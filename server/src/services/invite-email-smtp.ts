@@ -1,5 +1,6 @@
 import { createTransport } from "nodemailer";
 import type { InviteEmailPayload, InviteEmailTransport } from "./invite-email.js";
+import { setInviteEmailTransport } from "./invite-email.js";
 
 // SMTP transport for the invite-email hook. Activates only when SMTP env
 // configuration is present; otherwise the hook keeps its no-op transport and
@@ -91,4 +92,13 @@ export function createSmtpInviteEmailTransport(
       await mailer.sendMail(renderInviteMail(settings.from, { ...payload, email: payload.email }));
     },
   };
+}
+
+export function registerSmtpInviteEmailTransportFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  const settings = resolveSmtpSettingsFromEnv(env);
+  if (!settings) return false;
+  setInviteEmailTransport(createSmtpInviteEmailTransport(settings));
+  return true;
 }

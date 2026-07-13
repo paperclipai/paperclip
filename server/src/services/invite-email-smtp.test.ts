@@ -1,5 +1,11 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, afterEach } from "vitest";
 import { resolveSmtpSettingsFromEnv, createSmtpInviteEmailTransport, type InviteMail } from "./invite-email-smtp.js";
+import { registerSmtpInviteEmailTransportFromEnv } from "./invite-email-smtp.js";
+import {
+  getInviteEmailTransport,
+  noopInviteEmailTransport,
+  setInviteEmailTransport,
+} from "./invite-email.js";
 
 describe("resolveSmtpSettingsFromEnv", () => {
   it("returns null when nothing is configured", () => {
@@ -133,5 +139,25 @@ describe("createSmtpInviteEmailTransport", () => {
     });
     expect(sent[0].html).not.toContain("<img src=x>");
     expect(sent[0].html).toContain("&lt;img src=x&gt;");
+  });
+});
+
+describe("registerSmtpInviteEmailTransportFromEnv", () => {
+  afterEach(() => {
+    setInviteEmailTransport(noopInviteEmailTransport);
+  });
+
+  it("leaves the noop transport and returns false when unconfigured", () => {
+    expect(registerSmtpInviteEmailTransportFromEnv({})).toBe(false);
+    expect(getInviteEmailTransport()).toBe(noopInviteEmailTransport);
+  });
+
+  it("registers an SMTP transport and returns true when configured", () => {
+    const registered = registerSmtpInviteEmailTransportFromEnv({
+      PAPERCLIP_SMTP_URL: "smtp://mail.example.com",
+      PAPERCLIP_SMTP_FROM: "no-reply@example.com",
+    });
+    expect(registered).toBe(true);
+    expect(getInviteEmailTransport()).not.toBe(noopInviteEmailTransport);
   });
 });
