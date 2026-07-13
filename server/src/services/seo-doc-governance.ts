@@ -205,7 +205,11 @@ export function seoDocGovernanceService(db: Db, deps: SeoDocGovernanceDeps = {})
       .then((rows) => rows[0] ?? null);
   }
 
-  async function validateDependencies(docKey: string, dependencies: SeoDocDependencyRef[]): Promise<SeoDocViolation[]> {
+  async function validateDependencies(
+    companyId: string,
+    docKey: string,
+    dependencies: SeoDocDependencyRef[],
+  ): Promise<SeoDocViolation[]> {
     const violations: SeoDocViolation[] = [];
 
     for (const dep of dependencies) {
@@ -224,7 +228,7 @@ export function seoDocGovernanceService(db: Db, deps: SeoDocGovernanceDeps = {})
         const targetIssue = await db
           .select({ id: issues.id })
           .from(issues)
-          .where(eq(issues.identifier, targetIdentifier))
+          .where(and(eq(issues.companyId, companyId), eq(issues.identifier, targetIdentifier)))
           .then((rows) => rows[0] ?? null);
         if (!targetIssue) {
           violations.push({
@@ -252,7 +256,13 @@ export function seoDocGovernanceService(db: Db, deps: SeoDocGovernanceDeps = {})
         .select({ id: issueDocuments.id })
         .from(issueDocuments)
         .innerJoin(issues, eq(issueDocuments.issueId, issues.id))
-        .where(and(eq(issues.identifier, issueIdentifier), eq(issueDocuments.key, documentKey)))
+        .where(
+          and(
+            eq(issues.companyId, companyId),
+            eq(issues.identifier, issueIdentifier),
+            eq(issueDocuments.key, documentKey),
+          ),
+        )
         .then((rows) => rows[0] ?? null);
       if (!issueDocument) {
         violations.push({
@@ -376,11 +386,11 @@ export function seoDocGovernanceService(db: Db, deps: SeoDocGovernanceDeps = {})
       });
     },
 
-    async validateRegistryEntry(docKey: string): Promise<SeoDocViolation[]> {
+    async validateRegistryEntry(companyId: string, docKey: string): Promise<SeoDocViolation[]> {
       const entry = await db
         .select()
         .from(seoDocRegistryEntries)
-        .where(eq(seoDocRegistryEntries.docKey, docKey))
+        .where(and(eq(seoDocRegistryEntries.companyId, companyId), eq(seoDocRegistryEntries.docKey, docKey)))
         .then((rows) => rows[0] ?? null);
       if (!entry) return [];
 
@@ -401,7 +411,7 @@ export function seoDocGovernanceService(db: Db, deps: SeoDocGovernanceDeps = {})
       }
 
       const dependencies = (entry.dependencies ?? []) as SeoDocDependencyRef[];
-      violations.push(...(await validateDependencies(docKey, dependencies)));
+      violations.push(...(await validateDependencies(companyId, docKey, dependencies)));
 
       if (
         entry.documentClass === "implementation" &&
@@ -449,7 +459,7 @@ export function seoDocGovernanceService(db: Db, deps: SeoDocGovernanceDeps = {})
             ? "stale"
             : "active";
 
-        result.violations.push(...(await this.validateRegistryEntry(row.docKey)));
+        result.violations.push(...(await this.validateRegistryEntry(companyId, row.docKey)));
         if (nextStatus === "stale") result.staleDocKeys.push(row.docKey);
 
         await db

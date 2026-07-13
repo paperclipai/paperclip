@@ -188,7 +188,7 @@ describeEmbeddedPostgres("seoDocGovernanceService", () => {
   });
 
   it("flags implementation docs without source_strategy dependency", async () => {
-    const { issueId } = await createCompanyAndIssue("INS-315");
+    const { companyId, issueId } = await createCompanyAndIssue("INS-315");
 
     await docsSvc.upsertIssueDocument({
       issueId,
@@ -197,12 +197,12 @@ describeEmbeddedPostgres("seoDocGovernanceService", () => {
       body: governedBody({ owner: "cto", updateCadence: "weekly", documentClass: "implementation", dependencies: [] }),
     });
 
-    const violations = await governance.validateRegistryEntry("INS-315#document-plan");
+    const violations = await governance.validateRegistryEntry(companyId, "INS-315#document-plan");
     expect(violations.some((v) => v.code === "implementation_missing_source_strategy")).toBe(true);
   });
 
   it("flags implementation docs when source_strategy points at an issue instead of an issue document", async () => {
-    const { issueId } = await createCompanyAndIssue("INS-3151");
+    const { companyId, issueId } = await createCompanyAndIssue("INS-3151");
     const { issueId: strategyIssueId } = await createCompanyAndIssue("INS-3152");
 
     await docsSvc.upsertIssueDocument({
@@ -224,7 +224,7 @@ describeEmbeddedPostgres("seoDocGovernanceService", () => {
       }),
     });
 
-    const violations = await governance.validateRegistryEntry("INS-3151#document-plan");
+    const violations = await governance.validateRegistryEntry(companyId, "INS-3151#document-plan");
     expect(violations).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -237,7 +237,7 @@ describeEmbeddedPostgres("seoDocGovernanceService", () => {
   });
 
   it("flags strategy docs without implementation_handoff dependency", async () => {
-    const { issueId } = await createCompanyAndIssue("INS-316");
+    const { companyId, issueId } = await createCompanyAndIssue("INS-316");
 
     await docsSvc.upsertIssueDocument({
       issueId,
@@ -246,12 +246,12 @@ describeEmbeddedPostgres("seoDocGovernanceService", () => {
       body: governedBody({ owner: "cto", updateCadence: "weekly", documentClass: "strategy", dependencies: [] }),
     });
 
-    const violations = await governance.validateRegistryEntry("INS-316#document-plan");
+    const violations = await governance.validateRegistryEntry(companyId, "INS-316#document-plan");
     expect(violations.some((v) => v.code === "strategy_missing_handoff_issue")).toBe(true);
   });
 
   it("flags strategy docs when implementation_handoff points at an issue document instead of an issue", async () => {
-    const { issueId } = await createCompanyAndIssue("INS-3161");
+    const { companyId, issueId } = await createCompanyAndIssue("INS-3161");
     const { issueId: handoffIssueId } = await createCompanyAndIssue("INS-3162");
 
     await docsSvc.upsertIssueDocument({
@@ -273,7 +273,7 @@ describeEmbeddedPostgres("seoDocGovernanceService", () => {
       }),
     });
 
-    const violations = await governance.validateRegistryEntry("INS-3161#document-plan");
+    const violations = await governance.validateRegistryEntry(companyId, "INS-3161#document-plan");
     expect(violations).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -313,6 +313,71 @@ describeEmbeddedPostgres("seoDocGovernanceService", () => {
     expect((await governance.auditCompany(weekly.companyId, now)).staleDocKeys).toContain("INS-317#document-plan");
     expect((await governance.auditCompany(biweekly.companyId, now)).staleDocKeys).toContain("INS-318#document-plan");
     expect((await governance.auditCompany(monthly.companyId, now)).staleDocKeys).toContain("INS-319#document-plan");
+  });
+
+  it("scopes validation to the requested company when doc keys overlap across tenants", async () => {
+    const companyA = await createCompanyAndIssue("INS-400");
+    const companyB = await createCompanyAndIssue("INS-500");
+    const companyBStrategyIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: companyBStrategyIssueId,
+      companyId: companyB.companyId,
+      identifier: "INS-401",
+      issueNumber: 401,
+      title: "Issue INS-401",
+      status: "todo",
+      priority: "high",
+      createdByUserId: "user-1",
+    });
+
+    await docsSvc.upsertIssueDocument({
+      issueId: companyBStrategyIssueId,
+      key: "strategy",
+      format: "markdown",
+      body: governedBody({ owner: "cto", updateCadence: "weekly", documentClass: "strategy" }),
+    });
+
+    await docsSvc.upsertIssueDocument({
+      issueId: companyA.issueId,
+      key: "plan",
+      format: "markdown",
+      body: governedBody({
+        owner: "cto",
+        updateCadence: "weekly",
+        documentClass: "implementation",
+        dependencies: [{ type: "issue_document", role: "source_strategy", target: "INS-401#document-strategy" }],
+      }),
+    });
+
+    await docsSvc.upsertIssueDocument({
+      issueId: companyB.issueId,
+      key: "plan",
+      format: "markdown",
+      body: governedBody({
+        owner: "cto",
+        updateCadence: "weekly",
+        documentClass: "implementation",
+        dependencies: [{ type: "issue_document", role: "source_strategy", target: "INS-401#document-strategy" }],
+      }),
+    });
+
+    await db
+      .update(seoDocRegistryEntries)
+      .set({ docKey: "INS-400#document-plan" })
+      .where(and(eq(seoDocRegistryEntries.companyId, companyB.companyId), eq(seoDocRegistryEntries.issueId, companyB.issueId)));
+
+    const companyAViolations = await governance.validateRegistryEntry(companyA.companyId, "INS-400#document-plan");
+    const companyBViolations = await governance.validateRegistryEntry(companyB.companyId, "INS-400#document-plan");
+
+    expect(companyAViolations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "invalid_dependency_target",
+          message: expect.stringContaining("Dependency target issue document does not exist: INS-401#document-strategy"),
+        }),
+      ]),
+    );
+    expect(companyBViolations).toEqual([]);
   });
 
   it("keeps deprecated docs queryable and excludes them from escalation", async () => {
