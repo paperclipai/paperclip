@@ -164,6 +164,21 @@ describe("SidebarAccountMenu", () => {
           <SidebarAccountMenu
             deploymentMode="authenticated"
             version="2026.626.0+58.git.518fc71ce"
+            serverGit={{
+              available: true,
+              fullSha: "518fc71ce1234567890abcdef1234567890abcde",
+              shortSha: "518fc71",
+              branchName: "feature/source-build-label",
+              subject: "Show source build label",
+              committedAt: "2026-06-26T00:00:00.000Z",
+              localChanges: {
+                available: true,
+                hasLocalChanges: false,
+                stagedFileCount: 0,
+                unstagedFileCount: 0,
+                untrackedFileCount: 0,
+              },
+            }}
             open
           />
         </QueryClientProvider>,
@@ -171,8 +186,14 @@ describe("SidebarAccountMenu", () => {
     });
     await flushReact();
 
-    expect(document.body.textContent).toContain("Paperclip 518fc71");
+    expect(document.body.textContent).toContain("feature/source-build-labelPaperclip 518fc71");
     expect(document.body.textContent).not.toContain("2026.626.0+58.git.518fc71ce");
+    expect(document.body.querySelector('a[href="https://github.com/paperclipai/paperclip/tree/feature%2Fsource-build-label"]')?.textContent).toBe(
+      "feature/source-build-label",
+    );
+    expect(document.body.querySelector('a[href="https://github.com/paperclipai/paperclip/commit/518fc71ce1234567890abcdef1234567890abcde"]')?.textContent).toBe(
+      "518fc71",
+    );
 
     await act(async () => {
       root.unmount();
