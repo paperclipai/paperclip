@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import { type AnyPgColumn, pgTable, uuid, text, timestamp, jsonb, index, integer, bigint, boolean } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { agents } from "./agents.js";
@@ -87,6 +88,12 @@ export const heartbeatRuns = pgTable(
     companyCreatedAtDescIdx: index("heartbeat_runs_company_created_at_desc_idx").on(
       table.companyId,
       table.createdAt.desc(),
+    ),
+    // Callers filter runs by issue via the JSONB context snapshot; without this
+    // expression index every lookup seq-scans and detoasts the whole table.
+    companyContextIssueIdx: index("heartbeat_runs_company_context_issue_idx").on(
+      table.companyId,
+      sql`(${table.contextSnapshot} ->> 'issueId')`,
     ),
   }),
 );

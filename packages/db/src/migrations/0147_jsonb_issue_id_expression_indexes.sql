@@ -1,0 +1,3 @@
+CREATE INDEX IF NOT EXISTS "heartbeat_runs_company_context_issue_idx" ON "heartbeat_runs" ("company_id", ("context_snapshot" ->> 'issueId'));--> statement-breakpoint
+-- paperclip:migration-safety-ignore large-create-index-not-concurrently: the migration runner applies each migration inside a transaction, where CREATE INDEX CONCURRENTLY is not allowed; migrations run at instance startup before traffic is served, so a blocking btree build is acceptable
+CREATE INDEX IF NOT EXISTS "agent_wakeup_requests_company_payload_issue_idx" ON "agent_wakeup_requests" ("company_id", ("payload" ->> 'issueId'));

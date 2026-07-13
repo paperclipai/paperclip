@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import { pgTable, uuid, text, timestamp, jsonb, integer, index } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { agents } from "./agents.js";
@@ -36,5 +37,11 @@ export const agentWakeupRequests = pgTable(
       table.requestedAt,
     ),
     agentRequestedIdx: index("agent_wakeup_requests_agent_requested_idx").on(table.agentId, table.requestedAt),
+    // Wake-dedup lookups filter on the JSONB payload's issueId; see the matching
+    // expression index on heartbeat_runs.context_snapshot.
+    companyPayloadIssueIdx: index("agent_wakeup_requests_company_payload_issue_idx").on(
+      table.companyId,
+      sql`(${table.payload} ->> 'issueId')`,
+    ),
   }),
 );
