@@ -460,7 +460,7 @@ describe.sequential("issue thread interaction routes", () => {
       expect.objectContaining({
         action: "issue.thread_interaction_cancelled",
         details: expect.objectContaining({
-          cancellationAuthority: "board",
+          cancellationBasis: "board",
         }),
       }),
     );
@@ -499,7 +499,7 @@ describe.sequential("issue thread interaction routes", () => {
         runId: "run-agent-1",
         action: "issue.thread_interaction_cancelled",
         details: expect.objectContaining({
-          cancellationAuthority: "issues_manage",
+          cancellationBasis: "issues_manage",
         }),
       }),
     );
@@ -533,7 +533,7 @@ describe.sequential("issue thread interaction routes", () => {
       expect.anything(),
       expect.objectContaining({
         details: expect.objectContaining({
-          cancellationAuthority: "creator",
+          cancellationBasis: "creator",
         }),
       }),
     );
@@ -561,7 +561,7 @@ describe.sequential("issue thread interaction routes", () => {
       expect.anything(),
       expect.objectContaining({
         details: expect.objectContaining({
-          cancellationAuthority: "issue_control",
+          cancellationBasis: "issue_control",
         }),
       }),
     );

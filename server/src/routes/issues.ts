@@ -6820,7 +6820,7 @@ export function issueRoutes(
           interactionId: interaction.id,
           interactionKind: interaction.kind,
           interactionStatus: interaction.status,
-          cancellationAuthority,
+          cancellationBasis: cancellationAuthority,
           cancellationReason:
             interaction.kind === "request_confirmation"
               ? (interaction.result?.reason ?? null)
