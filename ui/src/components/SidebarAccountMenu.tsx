@@ -133,6 +133,7 @@ export function SidebarAccountMenu({
     onSuccess: async () => {
       setOpen(false);
       await queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.health });
     },
   });
 
