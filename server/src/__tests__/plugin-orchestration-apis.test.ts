@@ -11,9 +11,13 @@ import {
   companies,
   costEvents,
   createDb,
+  documentRevisions,
+  documents,
   executionWorkspaces,
   heartbeatRuns,
+  issueDocuments,
   issueRelations,
+  issueThreadInteractions,
   issues,
   pluginManagedResources,
   plugins,
@@ -67,7 +71,11 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(issueRelations);
+    await db.delete(issueThreadInteractions);
+    await db.delete(issueDocuments);
     await db.delete(issues);
+    await db.delete(documentRevisions);
+    await db.delete(documents);
     await db.delete(executionWorkspaces);
     await db.delete(pluginManagedResources);
     await db.delete(projects);
@@ -730,5 +738,133 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
       cachedInputTokens: 3,
       outputTokens: 6,
     });
+  });
+
+  async function seedAcceptedPlanIssue(companyId: string, agentId: string) {
+    const sourceIssueId = randomUUID();
+    const planDocumentId = randomUUID();
+    const acceptedPlanRevisionId = randomUUID();
+    await db.insert(issues).values({
+      id: sourceIssueId,
+      companyId,
+      title: "Epic: dashboard revamp",
+      status: "in_progress",
+      priority: "medium",
+      workMode: "planning",
+      assigneeAgentId: agentId,
+    });
+    await db.insert(documents).values({
+      id: planDocumentId,
+      companyId,
+      title: "Plan",
+      format: "markdown",
+      latestBody: "Plan body",
+      latestRevisionId: acceptedPlanRevisionId,
+      latestRevisionNumber: 1,
+      createdByAgentId: agentId,
+      updatedByAgentId: agentId,
+    });
+    await db.insert(documentRevisions).values({
+      id: acceptedPlanRevisionId,
+      companyId,
+      documentId: planDocumentId,
+      revisionNumber: 1,
+      title: "Plan",
+      format: "markdown",
+      body: "Plan body",
+      createdByAgentId: agentId,
+    });
+    await db.insert(issueDocuments).values({
+      companyId,
+      issueId: sourceIssueId,
+      documentId: planDocumentId,
+      key: "plan",
+    });
+    await db.insert(issueThreadInteractions).values({
+      id: randomUUID(),
+      companyId,
+      issueId: sourceIssueId,
+      kind: "request_confirmation",
+      status: "accepted",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        prompt: "Approve this plan?",
+        target: {
+          type: "issue_document",
+          issueId: sourceIssueId,
+          documentId: planDocumentId,
+          key: "plan",
+          revisionId: acceptedPlanRevisionId,
+          revisionNumber: 1,
+        },
+      },
+      result: { version: 1, outcome: "accepted" },
+      resolvedAt: new Date(),
+      createdByUserId: "local-board",
+      resolvedByUserId: "local-board",
+    });
+    return { sourceIssueId, acceptedPlanRevisionId };
+  }
+
+  it("decomposeAcceptedPlan creates child issues once and is idempotent on repeat calls", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const { sourceIssueId, acceptedPlanRevisionId } = await seedAcceptedPlanIssue(companyId, agentId);
+
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.epics", createEventBusStub());
+    const childInput = {
+      companyId,
+      acceptedPlanRevisionId,
+      children: [
+        { title: "Story 1: layout", assigneeAgentId: agentId },
+        { title: "Story 2: charts", assigneeAgentId: agentId },
+      ],
+    };
+
+    const first = await services.issues.decomposeAcceptedPlan({
+      sourceIssueId,
+      ...childInput,
+    });
+    expect(first.decomposition.status).toBe("completed");
+    expect(first.childIssueIds).toHaveLength(2);
+    expect(first.newlyCreatedIssues).toHaveLength(2);
+
+    const storedChildren = await db.select().from(issues).where(eq(issues.parentId, sourceIssueId));
+    expect(storedChildren).toHaveLength(2);
+    expect(storedChildren.map((row) => row.title).sort()).toEqual(["Story 1: layout", "Story 2: charts"]);
+
+    // Repeat call with the SAME children — must be a no-op, not a second wave of duplicates.
+    const second = await services.issues.decomposeAcceptedPlan({
+      sourceIssueId,
+      ...childInput,
+    });
+    expect(second.decomposition.id).toBe(first.decomposition.id);
+    expect(second.childIssueIds.sort()).toEqual(first.childIssueIds.sort());
+    expect(second.newlyCreatedIssues).toHaveLength(0);
+
+    const storedChildrenAfterRepeat = await db.select().from(issues).where(eq(issues.parentId, sourceIssueId));
+    expect(storedChildrenAfterRepeat).toHaveLength(2);
+  });
+
+  it("decomposeAcceptedPlan rejects a different child set for an already-decomposed revision", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const { sourceIssueId, acceptedPlanRevisionId } = await seedAcceptedPlanIssue(companyId, agentId);
+
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.epics", createEventBusStub());
+    await services.issues.decomposeAcceptedPlan({
+      sourceIssueId,
+      companyId,
+      acceptedPlanRevisionId,
+      children: [{ title: "Story 1: layout" }],
+    });
+
+    await expect(
+      services.issues.decomposeAcceptedPlan({
+        sourceIssueId,
+        companyId,
+        acceptedPlanRevisionId,
+        children: [{ title: "Story 1: layout (renamed)" }],
+      }),
+    ).rejects.toThrow(/different child set/);
   });
 });

@@ -2053,6 +2053,41 @@ export function buildHostServices(
         });
         return interaction as any;
       },
+      async decomposeAcceptedPlan(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const sourceIssue = requireInCompany("Issue", await issues.getById(params.sourceIssueId), companyId);
+        const result = await issues.decomposeAcceptedPlan(sourceIssue.id, {
+          acceptedPlanRevisionId: params.acceptedPlanRevisionId,
+          children: params.children.map((child) => ({
+            ...child,
+            originKind: normalizePluginOriginKind(child.originKind),
+          })) as unknown as Parameters<typeof issues.decomposeAcceptedPlan>[1]["children"],
+          actorAgentId: params.actorAgentId ?? null,
+          actorUserId: params.actorUserId ?? null,
+          actorRunId: params.actorRunId ?? null,
+        });
+        await logPluginActivity({
+          companyId,
+          action: "issue.accepted_plan_decomposition_updated",
+          entityType: "issue",
+          entityId: sourceIssue.id,
+          actor: { actorAgentId: params.actorAgentId, actorUserId: params.actorUserId, actorRunId: params.actorRunId },
+          details: {
+            identifier: sourceIssue.identifier,
+            acceptedPlanRevisionId: params.acceptedPlanRevisionId,
+            decompositionStatus: result.decomposition.status,
+            childIssueIds: result.childIssueIds,
+            newlyCreatedIssueIds: result.newlyCreatedIssues.map((issue) => issue.id),
+          },
+        });
+        return {
+          decomposition: result.decomposition,
+          childIssueIds: result.childIssueIds,
+          childIssues: result.childIssues as Issue[],
+          newlyCreatedIssues: result.newlyCreatedIssues as Issue[],
+        };
+      },
     },
 
     issueDocuments: {

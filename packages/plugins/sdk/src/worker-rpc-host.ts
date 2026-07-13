@@ -871,6 +871,18 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
           });
         },
 
+        async decomposeAcceptedPlan(sourceIssueId: string, input, companyId: string, actor) {
+          return callHost("issues.decomposeAcceptedPlan", {
+            sourceIssueId,
+            companyId,
+            acceptedPlanRevisionId: input.acceptedPlanRevisionId,
+            children: input.children,
+            actorAgentId: actor?.actorAgentId,
+            actorUserId: actor?.actorUserId,
+            actorRunId: actor?.actorRunId,
+          });
+        },
+
         async suggestTasks(
           issueId: string,
           interaction,
