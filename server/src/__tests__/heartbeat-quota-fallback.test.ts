@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   agents,
@@ -86,17 +86,39 @@ describeEmbeddedPostgres("heartbeat quota fallback reassignment", () => {
   }, 20_000);
 
   afterEach(async () => {
-    await db.delete(activityLog);
-    await db.delete(heartbeatRunEvents);
-    await db.delete(environmentLeases);
-    await db.delete(issueComments);
-    await db.delete(issueRelations);
-    await db.delete(issues);
-    await db.delete(heartbeatRuns);
-    await db.delete(agentWakeupRequests);
-    await db.delete(agentRuntimeState);
-    await db.delete(budgetPolicies);
-    await db.delete(agents);
+    // maybeFallbackReassign keeps writing heartbeat_run_events/activity/comments
+    // after the run's terminal status is already visible (the reassignment wakes
+    // the fallback agent as its last step), so a cleanup delete can race an
+    // in-flight insert. Retrying just the failing table isn't enough: a fresh
+    // heartbeat_run_events row can land after that table's delete already ran,
+    // so re-run the whole ordered sequence from the top on any FK violation
+    // (23503) instead of tightening the delete order.
+    const runDeleteSequence = async () => {
+      await db.delete(activityLog);
+      await db.delete(heartbeatRunEvents);
+      await db.delete(environmentLeases);
+      await db.delete(issueComments);
+      await db.delete(issueRelations);
+      await db.delete(issues);
+      await db.delete(heartbeatRuns);
+      await db.delete(agentWakeupRequests);
+      await db.delete(agentRuntimeState);
+      await db.delete(budgetPolicies);
+      await db.delete(agents);
+    };
+
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await runDeleteSequence();
+        break;
+      } catch (err) {
+        const code = (err as { cause?: { code?: string }; code?: string })?.cause?.code
+          ?? (err as { code?: string })?.code;
+        if (code !== "23503" || attempt >= 20) throw err;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    }
+
     await db.delete(companySkills);
     await db.delete(companies);
   });
@@ -323,6 +345,28 @@ describeEmbeddedPostgres("heartbeat quota fallback reassignment", () => {
         { timeout: 5_000, interval: 50 },
       )
       .toBe(fallbackAgentId);
+
+    // maybeFallbackReassign updates issues.assigneeAgentId first and only
+    // afterward writes the activity log entry, comment, and run event, so
+    // wait for its last side effect (the run event) before asserting on the
+    // earlier ones — otherwise the assigneeAgentId poll above can resolve
+    // while the activity/comment writes are still in flight.
+    await expect
+      .poll(
+        () =>
+          db
+            .select({ count: sql<number>`count(*)::int` })
+            .from(heartbeatRunEvents)
+            .where(
+              and(
+                eq(heartbeatRunEvents.runId, run!.id),
+                sql`${heartbeatRunEvents.message} like 'Quota fallback reassigned issue to agent%'`,
+              ),
+            )
+            .then((rows) => rows[0]?.count ?? 0),
+        { timeout: 5_000, interval: 50 },
+      )
+      .toBe(1);
 
     // No same-agent retry is scheduled when the fallback fires.
     const sameAgentRetries = await db
