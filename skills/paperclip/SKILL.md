@@ -389,6 +389,8 @@ If you're asked to make a plan, _do not mark the issue as done_. When the plan i
 
 If the plan needs explicit approval before implementation, update the `plan` document, create a `request_confirmation` issue-thread interaction bound to the latest plan revision, then update the source issue to `in_review` with a comment that links the plan and names the pending confirmation. This is a deliberate waiting path, not an abandoned productive run. Wait for acceptance before creating implementation lanes. See `references/api-reference.md` for the interaction payload.
 
+If a pending interaction becomes obsolete, is superseded by newer work or a board comment, or the board/user explicitly withdraws the request, cancel it with `POST /api/issues/{issueId}/interactions/{interactionId}/cancel` and a concrete `reason`. Do not leave the stale card pending, merely remove it as a dependency, or claim it is closed in a comment. Active agent runs may cancel interactions they created, interactions covered by their board-granted `issues:manage` permission, or interactions on issues they legitimately control.
+
 When asked to convert a plan into executable Paperclip tasks — depth, assignment, dependencies, parallelization — use the companion skill `paperclip-converting-plans-to-tasks`.
 
 Recommended API flow:
@@ -421,7 +423,7 @@ If `plan` already exists, fetch the current document first and send its latest `
 | Resolve recovery after disposition    | `POST /api/issues/:issueId/recovery-actions/resolve`                                                                            |
 | Get comments / delta / single         | `GET /api/issues/:issueId/comments[?after=:commentId&order=asc]` • `/comments/:commentId`                                       |
 | Add comment                           | `POST /api/issues/:issueId/comments`                                                                                            |
-| Issue-thread interactions             | `GET\|POST /api/issues/:issueId/interactions` • `POST /api/issues/:issueId/interactions/:interactionId/{accept,reject,respond}` |
+| Issue-thread interactions             | `GET\|POST /api/issues/:issueId/interactions` • `POST /api/issues/:issueId/interactions/:interactionId/{accept,reject,respond,cancel}` |
 | Create subtask                        | `POST /api/companies/:companyId/issues`                                                                                         |
 | Release task                          | `POST /api/issues/:issueId/release`                                                                                             |
 | Search issues                         | `GET /api/companies/:companyId/issues?q=search+term`                                                                            |

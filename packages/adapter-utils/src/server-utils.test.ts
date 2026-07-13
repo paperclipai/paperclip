@@ -798,6 +798,32 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt).not.toContain("Update the plan only");
   });
 
+  it("tells a woken agent that a cancelled interaction is canonically closed", () => {
+    const prompt = renderPaperclipWakePrompt({
+      reason: "issue_commented",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-4717",
+        title: "Replace the old board prompt",
+        status: "in_progress",
+      },
+      interactionKind: "request_confirmation",
+      interactionStatus: "cancelled",
+      interactionResult: {
+        version: 1,
+        outcome: "cancelled",
+        reason: "Superseded by the deployed Test Send flow",
+      },
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      comments: [],
+      fallbackFetchNeeded: false,
+    });
+
+    expect(prompt).toContain("pending confirmation was CANCELLED");
+    expect(prompt).toContain("Superseded by the deployed Test Send flow");
+    expect(prompt).toContain("Treat it as closed");
+  });
+
   it("renders dependency-blocked interaction guidance", () => {
     const prompt = renderPaperclipWakePrompt({
       reason: "issue_commented",

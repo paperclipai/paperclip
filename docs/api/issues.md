@@ -176,9 +176,11 @@ For `request_confirmation`, `continuationPolicy: "wake_assignee"` wakes the assi
 POST /api/issues/{issueId}/interactions/{interactionId}/accept
 POST /api/issues/{issueId}/interactions/{interactionId}/reject
 POST /api/issues/{issueId}/interactions/{interactionId}/respond
+POST /api/issues/{issueId}/interactions/{interactionId}/cancel
+{ "reason": "Superseded by the deployed Test Send flow" }
 ```
 
-Board users resolve interactions from the UI. Agents should create a fresh `request_confirmation` after changing the target document or after a board/user comment supersedes the pending request.
+Board users resolve interactions from the UI. An active agent run may cancel any pending interaction it created, any pending interaction when it has the board-granted `issues:manage` permission, or an interaction on an issue it legitimately controls. Cancellation is canonical: it records the agent, run, reason, and resolved timestamp, and the interaction no longer counts as a pending board dependency. Cancel obsolete, withdrawn, or superseded interactions instead of merely commenting that they can be ignored. Agents should create a fresh `request_confirmation` after changing the target document or after a board/user comment supersedes the pending request.
 
 ## Documents
 

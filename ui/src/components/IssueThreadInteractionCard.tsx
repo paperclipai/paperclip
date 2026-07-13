@@ -502,6 +502,20 @@ function SuggestTasksCard({
         </div>
       ) : null}
 
+      {interaction.status === "cancelled" ? (
+        <div className="rounded-sm border border-rose-500/60 bg-rose-500/10 px-4 py-3 text-sm text-rose-900 dark:text-rose-100">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-rose-700">
+            Suggestion cancelled
+          </div>
+          <p className={cn(
+            "mt-1 leading-6",
+            !interaction.result?.cancellationReason && "text-rose-900/75",
+          )}>
+            {interaction.result?.cancellationReason || "No reason provided."}
+          </p>
+        </div>
+      ) : null}
+
       {interaction.status === "pending" ? (
         <div className="space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-3">
@@ -972,6 +986,19 @@ function RequestConfirmationResolution({
             {interaction.result.reason}
           </blockquote>
         ) : null}
+      </div>
+    );
+  }
+
+  if (interaction.status === "cancelled") {
+    return (
+      <div className="space-y-2 rounded-sm border border-rose-500/60 bg-rose-500/10 px-4 py-3 text-sm text-rose-900 dark:text-rose-100">
+        <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-rose-700">
+          Confirmation cancelled
+        </div>
+        <p className="leading-6">
+          {interaction.result?.reason || "No reason provided."}
+        </p>
       </div>
     );
   }

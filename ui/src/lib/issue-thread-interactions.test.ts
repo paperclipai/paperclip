@@ -124,6 +124,49 @@ describe("issue thread interaction helpers", () => {
         answers: [{ questionId: "question-1", optionIds: ["option-1"] }],
       },
     })).toBe("Answered 1 question");
+
+    expect(buildIssueThreadInteractionSummary({
+      id: "interaction-cancelled-suggestions",
+      companyId: "company-1",
+      issueId: "issue-1",
+      kind: "suggest_tasks",
+      status: "cancelled",
+      continuationPolicy: "wake_assignee",
+      createdAt: "2026-04-06T12:00:00.000Z",
+      updatedAt: "2026-04-06T12:00:00.000Z",
+      payload: {
+        version: 1,
+        tasks: [
+          { clientKey: "task-1", title: "One" },
+          { clientKey: "task-2", title: "Two" },
+        ],
+      },
+      result: {
+        version: 1,
+        cancelled: true,
+        cancellationReason: "No longer needed",
+      },
+    })).toBe("Cancelled 2 proposed tasks");
+
+    expect(buildIssueThreadInteractionSummary({
+      id: "interaction-cancelled-confirmation",
+      companyId: "company-1",
+      issueId: "issue-1",
+      kind: "request_confirmation",
+      status: "cancelled",
+      continuationPolicy: "wake_assignee",
+      createdAt: "2026-04-06T12:00:00.000Z",
+      updatedAt: "2026-04-06T12:00:00.000Z",
+      payload: {
+        version: 1,
+        prompt: "Approve the old path?",
+      },
+      result: {
+        version: 1,
+        outcome: "cancelled",
+        reason: "Superseded by the new path",
+      },
+    })).toBe("Cancelled confirmation");
   });
 
   it("maps stored option ids back to labels for answered summaries", () => {

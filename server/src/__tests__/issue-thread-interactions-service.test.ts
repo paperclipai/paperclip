@@ -605,7 +605,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     })).rejects.toThrow("Interaction has already been resolved");
   });
 
-  it("persists cancelled ask_user_questions interactions without answer data", async () => {
+  it("persists canonical cancellation results for every interaction kind", async () => {
     const companyId = randomUUID();
     const goalId = randomUUID();
     const issueId = randomUUID();
@@ -633,7 +633,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       priority: "medium",
     });
 
-    const created = await interactionsSvc.create({
+    const question = await interactionsSvc.create({
       id: issueId,
       companyId,
     }, {
@@ -656,10 +656,10 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       userId: "local-board",
     });
 
-    const cancelled = await interactionsSvc.cancelQuestions({
+    const cancelled = await interactionsSvc.cancelInteraction({
       id: issueId,
       companyId,
-    }, created.id, {
+    }, question.id, {
       reason: "Not needed anymore",
     }, {
       userId: "local-board",
@@ -677,11 +677,67 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     await expect(interactionsSvc.answerQuestions({
       id: issueId,
       companyId,
-    }, created.id, {
+    }, question.id, {
       answers: [{ questionId: "scope", optionIds: ["phase-1"] }],
     }, {
       userId: "local-board",
     })).rejects.toThrow("Interaction has already been resolved");
+
+    const suggestion = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "suggest_tasks",
+      payload: {
+        version: 1,
+        tasks: [{ clientKey: "follow-up", title: "Create a follow-up" }],
+      },
+    }, {
+      userId: "local-board",
+    });
+    const cancelledSuggestion = await interactionsSvc.cancelInteraction({
+      id: issueId,
+      companyId,
+    }, suggestion.id, {
+      reason: "The implementation already covers it",
+    }, {
+      userId: "local-board",
+    });
+
+    expect(cancelledSuggestion.status).toBe("cancelled");
+    expect(cancelledSuggestion.result).toEqual({
+      version: 1,
+      cancelled: true,
+      cancellationReason: "The implementation already covers it",
+    });
+
+    const confirmation = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      payload: {
+        version: 1,
+        prompt: "Approve the old path?",
+      },
+    }, {
+      userId: "local-board",
+    });
+    const cancelledConfirmation = await interactionsSvc.cancelInteraction({
+      id: issueId,
+      companyId,
+    }, confirmation.id, {
+      reason: "Superseded by the new plan",
+    }, {
+      userId: "local-board",
+    });
+
+    expect(cancelledConfirmation.status).toBe("cancelled");
+    expect(cancelledConfirmation.result).toEqual({
+      version: 1,
+      outcome: "cancelled",
+      reason: "Superseded by the new plan",
+    });
   });
 
   it("reuses the existing interaction when the same idempotency key is submitted twice", async () => {

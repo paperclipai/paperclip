@@ -6774,10 +6774,35 @@ export function issueRoutes(
         return;
       }
       assertCompanyAccess(req, issue.companyId);
-      assertBoard(req);
+
+      const interactions = issueThreadInteractionService(db);
+      let cancellationAuthority: "board" | "creator" | "issues_manage" | "issue_control" = "board";
+      if (req.actor.type === "agent") {
+        const actorAgentId = req.actor.agentId;
+        if (!actorAgentId) throw forbidden("Agent authentication required");
+        if (!requireAgentRunId(req, res)) return;
+
+        const current = await interactions.getById(interactionId);
+        if (!current || current.companyId !== issue.companyId || current.issueId !== issue.id) {
+          throw notFound("Interaction not found");
+        }
+
+        if (current.createdByAgentId === actorAgentId) {
+          cancellationAuthority = "creator";
+        } else if (await access.hasPermission(issue.companyId, "agent", actorAgentId, "issues:manage")) {
+          cancellationAuthority = "issues_manage";
+        } else if (issue.assigneeAgentId !== null) {
+          if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+          cancellationAuthority = "issue_control";
+        } else {
+          throw forbidden("Agent cannot cancel this interaction");
+        }
+      } else {
+        assertBoard(req);
+      }
 
       const actor = getActorInfo(req);
-      const interaction = await issueThreadInteractionService(db).cancelQuestions(issue, interactionId, req.body, {
+      const interaction = await interactions.cancelInteraction(issue, interactionId, req.body, {
         agentId: actor.agentId,
         userId: actor.actorType === "user" ? actor.actorId : null,
       });
@@ -6795,10 +6820,11 @@ export function issueRoutes(
           interactionId: interaction.id,
           interactionKind: interaction.kind,
           interactionStatus: interaction.status,
+          cancellationAuthority,
           cancellationReason:
-            interaction.kind === "ask_user_questions"
-              ? (interaction.result?.cancellationReason ?? null)
-              : null,
+            interaction.kind === "request_confirmation"
+              ? (interaction.result?.reason ?? null)
+              : (interaction.result?.cancellationReason ?? null),
         },
       });
 

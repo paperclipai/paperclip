@@ -609,7 +609,7 @@ Dashboard payload must include:
 
 The current app also exposes V1-supporting surfaces for:
 
-- issue thread interactions (`suggest_tasks`, `ask_user_questions`, `request_confirmation`)
+- issue thread interactions (`suggest_tasks`, `ask_user_questions`, `request_confirmation`), including audited cancellation by the board or an active agent acting as creator, with `issues:manage`, or through legitimate issue control
 - issue approvals, issue references/search, labels, read state, inbox/archive state, and work products
 - execution workspaces, project workspaces, workspace runtime services, and workspace operations
 - routines and scheduled/API/webhook triggers

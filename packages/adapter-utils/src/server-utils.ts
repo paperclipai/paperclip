@@ -956,6 +956,15 @@ export function renderPaperclipWakePrompt(
       );
     } else if (normalized.interactionStatus === "accepted" && normalized.interactionKind === "request_confirmation") {
       lines.push(`- the user APPROVED your ${kindLabel}. Proceed.`);
+    } else if (normalized.interactionStatus === "cancelled") {
+      const reason =
+        asString(result?.cancellationReason, "").trim() ||
+        asString(result?.reason, "").trim();
+      lines.push(
+        reason
+          ? `- the pending ${kindLabel} was CANCELLED: "${reason}". Treat it as closed and continue from the current issue state.`
+          : `- the pending ${kindLabel} was CANCELLED. Treat it as closed and continue from the current issue state.`,
+      );
     }
   }
   if (normalized.checkedOutByHarness) {

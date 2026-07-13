@@ -12,13 +12,19 @@ const mockIssueService = vi.hoisted(() => ({
 
 const mockInteractionService = vi.hoisted(() => ({
   listForIssue: vi.fn(),
+  getById: vi.fn(),
   create: vi.fn(),
   acceptInteraction: vi.fn(),
   acceptSuggestedTasks: vi.fn(),
   rejectInteraction: vi.fn(),
   rejectSuggestedTasks: vi.fn(),
   answerQuestions: vi.fn(),
-  cancelQuestions: vi.fn(),
+  cancelInteraction: vi.fn(),
+}));
+
+const mockAccessService = vi.hoisted(() => ({
+  canUser: vi.fn(async () => true),
+  hasPermission: vi.fn(async () => true),
 }));
 
 const mockHeartbeatService = vi.hoisted(() => ({
@@ -41,10 +47,7 @@ function registerModuleMocks() {
     companyService: () => ({
       getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
     }),
-    accessService: () => ({
-      canUser: vi.fn(async () => true),
-      hasPermission: vi.fn(async () => true),
-    }),
+    accessService: () => mockAccessService,
     agentService: () => ({
       getById: vi.fn(async () => null),
       resolveByReference: vi.fn(async (_companyId: string, raw: string) => ({
@@ -170,6 +173,17 @@ describe.sequential("issue thread interaction routes", () => {
     vi.clearAllMocks();
     mockIssueService.getById.mockResolvedValue(createIssue());
     mockInteractionService.listForIssue.mockResolvedValue([]);
+    mockInteractionService.getById.mockResolvedValue({
+      id: "interaction-2",
+      companyId: "company-1",
+      issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      kind: "ask_user_questions",
+      status: "pending",
+      createdByAgentId: null,
+      createdByUserId: "local-board",
+    });
+    mockAccessService.canUser.mockResolvedValue(true);
+    mockAccessService.hasPermission.mockResolvedValue(true);
     mockInteractionService.create.mockResolvedValue({
       id: "interaction-1",
       companyId: "company-1",
@@ -269,7 +283,7 @@ describe.sequential("issue thread interaction routes", () => {
       updatedAt: "2026-04-20T12:06:00.000Z",
       resolvedAt: "2026-04-20T12:06:00.000Z",
     });
-    mockInteractionService.cancelQuestions.mockResolvedValue({
+    mockInteractionService.cancelInteraction.mockResolvedValue({
       id: "interaction-2",
       companyId: "company-1",
       issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
@@ -422,7 +436,7 @@ describe.sequential("issue thread interaction routes", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.status).toBe("cancelled");
-    expect(mockInteractionService.cancelQuestions).toHaveBeenCalledWith(
+    expect(mockInteractionService.cancelInteraction).toHaveBeenCalledWith(
       expect.objectContaining({ id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }),
       "interaction-2",
       {},
@@ -445,8 +459,143 @@ describe.sequential("issue thread interaction routes", () => {
       expect.anything(),
       expect.objectContaining({
         action: "issue.thread_interaction_cancelled",
+        details: expect.objectContaining({
+          cancellationAuthority: "board",
+        }),
       }),
     );
+  });
+
+  it("lets an active agent cancel with its board-granted issues:manage permission", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId: CREATED_AGENT_ID,
+      companyId: "company-1",
+      runId: "run-agent-1",
+    });
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-2/cancel")
+      .send({ reason: "Superseded by the deployed flow" });
+
+    expect(res.status).toBe(200);
+    expect(mockAccessService.hasPermission).toHaveBeenCalledWith(
+      "company-1",
+      "agent",
+      CREATED_AGENT_ID,
+      "issues:manage",
+    );
+    expect(mockInteractionService.cancelInteraction).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }),
+      "interaction-2",
+      { reason: "Superseded by the deployed flow" },
+      { agentId: CREATED_AGENT_ID, userId: null },
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        actorType: "agent",
+        agentId: CREATED_AGENT_ID,
+        runId: "run-agent-1",
+        action: "issue.thread_interaction_cancelled",
+        details: expect.objectContaining({
+          cancellationAuthority: "issues_manage",
+        }),
+      }),
+    );
+  });
+
+  it("lets an active agent retract an interaction it created without broader grants", async () => {
+    mockAccessService.hasPermission.mockResolvedValue(false);
+    mockInteractionService.getById.mockResolvedValueOnce({
+      id: "interaction-2",
+      companyId: "company-1",
+      issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      kind: "ask_user_questions",
+      status: "pending",
+      createdByAgentId: CREATED_AGENT_ID,
+      createdByUserId: null,
+    });
+    const app = await createApp({
+      type: "agent",
+      agentId: CREATED_AGENT_ID,
+      companyId: "company-1",
+      runId: "run-agent-2",
+    });
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-2/cancel")
+      .send({ reason: "No longer needed" });
+
+    expect(res.status).toBe(200);
+    expect(mockAccessService.hasPermission).not.toHaveBeenCalled();
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        details: expect.objectContaining({
+          cancellationAuthority: "creator",
+        }),
+      }),
+    );
+  });
+
+  it("lets an active assignee cancel an interaction on an issue it controls", async () => {
+    mockAccessService.hasPermission.mockResolvedValue(false);
+    mockIssueService.getById.mockResolvedValueOnce(createIssue({
+      status: "todo",
+      assigneeAgentId: CREATED_AGENT_ID,
+    }));
+    const app = await createApp({
+      type: "agent",
+      agentId: CREATED_AGENT_ID,
+      companyId: "company-1",
+      runId: "run-agent-3",
+    });
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-2/cancel")
+      .send({ reason: "Current implementation made this obsolete" });
+
+    expect(res.status).toBe(200);
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        details: expect.objectContaining({
+          cancellationAuthority: "issue_control",
+        }),
+      }),
+    );
+  });
+
+  it("rejects agent cancellation without an active run or cancellation authority", async () => {
+    const missingRunApp = await createApp({
+      type: "agent",
+      agentId: CREATED_AGENT_ID,
+      companyId: "company-1",
+      runId: null,
+    });
+    const missingRun = await request(missingRunApp)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-2/cancel")
+      .send({ reason: "No longer needed" });
+    expect(missingRun.status).toBe(401);
+
+    mockAccessService.hasPermission.mockResolvedValue(false);
+    mockIssueService.getById.mockResolvedValueOnce(createIssue({
+      status: "todo",
+      assigneeAgentId: null,
+    }));
+    const unauthorizedApp = await createApp({
+      type: "agent",
+      agentId: CREATED_AGENT_ID,
+      companyId: "company-1",
+      runId: "run-agent-4",
+    });
+    const unauthorized = await request(unauthorizedApp)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-2/cancel")
+      .send({ reason: "No longer needed" });
+
+    expect(unauthorized.status).toBe(403);
+    expect(mockInteractionService.cancelInteraction).not.toHaveBeenCalled();
   });
 
   it("does not wake a stranded assignee when a liveness board interaction is answered or cancelled", async () => {
@@ -487,7 +636,7 @@ describe.sequential("issue thread interaction routes", () => {
         }],
       },
     });
-    mockInteractionService.cancelQuestions.mockResolvedValueOnce({
+    mockInteractionService.cancelInteraction.mockResolvedValueOnce({
       ...baseInteraction,
       status: "cancelled",
       result: {
