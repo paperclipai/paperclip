@@ -16,6 +16,7 @@ import {
   isJsonRpcResponse,
   parseMessage,
   PLUGIN_RPC_ERROR_CODES,
+  WORKER_PROTOCOL_CAPABILITY_INVOCATION_SCOPE_ECHO,
   serializeMessage,
   type JsonRpcResponse,
   type PluginInvocationContext,
@@ -145,6 +146,59 @@ describe("worker performAction context", () => {
           companyId: null,
         },
         companyId: null,
+      });
+    } finally {
+      worker.stop();
+      hostReadline.close();
+      hostToWorker.destroy();
+      workerToHost.destroy();
+    }
+  });
+});
+
+describe("worker initialize handshake", () => {
+  it("advertises the invocation-scope echo protocol capability", async () => {
+    const hostToWorker = new PassThrough();
+    const workerToHost = new PassThrough();
+    const hostReadline = createInterface({ input: workerToHost });
+    const plugin = definePlugin({
+      async setup() {},
+    });
+    const worker = startWorkerRpcHost({
+      plugin,
+      stdin: hostToWorker,
+      stdout: workerToHost,
+    });
+
+    try {
+      const initializeResult = new Promise<unknown>((resolve) => {
+        hostReadline.on("line", (line) => {
+          const message = parseMessage(line);
+          if (!isJsonRpcResponse(message) || message.id !== "host-init") return;
+          resolve((message as { result?: unknown }).result);
+        });
+      });
+
+      hostToWorker.write(serializeMessage(createRequest("initialize", {
+        manifest: {
+          id: "paperclip.handshake-test",
+          apiVersion: 1,
+          version: "1.0.0",
+          displayName: "Handshake test",
+          description: "Handshake test",
+          author: "Paperclip",
+          categories: ["automation"],
+          capabilities: [],
+          entrypoints: { worker: "dist/worker.js" },
+        },
+        config: {},
+        instanceInfo: { instanceId: "test", hostVersion: "0.0.0" },
+        apiVersion: 1,
+      }, "host-init")));
+
+      await expect(initializeResult).resolves.toMatchObject({
+        ok: true,
+        protocolCapabilities: [WORKER_PROTOCOL_CAPABILITY_INVOCATION_SCOPE_ECHO],
       });
     } finally {
       worker.stop();

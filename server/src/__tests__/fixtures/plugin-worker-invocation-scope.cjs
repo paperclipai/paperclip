@@ -1,5 +1,9 @@
 const readline = require("node:readline");
 
+// When set, simulate a worker built against a stable (pre-echo) SDK that does
+// not declare the invocation-scope echo protocol capability on initialize.
+const isLegacySdk = process.env.PLUGIN_WORKER_LEGACY_SDK === "1";
+
 let nextRequestId = 1;
 const pendingNested = new Map();
 
@@ -69,6 +73,7 @@ rl.on("line", (line) => {
       result: {
         ok: true,
         supportedMethods: ["getData", "performAction"],
+        ...(isLegacySdk ? {} : { protocolCapabilities: ["invocation-scope-echo"] }),
       },
     });
     return;

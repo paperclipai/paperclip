@@ -536,6 +536,18 @@ Input includes:
 - instance info
 - host API version
 
+Result includes:
+
+- `ok`
+- `supportedMethods` — the optional methods this worker implements
+- `protocolCapabilities` (optional) — host-worker protocol capabilities the
+  worker's SDK supports. SDKs that echo the host-issued invocation id
+  (`paperclipInvocationId`) on nested worker→host calls declare
+  `"invocation-scope-echo"` here. The host only enforces invocation-scope
+  echo for workers that declare this capability; workers built against older
+  SDKs fall back to legacy (pre-enforcement) scope resolution and the host
+  logs a one-time warning suggesting an SDK upgrade.
+
 ### 13.2 `health`
 
 Returns:
