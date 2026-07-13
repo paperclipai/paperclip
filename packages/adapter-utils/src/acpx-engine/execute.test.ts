@@ -1517,6 +1517,32 @@ describe("summarizeAcpxTurnUsage no-report turns", () => {
     expect(summary.usageDetail).toMatchObject(current);
   });
 
+  it("treats omitted and explicit zero fields as the same stale breakdown", () => {
+    const current = { inputTokens: 25, outputTokens: 75, cachedReadTokens: 5 };
+    const summary = summarizeAcpxTurnUsage({
+      preStatus: { usage: { cumulative: { inputTokens: 10, outputTokens: 500 } } },
+      postStatus: {
+        usage: {
+          cumulative: {
+            inputTokens: 10,
+            outputTokens: 500,
+            cachedReadTokens: 0,
+            cachedWriteTokens: 0,
+            thoughtTokens: 0,
+            totalTokens: 0,
+          },
+        },
+      },
+      eventBreakdown: current,
+      eventCostUsd: null,
+    });
+    expect(summary.usage).toEqual({
+      inputTokens: 25,
+      outputTokens: 75,
+      cachedInputTokens: 5,
+    });
+  });
+
   it("does not reuse stale tokens when the turn reports cost only", () => {
     const stale = { inputTokens: 10, outputTokens: 500, cachedReadTokens: 30 };
     const summary = summarizeAcpxTurnUsage({

@@ -1483,12 +1483,12 @@ function usageBreakdownsEqual(
   right: AcpRuntimeUsageBreakdown,
 ): boolean {
   return (
-    left.inputTokens === right.inputTokens &&
-    left.outputTokens === right.outputTokens &&
-    left.cachedReadTokens === right.cachedReadTokens &&
-    left.cachedWriteTokens === right.cachedWriteTokens &&
-    left.thoughtTokens === right.thoughtTokens &&
-    left.totalTokens === right.totalTokens
+    asNumber(left.inputTokens, 0) === asNumber(right.inputTokens, 0) &&
+    asNumber(left.outputTokens, 0) === asNumber(right.outputTokens, 0) &&
+    asNumber(left.cachedReadTokens, 0) === asNumber(right.cachedReadTokens, 0) &&
+    asNumber(left.cachedWriteTokens, 0) === asNumber(right.cachedWriteTokens, 0) &&
+    asNumber(left.thoughtTokens, 0) === asNumber(right.thoughtTokens, 0) &&
+    asNumber(left.totalTokens, 0) === asNumber(right.totalTokens, 0)
   );
 }
 
