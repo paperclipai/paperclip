@@ -9,6 +9,10 @@ import type {
   AdapterExecutionContext,
   AdapterExecutionResult,
 } from "@paperclipai/adapter-utils";
+import {
+  parseLocalProcessFilesystemScope,
+  parseLocalProcessNetworkScope,
+} from "@paperclipai/adapter-utils/local-process-sandbox";
 import { inferOpenAiCompatibleBiller } from "@paperclipai/adapter-utils";
 import {
   ensureAdapterExecutionTargetCommandResolvable,
@@ -66,7 +70,9 @@ export async function resolveCodexExecutionEngineForRun(
   input: CodexEngineResolutionInput,
 ): Promise<CodexEngineSelection> {
   const selection = normalizeEngine(input.config.engine);
-  if (input.config.filesystemScope === "workspace" || input.config.networkScope === "deny" || input.config.networkScope === "allowlist") {
+  const filesystemScope = parseLocalProcessFilesystemScope(input.config.filesystemScope);
+  const networkScope = parseLocalProcessNetworkScope(input.config.networkScope);
+  if (filesystemScope || networkScope) {
     if (selection.explicit && selection.engine === "acp") {
       throw new Error("Local filesystem/network confinement requires the Codex CLI engine; ACP confinement is not supported.");
     }

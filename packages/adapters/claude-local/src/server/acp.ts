@@ -10,6 +10,10 @@ import type {
   AdapterExecutionResult,
 } from "@paperclipai/adapter-utils";
 import {
+  parseLocalProcessFilesystemScope,
+  parseLocalProcessNetworkScope,
+} from "@paperclipai/adapter-utils/local-process-sandbox";
+import {
   ensureAdapterExecutionTargetCommandResolvable,
   readAdapterExecutionTarget,
   resolveAdapterExecutionTargetCwd,
@@ -65,7 +69,9 @@ export async function resolveClaudeExecutionEngineForRun(
   input: ClaudeEngineResolutionInput,
 ): Promise<ClaudeEngineSelection> {
   const selection = normalizeEngine(input.config.engine);
-  if (input.config.filesystemScope === "workspace" || input.config.networkScope === "deny" || input.config.networkScope === "allowlist") {
+  const filesystemScope = parseLocalProcessFilesystemScope(input.config.filesystemScope);
+  const networkScope = parseLocalProcessNetworkScope(input.config.networkScope);
+  if (filesystemScope || networkScope) {
     if (selection.explicit && selection.engine === "acp") {
       throw new Error("Local filesystem/network confinement requires the Claude CLI engine; ACP confinement is not supported.");
     }

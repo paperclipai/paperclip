@@ -286,6 +286,12 @@ describe("claude_local ACP lane", () => {
       explicit: false,
       fallbackReason: expect.stringContaining("network scope"),
     });
+    await expect(
+      resolveClaudeExecutionEngineForRun({
+        config: { networkScope: "public" },
+        executionTarget: null,
+      }),
+    ).rejects.toThrow('networkScope must be "deny" or "allowlist"');
   });
 
   it("uses ACP for bridged sandbox auto runs when the ACP command is configured as a shell command", async () => {
