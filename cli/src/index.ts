@@ -129,6 +129,7 @@ const run = program
   .option("-d, --data-dir <path>", DATA_DIR_OPTION_HELP)
   .option("-i, --instance <id>", "Local instance id (default: default)")
   .option("--bind <mode>", "On first run, use onboarding reachability preset (loopback, lan, tailnet)")
+  .option("--maintenance", "Start loopback-only without startup reconciliation, schedulers, plugins, backups, or telemetry")
   .option("--repair", "Attempt automatic repairs during doctor", true)
   .option("--no-repair", "Disable automatic repairs during doctor")
   .action(runCommand);

@@ -25,6 +25,20 @@ Choose local instance:
 pnpm paperclipai run --instance dev
 ```
 
+Start an existing external-PostgreSQL instance for bounded operator inspection
+without onboarding, doctor repairs, automatic migrations, reconciliation,
+schedulers, plugin loading, backups, telemetry, or bootstrap invites:
+
+```sh
+DATABASE_URL=postgres://... pnpm paperclipai run --maintenance
+```
+
+Maintenance mode always binds to loopback and ignores public/runtime URL
+overrides. It refuses embedded PostgreSQL because starting or creating an
+embedded database would make inspection startup mutating. Explicit API actions
+remain available to the authenticated operator; this flag suppresses automatic
+startup and background work rather than making the API read-only.
+
 ## Deployment Modes
 
 Mode taxonomy and design intent are documented in `doc/DEPLOYMENT-MODES.md`.

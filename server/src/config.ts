@@ -50,6 +50,7 @@ const TAILSCALE_DETECT_TIMEOUT_MS = 3000;
 type DatabaseMode = "embedded-postgres" | "postgres";
 
 export interface Config {
+  maintenanceMode: boolean;
   deploymentMode: DeploymentMode;
   deploymentExposure: DeploymentExposure;
   bind: BindMode;
@@ -110,6 +111,7 @@ function detectTailnetBindHost(): string | undefined {
 
 export function loadConfig(): Config {
   const fileConfig = readConfigFile();
+  const maintenanceMode = process.env.PAPERCLIP_MAINTENANCE_MODE === "true";
   const fileDatabaseMode =
     (fileConfig?.database.mode === "postgres" ? "postgres" : "embedded-postgres") as DatabaseMode;
 
@@ -174,8 +176,9 @@ export function loadConfig(): Config {
     DEPLOYMENT_EXPOSURES.includes(deploymentExposureFromEnvRaw as DeploymentExposure)
       ? (deploymentExposureFromEnvRaw as DeploymentExposure)
       : null;
-  const deploymentExposure: DeploymentExposure =
-    deploymentMode === "local_trusted"
+  const deploymentExposure: DeploymentExposure = maintenanceMode
+    ? "private"
+    : deploymentMode === "local_trusted"
       ? "private"
       : (deploymentExposureFromEnv ?? fileConfig?.server.exposure ?? "private");
   const bindFromEnvRaw = process.env.PAPERCLIP_BIND;
@@ -183,13 +186,18 @@ export function loadConfig(): Config {
     bindFromEnvRaw && BIND_MODES.includes(bindFromEnvRaw as BindMode)
       ? (bindFromEnvRaw as BindMode)
       : null;
-  const configuredHost = process.env.HOST ?? fileConfig?.server.host ?? "127.0.0.1";
+  const configuredHost = maintenanceMode
+    ? "127.0.0.1"
+    : process.env.HOST ?? fileConfig?.server.host ?? "127.0.0.1";
   const tailnetBindHost = detectTailnetBindHost();
-  const bind =
-    bindFromEnv ??
-    fileConfig?.server.bind ??
-    inferBindModeFromHost(configuredHost, { tailnetBindHost });
-  const customBindHost = process.env.PAPERCLIP_BIND_HOST ?? fileConfig?.server.customBindHost;
+  const bind = maintenanceMode
+    ? "loopback"
+    : bindFromEnv ??
+      fileConfig?.server.bind ??
+      inferBindModeFromHost(configuredHost, { tailnetBindHost });
+  const customBindHost = maintenanceMode
+    ? undefined
+    : process.env.PAPERCLIP_BIND_HOST ?? fileConfig?.server.customBindHost;
   const authBaseUrlModeFromEnvRaw = process.env.PAPERCLIP_AUTH_BASE_URL_MODE;
   const authBaseUrlModeFromEnv =
     authBaseUrlModeFromEnvRaw &&
@@ -203,11 +211,14 @@ export function loadConfig(): Config {
     process.env.BETTER_AUTH_BASE_URL ??
     publicUrlFromEnv ??
     fileConfig?.auth?.publicBaseUrl;
-  const authPublicBaseUrl = authPublicBaseUrlRaw?.trim() || undefined;
-  const authBaseUrlMode: AuthBaseUrlMode =
-    authBaseUrlModeFromEnv ??
-    fileConfig?.auth?.baseUrlMode ??
-    (authPublicBaseUrl ? "explicit" : "auto");
+  const authPublicBaseUrl = maintenanceMode
+    ? undefined
+    : authPublicBaseUrlRaw?.trim() || undefined;
+  const authBaseUrlMode: AuthBaseUrlMode = maintenanceMode
+    ? "auto"
+    : authBaseUrlModeFromEnv ??
+      fileConfig?.auth?.baseUrlMode ??
+      (authPublicBaseUrl ? "explicit" : "auto");
   const disableSignUpFromEnv = process.env.PAPERCLIP_AUTH_DISABLE_SIGN_UP;
   const authDisableSignUp: boolean =
     disableSignUpFromEnv !== undefined
@@ -229,7 +240,7 @@ export function loadConfig(): Config {
       }
     })()
     : null;
-  const allowedHostnames = Array.from(
+  const allowedHostnames = maintenanceMode ? [] : Array.from(
     new Set(
       [
         ...(allowedHostnamesFromEnv ?? fileConfig?.server.allowedHostnames ?? []),
@@ -240,12 +251,14 @@ export function loadConfig(): Config {
     ),
   );
   const companyDeletionEnvRaw = process.env.PAPERCLIP_ENABLE_COMPANY_DELETION;
-  const companyDeletionEnabled =
-    companyDeletionEnvRaw !== undefined
+  const companyDeletionEnabled = maintenanceMode
+    ? false
+    : companyDeletionEnvRaw !== undefined
       ? companyDeletionEnvRaw === "true"
       : deploymentMode === "local_trusted";
-  const databaseBackupEnabled =
-    process.env.PAPERCLIP_DB_BACKUP_ENABLED !== undefined
+  const databaseBackupEnabled = maintenanceMode
+    ? false
+    : process.env.PAPERCLIP_DB_BACKUP_ENABLED !== undefined
       ? process.env.PAPERCLIP_DB_BACKUP_ENABLED === "true"
       : (fileDatabaseBackup?.enabled ?? true);
   const databaseBackupIntervalMinutes = Math.max(
@@ -286,6 +299,7 @@ export function loadConfig(): Config {
   }
 
   return {
+    maintenanceMode,
     deploymentMode,
     deploymentExposure,
     bind: resolvedBind.bind,
@@ -329,9 +343,11 @@ export function loadConfig(): Config {
     storageS3ForcePathStyle,
     feedbackExportBackendUrl,
     feedbackExportBackendToken,
-    heartbeatSchedulerEnabled: process.env.HEARTBEAT_SCHEDULER_ENABLED !== "false",
+    heartbeatSchedulerEnabled: maintenanceMode
+      ? false
+      : process.env.HEARTBEAT_SCHEDULER_ENABLED !== "false",
     heartbeatSchedulerIntervalMs: Math.max(10000, Number(process.env.HEARTBEAT_SCHEDULER_INTERVAL_MS) || 30000),
     companyDeletionEnabled,
-    telemetryEnabled: fileConfig?.telemetry?.enabled ?? true,
+    telemetryEnabled: maintenanceMode ? false : fileConfig?.telemetry?.enabled ?? true,
   };
 }

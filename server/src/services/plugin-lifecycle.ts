@@ -278,6 +278,12 @@ export interface PluginLifecycleManagerOptions {
    * caller is responsible for managing worker processes externally.
    */
   workerManager?: PluginWorkerManager;
+
+  /**
+   * Permanently remove plugin-owned database state before the registry row is
+   * hard-deleted. Failure aborts the uninstall so the operation is retryable.
+   */
+  purgePluginData?: (plugin: PluginRecord) => Promise<void>;
 }
 
 /**
@@ -309,6 +315,7 @@ export function pluginLifecycleManager(
   // as well as the new options object form.
   let loaderArg: PluginLoader | undefined;
   let workerManager: PluginWorkerManager | undefined;
+  let purgePluginData: ((plugin: PluginRecord) => Promise<void>) | undefined;
 
   if (options && typeof options === "object" && "discoverAll" in options) {
     // Legacy: second arg is a PluginLoader directly
@@ -317,6 +324,7 @@ export function pluginLifecycleManager(
     const opts = options as PluginLifecycleManagerOptions;
     loaderArg = opts.loader;
     workerManager = opts.workerManager;
+    purgePluginData = opts.purgePluginData;
   }
 
   const registry = pluginRegistryService(db);
@@ -536,12 +544,17 @@ export function pluginLifecycleManager(
       pluginId: string,
       removeData = false,
     ): Promise<PluginRecord | null> {
-      const plugin = await requirePlugin(pluginId);
+      const plugin = await registry.getById(pluginId) as PluginRecord | null;
+      if (!plugin) {
+        if (removeData) return null;
+        throw notFound(`Plugin not found: ${pluginId}`);
+      }
 
       // If already uninstalled and removeData, hard-delete
       if (plugin.status === "uninstalled") {
         if (removeData) {
           await pluginLoaderInstance.cleanupInstallArtifacts(plugin);
+          await purgePluginData?.(plugin);
           const deleted = await registry.uninstall(pluginId, true);
           log.info(
             { pluginId, pluginKey: plugin.pluginKey },
@@ -562,6 +575,9 @@ export function pluginLifecycleManager(
 
       await deactivatePluginRuntime(pluginId, plugin.pluginKey);
       await pluginLoaderInstance.cleanupInstallArtifacts(plugin);
+      if (removeData) {
+        await purgePluginData?.(plugin);
+      }
 
       // Perform the uninstall via registry (handles soft/hard delete)
       const result = await registry.uninstall(pluginId, removeData);

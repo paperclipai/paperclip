@@ -96,9 +96,12 @@ export function extractSecretRefPathsFromConfig(
     return refs;
   }
 
-  // Fallback: no schema or no secret-ref annotations — collect all UUIDs.
-  // This preserves backwards compatibility for plugins that omit
-  // instanceConfigSchema.
+  // A declared schema is authoritative. Ordinary UUID-valued fields must not
+  // be reclassified as secrets merely because the schema has no secret-ref
+  // annotations.
+  if (schema != null) return refs;
+
+  // Legacy fallback for plugins that omit instanceConfigSchema entirely.
   function walkAll(value: unknown): void {
     if (typeof value === "string") {
       if (isUuidSecretRef(value)) addRef(value, "$");
