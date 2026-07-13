@@ -2036,9 +2036,23 @@ async function resolveExistingSkillDirectory(skillDir: string | null) {
   return dirStat?.isDirectory() && skillFileStat?.isFile() ? skillDir : null;
 }
 
-function buildMissingRuntimeSourceDetail(skill: Pick<CompanySkill, "name" | "sourceLocator" | "metadata">) {
+function buildMissingRuntimeSourceDetail(
+  skill: Pick<CompanySkill, "name" | "sourceLocator" | "metadata" | "fileInventory">,
+  options: { expectedPath?: string | null } = {},
+) {
   const marker = getMissingSourceMarker(skill.metadata);
-  const sourcePath = asString(marker?.sourcePath) ?? normalizeSourceLocatorDirectory(skill.sourceLocator);
+  // The `missingSource` marker is only ever recorded for `local_path` skills
+  // (see reconcileLocalPathSkillSources), so for github/skills_sh-sourced
+  // skills we fall back to the actual on-disk runtime path instead of
+  // resolving the raw sourceLocator URL as if it were a filesystem path.
+  const sourcePath = asString(marker?.sourcePath) ?? options.expectedPath ?? normalizeSourceLocatorDirectory(skill.sourceLocator);
+  const hasStoredSkillFile = !marker
+    && skill.fileInventory.some((entry) => normalizePortablePath(entry.path) === "SKILL.md");
+  if (hasStoredSkillFile) {
+    return sourcePath
+      ? `Company skill "${skill.name}" is in the library and will be materialized at ${sourcePath} on the agent's next run.`
+      : `Company skill "${skill.name}" is in the library and will be materialized on the agent's next run.`;
+  }
   if (sourcePath) {
     return `Company skill "${skill.name}" is in the library, but Paperclip cannot find its local source at ${sourcePath}.`;
   }
@@ -4866,7 +4880,7 @@ export function companySkillService(db: Db) {
       return {
         status: "missing",
         source: materializedPath,
-        detail: buildMissingRuntimeSourceDetail(skill),
+        detail: buildMissingRuntimeSourceDetail(skill, { expectedPath: materializedPath }),
       };
     }
 

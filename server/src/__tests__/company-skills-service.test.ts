@@ -1628,6 +1628,60 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     );
   });
 
+  it("reports a pending-materialization detail (not a mangled URL path) for github-sourced skills during read-only runtime listing", async () => {
+    const companyId = randomUUID();
+    const skillId = randomUUID();
+    const skillKey = `company/${companyId}/ad-creative`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(companySkills).values({
+      id: skillId,
+      companyId,
+      key: skillKey,
+      slug: "ad-creative",
+      name: "ad-creative",
+      description: null,
+      markdown: "# Ad Creative\n",
+      sourceType: "github",
+      sourceLocator: "https://github.com/coreyhaines31/marketingskills",
+      trustLevel: "markdown_only",
+      compatibility: "compatible",
+      fileInventory: [{ path: "SKILL.md", kind: "skill" }],
+      metadata: { sourceKind: "github" },
+    });
+    await db.insert(agents).values({
+      id: randomUUID(),
+      companyId,
+      name: "Ad Manager",
+      role: "engineer",
+      status: "active",
+      adapterType: "claude_local",
+      adapterConfig: {
+        paperclipSkillSync: {
+          desiredSkills: [skillKey],
+        },
+      },
+    });
+
+    // Post-hoc imported (github/skills_sh) skills never get a `missingSource`
+    // marker — that's only ever written for local_path skills — so, before the
+    // fix, the read-only (`materializeMissing: false`) path fell back to
+    // resolving the raw sourceLocator URL as a filesystem path.
+    const entries = await svc.listRuntimeSkillEntries(companyId, { materializeMissing: false });
+    const entry = entries.find((candidate) => candidate.key === skillKey);
+
+    expect(entry).toMatchObject({ key: skillKey, sourceStatus: "missing" });
+    expect(entry!.missingDetail).not.toContain("https:/github.com");
+    expect(entry!.missingDetail).toContain("__runtime__");
+    expect(entry!.missingDetail).toContain("next run");
+    expect(entry!.missingDetail).toContain(entry!.source);
+  });
+
   it("falls back to stored markdown when reading SKILL.md from a missing local source", async () => {
     const companyId = randomUUID();
     const skillId = randomUUID();
