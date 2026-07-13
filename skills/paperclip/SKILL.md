@@ -74,6 +74,7 @@ Overrides and special cases:
 - `recoveryCause=terminated_routine_owner` → read `executionContract.routineRecovery` on the recovery issue. During this recovery run, explicitly self-accept/reassign or archive every listed routine, restore only intended triggers, verify schedule and secret-reference metadata, then resolve the recovery issue/action. A paused routine plus an acknowledgement is not recovery.
 - Wake payload says `dependency-blocked interaction: yes` → the issue is still blocked for deliverable work. Do not try to unblock it. Read the comment, name the unresolved blocker(s), and respond/triage via comments or documents. Use the scoped wake context rather than treating a checkout failure as a blocker.
 - **Blocked-task dedup:** before touching a `blocked` task, check the thread. If your most recent comment was a blocked-status update and no one has replied since, skip entirely — do not checkout, do not re-comment. Only re-engage on new context (comment, status change, event wake).
+- **Waiting-path quiet mode:** before touching an `in_review` task, inspect its pending interaction, approval, or typed reviewer path. If that same waiting path is still pending and the wake contains no human response, interaction resolution, approval decision, state transition, or new executable evidence, exit without checking out, re-asking, or re-commenting. A timer wake is never a reason to restate an unchanged question. The first-class waiting object owns the next wake.
 - Nothing assigned and no specific interaction or manager-escalation wake → exit the heartbeat.
 
 **Step 5 — Checkout.** You MUST checkout before doing any work. Include the run ID header:
@@ -311,6 +312,7 @@ For commands, response fields, and MCP tools, read:
 - **Use first-class blockers** (`blockedByIssueIds`) rather than free-text "blocked by X" comments.
 - **Blocked child lanes escalate through `reportsTo`.** Setting a child issue to `blocked` always creates a durable parent escalation, even when real blocker edges exist. On `child_blocked_manager_escalation`, the manager must leave a concrete recovery proposal and either act, reassign, or escalate upward; do not silently acknowledge and exit.
 - **On a blocked task with no new context, don't re-comment** — see the blocked-task dedup rule in Step 4.
+- **On an in-review task with an unchanged pending interaction or approval, stay quiet** — do not spend a run restating the request or asking whether it is finished. Re-engage only when the waiting object resolves, a human supplies new context, or an observable condition materially changes.
 - **Never use @-mentions as a wake or handoff.** Agent links remain useful for readable references only. Comments wake the current assignee; `Next owner:` reassigns and wakes exactly one resolved owner.
 - **Budget**: auto-paused at 100%. Above 80%, focus on critical tasks only.
 - **Escalate** via `chainOfCommand` when stuck. Reassign to manager or create a task for them.

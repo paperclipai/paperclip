@@ -12255,12 +12255,47 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           const isSameExecutionAgent =
             Boolean(executionAgentNameKey) && executionAgentNameKey === agentNameKey;
           const incomingIsSourceScopedRecovery = isSourceScopedRecoveryWake(enrichedContextSnapshot);
+          const agentCommentCanWaitForExistingDecisionPath =
+            issue.status === "in_review" &&
+            opts.requestedByActorType === "agent" &&
+            Boolean(wakeCommentId) &&
+            !readNonEmptyString(enrichedContextSnapshot.interactionStatus) &&
+            enrichedContextSnapshot.resumeIntent !== true &&
+            enrichedContextSnapshot.followUpRequested !== true &&
+            await Promise.all([
+              tx
+                .select({ id: issueThreadInteractions.id })
+                .from(issueThreadInteractions)
+                .where(
+                  and(
+                    eq(issueThreadInteractions.companyId, issue.companyId),
+                    eq(issueThreadInteractions.issueId, issue.id),
+                    eq(issueThreadInteractions.status, "pending"),
+                  ),
+                )
+                .limit(1)
+                .then((rows) => rows[0] ?? null),
+              tx
+                .select({ id: issueApprovals.approvalId })
+                .from(issueApprovals)
+                .innerJoin(approvals, eq(issueApprovals.approvalId, approvals.id))
+                .where(
+                  and(
+                    eq(issueApprovals.companyId, issue.companyId),
+                    eq(issueApprovals.issueId, issue.id),
+                    inArray(approvals.status, ["pending", "revision_requested"]),
+                  ),
+                )
+                .limit(1)
+                .then((rows) => rows[0] ?? null),
+            ]).then(([interaction, approval]) => Boolean(interaction || approval));
           const requiresGuaranteedFollowup =
             (
               shouldQueueFollowupForRunningIssueWake({ contextSnapshot: enrichedContextSnapshot, wakeCommentId }) ||
               incomingIsSourceScopedRecovery
             ) &&
-            isSameExecutionAgent;
+            isSameExecutionAgent &&
+            !agentCommentCanWaitForExistingDecisionPath;
           const shouldQueueFollowupForRunningWake =
             requiresGuaranteedFollowup &&
             (
@@ -13429,7 +13464,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     buildRunOutputSilence,
 
     tickTimers: async (now = new Date()) => {
-      const allAgents = await db.select().from(agents);
+      const [allAgents, activeAgentRows] = await Promise.all([
+        db.select().from(agents),
+        db
+          .selectDistinct({ agentId: heartbeatRuns.agentId })
+          .from(heartbeatRuns)
+          .where(inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES])),
+      ]);
+      const activeAgentIds = new Set(activeAgentRows.map((row) => row.agentId));
       let checked = 0;
       let enqueued = 0;
       let skipped = 0;
@@ -13443,6 +13485,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         const baseline = new Date(agent.lastHeartbeatAt ?? agent.createdAt).getTime();
         const elapsedMs = now.getTime() - baseline;
         if (elapsedMs < policy.intervalSec * 1000) continue;
+
+        // A generic interval heartbeat has no issue-scoped information that
+        // justifies competing with work the agent is already executing or has
+        // queued. Waiting until that path settles also advances
+        // lastHeartbeatAt, preventing overlapping timer runs from repeatedly
+        // reviewing and commenting on the same waiting issue.
+        if (activeAgentIds.has(agent.id)) {
+          skipped += 1;
+          continue;
+        }
 
         const run = await enqueueWakeup(agent.id, {
           source: "timer",

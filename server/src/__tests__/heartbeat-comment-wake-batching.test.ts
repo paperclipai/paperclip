@@ -10,6 +10,7 @@ import {
   createDb,
   heartbeatRuns,
   issueComments,
+  issueThreadInteractions,
   issues,
 } from "@paperclipai/db";
 import { heartbeatService } from "../services/heartbeat.ts";
@@ -268,6 +269,117 @@ describe("heartbeat comment wake batching", () => {
     const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
     expect(runs).toHaveLength(1);
     expect(runs[0]?.id).toBe(runId);
+  });
+
+  it("coalesces agent commentary when a pending board interaction already owns the next wake", async () => {
+    const companyId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    const commentingAgentId = randomUUID();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values([
+      {
+        id: assigneeAgentId,
+        companyId,
+        name: "CTO",
+        role: "cto",
+        status: "running",
+        adapterType: "process",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: commentingAgentId,
+        companyId,
+        name: "CEO",
+        role: "ceo",
+        status: "active",
+        adapterType: "process",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: assigneeAgentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "running",
+      contextSnapshot: { issueId, taskId: issueId, wakeReason: "issue_assigned" },
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Wait for board recipient",
+      status: "in_review",
+      priority: "medium",
+      assigneeAgentId,
+      executionRunId: runId,
+      executionAgentNameKey: "cto",
+      executionLockedAt: new Date(),
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+    await db.insert(issueThreadInteractions).values({
+      companyId,
+      issueId,
+      kind: "ask_user_questions",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      createdByAgentId: commentingAgentId,
+      payload: { version: 1, questions: [] },
+    });
+    const comment = await db
+      .insert(issueComments)
+      .values({
+        companyId,
+        issueId,
+        authorAgentId: commentingAgentId,
+        body: "The existing board interaction is still pending.",
+      })
+      .returning()
+      .then((rows) => rows[0]);
+
+    await heartbeat.wakeup(assigneeAgentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      payload: { issueId, commentId: comment.id },
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        commentId: comment.id,
+        wakeCommentId: comment.id,
+        wakeReason: "issue_commented",
+      },
+      requestedByActorType: "agent",
+      requestedByActorId: commentingAgentId,
+    });
+
+    const wakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, assigneeAgentId));
+    expect(wakeups).toHaveLength(1);
+    expect(wakeups[0]).toMatchObject({
+      status: "coalesced",
+      reason: "issue_execution_same_name",
+      runId,
+    });
+    const deferred = wakeups.filter((wakeup) => wakeup.status === "deferred_issue_execution");
+    expect(deferred).toHaveLength(0);
   });
 
   it("batches deferred comment wakes and forwards the ordered batch to the next run", async () => {

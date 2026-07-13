@@ -36,6 +36,7 @@ If `PAPERCLIP_APPROVAL_ID` is set:
 - Prioritize: `in_progress` first, then `in_review` when you were woken by a comment on it, then `todo`. Skip `blocked` unless you can unblock it.
 - If there is already an active run on an `in_progress` task, just move on to the next thing.
 - If `PAPERCLIP_TASK_ID` is set and assigned to you, prioritize that task.
+- For `in_review`, inspect the first-class waiting path before acting. If the same interaction, approval, or reviewer decision is still pending and there is no human response, resolved interaction, approval decision, state transition, or new executable evidence, exit silently. Never restate an unchanged board question on a timer wake; the waiting object will wake you when it resolves.
 
 ## 6. Checkout and Work
 

@@ -238,6 +238,61 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     return { companyId, agentId, issueId, nextCheckAt };
   }
 
+  it("does not enqueue a generic timer heartbeat while the agent already has a live run", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const staleAt = new Date("2026-04-11T12:00:00.000Z");
+    const tickAt = new Date("2026-04-11T12:31:00.000Z");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Busy CEO",
+      role: "ceo",
+      status: "running",
+      adapterType: "process",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          enabled: true,
+          intervalSec: 60,
+          wakeOnDemand: true,
+        },
+      },
+      permissions: {},
+      lastHeartbeatAt: staleAt,
+      createdAt: staleAt,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "running",
+      startedAt: new Date("2026-04-11T12:30:00.000Z"),
+      contextSnapshot: { issueId: randomUUID(), wakeReason: "issue_assigned" },
+    });
+
+    const result = await heartbeatService(db).tickTimers(tickAt);
+
+    expect(result).toMatchObject({ checked: 1, enqueued: 0, skipped: 1 });
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.id).toBe(runId);
+    await db
+      .update(heartbeatRuns)
+      .set({ status: "succeeded", finishedAt: tickAt })
+      .where(eq(heartbeatRuns.id, runId));
+  });
+
   it("triggers due issue monitors once and clears the one-shot schedule", async () => {
     const { issueId, agentId } = await seedFixture();
     const heartbeat = heartbeatService(db);
