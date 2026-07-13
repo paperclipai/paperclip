@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import postgres from "postgres";
-import { createBufferedTextFileWriter, runDatabaseBackup, runDatabaseRestore } from "./backup-lib.js";
+import { BackupTimeoutError, createBufferedTextFileWriter, runDatabaseBackup, runDatabaseRestore } from "./backup-lib.js";
 import { ensurePostgresDatabase } from "./client.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -408,6 +408,73 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
       }
     },
     60_000,
+  );
+
+  it(
+    "throws BackupTimeoutError when pg_dump never exits, instead of hanging",
+    async () => {
+      const sourceConnectionString = await createTempDatabase();
+      const backupDir = createTempDir("paperclip-db-backup-timeout-");
+      const stubDir = createTempDir("paperclip-db-backup-timeout-stub-");
+      const stubPath = path.join(stubDir, "pg_dump_hang.sh");
+      // Emit a small amount on stdout so bytesWritten is observably non-zero,
+      // then sleep far past the test timeout. SIGTERM ends `sleep` immediately
+      // on POSIX shells, so the watchdog can reap the child cleanly.
+      await fs.promises.writeFile(
+        stubPath,
+        "#!/bin/sh\nprintf 'fake pg_dump output\\n'\nsleep 300\n",
+        { mode: 0o755 },
+      );
+
+      const previousPgDumpPath = process.env.PAPERCLIP_PG_DUMP_PATH;
+      process.env.PAPERCLIP_PG_DUMP_PATH = stubPath;
+      cleanups.push(() => {
+        if (previousPgDumpPath === undefined) {
+          delete process.env.PAPERCLIP_PG_DUMP_PATH;
+        } else {
+          process.env.PAPERCLIP_PG_DUMP_PATH = previousPgDumpPath;
+        }
+      });
+
+      try {
+        const startedAt = Date.now();
+        await expect(
+          runDatabaseBackup({
+            connectionString: sourceConnectionString,
+            backupDir,
+            retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+            filenamePrefix: "paperclip-timeout-test",
+            backupEngine: "pg_dump",
+            backupTimeoutSeconds: 0.5,
+          }),
+        ).rejects.toBeInstanceOf(BackupTimeoutError);
+        const elapsedMs = Date.now() - startedAt;
+
+        // Fire-on-timeout (500ms) plus SIGTERM + child-exit settle should be
+        // well under 10s — orders of magnitude faster than the pre-fix hang.
+        expect(elapsedMs).toBeLessThan(10_000);
+
+        // The watchdog must NOT leave a partial .sql.gz behind: runDatabaseBackup
+        // cleans up the backup file on any throw, including BackupTimeoutError.
+        const leftovers = fs
+          .readdirSync(backupDir)
+          .filter((name) => name.startsWith("paperclip-timeout-test-"));
+        expect(leftovers).toEqual([]);
+      } finally {
+        // Defensive: make sure no stray stub pg_dump child outlives the test.
+        // The watchdog already SIGTERMs the child, but a failed assertion above
+        // could short-circuit before that path runs.
+        try {
+          // shellcheck-style guard: only kill processes that match our stub path.
+          const { execSync } = await import("node:child_process");
+          execSync(`pkill -f ${JSON.stringify(stubPath)} 2>/dev/null || true`);
+        } catch {
+          // Best-effort: pkill may not exist on the host; in that case the
+          // BackupTimeoutError path already killed the child.
+        }
+      }
+    },
+    20_000,
   );
 
   it(
