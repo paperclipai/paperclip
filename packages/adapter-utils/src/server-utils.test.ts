@@ -532,6 +532,7 @@ describe("renderPaperclipWakePrompt", () => {
     );
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Run managed browser commands sequentially");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("agent-browser tab new <url>");
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Google domains are routed through Camoufox");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("never copy or merge cookies between them");
   });
 
@@ -558,6 +559,7 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt).toContain("Never pass `--session`, `--session-name`, `--profile`, `--state`");
     expect(prompt).toContain("Run browser actions sequentially");
     expect(prompt).toContain("agent-browser tab <original-tab-id>");
+    expect(prompt).toContain("Google domains and Google's insecure-browser rejection must use Camoufox");
     expect(prompt).toContain("never copy or merge cookies between providers");
   });
 

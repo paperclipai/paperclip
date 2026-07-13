@@ -11,13 +11,13 @@ Use this skill for browser navigation, form interaction, authenticated web workf
 
 ## Provider policy
 
-1. For initial navigation, run `paperclip-browser-open <url>`. It starts with agent-browser, inspects the result, retries once on a security challenge, and automatically switches to Camoufox if the challenge remains.
+1. For initial navigation, run `paperclip-browser-open <url>`. It starts with agent-browser, inspects the result, retries once on a security challenge, and automatically switches to Camoufox if the challenge remains. Google domains are a security-compatibility exception: direct `google.com` and `*.google.com` URLs start in Camoufox, and an OAuth flow that redirects agent-browser to Google restarts from its original URL in Camoufox.
    Paperclip reconnects it to the issue's existing daemon across comments, heartbeat runs, and agent handoffs. Do not launch a browser just because an earlier comment used one, and do not reopen the current URL merely to attach. Only invoke browser commands when the current work actually needs navigation.
 2. If the user explicitly asks for Camoufox, run `paperclip-browser-open <url> --camoufox` (or `paperclip-camoufox <url>`) immediately. Do not start agent-browser first and do not substitute ordinary headless Chromium.
 3. The launcher prints JSON identifying the actual provider. Report a provider switch in the next progress comment.
 4. Camoufox is a fallback, not a promise to bypass every WAF. Stop for human captcha/2FA when required. Never attempt to defeat access controls or violate a site's terms.
 
-Agent-browser and Camoufox have independent authentication state. Never copy, merge, import, or translate cookies between them. Authenticate each provider manually when needed. The default remains agent-browser; use Camoufox only after the launcher detects a browser-security block or when the board explicitly requests it.
+Agent-browser and Camoufox have independent authentication state. Never copy, merge, import, or translate cookies between them. Authenticate each provider manually when needed. The default remains agent-browser except for Google domains; use Camoufox for Google authentication and services, after any other detected browser-security block, or when the board explicitly requests it. Google messages such as “Couldn’t sign you in” and “This browser or app may not be secure” are block signals, not credential failures; do not keep retrying them in agent-browser.
 
 Issue browser daemons close after 60 minutes without a managed browser command. Viewing the live stream does not reset that idle timer.
 
@@ -45,13 +45,13 @@ Agent-browser sessions support multiple tabs. Preserve the original login, OAuth
 Use this pattern:
 
 1. Run `agent-browser tab list` and retain the original tab id.
-2. Run `agent-browser tab new https://mail.google.com` (or the required identity-provider URL). The new tab becomes active and the live viewer follows it.
+2. For a non-Google secondary site, run `agent-browser tab new <url>`. The new tab becomes active and the live viewer follows it. Google is the exception: never open Gmail, Google Accounts, or another `*.google.com` service with a direct agent-browser tab command. Use `paperclip-browser-open <google-url>`, which routes that workflow to Camoufox.
 3. Retrieve the required OTP or approval in the second tab without posting it to comments or durable artifacts.
 4. Run `agent-browser tab <original-tab-id>` to return to the preserved login page. The live viewer follows the active tab.
 5. Take a fresh snapshot, locate the current OTP field, enter the value, and continue.
 6. Close only the temporary mail tab when it is no longer needed. Do not close the issue browser while the workflow is active.
 
-Tabs share the same issue-owned browser context and selected agent-browser profile, including cookies and authenticated state. Another issue still receives a different browser session. Camoufox does not currently provide the same persistent interactive multi-tab workflow; for an OTP flow requiring tab switching, keep agent-browser unless a browser-security block makes that impossible, then report the human authentication limitation explicitly.
+Tabs share the same issue-owned browser context and selected agent-browser profile, including cookies and authenticated state. Another issue still receives a different browser session. Camoufox does not currently provide the same persistent interactive multi-tab workflow. If a Google workflow needs information from another tab, keep the Google authentication inside Camoufox and report a human authentication limitation when the managed Camoufox workflow cannot preserve both pages; never fall back to Google authentication in agent-browser.
 
 Existing automation scripts may be read for selectors and workflow knowledge, but they do not satisfy an explicit live-browser request. If managed navigation fails, report the blocker; never silently fall back to an invisible custom browser.
 
