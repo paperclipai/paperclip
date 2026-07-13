@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   companies,
@@ -201,6 +201,41 @@ describeEmbeddedPostgres("seoDocGovernanceService", () => {
     expect(violations.some((v) => v.code === "implementation_missing_source_strategy")).toBe(true);
   });
 
+  it("flags implementation docs when source_strategy points at an issue instead of an issue document", async () => {
+    const { issueId } = await createCompanyAndIssue("INS-3151");
+    const { issueId: strategyIssueId } = await createCompanyAndIssue("INS-3152");
+
+    await docsSvc.upsertIssueDocument({
+      issueId: strategyIssueId,
+      key: "strategy",
+      format: "markdown",
+      body: governedBody({ owner: "cto", updateCadence: "weekly", documentClass: "strategy" }),
+    });
+
+    await docsSvc.upsertIssueDocument({
+      issueId,
+      key: "plan",
+      format: "markdown",
+      body: governedBody({
+        owner: "cto",
+        updateCadence: "weekly",
+        documentClass: "implementation",
+        dependencies: [{ type: "issue", role: "source_strategy", target: "INS-315B" }],
+      }),
+    });
+
+    const violations = await governance.validateRegistryEntry("INS-3151#document-plan");
+    expect(violations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "invalid_dependency_target",
+          message: expect.stringContaining("source_strategy requires target type issue_document"),
+        }),
+        expect.objectContaining({ code: "implementation_missing_source_strategy" }),
+      ]),
+    );
+  });
+
   it("flags strategy docs without implementation_handoff dependency", async () => {
     const { issueId } = await createCompanyAndIssue("INS-316");
 
@@ -213,6 +248,41 @@ describeEmbeddedPostgres("seoDocGovernanceService", () => {
 
     const violations = await governance.validateRegistryEntry("INS-316#document-plan");
     expect(violations.some((v) => v.code === "strategy_missing_handoff_issue")).toBe(true);
+  });
+
+  it("flags strategy docs when implementation_handoff points at an issue document instead of an issue", async () => {
+    const { issueId } = await createCompanyAndIssue("INS-3161");
+    const { issueId: handoffIssueId } = await createCompanyAndIssue("INS-3162");
+
+    await docsSvc.upsertIssueDocument({
+      issueId: handoffIssueId,
+      key: "handoff",
+      format: "markdown",
+      body: governedBody({ owner: "cto", updateCadence: "weekly", documentClass: "implementation" }),
+    });
+
+    await docsSvc.upsertIssueDocument({
+      issueId,
+      key: "plan",
+      format: "markdown",
+      body: governedBody({
+        owner: "cto",
+        updateCadence: "weekly",
+        documentClass: "strategy",
+        dependencies: [{ type: "issue_document", role: "implementation_handoff", target: "INS-316B#document-handoff" }],
+      }),
+    });
+
+    const violations = await governance.validateRegistryEntry("INS-3161#document-plan");
+    expect(violations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "invalid_dependency_target",
+          message: expect.stringContaining("implementation_handoff requires target type issue"),
+        }),
+        expect.objectContaining({ code: "strategy_missing_handoff_issue" }),
+      ]),
+    );
   });
 
   it("marks weekly/biweekly/monthly docs stale at the expected thresholds", async () => {
@@ -313,5 +383,53 @@ describeEmbeddedPostgres("seoDocGovernanceService", () => {
 
     expect(await governance.seedFromIssueIdentifiers(companyId, ["INS-312", "INS-85"])).toEqual({ synced: 2 });
     expect(await governance.seedFromIssueIdentifiers(companyId, ["INS-312", "INS-85"])).toEqual({ synced: 0 });
+  });
+
+  it("enforces DB-level enum constraints for governance registry columns", async () => {
+    const { companyId, issueId } = await createCompanyAndIssue("INS-321");
+
+    await expect(
+      db.execute(sql`
+        insert into seo_doc_registry_entries (
+          id,
+          company_id,
+          doc_key,
+          issue_id,
+          issue_document_key,
+          title,
+          issue_link,
+          owner,
+          last_updated,
+          update_cadence,
+          status,
+          dependencies,
+          document_class,
+          criticality,
+          created_at,
+          updated_at
+        ) values (
+          ${randomUUID()},
+          ${companyId},
+          ${"INS-321#document-plan"},
+          ${issueId},
+          ${"plan"},
+          ${"Plan"},
+          ${"/INS/issues/INS-321"},
+          ${"cto"},
+          ${"2026-04-20T00:00:00.000Z"},
+          ${"quarterly"},
+          ${"active"},
+          ${JSON.stringify([])}::jsonb,
+          ${"architecture"},
+          ${"normal"},
+          ${"2026-04-20T00:00:00.000Z"},
+          ${"2026-04-20T00:00:00.000Z"}
+        )
+      `),
+    ).rejects.toMatchObject({
+      cause: expect.objectContaining({
+        message: expect.stringContaining("seo_doc_registry_entries_update_cadence_check"),
+      }),
+    });
   });
 });

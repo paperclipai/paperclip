@@ -124,6 +124,12 @@ function isDependencyRole(value: string): value is SeoDocDependencyRef["role"] {
   return value === "source_strategy" || value === "implementation_handoff" || value === "related";
 }
 
+function expectedDependencyTypeForRole(role: SeoDocDependencyRef["role"]): SeoDocDependencyRef["type"] | null {
+  if (role === "source_strategy") return "issue_document";
+  if (role === "implementation_handoff") return "issue";
+  return null;
+}
+
 function parseGovernanceDate(value: string): Date | null {
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return null;
@@ -203,6 +209,16 @@ export function seoDocGovernanceService(db: Db, deps: SeoDocGovernanceDeps = {})
     const violations: SeoDocViolation[] = [];
 
     for (const dep of dependencies) {
+      const expectedType = expectedDependencyTypeForRole(dep.role);
+      if (expectedType && dep.type !== expectedType) {
+        violations.push({
+          code: "invalid_dependency_target",
+          docKey,
+          message: `Dependency role ${dep.role} requires target type ${expectedType}, received ${dep.type}: ${dep.target}`,
+        });
+        continue;
+      }
+
       if (dep.type === "issue") {
         const targetIdentifier = normalizeIssueIdentifier(dep.target);
         const targetIssue = await db
@@ -387,7 +403,10 @@ export function seoDocGovernanceService(db: Db, deps: SeoDocGovernanceDeps = {})
       const dependencies = (entry.dependencies ?? []) as SeoDocDependencyRef[];
       violations.push(...(await validateDependencies(docKey, dependencies)));
 
-      if (entry.documentClass === "implementation" && !dependencies.some((dep) => dep.role === "source_strategy")) {
+      if (
+        entry.documentClass === "implementation" &&
+        !dependencies.some((dep) => dep.role === "source_strategy" && dep.type === "issue_document")
+      ) {
         violations.push({
           code: "implementation_missing_source_strategy",
           docKey,
@@ -395,7 +414,10 @@ export function seoDocGovernanceService(db: Db, deps: SeoDocGovernanceDeps = {})
         });
       }
 
-      if (entry.documentClass === "strategy" && !dependencies.some((dep) => dep.role === "implementation_handoff")) {
+      if (
+        entry.documentClass === "strategy" &&
+        !dependencies.some((dep) => dep.role === "implementation_handoff" && dep.type === "issue")
+      ) {
         violations.push({
           code: "strategy_missing_handoff_issue",
           docKey,

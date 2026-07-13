@@ -1,4 +1,5 @@
-import { index, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
+import { check, index, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { issues } from "./issues.js";
 
@@ -50,6 +51,22 @@ export const seoDocRegistryEntries = pgTable(
     companyLastUpdatedIdx: index("seo_doc_registry_entries_company_last_updated_idx").on(
       table.companyId,
       table.lastUpdated,
+    ),
+    cadenceCheck: check(
+      "seo_doc_registry_entries_update_cadence_check",
+      sql`${table.updateCadence} in ('weekly', 'biweekly', 'monthly')`,
+    ),
+    statusCheck: check(
+      "seo_doc_registry_entries_status_check",
+      sql`${table.status} in ('active', 'stale', 'deprecated')`,
+    ),
+    documentClassCheck: check(
+      "seo_doc_registry_entries_document_class_check",
+      sql`${table.documentClass} in ('strategy', 'implementation', 'runbook', 'incident', 'experimentation', 'architecture', 'governance')`,
+    ),
+    criticalityCheck: check(
+      "seo_doc_registry_entries_criticality_check",
+      sql`${table.criticality} in ('normal', 'critical')`,
     ),
   }),
 );

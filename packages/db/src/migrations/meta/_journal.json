@@ -1016,6 +1016,13 @@
       "when": 1783792400000,
       "tag": "0146_seo_doc_registry_entries",
       "breakpoints": true
+    },
+    {
+      "idx": 147,
+      "version": "7",
+      "when": 1783922400000,
+      "tag": "0147_seo_doc_registry_entries_checks",
+      "breakpoints": true
     }
   ]
 }
