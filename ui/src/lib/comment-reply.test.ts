@@ -96,21 +96,59 @@ describe("formatReplyAuthorName", () => {
 
   it("uses the agent name when the target is an agent in the map", () => {
     expect(
-      formatReplyAuthorName({ authorType: "agent", authorAgentId: "agent-1" }, agentMap),
+      formatReplyAuthorName({ authorType: "agent", authorAgentId: "agent-1", authorUserId: null }, { agentMap }),
     ).toBe("CodexCoder");
   });
 
   it("falls back to a short agent id when the agent is unknown", () => {
     expect(
-      formatReplyAuthorName({ authorType: "agent", authorAgentId: "agent-abcdef123" }, agentMap),
+      formatReplyAuthorName(
+        { authorType: "agent", authorAgentId: "agent-abcdef123", authorUserId: null },
+        { agentMap },
+      ),
     ).toBe("agent-ab");
   });
 
   it("labels system authors as System", () => {
-    expect(formatReplyAuthorName({ authorType: "system", authorAgentId: null })).toBe("System");
+    expect(
+      formatReplyAuthorName({ authorType: "system", authorAgentId: null, authorUserId: null }),
+    ).toBe("System");
   });
 
-  it("labels user authors as You", () => {
-    expect(formatReplyAuthorName({ authorType: "user", authorAgentId: null })).toBe("You");
+  it("labels the current user's own comment as You", () => {
+    expect(
+      formatReplyAuthorName(
+        { authorType: "user", authorAgentId: null, authorUserId: "user-1" },
+        { currentUserId: "user-1" },
+      ),
+    ).toBe("You");
+  });
+
+  it("resolves another user's profile label instead of mislabeling them You", () => {
+    const userProfileMap = new Map([["user-2", { label: "Ada Lovelace", image: null }]]);
+    expect(
+      formatReplyAuthorName(
+        { authorType: "user", authorAgentId: null, authorUserId: "user-2" },
+        { currentUserId: "user-1", userProfileMap },
+      ),
+    ).toBe("Ada Lovelace");
+  });
+
+  it("labels another user without a profile as User (never You)", () => {
+    expect(
+      formatReplyAuthorName(
+        { authorType: "user", authorAgentId: null, authorUserId: "user-2" },
+        { currentUserId: "user-1" },
+      ),
+    ).toBe("User");
+  });
+
+  it("labels the board principal as Board", () => {
+    expect(
+      formatReplyAuthorName(
+        { authorType: "user", authorAgentId: null, authorUserId: "local-board" },
+        { currentUserId: "user-1" },
+      ),
+    ).toBe("Board");
   });
 });

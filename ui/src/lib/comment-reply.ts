@@ -1,4 +1,5 @@
 import type { Agent, IssueComment, IssueCommentReplyToMetadata } from "@paperclipai/shared";
+import type { CompanyUserProfile } from "./company-members";
 
 /**
  * Max characters shown in a reply excerpt (composer chip + sent quoted header).
@@ -32,16 +33,30 @@ export function buildOptimisticReplyTo(target: IssueComment): IssueCommentReplyT
 }
 
 /**
- * Human-readable author label for a reply target. Mirrors {@link CommentCard}'s author rendering:
- * agent comments show the agent name, everything else collapses to "You".
+ * Human-readable author label for a reply target. Mirrors the comment bubble's own author
+ * rendering: agent comments show the agent name; a user comment shows "You" only when it is the
+ * current viewer's, otherwise the resolved profile label (or "Board"/"User" when no profile is
+ * available). Resolving the current user matters in multi-user threads, where every non-current
+ * user would otherwise be mislabeled "You".
  */
 export function formatReplyAuthorName(
-  replyTo: Pick<IssueCommentReplyToMetadata, "authorType" | "authorAgentId">,
-  agentMap?: Map<string, Agent>,
+  replyTo: Pick<IssueCommentReplyToMetadata, "authorType" | "authorAgentId" | "authorUserId">,
+  options: {
+    agentMap?: Map<string, Agent> | null;
+    currentUserId?: string | null;
+    userProfileMap?: ReadonlyMap<string, CompanyUserProfile> | null;
+  } = {},
 ): string {
   if (replyTo.authorAgentId) {
-    return agentMap?.get(replyTo.authorAgentId)?.name ?? replyTo.authorAgentId.slice(0, 8);
+    return options.agentMap?.get(replyTo.authorAgentId)?.name ?? replyTo.authorAgentId.slice(0, 8);
   }
   if (replyTo.authorType === "system") return "System";
-  return "You";
+  const authorUserId = replyTo.authorUserId ?? null;
+  if (authorUserId && options.currentUserId && authorUserId === options.currentUserId) {
+    return "You";
+  }
+  const profileLabel = authorUserId ? options.userProfileMap?.get(authorUserId)?.label?.trim() : undefined;
+  if (profileLabel) return profileLabel;
+  if (authorUserId === "local-board") return "Board";
+  return "User";
 }

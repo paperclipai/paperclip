@@ -387,15 +387,17 @@ function ReplyButton({ onClick }: { onClick: () => void }) {
 function ReplyQuote({
   replyTo,
   agentMap,
+  currentUserId,
   targetDeleted,
   onClick,
 }: {
   replyTo: IssueCommentReplyToMetadata;
   agentMap?: Map<string, Agent>;
+  currentUserId?: string | null;
   targetDeleted: boolean;
   onClick?: () => void;
 }) {
-  const authorName = formatReplyAuthorName(replyTo, agentMap);
+  const authorName = formatReplyAuthorName(replyTo, { agentMap, currentUserId });
   const body = (
     <span className="flex min-w-0 items-stretch gap-2">
       <span aria-hidden className="w-0.5 shrink-0 rounded-full bg-primary/40" />
@@ -434,6 +436,7 @@ function ReplyQuote({
 function CommentCard({
   comment,
   agentMap,
+  currentUserId,
   companyId,
   projectId,
   feedbackVote = null,
@@ -450,6 +453,7 @@ function CommentCard({
 }: {
   comment: CommentWithRunMeta;
   agentMap?: Map<string, Agent>;
+  currentUserId?: string | null;
   companyId?: string | null;
   projectId?: string | null;
   feedbackVote?: FeedbackVoteValue | null;
@@ -548,6 +552,7 @@ function CommentCard({
             <ReplyQuote
               replyTo={replyTo}
               agentMap={agentMap}
+              currentUserId={currentUserId}
               targetDeleted={replyTargetDeleted}
               onClick={
                 onScrollToComment && !replyTargetDeleted
@@ -863,6 +868,7 @@ const TimelineList = memo(function TimelineList({
             key={comment.id}
             comment={comment}
             agentMap={agentMap}
+            currentUserId={currentUserId}
             companyId={companyId}
             projectId={projectId}
             feedbackVote={feedbackVoteByTargetId?.get(comment.id) ?? null}
@@ -1026,13 +1032,18 @@ export function CommentThread({
   const handleReply = useCallback(
     (comment: CommentWithRunMeta) => {
       const { excerpt, truncated } = buildReplyExcerpt(comment.body);
-      const authorName = comment.authorAgentId
-        ? agentMap?.get(comment.authorAgentId)?.name ?? comment.authorAgentId.slice(0, 8)
-        : "You";
+      const authorName = formatReplyAuthorName(
+        {
+          authorType: comment.authorType,
+          authorAgentId: comment.authorAgentId,
+          authorUserId: comment.authorUserId,
+        },
+        { agentMap, currentUserId },
+      );
       setReplyingTo({ commentId: comment.id, authorName, excerpt, excerptTruncated: truncated });
       editorRef.current?.focus();
     },
-    [agentMap],
+    [agentMap, currentUserId],
   );
 
   useEffect(() => {
@@ -1224,6 +1235,7 @@ export function CommentThread({
                 key={comment.id}
                 comment={comment}
                 agentMap={agentMap}
+                currentUserId={currentUserId}
                 companyId={companyId}
                 projectId={projectId}
                 highlightCommentId={highlightCommentId}

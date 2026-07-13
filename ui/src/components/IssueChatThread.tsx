@@ -863,17 +863,21 @@ function IssueChatReplyButton({ onClick }: { onClick: () => void }) {
 function IssueChatReplyQuote({
   replyTo,
   agentMap,
+  currentUserId,
+  userProfileMap,
   targetDeleted,
   onAccent,
   onClick,
 }: {
   replyTo: IssueCommentReplyToMetadata;
   agentMap?: Map<string, Agent>;
+  currentUserId?: string | null;
+  userProfileMap?: ReadonlyMap<string, CompanyUserProfile> | null;
   targetDeleted: boolean;
   onAccent?: boolean;
   onClick?: () => void;
 }) {
-  const authorName = formatReplyAuthorName(replyTo, agentMap);
+  const authorName = formatReplyAuthorName(replyTo, { agentMap, currentUserId, userProfileMap });
   const barClass = onAccent ? "bg-white/60" : "bg-primary/40";
   const authorClass = onAccent ? "text-white" : "text-foreground";
   const excerptClass = onAccent ? "text-white/80" : "text-muted-foreground";
@@ -1692,6 +1696,8 @@ function IssueChatUserMessage({
               <IssueChatReplyQuote
                 replyTo={replyTo}
                 agentMap={agentMap}
+                currentUserId={currentUserId}
+                userProfileMap={userProfileMap}
                 targetDeleted={deletedCommentIds?.has(replyTo.commentId) ?? false}
                 onAccent={isCurrentUser && !queued}
                 onClick={onScrollToComment ? () => onScrollToComment(replyTo.commentId) : undefined}
@@ -1835,6 +1841,8 @@ function IssueChatAssistantMessage({
     stoppingRunLabel = "Stopping...",
     stopRunVariant = "stop",
     runFinalizationActions = [],
+    currentUserId,
+    userProfileMap,
     onReply,
     onScrollToComment,
     highlightCommentId,
@@ -2089,6 +2097,8 @@ function IssueChatAssistantMessage({
                   <IssueChatReplyQuote
                     replyTo={replyTo}
                     agentMap={agentMap}
+                    currentUserId={currentUserId}
+                    userProfileMap={userProfileMap}
                     targetDeleted={deletedCommentIds?.has(replyTo.commentId) ?? false}
                     onClick={onScrollToComment ? () => onScrollToComment(replyTo.commentId) : undefined}
                   />
@@ -4739,7 +4749,7 @@ export function IssueChatThread({
     return true;
   }
 
-  // --- Reply-to-comment composer state (P3, PAP-13802) ---
+  // --- Reply-to-comment composer state ---
   const [replyingTo, setReplyingTo] = useState<ReplyDraftTarget | null>(null);
   const [highlightCommentId, setHighlightCommentId] = useState<string | null>(null);
   const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -4749,8 +4759,11 @@ export function IssueChatThread({
     const ids = new Set<string>();
     for (const message of messages) {
       const custom = message.metadata?.custom as Record<string, unknown> | undefined;
-      if (custom?.deletedAt && typeof custom.commentId === "string") {
-        ids.add(custom.commentId);
+      if (custom?.deletedAt) {
+        // Match the comment-id fallback used when rendering the message, so a deleted source
+        // without an explicit custom.commentId still marks its replies as tombstoned.
+        const commentId = typeof custom.commentId === "string" ? custom.commentId : message.id;
+        ids.add(commentId);
       }
     }
     return ids;

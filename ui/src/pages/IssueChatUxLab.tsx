@@ -320,7 +320,7 @@ export function IssueChatUxLab() {
         id="reply-to-comment"
         eyebrow="Reply to comment"
         title="Reply chip, quoted block, and tombstone"
-        description="PAP-13802 P3: hover a bubble to reveal Reply, the composer shows a quoted/clamped source chip (click to jump to the original, X or Escape to clear), sent replies render a quoted header above the body, and a reply whose source was deleted falls back to an 'Original comment deleted' tombstone."
+        description="Hover a bubble to reveal Reply, the composer shows a quoted/clamped source chip (click to jump to the original, X or Escape to clear), sent replies render a quoted header above the body, and a reply whose source was deleted falls back to an 'Original comment deleted' tombstone."
         accentClassName="bg-[linear-gradient(180deg,rgba(16,185,129,0.06),transparent_28%),var(--background)]"
       >
         <IssueChatThread

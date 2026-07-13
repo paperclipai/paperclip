@@ -339,7 +339,7 @@ export const issueChatUxReviewEvents: IssueTimelineEvent[] = [
 ];
 
 /**
- * Reply-to-comment (PAP-13802 P3) scenario: a sent reply with a quoted block, a reply whose
+ * Reply-to-comment scenario: a sent reply with a quoted block, a reply whose
  * source was deleted (tombstone), and the source comments they point back to. Seed
  * {@link issueChatUxReplyDraftKey} in localStorage to also render the composer reply chip.
  */
