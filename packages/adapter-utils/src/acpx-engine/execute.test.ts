@@ -1499,4 +1499,35 @@ describe("summarizeAcpxTurnUsage no-report turns", () => {
     expect(summary.usageDetail).toBeNull();
     expect(summary.costUsd).toBeCloseTo(0);
   });
+
+  it("prefers current event usage when the persisted breakdown is stale", () => {
+    const stale = { inputTokens: 10, outputTokens: 500, cachedReadTokens: 30 };
+    const current = { inputTokens: 25, outputTokens: 75, cachedReadTokens: 5 };
+    const summary = summarizeAcpxTurnUsage({
+      preStatus: { usage: { cumulative: stale } },
+      postStatus: { usage: { cumulative: { ...stale } } },
+      eventBreakdown: current,
+      eventCostUsd: null,
+    });
+    expect(summary.usage).toEqual({
+      inputTokens: 25,
+      outputTokens: 75,
+      cachedInputTokens: 5,
+    });
+    expect(summary.usageDetail).toMatchObject(current);
+  });
+
+  it("does not reuse stale tokens when the turn reports cost only", () => {
+    const stale = { inputTokens: 10, outputTokens: 500, cachedReadTokens: 30 };
+    const summary = summarizeAcpxTurnUsage({
+      preStatus: { usage: { cumulative: stale, cost: { amount: 0.5, currency: "USD" } } },
+      postStatus: { usage: { cumulative: { ...stale } } },
+      eventBreakdown: null,
+      eventCostUsd: 0.75,
+    });
+    expect(summary.usage).toBeNull();
+    expect(summary.usageDetail).toBeNull();
+    expect(summary.costUsd).toBeCloseTo(0.25);
+    expect(summary.cumulativeCostUsd).toBeCloseTo(0.75);
+  });
 });

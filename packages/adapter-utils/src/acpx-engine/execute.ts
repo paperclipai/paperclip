@@ -1531,18 +1531,17 @@ export function summarizeAcpxTurnUsage(input: {
   cumulativeCostUsd: number | null;
 } {
   // The persisted breakdown is overwritten per turn, so an unchanged value
-  // with no in-turn usage signal means this turn never reported usage (e.g.
-  // it failed before a response) — echoing it would double-count the
-  // previous turn's tokens.
+  // is stale for this turn. Prefer an in-turn event breakdown when available;
+  // otherwise suppress the stale value so it cannot be double-counted.
   const preBreakdown = input.preStatus?.usage?.cumulative ?? null;
   const postBreakdown = input.postStatus?.usage?.cumulative ?? null;
-  const turnReportedNothing =
-    !input.eventBreakdown &&
-    input.eventCostUsd == null &&
+  const postBreakdownIsStale =
     preBreakdown != null &&
     postBreakdown != null &&
     usageBreakdownsEqual(preBreakdown, postBreakdown);
-  const breakdown = turnReportedNothing ? null : postBreakdown ?? input.eventBreakdown ?? null;
+  const breakdown = postBreakdownIsStale
+    ? input.eventBreakdown
+    : postBreakdown ?? input.eventBreakdown ?? null;
   const inputTokens = Math.max(0, Math.floor(asNumber(breakdown?.inputTokens, 0)));
   const outputTokens = Math.max(0, Math.floor(asNumber(breakdown?.outputTokens, 0)));
   const cachedReadTokens = Math.max(0, Math.floor(asNumber(breakdown?.cachedReadTokens, 0)));
