@@ -11,13 +11,30 @@ const mockIssueService = vi.hoisted(() => ({
   listComments: vi.fn(),
 }));
 const mockSpawn = vi.hoisted(() => vi.fn());
+// This suite mounts boardChatRoutes in isolation (no createApp/setDispatchGateDb
+// bootstrap), so the route's dispatch-gate acquisition needs a mock rather than
+// a real Db — these tests exercise routing/guard logic, not gate transactions
+// (covered separately in dispatch-gate.test.ts).
+const mockAcquireDispatchGate = vi.hoisted(() => vi.fn().mockResolvedValue({ ok: true }));
+const mockReleaseDispatchGate = vi.hoisted(() => vi.fn());
+const mockSettleDispatchGateResult = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/index.js", () => ({
   instanceSettingsService: () => ({ getExperimental: mockGetExperimental }),
   issueService: () => mockIssueService,
 }));
 
-vi.mock("node:child_process", () => ({ spawn: mockSpawn }));
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  return { ...actual, spawn: mockSpawn };
+});
+
+vi.mock("../services/dispatch-gate.js", () => ({
+  acquireDispatchGate: mockAcquireDispatchGate,
+  releaseDispatchGate: mockReleaseDispatchGate,
+  settleDispatchGateResult: mockSettleDispatchGateResult,
+  CLAUDE_LOCAL_DEFAULT_SCOPE: "claude_local/default",
+}));
 
 vi.mock("../routes/authz.js", () => ({
   getActorInfo: () => ({ actorId: "user-1", agentId: null, runId: null }),

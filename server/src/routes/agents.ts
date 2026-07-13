@@ -88,7 +88,18 @@ import {
   isTruthyRuntimeEnvValue,
   resolveWorktreeRunExecutionActivationState,
 } from "../services/instance-settings.js";
-import { runClaudeLogin } from "@paperclipai/adapter-claude-local/server";
+import {
+  extractClaudeRetryNotBefore,
+  isClaudeProviderQuotaError,
+  runClaudeLogin,
+} from "@paperclipai/adapter-claude-local/server";
+import {
+  acquireDispatchGate,
+  CLAUDE_LOCAL_DEFAULT_SCOPE,
+  markDispatchGateUnknown,
+  settleDispatchGateResult,
+  type DispatchGateSettlement,
+} from "../services/dispatch-gate.js";
 import { DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
@@ -114,6 +125,20 @@ import {
 
 const RUN_LOG_DEFAULT_LIMIT_BYTES = 256_000;
 const RUN_LOG_MAX_LIMIT_BYTES = 1024 * 1024;
+
+/** Reuses the adapter's narrow quota classifier (stdout/stderr fallback, since `claude login` has no structured result event); quota evidence always takes precedence over a timeout classification. */
+function classifyClaudeLoginQuota(result: {
+  timedOut: boolean;
+  stdout: string;
+  stderr: string;
+}): DispatchGateSettlement {
+  const classifierInput = { parsed: null, stdout: result.stdout, stderr: result.stderr, errorMessage: null };
+  if (isClaudeProviderQuotaError(classifierInput)) {
+    return { kind: "quota", blockedUntil: extractClaudeRetryNotBefore(classifierInput), reason: "provider_quota" };
+  }
+  if (result.timedOut) return { kind: "idle" };
+  return { kind: "idle" };
+}
 
 function readRunLogLimitBytes(value: unknown) {
   const parsed = Number(value ?? RUN_LOG_DEFAULT_LIMIT_BYTES);
@@ -3612,17 +3637,35 @@ export function agentRoutes(
 
     const config = asRecord(agent.adapterConfig) ?? {};
     const { config: runtimeConfig } = await secretsSvc.resolveAdapterConfigForRuntime(agent.companyId, config);
-    const result = await runClaudeLogin({
-      runId: `claude-login-${randomUUID()}`,
-      agent: {
-        id: agent.id,
-        companyId: agent.companyId,
-        name: agent.name,
-        adapterType: agent.adapterType,
-        adapterConfig: agent.adapterConfig,
-      },
-      config: runtimeConfig,
-    });
+
+    const gateOwner = { kind: "login", id: `claude-login-${randomUUID()}` };
+    const gateAcquisition = await acquireDispatchGate(CLAUDE_LOCAL_DEFAULT_SCOPE, gateOwner);
+    if (!gateAcquisition.ok) {
+      res.status(429).json({
+        error: "Claude is busy with another launch — retry shortly",
+        code: "CLAUDE_LOCAL_BUSY",
+      });
+      return;
+    }
+
+    let result;
+    try {
+      result = await runClaudeLogin({
+        runId: gateOwner.id,
+        agent: {
+          id: agent.id,
+          companyId: agent.companyId,
+          name: agent.name,
+          adapterType: agent.adapterType,
+          adapterConfig: agent.adapterConfig,
+        },
+        config: runtimeConfig,
+      });
+    } catch (err) {
+      await markDispatchGateUnknown(CLAUDE_LOCAL_DEFAULT_SCOPE, gateOwner);
+      throw err;
+    }
+    await settleDispatchGateResult(CLAUDE_LOCAL_DEFAULT_SCOPE, gateOwner, result, classifyClaudeLoginQuota);
 
     res.json(result);
   });

@@ -256,6 +256,8 @@ export interface AdapterEnvironmentTestContext {
     bindHost?: string | null;
     allowedHostnames?: string[];
   };
+  /** Wraps only the real inference-producing probe call so read-only checks stay outside the launch gate; `null` means the caller declined to run it. */
+  runInferenceProbe?: <T>(run: () => Promise<T>) => Promise<T | null>;
 }
 
 /** Payload for the onHireApproved adapter lifecycle hook (e.g. join-request or hire_agent approval). */

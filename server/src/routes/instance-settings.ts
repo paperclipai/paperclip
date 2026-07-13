@@ -9,6 +9,7 @@ import {
 import { forbidden } from "../errors.js";
 import { validate } from "../middleware/validate.js";
 import { heartbeatService, instanceSettingsService, logActivity } from "../services/index.js";
+import { CLAUDE_LOCAL_DEFAULT_SCOPE, resumeDispatchGate } from "../services/dispatch-gate.js";
 import { environmentService } from "../services/environments.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import { assertBoardOrgAccess, getActorInfo } from "./authz.js";
@@ -193,6 +194,31 @@ export function instanceSettingsRoutes(db: Db) {
       res.json(result);
     },
   );
+
+  router.post("/instance/settings/experimental/dispatch-gate/claude-local/resume-quota", async (req, res) => {
+    assertCanManageInstanceSettings(req);
+    const result = await resumeDispatchGate(CLAUDE_LOCAL_DEFAULT_SCOPE);
+    if (!result.ok) {
+      return void res.status(result.reason === "not_found" ? 404 : 409).json({ error: `dispatch_gate_${result.reason}`, ...result });
+    }
+    const actor = getActorInfo(req);
+    await Promise.all(
+      (await svc.listCompanyIds()).map((companyId) =>
+        logActivity(db, {
+          companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "instance.settings.dispatch_gate_quota_resumed",
+          entityType: "dispatch_gate_state",
+          entityId: CLAUDE_LOCAL_DEFAULT_SCOPE,
+          details: {},
+        }),
+      ),
+    );
+    res.json({ scopeKey: CLAUDE_LOCAL_DEFAULT_SCOPE, ok: true });
+  });
 
   return router;
 }

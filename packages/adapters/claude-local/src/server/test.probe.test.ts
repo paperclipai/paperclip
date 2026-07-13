@@ -161,3 +161,54 @@ describe("claude sandbox hello probe diagnostics", () => {
     expect(failed?.detail).toBeUndefined();
   });
 });
+
+describe("claude testEnvironment runInferenceProbe mediation", () => {
+  it("wraps only the hello probe call, not the other read-only checks", async () => {
+    probeResult.value = { exitCode: 0, stdout: initLine, stderr: "" };
+    let runInferenceProbeCalls = 0;
+    const runInferenceProbe = <T,>(run: () => Promise<T>): Promise<T | null> => {
+      runInferenceProbeCalls += 1;
+      return run();
+    };
+
+    await testEnvironment({
+      companyId: "company-1",
+      adapterType: "claude_local",
+      config: { engine: "cli", command: "claude" },
+      executionTarget: sandboxTarget,
+      environmentName: "Daytona",
+      runInferenceProbe,
+    });
+
+    // cwd check, command-resolvable check, and sandbox install check all ran
+    // via the mocked execution-target helpers above but never through
+    // runInferenceProbe — only the hello probe itself does.
+    expect(runInferenceProbeCalls).toBe(1);
+    expect(ensureAdapterExecutionTargetCommandResolvable).toHaveBeenCalled();
+    expect(runAdapterExecutionTargetProcess).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports a blocked check (not a crash) when runInferenceProbe declines to run the probe", async () => {
+    let runInferenceProbeCalls = 0;
+    const runInferenceProbe = async <T,>(_run: () => Promise<T>): Promise<T | null> => {
+      runInferenceProbeCalls += 1;
+      return null;
+    };
+
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "claude_local",
+      config: { engine: "cli", command: "claude" },
+      executionTarget: sandboxTarget,
+      environmentName: "Daytona",
+      runInferenceProbe,
+    });
+
+    expect(runInferenceProbeCalls).toBe(1);
+    // The real Claude process is never invoked when the probe is declined.
+    expect(runAdapterExecutionTargetProcess).not.toHaveBeenCalled();
+    const blocked = result.checks.find((check) => check.code === "claude_hello_probe_gate_blocked");
+    expect(blocked).toBeTruthy();
+    expect(blocked?.level).toBe("warn");
+  });
+});

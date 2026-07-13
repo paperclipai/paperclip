@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,6 +8,18 @@ import type { Db } from "@paperclipai/db";
 import type { DeploymentMode } from "@paperclipai/shared";
 import { instanceSettingsService, issueService } from "../services/index.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import {
+  acquireDispatchGate,
+  CLAUDE_LOCAL_DEFAULT_SCOPE,
+  releaseDispatchGate,
+  settleDispatchGateResult,
+  type DispatchGateSettlement,
+} from "../services/dispatch-gate.js";
+import {
+  describeClaudeFailure,
+  extractClaudeRetryNotBefore,
+  isClaudeProviderQuotaError,
+} from "@paperclipai/adapter-claude-local/server";
 
 /**
  * Strip structured action signals (`%%ACTIONS%%{...}%%/ACTIONS%%`) from a
@@ -61,6 +74,42 @@ export function isConciergeReply(comment: {
 
 /** Max simultaneous `claude` subprocesses across all board-chat requests. */
 const MAX_CONCURRENT_BOARD_CHATS = 3;
+
+/** Bounded tail of stderr — enough for quota-message matching without unbounded growth over a long chat. */
+const STDERR_QUOTA_EVIDENCE_CAP = 4000;
+
+function appendCapped(buf: string, chunk: string, cap: number): string {
+  const next = buf + chunk;
+  return next.length > cap ? next.slice(next.length - cap) : next;
+}
+
+/**
+ * Reuses the adapter's narrow quota classifier (no second detector).
+ * Precedence: confirmed quota evidence always wins over our own timeout kill —
+ * only once quota is ruled out does timedOut resolve to idle. A non-timeout
+ * kill with no result and no stderr text is ambiguous and fails closed to `unknown`.
+ */
+function classifyBoardChatOutcome(outcome: {
+  timedOut: boolean;
+  signalKilled: boolean;
+  lastResultEvent: Record<string, unknown> | null;
+  stderrTail: string;
+}): DispatchGateSettlement {
+  const classifierInput = {
+    parsed: outcome.lastResultEvent,
+    stderr: outcome.stderrTail,
+    errorMessage: outcome.lastResultEvent ? describeClaudeFailure(outcome.lastResultEvent) : null,
+  };
+  if (isClaudeProviderQuotaError(classifierInput)) {
+    return { kind: "quota", blockedUntil: extractClaudeRetryNotBefore(classifierInput), reason: "provider_quota" };
+  }
+
+  if (outcome.timedOut) return { kind: "idle" };
+  if (outcome.signalKilled && !outcome.lastResultEvent && !outcome.stderrTail.trim()) {
+    return { kind: "unknown" };
+  }
+  return { kind: "idle" };
+}
 
 export function boardChatRoutes(
   db: Db,
@@ -205,6 +254,21 @@ export function boardChatRoutes(
         `Respond to the latest user turn.`
       : message;
 
+    // Board chat spawns a real `claude` process directly (see below) — it
+    // must go through the same durable dispatch gate as every other Claude
+    // launch surface so it can never run concurrently with e.g. an agent's
+    // heartbeat. Acquired here, right before the spawn, so nothing above this
+    // point (which can throw for ordinary reasons) can leak a held gate.
+    const gateOwner = { kind: "board_chat", id: randomUUID() };
+    const gateAcquisition = await acquireDispatchGate(CLAUDE_LOCAL_DEFAULT_SCOPE, gateOwner);
+    if (!gateAcquisition.ok) {
+      res.status(429).json({
+        error: "Claude is busy with another launch — retry shortly",
+        code: "CLAUDE_LOCAL_BUSY",
+      });
+      return;
+    }
+
     // Set up SSE.
     res.writeHead(200, {
       "Content-Type": "text/event-stream",
@@ -260,6 +324,8 @@ export function boardChatRoutes(
     let fullResponse = "";
     let streamedViaDelta = false;
     let killed = false;
+    let lastResultEvent: Record<string, unknown> | null = null;
+    let stderrTail = "";
 
     // 120s timeout — board conversations can involve multiple API calls.
     const timeout = setTimeout(() => {
@@ -340,19 +406,28 @@ export function boardChatRoutes(
               if (block.type === "text" && block.text) writeChunk(block.text);
             }
           }
-        } else if (event.type === "result" && event.result && !fullResponse) {
-          writeChunk(event.result);
+        } else if (event.type === "result") {
+          lastResultEvent = event;
+          if (event.result && !fullResponse) writeChunk(event.result);
         }
       }
     });
 
     proc.stderr.on("data", (data: Buffer) => {
-      console.error("[board/chat/stream stderr]", data.toString());
+      const text = data.toString();
+      stderrTail = appendCapped(stderrTail, text, STDERR_QUOTA_EVIDENCE_CAP);
+      console.error("[board/chat/stream stderr]", text);
     });
 
-    proc.on("close", async (exitCode) => {
+    proc.on("close", async (exitCode, signal) => {
       clearTimeout(timeout);
       releaseSlot();
+      await settleDispatchGateResult(
+        CLAUDE_LOCAL_DEFAULT_SCOPE,
+        gateOwner,
+        { timedOut: killed, signalKilled: signal !== null, lastResultEvent, stderrTail },
+        classifyBoardChatOutcome,
+      );
 
       // Persist the board's reply under the "board-concierge" sentinel so the
       // UI renders it as an assistant bubble (see BoardChat `isUser` check).
@@ -380,9 +455,14 @@ export function boardChatRoutes(
       }
     });
 
-    proc.on("error", (err) => {
+    proc.on("error", async (err) => {
       clearTimeout(timeout);
       releaseSlot();
+      // Node only emits `error` here for a failed spawn (no pid ever existed) —
+      // `close` never fires afterward, so this is a confirmed idle release, not
+      // a guess. Settlement is owner-scoped (kind+id), so even a stale/duplicate
+      // call here is a safe no-op against a row already held by someone else.
+      await releaseDispatchGate(CLAUDE_LOCAL_DEFAULT_SCOPE, gateOwner);
       console.error("[board/chat/stream spawn error]", err);
       if (res.writable) {
         res.write(

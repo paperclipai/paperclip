@@ -356,100 +356,107 @@ export async function testEnvironment(
         asNumber(config.helloProbeTimeoutSec, targetIsSandbox ? 90 : 45),
       );
 
-      const probe = await runAdapterExecutionTargetProcess(
-        runId,
-        target,
-        command,
-        args,
-        {
+      // Only this call produces inference; every other check above is read-only and stays outside the gate.
+      const runInferenceProbe = ctx.runInferenceProbe ?? (<T,>(run: () => Promise<T>) => run());
+      const probe = await runInferenceProbe(() =>
+        runAdapterExecutionTargetProcess(runId, target, command, args, {
           cwd,
           env,
           timeoutSec: helloProbeTimeoutSec,
           graceSec: 5,
           stdin: "Respond with hello.",
           onLog: async () => {},
-        },
+        }),
       );
 
-      const parsedStream = parseClaudeStreamJson(probe.stdout);
-      const parsed = parsedStream.resultJson;
-      const loginMeta = detectClaudeLoginRequired({
-        parsed,
-        stdout: probe.stdout,
-        stderr: probe.stderr,
-      });
-      const detail = summarizeProbeDetail(probe.stdout, probe.stderr);
-
-      if (probe.timedOut) {
+      if (probe === null) {
         checks.push({
-          code: "claude_hello_probe_timed_out",
+          code: "claude_hello_probe_gate_blocked",
           level: "warn",
-          message: "Claude hello probe timed out.",
-          hint: "Retry the probe. If this persists, verify Claude can run `Respond with hello` from this directory manually.",
-        });
-      } else if (loginMeta.requiresLogin) {
-        checks.push({
-          code: "claude_hello_probe_auth_required",
-          level: "warn",
-          message: "Claude CLI is installed, but login is required.",
-          ...(detail ? { detail } : {}),
-          hint: loginMeta.loginUrl
-            ? `Run \`claude login\` and complete sign-in at ${loginMeta.loginUrl}, then retry.`
-            : "Run `claude login` in this environment, then retry the probe.",
-        });
-      } else if ((probe.exitCode ?? 1) === 0) {
-        const summary = parsedStream.summary.trim();
-        const hasHello = /\bhello\b/i.test(summary);
-        checks.push({
-          code: hasHello ? "claude_hello_probe_passed" : "claude_hello_probe_unexpected_output",
-          level: hasHello ? "info" : "warn",
-          message: hasHello
-            ? "Claude hello probe succeeded."
-            : "Claude probe ran but did not return `hello` as expected.",
-          ...(summary ? { detail: summary.replace(/\s+/g, " ").trim().slice(0, 240) } : {}),
-          ...(hasHello
-            ? {}
-            : {
-                hint: "Try the probe manually (`claude --print - --output-format stream-json --verbose`) and prompt `Respond with hello`.",
-              }),
+          message: "Claude is busy with another launch; the hello probe was not run.",
+          hint: "Retry the environment test shortly.",
         });
       } else {
-        // Surface the actual failure instead of the leading stream-json
-        // `system/init` line: the real error lives in the final `result`
-        // event (parsed) or, when the CLI dies before emitting one, the last
-        // non-init stdout line — never the first one `summarizeProbeDetail`
-        // returns.
-        const stdoutFallback = lastNonInitStdoutLine(probe.stdout);
-        const failureDetail =
-          (parsed ? describeClaudeFailure(parsed) : null) ||
-          (firstNonEmptyLine(probe.stderr)
-            ? truncateDetail(firstNonEmptyLine(probe.stderr))
-            : "") ||
-          (stdoutFallback ? truncateDetail(stdoutFallback) : "") ||
-          detail ||
-          "";
-        const transient = isClaudeTransientUpstreamError({
+        const parsedStream = parseClaudeStreamJson(probe.stdout);
+        const parsed = parsedStream.resultJson;
+        const loginMeta = detectClaudeLoginRequired({
           parsed,
           stdout: probe.stdout,
           stderr: probe.stderr,
         });
-        checks.push(
-          transient
-            ? {
-                code: "claude_hello_probe_transient_upstream",
-                level: "warn",
-                message: "Claude hello probe hit a transient upstream error (rate limit or overload).",
-                ...(failureDetail ? { detail: failureDetail } : {}),
-                hint: "This is usually temporary. Wait a moment and re-run Test.",
-              }
-            : {
-                code: "claude_hello_probe_failed",
-                level: "error",
-                message: "Claude hello probe failed.",
-                ...(failureDetail ? { detail: failureDetail } : {}),
-                hint: `Exit code ${probe.exitCode ?? "unknown"}. Run \`claude --print - --output-format stream-json --verbose\` manually in this directory and prompt \`Respond with hello\` to debug.`,
-              },
-        );
+        const detail = summarizeProbeDetail(probe.stdout, probe.stderr);
+
+        if (probe.timedOut) {
+          checks.push({
+            code: "claude_hello_probe_timed_out",
+            level: "warn",
+            message: "Claude hello probe timed out.",
+            hint: "Retry the probe. If this persists, verify Claude can run `Respond with hello` from this directory manually.",
+          });
+        } else if (loginMeta.requiresLogin) {
+          checks.push({
+            code: "claude_hello_probe_auth_required",
+            level: "warn",
+            message: "Claude CLI is installed, but login is required.",
+            ...(detail ? { detail } : {}),
+            hint: loginMeta.loginUrl
+              ? `Run \`claude login\` and complete sign-in at ${loginMeta.loginUrl}, then retry.`
+              : "Run `claude login` in this environment, then retry the probe.",
+          });
+        } else if ((probe.exitCode ?? 1) === 0) {
+          const summary = parsedStream.summary.trim();
+          const hasHello = /\bhello\b/i.test(summary);
+          checks.push({
+            code: hasHello ? "claude_hello_probe_passed" : "claude_hello_probe_unexpected_output",
+            level: hasHello ? "info" : "warn",
+            message: hasHello
+              ? "Claude hello probe succeeded."
+              : "Claude probe ran but did not return `hello` as expected.",
+            ...(summary ? { detail: summary.replace(/\s+/g, " ").trim().slice(0, 240) } : {}),
+            ...(hasHello
+              ? {}
+              : {
+                  hint: "Try the probe manually (`claude --print - --output-format stream-json --verbose`) and prompt `Respond with hello`.",
+                }),
+          });
+        } else {
+          // Surface the actual failure instead of the leading stream-json
+          // `system/init` line: the real error lives in the final `result`
+          // event (parsed) or, when the CLI dies before emitting one, the last
+          // non-init stdout line — never the first one `summarizeProbeDetail`
+          // returns.
+          const stdoutFallback = lastNonInitStdoutLine(probe.stdout);
+          const failureDetail =
+            (parsed ? describeClaudeFailure(parsed) : null) ||
+            (firstNonEmptyLine(probe.stderr)
+              ? truncateDetail(firstNonEmptyLine(probe.stderr))
+              : "") ||
+            (stdoutFallback ? truncateDetail(stdoutFallback) : "") ||
+            detail ||
+            "";
+          const transient = isClaudeTransientUpstreamError({
+            parsed,
+            stdout: probe.stdout,
+            stderr: probe.stderr,
+          });
+          checks.push(
+            transient
+              ? {
+                  code: "claude_hello_probe_transient_upstream",
+                  level: "warn",
+                  message: "Claude hello probe hit a transient upstream error (rate limit or overload).",
+                  ...(failureDetail ? { detail: failureDetail } : {}),
+                  hint: "This is usually temporary. Wait a moment and re-run Test.",
+                }
+              : {
+                  code: "claude_hello_probe_failed",
+                  level: "error",
+                  message: "Claude hello probe failed.",
+                  ...(failureDetail ? { detail: failureDetail } : {}),
+                  hint: `Exit code ${probe.exitCode ?? "unknown"}. Run \`claude --print - --output-format stream-json --verbose\` manually in this directory and prompt \`Respond with hello\` to debug.`,
+                },
+          );
+        }
       }
     }
   }
