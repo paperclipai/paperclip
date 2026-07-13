@@ -374,6 +374,7 @@ const NEXT_OWNER_ROLE_ALIASES = new Map<string, string>([
   ["infra", "devops"],
   ["security", "security"],
 ]);
+const HUMAN_NEXT_OWNER_REFERENCE_PATTERN = /\b(?:board|human|user|operator|account\s+owner)\b/i;
 
 function isAssignableNextOwnerAgent(agent: NextOwnerAgentSummary | null | undefined) {
   return Boolean(agent && agent.status !== "terminated" && agent.status !== "pending_approval");
@@ -467,6 +468,7 @@ async function preflightNextOwnerHandoff(input: {
   body: string;
   actor: ReturnType<typeof getActorInfo>;
   agents: NextOwnerAgentResolver;
+  hasPendingHumanActionPath: () => Promise<boolean>;
 }): Promise<NextOwnerHandoffResolution | null> {
   if (input.actor.actorType !== "agent") return null;
   const resolution = await resolveNextOwnerHandoff({
@@ -475,6 +477,12 @@ async function preflightNextOwnerHandoff(input: {
     agents: input.agents,
   });
   if (resolution.kind !== "unresolved") return resolution;
+  if (
+    resolution.references.some((reference) => HUMAN_NEXT_OWNER_REFERENCE_PATTERN.test(reference)) &&
+    (await input.hasPendingHumanActionPath())
+  ) {
+    return { kind: "none", handoffs: resolution.handoffs };
+  }
 
   throw unprocessable("Next owner handoff could not be resolved to exactly one active company agent", {
     code: "next_owner_handoff_unresolved",
@@ -4855,6 +4863,10 @@ export function issueRoutes(
           body: commentBody,
           actor,
           agents: agentsSvc,
+          hasPendingHumanActionPath: async () =>
+            (await issueThreadInteractionService(db).listForIssue(existing.id)).some(
+              (interaction) => interaction.status === "pending",
+            ),
         })
       : null;
     const shouldCancelActiveRunForCancelledStatus =
@@ -7095,6 +7107,10 @@ export function issueRoutes(
       body: req.body.body,
       actor,
       agents: agentsSvc,
+      hasPendingHumanActionPath: async () =>
+        (await issueThreadInteractionService(db).listForIssue(issue.id)).some(
+          (interaction) => interaction.status === "pending",
+        ),
     });
     const reopenRequested = req.body.reopen === true;
     const resumeRequested = req.body.resume === true;

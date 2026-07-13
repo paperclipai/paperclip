@@ -34,6 +34,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
   cancelRun: vi.fn(async () => null),
 }));
 const mockIssueThreadInteractionService = vi.hoisted(() => ({
+  listForIssue: vi.fn(async () => []),
   expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
   expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
 }));
@@ -228,6 +229,7 @@ describe("issue update comment wakeups", () => {
     mockIssueService.update.mockReset();
     mockIssueService.list.mockResolvedValue([]);
     mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
+    mockIssueThreadInteractionService.listForIssue.mockResolvedValue([]);
     mockIssueService.findMentionedAgents.mockResolvedValue([]);
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
     mockIssueService.getDependencyReadiness.mockResolvedValue({
@@ -655,6 +657,45 @@ describe("issue update comment wakeups", () => {
     });
     expect(mockIssueService.update).not.toHaveBeenCalled();
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("accepts a human Next owner/action clause only when a pending interaction owns the action", async () => {
+    const authorAgentId = "44444444-4444-4444-8444-444444444444";
+    const existing = makeIssue({
+      assigneeAgentId: authorAgentId,
+      assigneeUserId: null,
+      parentId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    });
+    const commentBody =
+      "Next owner/action: board accepts the canonical confirmation or rejects for rollback. Acceptance wakes CTO.";
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-human-next-owner",
+      issueId: existing.id,
+      companyId: existing.companyId,
+      body: commentBody,
+    });
+    mockAgentService.list.mockResolvedValue([]);
+    mockAgentService.resolveByReference.mockResolvedValue({ ambiguous: false, agent: null });
+    mockIssueThreadInteractionService.listForIssue.mockResolvedValue([
+      { id: "interaction-1", status: "pending" },
+    ]);
+
+    const res = await request(
+      await createApp({
+        type: "agent",
+        agentId: authorAgentId,
+        companyId: "company-1",
+        runId: "run-human-next-owner",
+      }),
+    )
+      .post(`/api/issues/${existing.id}/comments`)
+      .send({ body: commentBody });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueThreadInteractionService.listForIssue).toHaveBeenCalledWith(existing.id);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 

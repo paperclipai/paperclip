@@ -438,7 +438,7 @@ V1 non-terminal liveness rule:
 - agent-owned `todo`, `in_progress`, `in_review`, and `blocked` issues must have a live execution path, an explicit waiting path, or an explicit recovery path
 - `in_review` is healthy only when a typed execution participant, pending issue-thread interaction or approval, user owner, active run, queued wake, or explicit recovery action owns the next action
 - a blocked chain is covered only when each unresolved leaf issue is live or explicitly waiting
-- an agent-authored `Next owner:` contract must resolve to exactly one active company agent before its comment or accompanying status mutation is accepted; successful resolution durably reassigns before the wake is queued
+- an agent-authored `Next owner:` contract must resolve to exactly one active company agent before its comment or accompanying status mutation is accepted; successful resolution durably reassigns before the wake is queued. A board/user `Next owner/action:` statement is accepted only when a pending first-class issue-thread interaction already owns that human action
 - when Paperclip cannot safely infer the next action, it surfaces the problem through visible blocked/recovery work instead of silently completing or reassigning work
 - explicit recovery actions are the liveness primitive; source-scoped actions are the default form, issue-backed recovery is a fallback for independent repair work or safety boundaries, and comments alone are evidence rather than a healthy liveness path
 
