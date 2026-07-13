@@ -30,6 +30,7 @@ export const projectWorkspaces = pgTable(
     remoteWorkspaceRef: text("remote_workspace_ref"),
     sharedWorkspaceKey: text("shared_workspace_key"),
     metadata: jsonb("metadata").$type<Record<string, unknown>>(),
+    defaultCompletionRequirement: text("default_completion_requirement"),
     isPrimary: boolean("is_primary").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

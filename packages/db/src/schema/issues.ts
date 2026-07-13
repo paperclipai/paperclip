@@ -65,6 +65,8 @@ export const issues = pgTable(
     executionWorkspacePreference: text("execution_workspace_preference"),
     executionWorkspaceSettings: jsonb("execution_workspace_settings").$type<Record<string, unknown>>(),
     sourceTrust: jsonb("source_trust").$type<SourceTrustMetadata | null>(),
+    completionRequirement: text("completion_requirement"),
+    completionRequirementRevision: integer("completion_requirement_revision").notNull().default(0),
     startedAt: timestamp("started_at", { withTimezone: true }),
     completedAt: timestamp("completed_at", { withTimezone: true }),
     cancelledAt: timestamp("cancelled_at", { withTimezone: true }),

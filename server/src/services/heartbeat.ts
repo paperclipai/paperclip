@@ -1555,6 +1555,7 @@ export async function assertGitSensitiveAdapterWorkspaceValid(input: {
     identifier: string | null;
     projectId: string | null;
     projectWorkspaceId: string | null;
+    completionRequirement?: string | null;
   } | null;
   resolvedWorkspace: ResolvedWorkspaceForRun;
   executionWorkspace: RealizedExecutionWorkspace;
@@ -1717,6 +1718,21 @@ export async function assertGitSensitiveAdapterWorkspaceValid(input: {
         { managedGitWorktreeBranch: formatManagedGitWorktreeBranchInspection(inspection) },
       );
     }
+  }
+
+  if (
+    workspaceExpectation &&
+    !input.resolvedWorkspace.repoUrl &&
+    input.resolvedWorkspace.source === "project_primary" &&
+    issue.completionRequirement === "workspace_delivery"
+  ) {
+    fail(
+      "null_repo_delivery_required",
+      `Issue ${issue.identifier ?? issue.id} requires workspace delivery but the project_primary workspace has no repository URL. ` +
+      `A project_primary folder without a repository locator cannot be an authoritative repository checkout. ` +
+      `Set a repository URL on the project workspace or change the issue completion requirement to evidence_only or artifact.`,
+      { completionRequirement: issue.completionRequirement, resolvedWorkspaceSource: input.resolvedWorkspace.source },
+    );
   }
 }
 
@@ -5545,6 +5561,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         originId: issues.originId,
         originRunId: issues.originRunId,
         updatedAt: issues.updatedAt,
+        completionRequirement: issues.completionRequirement,
+        completionRequirementRevision: issues.completionRequirementRevision,
       })
       .from(issues)
       .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)))
@@ -11234,6 +11252,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           projectWorkspaceId: issueContext.projectWorkspaceId,
           executionWorkspaceId: issueContext.executionWorkspaceId,
           executionWorkspacePreference: issueContext.executionWorkspacePreference,
+          completionRequirement: issueContext.completionRequirement,
         }
       : null;
     const continuationSummary = issueRef
@@ -12477,6 +12496,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               identifier: issueRef.identifier,
               projectId: issueRef.projectId,
               projectWorkspaceId: issueRef.projectWorkspaceId,
+              completionRequirement: issueRef.completionRequirement,
             }
           : null,
         resolvedWorkspace,

@@ -436,6 +436,130 @@ describe("assertGitSensitiveAdapterWorkspaceValid", () => {
     );
   });
 
+  it("rejects a workspace_delivery issue whose project_primary workspace has no repository URL", async () => {
+    const cwd = await createGitCheckout({ withRemote: false });
+    try {
+      await expectWorkspaceValidationFailure(
+        buildWorkspaceValidationInput({
+          issue: {
+            id: "issue-1",
+            identifier: "PAP-1",
+            projectId: "project-1",
+            projectWorkspaceId: "workspace-1",
+            completionRequirement: "workspace_delivery",
+          },
+          resolvedWorkspace: buildResolvedWorkspace({ cwd, repoUrl: null }),
+          executionWorkspace: {
+            ...buildWorkspaceValidationInput().executionWorkspace,
+            baseCwd: cwd,
+            cwd,
+          },
+          persistedExecutionWorkspace: {
+            ...buildWorkspaceValidationInput().persistedExecutionWorkspace!,
+            cwd,
+          },
+        }),
+        "null_repo_delivery_required",
+        "project_primary workspace has no repository URL",
+      );
+    } finally {
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("allows a workspace_delivery issue whose project_primary workspace has a repository URL", async () => {
+    const cwd = await createGitCheckout({ withRemote: true });
+    try {
+      await expect(
+        assertGitSensitiveAdapterWorkspaceValid(
+          buildWorkspaceValidationInput({
+            issue: {
+              id: "issue-1",
+              identifier: "PAP-1",
+              projectId: "project-1",
+              projectWorkspaceId: "workspace-1",
+              completionRequirement: "workspace_delivery",
+            },
+            resolvedWorkspace: buildResolvedWorkspace({ cwd, repoUrl: "https://github.com/example/repo.git" }),
+            executionWorkspace: {
+              ...buildWorkspaceValidationInput().executionWorkspace,
+              baseCwd: cwd,
+              cwd,
+            },
+            persistedExecutionWorkspace: {
+              ...buildWorkspaceValidationInput().persistedExecutionWorkspace!,
+              cwd,
+            },
+          }),
+        ),
+      ).resolves.toBeUndefined();
+    } finally {
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("allows a null-repo project_primary workspace when completionRequirement is not workspace_delivery", async () => {
+    const cwd = await createGitCheckout({ withRemote: false });
+    try {
+      await expect(
+        assertGitSensitiveAdapterWorkspaceValid(
+          buildWorkspaceValidationInput({
+            issue: {
+              id: "issue-1",
+              identifier: "PAP-1",
+              projectId: "project-1",
+              projectWorkspaceId: "workspace-1",
+              completionRequirement: "artifact",
+            },
+            resolvedWorkspace: buildResolvedWorkspace({ cwd, repoUrl: null }),
+            executionWorkspace: {
+              ...buildWorkspaceValidationInput().executionWorkspace,
+              baseCwd: cwd,
+              cwd,
+            },
+            persistedExecutionWorkspace: {
+              ...buildWorkspaceValidationInput().persistedExecutionWorkspace!,
+              cwd,
+            },
+          }),
+        ),
+      ).resolves.toBeUndefined();
+    } finally {
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("allows a null-repo project_primary workspace when completionRequirement is legacy_unspecified (null)", async () => {
+    const cwd = await createGitCheckout({ withRemote: false });
+    try {
+      await expect(
+        assertGitSensitiveAdapterWorkspaceValid(
+          buildWorkspaceValidationInput({
+            issue: {
+              id: "issue-1",
+              identifier: "PAP-1",
+              projectId: "project-1",
+              projectWorkspaceId: "workspace-1",
+              completionRequirement: null,
+            },
+            resolvedWorkspace: buildResolvedWorkspace({ cwd, repoUrl: null }),
+            executionWorkspace: {
+              ...buildWorkspaceValidationInput().executionWorkspace,
+              baseCwd: cwd,
+              cwd,
+            },
+            persistedExecutionWorkspace: {
+              ...buildWorkspaceValidationInput().persistedExecutionWorkspace!,
+              cwd,
+            },
+          }),
+        ),
+      ).resolves.toBeUndefined();
+    } finally {
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("does not apply the git-sensitive workspace guard to non-local execution targets", async () => {
     const input = buildWorkspaceValidationInput();
 
