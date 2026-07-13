@@ -45,6 +45,10 @@ import {
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
 } from "@paperclipai/adapter-utils/server-utils";
 import {
+  parseLocalProcessSandboxExtraPaths,
+  type LocalProcessSandboxOptions,
+} from "@paperclipai/adapter-utils/local-process-sandbox";
+import {
   claudeModelUsageTotals,
   parseClaudeStreamJson,
   describeClaudeFailure,
@@ -492,6 +496,28 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     instructionsContents: combinedInstructionsContents,
     onLog,
   });
+  const sharedClaudeConfigDir = resolveSharedClaudeConfigDir(process.env);
+  const localProcessSandbox: LocalProcessSandboxOptions | null =
+    config.filesystemScope === "workspace" && !executionTargetIsRemote
+      ? {
+          workspaceDir: effectiveExecutionCwd,
+          managedPaths: [
+            { path: sharedClaudeConfigDir, access: "rw" },
+            { path: path.join(path.dirname(sharedClaudeConfigDir), ".claude.json"), access: "rw" },
+            { path: promptBundle.addDir, access: "ro" },
+          ],
+          extraPaths: parseLocalProcessSandboxExtraPaths(config.filesystemExtraPaths),
+          homeDir: path.dirname(sharedClaudeConfigDir),
+          command: asString(config.filesystemSandboxCommand, "bwrap"),
+        }
+      : null;
+  if (localProcessSandbox) {
+    env.CLAUDE_CONFIG_DIR = sharedClaudeConfigDir;
+    await onLog(
+      "stdout",
+      `[paperclip] Confining Claude filesystem access to workspace "${effectiveExecutionCwd}" and declared adapter paths.\n`,
+    );
+  }
   const useManagedRemoteClaudeConfig =
     executionTargetIsRemote &&
     adapterExecutionTargetUsesManagedHome(executionTarget) &&
@@ -823,6 +849,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         graceMs: terminalResultCleanupGraceMs,
         hasTerminalResult: ({ stdout }) => parseClaudeStreamJson(stdout).resultJson !== null,
       },
+      localProcessSandbox,
     });
 
     const parsedStream = parseClaudeStreamJson(proc.stdout);

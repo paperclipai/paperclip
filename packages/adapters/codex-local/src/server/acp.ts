@@ -66,6 +66,10 @@ export async function resolveCodexExecutionEngineForRun(
   input: CodexEngineResolutionInput,
 ): Promise<CodexEngineSelection> {
   const selection = normalizeEngine(input.config.engine);
+  if (input.config.filesystemScope === "workspace") {
+    if (selection.explicit && selection.engine === "acp") throw new Error('filesystemScope="workspace" requires the Codex CLI engine; ACP confinement is not supported.');
+    return { engine: "cli", explicit: selection.explicit, ...(!selection.explicit ? { fallbackReason: 'filesystemScope="workspace" requires spawn-level confinement in the CLI lane.' } : {}) };
+  }
   if (selection.explicit || selection.engine !== "acp") return selection;
 
   const fallbackReason = await defaultCodexAcpFallbackReason(input);
