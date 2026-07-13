@@ -165,7 +165,7 @@ import {
 } from "../lib/transcriptPresentation";
 import { buildAgentMentionHref } from "@paperclipai/shared";
 import { cn, formatDateTime, formatShortDate } from "../lib/utils";
-import { brandChipBadge } from "../lib/status-colors";
+import { liveBlueBadge } from "../lib/status-colors";
 import { nextWorkMode, titleForPendingWorkMode, workModeMetaFor, workModeMetaList } from "../lib/work-mode-meta";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -1928,12 +1928,12 @@ function IssueChatAssistantMessage({
                 </Badge>
               ) : null}
               {isRunning ? (
-                // Gallery feedback r1: running chip uses the canonical brand blue
-                // (brandChipBadge.blue), not cyan; layout/size classes unchanged.
+                // Running chip shares the liveness-blue badge recipe with the
+                // issue header's "Live" badge (one live/running blue).
                 <Badge variant="outline"
                   className={cn(
                     "text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow)",
-                    brandChipBadge.blue,
+                    liveBlueBadge,
                   )}
                 >
                   <Loader2 className="h-3 w-3 animate-spin" />

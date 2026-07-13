@@ -1263,11 +1263,17 @@ export function readPaperclipIssueWorkModeFromContext(value: unknown): string | 
 
 export function renderPaperclipWakePrompt(
   value: unknown,
-  options: { resumedSession?: boolean } = {},
+  options: { resumedSession?: boolean; includeExecutionContract?: boolean } = {},
 ): string {
   const normalized = normalizePaperclipWakePayload(value);
   if (!normalized) return "";
   const resumedSession = options.resumedSession === true;
+  // The heartbeat prompt template already carries the execution contract on
+  // fresh sessions; only resume deltas (which replace the template) and
+  // template-less adapters need the wake-payload copy.
+  const includeExecutionContract = resumedSession || options.includeExecutionContract === true;
+  const hasWakeCommentBatch =
+    normalized.comments.length > 0 || normalized.includedCount > 0 || normalized.requestedCount > 0;
   const executionStage = normalized.executionStage;
   const principalLabel = (principal: PaperclipWakeExecutionPrincipal | null) => {
     if (!principal || !principal.type) return "unknown";
@@ -1294,6 +1300,23 @@ export function renderPaperclipWakePrompt(
     }
   };
 
+  const executionContractLines = includeExecutionContract
+    ? [
+        "Execution contract: take concrete action in this heartbeat when the issue is actionable; do not stop at a plan unless planning was requested. Leave durable progress and then give the issue a clear final disposition before ending the heartbeat: `done`, `in_review` with a real reviewer/approval/interaction path, `blocked` with first-class blockers or a named unblock owner/action, delegated follow-up issues with blockers, or `in_progress` only when a live continuation path exists. Use child issues for long or parallel delegated work instead of polling. Comments, documents, screenshots, work products, and `Remaining` bullets are evidence, not valid liveness paths by themselves.",
+        "",
+      ]
+    : [];
+  const wakeSummaryLines = [
+    `- reason: ${normalized.reason ?? "unknown"}`,
+    `- issue: ${normalized.issue?.identifier ?? normalized.issue?.id ?? "unknown"}${normalized.issue?.title ? ` ${normalized.issue.title}` : ""}`,
+    ...(hasWakeCommentBatch
+      ? [
+          `- pending comments: ${normalized.includedCount}/${normalized.requestedCount}`,
+          `- latest comment id: ${normalized.latestCommentId ?? "unknown"}`,
+        ]
+      : []),
+    `- fallback fetch needed: ${normalized.fallbackFetchNeeded ? "yes" : "no"}`,
+  ];
   const lines = resumedSession
       ? [
         "## Paperclip Resume Delta",
@@ -1303,30 +1326,24 @@ export function renderPaperclipWakePrompt(
         "Focus on the new wake delta below and continue the current task without restating the full heartbeat boilerplate.",
         "Fetch the API thread only when `fallbackFetchNeeded` is true or you need broader history than this batch.",
         "",
-        "Execution contract: take concrete action in this heartbeat when the issue is actionable; do not stop at a plan unless planning was requested. Leave durable progress and then give the issue a clear final disposition before ending the heartbeat: `done`, `in_review` with a real reviewer/approval/interaction path, `blocked` with first-class blockers or a named unblock owner/action, delegated follow-up issues with blockers, or `in_progress` only when a live continuation path exists. Use child issues for long or parallel delegated work instead of polling. Comments, documents, screenshots, work products, and `Remaining` bullets are evidence, not valid liveness paths by themselves.",
-        "",
-        `- reason: ${normalized.reason ?? "unknown"}`,
-        `- issue: ${normalized.issue?.identifier ?? normalized.issue?.id ?? "unknown"}${normalized.issue?.title ? ` ${normalized.issue.title}` : ""}`,
-        `- pending comments: ${normalized.includedCount}/${normalized.requestedCount}`,
-        `- latest comment id: ${normalized.latestCommentId ?? "unknown"}`,
-        `- fallback fetch needed: ${normalized.fallbackFetchNeeded ? "yes" : "no"}`,
+        ...executionContractLines,
+        ...wakeSummaryLines,
       ]
     : [
         "## Paperclip Wake Payload",
         "",
         "Treat this wake payload as the highest-priority change for the current heartbeat.",
         "This heartbeat is scoped to the issue below. Do not switch to another issue until you have handled this wake.",
-        "Before generic repo exploration or boilerplate heartbeat updates, acknowledge the latest comment and explain how it changes your next action.",
+        ...(hasWakeCommentBatch
+          ? ["Before generic repo exploration or boilerplate heartbeat updates, acknowledge the latest comment and explain how it changes your next action."]
+          : []),
         "Use this inline wake data first before refetching the issue thread.",
-        "Only fetch the API thread when `fallbackFetchNeeded` is true or you need broader history than this batch.",
+        ...(hasWakeCommentBatch || normalized.fallbackFetchNeeded
+          ? ["Only fetch the API thread when `fallbackFetchNeeded` is true or you need broader history than this batch."]
+          : []),
         "",
-        "Execution contract: take concrete action in this heartbeat when the issue is actionable; do not stop at a plan unless planning was requested. Leave durable progress and then give the issue a clear final disposition before ending the heartbeat: `done`, `in_review` with a real reviewer/approval/interaction path, `blocked` with first-class blockers or a named unblock owner/action, delegated follow-up issues with blockers, or `in_progress` only when a live continuation path exists. Use child issues for long or parallel delegated work instead of polling. Comments, documents, screenshots, work products, and `Remaining` bullets are evidence, not valid liveness paths by themselves.",
-        "",
-        `- reason: ${normalized.reason ?? "unknown"}`,
-        `- issue: ${normalized.issue?.identifier ?? normalized.issue?.id ?? "unknown"}${normalized.issue?.title ? ` ${normalized.issue.title}` : ""}`,
-        `- pending comments: ${normalized.includedCount}/${normalized.requestedCount}`,
-        `- latest comment id: ${normalized.latestCommentId ?? "unknown"}`,
-        `- fallback fetch needed: ${normalized.fallbackFetchNeeded ? "yes" : "no"}`,
+        ...executionContractLines,
+        ...wakeSummaryLines,
       ];
 
   if (normalized.issue?.status) {

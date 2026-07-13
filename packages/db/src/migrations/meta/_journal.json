@@ -1009,6 +1009,13 @@
       "when": 1783641600000,
       "tag": "0145_inbox_dismissal_snooze_kind",
       "breakpoints": true
+    },
+    {
+      "idx": 146,
+      "version": "7",
+      "when": 1783822632557,
+      "tag": "0146_routine_activity_gate",
+      "breakpoints": true
     }
   ]
 }

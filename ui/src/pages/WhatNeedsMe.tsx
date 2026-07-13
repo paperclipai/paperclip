@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowUpDown, Check, CheckCircle2, Inbox, Layers, ListFilter } from "lucide-react";
 import type { Agent, AttentionItem } from "@paperclipai/shared";
@@ -25,6 +25,7 @@ import {
   loadAttentionSortOrder,
   loadCollapsedAttentionGroupKeys,
   NO_GROUP_SENTINEL,
+  planAttentionRenderRows,
   saveAttentionFilters,
   saveAttentionGroupBy,
   saveAttentionSortOrder,
@@ -50,6 +51,31 @@ const SEVERITY_LABELS: Record<string, string> = {
   medium: "Medium",
   low: "Low",
 };
+
+/** Curtain rows never expand; module-level so memoized rows see one identity. */
+const noopToggleExpand = () => {};
+
+// Incremental rendering (PAP-13784, same pattern as IssuesList): the feed is
+// uncapped, so mounting every row up front makes the page slow to paint and
+// scroll. Render a bounded window and grow it as the scroll position nears the
+// bottom. One budget spans the active groups and the open curtains in document
+// order, so everything below the fold stays unmounted until needed.
+const INITIAL_ATTENTION_ROW_RENDER_LIMIT = 50;
+const ATTENTION_ROW_RENDER_BATCH_SIZE = 100;
+const ATTENTION_SCROLL_LOAD_THRESHOLD_PX = 480;
+
+function findScrollContainer(element: HTMLElement | null): HTMLElement | null {
+  if (!element || typeof window === "undefined") return null;
+  let current = element.parentElement;
+  while (current && current !== document.body && current !== document.documentElement) {
+    const overflowY = window.getComputedStyle(current).overflowY;
+    if (overflowY === "auto" || overflowY === "scroll" || overflowY === "overlay") {
+      return current;
+    }
+    current = current.parentElement;
+  }
+  return null;
+}
 
 export function WhatNeedsMe() {
   const { selectedCompanyId } = useCompany();
@@ -165,6 +191,80 @@ export function WhatNeedsMe() {
     [collapsedGroupKeys, groups],
   );
 
+  // Rendered-row budget: only ratchets up (a hard reset mid-scroll would yank
+  // the DOM out from under the user), and resets when the company changes.
+  const [renderedRowLimit, setRenderedRowLimit] = useState(INITIAL_ATTENTION_ROW_RENDER_LIMIT);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    setRenderedRowLimit(INITIAL_ATTENTION_ROW_RENDER_LIMIT);
+  }, [selectedCompanyId]);
+
+  // Keyboard selection may point past the budget (e.g. wrapping to the last
+  // row), so the effective limit is derived to always cover it — the selected
+  // row is then guaranteed to be in the DOM in the same commit that selects it.
+  const renderPlan = useMemo(() => {
+    const selectedIndex = selectedAttentionId
+      ? keyboardItems.findIndex((item) => item.id === selectedAttentionId)
+      : -1;
+    return planAttentionRenderRows({
+      groups,
+      collapsedGroupKeys,
+      snoozedItems,
+      snoozedOpen,
+      dismissedItems,
+      dismissedOpen,
+      limit: Math.max(renderedRowLimit, selectedIndex + 1),
+    });
+  }, [
+    collapsedGroupKeys,
+    dismissedItems,
+    dismissedOpen,
+    groups,
+    keyboardItems,
+    renderedRowLimit,
+    selectedAttentionId,
+    snoozedItems,
+    snoozedOpen,
+  ]);
+
+  const loadMoreRows = useCallback(() => {
+    setRenderedRowLimit((current) => current + ATTENTION_ROW_RENDER_BATCH_SIZE);
+  }, []);
+
+  useEffect(() => {
+    if (!renderPlan.hasMoreRows) return;
+    let animationFrameId: number | null = null;
+    const scrollContainer = findScrollContainer(rootRef.current);
+    const scrollTarget: Window | HTMLElement = scrollContainer ?? window;
+
+    const checkScrollPosition = () => {
+      if (animationFrameId !== null) return;
+      animationFrameId = window.requestAnimationFrame(() => {
+        animationFrameId = null;
+        const scrollHeight = scrollContainer?.scrollHeight ?? document.documentElement.scrollHeight;
+        if (scrollHeight === 0) return;
+        const scrollBottom = scrollContainer
+          ? scrollContainer.scrollTop + scrollContainer.clientHeight
+          : window.scrollY + window.innerHeight;
+        if (scrollBottom >= scrollHeight - ATTENTION_SCROLL_LOAD_THRESHOLD_PX) {
+          loadMoreRows();
+        }
+      });
+    };
+
+    scrollTarget.addEventListener("scroll", checkScrollPosition, { passive: true });
+    window.addEventListener("resize", checkScrollPosition);
+    // Initial check: a tall viewport (or an opened curtain) may need more rows
+    // than the current budget before any scrolling happens.
+    checkScrollPosition();
+
+    return () => {
+      scrollTarget.removeEventListener("scroll", checkScrollPosition);
+      window.removeEventListener("resize", checkScrollPosition);
+      if (animationFrameId !== null) window.cancelAnimationFrame(animationFrameId);
+    };
+  }, [loadMoreRows, renderPlan.hasMoreRows, renderedRowLimit]);
+
   useEffect(() => {
     if (selectedAttentionId && !keyboardItems.some((item) => item.id === selectedAttentionId)) {
       setSelectedAttentionId(null);
@@ -207,38 +307,57 @@ export function WhatNeedsMe() {
     });
   };
 
-  const handleUndoDismiss = (item: AttentionItem) => {
-    setPendingHide((prev) => {
-      const next = new Set(prev);
-      next.delete(item.id);
-      return next;
-    });
-    restore(item.dismissalKey);
-  };
-  const handleDismiss = (item: AttentionItem) => {
-    setPendingHide((prev) => new Set(prev).add(item.id));
-    dismiss(item.dismissalKey);
-    setExpandedId((previous) => (previous === item.id ? null : previous));
-    // ~8s undo window; restores the row in place via T1's DELETE endpoint.
-    pushToast({
-      id: `attention-dismiss-${item.id}`,
-      dedupeKey: `attention-dismiss-${item.dismissalKey}`,
-      title: "Dismissed",
-      body: item.subject.title ?? undefined,
-      tone: "info",
-      ttlMs: 8000,
-      action: { label: "Undo", onClick: () => handleUndoDismiss(item) },
-    });
-  };
-  const handleSnooze = (item: AttentionItem, snoozedUntil: string) => {
-    setPendingHide((prev) => new Set(prev).add(item.id));
-    snooze(item.dismissalKey, snoozedUntil);
-    if (expandedId === item.id) setExpandedId(null);
-  };
-  const handleRestore = (item: AttentionItem) => {
-    setPendingRestore((prev) => new Set(prev).add(item.id));
-    restore(item.dismissalKey);
-  };
+  // All row callbacks are stable (deps are setState functions, stable hook
+  // callbacks, and the stable `pushToast`) so the memoized rows only re-render
+  // when their own item/expanded/selected props change (PAP-13784).
+  const handleUndoDismiss = useCallback(
+    (item: AttentionItem) => {
+      setPendingHide((prev) => {
+        const next = new Set(prev);
+        next.delete(item.id);
+        return next;
+      });
+      restore(item.dismissalKey);
+    },
+    [restore],
+  );
+  const handleDismiss = useCallback(
+    (item: AttentionItem) => {
+      setPendingHide((prev) => new Set(prev).add(item.id));
+      dismiss(item.dismissalKey);
+      setExpandedId((previous) => (previous === item.id ? null : previous));
+      // ~8s undo window; restores the row in place via T1's DELETE endpoint.
+      pushToast({
+        id: `attention-dismiss-${item.id}`,
+        dedupeKey: `attention-dismiss-${item.dismissalKey}`,
+        title: "Dismissed",
+        body: item.subject.title ?? undefined,
+        tone: "info",
+        ttlMs: 8000,
+        action: { label: "Undo", onClick: () => handleUndoDismiss(item) },
+      });
+    },
+    [dismiss, handleUndoDismiss, pushToast],
+  );
+  const handleSnooze = useCallback(
+    (item: AttentionItem, snoozedUntil: string) => {
+      setPendingHide((prev) => new Set(prev).add(item.id));
+      snooze(item.dismissalKey, snoozedUntil);
+      setExpandedId((previous) => (previous === item.id ? null : previous));
+    },
+    [snooze],
+  );
+  const handleRestore = useCallback(
+    (item: AttentionItem) => {
+      setPendingRestore((prev) => new Set(prev).add(item.id));
+      restore(item.dismissalKey);
+    },
+    [restore],
+  );
+  const handleToggleExpand = useCallback((item: AttentionItem) => {
+    setSelectedAttentionId(item.id);
+    setExpandedId((prev) => (prev === item.id ? null : item.id));
+  }, []);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -282,7 +401,7 @@ export function WhatNeedsMe() {
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [keyboardItems, navigate, selectedAttentionId]);
+  }, [handleDismiss, keyboardItems, navigate, selectedAttentionId]);
   const activeFilterCount = countActiveAttentionFilters(filters);
 
   if (!selectedCompanyId) {
@@ -296,7 +415,7 @@ export function WhatNeedsMe() {
   const hasAnything = activeItems.length > 0 || snoozedItems.length > 0 || dismissedItems.length > 0;
 
   return (
-    <div className="max-w-3xl space-y-4">
+    <div ref={rootRef} className="max-w-3xl space-y-4">
       <div className="flex items-center justify-between gap-2">
         <h1 className="text-xl font-bold">Decisions</h1>
         <div className="flex items-center gap-2">
@@ -423,16 +542,13 @@ export function WhatNeedsMe() {
                   )}
                   {!collapsed && (
                     <div className="space-y-2">
-                      {group.items.map((item) => (
+                      {(renderPlan.groupRows.get(group.key) ?? []).map((item) => (
                         <AttentionQueueRow
                           key={item.id}
                           item={item}
                           companyId={selectedCompanyId}
                           expanded={expandedId === item.id}
-                          onToggleExpand={() => {
-                            setSelectedAttentionId(item.id);
-                            setExpandedId((prev) => (prev === item.id ? null : item.id));
-                          }}
+                          onToggleExpand={handleToggleExpand}
                           onDismiss={handleDismiss}
                           onSnooze={handleSnooze}
                           agentMap={agentMap}
@@ -454,14 +570,14 @@ export function WhatNeedsMe() {
               open={snoozedOpen}
               onToggle={() => setSnoozedOpen((prev) => !prev)}
             >
-              {snoozedItems.map((item) => (
+              {renderPlan.snoozedRows.map((item) => (
                 <AttentionQueueRow
                   key={item.id}
                   item={item}
                   companyId={selectedCompanyId}
                   variant="hidden"
                   expanded={false}
-                  onToggleExpand={() => {}}
+                  onToggleExpand={noopToggleExpand}
                   onDismiss={handleDismiss}
                   onRestore={handleRestore}
                   agentMap={agentMap}
@@ -478,14 +594,14 @@ export function WhatNeedsMe() {
               open={dismissedOpen}
               onToggle={() => setDismissedOpen((prev) => !prev)}
             >
-              {dismissedItems.map((item) => (
+              {renderPlan.dismissedRows.map((item) => (
                 <AttentionQueueRow
                   key={item.id}
                   item={item}
                   companyId={selectedCompanyId}
                   variant="hidden"
                   expanded={false}
-                  onToggleExpand={() => {}}
+                  onToggleExpand={noopToggleExpand}
                   onDismiss={handleDismiss}
                   onRestore={handleRestore}
                   agentMap={agentMap}
