@@ -1,6 +1,10 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
-import { resolveSmtpSettingsFromEnv, createSmtpInviteEmailTransport, type InviteMail } from "./invite-email-smtp.js";
-import { registerSmtpInviteEmailTransportFromEnv } from "./invite-email-smtp.js";
+import {
+  resolveSmtpSettingsFromEnv,
+  createSmtpInviteEmailTransport,
+  registerSmtpInviteEmailTransportFromEnv,
+  type InviteMail,
+} from "./invite-email-smtp.js";
 import {
   getInviteEmailTransport,
   noopInviteEmailTransport,
@@ -73,6 +77,15 @@ describe("resolveSmtpSettingsFromEnv", () => {
       PAPERCLIP_SMTP_FROM: "no-reply@example.com",
     });
     expect(settings?.transport).toMatchObject({ port: 587, secure: true });
+  });
+
+  it("throws a descriptive error for a URL without a recognized scheme", () => {
+    expect(() =>
+      resolveSmtpSettingsFromEnv({
+        PAPERCLIP_SMTP_URL: "mail.example.com:587",
+        PAPERCLIP_SMTP_FROM: "no-reply@example.com",
+      }),
+    ).toThrow(/PAPERCLIP_SMTP_URL must start with/);
   });
 });
 

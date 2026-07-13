@@ -3289,10 +3289,11 @@ export function accessRoutes(
         companyBranding
       );
 
-      // Optional email delivery: when a recipient email is present and a
-      // transport is registered, send the invite. Otherwise the copyable
-      // inviteUrl below is the unchanged fallback.
-      await inviteEmailHook(getInviteEmailTransport(), {
+      // Optional email delivery (fire-and-forget: the hook swallows all
+      // errors, so a slow or failing SMTP server never affects the response).
+      // When no transport is registered the copyable inviteUrl below is the
+      // unchanged fallback.
+      void inviteEmailHook(getInviteEmailTransport(), {
         email: (req.body.email as string | null | undefined) ?? null,
         inviteUrl: inviteSummary.inviteUrl,
         companyName: companyBranding.name ?? null,

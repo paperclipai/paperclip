@@ -581,8 +581,12 @@ export async function startServer(): Promise<StartedServer> {
     databasePort: resolvedEmbeddedPostgresPort,
   });
   const uiMode = config.uiDevMiddleware ? "vite-dev" : config.serveUi ? "static" : "none";
-  if (registerSmtpInviteEmailTransportFromEnv()) {
-    logger.info("Invite email delivery enabled (SMTP transport configured)");
+  try {
+    if (registerSmtpInviteEmailTransportFromEnv()) {
+      logger.info("Invite email delivery enabled (SMTP transport configured)");
+    }
+  } catch (err) {
+    logger.error({ err }, "Invalid SMTP configuration; invite email delivery disabled");
   }
   const storageService = createStorageServiceFromConfig(config);
   const feedback = feedbackService(db as any, {

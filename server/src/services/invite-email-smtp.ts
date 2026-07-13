@@ -24,7 +24,14 @@ export function resolveSmtpSettingsFromEnv(
   const url = env.PAPERCLIP_SMTP_URL?.trim();
   const host = env.PAPERCLIP_SMTP_HOST?.trim();
   if (!from || (!url && !host)) return null;
-  if (url) return { transport: url, from };
+  if (url) {
+    if (!/^(smtps?|direct):/i.test(url)) {
+      throw new Error(
+        "PAPERCLIP_SMTP_URL must start with smtp://, smtps://, or direct: — got an unrecognized scheme",
+      );
+    }
+    return { transport: url, from };
+  }
 
   const port = Number(env.PAPERCLIP_SMTP_PORT) || 587;
   const secure = env.PAPERCLIP_SMTP_SECURE === "true" || port === 465;
