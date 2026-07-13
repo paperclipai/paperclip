@@ -2735,7 +2735,12 @@ function allowsIssueInteractionWake(
   contextSnapshot: Record<string, unknown> | null | undefined,
 ) {
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
-  if (!wakeReason || !ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS.has(wakeReason)) return false;
+  if (!wakeReason) return false;
+  const commentScopedWake =
+    wakeReason === "issue_commented" ||
+    wakeReason === "issue_comment_mentioned" ||
+    wakeReason === "issue_reopened_via_comment";
+  if (!commentScopedWake && !ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS.has(wakeReason)) return false;
   return Boolean(deriveCommentId(contextSnapshot, null));
 }
 
@@ -2791,8 +2796,13 @@ function collectWakeDispatchText(value: unknown, depth = 0): string[] {
 
   const out: string[] = [];
   for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
-    if (key === PAPERCLIP_WAKE_PAYLOAD_KEY || key === DEFERRED_WAKE_CONTEXT_KEY) continue;
-    out.push(key);
+    if (
+      key === PAPERCLIP_WAKE_PAYLOAD_KEY ||
+      key === DEFERRED_WAKE_CONTEXT_KEY ||
+      key.startsWith("paperclip")
+    ) {
+      continue;
+    }
     out.push(...collectWakeDispatchText(entry, depth + 1));
   }
   return out;
@@ -2841,6 +2851,10 @@ function validateWakeDispatchOrigin(input: {
 }): DispatchOriginValidation {
   const wakeReason = readNonEmptyString(input.contextSnapshot.wakeReason) ?? input.reason;
   const issueId = deriveDispatchOriginIssueId(input);
+  const issueUnassigned =
+    Boolean(input.issue) &&
+    !input.issue?.assigneeAgentId &&
+    !input.issue?.assigneeUserId;
   const issueAssignedToAgent =
     Boolean(input.issue) &&
     input.issue?.assigneeAgentId === input.agent.id &&
@@ -2867,6 +2881,7 @@ function validateWakeDispatchOrigin(input: {
 
   if (
     input.issue &&
+    !issueUnassigned &&
     !issueAssignedToAgent &&
     !issueReviewParticipantMatches &&
     !explicitInteractionWake &&
@@ -10371,6 +10386,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const resumeIntent = context.resumeIntent === true || context.followUpRequested === true;
     const wakeReason = readNonEmptyString(context.wakeReason);
     const retryReason = readNonEmptyString(context.retryReason) ?? run.scheduledRetryReason ?? null;
+    const issueUnassigned = !issue.assigneeAgentId && !issue.assigneeUserId;
 
     if (
       issue.status === "in_progress" &&
@@ -10401,7 +10417,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
     }
 
-    if (issue.assigneeAgentId !== run.agentId && !isInteractionWake) {
+    if (!issueUnassigned && issue.assigneeAgentId !== run.agentId && !isInteractionWake) {
       return {
         stale: true,
         errorCode: "issue_assignee_changed",
