@@ -51,6 +51,34 @@ def _cmd_audit(args, environ, fetch):
     write_report(report, data.get("report_root", "~/.paperclip/seo-geo"))
     return 0
 
+def _cmd_resolve(args, environ, client_factory):
+    from resolve import resolve_ids
+    site = next(s for s in load_sites(args.sites) if s.name == args.site)
+    client = client_factory(site, resolve_credential(site, environ))
+    _ep2target = {"pages": "page", "posts": "post"}
+    def lookup(target, slug):
+        # Agent-Label (page/post) ist unzuverlässig -> zuerst gelabelten Typ, dann den
+        # anderen probieren. Nur post+page sind per mu-Plugin schreibbar (nicht Portfolio).
+        # Liefert (id, korrigiertes_target) — das target aus dem Typ, wo die ID lag.
+        order = ["pages", "posts"] if target == "page" else ["posts", "pages"]
+        for e in order:
+            wid = client.find_id_by_slug(e, slug)
+            if wid is not None:
+                return wid, _ep2target[e]
+        return None
+    cs_in = json.loads(open(os.path.expanduser(args.changeset)).read())
+    canonical, unresolved = resolve_ids(cs_in, lookup)
+    out = args.out or (os.path.splitext(os.path.expanduser(args.changeset))[0] + "-resolved.json")
+    with open(out, "w") as fh:
+        json.dump(canonical, fh, ensure_ascii=False, indent=2)
+    print(f"AUFGELÖST — {len(canonical['changes'])} Änderungen mit ID -> {out}")
+    if unresolved:
+        print(f"NICHT auflösbar ({len(unresolved)}):")
+        for u in unresolved:
+            print(f"  ? {u['url']} ({u['field']})")
+    return 1 if unresolved else 0
+
+
 def _cmd_validate(args, environ, client_factory):
     from changeset import validate_changeset
     cs = json.loads(open(os.path.expanduser(args.changeset)).read())
@@ -95,7 +123,10 @@ def main(argv, environ, fetch=None, client_factory=None) -> int:
     apl.add_argument("--root"); apl.add_argument("--dry-run", action="store_true")
     v = sub.add_parser("validate"); v.add_argument("--site"); v.add_argument("--sites")
     v.add_argument("--changeset"); v.add_argument("--no-live", action="store_true")
+    rs = sub.add_parser("resolve"); rs.add_argument("--site"); rs.add_argument("--sites")
+    rs.add_argument("--changeset"); rs.add_argument("--out")
     args = p.parse_args(argv)
+    if args.cmd == "resolve": return _cmd_resolve(args, environ, client_factory)
     if args.cmd == "validate": return _cmd_validate(args, environ, client_factory)
     if args.cmd == "approve": return _cmd_approve(args, environ)
     if args.cmd == "apply": return _cmd_apply(args, environ, client_factory)

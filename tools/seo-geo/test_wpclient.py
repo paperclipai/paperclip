@@ -56,3 +56,14 @@ def test_check_editable_flags_missing():
 
 def test_check_editable_skips_site_target():
     assert _client().check_editable("site", None) is None
+
+
+def test_find_id_by_slug_hit():
+    with requests_mock.Mocker() as m:
+        m.get(f"{BASE}/wp/v2/pages", json=[{"id": 845}])
+        assert _client().find_id_by_slug("pages", "start") == 845
+
+def test_find_id_by_slug_miss():
+    with requests_mock.Mocker() as m:
+        m.get(f"{BASE}/wp/v2/posts", json=[])
+        assert _client().find_id_by_slug("posts", "gibtsnicht") is None

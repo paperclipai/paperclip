@@ -108,3 +108,50 @@ def test_validate_clean_exits_0(tmp_path, capsys):
               {"X_WP_USER":"u","X_WP_PW":"p"}, client_factory=lambda s,a: C())
     assert rc == 0
     assert "VALIDIERUNG OK" in capsys.readouterr().out
+
+
+def test_resolve_fills_ids_and_writes(tmp_path):
+    sites = _write_sites(tmp_path)
+    cs = tmp_path / "agent.json"
+    cs.write_text(json.dumps({"target_site":"x","changes":[
+        {"url":"https://x.de/start/","field":"seo_title","wordpress_id":None,
+         "target":"page","current":"Alt","new":"Neu"}]}))
+    out = tmp_path / "resolved.json"
+    class C:
+        def find_id_by_slug(self, ep, slug): return 845 if (ep=="pages" and slug=="start") else None
+    rc = main(["resolve","--site","x","--sites",sites,"--changeset",str(cs),"--out",str(out)],
+              {"X_WP_USER":"u","X_WP_PW":"p"}, client_factory=lambda s,a: C())
+    assert rc == 0
+    d = json.loads(out.read_text())
+    assert d["changes"][0] == {"target":"page","id":845,"field":"seo_title","old":"Alt","new":"Neu"}
+
+def test_resolve_reports_unresolved_exit1(tmp_path, capsys):
+    sites = _write_sites(tmp_path)
+    cs = tmp_path / "agent.json"
+    cs.write_text(json.dumps({"target_site":"x","changes":[
+        {"url":"https://x.de/weg/","field":"seo_title","wordpress_id":None,
+         "target":"page","current":"A","new":"B"}]}))
+    class C:
+        def find_id_by_slug(self, ep, slug): return None
+    rc = main(["resolve","--site","x","--sites",sites,"--changeset",str(cs),"--out",str(tmp_path/"o.json")],
+              {"X_WP_USER":"u","X_WP_PW":"p"}, client_factory=lambda s,a: C())
+    assert rc == 1
+    assert "NICHT auflösbar" in capsys.readouterr().out
+
+
+def test_resolve_corrects_target_from_where_id_found(tmp_path):
+    sites = _write_sites(tmp_path)
+    cs = tmp_path / "agent.json"
+    # Agent labelt als 'page', Objekt ist aber ein POST
+    cs.write_text(json.dumps({"target_site":"x","changes":[
+        {"url":"https://x.de/news/","field":"meta_description","wordpress_id":None,
+         "target":"page","current":"A","new":"d"*140}]}))
+    out = tmp_path / "r.json"
+    class C:
+        def find_id_by_slug(self, ep, slug):
+            return 4184 if ep=="posts" else None   # nur in posts
+    rc = main(["resolve","--site","x","--sites",sites,"--changeset",str(cs),"--out",str(out)],
+              {"X_WP_USER":"u","X_WP_PW":"p"}, client_factory=lambda s,a: C())
+    assert rc == 0
+    ch = json.loads(out.read_text())["changes"][0]
+    assert ch["target"] == "post" and ch["id"] == 4184   # target korrigiert!
