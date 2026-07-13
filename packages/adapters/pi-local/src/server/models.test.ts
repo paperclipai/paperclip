@@ -2,7 +2,9 @@ import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import * as serverUtils from "@paperclipai/adapter-utils/server-utils";
 import {
+  discoverPiModels,
   discoverPiModelsCached,
   ensurePiModelConfiguredAndAvailable,
   listPiModels,
@@ -21,6 +23,28 @@ describe("pi models", () => {
   afterEach(() => {
     delete process.env.PAPERCLIP_PI_COMMAND;
     resetPiModelsCacheForTests();
+    vi.restoreAllMocks();
+  });
+
+  it("allows cold model discovery enough time under runtime contention", async () => {
+    const runChildProcess = vi.spyOn(serverUtils, "runChildProcess").mockResolvedValue({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: "provider  model\nbridge  claude-opus-4-8\n",
+      stderr: "",
+      pid: null,
+      startedAt: new Date().toISOString(),
+    });
+
+    await discoverPiModels({ command: "pi", cwd: "/tmp" });
+
+    expect(runChildProcess).toHaveBeenCalledWith(
+      expect.any(String),
+      "pi",
+      ["--list-models"],
+      expect.objectContaining({ timeoutSec: 60, graceSec: 3 }),
+    );
   });
 
   it("returns an empty list when discovery command is unavailable", async () => {

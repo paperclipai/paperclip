@@ -5,6 +5,7 @@ import { asString, runChildProcess } from "@paperclipai/adapter-utils/server-uti
 const MODELS_CACHE_TTL_MS = 5 * 60_000;
 const MODELS_CACHE_STALE_TTL_MS = 24 * 60 * 60_000;
 const MODELS_CACHE_MAX_ENTRIES = 64;
+const MODEL_DISCOVERY_TIMEOUT_SEC = 60;
 
 function firstNonEmptyLine(text: string): string {
   return (
@@ -153,7 +154,7 @@ async function runPiModelDiscovery(
     {
       cwd,
       env: runtimeEnv,
-      timeoutSec: 20,
+      timeoutSec: MODEL_DISCOVERY_TIMEOUT_SEC,
       graceSec: 3,
       onLog: async () => {},
     },
