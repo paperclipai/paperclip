@@ -35,9 +35,7 @@
 
 import type { Db } from "@paperclipai/db";
 import {
-  collectSecretRefPaths,
   isUuidSecretRef,
-  readConfigValueAtPath,
 } from "./json-schema-secret-refs.js";
 
 export const PLUGIN_SECRET_REFS_DISABLED_MESSAGE =
@@ -83,23 +81,13 @@ export function extractSecretRefPathsFromConfig(
   };
   if (configJson == null || typeof configJson !== "object") return new Map();
 
-  const secretPaths = collectSecretRefPaths(schema);
-
-  // If schema declares secret-ref paths, extract only those values.
-  if (secretPaths.size > 0) {
-    for (const dotPath of secretPaths) {
-      const current = readConfigValueAtPath(configJson as Record<string, unknown>, dotPath);
-      if (typeof current === "string" && isUuidSecretRef(current)) {
-        addRef(current, dotPath);
-      }
-    }
+  // A declared schema is authoritative. Traverse schema and config together so
+  // array item schemas resolve to their concrete config indexes instead of
+  // falling back to UUID-shape discovery.
+  if (schema != null) {
+    collectSchemaSecretRefs(configJson, schema, "", addRef);
     return refs;
   }
-
-  // A declared schema is authoritative. Ordinary UUID-valued fields must not
-  // be reclassified as secrets merely because the schema has no secret-ref
-  // annotations.
-  if (schema != null) return refs;
 
   // Legacy fallback for plugins that omit instanceConfigSchema entirely.
   function walkAll(value: unknown): void {
@@ -114,6 +102,78 @@ export function extractSecretRefPathsFromConfig(
 
   walkAll(configJson);
   return refs;
+}
+
+function collectSchemaSecretRefs(
+  configValue: unknown,
+  schemaNode: Record<string, unknown>,
+  path: string,
+  addRef: (secretRef: string, path: string) => void,
+): void {
+  if (schemaNode.format === "secret-ref") {
+    if (typeof configValue === "string" && isUuidSecretRef(configValue)) {
+      addRef(configValue, path || "$");
+    }
+    return;
+  }
+
+  for (const keyword of ["allOf", "anyOf", "oneOf"] as const) {
+    const branches = schemaNode[keyword];
+    if (!Array.isArray(branches)) continue;
+    for (const branch of branches) {
+      if (isSchemaNode(branch)) collectSchemaSecretRefs(configValue, branch, path, addRef);
+    }
+  }
+
+  if (Array.isArray(configValue)) {
+    const prefixItems = Array.isArray(schemaNode.prefixItems) ? schemaNode.prefixItems : [];
+    for (let index = 0; index < prefixItems.length && index < configValue.length; index += 1) {
+      const itemSchema = prefixItems[index];
+      if (isSchemaNode(itemSchema)) {
+        collectSchemaSecretRefs(configValue[index], itemSchema, appendPath(path, String(index)), addRef);
+      }
+    }
+
+    const items = schemaNode.items;
+    if (Array.isArray(items)) {
+      for (let index = 0; index < items.length && index < configValue.length; index += 1) {
+        const itemSchema = items[index];
+        if (isSchemaNode(itemSchema)) {
+          collectSchemaSecretRefs(configValue[index], itemSchema, appendPath(path, String(index)), addRef);
+        }
+      }
+    } else if (isSchemaNode(items)) {
+      for (let index = prefixItems.length; index < configValue.length; index += 1) {
+        collectSchemaSecretRefs(configValue[index], items, appendPath(path, String(index)), addRef);
+      }
+    }
+    return;
+  }
+
+  if (!configValue || typeof configValue !== "object") return;
+  const configObject = configValue as Record<string, unknown>;
+  const properties = isSchemaNode(schemaNode.properties)
+    ? schemaNode.properties as Record<string, unknown>
+    : {};
+  for (const [key, propertySchema] of Object.entries(properties)) {
+    if (!isSchemaNode(propertySchema)) continue;
+    collectSchemaSecretRefs(configObject[key], propertySchema, appendPath(path, key), addRef);
+  }
+
+  if (isSchemaNode(schemaNode.additionalProperties)) {
+    for (const [key, value] of Object.entries(configObject)) {
+      if (Object.prototype.hasOwnProperty.call(properties, key)) continue;
+      collectSchemaSecretRefs(value, schemaNode.additionalProperties, appendPath(path, key), addRef);
+    }
+  }
+}
+
+function isSchemaNode(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function appendPath(prefix: string, segment: string): string {
+  return prefix ? `${prefix}.${segment}` : segment;
 }
 
 // ---------------------------------------------------------------------------
