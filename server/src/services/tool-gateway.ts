@@ -76,6 +76,13 @@ import {
 const DEFAULT_SESSION_TTL_MS = 15 * 60 * 1000;
 const MAX_SESSION_TTL_MS = 60 * 60 * 1000;
 const DEFAULT_TOOL_TIMEOUT_MS = 10_000;
+// When a human approves a parked write, the server carries it out on their
+// behalf with no interactive caller left to raise `timeoutMs`. Remote write
+// providers (e.g. Zapier Google Sheets `add_row`) routinely take longer than
+// the 10s interactive default, so an approved action would otherwise abort with
+// `tool_timeout` even though the approval succeeded. Give approved executions
+// the full permitted headroom instead.
+const APPROVED_EXECUTION_TIMEOUT_MS = 60_000;
 const MAX_REMOTE_MCP_RESPONSE_BYTES = 1_000_000;
 const ACTIVE_GATEWAY_RUN_STATUSES = new Set(["running"]);
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -4161,7 +4168,7 @@ export function createToolGatewayService(
     await reflectToolActionInteractionLifecycle({ actionRequestId: claimed.id, status: "executing" });
 
     try {
-      const executionTimeoutMs = timeoutMs(undefined);
+      const executionTimeoutMs = timeoutMs(APPROVED_EXECUTION_TIMEOUT_MS);
       const result = tool.providerType === "mcp_remote_http"
         ? (await executeRemoteHttpTool(session, tool, parameters, executionTimeoutMs, invocation.id)).result
         : tool.providerType === "mcp_local_stdio"
@@ -4201,7 +4208,7 @@ export function createToolGatewayService(
         reasonCode: "approved_action_executed",
         argumentsSummary,
         resultSummary: resultValidation.summary,
-        metadata: { durationMs: Date.now() - startedAt },
+        metadata: { durationMs: Date.now() - startedAt, timeoutMs: executionTimeoutMs },
         tool,
       });
       return resultValidation.value;

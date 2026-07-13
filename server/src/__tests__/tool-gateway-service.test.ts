@@ -297,6 +297,15 @@ describeEmbeddedPostgres("tool gateway service", () => {
       resultSummary: expect.stringContaining("bodyLength"),
     });
 
+    // The server carries out the approved call itself with no interactive
+    // caller left to raise timeoutMs, so it must get the full 60s headroom
+    // rather than the 10s interactive default.
+    const [executedEvent] = await db.select().from(toolCallEvents).where(and(
+      eq(toolCallEvents.actionRequestId, actionRequest.id),
+      eq(toolCallEvents.reasonCode, "approved_action_executed"),
+    ));
+    expect(executedEvent?.metadata).toMatchObject({ timeoutMs: 60_000 });
+
     const result = await gateway.executeTool({
       sessionToken: session.token,
       tool: "mcp-remote-fixture:update_note",
