@@ -6,7 +6,7 @@ import { IssuesQuicklook } from "./IssuesQuicklook";
 import type { ProjectWorkspaceLinkedIssue, ProjectWorkspaceSummary } from "../lib/project-workspaces-tab";
 import { cn, projectWorkspaceUrl } from "../lib/utils";
 import { timeAgo } from "../lib/timeAgo";
-import { Copy, ExternalLink, FolderOpen, GitBranch, Loader2, Play, Square } from "lucide-react";
+import { Copy, ExternalLink, FolderOpen, GitBranch, Loader2, Play, Square, ShieldAlert, ShieldCheck } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 
 function workspaceKindLabel(kind: ProjectWorkspaceSummary["kind"]) {
@@ -17,6 +17,15 @@ function truncatePath(path: string) {
   const parts = path.split("/").filter(Boolean);
   if (parts.length <= 3) return path;
   return `…/${parts.slice(-3).join("/")}`;
+}
+
+function targetKindLabel(kind: NonNullable<ProjectWorkspaceSummary["target"]>["kind"]) {
+  return {
+    repository: "Repository",
+    remote_operator: "Remote/operator",
+    artifact_only: "Artifact-only",
+    unconfigured: "Configuration incomplete",
+  }[kind];
 }
 
 interface ProjectWorkspaceSummaryCardProps {
@@ -53,6 +62,8 @@ export function ProjectWorkspaceSummaryCard({
       : `/execution-workspaces/${summary.workspaceId}`;
   const hasRunningServices = summary.runningServiceCount > 0;
   const actionKey = `${summary.key}:${hasRunningServices ? "stop" : "start"}`;
+  const target = summary.target;
+  const repairHref = target?.repairHref || workspaceHref;
 
   return (
     <div className="rounded-lg border border-border bg-background p-4 shadow-sm sm:p-5">
@@ -224,6 +235,57 @@ export function ProjectWorkspaceSummaryCard({
             ) : null}
           </div>
         </div>
+
+        {target ? (
+          <div
+            className={cn(
+              "rounded-lg border px-3 py-3",
+              target.configurationIncomplete
+                ? "border-amber-500/40 bg-amber-500/5"
+                : "border-border/70 bg-background",
+            )}
+            data-testid="workspace-target-provenance"
+          >
+            <div className="flex items-start gap-2">
+              {target.configurationIncomplete ? (
+                <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-300" />
+              ) : (
+                <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+              )}
+              <div className="min-w-0 flex-1 space-y-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+                    Authoritative target
+                  </div>
+                  <span className={cn(
+                    "text-xs font-medium",
+                    target.configurationIncomplete ? "text-amber-700 dark:text-amber-300" : "text-foreground",
+                  )}>
+                    {targetKindLabel(target.kind)}
+                  </span>
+                </div>
+                {target.configurationIncomplete ? (
+                  <p className="text-sm text-amber-800 dark:text-amber-200">
+                    This primary folder is unversioned and is not a managed checkout. A project owner must select a repository or declare artifact-only delivery.
+                  </p>
+                ) : null}
+                <dl className="grid gap-x-4 gap-y-1 text-xs sm:grid-cols-2">
+                  <div><dt className="text-muted-foreground">Authoritative path</dt><dd className="break-all font-mono">{target.authoritativePath ?? "Not declared"}</dd></div>
+                  <div><dt className="text-muted-foreground">Checkout root</dt><dd className="break-all font-mono">{target.checkoutRoot ? truncatePath(target.checkoutRoot) : "Not declared"}</dd></div>
+                  <div><dt className="text-muted-foreground">Delivery method</dt><dd>{target.deliveryMethod}</dd></div>
+                  <div><dt className="text-muted-foreground">Target fingerprint</dt><dd>{target.fingerprint ?? "Pending provider attestation"}</dd></div>
+                  <div><dt className="text-muted-foreground">Last attestation</dt><dd>{target.lastAttestation ?? "No attestation recorded"}</dd></div>
+                </dl>
+                <div className="flex flex-wrap items-center gap-3 pt-1">
+                  <Link to={repairHref} className="text-xs font-medium text-foreground underline underline-offset-2 hover:text-primary">
+                    {target.configurationIncomplete ? "Select or repair target" : "Review target configuration"}
+                  </Link>
+                  {target.lastAttestation ? <span className="text-xs text-muted-foreground">Evidence is linked to the delivery run.</span> : null}
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : null}
 
         {summary.issues.length > 0 ? (
           <div className="space-y-2">

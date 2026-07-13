@@ -13,6 +13,19 @@ export type ProjectWorkspaceLinkedIssue = Pick<Issue, "id" | "identifier" | "tit
   originId?: string | null;
 };
 
+export type WorkspaceTargetKind = "repository" | "remote_operator" | "artifact_only" | "unconfigured";
+
+export interface WorkspaceTargetProvenance {
+  kind: WorkspaceTargetKind;
+  authoritativePath: string | null;
+  checkoutRoot: string | null;
+  deliveryMethod: string;
+  fingerprint: string | null;
+  lastAttestation: string | null;
+  configurationIncomplete: boolean;
+  repairHref: string;
+}
+
 export interface ProjectWorkspaceSummary {
   key: string;
   kind: "execution_workspace" | "project_workspace";
@@ -31,6 +44,47 @@ export interface ProjectWorkspaceSummary {
   hasRuntimeConfig: boolean;
   linkedIssueCount: number;
   issues: ProjectWorkspaceLinkedIssue[];
+  target?: WorkspaceTargetProvenance;
+}
+
+function redactRemote(value: string | null | undefined): string | null {
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    return `${url.protocol}//${url.host}${url.pathname}`;
+  } catch {
+    return "Configured remote (redacted)";
+  }
+}
+
+function targetForProjectWorkspace(workspace: ProjectWorkspace): WorkspaceTargetProvenance {
+  const hasRemote = Boolean(workspace.repoUrl || workspace.remoteWorkspaceRef);
+  const hasRepository = workspace.sourceType === "git_repo" || (workspace.sourceType === "local_path" && hasRemote);
+  const configurationIncomplete = workspace.isPrimary && workspace.sourceType === "local_path" && !hasRemote;
+  return {
+    kind: hasRepository ? "repository" : workspace.sourceType === "remote_managed" ? "remote_operator" : configurationIncomplete ? "unconfigured" : "artifact_only",
+    authoritativePath: redactRemote(workspace.repoUrl ?? workspace.remoteWorkspaceRef),
+    checkoutRoot: workspace.cwd,
+    deliveryMethod: workspace.sourceType === "remote_managed" ? "remote/operator" : hasRepository ? "repository checkout" : "artifact-only",
+    fingerprint: null,
+    lastAttestation: null,
+    configurationIncomplete,
+    repairHref: "",
+  };
+}
+
+function targetForExecutionWorkspace(workspace: ExecutionWorkspace, repairHref: string): WorkspaceTargetProvenance {
+  const hasRepository = workspace.strategyType === "git_worktree" || Boolean(workspace.repoUrl);
+  return {
+    kind: hasRepository ? "repository" : workspace.providerType === "adapter_managed" ? "remote_operator" : "artifact_only",
+    authoritativePath: redactRemote(workspace.repoUrl ?? workspace.providerRef),
+    checkoutRoot: workspace.cwd,
+    deliveryMethod: hasRepository ? "repository checkout" : workspace.providerType === "adapter_managed" ? "remote/operator" : "artifact-only",
+    fingerprint: null,
+    lastAttestation: null,
+    configurationIncomplete: !hasRepository && workspace.providerType !== "adapter_managed" && !workspace.cwd,
+    repairHref,
+  };
 }
 
 function toDate(value: Date | string | null | undefined): Date | null {
@@ -137,6 +191,7 @@ export function buildProjectWorkspaceSummaries(input: {
         ),
         linkedIssueCount: nextIssues.length,
         issues: nextIssues,
+        target: targetForExecutionWorkspace(executionWorkspace, `/execution-workspaces/${executionWorkspace.id}/configuration`),
       });
       continue;
     }
@@ -166,6 +221,7 @@ export function buildProjectWorkspaceSummaries(input: {
       hasRuntimeConfig: Boolean(projectWorkspace.runtimeConfig?.workspaceRuntime),
       linkedIssueCount: nextIssues.length,
       issues: nextIssues,
+      target: targetForProjectWorkspace(projectWorkspace),
     });
   }
 
@@ -193,6 +249,7 @@ export function buildProjectWorkspaceSummaries(input: {
       hasRuntimeConfig: Boolean(projectWorkspace.runtimeConfig?.workspaceRuntime),
       linkedIssueCount: 0,
       issues: [],
+      target: targetForProjectWorkspace(projectWorkspace),
     });
   }
 

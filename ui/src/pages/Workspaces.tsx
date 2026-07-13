@@ -9,7 +9,7 @@ import { ProjectWorkspacesContent } from "../components/ProjectWorkspacesContent
 import { PageSkeleton } from "../components/PageSkeleton";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
-import type { ProjectWorkspaceSummary } from "../lib/project-workspaces-tab";
+import type { ProjectWorkspaceSummary, WorkspaceTargetProvenance } from "../lib/project-workspaces-tab";
 import { queryKeys } from "../lib/queryKeys";
 import { projectRouteRef } from "../lib/utils";
 
@@ -23,6 +23,16 @@ type ProjectWorkspaceGroup = {
 };
 
 function overviewItemToSummary(item: WorkspaceOverviewItem): ProjectWorkspaceSummary {
+  const target: WorkspaceTargetProvenance = {
+    kind: item.strategyType === "git_worktree" ? "repository" : "artifact_only",
+    authoritativePath: null,
+    checkoutRoot: item.cwd,
+    deliveryMethod: item.strategyType === "git_worktree" ? "repository checkout" : "artifact-only",
+    fingerprint: null,
+    lastAttestation: null,
+    configurationIncomplete: false,
+    repairHref: `/execution-workspaces/${item.executionWorkspaceId}/configuration`,
+  };
   return {
     key: item.key,
     kind: item.kind,
@@ -41,6 +51,7 @@ function overviewItemToSummary(item: WorkspaceOverviewItem): ProjectWorkspaceSum
     hasRuntimeConfig: item.hasRuntimeConfig,
     linkedIssueCount: item.linkedIssueCount,
     issues: item.linkedIssues,
+    target,
   };
 }
 

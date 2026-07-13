@@ -300,4 +300,82 @@ describe("ProjectWorkspaceSummaryCard", () => {
       root.unmount();
     });
   });
+
+  it("warns for an unversioned primary folder and offers the repair route", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <ProjectWorkspaceSummaryCard
+          projectRef="paperclip-app"
+          summary={createSummary({
+            kind: "project_workspace",
+            executionWorkspaceId: null,
+            executionWorkspaceStatus: null,
+            target: {
+              kind: "unconfigured",
+              authoritativePath: null,
+              checkoutRoot: "/srv/paperclip/project",
+              deliveryMethod: "artifact-only",
+              fingerprint: null,
+              lastAttestation: null,
+              configurationIncomplete: true,
+              repairHref: "/projects/paperclip-app/workspaces/project-workspace-1",
+            },
+          })}
+          runtimeActionKey={null}
+          runtimeActionPending={false}
+          onRuntimeAction={() => {}}
+          onCloseWorkspace={() => {}}
+        />,
+      );
+    });
+
+    expect(container.textContent).toContain("Configuration incomplete");
+    expect(container.textContent).toContain("not a managed checkout");
+    expect(container.textContent).toContain("Pending provider attestation");
+    expect(container.querySelector("a[href='/projects/paperclip-app/workspaces/project-workspace-1']")?.textContent)
+      .toContain("Select or repair target");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("redacts remote target values and exposes delivery evidence state", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <ProjectWorkspaceSummaryCard
+          projectRef="paperclip-app"
+          summary={createSummary({
+            target: {
+              kind: "repository",
+              authoritativePath: "https://github.com/example/private-repo",
+              checkoutRoot: "/worktrees/task",
+              deliveryMethod: "repository checkout",
+              fingerprint: "sha256:abc123",
+              lastAttestation: "run-42",
+              configurationIncomplete: false,
+              repairHref: "/execution-workspaces/workspace-1/configuration",
+            },
+          })}
+          runtimeActionKey={null}
+          runtimeActionPending={false}
+          onRuntimeAction={() => {}}
+          onCloseWorkspace={() => {}}
+        />,
+      );
+    });
+
+    expect(container.textContent).toContain("https://github.com/example/private-repo");
+    expect(container.textContent).not.toContain("token");
+    expect(container.textContent).toContain("sha256:abc123");
+    expect(container.textContent).toContain("Evidence is linked to the delivery run.");
+
+    act(() => {
+      root.unmount();
+    });
+  });
 });
