@@ -806,6 +806,13 @@
       "when": 1783872000000,
       "tag": "0114_company_authenticators",
       "breakpoints": true
+    },
+    {
+      "idx": 115,
+      "version": "7",
+      "when": 1783900800000,
+      "tag": "0115_authenticator_secret_bindings",
+      "breakpoints": true
     }
   ]
 }
