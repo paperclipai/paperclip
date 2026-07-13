@@ -1562,6 +1562,15 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
             env: {},
             credentialSecretRef: options?.credential ? `sealed:${randomUUID()}` : null,
             enabled: false,
+            // Governance defaults for a freshly reconciled server — mirrors the
+            // real row mapper (server/src/services/mcp-servers.ts): a new server
+            // starts `pending` with `unknown` risk until discovery classifies it.
+            governanceStatus: "pending",
+            riskLevel: "unknown",
+            riskFactors: [],
+            governanceUpdatedAt: null,
+            governanceUpdatedBy: null,
+            governanceReason: null,
             lastHealthStatus: "unknown",
             lastHealthcheckAt: null,
             lastDiscoveryAt: null,

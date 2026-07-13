@@ -29,7 +29,7 @@ import {
 } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { EnvVarEditor } from "@/components/EnvVarEditor";
+import { EnvironmentVariablesEditor } from "@/components/environment-variables-editor";
 
 const MCP_SERVER_METADATA_BEARER_ENV_KEY = "httpBearerTokenEnvVar";
 const MCP_SERVER_METADATA_FORWARDED_ENV_KEYS = "forwardedEnvKeys";
@@ -728,7 +728,7 @@ export function CompanyMcpServers() {
 
                 <div className="grid gap-2 text-sm">
                   <span>Environment variables</span>
-                  <EnvVarEditor
+                  <EnvironmentVariablesEditor
                     value={draft.env}
                     secrets={availableSecrets}
                     onCreateSecret={async (name, value) => createSecret.mutateAsync({ name, value })}
