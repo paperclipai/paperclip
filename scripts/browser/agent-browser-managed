@@ -54,6 +54,8 @@ issue_identity="${AGENT_BROWSER_SESSION:-${PAPERCLIP_BROWSER_SCOPE_ID:-${PAPERCL
 safe_issue="$(printf '%s' "$issue_identity" | tr -c 'a-zA-Z0-9._-' '_')"
 command_lock_root="${AGENT_BROWSER_SOCKET_DIR:-${RUNTIME_HOME:-/tmp}}/.paperclip-command-locks"
 command_lock_dir="$command_lock_root/$safe_issue"
+activity_root="${AGENT_BROWSER_SOCKET_DIR:-${RUNTIME_HOME:-/tmp}}/.paperclip-browser-activity"
+activity_path="$activity_root/$safe_issue.activity"
 mkdir -p "$command_lock_root"
 chmod 700 "$command_lock_root" 2>/dev/null || true
 
@@ -156,6 +158,16 @@ esac
 
 if [ "$sync_state" = true ]; then
   acquire_command_lock || exit $?
+  mkdir -p "$activity_root"
+  touch "$activity_path"
+  chmod 600 "$activity_path" 2>/dev/null || true
+  if [ -n "${PAPERCLIP_API_URL:-}" ] && [ -n "${PAPERCLIP_API_KEY:-}" ] && [ -n "${PAPERCLIP_RUN_ID:-}" ]; then
+    curl -fsS --max-time 3 -X POST \
+      -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+      -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
+      "$PAPERCLIP_API_URL/api/heartbeat-runs/$PAPERCLIP_RUN_ID/browser-activity" \
+      >/dev/null 2>&1 || true
+  fi
 fi
 
 if [ "$sync_state" = true ]; then

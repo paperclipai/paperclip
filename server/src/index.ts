@@ -52,6 +52,7 @@ import type {
   InstanceDatabaseBackupTrigger,
 } from "./routes/instance-database-backups.js";
 import { createStartupThenPeriodicSingleFlight } from "./lib/coalescing-single-flight.js";
+import { startBrowserSessionReaper } from "./services/browser-session-reaper.js";
 
 type BetterAuthSessionUser = {
   id: string;
@@ -874,6 +875,8 @@ export async function startServer(): Promise<StartedServer> {
       void runSchemaCheck();
     }, SCHEMA_CHECK_INTERVAL_MS);
   }
+
+  startBrowserSessionReaper();
 
   if (config.databaseBackupEnabled) {
     const backupIntervalMs = config.databaseBackupIntervalMinutes * 60 * 1000;

@@ -4396,7 +4396,7 @@ export function IssueChatThread({
     return ids;
   }, [displayLiveRuns]);
   const browserPreviewRun = useMemo(
-    () => [...displayLiveRuns].reverse().find((run) => run.status === "running") ?? null,
+    () => [...displayLiveRuns].reverse().find((run) => run.status === "running" && run.browserActivityAt) ?? null,
     [displayLiveRuns],
   );
   const clearLatestSettleTimeouts = useCallback(() => {

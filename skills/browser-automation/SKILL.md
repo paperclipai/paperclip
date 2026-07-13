@@ -12,11 +12,14 @@ Use this skill for browser navigation, form interaction, authenticated web workf
 ## Provider policy
 
 1. For initial navigation, run `paperclip-browser-open <url>`. It starts with agent-browser, inspects the result, retries once on a security challenge, and automatically switches to Camoufox if the challenge remains.
+   Paperclip reconnects it to the issue's existing daemon across comments, heartbeat runs, and agent handoffs. Do not launch a browser just because an earlier comment used one, and do not reopen the current URL merely to attach. Only invoke browser commands when the current work actually needs navigation.
 2. If the user explicitly asks for Camoufox, run `paperclip-browser-open <url> --camoufox` (or `paperclip-camoufox <url>`) immediately. Do not start agent-browser first and do not substitute ordinary headless Chromium.
 3. The launcher prints JSON identifying the actual provider. Report a provider switch in the next progress comment.
 4. Camoufox is a fallback, not a promise to bypass every WAF. Stop for human captcha/2FA when required. Never attempt to defeat access controls or violate a site's terms.
 
 Agent-browser and Camoufox have independent authentication state. Never copy, merge, import, or translate cookies between them. Authenticate each provider manually when needed. The default remains agent-browser; use Camoufox only after the launcher detects a browser-security block or when the board explicitly requests it.
+
+Issue browser daemons close after 60 minutes without a managed browser command. Viewing the live stream does not reset that idle timer.
 
 ## Live movement
 

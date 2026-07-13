@@ -196,7 +196,7 @@ export function Browsers() {
   return (
     <div className="mx-auto w-full max-w-[1800px] px-5 py-6 lg:px-8">
       <header className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-        <div><div className="flex items-center gap-2"><MonitorUp className="size-5 text-sky-500" /><h1 className="text-2xl font-semibold tracking-tight">Browsers</h1></div><p className="mt-1 text-sm text-muted-foreground">Live, isolated browser sessions for every running agent.</p></div>
+        <div><div className="flex items-center gap-2"><MonitorUp className="size-5 text-sky-500" /><h1 className="text-2xl font-semibold tracking-tight">Browsers</h1></div><p className="mt-1 text-sm text-muted-foreground">Live, issue-owned browser sessions. Idle sessions close after one hour.</p></div>
         <div className="flex items-center gap-3">
           <span className="text-sm text-muted-foreground"><strong className="font-semibold text-foreground">{activeRunCount}</strong> active · {orderedRuns.length} recent</span>
           <div className="flex rounded-lg border bg-muted/30 p-1">

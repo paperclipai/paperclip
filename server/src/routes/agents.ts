@@ -4428,6 +4428,7 @@ export function agentRoutes(
       triggerDetail: heartbeatRuns.triggerDetail,
       contextCommentId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'commentId'`.as("contextCommentId"),
       contextWakeCommentId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'wakeCommentId'`.as("contextWakeCommentId"),
+      browserActivityAt: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'browserActivityAt'`.as("browserActivityAt"),
       startedAt: heartbeatRuns.startedAt,
       finishedAt: heartbeatRuns.finishedAt,
       createdAt: heartbeatRuns.createdAt,
@@ -4459,6 +4460,7 @@ export function agentRoutes(
         and(
           eq(heartbeatRuns.companyId, companyId),
           inArray(heartbeatRuns.status, ["queued", "running"]),
+          ...(browserOnly ? [sql<boolean>`${heartbeatRuns.contextSnapshot} ? 'browserActivityAt'`] : []),
         ),
       )
       .orderBy(desc(heartbeatRuns.createdAt));
@@ -4630,6 +4632,30 @@ export function agentRoutes(
     });
   });
 
+  router.post("/heartbeat-runs/:runId/browser-activity", async (req, res) => {
+    const runId = req.params.runId as string;
+    const run = await heartbeat.getRun(runId);
+    if (!run) {
+      res.status(404).json({ error: "Heartbeat run not found" });
+      return;
+    }
+    assertCompanyAccess(req, run.companyId);
+    if (req.actor.type === "agent" && req.actor.agentId !== run.agentId) {
+      throw forbidden("An agent may only report browser activity for its own run");
+    }
+    if (req.actor.type === "none") {
+      throw forbidden("Authentication required");
+    }
+    const browserActivityAt = new Date().toISOString();
+    await db
+      .update(heartbeatRuns)
+      .set({
+        contextSnapshot: sql`jsonb_set(coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb), '{browserActivityAt}', to_jsonb(now()::text), true)`,
+      })
+      .where(eq(heartbeatRuns.id, runId));
+    res.json({ ok: true, browserActivityAt });
+  });
+
   router.get("/heartbeat-runs/:runId/log", async (req, res) => {
     const runId = req.params.runId as string;
     const run = await heartbeat.getRunLogAccess(runId);
@@ -4704,6 +4730,7 @@ export function agentRoutes(
         triggerDetail: heartbeatRuns.triggerDetail,
         contextCommentId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'commentId'`.as("contextCommentId"),
         contextWakeCommentId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'wakeCommentId'`.as("contextWakeCommentId"),
+        browserActivityAt: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'browserActivityAt'`.as("browserActivityAt"),
         startedAt: heartbeatRuns.startedAt,
         finishedAt: heartbeatRuns.finishedAt,
         createdAt: heartbeatRuns.createdAt,

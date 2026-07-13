@@ -29,6 +29,7 @@ export interface ActiveRunForIssue {
   adapterType: string;
   logBytes?: number | null;
   lastOutputBytes?: number | null;
+  browserActivityAt?: string | null;
   issueId?: string | null;
   livenessState?: RunLivenessFields["livenessState"];
   livenessReason?: string | null;
@@ -53,6 +54,7 @@ export interface LiveRunForIssue {
   adapterType: string;
   logBytes?: number | null;
   lastOutputBytes?: number | null;
+  browserActivityAt?: string | null;
   issueId?: string | null;
   issueIdentifier?: string | null;
   issueTitle?: string | null;

@@ -170,6 +170,7 @@ export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = [
   "- If blocked, mark the issue blocked and name the unblock owner and action.",
   "- Respect budget, pause/cancel, approval gates, and company boundaries.",
   "- When the board explicitly requests the live, native, or managed browser, use Paperclip's managed browser commands. A custom Playwright/Puppeteer script, direct headless browser, reusable launch helper, or screenshots are not a substitute for the live browser stream.",
+  "- Browser sessions belong to issues, not heartbeat runs. Do not open or attach to a browser merely because an earlier comment used one. Only run browser commands when the current work needs navigation; managed commands automatically reconnect to the issue's existing session.",
   "- Paperclip owns browser identity: never pass agent-browser session/profile/state/CDP/provider overrides or override HOME. If a managed profile is briefly busy, retry the managed command; never create a private browser session as fallback.",
   "- Run managed browser commands sequentially and wait for each to finish. Agent-browser and Camoufox have independent authentication state: never copy or merge cookies between them; authenticate each provider separately when needed.",
 ].join("\n");
@@ -876,6 +877,7 @@ export function renderPaperclipWakePrompt(
       "HARD LIVE-BROWSER GATE:",
       "- The board explicitly requested visible navigation in Paperclip's native live browser. This is an execution requirement, not a request for screenshot evidence.",
       "- Start navigation with `paperclip-browser-open <url>` and perform each meaningful follow-up action with `agent-browser` so the issue viewport receives continuous frames.",
+      "- The managed browser automatically reuses this issue's existing session across comments, wakes, and agent handoffs. Do not launch a browser just because an earlier comment used one, and do not reopen the current URL merely to attach.",
       "- Do not use direct Playwright/Puppeteer, `headless: true`, a custom or reusable `launch.js`, an opaque batch browser script, or uploaded screenshots as a substitute, even if that path worked previously.",
       "- Existing scripts may inform selectors or workflow logic, but the requested interaction itself must be replayed through observable managed-browser commands.",
       "- Never pass `--session`, `--session-name`, `--profile`, `--state`, `--cdp`, `--auto-connect`, or provider overrides, and never override `HOME`; those detach the browser from the issue/profile selected by Paperclip.",
@@ -1190,6 +1192,7 @@ export function buildPaperclipEnv(
     vars.AGENT_BROWSER_RESTORE = `paperclip-${agent.companyId}-default`;
     vars.AGENT_BROWSER_SESSION_NAME = `paperclip-${agent.companyId}-default`;
     vars.AGENT_BROWSER_STREAM_PORT = String(browserStreamPortForRun(browserScopeId));
+    vars.PAPERCLIP_BROWSER_IDLE_TIMEOUT_SECONDS = "3600";
     vars.PAPERCLIP_BROWSER_PROFILE_ROOT = "/paperclip/browser-profiles";
     vars.PAPERCLIP_BROWSER_RUNTIME_HOME = `/paperclip/browser-runtime/${agent.companyId}`;
     const browserKeySeed = process.env.PAPERCLIP_SECRETS_MASTER_KEY?.trim()
@@ -1422,6 +1425,7 @@ export function refreshPaperclipWorkspaceEnvForExecution(input: {
       "AGENT_BROWSER_NAMESPACE",
       "AGENT_BROWSER_STREAM_PORT",
       "AGENT_BROWSER_ENCRYPTION_KEY",
+      "PAPERCLIP_BROWSER_IDLE_TIMEOUT_SECONDS",
     ].flatMap((key) => input.env[key] === undefined ? [] : [[key, input.env[key]]]),
   );
   for (const [key, value] of Object.entries(shapedEnvConfig)) {

@@ -34,6 +34,7 @@ describe("managed browser run environment", () => {
     expect(env.AGENT_BROWSER_SOCKET_DIR).toBe("/tmp/pab");
     expect(env.AGENT_BROWSER_SESSION).toBe(browserSessionKeyForRun(runId));
     expect(env.AGENT_BROWSER_NAMESPACE).toBe(browserSessionKeyForRun(runId));
+    expect(env.PAPERCLIP_BROWSER_IDLE_TIMEOUT_SECONDS).toBe("3600");
     expect(env.AGENT_BROWSER_RESTORE).toBe("paperclip-company-1-default");
     expect(env.AGENT_BROWSER_SESSION_NAME).toBe("paperclip-company-1-default");
   });
@@ -1162,6 +1163,7 @@ describe("refreshPaperclipWorkspaceEnvForExecution", () => {
       AGENT_BROWSER_NAMESPACE: "pc-managed",
       AGENT_BROWSER_STREAM_PORT: "23456",
       AGENT_BROWSER_ENCRYPTION_KEY: "a".repeat(64),
+      PAPERCLIP_BROWSER_IDLE_TIMEOUT_SECONDS: "3600",
       AGENT_BROWSER_SESSION_NAME: "paperclip-company-1-default",
       AGENT_BROWSER_RESTORE: "paperclip-company-1-default",
     };
@@ -1178,6 +1180,7 @@ describe("refreshPaperclipWorkspaceEnvForExecution", () => {
         AGENT_BROWSER_NAMESPACE: "manual-session",
         AGENT_BROWSER_STREAM_PORT: "39999",
         AGENT_BROWSER_ENCRYPTION_KEY: "b".repeat(64),
+        PAPERCLIP_BROWSER_IDLE_TIMEOUT_SECONDS: "10",
         AGENT_BROWSER_SESSION_NAME: "paperclip-company-1-project-finance",
       },
     });
@@ -1192,6 +1195,7 @@ describe("refreshPaperclipWorkspaceEnvForExecution", () => {
       AGENT_BROWSER_NAMESPACE: "pc-managed",
       AGENT_BROWSER_STREAM_PORT: "23456",
       AGENT_BROWSER_ENCRYPTION_KEY: "a".repeat(64),
+      PAPERCLIP_BROWSER_IDLE_TIMEOUT_SECONDS: "3600",
       AGENT_BROWSER_SESSION_NAME: "paperclip-company-1-project-finance",
       AGENT_BROWSER_RESTORE: "paperclip-company-1-project-finance",
     });

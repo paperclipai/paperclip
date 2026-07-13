@@ -3,6 +3,7 @@ import argparse
 import json
 import os
 import re
+import urllib.request
 from pathlib import Path
 
 from camoufox.sync_api import Camoufox
@@ -16,6 +17,21 @@ parser = argparse.ArgumentParser(description="Open a URL with Paperclip's manage
 parser.add_argument("url")
 parser.add_argument("--screenshot")
 args = parser.parse_args()
+
+api_url = os.environ.get("PAPERCLIP_API_URL", "").rstrip("/")
+api_key = os.environ.get("PAPERCLIP_API_KEY", "")
+run_id = os.environ.get("PAPERCLIP_RUN_ID", "")
+if api_url and api_key and run_id:
+    try:
+        request = urllib.request.Request(
+            f"{api_url}/api/heartbeat-runs/{run_id}/browser-activity",
+            data=b"",
+            method="POST",
+            headers={"Authorization": f"Bearer {api_key}", "X-Paperclip-Run-Id": run_id},
+        )
+        urllib.request.urlopen(request, timeout=3).close()
+    except Exception:
+        pass
 
 profile = safe(os.environ.get("AGENT_BROWSER_SESSION_NAME", "paperclip-default"))
 scope = safe(os.environ.get("PAPERCLIP_BROWSER_SCOPE_ID", os.environ.get("PAPERCLIP_RUN_ID", "manual")))
