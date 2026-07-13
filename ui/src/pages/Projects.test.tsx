@@ -11,6 +11,7 @@ import { Projects } from "./Projects";
 
 const mockProjectsApi = vi.hoisted(() => ({
   list: vi.fn(),
+  update: vi.fn(),
 }));
 
 const mockResourceMembershipsApi = vi.hoisted(() => ({
@@ -20,10 +21,19 @@ const mockResourceMembershipsApi = vi.hoisted(() => ({
 
 const mockOpenNewProject = vi.hoisted(() => vi.fn());
 const mockSetBreadcrumbs = vi.hoisted(() => vi.fn());
+const mockNavigate = vi.hoisted(() => vi.fn());
 
 vi.mock("@/lib/router", () => ({
   Link: ({ children, to, ...props }: { children?: ReactNode; to: string }) => (
-    <a href={to} {...props}>{children}</a>
+    <a
+      href={to}
+      {...props}
+      onClick={(event) => {
+        if (!event.defaultPrevented) mockNavigate(to);
+      }}
+    >
+      {children}
+    </a>
   ),
 }));
 
@@ -68,6 +78,7 @@ function makeProject(overrides: Partial<Project>): Project {
     companyId: "company-1",
     urlKey: "alpha",
     goalId: null,
+    parentProjectId: null,
     goalIds: [],
     goals: [],
     name: "Alpha",
@@ -145,14 +156,23 @@ describe("Projects", () => {
     mockResourceMembershipsApi.listMine.mockResolvedValue({
       projectMemberships: { "project-b": "left" },
       agentMemberships: {},
+      starredProjectIds: [],
+      starredAgentIds: [],
+      projectStarredAt: {},
+      agentStarredAt: {},
       updatedAt: null,
     });
-    mockResourceMembershipsApi.updateProject.mockResolvedValue({
+    mockResourceMembershipsApi.updateProject.mockImplementation(async (
+      _companyId: string,
+      resourceId: string,
+      body: { state?: "joined" | "left"; starred?: boolean },
+    ) => ({
       resourceType: "project",
-      resourceId: "project-b",
-      state: "joined",
+      resourceId,
+      state: body.state ?? "joined",
+      starredAt: body.starred ? new Date("2026-01-05T00:00:00Z") : null,
       updatedAt: new Date("2026-01-05T00:00:00Z"),
-    });
+    }));
   });
 
   afterEach(async () => {
@@ -196,6 +216,12 @@ describe("Projects", () => {
     await flushReact();
   }
 
+  function visibleProjectNames() {
+    return Array.from(container.querySelectorAll('[role="treeitem"] a'))
+      .map((element) => element.getAttribute("href")?.split("/").pop())
+      .filter((name): name is string => Boolean(name));
+  }
+
   async function chooseSortField(label: string) {
     const item = Array.from(document.body.querySelectorAll("button"))
       .find((element) => element.textContent?.includes(label));
@@ -207,38 +233,146 @@ describe("Projects", () => {
     await flushReact();
   }
 
-  it("groups joined projects above left projects and defaults sorting by name", async () => {
+  it("renders a bounded tree with only project names and status in default rows", async () => {
+    mockProjectsApi.list.mockResolvedValue([
+      makeProject({ id: "root", urlKey: "root", name: "Root" }),
+      makeProject({ id: "child", urlKey: "child", name: "Child", parentProjectId: "root", description: "Hidden description" }),
+      makeProject({ id: "grandchild", urlKey: "grandchild", name: "Grandchild", parentProjectId: "child" }),
+    ]);
+
     await renderProjects();
 
     const content = container.textContent ?? "";
-    expect(container.querySelector('button[title="Sort"]')?.textContent).toContain("Sort: Name");
-    expect(content.indexOf("My Projects")).toBeLessThan(content.indexOf("Alpha"));
-    expect(content.indexOf("Alpha")).toBeLessThan(content.indexOf("Charlie"));
-    expect(content.indexOf("Charlie")).toBeLessThan(content.indexOf("Other Projects"));
-    expect(content.indexOf("Other Projects")).toBeLessThan(content.indexOf("Bravo"));
+    expect(content.indexOf("Root")).toBeLessThan(content.indexOf("Child"));
+    expect(content.indexOf("Child")).toBeLessThan(content.indexOf("Grandchild"));
+    expect(content).not.toContain("Hidden description");
     expect(content).toContain("in progress");
+    expect(container.querySelector('[role="tree"]')).not.toBeNull();
   });
 
-  it("sorts grouped projects by the selected field", async () => {
+  it("keeps children with their root section when membership differs", async () => {
+    mockProjectsApi.list.mockResolvedValue([
+      makeProject({ id: "root", urlKey: "root", name: "Root" }),
+      makeProject({ id: "child", urlKey: "child", name: "Child", parentProjectId: "root" }),
+    ]);
+    mockResourceMembershipsApi.listMine.mockResolvedValue({
+      projectMemberships: { child: "left" },
+      agentMemberships: {},
+      starredProjectIds: [],
+      starredAgentIds: [],
+      projectStarredAt: {},
+      agentStarredAt: {},
+      updatedAt: null,
+    });
+
     await renderProjects();
+
+    const mySection = Array.from(container.querySelectorAll("section"))
+      .find((section) => section.querySelector("h2")?.textContent === "My Projects");
+    expect(mySection?.textContent).toContain("Root");
+    expect(mySection?.textContent).toContain("Child");
+    expect(mySection?.textContent).toContain("2 projects");
+    expect(container.textContent).not.toContain("Other Projects");
+  });
+
+  it("applies name and updated sorting to roots and siblings", async () => {
+    mockProjectsApi.list.mockResolvedValue([
+      makeProject({ id: "root-b", urlKey: "root-b", name: "Beta", updatedAt: new Date("2026-01-01T00:00:00Z") }),
+      makeProject({ id: "child-b", urlKey: "child-b", name: "Bravo", parentProjectId: "root-b", updatedAt: new Date("2026-01-02T00:00:00Z") }),
+      makeProject({ id: "child-a", urlKey: "child-a", name: "Alpha", parentProjectId: "root-b", updatedAt: new Date("2026-01-03T00:00:00Z") }),
+      makeProject({ id: "root-a", urlKey: "root-a", name: "Able", updatedAt: new Date("2026-01-04T00:00:00Z") }),
+    ]);
+    mockResourceMembershipsApi.listMine.mockResolvedValue({
+      projectMemberships: {},
+      agentMemberships: {},
+      starredProjectIds: [],
+      starredAgentIds: [],
+      projectStarredAt: {},
+      agentStarredAt: {},
+      updatedAt: null,
+    });
+
+    await renderProjects();
+    expect(visibleProjectNames()).toEqual(["root-a", "root-b", "child-a", "child-b"]);
+
     await openSortMenu();
     await chooseSortField("Updated");
-
-    const content = container.textContent ?? "";
-    expect(content.indexOf("My Projects")).toBeLessThan(content.indexOf("Charlie"));
-    expect(content.indexOf("Charlie")).toBeLessThan(content.indexOf("Alpha"));
-    expect(content.indexOf("Alpha")).toBeLessThan(content.indexOf("Other Projects"));
+    expect(visibleProjectNames()).toEqual(["root-a", "root-b", "child-a", "child-b"]);
   });
 
-  it("reserves description line height for projects without descriptions", async () => {
+  it("renders membership and star controls and calls their mutation", async () => {
     await renderProjects();
 
-    const bravoLink = Array.from(container.querySelectorAll<HTMLAnchorElement>("a")).find((link) =>
-      link.textContent?.includes("Bravo"),
+    const join = container.querySelector<HTMLButtonElement>('button[aria-label="Join Bravo"]');
+    expect(join).not.toBeNull();
+    await act(async () => { join?.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    await flushReact();
+    expect(mockResourceMembershipsApi.updateProject).toHaveBeenCalledWith(
+      "company-1",
+      "project-b",
+      expect.objectContaining({ state: "joined" }),
     );
-    const hiddenDescriptionLine = bravoLink?.querySelector("p[aria-hidden='true']");
 
-    expect(hiddenDescriptionLine).not.toBeNull();
-    expect(hiddenDescriptionLine?.className).toContain("min-h-4");
+    const star = container.querySelector<HTMLButtonElement>('button[aria-label="Star Alpha"]');
+    expect(star).not.toBeNull();
+    await act(async () => { star?.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    await flushReact();
+    expect(mockResourceMembershipsApi.updateProject).toHaveBeenCalledWith(
+      "company-1",
+      "project-a",
+      expect.objectContaining({ starred: true }),
+    );
+  });
+
+  it("collapses and expands child projects", async () => {
+    mockProjectsApi.list.mockResolvedValue([
+      makeProject({ id: "root", urlKey: "root", name: "Root" }),
+      makeProject({ id: "child", urlKey: "child", name: "Child", parentProjectId: "root" }),
+    ]);
+    await renderProjects();
+
+    const toggle = container.querySelector<HTMLButtonElement>('button[aria-label="Collapse Root"]');
+    expect(toggle).not.toBeNull();
+    await act(async () => { toggle?.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    expect(container.textContent).not.toContain("Child");
+    await act(async () => { container.querySelector<HTMLButtonElement>('button[aria-label="Expand Root"]')?.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    expect(container.textContent).toContain("Child");
+  });
+
+  it("opens move and archive dialogs without following the row link", async () => {
+    await renderProjects();
+
+    const openActions = async () => {
+      const trigger = container.querySelector<HTMLButtonElement>('button[aria-label="Actions for Alpha"]');
+      expect(trigger).not.toBeNull();
+      await act(async () => {
+        trigger?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
+        trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await flushReact();
+    };
+
+    await openActions();
+    const move = Array.from(document.body.querySelectorAll<HTMLElement>('[role="menuitem"]'))
+      .find((item) => item.textContent?.includes("Move or detach"));
+    expect(move).toBeTruthy();
+    await act(async () => { move?.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    await flushReact();
+    expect(document.body.textContent).toContain("Move Alpha");
+    expect(mockNavigate).not.toHaveBeenCalled();
+
+    const cancelMove = Array.from(document.body.querySelectorAll<HTMLButtonElement>("button"))
+      .find((button) => button.textContent === "Cancel");
+    await act(async () => { cancelMove?.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    await flushReact();
+
+    await openActions();
+    const archive = Array.from(document.body.querySelectorAll<HTMLElement>('[role="menuitem"]'))
+      .find((item) => item.textContent?.includes("Archive"));
+    expect(archive).toBeTruthy();
+    await act(async () => { archive?.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    await flushReact();
+    expect(document.body.textContent).toContain("Archive Alpha?");
+    expect(mockNavigate).not.toHaveBeenCalled();
   });
 });

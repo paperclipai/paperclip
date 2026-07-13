@@ -64,6 +64,7 @@ function makeProject(overrides: Partial<Project>): Project {
     id: "project-a",
     companyId: "company-1",
     urlKey: "alpha",
+    parentProjectId: null,
     goalId: null,
     goalIds: [],
     goals: [],

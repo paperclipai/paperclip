@@ -582,6 +582,7 @@ function createProject(overrides: Partial<Project> = {}): Project {
     id,
     companyId: "company-storybook",
     urlKey: "board-ui",
+    parentProjectId: null,
     goalId: "goal-company",
     goalIds: ["goal-company", "goal-board-ux"],
     goals: storybookGoals

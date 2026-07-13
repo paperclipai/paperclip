@@ -74,6 +74,7 @@ describe("issueDetailBreadcrumb", () => {
         id: "project-1",
         companyId: "company-1",
         urlKey: "paperclip-app",
+        parentProjectId: null,
         goalId: null,
         goalIds: [],
         goals: [],

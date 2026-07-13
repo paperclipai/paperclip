@@ -38,6 +38,7 @@ function makeProject(id: string, name: string): Project {
   return {
     id,
     companyId: "company-1",
+    parentProjectId: null,
     goalId: null,
     urlKey: name.toLowerCase(),
     name,

@@ -1,5 +1,6 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import type { Project } from "@paperclipai/shared";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { accessApi } from "../api/access";
@@ -34,6 +35,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "../lib/utils";
+import { getProjectDepth, MAX_PROJECT_TREE_DEPTH } from "../lib/project-tree";
 import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./MarkdownEditor";
 import { StatusBadge } from "./StatusBadge";
 import { ChoosePathButton } from "./PathInstructionsModal";
@@ -47,7 +49,7 @@ const projectStatuses = [
 ];
 
 export function NewProjectDialog() {
-  const { newProjectOpen, closeNewProject } = useDialog();
+  const { newProjectOpen, newProjectDefaults, closeNewProject } = useDialog();
   const { selectedCompanyId, selectedCompany } = useCompany();
   const queryClient = useQueryClient();
   const [name, setName] = useState("");
@@ -55,6 +57,7 @@ export function NewProjectDialog() {
   const [status, setStatus] = useState("planned");
   const [goalIds, setGoalIds] = useState<string[]>([]);
   const [targetDate, setTargetDate] = useState("");
+  const [parentProjectId, setParentProjectId] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(false);
   const [workspaceLocalPath, setWorkspaceLocalPath] = useState("");
   const [workspaceRepoUrl, setWorkspaceRepoUrl] = useState("");
@@ -63,6 +66,34 @@ export function NewProjectDialog() {
   const [statusOpen, setStatusOpen] = useState(false);
   const [goalOpen, setGoalOpen] = useState(false);
   const descriptionEditorRef = useRef<MarkdownEditorRef>(null);
+
+  const { data: projects } = useQuery<Project[]>({
+    queryKey: queryKeys.projects.list(selectedCompanyId!),
+    queryFn: () => projectsApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId && newProjectOpen,
+  });
+
+  const parentOptions = useMemo(() => (projects ?? [])
+    .map((project) => {
+      const reason = project.archivedAt
+        ? "Archived projects cannot contain projects."
+        : getProjectDepth(projects ?? [], project.id) >= MAX_PROJECT_TREE_DEPTH
+          ? `Projects cannot exceed ${MAX_PROJECT_TREE_DEPTH} levels.`
+          : null;
+      return { project, reason };
+    })
+    .sort((left, right) => left.project.name.localeCompare(right.project.name)), [projects]);
+
+  useEffect(() => {
+    if (newProjectOpen) setParentProjectId(newProjectDefaults.parentProjectId ?? null);
+  }, [newProjectDefaults.parentProjectId, newProjectOpen]);
+
+  const selectedParentOption = parentProjectId
+    ? parentOptions.find(({ project }) => project.id === parentProjectId)
+    : null;
+  const selectedParentReason = parentProjectId
+    ? selectedParentOption?.reason ?? (selectedParentOption ? null : "Parent project is unavailable.")
+    : null;
 
   const { data: goals } = useQuery({
     queryKey: queryKeys.goals.list(selectedCompanyId!),
@@ -107,6 +138,7 @@ export function NewProjectDialog() {
     setStatus("planned");
     setGoalIds([]);
     setTargetDate("");
+    setParentProjectId(null);
     setExpanded(false);
     setWorkspaceLocalPath("");
     setWorkspaceRepoUrl("");
@@ -164,6 +196,7 @@ export function NewProjectDialog() {
         name: name.trim(),
         description: description.trim() || undefined,
         status,
+        parentProjectId,
         // No color is sent — new projects persist color = null (neutral gray). See PAP-68.
         ...(goalIds.length > 0 ? { goalIds } : {}),
         ...(targetDate ? { targetDate } : {}),
@@ -332,6 +365,22 @@ export function NewProjectDialog() {
 
         {/* Property chips */}
         <div className="flex items-center gap-1.5 px-4 py-2 border-t border-border flex-wrap">
+          <label className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs">
+            <span className="text-muted-foreground">Parent</span>
+            <select
+              aria-label="Parent project"
+              className="max-w-48 bg-transparent outline-none"
+              value={parentProjectId ?? ""}
+              onChange={(event) => setParentProjectId(event.target.value || null)}
+            >
+              <option value="">No parent</option>
+              {parentOptions.map(({ project, reason }) => (
+                <option key={project.id} value={project.id} disabled={reason !== null} title={reason ?? undefined}>
+                  {project.name}{reason ? ` — ${reason}` : ""}
+                </option>
+              ))}
+            </select>
+          </label>
           {/* Status */}
           <Popover open={statusOpen} onOpenChange={setStatusOpen}>
             <PopoverTrigger asChild>
@@ -427,14 +476,16 @@ export function NewProjectDialog() {
 
         {/* Footer */}
         <div className="flex items-center justify-between px-4 py-2.5 border-t border-border">
-          {createProject.isError ? (
-            <p className="text-xs text-destructive">Failed to create project.</p>
+          {selectedParentReason ? (
+            <p className="text-xs text-destructive">{selectedParentReason}</p>
+          ) : createProject.isError ? (
+            <p className="text-xs text-destructive">{createProject.error.message || "Failed to create project."}</p>
           ) : (
             <span />
           )}
           <Button
             size="sm"
-            disabled={!name.trim() || createProject.isPending}
+            disabled={!name.trim() || createProject.isPending || selectedParentReason !== null}
             onClick={handleSubmit}
           >
             {createProject.isPending ? "Creating…" : "Create project"}

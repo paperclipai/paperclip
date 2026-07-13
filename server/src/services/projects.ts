@@ -32,8 +32,30 @@ import { listCurrentRuntimeServicesForProjectWorkspaces } from "./workspace-runt
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
 import { mergeProjectWorkspaceRuntimeConfig, readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
 import { resolveManagedProjectWorkspaceDir } from "../home-paths.js";
+import { conflict } from "../errors.js";
 
 type ProjectRow = typeof projects.$inferSelect;
+type ProjectTreeDb = Parameters<Parameters<Db["transaction"]>[0]>[0];
+type ProjectQueryDb = Db | ProjectTreeDb;
+
+export const PROJECT_TREE_MAX_DEPTH = 3;
+export const PROJECT_TREE_ERROR_CODES = {
+  parentNotFound: "PROJECT_PARENT_NOT_FOUND",
+  parentCompanyMismatch: "PROJECT_PARENT_COMPANY_MISMATCH",
+  parentArchived: "PROJECT_PARENT_ARCHIVED",
+  selfParent: "PROJECT_SELF_PARENT",
+  cycle: "PROJECT_PARENT_CYCLE",
+  depthExceeded: "PROJECT_TREE_DEPTH_EXCEEDED",
+  activeDescendants: "PROJECT_ACTIVE_DESCENDANTS",
+  archivedParent: "PROJECT_ARCHIVED_PARENT",
+  descendantsExist: "PROJECT_DESCENDANTS_EXIST",
+} as const;
+
+type ProjectTreeErrorCode = typeof PROJECT_TREE_ERROR_CODES[keyof typeof PROJECT_TREE_ERROR_CODES];
+
+function projectTreeConflict(code: ProjectTreeErrorCode, message: string) {
+  return conflict(message, { code });
+}
 type ProjectWorkspaceRow = typeof projectWorkspaces.$inferSelect;
 type WorkspaceRuntimeServiceRow = typeof workspaceRuntimeServices.$inferSelect;
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
@@ -79,7 +101,7 @@ interface ResolveProjectNameOptions {
 }
 
 /** Batch-load goal refs for a set of projects. */
-async function attachGoals(db: Db, rows: ProjectRow[]): Promise<ProjectWithGoals[]> {
+async function attachGoals(db: ProjectQueryDb, rows: ProjectRow[]): Promise<ProjectWithGoals[]> {
   if (rows.length === 0) return [];
 
   const projectIds = rows.map((r) => r.id);
@@ -231,7 +253,7 @@ function pickPrimaryWorkspace(
 }
 
 /** Batch-load workspace refs for a set of projects. */
-async function attachWorkspaces(db: Db, rows: ProjectWithGoals[]): Promise<ProjectWithGoals[]> {
+async function attachWorkspaces(db: ProjectQueryDb, rows: ProjectWithGoals[]): Promise<ProjectWithGoals[]> {
   if (rows.length === 0) return [];
 
   const projectIds = rows.map((r) => r.id);
@@ -400,8 +422,112 @@ async function attachListMetrics(
   }));
 }
 
+async function loadCompanyProjectTree(db: ProjectTreeDb, companyId: string): Promise<ProjectRow[]> {
+  return db.select().from(projects).where(eq(projects.companyId, companyId));
+}
+
+async function withProjectTreeTransaction<T>(
+  db: Db,
+  companyId: string,
+  work: (tx: ProjectTreeDb) => Promise<T>,
+): Promise<T> {
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`project-tree:${companyId}`}, 0))`);
+    return work(tx);
+  });
+}
+
+function collectDescendantIds(rows: ProjectRow[], projectId: string): Set<string> {
+  const childrenByParent = new Map<string, string[]>();
+  for (const row of rows) {
+    if (!row.parentProjectId) continue;
+    const children = childrenByParent.get(row.parentProjectId) ?? [];
+    children.push(row.id);
+    childrenByParent.set(row.parentProjectId, children);
+  }
+  const descendants = new Set<string>();
+  const pending = [...(childrenByParent.get(projectId) ?? [])];
+  while (pending.length > 0) {
+    const id = pending.pop()!;
+    if (descendants.has(id)) continue;
+    descendants.add(id);
+    pending.push(...(childrenByParent.get(id) ?? []));
+  }
+  return descendants;
+}
+
+function projectDepth(rowsById: Map<string, ProjectRow>, projectId: string): number {
+  let depth = 1;
+  let current = rowsById.get(projectId) ?? null;
+  const seen = new Set<string>([projectId]);
+  while (current?.parentProjectId) {
+    if (seen.has(current.parentProjectId)) {
+      throw projectTreeConflict(PROJECT_TREE_ERROR_CODES.cycle, "Project parent would create a cycle.");
+    }
+    seen.add(current.parentProjectId);
+    depth += 1;
+    current = rowsById.get(current.parentProjectId) ?? null;
+  }
+  return depth;
+}
+
+function subtreeHeight(rows: ProjectRow[], projectId: string): number {
+  const childrenByParent = new Map<string, string[]>();
+  for (const row of rows) {
+    if (!row.parentProjectId) continue;
+    const children = childrenByParent.get(row.parentProjectId) ?? [];
+    children.push(row.id);
+    childrenByParent.set(row.parentProjectId, children);
+  }
+  const height = (id: string, seen: Set<string>): number => {
+    if (seen.has(id)) {
+      throw projectTreeConflict(PROJECT_TREE_ERROR_CODES.cycle, "Project tree contains a cycle.");
+    }
+    const nextSeen = new Set(seen).add(id);
+    return 1 + Math.max(0, ...(childrenByParent.get(id) ?? []).map((childId) => height(childId, nextSeen)));
+  };
+  return height(projectId, new Set());
+}
+
+async function validateProjectParent(db: ProjectTreeDb, input: {
+  companyId: string;
+  projectId?: string;
+  parentProjectId: string | null;
+  rows?: ProjectRow[];
+}) {
+  if (input.parentProjectId === null) return;
+  if (input.projectId && input.parentProjectId === input.projectId) {
+    throw projectTreeConflict(PROJECT_TREE_ERROR_CODES.selfParent, "A project cannot be its own parent.");
+  }
+
+  const parent = await db.select().from(projects).where(eq(projects.id, input.parentProjectId)).then((rows) => rows[0] ?? null);
+  if (!parent) {
+    throw projectTreeConflict(PROJECT_TREE_ERROR_CODES.parentNotFound, "Parent project does not exist.");
+  }
+  if (parent.companyId !== input.companyId) {
+    throw projectTreeConflict(PROJECT_TREE_ERROR_CODES.parentCompanyMismatch, "Parent project must belong to the same company.");
+  }
+  if (parent.archivedAt) {
+    throw projectTreeConflict(PROJECT_TREE_ERROR_CODES.parentArchived, "Parent project must be active.");
+  }
+
+  const rows = input.rows ?? await loadCompanyProjectTree(db, input.companyId);
+  if (input.projectId && collectDescendantIds(rows, input.projectId).has(input.parentProjectId)) {
+    throw projectTreeConflict(PROJECT_TREE_ERROR_CODES.cycle, "Project parent would create a cycle.");
+  }
+  const rowsById = new Map(rows.map((row) => [row.id, row]));
+  const parentDepth = projectDepth(rowsById, input.parentProjectId);
+  const height = input.projectId ? subtreeHeight(rows, input.projectId) : 1;
+  if (parentDepth + height > PROJECT_TREE_MAX_DEPTH) {
+    throw projectTreeConflict(
+      PROJECT_TREE_ERROR_CODES.depthExceeded,
+      `Project tree depth cannot exceed ${PROJECT_TREE_MAX_DEPTH}.`,
+    );
+  }
+}
+
 /** Sync the project_goals join table for a single project. */
-async function syncGoalLinks(db: Db, projectId: string, companyId: string, goalIds: string[]) {
+async function syncGoalLinks(db: ProjectQueryDb, projectId: string, companyId: string, goalIds: string[]) {
   // Delete existing links
   await db.delete(projectGoals).where(eq(projectGoals.projectId, projectId));
 
@@ -547,32 +673,38 @@ export function projectService(db: Db) {
   ): Promise<ProjectWithGoals> => {
     const { goalIds: inputGoalIds, ...projectData } = data;
     const ids = resolveGoalIds({ goalIds: inputGoalIds, goalId: projectData.goalId });
+    return withProjectTreeTransaction(db, companyId, async (tx) => {
+      await validateProjectParent(tx, {
+        companyId,
+        parentProjectId: projectData.parentProjectId ?? null,
+      });
 
-    // Note: color is intentionally NOT auto-assigned. New projects default to
-    // `color = null` (neutral gray) unless an explicit color is supplied. See PAP-68.
+      // Note: color is intentionally NOT auto-assigned. New projects default to
+      // `color = null` (neutral gray) unless an explicit color is supplied. See PAP-68.
 
-    const existingProjects = await db
-      .select({ id: projects.id, name: projects.name })
-      .from(projects)
-      .where(eq(projects.companyId, companyId));
-    projectData.name = resolveProjectNameForUniqueShortname(projectData.name, existingProjects);
+      const existingProjects = await tx
+        .select({ id: projects.id, name: projects.name })
+        .from(projects)
+        .where(eq(projects.companyId, companyId));
+      projectData.name = resolveProjectNameForUniqueShortname(projectData.name, existingProjects);
 
-    // Also write goalId to the legacy column (first goal or null)
-    const legacyGoalId = ids && ids.length > 0 ? ids[0] : projectData.goalId ?? null;
+      // Also write goalId to the legacy column (first goal or null)
+      const legacyGoalId = ids && ids.length > 0 ? ids[0] : projectData.goalId ?? null;
 
-    const row = await db
-      .insert(projects)
-      .values({ ...projectData, goalId: legacyGoalId, companyId })
-      .returning()
-      .then((rows) => rows[0]);
+      const row = await tx
+        .insert(projects)
+        .values({ ...projectData, goalId: legacyGoalId, companyId })
+        .returning()
+        .then((rows) => rows[0]);
 
-    if (ids && ids.length > 0) {
-      await syncGoalLinks(db, row.id, companyId, ids);
-    }
+      if (ids && ids.length > 0) {
+        await syncGoalLinks(tx, row.id, companyId, ids);
+      }
 
-    const [withGoals] = await attachGoals(db, [row]);
-    const [enriched] = withGoals ? await attachWorkspaces(db, [withGoals]) : [];
-    return enriched!;
+      const [withGoals] = await attachGoals(tx, [row]);
+      const [enriched] = withGoals ? await attachWorkspaces(tx, [withGoals]) : [];
+      return enriched!;
+    });
   };
 
   const getProjectById = async (id: string): Promise<ProjectWithGoals | null> => {
@@ -780,50 +912,91 @@ export function projectService(db: Db) {
       const { goalIds: inputGoalIds, ...projectData } = data;
       const ids = resolveGoalIds({ goalIds: inputGoalIds, goalId: projectData.goalId });
       const existingProject = await db
-        .select({ id: projects.id, companyId: projects.companyId, name: projects.name })
+        .select()
         .from(projects)
         .where(eq(projects.id, id))
         .then((rows) => rows[0] ?? null);
       if (!existingProject) return null;
 
-      if (projectData.name !== undefined) {
-        const existingShortname = normalizeProjectUrlKey(existingProject.name);
-        const nextShortname = normalizeProjectUrlKey(projectData.name);
-        if (existingShortname !== nextShortname) {
-          const existingProjects = await db
-            .select({ id: projects.id, name: projects.name })
-            .from(projects)
-            .where(eq(projects.companyId, existingProject.companyId));
-          projectData.name = resolveProjectNameForUniqueShortname(projectData.name, existingProjects, {
-            excludeProjectId: id,
+      return withProjectTreeTransaction(db, existingProject.companyId, async (tx) => {
+        const lockedProject = await tx
+          .select()
+          .from(projects)
+          .where(eq(projects.id, id))
+          .then((rows) => rows[0] ?? null);
+        if (!lockedProject) return null;
+        const treeRows = await loadCompanyProjectTree(tx, lockedProject.companyId);
+        if (projectData.parentProjectId !== undefined) {
+          await validateProjectParent(tx, {
+            companyId: lockedProject.companyId,
+            projectId: id,
+            parentProjectId: projectData.parentProjectId ?? null,
+            rows: treeRows,
           });
         }
-      }
+        if (projectData.archivedAt) {
+          const descendants = collectDescendantIds(treeRows, id);
+          if (treeRows.some((row) => descendants.has(row.id) && row.archivedAt === null)) {
+            throw projectTreeConflict(
+              PROJECT_TREE_ERROR_CODES.activeDescendants,
+              "Cannot archive a project while it has active descendants.",
+            );
+          }
+        }
+        if (projectData.archivedAt === null) {
+          const parentProjectId = projectData.parentProjectId !== undefined
+            ? projectData.parentProjectId ?? null
+            : lockedProject.parentProjectId;
+          if (parentProjectId) {
+            const parent = treeRows.find((row) => row.id === parentProjectId) ?? null;
+            if (parent?.archivedAt) {
+              throw projectTreeConflict(
+                PROJECT_TREE_ERROR_CODES.archivedParent,
+                "Cannot unarchive a project while its parent is archived.",
+              );
+            }
+          }
+        }
 
-      // Keep legacy goalId column in sync
-      const updates: Partial<typeof projects.$inferInsert> = {
-        ...projectData,
-        updatedAt: new Date(),
-      };
-      if (ids !== undefined) {
-        updates.goalId = ids.length > 0 ? ids[0] : null;
-      }
+        if (projectData.name !== undefined) {
+          const existingShortname = normalizeProjectUrlKey(lockedProject.name);
+          const nextShortname = normalizeProjectUrlKey(projectData.name);
+          if (existingShortname !== nextShortname) {
+            const existingProjects = await tx
+              .select({ id: projects.id, name: projects.name })
+              .from(projects)
+              .where(eq(projects.companyId, existingProject.companyId));
+            projectData.name = resolveProjectNameForUniqueShortname(projectData.name, existingProjects, {
+              excludeProjectId: id,
+            });
+          }
+        }
 
-      const row = await db
-        .update(projects)
-        .set(updates)
-        .where(eq(projects.id, id))
-        .returning()
-        .then((rows) => rows[0] ?? null);
-      if (!row) return null;
+        // Keep legacy goalId column in sync
+        const updates: Partial<typeof projects.$inferInsert> = {
+          ...projectData,
+          updatedAt: new Date(),
+        };
+        if (ids !== undefined) {
+          updates.goalId = ids.length > 0 ? ids[0] : null;
+        }
 
-      if (ids !== undefined) {
-        await syncGoalLinks(db, id, row.companyId, ids);
-      }
+        const row = await tx
+          .update(projects)
+          .set(updates)
+          .where(eq(projects.id, id))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        if (!row) return null;
 
-      const [withGoals] = await attachGoals(db, [row]);
-      const [enriched] = withGoals ? await attachWorkspaces(db, [withGoals]) : [];
-      return enriched ?? null;
+        if (ids !== undefined) {
+          await syncGoalLinks(tx, id, row.companyId, ids);
+        }
+
+        const [withGoals] = await attachGoals(tx, [row]);
+        const [enriched] = withGoals ? await attachWorkspaces(tx, [withGoals]) : [];
+        return enriched ?? null;
+      });
     },
 
     clearExecutionWorkspaceEnvironmentSelection: async (companyId: string, environmentId: string) => {
@@ -856,16 +1029,30 @@ export function projectService(db: Db) {
       return cleared;
     },
 
-    remove: (id: string) =>
-      db
-        .delete(projects)
-        .where(eq(projects.id, id))
-        .returning()
-        .then((rows) => {
-          const row = rows[0] ?? null;
-          if (!row) return null;
-          return { ...row, urlKey: deriveProjectUrlKey(row.name, row.id) };
-        }),
+    remove: async (id: string) => {
+      const existing = await db.select().from(projects).where(eq(projects.id, id)).then((rows) => rows[0] ?? null);
+      if (!existing) return null;
+      return withProjectTreeTransaction(db, existing.companyId, async (tx) => {
+        const lockedProject = await tx.select().from(projects).where(eq(projects.id, id)).then((rows) => rows[0] ?? null);
+        if (!lockedProject) return null;
+        const treeRows = await loadCompanyProjectTree(tx, lockedProject.companyId);
+        if (collectDescendantIds(treeRows, id).size > 0) {
+          throw projectTreeConflict(
+            PROJECT_TREE_ERROR_CODES.descendantsExist,
+            "Cannot delete a project while it has descendants.",
+          );
+        }
+        return tx
+          .delete(projects)
+          .where(eq(projects.id, id))
+          .returning()
+          .then((rows) => {
+            const row = rows[0] ?? null;
+            if (!row) return null;
+            return { ...row, urlKey: deriveProjectUrlKey(row.name, row.id) };
+          });
+      });
+    },
 
     listWorkspaces: async (projectId: string): Promise<ProjectWorkspace[]> => {
       const rows = await db
