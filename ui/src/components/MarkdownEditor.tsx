@@ -940,6 +940,13 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   // NEO-411 Phase 1+2: reconcile the controlled value into the editor, but never
   // while input is actively streaming (defer to settle) and never for a value the
   // editor already emitted (drop the round-trip).
+  //
+  // NEO-419d: trigger ONLY on `editorValue`. `applyReconcile`/`editorAlreadyHolds`
+  // are memoized on `recordTts`, which churns identity across renders; listing them
+  // here made the effect re-fire on spurious renders and race the editor's own
+  // content commit, stranding async-loaded external values as empty content
+  // ("applies async external value updates once the editor ref becomes ready").
+  // Both callbacks read live refs, so excluding them from deps is safe.
   useEffect(() => {
     if (editorAlreadyHolds(editorValue)) return;
     if (!ref.current) return;
@@ -947,7 +954,8 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
     // flushes the latest controlled value once input stops.
     if (inputActiveRef.current) return;
     applyReconcile(editorValue);
-  }, [editorValue, applyReconcile, editorAlreadyHolds]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editorValue]);
 
   // NEO-411 Phase 1: track active input at the container so the reconcile effect
   // above can gate on it. Capture-phase + container-level so it survives the
