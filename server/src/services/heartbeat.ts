@@ -15176,7 +15176,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 eq(heartbeatRuns.companyId, agent.companyId),
                 eq(heartbeatRuns.agentId, agentId),
                 sql`${heartbeatRuns.finishedAt} is not null`,
-                gte(heartbeatRuns.createdAt, new Date(throttleNow.getTime() - ISSUE_REWAKE_LOOKBACK_MS)),
+                gte(heartbeatRuns.finishedAt, new Date(throttleNow.getTime() - ISSUE_REWAKE_LOOKBACK_MS)),
                 sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
               ),
             )
@@ -15191,6 +15191,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               .where(
                 and(
                   eq(activityLog.companyId, agent.companyId),
+                  eq(activityLog.entityType, "issue"),
+                  eq(activityLog.entityId, issue.id),
                   inArray(activityLog.runId, sampleRunIds),
                   inArray(activityLog.action, ISSUE_PROGRESS_ACTIVITY_ACTIONS),
                 ),

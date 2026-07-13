@@ -140,9 +140,13 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
     issueId: string;
     status?: string;
     finishedSecondsAgo: number;
+    startedSecondsAgo?: number;
   }) {
     const runId = randomUUID();
     const finishedAt = new Date(Date.now() - input.finishedSecondsAgo * 1000);
+    const startedAt = input.startedSecondsAgo === undefined
+      ? new Date(finishedAt.getTime() - 5_000)
+      : new Date(Date.now() - input.startedSecondsAgo * 1000);
     await db.insert(heartbeatRuns).values({
       id: runId,
       companyId: input.companyId,
@@ -150,7 +154,8 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
       invocationSource: "assignment",
       status: input.status ?? "succeeded",
       responsibleUserId: "responsible-user",
-      startedAt: new Date(finishedAt.getTime() - 5_000),
+      createdAt: startedAt,
+      startedAt,
       finishedAt,
       contextSnapshot: { issueId: input.issueId, wakeReason: "issue_assigned" },
     });
@@ -271,5 +276,54 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
 
     const wake = await assignmentWake(agentId, issueId);
     expect(wake).not.toBeNull();
+  });
+
+  it("does not count progress on another issue toward the current issue", async () => {
+    const { companyId, agentId, issueId } = await seedCompanyAgentIssue();
+    const otherIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: otherIssueId,
+      companyId,
+      title: "Related follow-up",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      responsibleUserId: "responsible-user",
+    });
+
+    await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 40 });
+    const progressRunId = await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 10 });
+    await db.insert(activityLog).values({
+      companyId,
+      actorType: "agent",
+      actorId: agentId,
+      agentId,
+      runId: progressRunId,
+      action: "issue.comment_added",
+      entityType: "issue",
+      entityId: otherIssueId,
+      createdAt: new Date(Date.now() - 11_000),
+    });
+
+    const wake = await assignmentWake(agentId, issueId);
+    expect(wake).toBeNull();
+    expect((await latestWakeRequest(agentId))?.reason).toBe("issue_rewake_throttled");
+  });
+
+  it("counts a long-running session that finished inside the lookback window", async () => {
+    const { companyId, agentId, issueId } = await seedCompanyAgentIssue();
+
+    await seedTerminalRun({
+      companyId,
+      agentId,
+      issueId,
+      finishedSecondsAgo: 40,
+      startedSecondsAgo: 7 * 60 * 60,
+    });
+    await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 10 });
+
+    const wake = await assignmentWake(agentId, issueId);
+    expect(wake).toBeNull();
+    expect((await latestWakeRequest(agentId))?.reason).toBe("issue_rewake_throttled");
   });
 });
