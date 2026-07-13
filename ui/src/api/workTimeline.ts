@@ -10,6 +10,7 @@ export interface WorkTimelineParams {
   projectId?: string;
   issueId?: string;
   limit?: number;
+  offset?: number;
 }
 
 function query(params: WorkTimelineParams): string {
@@ -21,6 +22,7 @@ function query(params: WorkTimelineParams): string {
   if (params.projectId) search.set("projectId", params.projectId);
   if (params.issueId) search.set("issueId", params.issueId);
   if (params.limit) search.set("limit", String(params.limit));
+  if (params.offset) search.set("offset", String(params.offset));
   const qs = search.toString();
   return qs ? `?${qs}` : "";
 }

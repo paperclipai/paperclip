@@ -5,7 +5,7 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { WorkTimelineResult } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { Timeline, timelineSummary } from "./Timeline";
+import { loadTimelineWindow, Timeline, timelineSummary } from "./Timeline";
 
 const mockSetBreadcrumbs = vi.hoisted(() => vi.fn());
 const mockWorkTimelineApi = vi.hoisted(() => ({
@@ -201,6 +201,54 @@ describe("Timeline", () => {
       element.textContent?.includes("2 runs") && element.textContent.includes("Range"),
     );
     expect(footer).not.toBeUndefined();
+  });
+
+  it("loads every timeline page in the selected window", async () => {
+    mockWorkTimelineApi.get
+      .mockResolvedValueOnce({
+        ...populatedTimeline,
+        actors: [populatedTimeline.actors[0]],
+        spans: [populatedTimeline.spans[0]],
+        pagination: {
+          limit: 500,
+          offset: 0,
+          totalIssues: 501,
+          hasMore: true,
+        },
+      })
+      .mockResolvedValueOnce({
+        ...populatedTimeline,
+        actors: [populatedTimeline.actors[1]],
+        spans: [populatedTimeline.spans[1]],
+        pagination: {
+          limit: 500,
+          offset: 500,
+          totalIssues: 501,
+          hasMore: false,
+        },
+      });
+
+    const result = await loadTimelineWindow("company-1", {
+      from: populatedTimeline.window.from,
+      to: populatedTimeline.window.to,
+    });
+
+    expect(mockWorkTimelineApi.get).toHaveBeenNthCalledWith(1, "company-1", expect.objectContaining({
+      limit: 500,
+      offset: 0,
+    }));
+    expect(mockWorkTimelineApi.get).toHaveBeenNthCalledWith(2, "company-1", expect.objectContaining({
+      limit: 500,
+      offset: 500,
+    }));
+    expect(result.actors.map((actor) => actor.id)).toEqual(["agent:codex", "agent:qa"]);
+    expect(result.spans.map((span) => span.runId)).toEqual(["run-1", "run-2"]);
+    expect(result.pagination).toEqual({
+      limit: 501,
+      offset: 0,
+      totalIssues: 501,
+      hasMore: false,
+    });
   });
 
   it("clamps open run summary time to the returned timeline window", async () => {

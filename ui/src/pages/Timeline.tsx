@@ -32,9 +32,72 @@ import { formatDuration, TIMELINE_COLORS } from "@/lib/timeline/layout";
 import { cn } from "@/lib/utils";
 
 type RangePreset = "today" | "7d" | "30d" | "custom";
+const TIMELINE_PAGE_LIMIT = 500;
+
 interface DateRangeState {
   fromDate: string;
   toDate: string;
+}
+
+function timelineEventKey(event: WorkTimelineResult["events"][number]) {
+  return `${event.actorId}\0${event.kind}\0${event.issueId}\0${event.at}`;
+}
+
+function timelineEdgeKey(edge: WorkTimelineResult["edges"][number]) {
+  return `${edge.fromActorId}\0${edge.toActorId}\0${edge.issueId}\0${edge.at}\0${edge.kind}`;
+}
+
+export async function loadTimelineWindow(
+  companyId: string,
+  params: WorkTimelineParams,
+): Promise<WorkTimelineResult> {
+  const actors = new Map<string, WorkTimelineResult["actors"][number]>();
+  const spans = new Map<string, WorkTimelineResult["spans"][number]>();
+  const events = new Map<string, WorkTimelineResult["events"][number]>();
+  const edges = new Map<string, WorkTimelineResult["edges"][number]>();
+  let offset = 0;
+  let firstPage: WorkTimelineResult | null = null;
+  let totalIssues = 0;
+  let capped = false;
+
+  while (true) {
+    const page = await workTimelineApi.get(companyId, {
+      ...params,
+      limit: TIMELINE_PAGE_LIMIT,
+      offset,
+    });
+    firstPage ??= page;
+    totalIssues = Math.max(totalIssues, page.pagination.totalIssues);
+    capped ||= page.window.capped;
+
+    for (const actor of page.actors) actors.set(actor.id, actor);
+    for (const span of page.spans) spans.set(span.runId, span);
+    for (const event of page.events) events.set(timelineEventKey(event), event);
+    for (const edge of page.edges) edges.set(timelineEdgeKey(edge), edge);
+
+    if (!page.pagination.hasMore) break;
+    const nextOffset = page.pagination.offset + page.pagination.limit;
+    if (nextOffset <= offset) throw new Error("Timeline pagination did not advance");
+    offset = nextOffset;
+  }
+
+  if (!firstPage) throw new Error("Timeline response was empty");
+  return {
+    actors: Array.from(actors.values()),
+    spans: Array.from(spans.values()),
+    events: Array.from(events.values()),
+    edges: Array.from(edges.values()),
+    pagination: {
+      limit: totalIssues,
+      offset: 0,
+      totalIssues,
+      hasMore: false,
+    },
+    window: {
+      ...firstPage.window,
+      capped,
+    },
+  };
 }
 
 function dateInputValue(date: Date): string {
@@ -261,7 +324,7 @@ export function Timeline() {
 
   const { data, isLoading, error } = useQuery({
     queryKey: [...queryKeys.workTimeline(selectedCompanyId ?? ""), dateRange.fromDate, dateRange.toDate],
-    queryFn: () => workTimelineApi.get(selectedCompanyId!, params!),
+    queryFn: () => loadTimelineWindow(selectedCompanyId!, params!),
     enabled: !!selectedCompanyId && !!params,
   });
 
