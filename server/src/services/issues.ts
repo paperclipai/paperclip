@@ -272,6 +272,26 @@ type DerivedIssueCommentAttribution = {
 };
 
 /**
+ * Resolve a comment `created_by_run_id` that is safe for the heartbeat_runs FK.
+ * Board/session requests often set X-Paperclip-Run-Id to non-run UUIDs or
+ * synthetic strings; those must not fail comment inserts with a 500.
+ */
+async function resolveCommentCreatedByRunId(
+  dbOrTx: any,
+  companyId: string,
+  runId: string | null | undefined,
+): Promise<string | null> {
+  const normalized = typeof runId === "string" ? runId.trim() : "";
+  if (!normalized || !isUuidLike(normalized)) return null;
+  const existing = await dbOrTx
+    .select({ id: heartbeatRuns.id })
+    .from(heartbeatRuns)
+    .where(and(eq(heartbeatRuns.id, normalized), eq(heartbeatRuns.companyId, companyId)))
+    .then((rows: Array<{ id: string }>) => rows[0] ?? null);
+  return existing?.id ?? null;
+}
+
+/**
  * Best-effort agent attribution for comments whose stored author is a non-human
  * sentinel (e.g. `local-board`). Callers MUST pre-filter `comments` to drop any
  * comment whose `authorUserId` maps to a genuine user profile so a real board /
@@ -7084,6 +7104,16 @@ export function issueService(db: Db) {
       const presentation = issueCommentPresentationSchema.nullable().parse(options?.presentation ?? null);
       const metadata = issueCommentMetadataSchema.nullable().parse(options?.metadata ?? null);
       const createdAt = options?.createdAt ? new Date(options.createdAt) : null;
+      // Board/session actors often forward X-Paperclip-Run-Id values that are not
+      // heartbeat_runs rows (client request ids, synthetic strings, deleted runs).
+      // created_by_run_id is a UUID FK — invalid values used to 500 every comment.
+      const createdByRunId = await resolveCommentCreatedByRunId(dbOrTx, issue.companyId, actor.runId);
+      if (actor.runId && !createdByRunId) {
+        logger.warn(
+          { issueId, companyId: issue.companyId, runId: actor.runId },
+          "dropping invalid createdByRunId for issue comment insert",
+        );
+      }
       const [comment] = await dbOrTx
         .insert(issueComments)
         .values({
@@ -7092,7 +7122,7 @@ export function issueService(db: Db) {
           authorAgentId: actor.agentId ?? null,
           authorUserId: actor.userId ?? null,
           authorType,
-          createdByRunId: actor.runId ?? null,
+          createdByRunId,
           body: redactedBody,
           presentation,
           metadata,
