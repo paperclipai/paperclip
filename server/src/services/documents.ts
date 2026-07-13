@@ -1,8 +1,9 @@
 import { and, asc, desc, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { documentRevisions, documents, issueDocuments, issues } from "@paperclipai/db";
+import { documentRevisions, documents, issueDocuments, issues, seoDocRegistryEntries } from "@paperclipai/db";
 import { isSystemIssueDocumentKey, issueDocumentKeySchema } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
+import { seoDocGovernanceService } from "./seo-doc-governance.js";
 
 function normalizeDocumentKey(key: string) {
   const normalized = key.trim().toLowerCase();
@@ -109,8 +110,24 @@ export const issueDocumentSelect = {
 };
 
 export function documentService(db: Db) {
+  const seoGovernance = seoDocGovernanceService(db);
   const filterSystemDocuments = <T extends { key: string }>(rows: T[], includeSystem: boolean) =>
     includeSystem ? rows : rows.filter((row) => !isSystemIssueDocumentKey(row.key));
+
+  function maybeRethrowGovernanceValidation(err: unknown): never {
+    if (err && typeof err === "object" && "details" in err) {
+      const details = (err as { details?: unknown }).details;
+      if (
+        details &&
+        typeof details === "object" &&
+        "code" in (details as Record<string, unknown>) &&
+        typeof (details as Record<string, unknown>).code === "string"
+      ) {
+        throw unprocessable("Invalid seo_governance metadata", details);
+      }
+    }
+    throw err;
+  }
 
   return {
     getIssueDocumentPayload: async (
@@ -210,11 +227,12 @@ export function documentService(db: Db) {
     }) => {
       const key = normalizeDocumentKey(input.key);
       const issue = await db
-        .select({ id: issues.id, companyId: issues.companyId })
+        .select({ id: issues.id, companyId: issues.companyId, identifier: issues.identifier })
         .from(issues)
         .where(eq(issues.id, input.issueId))
         .then((rows) => rows[0] ?? null);
       if (!issue) throw notFound("Issue not found");
+      const issueIdentifier = issue.identifier ?? issue.id;
 
       const maxAttempts = input.lockedDocumentStrategy === "create_new_document" ? 3 : 1;
       for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
@@ -396,6 +414,21 @@ export function documentService(db: Db) {
               .set({ updatedAt: now })
               .where(eq(issueDocuments.documentId, existing.id));
 
+            if (input.format === "markdown") {
+              try {
+                await seoDocGovernanceService(tx as unknown as Db).syncRegistryEntryFromIssueDocument({
+                  issueId: issue.id,
+                  issueIdentifier,
+                  issueDocumentKey: key,
+                  title: input.title ?? null,
+                  body: input.body,
+                  now,
+                });
+              } catch (error) {
+                maybeRethrowGovernanceValidation(error);
+              }
+            }
+
             return {
               created: false as const,
               document: {
@@ -473,6 +506,21 @@ export function documentService(db: Db) {
             updatedAt: now,
           });
 
+          if (input.format === "markdown") {
+            try {
+              await seoDocGovernanceService(tx as unknown as Db).syncRegistryEntryFromIssueDocument({
+                issueId: issue.id,
+                issueIdentifier,
+                issueDocumentKey: key,
+                title: input.title ?? null,
+                body: input.body,
+                now,
+              });
+            } catch (error) {
+              maybeRethrowGovernanceValidation(error);
+            }
+          }
+
           return {
             created: true as const,
             document: {
@@ -521,6 +569,13 @@ export function documentService(db: Db) {
     }) => {
       const key = normalizeDocumentKey(input.key);
       return db.transaction(async (tx) => {
+        const issueIdentifierRow = await tx
+          .select({ identifier: issues.identifier })
+          .from(issues)
+          .where(eq(issues.id, input.issueId))
+          .then((rows) => rows[0] ?? null);
+        if (!issueIdentifierRow) throw notFound("Issue not found");
+
         const existing = await tx
           .select(issueDocumentSelect)
           .from(issueDocuments)
@@ -594,6 +649,21 @@ export function documentService(db: Db) {
           .update(issueDocuments)
           .set({ updatedAt: now })
           .where(eq(issueDocuments.documentId, existing.id));
+
+        if (revision.format === "markdown") {
+          try {
+            await seoDocGovernanceService(tx as unknown as Db).syncRegistryEntryFromIssueDocument({
+              issueId: input.issueId,
+              issueIdentifier: issueIdentifierRow.identifier ?? input.issueId,
+              issueDocumentKey: key,
+              title: revision.title ?? null,
+              body: revision.body,
+              now,
+            });
+          } catch (error) {
+            maybeRethrowGovernanceValidation(error);
+          }
+        }
 
         return {
           restoredFromRevisionId: revision.id,
@@ -715,6 +785,13 @@ export function documentService(db: Db) {
     deleteIssueDocument: async (issueId: string, rawKey: string) => {
       const key = normalizeDocumentKey(rawKey);
       return db.transaction(async (tx) => {
+        const issueRow = await tx
+          .select({ id: issues.id, companyId: issues.companyId, identifier: issues.identifier })
+          .from(issues)
+          .where(eq(issues.id, issueId))
+          .then((rows) => rows[0] ?? null);
+        if (!issueRow) throw notFound("Issue not found");
+
         const existing = await tx
           .select(issueDocumentSelect)
           .from(issueDocuments)
@@ -731,8 +808,31 @@ export function documentService(db: Db) {
           });
         }
 
+        const docKey = seoGovernance.buildDocKey(issueRow.identifier ?? issueRow.id, key);
+        const registryEntry = await tx
+          .select({
+            id: seoDocRegistryEntries.id,
+            status: seoDocRegistryEntries.status,
+          })
+          .from(seoDocRegistryEntries)
+          .where(and(eq(seoDocRegistryEntries.companyId, issueRow.companyId), eq(seoDocRegistryEntries.docKey, docKey)))
+          .then((rows) => rows[0] ?? null);
+
+        if (registryEntry && registryEntry.status !== "deprecated") {
+          throw unprocessable("Governed documents must be superseded before deletion", {
+            code: "governed_document_delete_requires_deprecated",
+            fields: [{
+              field: "seo_governance.status",
+              message: "Set `seo_governance.status: deprecated` before deleting this document.",
+            }],
+          });
+        }
+
         await tx.delete(issueDocuments).where(eq(issueDocuments.documentId, existing.id));
         await tx.delete(documents).where(eq(documents.id, existing.id));
+        if (registryEntry) {
+          await tx.delete(seoDocRegistryEntries).where(eq(seoDocRegistryEntries.id, registryEntry.id));
+        }
 
         return {
           ...existing,
