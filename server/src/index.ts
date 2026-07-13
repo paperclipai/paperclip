@@ -36,6 +36,11 @@ import { logger } from "./middleware/logger.js";
 import { setupEnvironmentCustomImageTerminalWebSocketServer } from "./realtime/environment-custom-image-terminal-ws.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import {
+  configureLiveEventsTransport,
+  resolveLiveEventsRedisUrl,
+  resolveLiveEventsTransportMode,
+} from "./services/live-events.js";
+import {
   feedbackService,
   backfillPrincipalAccessCompatibility,
   bootstrapExecutionPolicyFromEnv,
@@ -62,6 +67,7 @@ import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-
 import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
 import { initTelemetry, getTelemetryClient } from "./telemetry.js";
 import { conflict } from "./errors.js";
+import { trySessionAdvisoryLock, withAdvisoryXactLock } from "./services/advisory-locks.js";
 import type {
   InstanceDatabaseBackupRunResult,
   InstanceDatabaseBackupTrigger,
@@ -251,13 +257,21 @@ export async function startServer(): Promise<StartedServer> {
   const LOCAL_BOARD_USER_NAME = "Board";
   
   async function ensureLocalTrustedBoardPrincipal(db: any): Promise<void> {
+    // N replicas boot concurrently in local_trusted mode; the check-then-insert
+    // sequences below race without cross-replica mutual exclusion.
+    await withAdvisoryXactLock(db, "local-board-bootstrap", async () => {
+      await ensureLocalTrustedBoardPrincipalLocked(db);
+    });
+  }
+
+  async function ensureLocalTrustedBoardPrincipalLocked(db: any): Promise<void> {
     const now = new Date();
     const existingUser = await db
       .select({ id: authUsers.id })
       .from(authUsers)
       .where(eq(authUsers.id, LOCAL_BOARD_USER_ID))
       .then((rows: Array<{ id: string }>) => rows[0] ?? null);
-  
+
     if (!existingUser) {
       await db.insert(authUsers).values({
         id: LOCAL_BOARD_USER_ID,
@@ -269,7 +283,7 @@ export async function startServer(): Promise<StartedServer> {
         updatedAt: now,
       });
     }
-  
+
     const role = await db
       .select({ id: instanceUserRoles.id })
       .from(instanceUserRoles)
@@ -281,7 +295,7 @@ export async function startServer(): Promise<StartedServer> {
         role: "instance_admin",
       });
     }
-  
+
     const companyRows = await db.select({ id: companies.id }).from(companies);
     for (const company of companyRows) {
       const membership = await db
@@ -612,6 +626,26 @@ export async function startServer(): Promise<StartedServer> {
     }
 
     databaseBackupInFlight = true;
+    // Acquire the cross-replica lock under an explicit catch: the main
+    // try/finally (which resets the flag) only starts below, so a throwing
+    // acquisition (e.g. connection failure) must reset the flag here or it
+    // would leak `true` and block all future backups on this replica.
+    let lock: Awaited<ReturnType<typeof trySessionAdvisoryLock>>;
+    try {
+      lock = await trySessionAdvisoryLock(activeDatabaseConnectionString, "database-backup");
+    } catch (err) {
+      databaseBackupInFlight = false;
+      throw err;
+    }
+    if (!lock.acquired) {
+      databaseBackupInFlight = false;
+      const message = "Database backup already in progress on another replica";
+      if (trigger === "scheduled") {
+        logger.warn("Skipping scheduled database backup because another replica is backing up");
+        return null;
+      }
+      throw conflict(message);
+    }
     const startedAt = new Date();
     const startedAtMs = Date.now();
     const label = trigger === "scheduled" ? "Automatic" : "Manual";
@@ -654,6 +688,12 @@ export async function startServer(): Promise<StartedServer> {
       logger.error({ err, backupDir: config.databaseBackupDir, trigger }, `${label} database backup failed`);
       throw err;
     } finally {
+      await lock.release().catch((err) => {
+        logger.warn(
+          { err },
+          "database backup: failed to release session advisory lock; it will be released when Postgres detects the dead connection",
+        );
+      });
       databaseBackupInFlight = false;
     }
   };
@@ -728,6 +768,21 @@ export async function startServer(): Promise<StartedServer> {
   setupEnvironmentCustomImageTerminalWebSocketServer(server, db as any, {
     pluginWorkerManager,
   });
+
+  // Cross-replica live-events transport. Default: Postgres LISTEN/NOTIFY
+  // against the same database the server already uses — no new infra.
+  // Operators who run Redis can opt in via PAPERCLIP_LIVE_EVENTS_TRANSPORT=redis.
+  // Single-replica deployments are unaffected: in-process delivery has
+  // always worked locally and the transport is purely additive.
+  const liveEventsTransportMode = resolveLiveEventsTransportMode();
+  void configureLiveEventsTransport({
+    mode: liveEventsTransportMode,
+    databaseUrl: activeDatabaseConnectionString ?? config.databaseUrl,
+    redisUrl: resolveLiveEventsRedisUrl(),
+  }).catch((err) => {
+    logger.warn({ err }, "live-events: transport configuration failed; falling back to in-process");
+  });
+
   setupLiveEventsWebSocketServer(server, db as any, {
     deploymentMode: config.deploymentMode,
     resolveSessionFromHeaders,

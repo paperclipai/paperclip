@@ -1,4 +1,5 @@
 export {
+  PAPERCLIP_LOCK_NAMESPACE,
   createDb,
   getPostgresDataDirectory,
   ensurePostgresDatabase,
@@ -10,6 +11,7 @@ export {
   migratePostgresIfEmpty,
   type MigrationBootstrapResult,
   type Db,
+  postgres,
 } from "./client.js";
 export {
   getEmbeddedPostgresTestSupport,

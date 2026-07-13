@@ -90,6 +90,7 @@ import type {
 import { isUuidLike, normalizeAgentUrlKey, parseFrontmatterMarkdown } from "@paperclipai/shared";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { conflict, notFound, unprocessable } from "../errors.js";
+import { withAdvisoryXactLock } from "./advisory-locks.js";
 import { ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
 import { agentService } from "./agents.js";
 import { issueDocumentSelect, mapIssueDocumentRow } from "./documents.js";
@@ -2683,7 +2684,17 @@ export function companySkillService(db: Db) {
       return;
     }
 
-    const refreshPromise = (async () => {
+    // Cross-replica: serialize concurrent refreshes of the same company so the
+    // ensure/reconcile writes don't interleave. A second replica blocks, then
+    // re-runs the idempotent refresh — duplicate work, never corrupted state.
+    // The in-process map above still dedupes callers within this process.
+    //
+    // Held-lock bound (see advisory-locks.ts): refreshes are operator-
+    // triggered and rare, the work is FS+DB-bounded (no network calls), and
+    // per-company concurrency is additionally capped by the in-process
+    // single-flight map above — so the count of concurrently held
+    // skill-refresh locks stays far below the connection-pool size.
+    const refreshPromise = withAdvisoryXactLock(db, `skill-refresh:${companyId}`, async () => {
       const companyExists = await db
         .select({ id: companies.id })
         .from(companies)
@@ -2694,7 +2705,7 @@ export function companySkillService(db: Db) {
       }
       await ensureBundledSkills(companyId);
       await reconcileLocalPathSkillSources(companyId);
-    })();
+    });
 
     skillInventoryRefreshPromises.set(companyId, refreshPromise);
     try {
