@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Agent } from "@paperclipai/shared";
-import { AlertTriangle, CheckCircle2, ChevronRight, CircleDashed, GitBranch, ListChecks, Loader2, MessageSquareQuote, XCircle } from "lucide-react";
+import { AlertTriangle, ArrowUpRight, Check, CheckCircle2, ChevronRight, CircleDashed, ExternalLink, FileText, GitBranch, ImagePlus, Loader2, MessageSquareQuote, MinusCircle, ThumbsUp, X, XCircle } from "lucide-react";
 import { Link } from "@/lib/router";
 import { formatAssigneeUserLabel } from "../lib/assignees";
 import {
@@ -8,27 +8,32 @@ import {
   collectSuggestedTaskClientKeys,
   countSuggestedTaskNodes,
   getCheckboxConfirmationSelectedLabels,
-  getRequestConfirmationTargetHref,
+  getItemVerdictProgress,
   getQuestionAnswerLabels,
+  normalizeRequestConfirmationTargetHref,
   type AskUserQuestionsAnswer,
   type AskUserQuestionsInteraction,
   type IssueThreadInteraction,
   type RequestCheckboxConfirmationInteraction,
   type RequestConfirmationInteraction,
-  type RequestConfirmationResult,
   type RequestConfirmationTarget,
+  type RequestItemVerdictsInteraction,
+  type RequestItemVerdictsItem,
+  type RequestItemVerdictsResultItem,
+  type RequestItemVerdictValue,
   type SuggestTasksInteraction,
   type SuggestTasksResultCreatedTask,
   type SuggestedTaskDraft,
   type SuggestedTaskTreeNode,
 } from "../lib/issue-thread-interactions";
 import { cn, formatDateTime, formatShortDate } from "../lib/utils";
-import { MarkdownBody } from "./MarkdownBody";
+import { MarkdownBody, type MarkdownExternalReferenceMap } from "./MarkdownBody";
 import { Button } from "./ui/button";
 import { Checkbox } from "./ui/checkbox";
 import { PriorityIcon } from "./PriorityIcon";
 import { Textarea } from "./ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
+import { Badge } from "@/components/ui/badge";
 
 const OTHER_ANSWER_ID = "__paperclip_other__";
 
@@ -59,6 +64,12 @@ interface IssueThreadInteractionCardProps {
   onCancelInteraction?: (
     interaction: AskUserQuestionsInteraction,
   ) => Promise<void> | void;
+  onSubmitInteractionVerdicts?: (
+    interaction: RequestItemVerdictsInteraction,
+    verdicts: { id: string; verdict: RequestItemVerdictValue; reason?: string }[],
+  ) => Promise<void> | void;
+  onUploadImage?: (file: File) => Promise<string>;
+  externalReferences?: MarkdownExternalReferenceMap;
 }
 
 function resolveActorLabel(args: {
@@ -109,6 +120,8 @@ function interactionKindLabel(kind: IssueThreadInteraction["kind"]) {
       return "Confirmation";
     case "request_checkbox_confirmation":
       return "Checkbox confirmation";
+    case "request_item_verdicts":
+      return "Item verdicts";
     default:
       return kind;
   }
@@ -158,6 +171,70 @@ function statusClasses(status: IssueThreadInteraction["status"]) {
   }
 }
 
+/**
+ * A confirmation that targets the issue's `plan` document renders as a distinct
+ * plan card (PAP-95g): a full state-coloured outline — violet while in review,
+ * green once approved, red when changes are requested (PAP-75 palette) — with no
+ * left stripe, so plans stand out from comments and status rows.
+ */
+function isPlanConfirmation(interaction: IssueThreadInteraction): boolean {
+  if (interaction.kind !== "request_confirmation") return false;
+  const target = interaction.payload.target;
+  return target?.type === "issue_document" && target?.key === "plan";
+}
+
+function requestConfirmationResumeFailure(interaction: IssueThreadInteraction) {
+  if (interaction.kind !== "request_confirmation" && interaction.kind !== "request_checkbox_confirmation") return null;
+  return interaction.result?.resumeFailure ?? null;
+}
+
+function planStatusClasses(
+  status: IssueThreadInteraction["status"],
+  resumeFailure?: ReturnType<typeof requestConfirmationResumeFailure>,
+) {
+  switch (status) {
+    case "accepted":
+    case "answered":
+      if (resumeFailure) {
+        return {
+          shell: "border-2 border-amber-500/70 bg-transparent",
+          badge: "border-amber-500/60 bg-amber-500/10 text-amber-900 dark:bg-amber-500/15 dark:text-amber-100",
+          label: "Approved — agent resume failed",
+          Icon: AlertTriangle,
+        };
+      }
+      return {
+        shell: "border-2 border-green-500/80 bg-transparent",
+        badge: "border-green-500/60 bg-green-500/10 text-green-900 dark:bg-green-500/15 dark:text-green-100",
+        label: "Approved",
+        Icon: CheckCircle2,
+      };
+    case "rejected":
+    case "cancelled":
+      return {
+        shell: "border-2 border-red-500/80 bg-transparent",
+        badge: "border-red-500/60 bg-red-500/10 text-red-900 dark:bg-red-500/15 dark:text-red-100",
+        label: "Changes requested",
+        Icon: XCircle,
+      };
+    case "failed":
+    case "expired":
+      return {
+        shell: "border-2 border-amber-500/70 bg-transparent",
+        badge: "border-amber-500/60 bg-amber-500/10 text-amber-900 dark:bg-amber-500/15 dark:text-amber-100",
+        label: "Expired",
+        Icon: AlertTriangle,
+      };
+    default:
+      return {
+        shell: "border-2 border-violet-500/80 bg-transparent",
+        badge: "border-violet-500/60 bg-violet-500/10 text-violet-900 dark:bg-violet-500/15 dark:text-violet-100",
+        label: "In review",
+        Icon: FileText,
+      };
+  }
+}
+
 function TaskField({
   label,
   value,
@@ -170,7 +247,7 @@ function TaskField({
   return (
     <span
       className={cn(
-        "inline-flex items-center rounded-sm border px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.16em]",
+        "inline-flex items-center rounded-sm border px-2 py-0.5 text-(length:--text-nano) font-medium uppercase tracking-(--tracking-eyebrow)",
         tone === "default"
           ? "border-border/70 bg-transparent text-foreground"
           : "border-border/60 bg-transparent text-muted-foreground",
@@ -268,7 +345,7 @@ function TaskTreeNode({
                   </div>
                 </div>
                 {depth > 0 ? (
-                  <div className="mt-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+                  <div className="mt-0.5 text-(length:--text-nano) font-medium uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
                     Child task
                   </div>
                 ) : null}
@@ -284,13 +361,13 @@ function TaskTreeNode({
           {createdTask?.issueId ? (
             <Link
               to={`/issues/${createdTask.identifier ?? createdTask.issueId}`}
-              className="inline-flex shrink-0 items-center gap-1 rounded-sm border border-emerald-500/50 bg-emerald-500/10 px-2.5 py-1 text-[11px] font-medium text-emerald-900 transition-colors hover:bg-emerald-500/15 dark:text-emerald-100"
+              className="inline-flex shrink-0 items-center gap-1 rounded-sm border border-emerald-500/50 bg-emerald-500/10 px-2.5 py-1 text-(length:--text-micro) font-medium text-emerald-900 transition-colors hover:bg-emerald-500/15 dark:text-emerald-100"
             >
               {createdTask.identifier ?? createdTask.issueId.slice(0, 8)}
               <ChevronRight className="h-3 w-3" />
             </Link>
           ) : isSkipped ? (
-            <span className="inline-flex shrink-0 items-center rounded-sm border border-amber-500/60 bg-amber-500/10 px-2.5 py-1 text-[11px] font-medium text-amber-900 dark:text-amber-100">
+            <span className="inline-flex shrink-0 items-center rounded-sm border border-amber-500/60 bg-amber-500/10 px-2.5 py-1 text-(length:--text-micro) font-medium text-amber-900 dark:text-amber-100">
               Skipped
             </span>
           ) : null}
@@ -299,7 +376,7 @@ function TaskTreeNode({
         {hasMetadata ? (
           <div className="mt-2 flex flex-wrap gap-1.5">
             {hasExplicitAssignee ? (
-              <TaskField label="Assignee" value={assigneeLabel} />
+              <TaskField label="Responsible" value={assigneeLabel} />
             ) : null}
             {node.task.billingCode ? (
               <TaskField label="Billing" value={node.task.billingCode} />
@@ -467,7 +544,7 @@ function SuggestTasksCard({
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-        <span>{totalTasks === 1 ? "1 draft task" : `${totalTasks} draft tasks`}</span>
+        <span>{totalTasks === 1 ? "1 draft issue" : `${totalTasks} draft issues`}</span>
         {interaction.payload.defaultParentId ? (
           <TaskField label="Default parent" value={interaction.payload.defaultParentId} tone="subtle" />
         ) : null}
@@ -492,20 +569,20 @@ function SuggestTasksCard({
 
       {interaction.status === "accepted" ? (
         <div className="rounded-sm border border-emerald-500/60 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-900 dark:text-emerald-100">
-          <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-emerald-700">
+          <div className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-emerald-700">
             Resolution summary
           </div>
           <p className="mt-1 leading-6">
             {skippedCount > 0
-              ? `Created ${createdCount} draft ${createdCount === 1 ? "task" : "tasks"} and skipped ${skippedCount} during review.`
-              : `Created all ${createdCount} draft ${createdCount === 1 ? "task" : "tasks"}.`}
+              ? `Created ${createdCount} draft ${createdCount === 1 ? "issue" : "issues"} and skipped ${skippedCount} during review.`
+              : `Created all ${createdCount} draft ${createdCount === 1 ? "issue" : "issues"}.`}
           </p>
         </div>
       ) : null}
 
       {interaction.status === "rejected" ? (
         <div className="rounded-sm border border-rose-500/60 bg-rose-500/10 px-4 py-3 text-sm text-rose-900 dark:text-rose-100">
-          <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-rose-700">
+          <div className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-rose-700">
             Rejection reason
           </div>
           <p className={cn(
@@ -523,8 +600,8 @@ function SuggestTasksCard({
             <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
               <span>
                 {selectedCount === totalTasks
-                  ? `All ${totalTasks} draft ${totalTasks === 1 ? "task" : "tasks"} selected`
-                  : `${selectedCount} of ${totalTasks} draft ${totalTasks === 1 ? "task" : "tasks"} selected`}
+                  ? `All ${totalTasks} draft ${totalTasks === 1 ? "issue" : "issues"} selected`
+                  : `${selectedCount} of ${totalTasks} draft ${totalTasks === 1 ? "issue" : "issues"} selected`}
               </span>
               {selectedCount < totalTasks ? (
                 <span>
@@ -623,7 +700,7 @@ function QuestionOptionButton({
       role={selectionMode === "single" ? "radio" : "checkbox"}
       aria-checked={selected}
       className={cn(
-        "w-full rounded-sm border px-4 py-3 text-left transition-colors outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50",
+        "w-full rounded-sm border px-4 py-3 text-left transition-colors outline-none focus-visible:border-ring focus-visible:ring-(length:--rad-3) focus-visible:ring-ring/50",
         selected
           ? "border-sky-500/80 bg-sky-500/10 text-sky-950 dark:border-sky-400/80 dark:bg-sky-400/15 dark:text-sky-50"
           : "border-border/70 bg-transparent text-foreground hover:border-sky-500/70 hover:bg-sky-500/10 dark:hover:border-sky-400/70 dark:hover:bg-sky-400/10",
@@ -659,6 +736,7 @@ function AskUserQuestionsCard({
   interaction,
   onSubmitInteractionAnswers,
   onCancelInteraction,
+  externalReferences,
 }: {
   interaction: AskUserQuestionsInteraction;
   onSubmitInteractionAnswers?: (
@@ -668,6 +746,7 @@ function AskUserQuestionsCard({
   onCancelInteraction?: (
     interaction: AskUserQuestionsInteraction,
   ) => Promise<void> | void;
+  externalReferences?: MarkdownExternalReferenceMap;
 }) {
   const [draftAnswers, setDraftAnswers] = useState<Record<string, string[]>>(() =>
     Object.fromEntries(
@@ -792,10 +871,10 @@ function AskUserQuestionsCard({
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-        <span className="inline-flex items-center gap-1 rounded-full border border-border/70 bg-background/70 px-2.5 py-1 font-medium uppercase tracking-[0.16em] text-foreground/70">
+        <Badge variant="outline" className="border-border/70 bg-background/70 px-2.5 py-1 uppercase tracking-(--tracking-eyebrow) text-foreground/70">
           <MessageSquareQuote className="h-3 w-3" />
           Ask user questions
-        </span>
+        </Badge>
         <span>
           {questions.length === 1
             ? "1 question"
@@ -808,11 +887,11 @@ function AskUserQuestionsCard({
           {questions.map((question, index) => (
             <div
               key={question.id}
-              className="rounded-2xl border border-border/70 bg-background/82 p-4 shadow-[0_18px_42px_rgba(15,23,42,0.06)]"
+              className="rounded-2xl border border-border/70 bg-background/82 p-4 shadow-(--shadow-extract-9)"
             >
               <div className="flex items-start justify-between gap-3">
                 <div>
-                  <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+                  <div className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
                     Question {index + 1}
                   </div>
                   <div
@@ -858,7 +937,7 @@ function AskUserQuestionsCard({
                   id={`${interaction.id}-${question.id}-other`}
                   aria-expanded={otherActiveQuestions[question.id] === true}
                   className={cn(
-                    "text-sm font-medium underline underline-offset-4 transition-colors outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
+                    "text-sm font-medium underline underline-offset-4 transition-colors outline-none focus-visible:ring-(length:--rad-3) focus-visible:ring-ring/50",
                     otherActiveQuestions[question.id]
                       ? "text-sky-700 hover:text-sky-800 dark:text-sky-300 dark:hover:text-sky-200"
                       : "text-muted-foreground hover:text-foreground",
@@ -933,6 +1012,24 @@ function AskUserQuestionsCard({
             <p className="mt-1">No answer was recorded.</p>
           )}
         </div>
+      ) : interaction.status === "expired" ? (
+        <div className="rounded-2xl border border-amber-300/70 bg-amber-50/85 p-4 text-sm leading-6 text-amber-950 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100">
+          <div className="flex items-center gap-2 font-semibold">
+            <AlertTriangle className="h-4 w-4" />
+            {questions.length === 1 ? "Question expired by comment" : "Questions expired by comment"}
+          </div>
+          <p className="mt-1">
+            A later board/user comment superseded this question request. Create a fresh request if answers are still needed.
+          </p>
+          {interaction.result?.commentId ? (
+            <a
+              href={`#comment-${interaction.result.commentId}`}
+              className="mt-3 inline-flex text-sm font-medium underline underline-offset-4"
+            >
+              Jump to comment
+            </a>
+          ) : null}
+        </div>
       ) : (
         <div className="space-y-3">
           {questions.map((question) => {
@@ -963,10 +1060,10 @@ function AskUserQuestionsCard({
 
           {interaction.result?.summaryMarkdown ? (
             <div className="rounded-2xl border border-emerald-300/60 bg-emerald-50/85 p-4">
-              <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-emerald-700">
+              <div className="mb-2 text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-emerald-700">
                 Submitted summary
               </div>
-              <MarkdownBody>{interaction.result.summaryMarkdown}</MarkdownBody>
+              <MarkdownBody externalReferences={externalReferences}>{interaction.result.summaryMarkdown}</MarkdownBody>
             </div>
           ) : null}
         </div>
@@ -984,20 +1081,35 @@ function requestConfirmationTargetLabel(target: RequestConfirmationTarget) {
   return `${target.key}${revision}`;
 }
 
+function requestConfirmationTargetHref({
+  interaction,
+  target,
+}: {
+  interaction: Pick<IssueThreadInteraction, "issueId">;
+  target: RequestConfirmationTarget;
+}) {
+  if (target.href) return target.href;
+  if (target.type === "issue_document") {
+    const issueId = target.issueId ?? interaction.issueId;
+    return `/issues/${issueId}#document-${encodeURIComponent(target.key)}`;
+  }
+  return null;
+}
+
 function RequestConfirmationTargetChip({
-  issueId,
+  interaction,
   target,
   tone = "default",
 }: {
-  issueId: string;
+  interaction: Pick<IssueThreadInteraction, "issueId">;
   target: RequestConfirmationTarget | null | undefined;
   tone?: "default" | "subtle";
 }) {
   if (!target) return null;
 
-  const href = getRequestConfirmationTargetHref({ issueId, target });
+  const href = requestConfirmationTargetHref({ interaction, target });
   const className = cn(
-    "inline-flex max-w-full items-center gap-1.5 rounded-sm border px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.16em]",
+    "inline-flex max-w-full items-center gap-1.5 rounded-sm border px-2 py-0.5 text-(length:--text-nano) font-medium uppercase tracking-(--tracking-eyebrow)",
     tone === "default"
       ? "border-border/70 bg-transparent text-foreground"
       : "border-border/60 bg-transparent text-muted-foreground",
@@ -1025,121 +1137,107 @@ function RequestConfirmationTargetChip({
   );
 }
 
-function ConfirmationDeclinedBlock({
-  issueId,
-  result,
-  target,
-}: {
-  issueId: string;
-  result: RequestConfirmationResult | null | undefined;
-  target: RequestConfirmationTarget | null;
-}) {
-  return (
-    <div className="space-y-2">
-      <div className="flex flex-wrap items-center gap-2 text-sm leading-6 text-foreground">
-        <span className="font-medium">Declined</span>
-        <RequestConfirmationTargetChip issueId={issueId} target={target} />
-      </div>
-      {result?.reason ? (
-        <blockquote className="rounded-sm border-l-2 border-rose-500/70 bg-rose-500/10 px-3 py-2 text-sm leading-6 text-rose-900 dark:text-rose-100">
-          {result.reason}
-        </blockquote>
-      ) : null}
-    </div>
-  );
-}
-
-function ConfirmationExpiredBlock({
-  issueId,
-  result,
-  target,
-}: {
-  issueId: string;
-  result: RequestConfirmationResult | null | undefined;
-  target: RequestConfirmationTarget | null;
-}) {
-  const outcome = result?.outcome;
-  const staleTarget = result?.staleTarget ?? null;
-  const expiredByComment = outcome === "superseded_by_comment";
-  const expiredByTargetChange = outcome === "stale_target";
-  return (
-    <div className="space-y-3 rounded-sm border border-amber-500/60 bg-amber-500/10 px-4 py-3 text-sm text-amber-900 dark:text-amber-100">
-      <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-amber-700">
-        {expiredByComment ? "Expired by comment" : "Expired by target change"}
-      </div>
-      <p className="leading-6">
-        {expiredByComment
-          ? "A board comment superseded this request before it was resolved."
-          : "The requested target changed before this request was resolved."}
-      </p>
-      {expiredByComment && result?.commentId ? (
-        <Button asChild size="sm" variant="ghost" className="h-7 px-2 text-amber-950 hover:bg-amber-500/15 dark:text-amber-50">
-          <a href={`#comment-${result.commentId}`}>Jump to comment</a>
-        </Button>
-      ) : null}
-      {expiredByTargetChange ? (
-        <div className="flex flex-wrap items-center gap-2">
-          <RequestConfirmationTargetChip
-            issueId={issueId}
-            target={staleTarget}
-            tone="subtle"
-          />
-          {staleTarget && target ? (
-            <ChevronRight className="h-3.5 w-3.5 text-amber-700" />
-          ) : null}
-          <RequestConfirmationTargetChip issueId={issueId} target={target} />
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function ConfirmationFailedBlock() {
-  return (
-    <p className="text-sm leading-6 text-muted-foreground">
-      This request could not be resolved. Try again or create a new request.
-    </p>
-  );
-}
-
 function RequestConfirmationResolution({
   interaction,
 }: {
   interaction: RequestConfirmationInteraction;
 }) {
+  const outcome = interaction.result?.outcome;
   const target = interaction.payload.target ?? null;
+  const staleTarget = interaction.result?.staleTarget ?? null;
 
   if (interaction.status === "accepted") {
+    const resumeFailure = requestConfirmationResumeFailure(interaction);
+    if (resumeFailure) {
+      return (
+        <div className="space-y-2">
+          <div className="flex flex-wrap items-center gap-2 text-sm leading-6 text-foreground">
+            <span className="font-medium">Confirmed</span>
+            <RequestConfirmationTargetChip interaction={interaction} target={target} />
+          </div>
+          <div className="rounded-sm border border-amber-500/60 bg-amber-500/10 px-4 py-3 text-sm text-amber-900 dark:text-amber-100">
+            <div className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-amber-700">
+              Agent resume failed
+            </div>
+            <p className="mt-1 leading-6">
+              {resumeFailure.status === "retrying"
+                ? `Paperclip is retrying the agent resume after approval (attempt ${resumeFailure.attempt}/${resumeFailure.maxAttempts}).`
+                : "Paperclip needs attention before the agent can resume this approved work."}
+            </p>
+            {resumeFailure.errorCode ? (
+              <p className="mt-1 leading-6">
+                Latest cause: <code className="font-mono text-(length:--text-micro)">{resumeFailure.errorCode}</code>
+              </p>
+            ) : null}
+          </div>
+        </div>
+      );
+    }
     return (
       <div className="flex flex-wrap items-center gap-2 text-sm leading-6 text-foreground">
         <span className="font-medium">Confirmed</span>
-        <RequestConfirmationTargetChip issueId={interaction.issueId} target={target} />
+        <RequestConfirmationTargetChip interaction={interaction} target={target} />
       </div>
     );
   }
 
   if (interaction.status === "rejected") {
     return (
-      <ConfirmationDeclinedBlock
-        issueId={interaction.issueId}
-        result={interaction.result}
-        target={target}
-      />
+      <div className="space-y-2">
+        <div className="flex flex-wrap items-center gap-2 text-sm leading-6 text-foreground">
+          <span className="font-medium">Declined</span>
+          <RequestConfirmationTargetChip interaction={interaction} target={target} />
+        </div>
+        {interaction.result?.reason ? (
+          <div className="rounded-sm border-l-2 border-rose-500/70 bg-rose-500/10 px-3 py-2 text-sm leading-6 text-rose-900 dark:text-rose-100">
+            <MarkdownBody>{interaction.result.reason}</MarkdownBody>
+          </div>
+        ) : null}
+      </div>
     );
   }
 
   if (interaction.status === "expired") {
+    const expiredByComment = outcome === "superseded_by_comment";
+    const expiredByTargetChange = outcome === "stale_target";
     return (
-      <ConfirmationExpiredBlock
-        issueId={interaction.issueId}
-        result={interaction.result}
-        target={target}
-      />
+      <div className="space-y-3 rounded-sm border border-amber-500/60 bg-amber-500/10 px-4 py-3 text-sm text-amber-900 dark:text-amber-100">
+        <div className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-amber-700">
+          {expiredByComment ? "Expired by comment" : "Expired by target change"}
+        </div>
+        <p className="leading-6">
+          {expiredByComment
+            ? "A board comment superseded this confirmation before it was resolved."
+            : "The requested target changed before this confirmation was resolved."}
+        </p>
+        {expiredByComment && interaction.result?.commentId ? (
+          <Button asChild size="sm" variant="ghost" className="h-7 px-2 text-amber-950 hover:bg-amber-500/15 dark:text-amber-50">
+            <a href={`#comment-${interaction.result.commentId}`}>Jump to comment</a>
+          </Button>
+        ) : null}
+        {expiredByTargetChange ? (
+          <div className="flex flex-wrap items-center gap-2">
+            <RequestConfirmationTargetChip
+              interaction={interaction}
+              target={staleTarget}
+              tone="subtle"
+            />
+            {staleTarget && target ? (
+              <ChevronRight className="h-3.5 w-3.5 text-amber-700" />
+            ) : null}
+            <RequestConfirmationTargetChip interaction={interaction} target={target} />
+          </div>
+        ) : null}
+      </div>
     );
   }
 
   if (interaction.status === "failed") {
-    return <ConfirmationFailedBlock />;
+    return (
+      <p className="text-sm leading-6 text-muted-foreground">
+        This request could not be resolved. Try again or create a new request.
+      </p>
+    );
   }
 
   return null;
@@ -1147,10 +1245,14 @@ function RequestConfirmationResolution({
 
 function RequestConfirmationCard({
   interaction,
+  isPlan = false,
   onAcceptInteraction,
   onRejectInteraction,
+  onUploadImage,
+  externalReferences,
 }: {
   interaction: RequestConfirmationInteraction;
+  isPlan?: boolean;
   onAcceptInteraction?: (
     interaction: RequestConfirmationInteraction,
   ) => Promise<void> | void;
@@ -1158,16 +1260,25 @@ function RequestConfirmationCard({
     interaction: RequestConfirmationInteraction,
     reason?: string,
   ) => Promise<void> | void;
+  onUploadImage?: (file: File) => Promise<string>;
+  externalReferences?: MarkdownExternalReferenceMap;
 }) {
   const [rejecting, setRejecting] = useState(false);
   const [working, setWorking] = useState<"accept" | "reject" | null>(null);
   const [rejectReason, setRejectReason] = useState(interaction.result?.reason ?? "");
   const [rejectAttempted, setRejectAttempted] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [shots, setShots] = useState<{ name: string; url: string }[]>([]);
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  // Screenshots ride along in the decline reason as markdown image refs so the
+  // board can attach images when sending a plan back — no schema change needed.
+  const allowScreenshots = isPlan && Boolean(onUploadImage);
   const rejectRequiresReason = interaction.payload.rejectRequiresReason === true;
   const allowDeclineReason = interaction.payload.allowDeclineReason !== false;
   const trimmedRejectReason = rejectReason.trim();
-  const canReject = !rejectRequiresReason || trimmedRejectReason.length > 0;
+  const canReject = !rejectRequiresReason || trimmedRejectReason.length > 0 || shots.length > 0;
   const declineReasonInvalid = rejectRequiresReason && !canReject;
   const declineReasonPlaceholder =
     interaction.payload.declineReasonPlaceholder
@@ -1179,11 +1290,39 @@ function RequestConfirmationCard({
     setRejectReason(interaction.result?.reason ?? "");
     setRejectAttempted(false);
     setActionError(null);
+    setShots([]);
+    setUploadError(null);
     if (interaction.status !== "pending") {
       setRejecting(false);
       setWorking(null);
     }
   }, [interaction.id, interaction.result?.reason, interaction.status]);
+
+  async function handleAddScreenshots(files: FileList | null) {
+    if (!onUploadImage || !files || files.length === 0) return;
+    setUploadError(null);
+    setUploading(true);
+    try {
+      const uploaded: { name: string; url: string }[] = [];
+      for (const file of Array.from(files)) {
+        if (!file.type.startsWith("image/")) continue;
+        const url = await onUploadImage(file);
+        uploaded.push({ name: file.name || "screenshot", url });
+      }
+      if (uploaded.length > 0) setShots((current) => [...current, ...uploaded]);
+    } catch {
+      setUploadError("Couldn't upload that image. Try again.");
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  function composeReason() {
+    const text = trimmedRejectReason;
+    if (shots.length === 0) return text || undefined;
+    const images = shots.map((s) => `![${s.name}](${s.url})`).join("\n");
+    return [text, images].filter(Boolean).join("\n\n");
+  }
 
   async function handleAccept() {
     if (!onAcceptInteraction) return;
@@ -1204,7 +1343,7 @@ function RequestConfirmationCard({
     setWorking("reject");
     setActionError(null);
     try {
-      await onRejectInteraction(interaction, trimmedRejectReason || undefined);
+      await onRejectInteraction(interaction, composeReason());
       setRejecting(false);
     } catch {
       setActionError("Try again");
@@ -1222,11 +1361,11 @@ function RequestConfirmationCard({
           </div>
           {interaction.payload.detailsMarkdown ? (
             <div className="border-t border-border/60 pt-3 text-sm">
-              <MarkdownBody>{interaction.payload.detailsMarkdown}</MarkdownBody>
+              <MarkdownBody externalReferences={externalReferences}>{interaction.payload.detailsMarkdown}</MarkdownBody>
             </div>
           ) : null}
           <RequestConfirmationTargetChip
-            issueId={interaction.issueId}
+            interaction={interaction}
             target={interaction.payload.target}
           />
         </div>
@@ -1237,7 +1376,7 @@ function RequestConfirmationCard({
           <div className="flex flex-wrap items-center justify-end gap-2">
             <Button
               size="sm"
-              variant={rejecting ? "outline" : "default"}
+              variant={rejecting ? "outline" : isPlan ? "cta" : "default"}
               disabled={!onAcceptInteraction || working !== null}
               onClick={() => void handleAccept()}
             >
@@ -1282,6 +1421,69 @@ function RequestConfirmationCard({
               />
               {rejectAttempted && declineReasonInvalid ? (
                 <p className="text-xs text-destructive">A decline reason is required.</p>
+              ) : null}
+              {allowScreenshots ? (
+                <div className="space-y-2">
+                  {shots.length > 0 ? (
+                    <div className="flex flex-wrap gap-2">
+                      {shots.map((shot, index) => (
+                        <div
+                          key={`${shot.url}-${index}`}
+                          className="group relative h-16 w-16 overflow-hidden rounded-sm border border-border/70"
+                        >
+                          <img
+                            src={shot.url}
+                            alt={shot.name}
+                            className="h-full w-full object-cover"
+                          />
+                          <button
+                            type="button"
+                            aria-label={`Remove ${shot.name}`}
+                            className="absolute right-0.5 top-0.5 rounded-full bg-background/90 p-0.5 text-foreground opacity-0 transition-opacity group-hover:opacity-100"
+                            onClick={() =>
+                              setShots((current) => current.filter((_, i) => i !== index))
+                            }
+                          >
+                            <X className="h-3 w-3" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    className="hidden"
+                    onChange={(event) => {
+                      void handleAddScreenshots(event.target.value ? event.target.files : null);
+                      event.target.value = "";
+                    }}
+                  />
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    disabled={working !== null || uploading}
+                    onClick={() => fileInputRef.current?.click()}
+                  >
+                    {uploading ? (
+                      <>
+                        <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                        Uploading...
+                      </>
+                    ) : (
+                      <>
+                        <ImagePlus className="mr-2 h-3.5 w-3.5" />
+                        Attach screenshots
+                      </>
+                    )}
+                  </Button>
+                  {uploadError ? (
+                    <p className="text-xs text-destructive">{uploadError}</p>
+                  ) : null}
+                </div>
               ) : null}
               <div className="flex flex-wrap justify-end gap-2">
                 <Button
@@ -1350,7 +1552,7 @@ function RequestCheckboxConfirmationResolution({
     const hiddenCount = selectedLabels.length - CHECKBOX_SUMMARY_LABEL_LIMIT;
     const hasHiddenLabels = hiddenCount > 0;
     const chipClassName =
-      "inline-flex items-center rounded-sm border border-border/60 bg-transparent px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.16em] text-muted-foreground";
+      "inline-flex items-center rounded-sm border border-border/60 bg-transparent px-2 py-0.5 text-(length:--text-nano) font-medium uppercase tracking-(--tracking-eyebrow) text-muted-foreground";
 
     return (
       <div className="space-y-3">
@@ -1360,7 +1562,7 @@ function RequestCheckboxConfirmationResolution({
               ? "Confirmed with no options selected"
               : `Confirmed ${selectedCount} of ${totalOptions} ${totalOptions === 1 ? "option" : "options"}`}
           </span>
-          <RequestConfirmationTargetChip issueId={interaction.issueId} target={target} />
+          <RequestConfirmationTargetChip interaction={interaction} target={target} />
         </div>
         {visibleLabels.length > 0 ? (
           <div className="flex flex-wrap gap-1.5">
@@ -1387,27 +1589,19 @@ function RequestCheckboxConfirmationResolution({
   }
 
   if (interaction.status === "rejected") {
-    return (
-      <ConfirmationDeclinedBlock
-        issueId={interaction.issueId}
-        result={interaction.result}
-        target={target}
-      />
-    );
+    return <RequestConfirmationResolution interaction={interaction as unknown as RequestConfirmationInteraction} />;
   }
 
   if (interaction.status === "expired") {
-    return (
-      <ConfirmationExpiredBlock
-        issueId={interaction.issueId}
-        result={interaction.result}
-        target={target}
-      />
-    );
+    return <RequestConfirmationResolution interaction={interaction as unknown as RequestConfirmationInteraction} />;
   }
 
   if (interaction.status === "failed") {
-    return <ConfirmationFailedBlock />;
+    return (
+      <p className="text-sm leading-6 text-muted-foreground">
+        This request could not be resolved. Try again or create a new request.
+      </p>
+    );
   }
 
   return null;
@@ -1459,6 +1653,7 @@ function RequestCheckboxConfirmationCard({
   interaction,
   onAcceptInteraction,
   onRejectInteraction,
+  externalReferences,
 }: {
   interaction: RequestCheckboxConfirmationInteraction;
   onAcceptInteraction?: (
@@ -1470,6 +1665,7 @@ function RequestCheckboxConfirmationCard({
     interaction: RequestCheckboxConfirmationInteraction,
     reason?: string,
   ) => Promise<void> | void;
+  externalReferences?: MarkdownExternalReferenceMap;
 }) {
   const options = interaction.payload.options;
   const optionIds = useMemo(() => options.map((option) => option.id), [options]);
@@ -1505,7 +1701,6 @@ function RequestCheckboxConfirmationCard({
       setRejecting(false);
       setWorking(null);
     }
-    // optionSeed guards against option list identity churn for the same interaction.
   }, [interaction.id, interaction.status, interaction.result?.reason, defaultSelected, optionSeed]);
 
   const rejectRequiresReason = interaction.payload.rejectRequiresReason === true;
@@ -1595,7 +1790,7 @@ function RequestCheckboxConfirmationCard({
     ? `All ${totalOptions} options selected`
     : `${selectedCount} of ${totalOptions} ${totalOptions === 1 ? "option" : "options"} selected`;
   const boundsHint = maxSelected != null
-    ? `Pick ${minSelected === maxSelected ? `exactly ${maxSelected}` : `${minSelected}–${maxSelected}`}.`
+    ? `Pick ${minSelected === maxSelected ? `exactly ${maxSelected}` : `${minSelected}-${maxSelected}`}.`
     : minSelected > 0
       ? `Pick at least ${minSelected}.`
       : null;
@@ -1606,11 +1801,11 @@ function RequestCheckboxConfirmationCard({
         <div className="text-sm leading-6 text-foreground">{interaction.payload.prompt}</div>
         {interaction.payload.detailsMarkdown ? (
           <div className="border-t border-border/60 pt-3 text-sm">
-            <MarkdownBody>{interaction.payload.detailsMarkdown}</MarkdownBody>
+            <MarkdownBody externalReferences={externalReferences}>{interaction.payload.detailsMarkdown}</MarkdownBody>
           </div>
         ) : null}
         <RequestConfirmationTargetChip
-          issueId={interaction.issueId}
+          interaction={interaction}
           target={interaction.payload.target}
         />
       </div>
@@ -1756,6 +1951,495 @@ function RequestCheckboxConfirmationCard({
   );
 }
 
+// --- Per-item verdicts (C3) ---------------------------------------------
+
+const VERDICT_LABEL: Record<RequestItemVerdictValue, string> = {
+  approve: "Approve",
+  reject: "Reject",
+  defer: "Defer",
+};
+
+/** Present-tense past-participle label for a resolved verdict chip. */
+const VERDICT_RESOLVED_LABEL: Record<RequestItemVerdictValue, string> = {
+  approve: "Approved",
+  reject: "Rejected",
+  defer: "Deferred",
+};
+
+function verdictChipClasses(verdict: RequestItemVerdictValue) {
+  switch (verdict) {
+    case "approve":
+      return "border-emerald-500/60 bg-emerald-500/10 text-emerald-900 dark:bg-emerald-500/15 dark:text-emerald-100";
+    case "reject":
+      return "border-rose-500/60 bg-rose-500/10 text-rose-900 dark:bg-rose-500/15 dark:text-rose-100";
+    default:
+      return "border-border/70 bg-muted/40 text-muted-foreground";
+  }
+}
+
+function VerdictConsequenceChip({ verdict }: { verdict: RequestItemVerdictValue }) {
+  const Icon = verdict === "approve" ? CheckCircle2 : verdict === "reject" ? XCircle : MinusCircle;
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1 rounded-sm border px-2 py-0.5 text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow)",
+        verdictChipClasses(verdict),
+      )}
+    >
+      <Icon className="h-3.5 w-3.5" aria-hidden />
+      {VERDICT_RESOLVED_LABEL[verdict]}
+    </span>
+  );
+}
+
+function ItemVerdictDeepLink({ item }: { item: RequestItemVerdictsItem }) {
+  const href = item.href ? normalizeRequestConfirmationTargetHref(item.href) : null;
+  if (!href) return null;
+  const isInternal = href.startsWith("/") || href.startsWith("#");
+  const className =
+    "inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1";
+  const label = (
+    <>
+      Open
+      {isInternal ? <ArrowUpRight className="h-3 w-3" aria-hidden /> : <ExternalLink className="h-3 w-3" aria-hidden />}
+    </>
+  );
+  if (isInternal) {
+    return (
+      <Link to={href} className={className}>
+        {label}
+      </Link>
+    );
+  }
+  return (
+    <a href={href} target="_blank" rel="noreferrer" className={className}>
+      {label}
+    </a>
+  );
+}
+
+function ItemVerdictSegmentedControl({
+  itemId,
+  verdicts,
+  value,
+  disabled,
+  onSelect,
+}: {
+  itemId: string;
+  verdicts: RequestItemVerdictValue[];
+  value: RequestItemVerdictValue | null;
+  disabled: boolean;
+  onSelect: (verdict: RequestItemVerdictValue) => void;
+}) {
+  return (
+    <div
+      role="group"
+      aria-label="Choose a verdict"
+      className="flex shrink-0 flex-wrap items-center gap-2"
+    >
+      {verdicts.map((verdict) => {
+        const active = value === verdict;
+        const variant = verdict === "reject"
+          ? (active ? "destructive" : "outline")
+          : verdict === "approve"
+            ? (active ? "default" : "outline")
+            : (active ? "secondary" : "outline");
+        const Icon = verdict === "approve" ? Check : verdict === "reject" ? X : MinusCircle;
+        return (
+          <Button
+            key={verdict}
+            type="button"
+            size="sm"
+            variant={variant}
+            disabled={disabled}
+            aria-pressed={active}
+            aria-label={`${VERDICT_LABEL[verdict]} this item`}
+            className="min-h-11 min-w-24"
+            onClick={() => onSelect(verdict)}
+            data-verdict={verdict}
+            data-item-id={itemId}
+            data-active={active}
+          >
+            <Icon className="h-4 w-4" aria-hidden />
+            {VERDICT_LABEL[verdict]}
+          </Button>
+        );
+      })}
+    </div>
+  );
+}
+
+interface VerdictDraft {
+  verdict: RequestItemVerdictValue;
+  reason: string;
+}
+
+function RequestItemVerdictsCard({
+  interaction,
+  onSubmitInteractionVerdicts,
+  externalReferences,
+}: {
+  interaction: RequestItemVerdictsInteraction;
+  onSubmitInteractionVerdicts?: (
+    interaction: RequestItemVerdictsInteraction,
+    verdicts: { id: string; verdict: RequestItemVerdictValue; reason?: string }[],
+  ) => Promise<void> | void;
+  externalReferences?: MarkdownExternalReferenceMap;
+}) {
+  const payload = interaction.payload;
+  const items = payload.items;
+  const enabledVerdicts = useMemo<RequestItemVerdictValue[]>(
+    () => payload.verdicts ?? ["approve", "reject"],
+    [payload.verdicts],
+  );
+  const requireReasonOn = useMemo(
+    () => new Set<RequestItemVerdictValue>(payload.requireReasonOn ?? ["reject"]),
+    [payload.requireReasonOn],
+  );
+  const allowBulkApprove = payload.allowBulkApprove !== false && enabledVerdicts.includes("approve");
+  const reasonLabel = payload.reasonLabel ?? "Reason";
+
+  const resolvedById = useMemo(
+    () => new Map<string, RequestItemVerdictsResultItem>((interaction.result?.items ?? []).map((item) => [item.id, item])),
+    [interaction.result],
+  );
+
+  const [drafts, setDrafts] = useState<Map<string, VerdictDraft>>(new Map());
+  const [applyingItemIds, setApplyingItemIds] = useState<Set<string>>(new Set());
+  const [working, setWorking] = useState(false);
+  const [attempted, setAttempted] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  // When the server merges newly-resolved items, drop their local drafts and
+  // clear the applying/working state so the terminal chips take over (S3 → S4).
+  useEffect(() => {
+    setDrafts((current) => {
+      let changed = false;
+      const next = new Map(current);
+      for (const id of [...next.keys()]) {
+        if (resolvedById.has(id)) {
+          next.delete(id);
+          changed = true;
+        }
+      }
+      return changed ? next : current;
+    });
+    setApplyingItemIds(new Set());
+    setWorking(false);
+    setActionError(null);
+  }, [resolvedById]);
+
+  const progress = getItemVerdictProgress({ payload, result: interaction.result });
+  const isTerminal = interaction.status !== "pending";
+  const isExpired = interaction.status === "expired";
+  const isComplete = interaction.status === "answered" || progress.decided === progress.total;
+
+  const draftEntries = [...drafts.entries()];
+  const draftCount = draftEntries.length;
+  const invalidDraftIds = new Set(
+    draftEntries
+      .filter(([, draft]) => requireReasonOn.has(draft.verdict) && draft.reason.trim().length === 0)
+      .map(([id]) => id),
+  );
+  // Apply is enabled as soon as there is ≥1 draft (spec §1). If a required
+  // reject reason is missing, clicking Apply reveals the inline error instead
+  // of silently submitting — the reason gates the actual submit (spec AC).
+  const hasDrafts = draftCount > 0 && !working && Boolean(onSubmitInteractionVerdicts);
+  const canApply = hasDrafts && invalidDraftIds.size === 0;
+
+  function toggleDraft(itemId: string, verdict: RequestItemVerdictValue) {
+    setDrafts((current) => {
+      const next = new Map(current);
+      const existing = next.get(itemId);
+      if (existing?.verdict === verdict) {
+        next.delete(itemId); // per-item undo
+      } else {
+        next.set(itemId, { verdict, reason: existing?.reason ?? "" });
+      }
+      return next;
+    });
+  }
+
+  function setDraftReason(itemId: string, reason: string) {
+    setDrafts((current) => {
+      const existing = current.get(itemId);
+      if (!existing) return current;
+      const next = new Map(current);
+      next.set(itemId, { ...existing, reason });
+      return next;
+    });
+  }
+
+  function handleApproveAll() {
+    if (!allowBulkApprove) return;
+    setDrafts((current) => {
+      const next = new Map(current);
+      for (const id of progress.pendingItemIds) {
+        const existing = next.get(id);
+        next.set(id, { verdict: "approve", reason: existing?.reason ?? "" });
+      }
+      return next;
+    });
+  }
+
+  async function handleApply() {
+    setAttempted(true);
+    if (!onSubmitInteractionVerdicts || draftCount === 0 || invalidDraftIds.size > 0) return;
+    const verdicts = draftEntries.map(([id, draft]) => ({
+      id,
+      verdict: draft.verdict,
+      reason: draft.reason.trim() ? draft.reason.trim() : undefined,
+    }));
+    setWorking(true);
+    setApplyingItemIds(new Set(verdicts.map((entry) => entry.id)));
+    setActionError(null);
+    try {
+      await onSubmitInteractionVerdicts(interaction, verdicts);
+      // Success: the parent refetch updates `interaction.result`, the effect
+      // above clears drafts + applying state, and terminal chips render.
+    } catch {
+      setActionError("Try again");
+      setApplyingItemIds(new Set());
+      setWorking(false);
+    }
+  }
+
+  const applyLabel = draftCount === 0
+    ? "Apply 0 decisions"
+    : `Apply ${draftCount} decision${draftCount === 1 ? "" : "s"}`;
+
+  return (
+    <div className="space-y-4">
+      {/* Prompt + details (S1) */}
+      <div className="space-y-3 rounded-sm border border-border/70 bg-background/75 p-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="text-sm leading-6 text-foreground">{payload.prompt}</div>
+          <VerdictProgressBadge progress={progress} pendingReason={invalidDraftIds.size > 0} />
+        </div>
+        {payload.detailsMarkdown ? (
+          <div className="border-t border-border/60 pt-3 text-sm">
+            <MarkdownBody externalReferences={externalReferences}>{payload.detailsMarkdown}</MarkdownBody>
+          </div>
+        ) : null}
+        {interaction.payload.target ? (
+          <RequestConfirmationTargetChip interaction={interaction} target={interaction.payload.target} />
+        ) : null}
+      </div>
+
+      {/* Stale / superseded notice (S6) */}
+      {isExpired ? (
+        <div className="rounded-sm border border-amber-500/50 bg-amber-500/10 px-3 py-2 text-sm text-amber-900 dark:text-amber-100">
+          <div className="flex items-center gap-2 font-medium">
+            <AlertTriangle className="h-4 w-4" aria-hidden />
+            {interaction.result?.outcome === "superseded_by_comment"
+              ? "This review expired after a later comment."
+              : interaction.result?.outcome === "stale_target"
+                ? "This review expired after the target changed."
+                : "This review expired."}
+          </div>
+          {progress.decided > 0 ? (
+            <p className="mt-1 text-xs leading-5">
+              {progress.decided === 1 ? "1 item was" : `${progress.decided} items were`} already applied and cannot be
+              reverted. Remaining items were cancelled.
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+
+      {/* Item list (S1/S2/S3/S4) */}
+      <ul className="space-y-2" aria-label="Items to review">
+        {items.map((item) => {
+          const resolved = resolvedById.get(item.id);
+          const applying = applyingItemIds.has(item.id);
+          const draft = drafts.get(item.id);
+          return (
+            <li
+              key={item.id}
+              className={cn(
+                "rounded-sm border border-border/70 bg-background/60 p-3",
+                draft && !resolved && "border-border",
+              )}
+              data-item-id={item.id}
+              data-item-state={resolved ? "resolved" : applying ? "applying" : draft ? "draft" : "pending"}
+            >
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="min-w-0 flex-1 basis-64">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-sm font-medium leading-5 text-foreground">{item.label}</span>
+                    <ItemVerdictDeepLink item={item} />
+                  </div>
+                  {item.description ? (
+                    <p className="mt-0.5 text-sm leading-5 text-muted-foreground">{item.description}</p>
+                  ) : null}
+                  {item.previewMarkdown ? (
+                    <div className="mt-2 rounded-sm border border-border/50 bg-muted/20 px-2.5 py-2 text-xs">
+                      <MarkdownBody externalReferences={externalReferences}>{item.previewMarkdown}</MarkdownBody>
+                    </div>
+                  ) : null}
+                  {resolved?.reason ? (
+                    <p className="mt-2 text-xs leading-5 text-muted-foreground">
+                      <span className="font-medium text-foreground">{reasonLabel}: </span>
+                      {resolved.reason}
+                    </p>
+                  ) : null}
+                </div>
+
+                <div className="flex shrink-0 flex-col items-end gap-1">
+                  {resolved ? (
+                    <VerdictConsequenceChip verdict={resolved.verdict} />
+                  ) : applying ? (
+                    <span className="inline-flex items-center gap-1.5 rounded-sm border border-border/70 bg-muted/40 px-2 py-0.5 text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
+                      <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" aria-hidden />
+                      Applying…
+                    </span>
+                  ) : isTerminal ? (
+                    <span className="inline-flex items-center gap-1 rounded-sm border border-border/70 bg-muted/30 px-2 py-0.5 text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
+                      <CircleDashed className="h-3.5 w-3.5" aria-hidden />
+                      Not decided
+                    </span>
+                  ) : (
+                    <ItemVerdictSegmentedControl
+                      itemId={item.id}
+                      verdicts={enabledVerdicts}
+                      value={draft?.verdict ?? null}
+                      disabled={working}
+                      onSelect={(verdict) => toggleDraft(item.id, verdict)}
+                    />
+                  )}
+                </div>
+              </div>
+
+              {/* Draft reason field (S2) — reveals when the draft verdict needs a reason */}
+              {!resolved && !applying && draft && requireReasonOn.has(draft.verdict) ? (
+                <div className="mt-3 space-y-1.5">
+                  <label
+                    htmlFor={`${interaction.id}-${item.id}-reason`}
+                    className="text-xs font-medium text-foreground"
+                  >
+                    {reasonLabel}
+                  </label>
+                  <Textarea
+                    id={`${interaction.id}-${item.id}-reason`}
+                    value={draft.reason}
+                    onChange={(event) => setDraftReason(item.id, event.target.value)}
+                    placeholder="Give the agent a reason so it can act on this item."
+                    aria-invalid={attempted && invalidDraftIds.has(item.id)}
+                    className={cn(
+                      "min-h-16 bg-background text-sm",
+                      attempted && invalidDraftIds.has(item.id) && "border-rose-500 focus-visible:ring-rose-500/25",
+                    )}
+                  />
+                  {attempted && invalidDraftIds.has(item.id) ? (
+                    <p className="text-xs text-destructive">A reason is required to {VERDICT_LABEL[draft.verdict].toLowerCase()} this item.</p>
+                  ) : null}
+                </div>
+              ) : null}
+            </li>
+          );
+        })}
+      </ul>
+
+      {/* Complete summary (S5) */}
+      {isComplete && !isExpired ? (
+        <div className="flex flex-wrap items-center gap-2 rounded-sm border border-emerald-500/50 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-900 dark:text-emerald-100">
+          <CheckCircle2 className="h-4 w-4" aria-hidden />
+          <span className="font-medium">
+            {progress.decided} decided · {progress.approved} approved · {progress.rejected} rejected
+            {progress.deferred > 0 ? ` · ${progress.deferred} deferred` : ""}
+          </span>
+        </div>
+      ) : null}
+
+      {/* Pinned batch bar (S1/S2) — only while items remain actionable */}
+      {!isTerminal && progress.pendingItemIds.length > 0 ? (
+        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/60 pt-3">
+          <div className="text-xs text-muted-foreground">
+            {draftCount > 0
+              ? `${draftCount} draft verdict${draftCount === 1 ? "" : "s"} ready to apply`
+              : "Mark verdicts, then apply them in one pass."}
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            {allowBulkApprove ? (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={working || progress.pendingItemIds.length === 0}
+                onClick={handleApproveAll}
+              >
+                <ThumbsUp className="h-4 w-4" aria-hidden />
+                Approve all
+              </Button>
+            ) : null}
+            <Button
+              type="button"
+              size="sm"
+              variant="default"
+              aria-disabled={!canApply}
+              disabled={!hasDrafts}
+              onClick={() => void handleApply()}
+            >
+              {working ? (
+                <>
+                  <Loader2 className="h-4 w-4 motion-safe:animate-spin" aria-hidden />
+                  Applying…
+                </>
+              ) : (
+                applyLabel
+              )}
+            </Button>
+          </div>
+        </div>
+      ) : null}
+
+      {actionError ? (
+        <div className="rounded-sm border border-destructive/60 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {actionError}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function VerdictProgressBadge({
+  progress,
+  pendingReason,
+}: {
+  progress: ReturnType<typeof getItemVerdictProgress>;
+  pendingReason: boolean;
+}) {
+  const pct = progress.total > 0 ? Math.round((progress.decided / progress.total) * 100) : 0;
+  return (
+    <div className="flex items-center gap-2">
+      {/* Von Restorff accent when a draft reject is missing its reason */}
+      {pendingReason ? (
+        <span className="inline-flex items-center gap-1 rounded-sm border border-amber-500/60 bg-amber-500/10 px-1.5 py-0.5 text-(length:--text-nano) font-semibold uppercase tracking-(--tracking-eyebrow) text-amber-900 dark:text-amber-100">
+          <AlertTriangle className="h-3 w-3" aria-hidden />
+          Reason needed
+        </span>
+      ) : null}
+      <div
+        className="flex items-center gap-2"
+        role="progressbar"
+        aria-valuemin={0}
+        aria-valuemax={progress.total}
+        aria-valuenow={progress.decided}
+        aria-label={`${progress.decided} of ${progress.total} decided`}
+      >
+        <div className="h-1.5 w-16 overflow-hidden rounded-full bg-muted">
+          <div
+            className="h-full rounded-full bg-primary transition-[width] motion-reduce:transition-none"
+            style={{ width: `${pct}%` }}
+          />
+        </div>
+        <span className="whitespace-nowrap text-xs font-medium text-muted-foreground">
+          {progress.decided} of {progress.total} decided
+        </span>
+      </div>
+    </div>
+  );
+}
+
 export function IssueThreadInteractionCard({
   interaction,
   agentMap,
@@ -1765,9 +2449,15 @@ export function IssueThreadInteractionCard({
   onRejectInteraction,
   onSubmitInteractionAnswers,
   onCancelInteraction,
+  onSubmitInteractionVerdicts,
+  onUploadImage,
+  externalReferences,
 }: IssueThreadInteractionCardProps) {
-  const StatusIcon = statusIcon(interaction.status);
-  const styles = statusClasses(interaction.status);
+  const isPlan = isPlanConfirmation(interaction);
+  const resumeFailure = requestConfirmationResumeFailure(interaction);
+  const planStyles = isPlan ? planStatusClasses(interaction.status, resumeFailure) : null;
+  const StatusIcon = planStyles ? planStyles.Icon : statusIcon(interaction.status);
+  const styles = planStyles ?? statusClasses(interaction.status);
   const createdByLabel = resolveActorLabel({
     agentId: interaction.createdByAgentId,
     userId: interaction.createdByUserId,
@@ -1787,25 +2477,16 @@ export function IssueThreadInteractionCard({
       : null;
 
   return (
-    <div className={cn("rounded-sm border p-5 shadow-none", styles.shell)}>
+    <div className={cn("rounded-lg border p-5 shadow-none", styles.shell)}>
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="min-w-0 flex-1 basis-64">
           <div className="flex flex-wrap items-center gap-2">
-            <span className={cn("inline-flex items-center gap-1 rounded-sm border px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.16em]", styles.badge)}>
+            <span className={cn("inline-flex items-center gap-1 rounded-sm border px-2.5 py-1 text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow)", styles.badge)}>
               <StatusIcon className="h-3.5 w-3.5" />
-              {interactionKindLabel(interaction.kind)}
+              {isPlan ? "Plan" : interactionKindLabel(interaction.kind)}
               <span className="text-current/60">/</span>
-              {statusLabel(interaction.status)}
+              {planStyles ? planStyles.label : statusLabel(interaction.status)}
             </span>
-            {interaction.continuationPolicy === "wake_assignee"
-              || interaction.continuationPolicy === "wake_assignee_on_accept" ? (
-              <span className="inline-flex items-center gap-1 rounded-sm border border-border/70 bg-transparent px-2.5 py-1 text-[11px] font-medium uppercase tracking-[0.16em] text-foreground/70">
-                <ListChecks className="h-3.5 w-3.5" />
-                {interaction.continuationPolicy === "wake_assignee_on_accept"
-                  ? "Wakes on confirm"
-                  : "Wakes assignee"}
-              </span>
-            ) : null}
           </div>
 
           <div className="mt-3 text-lg font-bold text-foreground">
@@ -1814,8 +2495,12 @@ export function IssueThreadInteractionCard({
                 ? "Suggested task tree"
                 : interaction.kind === "ask_user_questions"
                   ? interaction.payload.title ?? "Questions for the operator"
-                  : interaction.kind === "request_checkbox_confirmation"
-                    ? "Checkbox confirmation requested"
+                : interaction.kind === "request_checkbox_confirmation"
+                  ? "Checkbox confirmation requested"
+                : interaction.kind === "request_item_verdicts"
+                  ? "Review these items"
+                  : isPlan
+                    ? "Plan review"
                     : "Confirmation requested")}
           </div>
           {interaction.summary ? (
@@ -1853,18 +2538,29 @@ export function IssueThreadInteractionCard({
             interaction={interaction}
             onSubmitInteractionAnswers={onSubmitInteractionAnswers}
             onCancelInteraction={onCancelInteraction}
+            externalReferences={externalReferences}
           />
         ) : interaction.kind === "request_checkbox_confirmation" ? (
           <RequestCheckboxConfirmationCard
             interaction={interaction}
             onAcceptInteraction={onAcceptInteraction}
             onRejectInteraction={onRejectInteraction}
+            externalReferences={externalReferences}
+          />
+        ) : interaction.kind === "request_item_verdicts" ? (
+          <RequestItemVerdictsCard
+            interaction={interaction}
+            onSubmitInteractionVerdicts={onSubmitInteractionVerdicts}
+            externalReferences={externalReferences}
           />
         ) : (
           <RequestConfirmationCard
             interaction={interaction}
+            isPlan={isPlan}
             onAcceptInteraction={onAcceptInteraction}
             onRejectInteraction={onRejectInteraction}
+            onUploadImage={onUploadImage}
+            externalReferences={externalReferences}
           />
         )}
       </div>

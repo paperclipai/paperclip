@@ -28,6 +28,7 @@ import {
   readConfigValueAtPath,
   writeConfigValueAtPath,
 } from "./json-schema-secret-refs.js";
+import { resolveActiveEnvironmentCustomImageTemplateForRuntime } from "./environment-custom-image-runtime.js";
 
 const secretRefSchema = z.object({
   type: z.literal("secret_ref"),
@@ -74,6 +75,8 @@ const fakeSandboxEnvironmentConfigSchema = z.object({
     .min(1, "Fake sandbox environments require an image.")
     .default("ubuntu:24.04"),
   reuseLease: z.boolean().optional().default(false),
+  streamRunLogs: z.boolean().optional(),
+  archiveOnRelease: z.boolean().optional(),
 }).strict();
 
 const pluginSandboxProviderKeySchema = z.string()
@@ -88,6 +91,8 @@ const pluginSandboxEnvironmentConfigSchema = z.object({
   provider: pluginSandboxProviderKeySchema,
   timeoutMs: z.coerce.number().int().min(1).max(86_400_000).optional(),
   reuseLease: z.boolean().optional().default(false),
+  streamRunLogs: z.boolean().optional(),
+  archiveOnRelease: z.boolean().optional(),
 }).catchall(z.unknown());
 
 const pluginEnvironmentConfigSchema = z.object({
@@ -146,6 +151,13 @@ async function getSandboxProviderConfigSchema(
   return schema && typeof schema === "object" && !Array.isArray(schema)
     ? schema as Record<string, unknown>
     : null;
+}
+
+export async function resolveSandboxProviderSecretRefPaths(
+  db: Db,
+  provider: string,
+): Promise<Set<string>> {
+  return collectSecretRefPaths(await getSandboxProviderConfigSchema(db, provider));
 }
 
 function secretName(input: {
@@ -264,6 +276,45 @@ async function resolveConfigSecretRefsForRuntime(input: {
   return nextConfig;
 }
 
+async function resolveConfigSecretRefsForProbe(input: {
+  db: Db;
+  companyId: string;
+  config: Record<string, unknown>;
+  schema: Record<string, unknown> | null;
+  accessContext?: {
+    actorType: "agent" | "user";
+    actorId: string;
+    actorSource?: "local_implicit" | "session" | "board_key" | "agent_key" | "agent_jwt" | "cloud_tenant";
+    heartbeatRunId?: string | null;
+  };
+}): Promise<Record<string, unknown>> {
+  const secrets = secretService(input.db);
+  let nextConfig = { ...input.config };
+  for (const path of collectSecretRefPaths(input.schema)) {
+    const current = readConfigValueAtPath(nextConfig, path);
+    if (typeof current !== "string") continue;
+    const trimmed = current.trim();
+    if (!isUuidSecretRef(trimmed)) continue;
+    // Unsaved draft probes do not have an environment record yet, so they
+    // cannot rely on environment-bound secret resolution. Resolve directly for
+    // this ephemeral board-only probe and never persist the plaintext value.
+    nextConfig = writeConfigValueAtPath(
+      nextConfig,
+      path,
+      await secrets.resolveSecretValueForEphemeralAccess(input.companyId, trimmed, "latest", {
+        consumerType: "system",
+        consumerId: "environment-probe-config",
+        configPath: path,
+        actorType: input.accessContext?.actorType ?? "system",
+        actorId: input.accessContext?.actorId ?? null,
+        actorSource: input.accessContext?.actorSource,
+        heartbeatRunId: input.accessContext?.heartbeatRunId ?? null,
+      }),
+    );
+  }
+  return nextConfig;
+}
+
 export async function collectEnvironmentSecretRefs(input: {
   db: Db;
   environment: Pick<Environment, "id" | "driver" | "config">;
@@ -338,8 +389,15 @@ export function normalizeEnvironmentConfig(input: {
 
 export function normalizeEnvironmentConfigForProbe(input: {
   db: Db;
+  companyId: string;
   driver: EnvironmentDriver;
   config: Record<string, unknown> | null | undefined;
+  accessContext?: {
+    actorType: "agent" | "user";
+    actorId: string;
+    actorSource?: "local_implicit" | "session" | "board_key" | "agent_key" | "agent_jwt" | "cloud_tenant";
+    heartbeatRunId?: string | null;
+  };
   pluginWorkerManager?: PluginWorkerManager;
 }): Promise<Record<string, unknown>> | Record<string, unknown> {
   if (input.driver === "ssh") {
@@ -370,9 +428,20 @@ export function normalizeEnvironmentConfigForProbe(input: {
       workerManager: input.pluginWorkerManager,
       provider: parsed.data.provider,
       config: stripSandboxProviderEnvelope(parsed.data),
-    }).then((validated) => ({
+    }).then(async (validated) => ({
       provider: parsed.data.provider,
-      ...validated.normalizedConfig,
+      ...(await resolveConfigSecretRefsForProbe({
+        db: input.db,
+        companyId: input.companyId,
+        config: validated.normalizedConfig,
+        accessContext: input.accessContext,
+        schema:
+          validated.driver.configSchema &&
+          typeof validated.driver.configSchema === "object" &&
+          !Array.isArray(validated.driver.configSchema)
+            ? validated.driver.configSchema as Record<string, unknown>
+            : null,
+      })),
     }));
   }
 
@@ -491,9 +560,17 @@ export async function normalizeEnvironmentConfigForPersistence(input: {
 
 export async function resolveEnvironmentDriverConfigForRuntime(
   db: Db,
-  companyId: string,
+  companyId: string | null,
   environment: Pick<Environment, "driver" | "config"> & Partial<Pick<Environment, "id">>,
-  context?: { issueId?: string | null; heartbeatRunId?: string | null },
+  context?: {
+    issueId?: string | null;
+    heartbeatRunId?: string | null;
+    // Force applying the active custom-image template even without a run/issue
+    // context. Operator-initiated `Test` probes have no issueId/heartbeatRunId
+    // but must still resolve the active custom image as prepared runtime
+    // configuration and tooling so the test reflects what real agent runs use.
+    applyCustomImageTemplate?: boolean;
+  },
 ): Promise<ParsedEnvironmentConfig> {
   const parsed = parseEnvironmentDriverConfig(environment);
   const secrets = secretService(db);
@@ -503,6 +580,9 @@ export async function resolveEnvironmentDriverConfigForRuntime(
   }
 
   if (parsed.driver === "ssh" && parsed.config.privateKeySecretRef) {
+    if (!companyId) {
+      throw unprocessable("Runtime secret resolution requires a companyId context");
+    }
     return {
       driver: "ssh",
       config: {
@@ -526,19 +606,41 @@ export async function resolveEnvironmentDriverConfigForRuntime(
   }
 
   if (parsed.driver === "sandbox" && parsed.config.provider !== "fake") {
-    return {
-      driver: "sandbox",
-      config: await resolveConfigSecretRefsForRuntime({
+    const schema = await getSandboxProviderConfigSchema(db, parsed.config.provider);
+    let runtimeConfig = parsed.config;
+    if (companyId) {
+      runtimeConfig = await resolveConfigSecretRefsForRuntime({
         db,
         companyId,
         config: parsed.config as Record<string, unknown>,
-        schema: await getSandboxProviderConfigSchema(db, parsed.config.provider),
+        schema,
         context: {
           consumerId: environmentId!,
           issueId: context?.issueId ?? null,
           heartbeatRunId: context?.heartbeatRunId ?? null,
         },
-      }) as SandboxEnvironmentConfig,
+      }) as SandboxEnvironmentConfig;
+    } else {
+      for (const path of collectSecretRefPaths(schema)) {
+        const current = readConfigValueAtPath(parsed.config as Record<string, unknown>, path);
+        if (typeof current === "string" && isUuidSecretRef(current.trim())) {
+          throw unprocessable("Runtime secret resolution requires a companyId context");
+        }
+      }
+    }
+    return {
+      driver: "sandbox",
+      config: environmentId && (context?.issueId || context?.heartbeatRunId || context?.applyCustomImageTemplate)
+        ? await resolveActiveEnvironmentCustomImageTemplateForRuntime(db, {
+            environmentId,
+            baseConfig: parsed.config,
+            runtimeConfig,
+            // Match the capture-time fingerprint exclusions: secret-ref paths
+            // are excluded when the template's source fingerprint is computed,
+            // so they must be excluded when re-checking it here.
+            secretRefExcludePaths: collectSecretRefPaths(schema),
+          })
+        : runtimeConfig,
     };
   }
 

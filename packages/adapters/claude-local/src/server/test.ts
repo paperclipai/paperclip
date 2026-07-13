@@ -1,3 +1,6 @@
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import type {
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestContext,
@@ -8,6 +11,7 @@ import {
   asBoolean,
   asNumber,
   asStringArray,
+  parseJson,
   parseObject,
   ensurePathInEnv,
 } from "@paperclipai/adapter-utils/server-utils";
@@ -15,15 +19,24 @@ import {
   ensureAdapterExecutionTargetCommandResolvable,
   ensureAdapterExecutionTargetDirectory,
   maybeRunSandboxInstallCommand,
+  prepareAdapterExecutionTargetRuntime,
   runAdapterExecutionTargetProcess,
   describeAdapterExecutionTarget,
   resolveAdapterExecutionTargetCwd,
+  adapterExecutionTargetUsesManagedHome,
 } from "@paperclipai/adapter-utils/execution-target";
-import path from "node:path";
-import { detectClaudeLoginRequired, parseClaudeStreamJson } from "./parse.js";
+import {
+  describeClaudeFailure,
+  detectClaudeLoginRequired,
+  isClaudeTransientUpstreamError,
+  parseClaudeStreamJson,
+} from "./parse.js";
+import { claudeCommandLooksLike, claudeCommandSupportsEffortFlag } from "./cli-capabilities.js";
 import { isBedrockModelId } from "./models.js";
 import { buildClaudeProbePermissionArgs } from "./permissions.js";
+import { materializeRemoteClaudeConfig, prepareClaudeConfigSeed } from "./claude-config.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
+import { resolveClaudeExecutionEngineForRun, testClaudeAcpEnvironment } from "./acp.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
   if (checks.some((check) => check.level === "error")) return "fail";
@@ -44,13 +57,29 @@ function firstNonEmptyLine(text: string): string {
   );
 }
 
-function commandLooksLike(command: string, expected: string): boolean {
-  const base = path.basename(command).toLowerCase();
-  return base === expected || base === `${expected}.cmd` || base === `${expected}.exe`;
+function lastNonInitStdoutLine(text: string): string {
+  const lines = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index]!;
+    const parsed = parseJson(line);
+    if (parsed && asString(parsed.type, "") === "system" && asString(parsed.subtype, "") === "init") {
+      continue;
+    }
+    return line;
+  }
+  return "";
+}
+
+function truncateDetail(value: string, max = 240): string {
+  const clean = value.replace(/\s+/g, " ").trim();
+  return clean.length > max ? `${clean.slice(0, max - 1)}…` : clean;
 }
 
 function summarizeProbeDetail(stdout: string, stderr: string): string | null {
-  const raw = firstNonEmptyLine(stderr) || firstNonEmptyLine(stdout);
+  const raw = firstNonEmptyLine(stderr) || lastNonInitStdoutLine(stdout);
   if (!raw) return null;
   const clean = raw.replace(/\s+/g, " ").trim();
   const max = 240;
@@ -60,7 +89,24 @@ function summarizeProbeDetail(stdout: string, stderr: string): string | null {
 export async function testEnvironment(
   ctx: AdapterEnvironmentTestContext,
 ): Promise<AdapterEnvironmentTestResult> {
+  const engineSelection = await resolveClaudeExecutionEngineForRun({
+    config: parseObject(ctx.config),
+    executionTarget: ctx.executionTarget,
+  });
+  if (engineSelection.engine === "acp") {
+    return testClaudeAcpEnvironment(ctx);
+  }
+
   const checks: AdapterEnvironmentCheck[] = [];
+  if (!engineSelection.explicit && engineSelection.fallbackReason) {
+    checks.push({
+      code: "claude_acp_default_fallback",
+      level: "warn",
+      message: "Claude ACP default is unavailable; testing the Claude CLI fallback lane.",
+      detail: engineSelection.fallbackReason,
+      hint: "Fix the ACP prerequisite to use the default ACP lane, or set engine=cli to pin the CLI lane.",
+    });
+  }
   const config = parseObject(ctx.config);
   const command = asString(config.command, "claude");
   const target = ctx.executionTarget ?? null;
@@ -105,7 +151,6 @@ export async function testEnvironment(
   for (const [key, value] of Object.entries(envConfig)) {
     if (typeof value === "string") env[key] = value;
   }
-  const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
   const installCheck = await maybeRunSandboxInstallCommand({
     runId,
     target,
@@ -115,6 +160,69 @@ export async function testEnvironment(
     env,
   });
   if (installCheck) checks.push(installCheck);
+  const hasExplicitClaudeConfigDir = isNonEmpty(env.CLAUDE_CONFIG_DIR);
+  if (targetIsRemote && adapterExecutionTargetUsesManagedHome(target) && !hasExplicitClaudeConfigDir) {
+    let tempWorkspaceDir: string | null = null;
+    let preparedRuntime: Awaited<ReturnType<typeof prepareAdapterExecutionTargetRuntime>> | null = null;
+    try {
+      const seedDir = await prepareClaudeConfigSeed(process.env, async () => {}, ctx.companyId);
+      const managedRemoteCwd = target?.kind === "remote" ? target.remoteCwd : cwd;
+      tempWorkspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-envtest-workspace-"));
+      preparedRuntime = await prepareAdapterExecutionTargetRuntime({
+        runId,
+        target,
+        adapterKey: "claude",
+        workspaceLocalDir: tempWorkspaceDir,
+        workspaceRemoteDir: managedRemoteCwd,
+        timeoutSec: Math.max(1, asNumber(config.helloProbeTimeoutSec, targetIsSandbox ? 90 : 45)),
+        assets: [
+          {
+            key: "config-seed",
+            localDir: seedDir,
+            followSymlinks: true,
+          },
+        ],
+      });
+      const runtimeRootDir =
+        preparedRuntime.runtimeRootDir ?? path.posix.join(managedRemoteCwd, ".paperclip-runtime", "claude");
+      const remoteClaudeConfigSeedDir =
+        preparedRuntime.assetDirs["config-seed"] ?? path.posix.join(runtimeRootDir, "config-seed");
+      const remoteClaudeConfigDir = path.posix.join(runtimeRootDir, "config");
+      env.CLAUDE_CONFIG_DIR = remoteClaudeConfigDir;
+      await materializeRemoteClaudeConfig({
+        runId,
+        target,
+        remoteClaudeConfigDir,
+        remoteClaudeConfigSeedDir,
+        options: {
+          cwd,
+          env,
+          timeoutSec: Math.max(15, asNumber(config.helloProbeTimeoutSec, targetIsSandbox ? 90 : 45)),
+          graceSec: 5,
+          onLog: async () => {},
+        },
+      });
+      checks.push({
+        code: "claude_managed_config_dir",
+        level: "info",
+        message: "Sandbox probe is using Paperclip-managed Claude config materialization.",
+        detail: remoteClaudeConfigDir,
+      });
+    } catch (err) {
+      checks.push({
+        code: "claude_managed_config_dir_failed",
+        level: "error",
+        message: "Could not materialize Paperclip-managed Claude config for the sandbox probe.",
+        detail: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      await preparedRuntime?.restoreWorkspace().catch(() => undefined);
+      if (tempWorkspaceDir) {
+        await fs.rm(tempWorkspaceDir, { recursive: true, force: true }).catch(() => undefined);
+      }
+    }
+  }
+  const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
   try {
     await ensureAdapterExecutionTargetCommandResolvable(command, target, cwd, runtimeEnv);
     checks.push({
@@ -179,9 +287,14 @@ export async function testEnvironment(
   }
 
   const canRunProbe =
-    checks.every((check) => check.code !== "claude_cwd_invalid" && check.code !== "claude_command_unresolvable");
+    checks.every(
+      (check) =>
+        check.code !== "claude_cwd_invalid" &&
+        check.code !== "claude_command_unresolvable" &&
+        check.code !== "claude_managed_config_dir_failed",
+    );
   if (canRunProbe) {
-    if (!commandLooksLike(command, "claude")) {
+    if (!claudeCommandLooksLike(command, "claude")) {
       checks.push({
         code: "claude_hello_probe_skipped_custom_command",
         level: "info",
@@ -201,14 +314,37 @@ export async function testEnvironment(
         return asStringArray(config.args);
       })();
 
+      let effectiveEffort = effort;
+      if (targetIsSandbox && effort) {
+        const supportsEffort = await claudeCommandSupportsEffortFlag({
+          runId,
+          command,
+          target,
+          cwd,
+          env,
+          timeoutSec: 45,
+          graceSec: 5,
+        });
+        if (supportsEffort === false) {
+          effectiveEffort = "";
+          checks.push({
+            code: "claude_effort_flag_unsupported",
+            level: "warn",
+            message:
+              "Claude CLI in the sandbox does not advertise --effort; the probe omitted the configured reasoning effort.",
+            hint: "Upgrade the sandbox CLI/template to a newer Claude Code release to restore reasoning-effort control.",
+          });
+        }
+      }
+
       const args = ["--print", "-", "--output-format", "stream-json", "--verbose"];
-      args.push(...buildClaudeProbePermissionArgs({ dangerouslySkipPermissions, targetIsSandbox }));
+      args.push(...buildClaudeProbePermissionArgs({ dangerouslySkipPermissions, targetIsRemote }));
       if (chrome) args.push("--chrome");
       // For Bedrock: only pass --model when the ID is a Bedrock-native identifier.
       if (model && (!hasBedrock || isBedrockModelId(model))) {
         args.push("--model", model);
       }
-      if (effort) args.push("--effort", effort);
+      if (effectiveEffort) args.push("--effort", effectiveEffort);
       if (maxTurns > 0) args.push("--max-turns", String(maxTurns));
       if (extraArgs.length > 0) args.push(...extraArgs);
 
@@ -278,13 +414,42 @@ export async function testEnvironment(
               }),
         });
       } else {
-        checks.push({
-          code: "claude_hello_probe_failed",
-          level: "error",
-          message: "Claude hello probe failed.",
-          ...(detail ? { detail } : {}),
-          hint: "Run `claude --print - --output-format stream-json --verbose` manually in this directory and prompt `Respond with hello` to debug.",
+        // Surface the actual failure instead of the leading stream-json
+        // `system/init` line: the real error lives in the final `result`
+        // event (parsed) or, when the CLI dies before emitting one, the last
+        // non-init stdout line — never the first one `summarizeProbeDetail`
+        // returns.
+        const stdoutFallback = lastNonInitStdoutLine(probe.stdout);
+        const failureDetail =
+          (parsed ? describeClaudeFailure(parsed) : null) ||
+          (firstNonEmptyLine(probe.stderr)
+            ? truncateDetail(firstNonEmptyLine(probe.stderr))
+            : "") ||
+          (stdoutFallback ? truncateDetail(stdoutFallback) : "") ||
+          detail ||
+          "";
+        const transient = isClaudeTransientUpstreamError({
+          parsed,
+          stdout: probe.stdout,
+          stderr: probe.stderr,
         });
+        checks.push(
+          transient
+            ? {
+                code: "claude_hello_probe_transient_upstream",
+                level: "warn",
+                message: "Claude hello probe hit a transient upstream error (rate limit or overload).",
+                ...(failureDetail ? { detail: failureDetail } : {}),
+                hint: "This is usually temporary. Wait a moment and re-run Test.",
+              }
+            : {
+                code: "claude_hello_probe_failed",
+                level: "error",
+                message: "Claude hello probe failed.",
+                ...(failureDetail ? { detail: failureDetail } : {}),
+                hint: `Exit code ${probe.exitCode ?? "unknown"}. Run \`claude --print - --output-format stream-json --verbose\` manually in this directory and prompt \`Respond with hello\` to debug.`,
+              },
+        );
       }
     }
   }

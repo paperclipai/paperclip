@@ -9,6 +9,8 @@ import {
   companySecrets,
   companySecretVersions,
   createDb,
+  documentRevisions,
+  documents,
   executionWorkspaces,
   heartbeatRuns,
   instanceSettings,
@@ -17,6 +19,7 @@ import {
   issues,
   projectWorkspaces,
   projects,
+  routineDocuments,
   routineRuns,
   routines,
   routineTriggers,
@@ -65,6 +68,9 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     await db.delete(routineRuns);
     await db.delete(routineTriggers);
     await db.delete(routines);
+    await db.delete(routineDocuments);
+    await db.delete(documents);
+    await db.delete(documentRevisions);
     await db.delete(companySecretVersions);
     await db.delete(companySecrets);
     await db.delete(heartbeatRuns);
@@ -82,6 +88,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
   });
 
   async function seedFixture(opts?: {
+    runtimeEnv?: Record<string, string | undefined>;
     wakeup?: (
       agentId: string,
       wakeupOpts: {
@@ -98,6 +105,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const projectId = randomUUID();
+    const defaultResponsibleUserId = randomUUID();
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
     const wakeups: Array<{
       agentId: string;
@@ -116,6 +124,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       id: companyId,
       name: "Paperclip",
       issuePrefix,
+      defaultResponsibleUserId,
       requireBoardApprovalForNewAgents: false,
     });
 
@@ -139,6 +148,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     });
 
     const svc = routineService(db, {
+      runtimeEnv: opts?.runtimeEnv,
       heartbeat: {
         wakeup: async (wakeupAgentId, wakeupOpts) => {
           wakeups.push({ agentId: wakeupAgentId, opts: wakeupOpts });
@@ -148,6 +158,11 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
             (typeof wakeupOpts.contextSnapshot?.issueId === "string" && wakeupOpts.contextSnapshot.issueId) ||
             null;
           if (!issueId) return null;
+          const issue = await db
+            .select({ responsibleUserId: issues.responsibleUserId })
+            .from(issues)
+            .where(eq(issues.id, issueId))
+            .then((rows) => rows[0] ?? null);
           const queuedRunId = randomUUID();
           await db.insert(heartbeatRuns).values({
             id: queuedRunId,
@@ -156,6 +171,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
             invocationSource: wakeupOpts.source ?? "assignment",
             triggerDetail: wakeupOpts.triggerDetail ?? null,
             status: "queued",
+            responsibleUserId: issue?.responsibleUserId ?? defaultResponsibleUserId,
             contextSnapshot: { ...(wakeupOpts.contextSnapshot ?? {}), issueId },
           });
           await db
@@ -188,6 +204,18 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     );
 
     return { companyId, agentId, issueSvc, projectId, routine, svc, wakeups };
+  }
+
+  async function armWorktreeExecution(cutoff: Date, instanceId = "worktree-routines-test") {
+    await db.insert(instanceSettings).values({
+      singletonKey: "default",
+      general: {},
+      experimental: {
+        enableWorktreeRunExecution: true,
+        worktreeRunExecutionActivatedAt: cutoff.toISOString(),
+        worktreeRunExecutionActivationInstanceId: instanceId,
+      },
+    });
   }
 
   it("filters listed routines by project", async () => {
@@ -495,6 +523,26 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(restoredTrigger?.publicId).not.toBe(created.trigger.publicId);
   });
 
+  it("persists custom schedule cron expressions exactly", async () => {
+    const { companyId, routine, svc } = await seedFixture();
+    const cronExpression = "0 8-18/2 * * 1-5";
+
+    const created = await svc.createTrigger(routine.id, {
+      kind: "schedule",
+      label: "Business hours",
+      cronExpression,
+      timezone: "UTC",
+    }, {});
+
+    expect(created.trigger.cronExpression).toBe(cronExpression);
+
+    const storedTrigger = await svc.getTrigger(created.trigger.id);
+    expect(storedTrigger?.cronExpression).toBe(cronExpression);
+
+    const [listed] = await svc.list(companyId);
+    expect(listed?.triggers[0]?.cronExpression).toBe(cronExpression);
+  });
+
   it("blocks agents from restoring routine revisions assigned to another agent", async () => {
     const { companyId, routine, svc } = await seedFixture();
     const otherAgentId = randomUUID();
@@ -686,6 +734,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
         id: issues.id,
         assigneeAgentId: issues.assigneeAgentId,
         createdByUserId: issues.createdByUserId,
+        responsibleUserId: issues.responsibleUserId,
       })
       .from(issues)
       .where(eq(issues.id, run.linkedIssueId!));
@@ -693,6 +742,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       id: run.linkedIssueId,
       assigneeAgentId: agentId,
       createdByUserId: userId,
+      responsibleUserId: userId,
     });
 
     const inboxIssues = await issueSvc.list(companyId, {
@@ -701,6 +751,45 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       includeRoutineExecutions: true,
     });
     expect(inboxIssues.map((issue) => issue.id)).toContain(run.linkedIssueId);
+  });
+
+  it("uses the routine revision responsible-user snapshot for automatic runs", async () => {
+    const { companyId, agentId, projectId, svc } = await seedFixture();
+    const responsibleUserId = randomUUID();
+    const driftUserId = randomUUID();
+    const routine = await svc.create(
+      companyId,
+      {
+        projectId,
+        goalId: null,
+        parentIssueId: null,
+        title: "snapshotted owner routine",
+        description: null,
+        assigneeAgentId: agentId,
+        priority: "medium",
+        status: "active",
+        concurrencyPolicy: "coalesce_if_active",
+        catchUpPolicy: "skip_missed",
+      },
+      { userId: responsibleUserId },
+    );
+
+    await db
+      .update(routines)
+      .set({ responsibleUserId: driftUserId, updatedAt: new Date() })
+      .where(eq(routines.id, routine.id));
+
+    const run = await svc.runRoutine(routine.id, { source: "schedule" });
+
+    expect(run.status).toBe("issue_created");
+    expect(run.responsibleUserId).toBe(responsibleUserId);
+    const [createdIssue] = await db
+      .select({
+        responsibleUserId: issues.responsibleUserId,
+      })
+      .from(issues)
+      .where(eq(issues.id, run.linkedIssueId!));
+    expect(createdIssue?.responsibleUserId).toBe(responsibleUserId);
   });
 
   it("waits for the assignee wakeup to be queued before returning the routine run", async () => {
@@ -1047,6 +1136,63 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     });
   });
 
+  it("infers capital-Date variables, preserves builtin date, and validates submitted date values", async () => {
+    const { companyId, agentId, projectId, svc } = await seedFixture();
+    const dateRoutine = await svc.create(
+      companyId,
+      {
+        projectId,
+        goalId: null,
+        parentIssueId: null,
+        title: "date check {{startDate}} on {{date}}",
+        description: "Range {{startDate}} to {{endDate}}",
+        assigneeAgentId: agentId,
+        priority: "medium",
+        status: "active",
+        concurrencyPolicy: "coalesce_if_active",
+        catchUpPolicy: "skip_missed",
+      },
+      {},
+    );
+
+    expect(dateRoutine.variables).toEqual([
+      { name: "startDate", label: null, type: "date", defaultValue: null, required: true, options: [] },
+      { name: "endDate", label: null, type: "date", defaultValue: null, required: true, options: [] },
+    ]);
+
+    await expect(
+      svc.runRoutine(dateRoutine.id, {
+        source: "manual",
+        variables: { startDate: "2024-02-30", endDate: "2024-03-01" },
+      }),
+    ).rejects.toThrow(/valid YYYY-MM-DD date/i);
+
+    const run = await svc.runRoutine(dateRoutine.id, {
+      source: "manual",
+      variables: { startDate: "2024-02-29", endDate: "2024-03-01" },
+    });
+
+    const storedIssue = await db
+      .select({ title: issues.title, description: issues.description })
+      .from(issues)
+      .where(eq(issues.id, run.linkedIssueId!))
+      .then((rows) => rows[0] ?? null);
+    const storedRun = await db
+      .select({ triggerPayload: routineRuns.triggerPayload })
+      .from(routineRuns)
+      .where(eq(routineRuns.id, run.id))
+      .then((rows) => rows[0] ?? null);
+
+    expect(storedIssue?.title).toMatch(/^date check 2024-02-29 on \d{4}-\d{2}-\d{2}$/);
+    expect(storedIssue?.description).toBe("Range 2024-02-29 to 2024-03-01");
+    expect(storedRun?.triggerPayload).toEqual({
+      variables: {
+        startDate: "2024-02-29",
+        endDate: "2024-03-01",
+      },
+    });
+  });
+
   it("attaches the selected execution workspace to manually triggered routine issues", async () => {
     const { companyId, projectId, routine, svc } = await seedFixture();
     const projectWorkspaceId = randomUUID();
@@ -1340,6 +1486,32 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     ).rejects.toThrow(/require defaults for required variables/i);
   });
 
+  it("rejects invalid date defaults before persisting routine variables", async () => {
+    const { companyId, agentId, projectId, svc } = await seedFixture();
+
+    await expect(
+      svc.create(
+        companyId,
+        {
+          projectId,
+          goalId: null,
+          parentIssueId: null,
+          title: "date check {{startDate}}",
+          description: null,
+          assigneeAgentId: agentId,
+          priority: "medium",
+          status: "active",
+          concurrencyPolicy: "coalesce_if_active",
+          catchUpPolicy: "skip_missed",
+          variables: [
+            { name: "startDate", label: null, type: "date", defaultValue: "2024-02-30", required: true, options: [] },
+          ],
+        },
+        {},
+      ),
+    ).rejects.toThrow(/valid YYYY-MM-DD date/i);
+  });
+
   it("serializes concurrent dispatches until the first execution issue is linked to a queued run", async () => {
     const { routine, svc } = await seedFixture({
       wakeup: async (wakeupAgentId, wakeupOpts) => {
@@ -1586,6 +1758,80 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
 
     expect(run.source).toBe("webhook");
     expect(run.status).toBe("issue_created");
+  });
+
+  it("records suppressed automatic runs when worktree execution is disabled while allowing manual runs", async () => {
+    const runtimeEnv = { PAPERCLIP_IN_WORKTREE: "yes", PAPERCLIP_INSTANCE_ID: "worktree-routines-test" };
+    const { companyId, routine, svc } = await seedFixture({ runtimeEnv });
+    const { trigger: scheduleTrigger } = await svc.createTrigger(
+      routine.id,
+      { kind: "schedule", cronExpression: "0 0 * * *", timezone: "UTC" },
+      {},
+    );
+    const { trigger: webhookTrigger } = await svc.createTrigger(
+      routine.id,
+      { kind: "webhook", signingMode: "none" },
+      {},
+    );
+    const pastDue = new Date("2020-01-01T00:00:00.000Z");
+    await db.update(routineTriggers).set({ nextRunAt: pastDue }).where(eq(routineTriggers.id, scheduleTrigger.id));
+
+    expect(await svc.tickScheduledTriggers(new Date())).toEqual({ triggered: 0 });
+    const webhookRun = await svc.firePublicTrigger(webhookTrigger.publicId!, { payload: { event: "created" } });
+    expect(webhookRun).toMatchObject({ source: "webhook", status: "skipped", failureReason: "worktree_execution_cutoff" });
+
+    const manualRun = await svc.runRoutine(routine.id, { source: "manual" });
+    expect(manualRun.status).toBe("issue_created");
+
+    const automatedRuns = await db.select().from(routineRuns).where(eq(routineRuns.routineId, routine.id));
+    expect(automatedRuns.filter((run) => run.failureReason === "worktree_execution_cutoff")).toHaveLength(2);
+    expect(automatedRuns.filter((run) => run.linkedIssueId)).toHaveLength(1);
+    const scheduleAfter = await db.select().from(routineTriggers).where(eq(routineTriggers.id, scheduleTrigger.id)).then((rows) => rows[0]);
+    expect(scheduleAfter!.nextRunAt!.getTime()).toBeGreaterThan(pastDue.getTime());
+    expect((await db.select().from(issues).where(eq(issues.companyId, companyId))).filter((issue) => issue.originKind === "routine_execution")).toHaveLength(1);
+  });
+
+  it("dispatches only post-cutoff scheduled routines in an armed worktree", async () => {
+    const runtimeEnv = { PAPERCLIP_IN_WORKTREE: "true", PAPERCLIP_INSTANCE_ID: "worktree-routines-test" };
+    const { companyId, agentId, projectId, routine: oldRoutine, svc } = await seedFixture({ runtimeEnv });
+    const cutoff = new Date("2025-01-01T00:00:00.000Z");
+    await armWorktreeExecution(cutoff);
+    const newRoutine = await svc.create(companyId, {
+      projectId,
+      goalId: null,
+      parentIssueId: null,
+      title: "new routine",
+      description: null,
+      assigneeAgentId: agentId,
+      priority: "medium",
+      status: "active",
+      concurrencyPolicy: "coalesce_if_active",
+      catchUpPolicy: "skip_missed",
+    }, {});
+    await db.update(routines).set({ createdAt: new Date("2024-12-31T23:59:59.000Z") }).where(eq(routines.id, oldRoutine.id));
+    await db.update(routines).set({ createdAt: new Date("2025-01-01T00:00:01.000Z") }).where(eq(routines.id, newRoutine.id));
+    const { trigger: oldTrigger } = await svc.createTrigger(oldRoutine.id, { kind: "schedule", cronExpression: "0 0 * * *", timezone: "UTC" }, {});
+    const { trigger: newTrigger } = await svc.createTrigger(newRoutine.id, { kind: "schedule", cronExpression: "0 0 * * *", timezone: "UTC" }, {});
+    await db.update(routineTriggers).set({ nextRunAt: new Date("2020-01-01T00:00:00.000Z") }).where(eq(routineTriggers.id, oldTrigger.id));
+    await db.update(routineTriggers).set({ nextRunAt: new Date("2020-01-01T00:00:00.000Z") }).where(eq(routineTriggers.id, newTrigger.id));
+
+    expect(await svc.tickScheduledTriggers(new Date())).toEqual({ triggered: 1 });
+    const oldRuns = await db.select().from(routineRuns).where(eq(routineRuns.routineId, oldRoutine.id));
+    expect(oldRuns).toMatchObject([{ status: "skipped", failureReason: "worktree_execution_cutoff", linkedIssueId: null }]);
+    const newRuns = await db.select().from(routineRuns).where(eq(routineRuns.routineId, newRoutine.id));
+    expect(newRuns).toMatchObject([{ status: "issue_created" }]);
+  });
+
+  it("applies the armed cutoff to webhook dispatch but not manual API runs", async () => {
+    const runtimeEnv = { PAPERCLIP_IN_WORKTREE: "true", PAPERCLIP_INSTANCE_ID: "worktree-routines-test" };
+    const { routine, svc } = await seedFixture({ runtimeEnv });
+    await armWorktreeExecution(new Date("2025-01-01T00:00:00.000Z"));
+    await db.update(routines).set({ createdAt: new Date("2024-12-31T23:59:59.000Z") }).where(eq(routines.id, routine.id));
+    const { trigger } = await svc.createTrigger(routine.id, { kind: "webhook", signingMode: "none" }, {});
+
+    const webhookRun = await svc.firePublicTrigger(trigger.publicId!, { payload: { event: "created" } });
+    expect(webhookRun).toMatchObject({ status: "skipped", failureReason: "worktree_execution_cutoff", linkedIssueId: null });
+    expect((await svc.runRoutine(routine.id, { source: "api" })).status).toBe("issue_created");
   });
 
   it("suppresses scheduled ticks while the routine project is paused, then resumes when unpaused", async () => {

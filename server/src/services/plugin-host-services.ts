@@ -422,6 +422,14 @@ function sanitiseMeta(meta: Record<string, unknown> | null | undefined): Record<
 interface BufferedLogEntry {
   db: Db;
   pluginId: string;
+  /**
+   * Owning tenant for `plugin_logs.company_id` — populated when the caller
+   * attributes the log/metric to a specific company so the row participates
+   * in the `ON DELETE CASCADE` from `companies`. `null` means instance-scope
+   * (cron jobs / public webhooks without a tenant); those rows survive
+   * company deletes but are still attributable.
+   */
+  companyId: string | null;
   level: string;
   message: string;
   meta: Record<string, unknown> | null;
@@ -454,6 +462,7 @@ export async function flushPluginLogBuffer(): Promise<void> {
   for (const [dbInstance, group] of byDb) {
     const values = group.map((e) => ({
       pluginId: e.pluginId,
+      companyId: e.companyId,
       level: e.level,
       message: e.message,
       meta: e.meta,
@@ -1310,6 +1319,7 @@ export function buildHostServices(
         _logBuffer.push({
           db,
           pluginId,
+          companyId: params.companyId ?? null,
           level: "metric",
           message: safeName,
           meta: sanitiseMeta({ value: params.value, tags: params.tags ?? null }),
@@ -1332,7 +1342,7 @@ export function buildHostServices(
         }
         const telemetryClient = getTelemetryClient();
         if (!telemetryClient) return;
-        telemetryClient.track(`plugin.${pluginKey}.${eventName}`, params.dimensions);
+        telemetryClient.trackDynamic(`plugin.${pluginKey}.${eventName}`, params.dimensions);
       },
     },
 
@@ -1358,6 +1368,7 @@ export function buildHostServices(
         _logBuffer.push({
           db,
           pluginId,
+          companyId: params.companyId ?? null,
           level: level ?? "info",
           message: safeMessage,
           meta: safeMeta,
@@ -1619,6 +1630,8 @@ export function buildHostServices(
           originRunId: params.originRunId ?? actorRunId ?? null,
           createdByAgentId: actorAgentId ?? null,
           createdByUserId: actorUserId ?? null,
+          actorResponsibleUserId: actorUserId ?? null,
+          trustExplicitResponsibleUserId: true,
         })) as Issue;
         await logPluginActivity({
           companyId,
@@ -2704,7 +2717,7 @@ export function buildHostServices(
         // Track the subscription so it can be cleaned up on dispose() if the run
         // never reaches a terminal status (hang, crash, network partition).
         if (notifyWorker) {
-          const TERMINAL_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out"]);
+          const TERMINAL_STATUSES = new Set(["succeeded", "interrupted", "failed", "cancelled", "timed_out"]);
 
           const cleanup = () => {
             unsubscribe();

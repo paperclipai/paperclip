@@ -2,12 +2,18 @@ import { Navigate, Outlet, Route, Routes, useLocation, useParams } from "@/lib/r
 import { Button } from "@/components/ui/button";
 import { useTranslation } from "@/i18n";
 import { Layout } from "./components/Layout";
-import { OnboardingWizard } from "./components/OnboardingWizard";
+import { ConferenceRoomChatGate } from "./components/ConferenceRoomChatGate";
+import { PipelinesExperimentalGate } from "./components/PipelinesExperimentalGate";
+import { CasesExperimentalGate } from "./components/CasesExperimentalGate";
+import { Cases } from "./pages/Cases";
+import { CaseDetail } from "./pages/CaseDetail";
+import { OnboardingWizardVariant } from "./components/OnboardingWizardVariant";
 import { CloudAccessGate } from "./components/CloudAccessGate";
 import { Dashboard } from "./pages/Dashboard";
 import { DashboardLive } from "./pages/DashboardLive";
+import { Timeline } from "./pages/Timeline";
 import { Companies } from "./pages/Companies";
-import { Agents } from "./pages/Agents";
+import { AGENT_FILTER_TABS, Agents } from "./pages/Agents";
 import { AgentDetail } from "./pages/AgentDetail";
 import { Projects } from "./pages/Projects";
 import { ProjectDetail } from "./pages/ProjectDetail";
@@ -18,6 +24,8 @@ import { Search } from "./pages/Search";
 import { IssueDetail } from "./pages/IssueDetail";
 import { IssueChatLongThreadPerf } from "./pages/IssueChatLongThreadPerf";
 import { Routines } from "./pages/Routines";
+import { Learnings, PipelineItemDetail, PipelineItemLegacyRedirect, Pipelines, ReviewQueue } from "./pages/Pipelines";
+import { PipelineSettings } from "./pages/PipelineSettings";
 import { RoutineDetail } from "./pages/RoutineDetail";
 import { UserProfile } from "./pages/UserProfile";
 import { ExecutionWorkspaceDetail } from "./pages/ExecutionWorkspaceDetail";
@@ -29,16 +37,20 @@ import { ApprovalDetail } from "./pages/ApprovalDetail";
 import { Costs } from "./pages/Costs";
 import { Activity } from "./pages/Activity";
 import { Inbox } from "./pages/Inbox";
+import { WhatNeedsMe } from "./pages/WhatNeedsMe";
+import { BoardChat } from "./pages/BoardChat";
 import { CompanySettings } from "./pages/CompanySettings";
 import { CompanyEnvironments } from "./pages/CompanyEnvironments";
 import { CloudUpstream } from "./pages/CloudUpstream";
 import { CloudUpstreamUxLab } from "./pages/CloudUpstreamUxLab";
 import { BootstrapSetupUxLab } from "./pages/BootstrapSetupUxLab";
+import { ResponsibleUserDenialUxLab } from "./pages/ResponsibleUserDenialUxLab";
 import { CompanySettingsPluginPage } from "./pages/CompanySettingsPluginPage";
 import { CompanyAccess, CompanyAccessLegacyRoute } from "./pages/CompanyAccess";
 import { CompanyInvites } from "./pages/CompanyInvites";
 import { CompanyMcpServers } from "./pages/CompanyMcpServers";
 import { CompanySkills } from "./pages/CompanySkills";
+import { SkillStudio } from "./pages/SkillStudio";
 import { Secrets } from "./pages/Secrets";
 import { CompanyExport } from "./pages/CompanyExport";
 import { CompanyImport } from "./pages/CompanyImport";
@@ -61,9 +73,12 @@ import { InviteLandingPage } from "./pages/InviteLanding";
 import { JoinRequestQueue } from "./pages/JoinRequestQueue";
 import { NotFoundPage } from "./pages/NotFound";
 import { useCompany } from "./context/CompanyContext";
-import { useDialogActions } from "./context/DialogContext";
+import { useDialogActions, useDialogState } from "./context/DialogContext";
 import { loadLastInboxTab } from "./lib/inbox";
-import { shouldRedirectCompanylessRouteToOnboarding } from "./lib/onboarding-route";
+import {
+  isOnboardingWizardActive,
+  shouldRedirectCompanylessRouteToOnboarding,
+} from "./lib/onboarding-route";
 import { normalizeRememberedInstanceSettingsPath } from "./lib/instance-settings";
 
 function boardRoutes() {
@@ -72,10 +87,11 @@ function boardRoutes() {
       <Route index element={<Navigate to="dashboard" replace />} />
       <Route path="dashboard" element={<Dashboard />} />
       <Route path="dashboard/live" element={<DashboardLive />} />
+      <Route path="timeline" element={<Timeline />} />
       <Route path="onboarding" element={<OnboardingRoutePage />} />
       <Route path="companies" element={<Companies />} />
       <Route path="company/settings" element={<CompanySettings />} />
-      <Route path="company/settings/environments" element={<CompanyEnvironments />} />
+      <Route path="company/settings/environments" element={<Navigate to="/company/settings/instance/environments" replace />} />
       <Route path="company/settings/cloud-upstream" element={<CloudUpstream />} />
       <Route path="company/settings/members" element={<CompanyAccess />} />
       <Route path="company/settings/access" element={<CompanyAccessLegacyRoute />} />
@@ -88,6 +104,9 @@ function boardRoutes() {
       <Route path="company/settings/instance" element={<Navigate to="general" replace />} />
       <Route path="company/settings/instance/profile" element={<ProfileSettings />} />
       <Route path="company/settings/instance/general" element={<InstanceGeneralSettings />} />
+      <Route path="company/settings/instance/environments" element={<CompanyEnvironments />} />
+      <Route path="company/settings/instance/environments/new" element={<CompanyEnvironments mode="create" />} />
+      <Route path="company/settings/instance/environments/:environmentId/edit" element={<CompanyEnvironments mode="edit" />} />
       <Route path="company/settings/instance/access" element={<InstanceAccess />} />
       <Route path="company/settings/instance/heartbeats" element={<InstanceSettings />} />
       <Route path="company/settings/instance/experimental" element={<InstanceExperimentalSettings />} />
@@ -95,16 +114,19 @@ function boardRoutes() {
       <Route path="company/settings/instance/plugins/:pluginId" element={<PluginSettings />} />
       <Route path="company/settings/instance/adapters" element={<AdapterManager />} />
       <Route path="company/settings/:settingsRoutePath/*" element={<CompanySettingsPluginPage />} />
+      <Route path="skills/studio" element={<SkillStudio />} />
+      <Route path="skills/studio/new" element={<SkillStudio />} />
+      <Route path="skills/studio/:skillId" element={<SkillStudio />} />
+      <Route path="skills/:skillId/studio" element={<LegacySkillStudioRedirect />} />
       <Route path="skills/*" element={<CompanySkills />} />
       <Route path="settings" element={<LegacySettingsRedirect />} />
       <Route path="settings/*" element={<LegacySettingsRedirect />} />
       <Route path="plugins/:pluginId" element={<PluginPage />} />
       <Route path="org" element={<OrgChart />} />
       <Route path="agents" element={<Navigate to="/agents/all" replace />} />
-      <Route path="agents/all" element={<Agents />} />
-      <Route path="agents/active" element={<Agents />} />
-      <Route path="agents/paused" element={<Agents />} />
-      <Route path="agents/error" element={<Agents />} />
+      {AGENT_FILTER_TABS.map((tab) => (
+        <Route key={tab} path={`agents/${tab}`} element={<Agents />} />
+      ))}
       <Route path="agents/new" element={<NewAgent />} />
       <Route path="agents/:agentId" element={<AgentDetail />} />
       <Route path="agents/:agentId/:tab" element={<AgentDetail />} />
@@ -131,7 +153,48 @@ function boardRoutes() {
         <Route path="tests/perf/long-thread" element={<IssueChatLongThreadPerf />} />
       ) : null}
       <Route path="routines" element={<Routines />} />
+      <Route
+        path="cases"
+        element={<CasesExperimentalGate><Cases /></CasesExperimentalGate>}
+      />
+      <Route
+        path="cases/:caseIdentifier"
+        element={<CasesExperimentalGate><CaseDetail /></CasesExperimentalGate>}
+      />
+      <Route
+        path="review-queue"
+        element={<PipelinesExperimentalGate><ReviewQueue /></PipelinesExperimentalGate>}
+      />
+      <Route
+        path="learnings"
+        element={<PipelinesExperimentalGate><Learnings /></PipelinesExperimentalGate>}
+      />
+      <Route
+        path="pipelines"
+        element={<PipelinesExperimentalGate><Pipelines /></PipelinesExperimentalGate>}
+      />
+      <Route
+        path="pipelines/:pipelineId"
+        element={<PipelinesExperimentalGate><Pipelines /></PipelinesExperimentalGate>}
+      />
+      <Route
+        path="pipelines/:pipelineId/add"
+        element={<PipelinesExperimentalGate><Pipelines /></PipelinesExperimentalGate>}
+      />
+      <Route
+        path="pipelines/:pipelineId/settings"
+        element={<PipelinesExperimentalGate><PipelineSettings /></PipelinesExperimentalGate>}
+      />
+      <Route
+        path="pipelines/:pipelineId/items/:caseId"
+        element={<PipelinesExperimentalGate><PipelineItemDetail /></PipelinesExperimentalGate>}
+      />
+      <Route
+        path="pipelines/:pipelineId/cases/:caseId"
+        element={<PipelinesExperimentalGate><PipelineItemLegacyRedirect /></PipelinesExperimentalGate>}
+      />
       <Route path="routines/:routineId" element={<RoutineDetail />} />
+      <Route path="routines/:routineId/:section" element={<RoutineDetail />} />
       <Route path="execution-workspaces/:workspaceId" element={<ExecutionWorkspaceDetail />} />
       <Route path="execution-workspaces/:workspaceId/services" element={<ExecutionWorkspaceDetail />} />
       <Route path="execution-workspaces/:workspaceId/configuration" element={<ExecutionWorkspaceDetail />} />
@@ -147,6 +210,16 @@ function boardRoutes() {
       <Route path="approvals/:approvalId" element={<ApprovalDetail />} />
       <Route path="costs" element={<Costs />} />
       <Route path="activity" element={<Activity />} />
+      {/* Conference Room Chat surfaces (PAP-136/PAP-137): routes stay
+          registered but redirect to the company home while the experimental
+          flag is off. The board-level `artifacts` mount below is the new
+          conference-room one; the master-level mount above it still serves
+          `/artifacts` in both modes. */}
+      <Route element={<ConferenceRoomChatGate />}>
+        <Route path="board-chat" element={<BoardChat />} />
+        <Route path="artifacts" element={<Artifacts />} />
+      </Route>
+      <Route path="decisions" element={<WhatNeedsMe />} />
       <Route path="inbox" element={<InboxRootRedirect />} />
       <Route path="inbox/mine" element={<Inbox />} />
       <Route path="inbox/recent" element={<Inbox />} />
@@ -166,6 +239,33 @@ function boardRoutes() {
 
 function InboxRootRedirect() {
   return <Navigate to={`/inbox/${loadLastInboxTab()}`} replace />;
+}
+
+function LegacySkillStudioRedirect() {
+  const location = useLocation();
+  const { companies, selectedCompany, loading } = useCompany();
+  const { companyPrefix, skillId } = useParams<{ companyPrefix?: string; skillId?: string }>();
+
+  if (loading) return null;
+
+  const targetCompany =
+    (companyPrefix
+      ? companies.find((company) => company.issuePrefix.toUpperCase() === companyPrefix.toUpperCase())
+      : null) ??
+    selectedCompany ??
+    companies[0] ??
+    null;
+
+  if (!targetCompany || !skillId) {
+    return <Navigate to="/skills/studio" replace />;
+  }
+
+  return (
+    <Navigate
+      to={`/${targetCompany.issuePrefix}/skills/studio/${encodeURIComponent(skillId)}${location.search}${location.hash}`}
+      replace
+    />
+  );
 }
 
 function LegacySettingsRedirect() {
@@ -212,7 +312,17 @@ function LegacySettingsRedirect() {
 function OnboardingRoutePage() {
   const { companies } = useCompany();
   const { openOnboarding } = useDialogActions();
+  const { onboardingOpen, onboardingRouteDismissed } = useDialogState();
   const { companyPrefix } = useParams<{ companyPrefix?: string }>();
+
+  // The OnboardingWizard auto-opens on this route (and can also be opened
+  // explicitly). While it is showing it covers the whole screen, so the
+  // launcher card below must not stay interactive behind it — otherwise users
+  // can tab/click through to the form behind the modal (PAP-52). The launcher
+  // only needs to render as a re-entry point once the wizard is dismissed.
+  if (isOnboardingWizardActive({ onboardingOpen, routeDismissed: onboardingRouteDismissed })) {
+    return null;
+  }
   const matchedCompany = companyPrefix
     ? companies.find((company) => company.issuePrefix.toUpperCase() === companyPrefix.toUpperCase()) ?? null
     : null;
@@ -336,6 +446,7 @@ export function App() {
         <Route path="tests/perf/long-thread" element={<IssueChatLongThreadPerf />} />
         <Route path="ux-lab/cloud-upstream" element={<CloudUpstreamUxLab />} />
         <Route path="ux-lab/bootstrap-setup" element={<BootstrapSetupUxLab />} />
+        <Route path="ux-lab/responsible-user-denial" element={<ResponsibleUserDenialUxLab />} />
 
         <Route element={<CloudAccessGate />}>
           <Route index element={<CompanyRootRedirect />} />
@@ -348,12 +459,30 @@ export function App() {
           <Route path="issues/:issueId" element={<UnprefixedBoardRedirect />} />
           <Route path="routines" element={<UnprefixedBoardRedirect />} />
           <Route path="routines/:routineId" element={<UnprefixedBoardRedirect />} />
+          <Route path="review-queue" element={<UnprefixedBoardRedirect />} />
+          <Route path="learnings" element={<UnprefixedBoardRedirect />} />
+          <Route path="cases" element={<UnprefixedBoardRedirect />} />
+          <Route path="cases/:caseIdentifier" element={<UnprefixedBoardRedirect />} />
+          <Route path="pipelines" element={<UnprefixedBoardRedirect />} />
+          <Route path="pipelines/:pipelineId" element={<UnprefixedBoardRedirect />} />
+          <Route path="pipelines/:pipelineId/add" element={<UnprefixedBoardRedirect />} />
+          <Route path="pipelines/:pipelineId/settings" element={<UnprefixedBoardRedirect />} />
+          <Route path="pipelines/:pipelineId/items/:caseId" element={<UnprefixedBoardRedirect />} />
+          <Route path="pipelines/:pipelineId/cases/:caseId" element={<UnprefixedBoardRedirect />} />
           <Route path="artifacts" element={<UnprefixedBoardRedirect />} />
+          <Route path="decisions" element={<UnprefixedBoardRedirect />} />
           <Route path="u/:userSlug" element={<UnprefixedBoardRedirect />} />
+          <Route path="skills/studio" element={<UnprefixedBoardRedirect />} />
+          <Route path="skills/studio/new" element={<UnprefixedBoardRedirect />} />
+          <Route path="skills/studio/:skillId" element={<UnprefixedBoardRedirect />} />
+          <Route path="skills/:skillId/studio" element={<LegacySkillStudioRedirect />} />
           <Route path="skills/*" element={<UnprefixedBoardRedirect />} />
           <Route path="settings" element={<LegacySettingsRedirect />} />
           <Route path="settings/*" element={<LegacySettingsRedirect />} />
           <Route path="agents" element={<UnprefixedBoardRedirect />} />
+          {AGENT_FILTER_TABS.map((tab) => (
+            <Route key={tab} path={`agents/${tab}`} element={<UnprefixedBoardRedirect />} />
+          ))}
           <Route path="agents/new" element={<UnprefixedBoardRedirect />} />
           <Route path="agents/:agentId" element={<UnprefixedBoardRedirect />} />
           <Route path="agents/:agentId/:tab" element={<UnprefixedBoardRedirect />} />
@@ -379,7 +508,7 @@ export function App() {
           <Route path="*" element={<NotFoundPage scope="global" />} />
         </Route>
       </Routes>
-      <OnboardingWizard />
+      <OnboardingWizardVariant />
     </>
   );
 }

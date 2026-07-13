@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   acceptIssueThreadInteractionSchema,
+  askUserQuestionsResultSchema,
   createIssueThreadInteractionSchema,
+  submitIssueThreadInteractionVerdictsSchema,
 } from "./validators/issue.js";
 
 describe("issue thread interaction schemas", () => {
@@ -101,6 +103,44 @@ describe("issue thread interaction schemas", () => {
         href,
       });
     }
+  });
+
+  it("parses ask_user_questions supersede flags and expired results", () => {
+    const parsed = createIssueThreadInteractionSchema.parse({
+      kind: "ask_user_questions",
+      payload: {
+        version: 1,
+        title: "Choose scope",
+        supersedeOnUserComment: false,
+        questions: [
+          {
+            id: "scope",
+            prompt: "Which scope should I use?",
+            selectionMode: "single",
+            options: [{ id: "small", label: "Small" }],
+          },
+        ],
+      },
+    });
+
+    expect(parsed).toMatchObject({
+      kind: "ask_user_questions",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        supersedeOnUserComment: false,
+      },
+    });
+
+    expect(askUserQuestionsResultSchema.parse({
+      version: 1,
+      answers: [],
+      expirationReason: "superseded_by_comment",
+      commentId: "11111111-1111-4111-8111-111111111111",
+      summaryMarkdown: null,
+    })).toMatchObject({
+      expirationReason: "superseded_by_comment",
+      commentId: "11111111-1111-4111-8111-111111111111",
+    });
   });
 
   it("rejects unsafe request_confirmation target hrefs", () => {
@@ -266,5 +306,112 @@ describe("issue thread interaction schemas", () => {
     expect(() => acceptIssueThreadInteractionSchema.parse({
       selectedOptionIds: ["item-1", "item-1"],
     })).toThrow("selectedOptionIds must be unique");
+  });
+
+  it("parses request_item_verdicts payloads with defaults", () => {
+    const parsed = createIssueThreadInteractionSchema.parse({
+      kind: "request_item_verdicts",
+      payload: {
+        version: 1,
+        prompt: "Review these generated items.",
+        items: [
+          { id: "api", label: "API route", description: "Server submit endpoint" },
+          { id: "docs", label: "Docs", previewMarkdown: "Document the route." },
+        ],
+      },
+    });
+
+    expect(parsed).toMatchObject({
+      kind: "request_item_verdicts",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        verdicts: ["approve", "reject"],
+        requireReasonOn: ["reject"],
+        allowBulkApprove: true,
+      },
+    });
+  });
+
+  it("accepts request_item_verdicts defer when enabled explicitly", () => {
+    const parsed = createIssueThreadInteractionSchema.parse({
+      kind: "request_item_verdicts",
+      payload: {
+        version: 1,
+        prompt: "Review these generated items.",
+        items: [{ id: "api", label: "API route" }],
+        verdicts: ["approve", "reject", "defer"],
+        requireReasonOn: ["reject", "defer"],
+      },
+    });
+
+    expect(parsed).toMatchObject({
+      kind: "request_item_verdicts",
+      payload: {
+        verdicts: ["approve", "reject", "defer"],
+        requireReasonOn: ["reject", "defer"],
+      },
+    });
+  });
+
+  it("rejects invalid request_item_verdicts item and reason references", () => {
+    const base = {
+      kind: "request_item_verdicts",
+      payload: {
+        version: 1,
+        prompt: "Review these generated items.",
+        items: [
+          { id: "api", label: "API route" },
+          { id: "docs", label: "Docs" },
+        ],
+      },
+    } as const;
+
+    expect(() => createIssueThreadInteractionSchema.parse({
+      ...base,
+      payload: {
+        ...base.payload,
+        items: [],
+      },
+    })).toThrow();
+
+    expect(() => createIssueThreadInteractionSchema.parse({
+      ...base,
+      payload: {
+        ...base.payload,
+        items: [
+          { id: "api", label: "API route" },
+          { id: "api", label: "Duplicate" },
+        ],
+      },
+    })).toThrow("Item ids must be unique within one item verdict request");
+
+    expect(() => createIssueThreadInteractionSchema.parse({
+      ...base,
+      payload: {
+        ...base.payload,
+        items: Array.from({ length: 201 }, (_value, index) => ({
+          id: `item-${index}`,
+          label: `Item ${index}`,
+        })),
+      },
+    })).toThrow();
+
+    expect(() => createIssueThreadInteractionSchema.parse({
+      ...base,
+      payload: {
+        ...base.payload,
+        verdicts: ["approve", "reject"],
+        requireReasonOn: ["defer"],
+      },
+    })).toThrow("requireReasonOn must reference enabled verdicts");
+  });
+
+  it("rejects duplicate request_item_verdicts submit ids", () => {
+    expect(() => submitIssueThreadInteractionVerdictsSchema.parse({
+      verdicts: [
+        { id: "api", verdict: "approve" },
+        { id: "api", verdict: "reject", reason: "Needs revision" },
+      ],
+    })).toThrow("verdict item ids must be unique");
   });
 });

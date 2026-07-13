@@ -4,7 +4,7 @@
 
 <p align="center">
   <a href="#quickstart"><strong>Quickstart</strong></a> &middot;
-  <a href="https://paperclip.ing/docs"><strong>Docs</strong></a> &middot;
+  <a href="https://docs.paperclip.ing"><strong>Docs</strong></a> &middot;
   <a href="https://github.com/paperclipai/paperclip"><strong>GitHub</strong></a> &middot;
   <a href="https://discord.gg/m4HZY7xNG3"><strong>Discord</strong></a> &middot;
   <a href="https://x.com/papercliping"><strong>Twitter</strong></a> &middot;
@@ -379,7 +379,7 @@ See [doc/DEVELOPING.md](https://github.com/paperclipai/paperclip/blob/master/doc
 - ✅ Better Budgeting
 - ✅ Agent Reviews and Approvals
 - ✅ Multiple Human Users
-- ⚪ Cloud / Sandbox agents (e.g. Cursor / e2b agents)
+- ⚪ Cloud / Sandbox agents (e.g. Cursor / e2b / Novita agents)
 - ⚪ Artifacts & Work Products
 - ⚪ Memory / Knowledge
 - ⚪ Enforced Outcomes

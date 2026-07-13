@@ -6,6 +6,7 @@ import {
   focusPageSearchShortcutTarget,
   hasBlockingShortcutDialog,
   isKeyboardShortcutTextInputTarget,
+  resolveAttentionQueueKeyAction,
   resolveIssueDetailGoKeyAction,
   resolveInboxQuickArchiveKeyAction,
   resolveInboxUndoArchiveKeyAction,
@@ -14,6 +15,37 @@ import {
 } from "./keyboardShortcuts";
 
 describe("keyboardShortcuts helpers", () => {
+  describe("resolveAttentionQueueKeyAction", () => {
+    const baseArgs = {
+      defaultPrevented: false,
+      metaKey: false,
+      ctrlKey: false,
+      altKey: false,
+      target: document.body,
+      hasOpenDialog: false,
+      hasSelection: true,
+    };
+
+    it.each([
+      ["j", "next"],
+      ["ArrowDown", "next"],
+      ["k", "previous"],
+      ["ArrowUp", "previous"],
+      ["Enter", "toggle"],
+      ["x", "dismiss"],
+    ] as const)("maps %s to %s", (key, expected) => {
+      expect(resolveAttentionQueueKeyAction({ ...baseArgs, key })).toBe(expected);
+    });
+
+    it("does not act while typing, dialog-bound, modified, or unselected", () => {
+      const input = document.createElement("input");
+      expect(resolveAttentionQueueKeyAction({ ...baseArgs, key: "j", target: input })).toBe("ignore");
+      expect(resolveAttentionQueueKeyAction({ ...baseArgs, key: "j", hasOpenDialog: true })).toBe("ignore");
+      expect(resolveAttentionQueueKeyAction({ ...baseArgs, key: "j", metaKey: true })).toBe("ignore");
+      expect(resolveAttentionQueueKeyAction({ ...baseArgs, key: "Enter", hasSelection: false })).toBe("ignore");
+    });
+  });
+
   it("detects editable shortcut targets", () => {
     const wrapper = document.createElement("div");
     wrapper.innerHTML = `
@@ -255,6 +287,21 @@ describe("keyboardShortcuts helpers", () => {
       target: button,
       hasOpenDialog: false,
     })).toBe("focus_comment");
+  });
+
+  it("opens the file viewer on f after g", () => {
+    const button = document.createElement("button");
+
+    expect(resolveIssueDetailGoKeyAction({
+      armed: true,
+      defaultPrevented: false,
+      key: "f",
+      metaKey: false,
+      ctrlKey: false,
+      altKey: false,
+      target: button,
+      hasOpenDialog: false,
+    })).toBe("open_file_viewer");
   });
 
   it("disarms go-to-inbox instead of firing from an editor", () => {

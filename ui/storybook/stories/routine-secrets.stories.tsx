@@ -10,7 +10,7 @@ import type {
   RoutineRevision,
   RoutineRevisionSnapshotV1,
 } from "@paperclipai/shared";
-import { EnvVarEditor } from "@/components/EnvVarEditor";
+import { EnvironmentVariablesEditor } from "@/components/environment-variables-editor";
 import { RoutineHistoryTab } from "@/components/RoutineHistoryTab";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { useCompany } from "@/context/CompanyContext";
@@ -82,7 +82,7 @@ function SecretsTabSurface({
           Routine secrets apply to every issue this routine creates. They override matching keys in
           project and agent env. <span className="font-mono">PAPERCLIP_*</span> variables are reserved.
         </p>
-        <EnvVarEditor
+        <EnvironmentVariablesEditor
           value={env}
           secrets={storybookSecrets as CompanySecret[]}
           onCreateSecret={async (name) => ({
@@ -149,6 +149,7 @@ function makeSnapshot(env: RoutineEnvConfig | null): RoutineRevisionSnapshotV1 {
       projectId: null,
       goalId: null,
       parentIssueId: null,
+      responsibleUserId: null,
       title: "Nightly digest",
       description: "Summarize agent activity each night.",
       assigneeAgentId: null,
@@ -170,6 +171,7 @@ function makeRoutine(latestRevisionId: string, latestRevisionNumber: number): Ro
     projectId: null,
     goalId: null,
     parentIssueId: null,
+    responsibleUserId: null,
     title: "Nightly digest",
     description: "Summarize agent activity each night.",
     assigneeAgentId: null,

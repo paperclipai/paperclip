@@ -25,19 +25,38 @@ export function generateJWT(privateKey) {
   return `${data}.${sig}`;
 }
 
+// Per-call timeout so a single slow/hung GitHub endpoint cannot eat the entire
+// workflow budget. Overridable via options.timeoutMs for callers that need
+// different bounds.
+export const GH_FETCH_DEFAULT_TIMEOUT_MS = 15_000;
+
 export async function ghFetch(path, token, options = {}) {
-  const res = await fetch(`https://api.github.com${path}`, {
-    ...options,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: 'application/vnd.github+json',
-      'X-GitHub-Api-Version': '2022-11-28',
-      ...options.headers,
-    },
-  });
-  const text = await res.text();
-  if (!res.ok) throw new Error(`GitHub API ${options.method ?? 'GET'} ${path} → ${res.status}: ${text}`);
-  return JSON.parse(text);
+  const { timeoutMs = GH_FETCH_DEFAULT_TIMEOUT_MS, signal: externalSignal, ...fetchOptions } = options;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(new Error(`ghFetch timeout after ${timeoutMs}ms: ${path}`)), timeoutMs);
+  const abortOnExternal = () => controller.abort(externalSignal?.reason);
+  if (externalSignal) {
+    if (externalSignal.aborted) abortOnExternal();
+    else externalSignal.addEventListener('abort', abortOnExternal, { once: true });
+  }
+  try {
+    const res = await fetch(`https://api.github.com${path}`, {
+      ...fetchOptions,
+      signal: controller.signal,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+        ...fetchOptions.headers,
+      },
+    });
+    const text = await res.text();
+    if (!res.ok) throw new Error(`GitHub API ${fetchOptions.method ?? 'GET'} ${path} → ${res.status}: ${text}`);
+    return JSON.parse(text);
+  } finally {
+    clearTimeout(timer);
+    if (externalSignal) externalSignal.removeEventListener('abort', abortOnExternal);
+  }
 }
 
 export async function resolveInstallationId(fetchInstallation, token, repo, owner) {

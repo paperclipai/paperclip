@@ -13,11 +13,22 @@ const mockAuthApi = vi.hoisted(() => ({
   updateProfile: vi.fn(),
   signOut: vi.fn(),
 }));
+const mockInstanceSettingsApi = vi.hoisted(() => ({
+  getExperimental: vi.fn(),
+}));
 const mockToggleTheme = vi.hoisted(() => vi.fn());
 const mockSetSidebarOpen = vi.hoisted(() => vi.fn());
 
 vi.mock("@/api/auth", () => ({
   authApi: mockAuthApi,
+}));
+
+vi.mock("@/api/instanceSettings", () => ({
+  instanceSettingsApi: mockInstanceSettingsApi,
+}));
+
+vi.mock("../api/instanceSettings", () => ({
+  instanceSettingsApi: mockInstanceSettingsApi,
 }));
 
 vi.mock("@/lib/router", () => ({
@@ -71,6 +82,9 @@ describe("SidebarAccountMenu", () => {
         image: "https://example.com/jane.png",
       },
     });
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIsolatedWorkspaces: false,
+    });
   });
 
   afterEach(() => {
@@ -112,10 +126,25 @@ describe("SidebarAccountMenu", () => {
     expect(document.body.textContent).toContain("Edit profile");
     expect(document.body.textContent).not.toContain("Instance settings");
     expect(document.body.textContent).toContain("Documentation");
+    expect(document.body.textContent).toContain("Feedback");
+
+    // Feedback link opens in a new tab pointing at the feedback URL
+    const feedbackAnchor = document.body.querySelector('a[href="https://paperclip.ing/feedback"]') as HTMLAnchorElement | null;
+    expect(feedbackAnchor).not.toBeNull();
+    expect(feedbackAnchor?.getAttribute("target")).toBe("_blank");
+
+    // Feedback appears after Documentation and before the theme toggle
+    const menuText = document.body.querySelector('[data-slot="popover-content"]')?.textContent ?? "";
+    const docsPos = menuText.indexOf("Documentation");
+    const feedbackPos = menuText.indexOf("Feedback");
+    const themePos = menuText.indexOf("Switch to");
+    expect(docsPos).toBeLessThan(feedbackPos);
+    expect(feedbackPos).toBeLessThan(themePos);
+
     expect(document.body.textContent).toContain("Paperclip v1.2.3");
     expect(document.body.textContent).toContain("jane@example.com");
     expect(document.body.querySelector('[data-slot="popover-content"]')?.className)
-      .toContain("w-[277px]");
+      .toContain("w-(--sz-277px)");
     expect(document.body.querySelector('a[href="/company/settings/instance/profile"]')).not.toBeNull();
 
     await act(async () => {

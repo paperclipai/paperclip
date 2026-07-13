@@ -12,6 +12,9 @@ It is intentionally narrower than [PLUGIN_SPEC.md](./PLUGIN_SPEC.md). The spec i
 - Plugin UI runs as same-origin JavaScript inside the main Paperclip app.
 - Worker-side host APIs are capability-gated.
 - Plugin UI is not sandboxed by manifest capabilities.
+- External object reference providers are trusted-install only in the MVP.
+  Capabilities gate provider detection/resolution and host API calls, but they
+  are not a sandbox boundary for untrusted marketplace code.
 - Plugin database migrations are restricted to a host-derived plugin namespace.
 - Plugin-managed surfaces are first-class records (agents, projects, routines, and
   skills) rather than private plugin-only state.
@@ -21,6 +24,29 @@ It is intentionally narrower than [PLUGIN_SPEC.md](./PLUGIN_SPEC.md). The spec i
   `@paperclipai/plugin-sdk/ui`; use it for common Paperclip controls before
   building custom versions.
 - `ctx.assets` is not supported in the current runtime.
+
+## External object reference providers
+
+Plugins can contribute provider-neutral object reference detection and status
+resolution for URLs and future explicit links. Declare `objectReferences` in the
+manifest and add at least `external.objects.detect` and `external.objects.read`.
+
+```ts
+objectReferences: [
+  {
+    providerKey: "mocktracker",
+    displayName: "Mock Tracker",
+    objectTypes: ["ticket"],
+    urlPatterns: ["https://mock.example/tickets/:id"],
+  },
+],
+```
+
+Implement `onDetectExternalObjects()` in the worker to recognize sanitized URL
+candidates and return provider-stable identities. Implement
+`onResolveExternalObject()` to return normalized board-safe status metadata.
+Paperclip owns inline markdown rendering; plugins must not return React, HTML,
+or `dangerouslySetInnerHTML` content for inline references.
 
 ## Scaffold a plugin
 
@@ -335,6 +361,22 @@ Mount surfaces currently wired in the host include:
 - `contextMenuItem`
 - `commentAnnotation`
 - `commentContextMenuItem`
+
+### `routeSidebar` and the app sidebar
+
+A `routeSidebar` slot gives a plugin page route its own contextual navigation.
+It **coexists** with the main app sidebar rather than replacing it: while your
+route is active the host collapses the app `<Sidebar/>` to its 64px icon rail
+(still hover/peek-able) and renders your sidebar in a second pane, yielding
+`[ app rail ][ your sidebar ][ content ]`.
+
+Because the host drives this collapse, a plugin should **not** mount
+`RequestCollapsedSidebar` or otherwise try to collapse the app sidebar itself —
+doing so is redundant and fights the host. While your route is active the app
+rail is forced collapsed (its expand toggle is hidden), overriding any user pin
+— a secondary sidebar always collapses the primary. This force never changes the
+user's saved expanded/collapsed preference, so the host restores exactly what
+the user chose as soon as they navigate away.
 
 ## Shared host components
 
