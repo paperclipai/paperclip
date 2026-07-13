@@ -172,4 +172,30 @@ describe("createHostClientHandlers invocation company scope", () => {
     ).rejects.toBeInstanceOf(InvocationScopeDeniedError);
     expect(searchAudit).not.toHaveBeenCalled();
   });
+
+  it("fails closed when an authorization read arrives with an expired invocation scope", async () => {
+    const searchAudit = vi.fn(async () => []);
+    const services = {
+      authorization: {
+        searchAudit,
+      },
+    } as unknown as HostServices;
+    const handlers = createHostClientHandlers({
+      pluginId: "paperclip.test",
+      capabilities: ["authorization.audit.read"],
+      services,
+    });
+
+    await expect(
+      handlers["authorization.audit.search"](
+        { companyId: "company-a" },
+        { invalidInvocationScope: true },
+      ),
+    ).rejects.toMatchObject({
+      name: "InvocationScopeDeniedError",
+      code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED,
+      message: expect.stringContaining("missing, expired, or unknown invocation scope"),
+    });
+    expect(searchAudit).not.toHaveBeenCalled();
+  });
 });
