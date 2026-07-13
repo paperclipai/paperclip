@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { resolveSmtpSettingsFromEnv } from "./invite-email-smtp.js";
+import { describe, expect, it, vi } from "vitest";
+import { resolveSmtpSettingsFromEnv, createSmtpInviteEmailTransport, type InviteMail } from "./invite-email-smtp.js";
 
 describe("resolveSmtpSettingsFromEnv", () => {
   it("returns null when nothing is configured", () => {
@@ -67,5 +67,71 @@ describe("resolveSmtpSettingsFromEnv", () => {
       PAPERCLIP_SMTP_FROM: "no-reply@example.com",
     });
     expect(settings?.transport).toMatchObject({ port: 587, secure: true });
+  });
+});
+
+describe("createSmtpInviteEmailTransport", () => {
+  const settings = { transport: "smtp://mail.example.com", from: "no-reply@example.com" };
+
+  function capturingMailer() {
+    const sent: InviteMail[] = [];
+    const mailer = { sendMail: vi.fn(async (mail: InviteMail) => void sent.push(mail)) };
+    return { sent, mailer };
+  }
+
+  it("sends a mail with company name, role, and invite link", async () => {
+    const { sent, mailer } = capturingMailer();
+    const transport = createSmtpInviteEmailTransport(settings, () => mailer);
+    await transport.sendInviteEmail({
+      email: "teammate@example.com",
+      inviteUrl: "https://paperclip.example.com/i/abc",
+      companyName: "Acme",
+      role: "operator",
+    });
+    expect(sent).toHaveLength(1);
+    expect(sent[0].from).toBe("no-reply@example.com");
+    expect(sent[0].to).toBe("teammate@example.com");
+    expect(sent[0].subject).toBe("You've been invited to join Acme on Paperclip");
+    expect(sent[0].text).toContain("https://paperclip.example.com/i/abc");
+    expect(sent[0].text).toContain("operator");
+    expect(sent[0].html).toContain("https://paperclip.example.com/i/abc");
+  });
+
+  it("falls back to a generic subject and omits the role line when absent", async () => {
+    const { sent, mailer } = capturingMailer();
+    const transport = createSmtpInviteEmailTransport(settings, () => mailer);
+    await transport.sendInviteEmail({
+      email: "teammate@example.com",
+      inviteUrl: "https://paperclip.example.com/i/abc",
+      companyName: null,
+      role: null,
+    });
+    expect(sent[0].subject).toBe("You've been invited to a company on Paperclip");
+    expect(sent[0].text).not.toContain("as ");
+  });
+
+  it("does nothing when the payload has no recipient", async () => {
+    const { sent, mailer } = capturingMailer();
+    const transport = createSmtpInviteEmailTransport(settings, () => mailer);
+    await transport.sendInviteEmail({
+      email: null,
+      inviteUrl: "https://paperclip.example.com/i/abc",
+      companyName: "Acme",
+      role: null,
+    });
+    expect(sent).toHaveLength(0);
+  });
+
+  it("escapes HTML in the company name", async () => {
+    const { sent, mailer } = capturingMailer();
+    const transport = createSmtpInviteEmailTransport(settings, () => mailer);
+    await transport.sendInviteEmail({
+      email: "teammate@example.com",
+      inviteUrl: "https://paperclip.example.com/i/abc",
+      companyName: "<img src=x>",
+      role: null,
+    });
+    expect(sent[0].html).not.toContain("<img src=x>");
+    expect(sent[0].html).toContain("&lt;img src=x&gt;");
   });
 });
