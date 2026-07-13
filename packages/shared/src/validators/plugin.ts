@@ -1112,6 +1112,10 @@ export const pluginManifestV1Schema = z.object({
         code: z.ZodIssueCode.custom,
         message: `Duplicate managed MCP server keys: ${[...new Set(duplicates)].join(", ")}`,
         path: ["mcpServers"],
+      });
+    }
+  }
+
   if (manifest.objectReferences) {
     const providerKeys = manifest.objectReferences.map((provider) => provider.providerKey);
     const duplicateProviders = providerKeys.filter((key, i) => providerKeys.indexOf(key) !== i);

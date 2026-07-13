@@ -1105,6 +1105,8 @@ export {
   readWorkspaceMcpRuntimeConfig,
   listWorkspaceMcpServers,
 } from "./workspace-mcp.js";
+
+export {
   formatExternalObjectMentionSourceLabel,
   type ExternalObjectCanonicalIdentity,
   type ExternalObjectCanonicalUrl,

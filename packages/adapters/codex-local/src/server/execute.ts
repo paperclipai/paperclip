@@ -35,6 +35,7 @@ import {
   renderTemplate,
   renderPaperclipWakePrompt,
   stringifyPaperclipWakePayload,
+  buildPaperclipMcpPrompt,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   joinPromptSections,
 } from "@paperclipai/adapter-utils/server-utils";
@@ -802,10 +803,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
     const renderedPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
     const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
+    const mcpPrompt = buildPaperclipMcpPrompt(context);
     const prompt = joinPromptSections([
       promptInstructionsPrefix,
       renderedBootstrapPrompt,
       wakePrompt,
+      mcpPrompt,
       codexFallbackHandoffNote,
       sessionHandoffNote,
       renderedPrompt,
@@ -815,6 +818,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       instructionsChars,
       bootstrapPromptChars: renderedBootstrapPrompt.length,
       wakePromptChars: wakePrompt.length,
+      mcpPromptChars: mcpPrompt.length,
       sessionHandoffChars: sessionHandoffNote.length,
       heartbeatPromptChars: renderedPrompt.length,
     };

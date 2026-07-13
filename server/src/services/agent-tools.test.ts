@@ -376,12 +376,19 @@ function serviceWithBindings(
     isCompanyMcpClientEnabled?: (companyId: string) => Promise<boolean>;
   } = {},
 ) {
-  const executeTool = vi.fn(async () => ({
-    content: "ok",
-    data: {},
-    error: null,
-    logs: [],
-  }));
+  const executeTool = vi.fn(
+    async (): Promise<{
+      content: string | null;
+      data: unknown;
+      error: string | null;
+      logs: unknown[];
+    }> => ({
+      content: "ok",
+      data: {},
+      error: null,
+      logs: [],
+    }),
+  );
   const telemetry = vi.fn();
   const svc = agentMcpToolService(NO_DB, {
     secrets: null as never,
