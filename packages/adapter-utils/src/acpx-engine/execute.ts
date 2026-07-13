@@ -1569,8 +1569,14 @@ export function summarizeAcpxTurnUsage(input: {
       )
     : null;
 
-  const cumulativeCostUsd = usdCostAmount(input.postStatus?.usage?.cost) ?? input.eventCostUsd;
   const previousCostUsd = usdCostAmount(input.preStatus?.usage?.cost);
+  const postCostUsd = usdCostAmount(input.postStatus?.usage?.cost);
+  const postCostIsStale =
+    input.eventCostUsd != null &&
+    previousCostUsd != null &&
+    postCostUsd != null &&
+    postCostUsd === previousCostUsd;
+  const cumulativeCostUsd = postCostIsStale ? input.eventCostUsd : postCostUsd ?? input.eventCostUsd;
   let costUsd: number | null = null;
   if (cumulativeCostUsd != null) {
     costUsd =

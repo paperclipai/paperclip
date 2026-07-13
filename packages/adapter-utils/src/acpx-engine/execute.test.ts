@@ -1521,7 +1521,9 @@ describe("summarizeAcpxTurnUsage no-report turns", () => {
     const stale = { inputTokens: 10, outputTokens: 500, cachedReadTokens: 30 };
     const summary = summarizeAcpxTurnUsage({
       preStatus: { usage: { cumulative: stale, cost: { amount: 0.5, currency: "USD" } } },
-      postStatus: { usage: { cumulative: { ...stale } } },
+      postStatus: {
+        usage: { cumulative: { ...stale }, cost: { amount: 0.5, currency: "USD" } },
+      },
       eventBreakdown: null,
       eventCostUsd: 0.75,
     });
