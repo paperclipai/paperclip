@@ -62,6 +62,23 @@ describe("server adapter registry", () => {
     ]);
   });
 
+  it("serves the current built-in Gemini model catalog", async () => {
+    await expect(listAdapterModels("gemini_local")).resolves.toEqual([
+      { id: "auto", label: "Auto" },
+      { id: "gemini-3.5-flash", label: "Gemini 3.5 Flash" },
+      { id: "gemini-3.5-live-translate-preview", label: "Gemini 3.5 Live Translate Preview" },
+      { id: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro Preview" },
+      { id: "gemini-3.1-pro-preview-customtools", label: "Gemini 3.1 Pro Preview (Custom Tools)" },
+      { id: "gemini-3.1-flash-lite", label: "Gemini 3.1 Flash Lite" },
+      { id: "gemini-3.1-flash-live-preview", label: "Gemini 3.1 Flash Live Preview" },
+      { id: "gemini-2.5-pro", label: "Gemini 2.5 Pro" },
+      { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash" },
+      { id: "gemini-2.5-flash-lite", label: "Gemini 2.5 Flash Lite" },
+      { id: "gemini-2.0-flash", label: "Gemini 2.0 Flash" },
+      { id: "gemini-2.0-flash-lite", label: "Gemini 2.0 Flash Lite" },
+    ]);
+  });
+
   it("exposes adapter model profiles when adapters declare them", async () => {
     const adapterWithProfiles: ServerAdapterModule = {
       ...externalAdapter,

@@ -212,6 +212,50 @@ describe("adapter model refresh route", () => {
     expect(listModels).not.toHaveBeenCalled();
   });
 
+  it("serves the built-in Gemini model catalog through the HTTP route", async () => {
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).get("/api/companies/company-1/adapters/gemini_local/models"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toEqual([
+      { id: "auto", label: "Auto" },
+      { id: "gemini-3.5-flash", label: "Gemini 3.5 Flash" },
+      { id: "gemini-3.5-live-translate-preview", label: "Gemini 3.5 Live Translate Preview" },
+      { id: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro Preview" },
+      { id: "gemini-3.1-pro-preview-customtools", label: "Gemini 3.1 Pro Preview (Custom Tools)" },
+      { id: "gemini-3.1-flash-lite", label: "Gemini 3.1 Flash Lite" },
+      { id: "gemini-3.1-flash-live-preview", label: "Gemini 3.1 Flash Live Preview" },
+      { id: "gemini-2.5-pro", label: "Gemini 2.5 Pro" },
+      { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash" },
+      { id: "gemini-2.5-flash-lite", label: "Gemini 2.5 Flash Lite" },
+      { id: "gemini-2.0-flash", label: "Gemini 2.0 Flash" },
+      { id: "gemini-2.0-flash-lite", label: "Gemini 2.0 Flash Lite" },
+    ]);
+  });
+
+  it("serves the Claude fallback catalog with Sonnet 5 through the HTTP route", async () => {
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).get("/api/companies/company-1/adapters/claude_local/models"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toEqual([
+      { id: "claude-opus-4-8", label: "Claude Opus 4.8" },
+      { id: "claude-fable-5", label: "Claude Fable 5" },
+      { id: "claude-sonnet-5", label: "Claude Sonnet 5" },
+      { id: "claude-mythos-5", label: "Claude Mythos 5" },
+      { id: "claude-opus-4-7", label: "Claude Opus 4.7" },
+      { id: "claude-opus-4-6", label: "Claude Opus 4.6" },
+      { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6" },
+      { id: "claude-haiku-4-6", label: "Claude Haiku 4.6" },
+      { id: "claude-sonnet-4-5", label: "Claude Sonnet 4.5" },
+      { id: "claude-haiku-4-5", label: "Claude Haiku 4.5" },
+    ]);
+  });
+
   it("skips OpenCode model discovery for non-local environments", async () => {
     mockEnvironmentService.getById.mockResolvedValue({
       id: "env-1",
