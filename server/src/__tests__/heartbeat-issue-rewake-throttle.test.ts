@@ -69,24 +69,51 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
 
   afterEach(async () => {
     runningProcesses.clear();
-    for (let attempt = 0; attempt < 100; attempt += 1) {
+    // Wait for a STABLE idle window before tearing down. Upstream #9470 broke on
+    // the first idle read, but our fork's heartbeat.ts (NEO-259) fires post-run
+    // recovery/handoff side-effects: a terminal run calls startNextQueuedRunForAgent
+    // and chained handoff/recovery runs asynchronously insert issue_comments (plus
+    // agent_wakeup_requests / agent_runtime_state / heartbeat_run_events) after the
+    // original run already left running state. A single idle read observes the gap
+    // between a run finishing and its recovery enqueuing the next run, so require
+    // several consecutive idle polls to let background recovery fully settle.
+    let idlePolls = 0;
+    for (let attempt = 0; attempt < 200; attempt += 1) {
       const runs = await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns);
-      if (!runs.some((run) => run.status === "queued" || run.status === "running")) break;
+      const hasActiveRun = runs.some((run) => run.status === "queued" || run.status === "running");
+      if (hasActiveRun) {
+        idlePolls = 0;
+      } else if ((idlePolls += 1) >= 5) {
+        break;
+      }
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
-    await db.delete(environmentLeases);
-    await db.delete(issueComments);
-    await db.delete(issues);
-    await db.delete(heartbeatRunEvents);
-    await db.delete(activityLog);
-    await db.delete(heartbeatRuns);
-    await db.delete(agentWakeupRequests);
-    await db.delete(agentRuntimeState);
-    await db.delete(agents);
-    await db.delete(environments);
-    await db.delete(executionWorkspaces);
-    await db.delete(companySkills);
-    await db.delete(companies);
+    // Belt-and-suspenders: even after draining, a straggling recovery insert can
+    // race the deletes and re-reference a parent row (issue_comments -> issues;
+    // wakeup/runtime/event rows -> agents/companies). Child rows are deleted before
+    // their parents each pass, so retrying the whole FK-ordered sequence on a
+    // violation clears any late insert on the next iteration.
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        await db.delete(environmentLeases);
+        await db.delete(issueComments);
+        await db.delete(issues);
+        await db.delete(heartbeatRunEvents);
+        await db.delete(activityLog);
+        await db.delete(heartbeatRuns);
+        await db.delete(agentWakeupRequests);
+        await db.delete(agentRuntimeState);
+        await db.delete(agents);
+        await db.delete(environments);
+        await db.delete(executionWorkspaces);
+        await db.delete(companySkills);
+        await db.delete(companies);
+        break;
+      } catch (error) {
+        if (attempt >= 20) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    }
   });
 
   afterAll(async () => {

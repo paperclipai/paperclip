@@ -19,7 +19,7 @@ reserved **10000+** range → drop `pnpm-lock.yaml` for CI → `tsc -b` + target
 
 ## Fork-only NEO customizations (still diverge from upstream)
 
-- **NEO-259** `heartbeat.ts` — heartbeat runs + auth context, recovery/handoff side-effects (async comment/wakeup writes). Fork-only. *Watch:* interacts with upstream's new issue re-wake throttle (#9470); see follow-up on the rewake integration-test teardown race.
+- **NEO-259** `heartbeat.ts` — heartbeat runs + auth context, recovery/handoff side-effects (async comment/wakeup writes). Fork-only. *Interacts* with upstream's new issue re-wake throttle (#9470): the rewake integration test's `afterEach` raced our async recovery inserts (FK on `issues` delete). Resolved test-only in **NEO-430** (2026-07-13) — `heartbeat-issue-rewake-throttle.test.ts` teardown now waits for a stable idle window (consecutive-idle debounce) + retries the FK-ordered deletes; production recovery unchanged.
 - **NEO-28 / identity-auth** (`10000_neo28_identity_auth_framework`) — fork-only.
 - **NEO-348…356 MCP stack** (`10002` registry, `10003` company_mcp_client_enabled, `10004` governance) — fork-only; upstream shipped ~zero MCP work this window, not redundant.
 - **NEO-210/294** `authorization.ts` — fork-only.
