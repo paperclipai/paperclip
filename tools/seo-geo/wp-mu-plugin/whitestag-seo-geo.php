@@ -1,8 +1,8 @@
 <?php
 /*
 Plugin Name: WHITESTAG SEO/GEO Bridge
-Description: Öffnet Yoast-Meta für REST + serviert /llms.txt aus einer Option.
-Version: 0.1.0
+Description: Öffnet Yoast-Meta für REST + serviert /llms.txt + liest/schreibt Avada-Seitenoptionen (pyre_*).
+Version: 0.2.0
 */
 if (!defined('ABSPATH')) exit;
 
@@ -52,6 +52,44 @@ add_action('rest_api_init', function () {
         'callback' => function ($req) {
             update_option('whitestag_llms_txt', (string) $req->get_param('content'));
             return ['ok' => true];
+        },
+    ]);
+
+    // --- Avada-Seitenoptionen (nur pyre_*-Meta) lesen/schreiben ---------------
+    // Eng abgesteckt: ausschliesslich Schluessel mit Praefix "pyre_" (Avada Fusion
+    // Page Options). Berechtigung: edit_posts. Kein Zugriff auf andere/private Meta.
+    $pyre_perm = function () { return current_user_can('edit_posts'); };
+
+    // Lesen: alle pyre_*-Felder eines Posts -> Diagnose (2026- vs 2024-Beitrag vergleichen)
+    register_rest_route('whitestag-seo-geo/v1', '/pageopts/(?P<id>\d+)', [
+        'methods'  => 'GET',
+        'permission_callback' => $pyre_perm,
+        'callback' => function ($req) {
+            $id = (int) $req['id'];
+            if (!get_post($id)) return new WP_Error('not_found', 'Post nicht gefunden', ['status' => 404]);
+            $out = [];
+            foreach (get_post_meta($id) as $k => $v) {
+                if (strpos($k, 'pyre_') === 0) $out[$k] = maybe_unserialize($v[0]);
+            }
+            return ['id' => $id, 'pyre' => $out];
+        },
+    ]);
+
+    // Schreiben: genau ein pyre_*-Feld setzen
+    register_rest_route('whitestag-seo-geo/v1', '/pageopts', [
+        'methods'  => 'POST',
+        'permission_callback' => $pyre_perm,
+        'callback' => function ($req) {
+            $id  = (int) $req->get_param('id');
+            $key = (string) $req->get_param('key');
+            $val = (string) $req->get_param('value');
+            if (!get_post($id)) return new WP_Error('not_found', 'Post nicht gefunden', ['status' => 404]);
+            if (strpos($key, 'pyre_') !== 0) {
+                return new WP_Error('forbidden_key', 'Nur pyre_*-Schluessel erlaubt', ['status' => 403]);
+            }
+            $old = get_post_meta($id, $key, true);
+            update_post_meta($id, $key, $val);
+            return ['ok' => true, 'id' => $id, 'key' => $key, 'old' => $old, 'new' => $val];
         },
     ]);
 });
