@@ -39,6 +39,11 @@ import {
   joinPromptSections,
 } from "@paperclipai/adapter-utils/server-utils";
 import {
+  parseLocalProcessSandboxExtraPaths,
+  resolveLocalProcessSandboxWorkspaceDir,
+  type LocalProcessSandboxOptions,
+} from "@paperclipai/adapter-utils/local-process-sandbox";
+import {
   parseCodexJsonl,
   extractCodexRetryNotBefore,
   isCodexProviderQuotaError,
@@ -632,6 +637,27 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ),
     );
     const billingType = resolveCodexBillingType(effectiveEnv);
+    const localSandboxWorkspaceDir = resolveLocalProcessSandboxWorkspaceDir({
+      executionCwd: effectiveExecutionCwd,
+      workspaceCwd: effectiveWorkspaceCwd,
+      workspaceWorktreePath,
+    });
+    const localProcessSandbox: LocalProcessSandboxOptions | null =
+      config.filesystemScope === "workspace" && !executionTargetIsRemote
+        ? {
+            workspaceDir: localSandboxWorkspaceDir,
+            managedPaths: [{ path: effectiveCodexHome, access: "rw", createIfMissing: "directory" }],
+            extraPaths: parseLocalProcessSandboxExtraPaths(config.filesystemExtraPaths),
+            homeDir: effectiveCodexHome,
+            command: asString(config.filesystemSandboxCommand, "bwrap"),
+          }
+        : null;
+    if (localProcessSandbox) {
+      await onLog(
+        "stdout",
+        `[paperclip] Confining Codex filesystem access to workspace "${localSandboxWorkspaceDir}" and declared adapter paths.\n`,
+      );
+    }
     const runtimeEnv = Object.fromEntries(
       Object.entries(ensurePathInEnv(effectiveEnv)).filter(
         (entry): entry is [string, string] => typeof entry[1] === "string",
@@ -923,6 +949,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             await onLog(stream, cleaned);
           },
           runLogTail: paperclipBridge?.runLogTail,
+          localProcessSandbox,
         });
         const cleanedStderr = stripCodexRolloutNoise(proc.stderr);
         return {

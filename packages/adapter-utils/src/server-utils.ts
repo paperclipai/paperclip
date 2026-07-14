@@ -4,6 +4,10 @@ import { constants as fsConstants, promises as fs, type Dirent } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
+import {
+  buildLocalProcessSandboxSpawnTarget,
+  type LocalProcessSandboxOptions,
+} from "./local-process-sandbox.js";
 import { buildSshSpawnTarget, type SshRemoteExecutionSpec } from "./ssh.js";
 import { redactCommandText } from "./command-redaction.js";
 import type {
@@ -2056,6 +2060,7 @@ async function resolveSpawnTarget(
   options: {
     remoteExecution?: RemoteExecutionSpec | null;
     remoteEnv?: Record<string, string> | null;
+    localProcessSandbox?: LocalProcessSandboxOptions | null;
   } = {},
 ): Promise<SpawnTarget> {
   const remote = options.remoteExecution ?? null;
@@ -2082,6 +2087,23 @@ async function resolveSpawnTarget(
 
   const resolved = await resolveCommandPath(command, cwd, env);
   const executable = resolved ?? command;
+
+  if (options.localProcessSandbox) {
+    if (!resolved) throw new Error(`Command not found in PATH: "${command}"`);
+    const sandboxTarget = await buildLocalProcessSandboxSpawnTarget({
+      executable,
+      args,
+      cwd,
+      options: options.localProcessSandbox,
+    });
+    const sandboxCommand = await resolveCommandPath(sandboxTarget.command, cwd, env);
+    if (!sandboxCommand) {
+      throw new Error(
+        `filesystemScope="workspace" requires Bubblewrap, but "${sandboxTarget.command}" was not found in PATH. Install bwrap or configure filesystemSandboxCommand.`,
+      );
+    }
+    return { ...sandboxTarget, command: sandboxCommand };
+  }
 
   if (process.platform !== "win32") {
     return { command: executable, args };
@@ -2898,6 +2920,7 @@ export async function runChildProcess(
     terminalResultCleanup?: TerminalResultCleanupOptions;
     stdin?: string;
     remoteExecution?: RemoteExecutionSpec | null;
+    localProcessSandbox?: LocalProcessSandboxOptions | null;
   },
 ): Promise<RunProcessResult> {
   const onLogError = opts.onLogError ?? ((err, id, msg) => console.warn({ err, runId: id }, msg));
@@ -2923,9 +2946,11 @@ export async function runChildProcess(
     }
 
     const mergedEnv = ensurePathInEnv(rawMerged);
+    if (opts.localProcessSandbox?.homeDir) mergedEnv.HOME = opts.localProcessSandbox.homeDir;
     void resolveSpawnTarget(command, args, opts.cwd, mergedEnv, {
       remoteExecution: opts.remoteExecution ?? null,
       remoteEnv: opts.remoteExecution ? opts.env : null,
+      localProcessSandbox: opts.localProcessSandbox ?? null,
     })
       .then((target) => {
         const child = spawn(target.command, target.args, {

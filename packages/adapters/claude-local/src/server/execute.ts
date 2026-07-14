@@ -45,6 +45,11 @@ import {
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
 } from "@paperclipai/adapter-utils/server-utils";
 import {
+  parseLocalProcessSandboxExtraPaths,
+  resolveLocalProcessSandboxWorkspaceDir,
+  type LocalProcessSandboxOptions,
+} from "@paperclipai/adapter-utils/local-process-sandbox";
+import {
   claudeModelUsageTotals,
   parseClaudeStreamJson,
   describeClaudeFailure,
@@ -492,6 +497,33 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     instructionsContents: combinedInstructionsContents,
     onLog,
   });
+  const sharedClaudeConfigDir = resolveSharedClaudeConfigDir(process.env);
+  const localSandboxWorkspaceDir = resolveLocalProcessSandboxWorkspaceDir({
+    executionCwd: effectiveExecutionCwd,
+    workspaceCwd: effectiveWorkspaceCwd,
+    workspaceWorktreePath,
+  });
+  const localProcessSandbox: LocalProcessSandboxOptions | null =
+    config.filesystemScope === "workspace" && !executionTargetIsRemote
+      ? {
+          workspaceDir: localSandboxWorkspaceDir,
+          managedPaths: [
+            { path: sharedClaudeConfigDir, access: "rw", createIfMissing: "directory" },
+            { path: path.join(path.dirname(sharedClaudeConfigDir), ".claude.json"), access: "rw", createIfMissing: "file" },
+            { path: promptBundle.addDir, access: "ro" },
+          ],
+          extraPaths: parseLocalProcessSandboxExtraPaths(config.filesystemExtraPaths),
+          homeDir: path.dirname(sharedClaudeConfigDir),
+          command: asString(config.filesystemSandboxCommand, "bwrap"),
+        }
+      : null;
+  if (localProcessSandbox) {
+    env.CLAUDE_CONFIG_DIR = sharedClaudeConfigDir;
+    await onLog(
+      "stdout",
+      `[paperclip] Confining Claude filesystem access to workspace "${localSandboxWorkspaceDir}" and declared adapter paths.\n`,
+    );
+  }
   const useManagedRemoteClaudeConfig =
     executionTargetIsRemote &&
     adapterExecutionTargetUsesManagedHome(executionTarget) &&
@@ -823,6 +855,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         graceMs: terminalResultCleanupGraceMs,
         hasTerminalResult: ({ stdout }) => parseClaudeStreamJson(stdout).resultJson !== null,
       },
+      localProcessSandbox,
     });
 
     const parsedStream = parseClaudeStreamJson(proc.stdout);
