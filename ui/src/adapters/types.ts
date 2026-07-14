@@ -1,5 +1,5 @@
 import type { ComponentType } from "react";
-import type { CreateConfigValues } from "@paperclipai/adapter-utils";
+import type { AdapterCredentialSetup, CreateConfigValues } from "@paperclipai/adapter-utils";
 
 // Re-export shared types so local consumers don't need to change imports
 export type { TranscriptEntry, StdoutLineParser, CreateConfigValues } from "@paperclipai/adapter-utils";
@@ -41,4 +41,6 @@ export interface UIAdapterModule extends TranscriptParserSource {
   label: string;
   ConfigFields: ComponentType<AdapterConfigFieldsProps>;
   buildAdapterConfig: (values: CreateConfigValues) => Record<string, unknown>;
+  /** Guided BYOK credential options; absent for adapters without one (e.g. external plugins). */
+  credentialSetup?: AdapterCredentialSetup;
 }
