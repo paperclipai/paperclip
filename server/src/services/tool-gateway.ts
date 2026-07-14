@@ -625,7 +625,7 @@ function humanizeArgumentValue(value: unknown): string | null {
 /**
  * Build the prosumer-facing "Ask first" preview (M5/M7/M9). Deliberately free of the
  * words tool/risk/transport/arguments and of raw JSON — those only belong on the
- * Advanced surfaces (M8a/M8b) and the board-only formal-approval interaction. See PAP-10896.
+ * Advanced surfaces (M8a/M8b) and the board-only formal-approval interaction.
  */
 function buildHumanizedActionPreview(input: {
   tool: ToolGatewayDescriptor;
@@ -2559,7 +2559,13 @@ export function createToolGatewayService(
   function localStdioEnvironment(connection: typeof toolConnections.$inferSelect, template: LocalStdioRuntimeTemplate): NodeJS.ProcessEnv {
     const config = asRecord(connection.config) ?? {};
     const configEnv = asRecord(config.env) ?? {};
-    const env: NodeJS.ProcessEnv = { ...process.env };
+    const env: NodeJS.ProcessEnv = {};
+    for (const key of ["PATH", "Path", "SystemRoot", "WINDIR", "COMSPEC", "PATHEXT"]) {
+      const value = process.env[key];
+      if (typeof value === "string" && value.length > 0) {
+        env[key] = value;
+      }
+    }
     for (const key of template.envKeys) {
       const configured = configEnv[key];
       if (typeof configured === "string") {

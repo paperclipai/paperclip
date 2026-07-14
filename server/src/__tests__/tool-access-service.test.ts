@@ -2667,6 +2667,7 @@ describeEmbeddedPostgres("tool access service", () => {
   it("starts and completes OAuth app sign-in with PKCE state and secret-backed tokens", async () => {
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET", "slack-client-secret");
+    vi.stubEnv("PAPERCLIP_PUBLIC_URL", "https://paperclip-public.example");
     const company = await createCompany(db);
     const app = createRouteApp(db);
 
@@ -2686,6 +2687,7 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(startUrl.searchParams.get("client_id")).toBe("slack-client-id");
     expect(startUrl.searchParams.get("code_challenge_method")).toBe("S256");
     expect(startUrl.searchParams.get("code_challenge")).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(startUrl.searchParams.get("redirect_uri")).toBe("https://paperclip-public.example/api/tools/oauth/callback");
     const state = startUrl.searchParams.get("state");
     expect(state).toBeTruthy();
     await expect(db.select().from(toolOauthStates)).resolves.toEqual([
@@ -2707,6 +2709,7 @@ describeEmbeddedPostgres("tool access service", () => {
         expect(body.get("code")).toBe("oauth-code");
         expect(body.get("client_secret")).toBe("slack-client-secret");
         expect(body.get("code_verifier")).toBeTruthy();
+        expect(body.get("redirect_uri")).toBe("https://paperclip-public.example/api/tools/oauth/callback");
         return {
           ok: true,
           json: async () => ({

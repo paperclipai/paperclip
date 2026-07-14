@@ -1,6 +1,6 @@
 -- Scope plugin configuration rows by company before re-enabling plugin secret
 -- refs. Legacy rows were instance-global; preserve only rows with an
--- unambiguous company owner and drop ambiguous rows fail-closed.
+-- unambiguous company owner and fail closed when a row is ambiguous.
 
 ALTER TABLE "plugin_config"
   ADD COLUMN IF NOT EXISTS "company_id" uuid;--> statement-breakpoint
@@ -33,8 +33,18 @@ FROM single_company sc
 WHERE pc."company_id" IS NULL
   AND sc."company_count" = 1;--> statement-breakpoint
 
-DELETE FROM "plugin_config"
-WHERE "company_id" IS NULL;--> statement-breakpoint
+DO $$
+DECLARE
+  unresolved_count integer;
+BEGIN
+  SELECT count(*) INTO unresolved_count
+  FROM "plugin_config"
+  WHERE "company_id" IS NULL;
+
+  IF unresolved_count > 0 THEN
+    RAISE EXCEPTION 'Cannot assign company_id for % plugin_config row(s); resolve ambiguous plugin secret bindings before applying migration 0164', unresolved_count;
+  END IF;
+END $$;--> statement-breakpoint
 
 ALTER TABLE "plugin_config"
   ALTER COLUMN "company_id" SET NOT NULL;--> statement-breakpoint

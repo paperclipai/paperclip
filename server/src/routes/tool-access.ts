@@ -40,7 +40,7 @@ import {
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { getActorInfo, assertBoard, assertCompanyAccess } from "./authz.js";
-import { forbidden } from "../errors.js";
+import { badRequest, forbidden } from "../errors.js";
 import { accessService, googleSheetsRobotEmailFromEnv, logActivity, toolAccessPolicyService, toolAccessService } from "../services/index.js";
 import { ToolGatewayHttpError, type ToolGatewayService } from "../services/tool-gateway.js";
 
@@ -89,12 +89,26 @@ export function toolAccessRoutes(
   const svc = toolAccessService(db, options);
   const policySvc = toolAccessPolicyService(db);
 
+  function configuredPublicBaseUrl() {
+    const raw = (
+      process.env.PAPERCLIP_PUBLIC_URL?.trim()
+      || process.env.PAPERCLIP_AUTH_PUBLIC_BASE_URL?.trim()
+      || process.env.BETTER_AUTH_URL?.trim()
+      || process.env.BETTER_AUTH_BASE_URL?.trim()
+    );
+    if (!raw) return null;
+    try {
+      return new URL(raw).origin;
+    } catch {
+      return null;
+    }
+  }
+
   function requestBaseUrl(req: Request) {
-    const forwardedProto = String(req.headers["x-forwarded-proto"] ?? "").split(",")[0]?.trim();
-    const forwardedHost = String(req.headers["x-forwarded-host"] ?? "").split(",")[0]?.trim();
-    const proto = forwardedProto || req.protocol;
-    const host = forwardedHost || req.get("host");
-    return `${proto}://${host}`;
+    const configured = configuredPublicBaseUrl();
+    if (configured) return configured;
+    const host = req.get("host")?.trim() || req.hostname;
+    return `${req.protocol}://${host}`;
   }
 
   function oauthRedirectUri(req: Request) {
@@ -271,9 +285,10 @@ export function toolAccessRoutes(
     const error = typeof req.query.error === "string" ? req.query.error : null;
     const errorDescription = typeof req.query.error_description === "string" ? req.query.error_description : null;
     const pendingState = state ? await svc.peekOAuthState(state) : null;
-    if (pendingState) {
-      assertToolAppMutationAccess(req, pendingState.companyId);
+    if (!pendingState) {
+      throw badRequest("Invalid or expired OAuth state");
     }
+    assertToolAppMutationAccess(req, pendingState.companyId);
     const result = await svc.completeOAuthCallback({
       state,
       code,

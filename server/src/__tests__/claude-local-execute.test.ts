@@ -350,7 +350,7 @@ function createLocalSandboxRunner() {
 }
 
 describe("claude execute", () => {
-  it("uses a strict per-agent MCP config and keeps zero-server runs empty", async () => {
+  it("uses a strict per-agent MCP config only when managed servers are present", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-mcp-config-"));
     const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root);
     try {
@@ -392,10 +392,11 @@ describe("claude execute", () => {
           },
         },
       });
-      expect(JSON.parse(zero.mcpConfigContents)).toEqual({ mcpServers: {} });
+      expect(zero.argv).not.toContain("--mcp-config");
+      expect(zero.argv).not.toContain("--strict-mcp-config");
+      expect(zero.mcpConfigPath).toBeNull();
+      expect(zero.mcpConfigContents).toBeNull();
       expect(alpha.mcpConfigPath).toContain("/agents/agent-alpha/");
-      expect(zero.mcpConfigPath).toContain("/agents/agent-zero/");
-      expect(alpha.mcpConfigPath).not.toBe(zero.mcpConfigPath);
     } finally {
       restore();
       await fs.rm(root, { recursive: true, force: true });

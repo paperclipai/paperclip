@@ -1,7 +1,7 @@
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
 
-// PAP-10820 — QA harness for application edit, status lifecycle, and delete
-// covering Phases 2/3/4 of the [PAP-10805] applications page work. The spec
+// application CRUD — QA harness for application edit, status lifecycle, and delete
+// covering Phases 2/3/4 of the the applications page work. The spec
 // boots the shared local_trusted Playwright webServer (see playwright.config),
 // seeds applications and connections through the board API, then drives the
 // Tools → Applications UI for each action and captures screenshots.
@@ -16,7 +16,7 @@ const APP_PREFIX = `qa10820-${Date.now().toString(36)}`;
 
 async function discoverCompany(request: APIRequestContext): Promise<SeedResult> {
   const res = await request.post("/api/companies", {
-    data: { name: `PAP-10820 applications CRUD ${Date.now()}` },
+    data: { name: `applications CRUD ${Date.now()}` },
   });
   expect(res.ok(), `create company failed ${res.status()}: ${await res.text()}`).toBe(true);
   const company = await res.json();
@@ -70,7 +70,7 @@ async function expandApplicationRow(page: Page, name: string) {
   }
 }
 
-test.describe.serial("PAP-10820 applications CRUD", () => {
+test.describe.serial("applications CRUD", () => {
   let seed: SeedResult;
 
   test.beforeAll(async ({ request }) => {
@@ -86,7 +86,7 @@ test.describe.serial("PAP-10820 applications CRUD", () => {
     const first = `${APP_PREFIX}-edit-original`;
     const second = `${APP_PREFIX}-edit-conflict`;
     const renamed = `${APP_PREFIX}-edit-renamed`;
-    const description = "Updated description for PAP-10820 QA";
+    const description = "Updated description for application CRUD QA";
 
     await createApplication(request, seed.companyId, { name: first, description: "Initial description" });
     await createApplication(request, seed.companyId, { name: second });
@@ -101,7 +101,7 @@ test.describe.serial("PAP-10820 applications CRUD", () => {
 
     const editDialog = page.getByRole("dialog");
     await expect(editDialog.getByRole("heading", { name: "Edit application" })).toBeVisible();
-    await editDialog.screenshot({ path: `${SCREENSHOT_DIR}/pap-10820-edit-dialog-open.png` });
+    await editDialog.screenshot({ path: `${SCREENSHOT_DIR}/applications-crud-edit-dialog-open.png` });
 
     // Rename + new description
     const nameInput = editDialog.getByLabel("Name");
@@ -115,7 +115,7 @@ test.describe.serial("PAP-10820 applications CRUD", () => {
     await expect(page.getByText(renamed, { exact: true })).toBeVisible();
     await expect(page.getByText(description, { exact: false })).toBeVisible();
 
-    await page.screenshot({ path: `${SCREENSHOT_DIR}/pap-10820-edit-saved-table.png`, fullPage: true });
+    await page.screenshot({ path: `${SCREENSHOT_DIR}/applications-crud-edit-saved-table.png`, fullPage: true });
 
     // Now attempt to rename the renamed app to the existing `second` — should
     // show the friendly conflict error (no crash, no 500, dialog stays open).
@@ -130,7 +130,7 @@ test.describe.serial("PAP-10820 applications CRUD", () => {
     ).toBeVisible({ timeout: 10_000 });
     await expect(conflictDialog).toBeVisible();
     await conflictDialog.screenshot({
-      path: `${SCREENSHOT_DIR}/pap-10820-edit-duplicate-conflict.png`,
+      path: `${SCREENSHOT_DIR}/applications-crud-edit-duplicate-conflict.png`,
     });
 
     await page.keyboard.press("Escape");
@@ -158,7 +158,7 @@ test.describe.serial("PAP-10820 applications CRUD", () => {
     await expect(disableDialog.getByText("Impact summary")).toBeVisible();
     // Should show 1 connection affected.
     await expect(disableDialog.getByText(/^1$/)).toBeVisible();
-    await disableDialog.screenshot({ path: `${SCREENSHOT_DIR}/pap-10820-disable-impact-dialog.png` });
+    await disableDialog.screenshot({ path: `${SCREENSHOT_DIR}/applications-crud-disable-impact-dialog.png` });
     await disableDialog.getByRole("button", { name: "Disable application" }).click();
 
     await expect(disableDialog).toBeHidden({ timeout: 10_000 });
@@ -218,7 +218,7 @@ test.describe.serial("PAP-10820 applications CRUD", () => {
     const archiveDialog = page.getByRole("dialog");
     await expect(archiveDialog.getByRole("heading", { name: "Archive application" })).toBeVisible();
     await expect(archiveDialog.getByText("Impact summary")).toBeVisible();
-    await archiveDialog.screenshot({ path: `${SCREENSHOT_DIR}/pap-10820-archive-impact-dialog.png` });
+    await archiveDialog.screenshot({ path: `${SCREENSHOT_DIR}/applications-crud-archive-impact-dialog.png` });
     await archiveDialog.getByRole("button", { name: "Archive application" }).click();
     await expect(archiveDialog).toBeHidden({ timeout: 10_000 });
 
@@ -235,7 +235,7 @@ test.describe.serial("PAP-10820 applications CRUD", () => {
       page.getByRole("row", { name: new RegExp(appName) }).getByText("active", { exact: true }),
     ).toBeVisible({ timeout: 10_000 });
 
-    await page.screenshot({ path: `${SCREENSHOT_DIR}/pap-10820-lifecycle-reactivated.png`, fullPage: true });
+    await page.screenshot({ path: `${SCREENSHOT_DIR}/applications-crud-lifecycle-reactivated.png`, fullPage: true });
   });
 
   test("Phase 4: delete guard + clean delete", async ({ page, request }) => {
@@ -262,7 +262,7 @@ test.describe.serial("PAP-10820 applications CRUD", () => {
     await page.getByRole("menuitem", { name: "Delete" }).click();
     const guardedDialog = page.getByRole("dialog");
     await expect(guardedDialog.getByText("delete is blocked while connections exist")).toBeVisible();
-    await guardedDialog.screenshot({ path: `${SCREENSHOT_DIR}/pap-10820-delete-blocked-precheck.png` });
+    await guardedDialog.screenshot({ path: `${SCREENSHOT_DIR}/applications-crud-delete-blocked-precheck.png` });
 
     // Attempt the delete anyway — server returns 409 and the same dialog
     // surfaces the error inline.
@@ -270,7 +270,7 @@ test.describe.serial("PAP-10820 applications CRUD", () => {
     await expect(
       guardedDialog.getByText(/connection/i).first(),
     ).toBeVisible({ timeout: 10_000 });
-    await guardedDialog.screenshot({ path: `${SCREENSHOT_DIR}/pap-10820-delete-409-inline.png` });
+    await guardedDialog.screenshot({ path: `${SCREENSHOT_DIR}/applications-crud-delete-409-inline.png` });
 
     // Confirm the application still exists.
     const stillThere = await request.get(`/api/companies/${seed.companyId}/tools/applications`);
@@ -284,13 +284,13 @@ test.describe.serial("PAP-10820 applications CRUD", () => {
     await page.getByRole("menuitem", { name: "Delete" }).click();
     const cleanDialog = page.getByRole("dialog");
     await expect(cleanDialog.getByText("No connections are attached")).toBeVisible();
-    await cleanDialog.screenshot({ path: `${SCREENSHOT_DIR}/pap-10820-delete-clean-precheck.png` });
+    await cleanDialog.screenshot({ path: `${SCREENSHOT_DIR}/applications-crud-delete-clean-precheck.png` });
     await cleanDialog.getByRole("button", { name: "Delete application" }).click();
     await expect(cleanDialog).toBeHidden({ timeout: 10_000 });
 
     // The row should be gone from the table.
     await expect(page.getByText(cleanAppName, { exact: true })).toBeHidden({ timeout: 10_000 });
-    await page.screenshot({ path: `${SCREENSHOT_DIR}/pap-10820-delete-clean-after.png`, fullPage: true });
+    await page.screenshot({ path: `${SCREENSHOT_DIR}/applications-crud-delete-clean-after.png`, fullPage: true });
 
     // Verify via API that the application is gone.
     const after = await request.get(`/api/companies/${seed.companyId}/tools/applications`);

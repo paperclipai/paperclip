@@ -2,7 +2,7 @@ import { expect, test, type APIRequestContext } from "@playwright/test";
 import { createServer, type Server } from "node:http";
 import { AddressInfo } from "node:net";
 
-// PAP-10915 wave 6 — not-connected apps get a real app page.
+// Apps navigation wave 6 — not-connected apps get a real app page.
 // A row with no live connection must open /apps/app/:applicationId (previous
 // setup + danger zone + reconnect prefill), not the generic connect wizard,
 // and reconnecting must revive the same application/connection, not duplicate.
@@ -12,7 +12,7 @@ const SCREENSHOT_DIR = "test-results";
 type Seed = { companyId: string; prefix: string };
 
 async function newCompany(request: APIRequestContext, label: string): Promise<Seed> {
-  const res = await request.post("/api/companies", { data: { name: `PAP-10915 ${label} ${Date.now()}` } });
+  const res = await request.post("/api/companies", { data: { name: `Apps navigation ${label} ${Date.now()}` } });
   expect(res.ok(), `create company failed ${res.status()}: ${await res.text()}`).toBe(true);
   const company = await res.json();
   return {
@@ -64,7 +64,7 @@ async function startMockMcp(): Promise<MockMcpServer> {
   };
 }
 
-test.describe.serial("PAP-10915 not-connected app page", () => {
+test.describe.serial("not-connected app page", () => {
   test.setTimeout(240_000);
 
   let mock: MockMcpServer;
@@ -110,7 +110,7 @@ test.describe.serial("PAP-10915 not-connected app page", () => {
     await expect(page.getByRole("heading", { name: "Bla" })).toBeVisible({ timeout: 20_000 });
     await expect(page.getByRole("heading", { name: "Previous setup" })).toBeVisible();
     await expect(page.getByText("Danger zone")).toBeVisible();
-    await page.screenshot({ path: `${SCREENSHOT_DIR}/pap10915-w6-01-app-not-connected.png`, fullPage: true });
+    await page.screenshot({ path: `${SCREENSHOT_DIR}/apps-nav-w6-01-app-not-connected.png`, fullPage: true });
   });
 
   test("reconnect prefills the wizard and revives the same application", async ({ page, request }) => {
@@ -119,7 +119,7 @@ test.describe.serial("PAP-10915 not-connected app page", () => {
     await expect(page).toHaveURL(/\/apps\/connect\?/, { timeout: 20_000 });
     await expect(page.getByText("Connect with a link")).toBeVisible({ timeout: 20_000 });
     await expect(page.getByText(mock.url)).toBeVisible();
-    await page.screenshot({ path: `${SCREENSHOT_DIR}/pap10915-w6-02-reconnect-prefilled.png`, fullPage: true });
+    await page.screenshot({ path: `${SCREENSHOT_DIR}/apps-nav-w6-02-reconnect-prefilled.png`, fullPage: true });
 
     await page.getByRole("button", { name: "Check link" }).click();
     await expect(page.getByText(/Connected to .* it offers/)).toBeVisible({ timeout: 30_000 });
@@ -150,7 +150,7 @@ test.describe.serial("PAP-10915 not-connected app page", () => {
     const row = page.locator("tbody tr", { hasText: "Bla" });
     await expect(row).toBeVisible({ timeout: 30_000 });
     await expect(row.getByRole("button", { name: /Open|Review/ })).toBeVisible();
-    await page.screenshot({ path: `${SCREENSHOT_DIR}/pap10915-w6-03-reconnected-row.png`, fullPage: true });
+    await page.screenshot({ path: `${SCREENSHOT_DIR}/apps-nav-w6-03-reconnected-row.png`, fullPage: true });
   });
 
   test("danger zone on the app page removes the app", async ({ page, request }) => {
@@ -170,7 +170,7 @@ test.describe.serial("PAP-10915 not-connected app page", () => {
     await page.goto(`/${seed.prefix}/apps/app/${secondBody.application.id}`);
     await expect(page.getByText("Danger zone")).toBeVisible({ timeout: 30_000 });
     await page.getByRole("button", { name: "Remove app" }).click();
-    await page.screenshot({ path: `${SCREENSHOT_DIR}/pap10915-w6-04-app-page-danger.png`, fullPage: true });
+    await page.screenshot({ path: `${SCREENSHOT_DIR}/apps-nav-w6-04-app-page-danger.png`, fullPage: true });
     await page.getByRole("button", { name: "Yes, remove it" }).click();
     await expect(page).toHaveURL(new RegExp(`/${seed.prefix}/apps$`), { timeout: 20_000 });
     await expect(page.getByText("App removed").first()).toBeVisible({ timeout: 20_000 });

@@ -178,6 +178,9 @@ async function createRemoteMcpTool(
     credentialRefs?: typeof toolConnections.$inferInsert["credentialRefs"];
     credentialSecretRefs?: typeof toolConnections.$inferInsert["credentialSecretRefs"];
     riskLevel?: "read" | "write" | "destructive";
+    stdioScript?: string;
+    envKeys?: string[];
+    connectionConfig?: Record<string, unknown>;
   } = {},
 ) {
   const applicationKey = input.applicationKey ?? `app-${randomUUID().slice(0, 8)}`;
@@ -283,7 +286,7 @@ async function createLocalStdioMcpTool(
   }).returning();
   const toolName = input.toolName ?? "echo";
   const templateKey = `test.local-stdio.${randomUUID()}`;
-  const stdioScript = `
+  const stdioScript = input.stdioScript ?? `
 const readline = require("node:readline");
 const rl = readline.createInterface({ input: process.stdin });
 rl.on("line", (line) => {
@@ -303,7 +306,7 @@ rl.on("line", (line) => {
     name: `Local stdio template ${randomUUID()}`,
     command: process.execPath,
     args: ["-e", stdioScript],
-    envKeys: [],
+    envKeys: input.envKeys ?? [],
     tools: [
       {
         name: toolName,
@@ -327,8 +330,8 @@ rl.on("line", (line) => {
     status: input.connectionStatus ?? "active",
     enabled: input.connectionEnabled ?? true,
     healthStatus: input.healthStatus ?? "ok",
-    config: { templateId: templateKey },
-    transportConfig: { templateId: templateKey },
+    config: { templateId: templateKey, ...(input.connectionConfig ?? {}) },
+    transportConfig: { templateId: templateKey, ...(input.connectionConfig ?? {}) },
   }).returning();
   const [catalogEntry] = await db.insert(toolCatalogEntries).values({
     companyId,
@@ -1251,6 +1254,87 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
       commandTemplateKey: localTool.templateKey,
       healthStatus: "ok",
     });
+  });
+
+  it("passes only approved env values to local stdio MCP processes", async () => {
+    const previousDatabaseUrl = process.env.DATABASE_URL;
+    process.env.DATABASE_URL = "postgres://server-secret.example/paperclip";
+    try {
+      const company = await createCompany(db);
+      const agent = await createAgent(db, company.id);
+      const { run } = await createIssueAndRun(db, company.id, agent.id);
+      const localTool = await createLocalStdioMcpTool(db, company.id, {
+        applicationKey: "local-env-demo",
+        connectionName: "Local Env Demo",
+        toolName: "inspect_env",
+        title: "Inspect env",
+        envKeys: ["ALLOWED_TOKEN"],
+        connectionConfig: { env: { ALLOWED_TOKEN: "allowed-token", EXTRA_CONFIG: "extra-value" } },
+        stdioScript: `
+const readline = require("node:readline");
+const rl = readline.createInterface({ input: process.stdin });
+rl.on("line", (line) => {
+  const message = JSON.parse(line);
+  if (message.method === "initialize") {
+    process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { protocolVersion: "2024-11-05", capabilities: {}, serverInfo: { name: "env-stdio", version: "0.0.0" } } }) + "\\n");
+    return;
+  }
+  if (message.method === "tools/call") {
+    process.stdout.write(JSON.stringify({
+      jsonrpc: "2.0",
+      id: message.id,
+      result: {
+        content: [{ type: "text", text: "env" }],
+        structuredContent: {
+          databaseUrl: process.env.DATABASE_URL ?? null,
+          allowedToken: process.env.ALLOWED_TOKEN ?? null,
+          extraConfig: process.env.EXTRA_CONFIG ?? null,
+          hasPath: Boolean(process.env.PATH || process.env.Path),
+        },
+      },
+    }) + "\\n");
+  }
+});
+`,
+      });
+      const expectedName = expectedConnectedToolName({
+        applicationKey: "local-env-demo",
+        connectionId: localTool.connection.id,
+        toolName: "inspect_env",
+      });
+      const profile = await allowToolsForAgent(db, company.id, agent.id, []);
+      await db.insert(toolProfileEntries).values({
+        companyId: company.id,
+        profileId: profile.id,
+        selectorType: "catalog_entry",
+        effect: "include",
+        catalogEntryId: localTool.catalogEntry.id,
+      });
+
+      const gateway = createTestToolGatewayService(db, { runtimeSupervisor: { idleTtlMs: 10_000 } });
+      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+
+      await expect(gateway.executeTool({
+        sessionToken: session.token,
+        tool: expectedName,
+        parameters: { message: "hello" },
+      })).resolves.toMatchObject({
+        status: "completed",
+        result: {
+          data: {
+            structuredContent: {
+              databaseUrl: null,
+              allowedToken: "***REDACTED***",
+              extraConfig: "extra-value",
+              hasPath: true,
+            },
+          },
+        },
+      });
+    } finally {
+      if (previousDatabaseUrl === undefined) delete process.env.DATABASE_URL;
+      else process.env.DATABASE_URL = previousDatabaseUrl;
+    }
   });
 
   it("keeps connected remote MCP gateway names collision-safe and excludes inactive catalog sources", async () => {

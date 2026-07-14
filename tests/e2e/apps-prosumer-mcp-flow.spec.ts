@@ -2,7 +2,7 @@ import { expect, test, type APIRequestContext, type Page } from "@playwright/tes
 import { createServer, type Server } from "node:http";
 import { AddressInfo } from "node:net";
 
-// PAP-10864 — QA harness for the prosumer Connect-an-app flow on top of the
+// prosumer MCP flow — QA harness for the prosumer Connect-an-app flow on top of the
 // tool-access foundation. Covers the M-series happy path (gallery + key paste
 // → choose actions → who-can-use → success), the expired-key reconnect path,
 // the Needs-attention surface, and a regression check that /apps/advanced
@@ -18,7 +18,7 @@ const SCREENSHOT_DIR = "test-results";
 type Seed = { companyId: string; prefix: string };
 
 async function newCompany(request: APIRequestContext, label: string): Promise<Seed> {
-  const res = await request.post("/api/companies", { data: { name: `PAP-10864 ${label} ${Date.now()}` } });
+  const res = await request.post("/api/companies", { data: { name: `prosumer MCP flow ${label} ${Date.now()}` } });
   expect(res.ok(), `create company failed ${res.status()}: ${await res.text()}`).toBe(true);
   const company = await res.json();
   return {
@@ -72,7 +72,7 @@ async function startMockMcp(options: { expectedHeader?: string } = {}): Promise<
                 inputSchema: { type: "object", properties: {}, additionalProperties: false },
               },
               {
-                // Namespaced name (PAP-10902): real MCP servers prefix tool names
+                // Namespaced name (namespaced tool names): real MCP servers prefix tool names
                 // ("github:create_issue"). The classifier must still see the "create"
                 // verb and land this under "Can make changes" with the toggle OFF —
                 // the old leading-anchor regex fell through to read-only.
@@ -129,7 +129,7 @@ async function gotoNeedsAttention(page: Page, prefix: string) {
 
 // ---- Tests ------------------------------------------------------------------
 
-test.describe.serial("PAP-10864 prosumer MCP flow", () => {
+test.describe.serial("prosumer MCP flow prosumer MCP flow", () => {
   test.setTimeout(180_000); // vite-dev cold bundling is slow on first hit
 
   let mock: MockMcpServer;
@@ -149,7 +149,7 @@ test.describe.serial("PAP-10864 prosumer MCP flow", () => {
 
     // Gallery step renders with seeded apps + the link-mode entry.
     await expect(page.getByRole("heading", { name: "Connect an app" })).toBeVisible({ timeout: 30_000 });
-    await page.screenshot({ path: `${SCREENSHOT_DIR}/pap10864-01-gallery.png`, fullPage: true });
+    await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-01-gallery.png`, fullPage: true });
 
     // Use the "Connect with a link" path against the mock MCP server.
     const linkInput = page.getByPlaceholder("https://example.com/actions");
@@ -159,7 +159,7 @@ test.describe.serial("PAP-10864 prosumer MCP flow", () => {
     // LinkKey step shows the "Connect with a link" heading. Mock doesn't
     // require a key — leave the default "No" answer.
     await expect(page.getByRole("heading", { name: "Connect with a link" })).toBeVisible({ timeout: 15_000 });
-    await page.screenshot({ path: `${SCREENSHOT_DIR}/pap10864-02-key-step.png`, fullPage: true });
+    await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-02-key-step.png`, fullPage: true });
 
     // Submit (button label is "Check link").
     await page.getByRole("button", { name: /Check link/i }).click();
@@ -167,13 +167,13 @@ test.describe.serial("PAP-10864 prosumer MCP flow", () => {
     // Actions step — read-only enabled, write disabled by default.
     await expect(page.getByText(/Read only/i)).toBeVisible({ timeout: 30_000 });
     await expect(page.getByText(/Can make changes/i)).toBeVisible();
-    await page.screenshot({ path: `${SCREENSHOT_DIR}/pap10864-03-actions-step.png`, fullPage: true });
+    await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-03-actions-step.png`, fullPage: true });
 
     // Verify our seeded tool labels appear (display name is the descriptor title).
     await expect(page.getByText("List widgets")).toBeVisible();
     await expect(page.getByText("Create widget")).toBeVisible();
 
-    // PAP-10902: the namespaced write action ("qa10864:create_widget") must be
+    // namespaced tool names: the namespaced write action ("qa10864:create_widget") must be
     // classified write and land under "Can make changes" — NOT pre-enabled under
     // "Read only". Scope the assertions to each action group.
     const readOnlyGroup = page.locator("div.rounded-xl").filter({ hasText: "Read only" });
@@ -186,21 +186,21 @@ test.describe.serial("PAP-10864 prosumer MCP flow", () => {
     const createToggle = page.getByRole("switch").last();
     await createToggle.click();
     await expect(page.getByText(/Ask first/i)).toBeVisible({ timeout: 5_000 });
-    await page.screenshot({ path: `${SCREENSHOT_DIR}/pap10864-03b-ask-first-on.png`, fullPage: true });
+    await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-03b-ask-first-on.png`, fullPage: true });
 
     // Continue to who-can-use.
     await page.getByRole("button", { name: /Continue with .* on/ }).click();
 
     // Who-can-use step — defaults to All agents.
     await expect(page.getByRole("heading", { name: /Who can use/i })).toBeVisible({ timeout: 15_000 });
-    await page.screenshot({ path: `${SCREENSHOT_DIR}/pap10864-04-who-step.png`, fullPage: true });
+    await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-04-who-step.png`, fullPage: true });
 
     // Finish.
     await page.getByRole("button", { name: /Finish setup/i }).click();
 
     // Success step.
     await expect(page.getByText(/ready|all set|done/i).first()).toBeVisible({ timeout: 20_000 });
-    await page.screenshot({ path: `${SCREENSHOT_DIR}/pap10864-05-success.png`, fullPage: true });
+    await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-05-success.png`, fullPage: true });
 
     // Verify the mock saw a tools/list call from the catalog refresh.
     expect(mock.captures.some((c) => c.method === "tools/list")).toBe(true);
@@ -208,7 +208,7 @@ test.describe.serial("PAP-10864 prosumer MCP flow", () => {
     // The new connection should show up on /apps.
     await gotoApps(page, seed.prefix);
     await expect(page.getByRole("heading", { name: "Apps" })).toBeVisible({ timeout: 15_000 });
-    await page.screenshot({ path: `${SCREENSHOT_DIR}/pap10864-06-apps-list.png`, fullPage: true });
+    await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-06-apps-list.png`, fullPage: true });
   });
 
   test("Expired key → health sweep → Needs attention → reconnect → green", async ({ page, request }) => {
@@ -239,12 +239,12 @@ test.describe.serial("PAP-10864 prosumer MCP flow", () => {
       // Needs-attention page should surface this connection.
       await gotoNeedsAttention(page, seed.prefix);
       await expect(page.getByRole("heading", { name: "Needs attention" })).toBeVisible({ timeout: 30_000 });
-      await page.screenshot({ path: `${SCREENSHOT_DIR}/pap10864-07-needs-attention.png`, fullPage: true });
+      await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-07-needs-attention.png`, fullPage: true });
 
       // App detail should expose the reconnect call-to-action.
       await page.goto(`/${seed.prefix}/apps/${connectionId}`);
       await expect(page.getByRole("button", { name: /Reconnect|Replace key/i }).first()).toBeVisible({ timeout: 20_000 });
-      await page.screenshot({ path: `${SCREENSHOT_DIR}/pap10864-08-app-detail-reconnect.png`, fullPage: true });
+      await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-08-app-detail-reconnect.png`, fullPage: true });
 
       // Bring the mock back so reconnect succeeds.
       const recovered = await startMockMcp();
@@ -278,14 +278,14 @@ test.describe.serial("PAP-10864 prosumer MCP flow", () => {
 
     await gotoAdvanced(page, seed.prefix);
     await expect(page.getByRole("heading", { name: "Advanced setup" })).toBeVisible({ timeout: 20_000 });
-    await page.screenshot({ path: `${SCREENSHOT_DIR}/pap10864-09-advanced-default.png`, fullPage: true });
+    await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-09-advanced-default.png`, fullPage: true });
 
     // M8a paste tab.
     const pasteTab = page.getByRole("tab", { name: /Paste/i }).first();
     if (await pasteTab.isVisible().catch(() => false)) {
       await pasteTab.click();
       await page.waitForTimeout(250);
-      await page.screenshot({ path: `${SCREENSHOT_DIR}/pap10864-10-advanced-paste-tab.png`, fullPage: true });
+      await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-10-advanced-paste-tab.png`, fullPage: true });
     }
 
     // M8b run-your-own tab.
@@ -293,7 +293,7 @@ test.describe.serial("PAP-10864 prosumer MCP flow", () => {
     if (await ownTab.isVisible().catch(() => false)) {
       await ownTab.click();
       await page.waitForTimeout(250);
-      await page.screenshot({ path: `${SCREENSHOT_DIR}/pap10864-11-advanced-own-tab.png`, fullPage: true });
+      await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-11-advanced-own-tab.png`, fullPage: true });
     }
   });
 });
