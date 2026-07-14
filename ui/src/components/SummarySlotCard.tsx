@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { Link } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
+  SummarySlotDocument,
   SummarySlotIssueRef,
   SummarySlotKey,
   SummarySlotRevision,
@@ -19,11 +20,13 @@ import { InlineBanner } from "@/components/InlineBanner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { Select, SelectContent, SelectItem, SelectSeparator, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { queryKeys } from "@/lib/queryKeys";
 import { cn, formatDateTime, relativeTime } from "@/lib/utils";
 
 const SUMMARIZER_KEY = "summarizer";
 const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
+const LATEST_REVISION_SELECT_VALUE = "__latest__";
 
 export interface SummarySlotCardProps {
   companyId: string | null | undefined;
@@ -40,7 +43,30 @@ function issueLabel(issue: SummarySlotIssueRef) {
 }
 
 function revisionLabel(revision: SummarySlotRevision) {
-  return `Revision ${revision.revisionNumber}`;
+  return `Rev ${revision.revisionNumber}`;
+}
+
+function formatRevisionTimestamp(date: Date | string) {
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).format(new Date(date)).replace(",", "");
+}
+
+function revisionOptionLabel(revision: SummarySlotRevision) {
+  return `${revisionLabel(revision)} - ${formatRevisionTimestamp(revision.createdAt)}`;
+}
+
+function latestRevisionOptionLabel(
+  document: SummarySlotDocument,
+  revision: SummarySlotRevision | null,
+) {
+  return `Latest (Rev ${document.latestRevisionNumber}) - ${
+    formatRevisionTimestamp(revision?.createdAt ?? document.updatedAt)
+  }`;
 }
 
 function setupState(state: BuiltInAgentState | undefined) {
@@ -138,10 +164,19 @@ export function SummarySlotCard({
     () => revisions.find((revision) => revision.id === selectedRevisionId) ?? null,
     [revisions, selectedRevisionId],
   );
-  const displayedBody = selectedRevision?.body ?? latestDocument?.body ?? "";
-  const displayingHistoricalRevision = Boolean(
-    selectedRevision && selectedRevision.id !== latestDocument?.latestRevisionId,
-  );
+  const latestRevision = latestDocument
+    ? revisions.find((revision) => revision.id === latestDocument.latestRevisionId) ?? null
+    : null;
+  const historicalRevision = selectedRevision && selectedRevision.id !== latestDocument?.latestRevisionId
+    ? selectedRevision
+    : null;
+  const displayedBody = historicalRevision?.body ?? latestDocument?.body ?? "";
+  const displayingHistoricalRevision = Boolean(historicalRevision);
+  const historicalRevisionOptions = latestDocument
+    ? revisions.filter((revision) => revision.id !== latestDocument.latestRevisionId)
+    : revisions;
+  const revisionSelectValue = historicalRevision?.id ?? LATEST_REVISION_SELECT_VALUE;
+  const latestSelectLabel = latestDocument ? latestRevisionOptionLabel(latestDocument, latestRevision) : "Latest";
   const generatingIssue = slotQuery.data?.generatingIssue ?? null;
   const isGenerating = slotQuery.data?.slot?.status === "generating"
     && generatingIssue
@@ -172,6 +207,51 @@ export function SummarySlotCard({
           {description ? <p className="text-sm text-muted-foreground">{description}</p> : null}
         </div>
         <div className="flex shrink-0 flex-wrap items-center gap-2">
+          {latestDocument && revisions.length > 1 ? (
+            <>
+              <Select
+                value={revisionSelectValue}
+                onValueChange={(value) => {
+                  setSelectedRevisionId(value === LATEST_REVISION_SELECT_VALUE ? null : value);
+                }}
+              >
+                <SelectTrigger
+                  size="sm"
+                  className="w-(--sz-240px) text-xs"
+                  aria-label="Select summary revision"
+                  title={historicalRevision ? revisionOptionLabel(historicalRevision) : latestSelectLabel}
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent align="end" position="popper">
+                  <SelectItem value={LATEST_REVISION_SELECT_VALUE} className="text-xs">
+                    {latestSelectLabel}
+                  </SelectItem>
+                  {historicalRevisionOptions.length > 0 ? <SelectSeparator /> : null}
+                  {historicalRevisionOptions.map((revision) => (
+                    <SelectItem
+                      key={revision.id}
+                      value={revision.id}
+                      className="text-xs"
+                      title={formatDateTime(revision.createdAt)}
+                    >
+                      {revisionOptionLabel(revision)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {displayingHistoricalRevision ? (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setSelectedRevisionId(null)}
+                >
+                  Latest
+                </Button>
+              ) : null}
+            </>
+          ) : null}
           {latestDocument ? (
             <Button
               type="button"
@@ -328,38 +408,18 @@ export function SummarySlotCard({
           <div className="flex flex-col gap-3 text-xs text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
             <div className="flex flex-wrap items-center gap-2">
               <span>
-                Updated {relativeTime(selectedRevision?.createdAt ?? latestDocument.updatedAt)}
+                Updated {relativeTime(historicalRevision?.createdAt ?? latestRevision?.createdAt ?? latestDocument.updatedAt)}
               </span>
               <span aria-hidden="true">.</span>
-              <span title={formatDateTime(selectedRevision?.createdAt ?? latestDocument.updatedAt)}>
-                {displayingHistoricalRevision
-                  ? revisionLabel(selectedRevision!)
-                  : `Revision ${latestDocument.latestRevisionNumber}`}
+              <span title={formatDateTime(historicalRevision?.createdAt ?? latestRevision?.createdAt ?? latestDocument.updatedAt)}>
+                {displayingHistoricalRevision ? revisionOptionLabel(historicalRevision!) : latestSelectLabel}
               </span>
             </div>
 
             {revisions.length > 1 ? (
-              <div className="flex flex-wrap items-center gap-2">
+              <div className="flex items-center gap-1">
                 <History className="h-3.5 w-3.5" aria-hidden="true" />
-                <Button
-                  type="button"
-                  size="xs"
-                  variant={selectedRevisionId ? "ghost" : "secondary"}
-                  onClick={() => setSelectedRevisionId(null)}
-                >
-                  Latest
-                </Button>
-                {revisions.map((revision) => (
-                  <Button
-                    key={revision.id}
-                    type="button"
-                    size="xs"
-                    variant={selectedRevisionId === revision.id ? "secondary" : "ghost"}
-                    onClick={() => setSelectedRevisionId(revision.id)}
-                  >
-                    {revisionLabel(revision)}
-                  </Button>
-                ))}
+                <span>{revisions.length} revisions</span>
               </div>
             ) : null}
           </div>

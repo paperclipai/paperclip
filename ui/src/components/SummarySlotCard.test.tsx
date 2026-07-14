@@ -18,6 +18,13 @@ import { SummarySlotCard } from "./SummarySlotCard";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
+if (!HTMLElement.prototype.hasPointerCapture) {
+  Object.defineProperty(HTMLElement.prototype, "hasPointerCapture", {
+    configurable: true,
+    value: () => false,
+  });
+}
+
 const mockInstanceSettingsApi = vi.hoisted(() => ({ getExperimental: vi.fn() }));
 const mockSummarySlotsApi = vi.hoisted(() => ({
   get: vi.fn(),
@@ -58,6 +65,32 @@ async function flushQueries() {
     await new Promise((resolve) => window.setTimeout(resolve, 0));
   }
   flushSync(() => {});
+}
+
+async function openRevisionSelect(container: HTMLElement) {
+  const trigger = container.querySelector<HTMLElement>('button[aria-label="Select summary revision"]');
+  expect(trigger).not.toBeNull();
+
+  await act(async () => {
+    trigger!.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
+    trigger!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  await flushQueries();
+
+  return trigger!;
+}
+
+async function chooseRevisionOption(labelPart: string) {
+  const option = Array.from(document.body.querySelectorAll<HTMLElement>('[role="option"]')).find(
+    (element) => element.textContent?.includes(labelPart),
+  );
+  expect(option).toBeTruthy();
+
+  await act(async () => {
+    option!.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, button: 0 }));
+    option!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  await flushQueries();
 }
 
 function readySummarizer(): BuiltInAgentState {
@@ -283,17 +316,23 @@ describe("SummarySlotCard", () => {
     expect(container.textContent).toContain("Review the launch notes.");
   });
 
-  it("switches to a historical revision", async () => {
+  it("switches to a historical revision from a dated dropdown", async () => {
     mockSummarySlotsApi.get.mockResolvedValue({
       slot: slot({ documentId: "doc-1" }),
-      document: summaryDocument({ body: "## Latest\nCurrent body" }),
+      document: summaryDocument({
+        body: "## Latest\nCurrent body",
+        latestRevisionId: "rev-3",
+        latestRevisionNumber: 3,
+        updatedAt: "2026-07-14T17:10:00.000Z",
+      }),
       generatingIssue: null,
     } satisfies GetSummarySlotResponse);
     mockSummarySlotsApi.revisions.mockResolvedValue({
       slot: slot({ documentId: "doc-1" }),
       revisions: [
-        revision({ id: "rev-1", revisionNumber: 1, body: "## Old\nOld body" }),
-        revision({ id: "rev-2", revisionNumber: 2, body: "## Latest\nCurrent body" }),
+        revision({ id: "rev-1", revisionNumber: 1, body: "## Old\nOld body", createdAt: "2026-07-13T17:10:00.000Z" }),
+        revision({ id: "rev-2", revisionNumber: 2, body: "## Middle\nMiddle body", createdAt: "2026-07-14T09:15:00.000Z" }),
+        revision({ id: "rev-3", revisionNumber: 3, body: "## Latest\nCurrent body", createdAt: "2026-07-14T17:10:00.000Z" }),
       ],
     });
 
@@ -301,18 +340,35 @@ describe("SummarySlotCard", () => {
     await flushQueries();
 
     expect(container.textContent).toContain("Current body");
-    const revisionOneButton = [...container.querySelectorAll<HTMLButtonElement>("button")].find(
-      (button) => button.textContent === "Revision 1",
-    );
-    expect(revisionOneButton).not.toBeNull();
+    expect(container.textContent).toContain("Latest (Rev 3) - Jul 14");
+    expect(container.textContent).toContain("3 revisions");
+    expect([...container.querySelectorAll<HTMLButtonElement>("button")].some(
+      (button) => button.textContent === "Revision 1" || button.textContent === "Rev 1",
+    )).toBe(false);
 
-    await act(async () => {
-      revisionOneButton?.click();
-    });
-    await flushQueries();
+    await openRevisionSelect(container);
+
+    expect(document.body.textContent).toContain("Latest (Rev 3) - Jul 14");
+    expect(document.body.textContent).toContain("Rev 1 - Jul 13");
+    expect(document.body.textContent).toContain("Rev 2 - Jul 14");
+
+    await chooseRevisionOption("Rev 1 - Jul 13");
 
     expect(container.textContent).toContain("Historical revision");
     expect(container.textContent).toContain("Old body");
+
+    const latestButton = [...container.querySelectorAll<HTMLButtonElement>("button")].find(
+      (button) => button.textContent === "Latest",
+    );
+    expect(latestButton).not.toBeNull();
+
+    await act(async () => {
+      latestButton?.click();
+    });
+    await flushQueries();
+
+    expect(container.textContent).toContain("Current body");
+    expect(container.textContent).not.toContain("Historical revision");
   });
 
   it("shows stopped generation as a failed retryable state", async () => {
