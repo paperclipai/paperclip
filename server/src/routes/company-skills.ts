@@ -118,15 +118,14 @@ export function companySkillRoutes(db: Db) {
     sourceLocator?: unknown;
   }): Promise<SkillPolicyEvaluationResource> {
     const stored = input.skillId ? await svc.getById(input.companyId, input.skillId) : null;
+    const sourceLocator = asString(input.sourceLocator) ?? stored?.sourceLocator ?? undefined;
     return {
       ...(input.skillId ? { skillId: input.skillId } : {}),
       ...(asString(input.skillKey) || stored?.key ? { skillKey: asString(input.skillKey) ?? stored?.key } : {}),
       ...((input.sourceType || stored?.sourceType) ? {
         sourceType: normalizeSkillPolicySourceType(input.sourceType ?? stored?.sourceType),
       } : {}),
-      ...(asString(input.sourceLocator) || stored?.sourceLocator ? {
-        sourceLocator: asString(input.sourceLocator) ?? stored?.sourceLocator ?? undefined,
-      } : {}),
+      ...(sourceLocator ? { sourceLocator: normalizeGitHubPolicyLocator(sourceLocator) } : {}),
     };
   }
 

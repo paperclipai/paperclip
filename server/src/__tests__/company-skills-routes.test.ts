@@ -865,6 +865,48 @@ describe("company skill mutation permissions", () => {
     expect(mockCompanySkillService.importFromSource).not.toHaveBeenCalled();
   });
 
+  it("normalizes stored GitHub locators before evaluating mutation policy", async () => {
+    mockAccessService.decide.mockResolvedValue(denySkillChangeDecision());
+    mockCompanySkillService.getById.mockResolvedValue({
+      id: "skill-1",
+      key: "company/company-1/review",
+      sourceType: "github",
+      sourceLocator: "https://WWW.GitHub.com/Acme/Review.git",
+    });
+    mockCompanySkillPolicyService.evaluate.mockImplementation(async (input: { resource?: { sourceLocator?: string } }) => (
+      input.resource?.sourceLocator === "https://github.com/acme/review"
+        ? denySkillPolicy("skills.edit")
+        : {
+          allowed: true,
+          action: "skills.edit",
+          reason: "policy_default",
+          policyRevision: 1,
+          matchedRuleId: null,
+          remediation: null,
+        }
+    ));
+
+    const res = await request(await createApp({
+      type: "board",
+      userId: "board-user",
+      companyIds: ["company-1"],
+      source: "session",
+      isInstanceAdmin: false,
+    }))
+      .patch("/api/companies/company-1/skills/skill-1")
+      .send({ name: "Updated review" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(mockCompanySkillPolicyService.evaluate).toHaveBeenCalledWith(expect.objectContaining({
+      action: "skills.edit",
+      resource: expect.objectContaining({
+        sourceType: "git",
+        sourceLocator: "https://github.com/acme/review",
+      }),
+    }));
+    expect(mockCompanySkillService.updateSkill).not.toHaveBeenCalled();
+  });
+
   it("blocks npx skills add imports when policy denies the canonical git source locator", async () => {
     mockAccessService.decide.mockResolvedValue(denySkillChangeDecision());
     mockCompanySkillPolicyService.evaluate.mockImplementation(async (input: { resource?: { sourceType?: string; sourceLocator?: string } }) => {
