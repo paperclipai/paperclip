@@ -743,7 +743,7 @@ export const toolRateLimitCounters = pgTable(
   {
     id: uuid("id").primaryKey().defaultRandom(),
     companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
-    policyId: uuid("policy_id").references(() => toolPolicies.id, { onDelete: "cascade" }),
+    policyId: uuid("policy_id").notNull().references(() => toolPolicies.id, { onDelete: "cascade" }),
     counterKey: text("counter_key").notNull(),
     scopeType: text("scope_type").notNull(),
     scopeId: text("scope_id").notNull(),

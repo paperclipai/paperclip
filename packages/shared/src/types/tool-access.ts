@@ -1001,7 +1001,7 @@ export interface ToolRunDecisionLookup {
 export interface ToolRateLimitCounter {
   id: string;
   companyId: string;
-  policyId: string | null;
+  policyId: string;
   counterKey: string;
   scopeType: string;
   scopeId: string;

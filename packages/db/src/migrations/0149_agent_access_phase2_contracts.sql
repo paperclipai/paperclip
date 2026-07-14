@@ -237,7 +237,7 @@ CREATE TABLE IF NOT EXISTS "tool_call_events" (
 CREATE TABLE IF NOT EXISTS "tool_rate_limit_counters" (
   "id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
   "company_id" uuid NOT NULL,
-  "policy_id" uuid,
+	"policy_id" uuid NOT NULL,
   "counter_key" text NOT NULL,
   "scope_type" text NOT NULL,
   "scope_id" text NOT NULL,
