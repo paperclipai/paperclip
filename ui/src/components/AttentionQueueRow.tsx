@@ -558,7 +558,7 @@ function ExpandedImages({ images, issueHref }: { images: AttentionDetailImage[];
           </span>
         );
       })}
-      {extra > 0 && issueHref && (
+      {extra > 0 && (issueHref ? (
         <Link
           to={issueHref}
           onClick={(e) => e.stopPropagation()}
@@ -570,7 +570,11 @@ function ExpandedImages({ images, issueHref }: { images: AttentionDetailImage[];
             <ExternalLink className="h-3 w-3" />
           </span>
         </Link>
-      )}
+      ) : (
+        <span className="flex h-32 w-24 items-center justify-center rounded-md border border-dashed border-border bg-muted/40 text-sm font-semibold text-muted-foreground">
+          {extra} more
+        </span>
+      ))}
     </div>
   );
 }

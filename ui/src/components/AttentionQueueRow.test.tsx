@@ -576,4 +576,43 @@ describe("AttentionQueueRow", () => {
     expect(moreLink).toBeDefined();
     expect(moreLink?.getAttribute("href")).toBe("/PAP/issues/PAP-42");
   });
+
+  it("shows the remaining image count when no issue link is available", () => {
+    render(
+      <AttentionQueueRow
+        item={buildItem({
+          sourceKind: "review" as AttentionSourceKind,
+          inlineResolvable: false,
+          subject: {
+            kind: "issue",
+            id: "issue-1",
+            companyId: "c1",
+            title: "Unlinked review",
+            identifier: null,
+            status: "in_review",
+            href: null,
+            metadata: {},
+          },
+          detail: {
+            kind: "generic",
+            summaryExcerpt: "4 screenshots",
+            images: [
+              { assetId: "img-1", alt: "one" },
+              { assetId: "img-2", alt: "two" },
+              { assetId: "img-3", alt: "three" },
+              { assetId: "img-4", alt: "four" },
+            ],
+          },
+        })}
+        companyId="c1"
+        expanded
+        onToggleExpand={noop}
+        onDismiss={noop}
+      />,
+    );
+
+    const gallery = container?.querySelector('[data-attention-expanded-images="true"]');
+    expect(gallery?.textContent).toContain("1 more");
+    expect(gallery?.querySelectorAll("a")).toHaveLength(0);
+  });
 });
