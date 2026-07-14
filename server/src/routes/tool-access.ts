@@ -40,7 +40,7 @@ import {
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { getActorInfo, assertBoard, assertCompanyAccess } from "./authz.js";
-import { badRequest, forbidden } from "../errors.js";
+import { badRequest, forbidden, unprocessable } from "../errors.js";
 import { accessService, googleSheetsRobotEmailFromEnv, logActivity, toolAccessPolicyService, toolAccessService } from "../services/index.js";
 import { ToolGatewayHttpError, type ToolGatewayService } from "../services/tool-gateway.js";
 
