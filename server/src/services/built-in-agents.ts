@@ -199,7 +199,7 @@ const FALLBACK_SUMMARIZER_SKILL = [
   "",
   "# Summarize status",
   "",
-  "Turn a Paperclip scope's current state into a short Markdown summary answering what needs a human, what is in flight, and what changed since the last revision, then write it back to the scope's summary slot. Read-and-report only; cite issue identifiers and never fabricate status.",
+  "Turn a Paperclip scope's current state into a short Markdown summary with `Needs you`, `Next`, and `Since last summary` sections, then write it back to the scope's summary slot. Read-and-report only; cite issue identifiers and never fabricate status.",
   "",
 ].join("\n");
 

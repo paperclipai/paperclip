@@ -308,7 +308,7 @@ export function summarySlotService(db: Db) {
     return { projectId: null, projectWorkspaceId: null };
   }
 
-  function generationIssueDescription(sel: ResolvedSelector): string {
+  function generationIssueDescription(sel: ResolvedSelector, generationIssueId: string | null = null): string {
     const target = sel.scopeId ? `\`${sel.scopeId}\`` : "the workspaces overview";
     return [
       `Generate the ${scopeLabel(sel.scopeKind)} summary for ${target}.`,
@@ -321,13 +321,15 @@ export function summarySlotService(db: Db) {
           scopeKind: sel.scopeKind,
           scopeId: sel.scopeId,
           slotKey: sel.slotKey,
+          generationIssueId,
         },
         null,
         2,
       ),
       "```",
       "",
-      "Lead with what needs the operator, then what is next, then what changed since the last summary.",
+      "Write one concise Markdown summary with exactly these sections: `## Needs you`, `## Next`, and `## Since last summary`.",
+      "Pass the `generationIssueId` from the payload, the previous revision id when present, and the model actually used to the summary-slot write API.",
       "Close this task with a short comment once the summary revision is written.",
     ].join("\n");
   }
@@ -373,19 +375,24 @@ export function summarySlotService(db: Db) {
       createdByAgentId: actor.agentId ?? null,
       createdByUserId: actor.userId ?? null,
     });
+    const generationIssue = (
+      await issuesSvc.update(created.id, {
+        description: generationIssueDescription(sel, created.id),
+      })
+    ) ?? created;
 
     const slotRow = await upsertSlot(sel, {
       status: "generating",
-      generatingIssueId: created.id,
+      generatingIssueId: generationIssue.id,
     });
 
     return {
       slot: mapSlot(slotRow),
       generatingIssue: {
-        id: created.id,
-        identifier: created.identifier ?? null,
-        title: created.title,
-        status: created.status as IssueStatus,
+        id: generationIssue.id,
+        identifier: generationIssue.identifier ?? null,
+        title: generationIssue.title,
+        status: generationIssue.status as IssueStatus,
       },
       alreadyGenerating: false,
     };

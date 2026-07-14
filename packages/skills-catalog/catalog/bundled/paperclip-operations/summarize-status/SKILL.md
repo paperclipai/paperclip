@@ -35,7 +35,7 @@ This is a **read-and-report** loop. You never change the underlying issues, work
 
 - You were asked to change issue state, reassign work, or edit code. That is out of scope — summarize only.
 - No scope was given, or the scope is in another company. Refuse and ask for a scoped generation issue. Every read stays company-scoped.
-- You are asked to invent status the source data does not support. Never fabricate — an empty scope gets an honest "nothing in flight" summary.
+- You are asked to invent status the source data does not support. Never fabricate — an empty scope gets an honest "nothing is next" summary.
 
 ## Inputs
 
@@ -82,7 +82,7 @@ Structure every summary the same way so returning readers know where to look:
 - <who/what is waiting, with a linked issue identifier> — [PAP-NNN](/PAP/issues/PAP-NNN)
 _(or: "Nothing is waiting on you right now.")_
 
-## In flight
+## Next
 - <work happening now and what it unblocks>
 
 ## Since last summary
@@ -94,7 +94,7 @@ Rules:
 
 - **Cite, don't assert.** Every concrete claim links the issue identifier it came from. No linked evidence → drop the line.
 - **Waiting-on-a-human first.** If nothing needs a person, say so plainly at the top — that is a valuable answer.
-- **Honest emptiness.** A quiet scope gets a short "nothing in flight" summary, not filler.
+- **Honest emptiness.** A quiet scope gets a short "nothing is next" summary, not filler.
 - **No secrets.** Never surface API keys, tokens, or raw credentials that appear in issue bodies or configs.
 
 ### 4) Write the revision back to the slot
