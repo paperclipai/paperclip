@@ -1196,9 +1196,16 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
           assigneeAgentId: input.watchdog.watchdogAgentId,
           parentId: input.sourceIssue.id,
           projectId: input.sourceIssue.projectId,
+          projectWorkspaceId: input.sourceIssue.projectWorkspaceId,
           goalId: input.sourceIssue.goalId,
           billingCode: input.sourceIssue.billingCode,
           originFingerprint: input.classification.stopFingerprint,
+          // A review may have been created before workspace isolation was
+          // enforced. Reset legacy state before reusing it so recovery cannot
+          // resume work in the watched issue's checkout.
+          executionWorkspaceId: null,
+          executionWorkspacePreference: "agent_default",
+          executionWorkspaceSettings: null,
         }) ?? fallback
         : fallback;
       if (!shouldReopen && watchdogIssue.originFingerprint !== input.classification.stopFingerprint) {
@@ -1249,7 +1256,12 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         originId: input.sourceIssue.id,
         originFingerprint: input.classification.stopFingerprint,
         billingCode: input.sourceIssue.billingCode,
-        inheritExecutionWorkspaceFromIssueId: input.sourceIssue.id,
+        // Watchdog reviews are reusable control-plane issues, not source-tree
+        // work. Explicitly opt out of parent workspace inheritance so a
+        // review gets an agent-default workspace bound to its own issue.
+        executionWorkspaceId: null,
+        executionWorkspacePreference: "agent_default",
+        executionWorkspaceSettings: null,
       })
       .catch(async (error: unknown) => {
         if (!isActiveTaskWatchdogUniqueConflict(error)) throw error;
