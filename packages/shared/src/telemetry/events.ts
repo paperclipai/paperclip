@@ -103,7 +103,7 @@ export function trackSkillCreated(
   },
 ): void {
   client.track(
-    // @ts-expect-error -- proposed-telemetry(https://github.com/paperclipai/paperclip/issues/2411): measure successful Skill Studio skill creation funnel
+    // @ts-expect-error -- proposed-telemetry: measure successful Skill Studio skill creation funnel
     "skill.created",
     {
       skill_id: dims.skillId,
@@ -124,7 +124,7 @@ export function trackSkillVersionSaved(
   },
 ): void {
   client.track(
-    // @ts-expect-error -- proposed-telemetry(https://github.com/paperclipai/paperclip/issues/2411): measure Skill Studio editor save and version creation usage
+    // @ts-expect-error -- proposed-telemetry: measure Skill Studio editor save and version creation usage
     "skill.version_saved",
     {
       skill_id: dims.skillId,
@@ -145,7 +145,7 @@ export function trackSkillTestRun(
   },
 ): void {
   client.track(
-    // @ts-expect-error -- proposed-telemetry(https://github.com/paperclipai/paperclip/issues/2411): measure Skill Studio validation loop usage
+    // @ts-expect-error -- proposed-telemetry: measure Skill Studio validation loop usage
     "skill.test_run",
     {
       skill_id: dims.skillId,
@@ -168,7 +168,7 @@ export function trackSkillForked(
   },
 ): void {
   client.track(
-    // @ts-expect-error -- proposed-telemetry(https://github.com/paperclipai/paperclip/issues/2411): measure Skill Studio fork completion and reassignment demand
+    // @ts-expect-error -- proposed-telemetry: measure Skill Studio fork completion and reassignment demand
     "skill.forked",
     {
       skill_id: dims.skillId,
@@ -187,7 +187,7 @@ export function trackSkillShareLinkCopied(
   },
 ): void {
   client.track(
-    // @ts-expect-error -- proposed-telemetry(https://github.com/paperclipai/paperclip/issues/2411): exercise triage of low-signal share-link copy proposal
+    // @ts-expect-error -- proposed-telemetry: exercise triage of low-signal share-link copy proposal
     "skill.share_link",
     {
       sharing_scope: asEventDimension(dims.sharingScope),

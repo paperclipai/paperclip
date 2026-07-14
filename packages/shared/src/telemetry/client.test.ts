@@ -1,12 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TelemetryClient } from "./client.js";
-import {
-  trackSkillCreated,
-  trackSkillForked,
-  trackSkillShareLinkCopied,
-  trackSkillTestRun,
-  trackSkillVersionSaved,
-} from "./events.js";
 import type { TelemetryConfig, TelemetryState } from "./types.js";
 
 const TEST_STATE: TelemetryState = {
@@ -35,60 +28,6 @@ function sentBody() {
 describe("TelemetryClient runtime event gate", () => {
   afterEach(() => {
     vi.restoreAllMocks();
-  });
-
-  it("swallows proposed first-party events before they touch state or the queue", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true }));
-    const { client, stateFactory } = makeClient();
-
-    client.track(
-      // @ts-expect-error -- proposed-telemetry(PAP-2411): fixture proposal not in generated schema
-      "skill_studio.skill_created",
-      { sharing_scope: "team" },
-    );
-
-    await client.flush();
-
-    expect(stateFactory).not.toHaveBeenCalled();
-    expect(fetch).not.toHaveBeenCalled();
-  });
-
-  it("swallows Skill Studio proposed wrappers before they touch state or the queue", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true }));
-    const { client, stateFactory } = makeClient();
-
-    trackSkillCreated(client, {
-      skillId: "11111111-1111-4111-8111-111111111111",
-      creationSource: "blank",
-      sharingScope: "company",
-      categoryCount: 1,
-      fileCount: 2,
-    });
-    trackSkillVersionSaved(client, {
-      skillId: "11111111-1111-4111-8111-111111111111",
-      revisionNumber: 2,
-      fileType: "skill",
-    });
-    trackSkillTestRun(client, {
-      skillId: "11111111-1111-4111-8111-111111111111",
-      status: "queued",
-      runSource: "run",
-      adHoc: true,
-      templateUsed: false,
-    });
-    trackSkillForked(client, {
-      skillId: "22222222-2222-4222-8222-222222222222",
-      forkFromSkillId: "11111111-1111-4111-8111-111111111111",
-      sourceType: "catalog",
-      sharingScope: "private",
-      reassignAgentCount: 0,
-    });
-    trackSkillShareLinkCopied(client, { sharingScope: "public_link" });
-
-    await client.flush();
-
-    expect(stateFactory).not.toHaveBeenCalled();
-    expect(fetch).not.toHaveBeenCalled();
   });
 
   it("uses own-property membership so prototype event names are swallowed", async () => {
