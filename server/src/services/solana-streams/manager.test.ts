@@ -33,8 +33,6 @@ describe("createSolanaStreamManager", () => {
         commitment: "confirmed",
         filters: [],
         enabled: true,
-        maxReconnectDelayMs: 30000,
-        initialReconnectDelayMs: 1000,
       },
       source,
     );
