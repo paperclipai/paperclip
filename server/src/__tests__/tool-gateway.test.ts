@@ -3,7 +3,7 @@ import { createServer, type IncomingMessage } from "node:http";
 import express from "express";
 import { and, eq } from "drizzle-orm";
 import request from "supertest";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   agents,
@@ -1395,6 +1395,43 @@ rl.on("line", (line) => {
       expect.stringMatching(new RegExp(`^mcp\\.kv-demo-${first.connection.id.replace(/-/g, "").slice(0, 8)}:kv-set$`)),
       expect.stringMatching(new RegExp(`^mcp\\.kv-demo-${second.connection.id.replace(/-/g, "").slice(0, 8)}:kv-set$`)),
     ]));
+  });
+
+  it("blocks private remote HTTP endpoints in authenticated public deployments before dispatch", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    await createRemoteMcpTool(db, company.id, {
+      applicationKey: "private-endpoint",
+      toolName: "kv_set",
+      url: "http://169.254.169.254/mcp",
+    });
+    await allowAllToolsForAgent(db, company.id, agent.id);
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("fetch should not be called"));
+    try {
+      const gateway = createTestToolGatewayService(db, {
+        deploymentMode: "authenticated",
+        deploymentExposure: "public",
+      });
+      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+      const connectedTool = (await gateway.listToolsForSession(session.token))
+        .find((tool) => tool.providerType === "mcp_remote_http");
+      expect(connectedTool).toBeTruthy();
+
+      await gateway.executeTool({
+        sessionToken: session.token,
+        tool: connectedTool!.name,
+        parameters: { key: "alpha", value: "one" },
+      }).then(
+        () => {
+          throw new Error("Expected private endpoint to be blocked");
+        },
+        (error) => expectGatewayError(error, 422, "remote_http_private_endpoint"),
+      );
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      fetchSpy.mockRestore();
+    }
   });
 
   it("executes a connected remote HTTP MCP tool with stored credentials and redacted audit state", async () => {

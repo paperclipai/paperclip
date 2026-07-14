@@ -430,9 +430,8 @@ export function toolAccessRoutes(
   });
 
   router.post("/companies/:companyId/tools/applications", validate(createToolApplicationSchema), async (req, res) => {
-    assertBoard(req);
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    assertToolAppMutationAccess(req, companyId);
     try {
       const application = await svc.createApplication(companyId, req.body);
       await logActivity(db, {
@@ -451,9 +450,8 @@ export function toolAccessRoutes(
   });
 
   router.patch("/tool-applications/:applicationId", validate(updateToolApplicationSchema), async (req, res) => {
-    assertBoard(req);
     const existing = await svc.getApplication(req.params.applicationId as string);
-    assertCompanyAccess(req, existing.companyId);
+    assertToolAppMutationAccess(req, existing.companyId);
     try {
       const application = await svc.updateApplication(existing.id, req.body);
       await logActivity(db, {
@@ -472,9 +470,8 @@ export function toolAccessRoutes(
   });
 
   router.delete("/tool-applications/:applicationId", async (req, res) => {
-    assertBoard(req);
     const existing = await svc.getApplication(req.params.applicationId as string);
-    assertCompanyAccess(req, existing.companyId);
+    assertToolAppMutationAccess(req, existing.companyId);
     const application = await svc.deleteApplication(existing.id);
     await logActivity(db, {
       companyId: application.companyId,
@@ -496,9 +493,8 @@ export function toolAccessRoutes(
   });
 
   router.post("/companies/:companyId/tools/connections", validate(createToolConnectionSchema), async (req, res) => {
-    assertBoard(req);
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    assertToolAppMutationAccess(req, companyId);
     try {
       const connection = await svc.createConnection(companyId, req.body);
       await logActivity(db, {
@@ -640,9 +636,8 @@ export function toolAccessRoutes(
   });
 
   router.patch("/tool-connections/:connectionId", validate(updateToolConnectionSchema), async (req, res) => {
-    assertBoard(req);
     const existing = await svc.getConnection(req.params.connectionId as string);
-    assertCompanyAccess(req, existing.companyId);
+    assertToolAppMutationAccess(req, existing.companyId);
     const connection = await svc.updateConnection(existing.id, req.body);
     const lifecycleChanges = classifyConnectionUpdate(
       { enabled: existing.enabled, config: existing.config },
@@ -684,9 +679,8 @@ export function toolAccessRoutes(
   });
 
   router.delete("/tool-connections/:connectionId", async (req, res) => {
-    assertBoard(req);
     const existing = await svc.getConnection(req.params.connectionId as string);
-    assertCompanyAccess(req, existing.companyId);
+    assertToolAppMutationAccess(req, existing.companyId);
     const applicationBefore = await svc.getApplication(existing.applicationId);
     const connection = await svc.archiveConnection(existing.id);
     const applicationAfter = await svc.getApplication(existing.applicationId);
@@ -714,9 +708,8 @@ export function toolAccessRoutes(
   });
 
   router.post("/tool-connections/:connectionId/health-check", async (req, res) => {
-    assertBoard(req);
     const existing = await svc.getConnection(req.params.connectionId as string);
-    assertCompanyAccess(req, existing.companyId);
+    assertToolAppMutationAccess(req, existing.companyId);
     res.json(await svc.checkHealth(existing.id, getActorInfo(req)));
   });
 
@@ -724,9 +717,8 @@ export function toolAccessRoutes(
     "/tool-connections/:connectionId/reconnect",
     validate(reconnectToolAppSchema),
     async (req, res) => {
-      assertBoard(req);
       const existing = await svc.getConnection(req.params.connectionId as string);
-      assertCompanyAccess(req, existing.companyId);
+      assertToolAppMutationAccess(req, existing.companyId);
       const result = await svc.reconnectGalleryApp(
         existing.id,
         existing.companyId,
@@ -747,9 +739,8 @@ export function toolAccessRoutes(
   );
 
   router.post("/tool-connections/:connectionId/catalog/refresh", async (req, res) => {
-    assertBoard(req);
     const existing = await svc.getConnection(req.params.connectionId as string);
-    assertCompanyAccess(req, existing.companyId);
+    assertToolAppMutationAccess(req, existing.companyId);
     res.json(await svc.refreshCatalog(existing.id, getActorInfo(req)));
   });
 

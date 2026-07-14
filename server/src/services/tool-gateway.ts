@@ -54,6 +54,7 @@ import type { AgentToolDescriptor, PluginToolDispatcher } from "./plugin-tool-di
 import { logActivity, type LogActivityInput } from "./activity-log.js";
 import { secretService } from "./secrets.js";
 import { mcpHttpRequestHeaders, parseMcpHttpResponseBody } from "./mcp-http.js";
+import { assertPublicRemoteHttpEndpoint, parseRemoteHttpEndpoint } from "./remote-http-endpoint-guard.js";
 import { toolAccessPolicyService } from "./tool-access-policy.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
 import {
@@ -2084,19 +2085,25 @@ export function createToolGatewayService(
 
   function remoteEndpoint(config: Record<string, unknown>): string {
     const value = config.url ?? config.endpoint ?? config.remoteUrl;
-    if (typeof value !== "string" || value.trim().length === 0) {
-      throw new ToolGatewayHttpError(422, "Remote MCP connection requires config.url", "remote_http_url_missing");
-    }
-    let parsed: URL;
-    try {
-      parsed = new URL(value);
-    } catch {
-      throw new ToolGatewayHttpError(422, "Remote MCP connection URL is invalid", "remote_http_url_invalid");
-    }
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-      throw new ToolGatewayHttpError(422, "Remote MCP connection URL must use http or https", "remote_http_url_invalid");
-    }
+    const parsed = parseRemoteHttpEndpoint(
+      value,
+      (message, code) => new ToolGatewayHttpError(422, message, code),
+    );
     return parsed.toString();
+  }
+
+  function allowPrivateRemoteEndpoints() {
+    return options.deploymentMode !== "authenticated" || options.deploymentExposure !== "public";
+  }
+
+  async function assertRemoteEndpointAllowed(config: Record<string, unknown>): Promise<string> {
+    const endpoint = new URL(remoteEndpoint(config));
+    await assertPublicRemoteHttpEndpoint(
+      endpoint,
+      { allowPrivateNetwork: allowPrivateRemoteEndpoints() },
+      (message, code) => new ToolGatewayHttpError(422, message, code),
+    );
+    return endpoint.toString();
   }
 
   function headerName(value: unknown): string | null {
@@ -2999,7 +3006,7 @@ export function createToolGatewayService(
     callerHeaders?: ExecuteGatewayToolInput["callerHeaders"],
   ): Promise<RemoteHttpExecutionResult> {
     const { entry, connection } = await resolveConnectedRemoteTool(session, tool);
-    const endpoint = remoteEndpoint(connection.config ?? {});
+    const endpoint = await assertRemoteEndpointAllowed(connection.config ?? {});
     const credentialHeaders = await resolveCredentialHeaders(connection);
     const { headers, summary: headerSummary } = buildRemoteHeaders({
       session,

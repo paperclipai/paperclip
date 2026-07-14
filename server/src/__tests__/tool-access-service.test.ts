@@ -991,6 +991,22 @@ describeEmbeddedPostgres("tool access service", () => {
     })).rejects.toThrow("Local stdio MCP connections must use an approved templateId");
   });
 
+  it("blocks private remote HTTP endpoints in authenticated public deployments", async () => {
+    const company = await createCompany(db);
+    const service = toolAccessService(db, { deploymentMode: "authenticated", deploymentExposure: "public" });
+
+    await expect(service.createConnection(company.id, {
+      name: "Metadata endpoint",
+      transport: "remote_http",
+      config: { url: "http://169.254.169.254/latest/meta-data" },
+      enabled: true,
+      status: "active",
+    })).rejects.toMatchObject({
+      status: 400,
+      details: { code: "remote_http_private_endpoint" },
+    });
+  });
+
   it("creates profiles with entries, binds them to agents, and resolves effective allowed tools", async () => {
     const company = await createCompany(db);
     const service = toolAccessService(db);
@@ -4676,6 +4692,54 @@ describeEmbeddedPostgres("tool access service", () => {
 
     expect(forbiddenRes.status).toBe(403);
     expect(missingRes.status).toBe(404);
+  });
+
+  it("keeps direct application and connection mutation routes viewer-safe", async () => {
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const application = await service.createApplication(company.id, {
+      name: "Viewer guarded app",
+      type: "mcp_http",
+    });
+    const connection = await service.createConnection(company.id, {
+      applicationId: application.id,
+      name: "Viewer guarded connection",
+      transport: "remote_http",
+      config: { url: "https://viewer-guard.example/mcp" },
+      status: "active",
+      enabled: true,
+    });
+    const viewerApp = createRouteApp(db, boardSessionActor(company.id, "viewer", "viewer-user"));
+
+    const responses = [
+      await request(viewerApp)
+        .post(`/api/companies/${company.id}/tools/applications`)
+        .send({ name: "Viewer create app", type: "mcp_http" }),
+      await request(viewerApp)
+        .post(`/api/companies/${company.id}/tools/connections`)
+        .send({ name: "Viewer create connection", transport: "remote_http", config: { url: "https://viewer-create.example/mcp" } }),
+      await request(viewerApp)
+        .patch(`/api/tool-applications/${application.id}`)
+        .send({ name: "Viewer edited app" }),
+      await request(viewerApp)
+        .delete(`/api/tool-applications/${application.id}`),
+      await request(viewerApp)
+        .patch(`/api/tool-connections/${connection.id}`)
+        .send({ name: "Viewer edited connection" }),
+      await request(viewerApp)
+        .delete(`/api/tool-connections/${connection.id}`),
+      await request(viewerApp)
+        .post(`/api/tool-connections/${connection.id}/health-check`)
+        .send({}),
+      await request(viewerApp)
+        .post(`/api/tool-connections/${connection.id}/catalog/refresh`)
+        .send({}),
+    ];
+
+    for (const res of responses) {
+      expect(res.status).toBe(403);
+      expect(res.body.error).toContain("Viewer access is read-only");
+    }
   });
 
   it("deletes an application with zero connections and records activity", async () => {

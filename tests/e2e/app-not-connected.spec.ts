@@ -3,8 +3,8 @@ import { createServer, type Server } from "node:http";
 import { AddressInfo } from "node:net";
 
 // Apps navigation wave 6 — not-connected apps get a real app page.
-// A row with no live connection must open /apps/app/:applicationId (previous
-// setup + danger zone + reconnect prefill), not the generic connect wizard,
+// A row with no live connection must open /apps/app/:applicationId/setup (previous
+// setup + advanced danger zone + reconnect prefill), not the generic connect wizard,
 // and reconnecting must revive the same application/connection, not duplicate.
 
 const SCREENSHOT_DIR = "test-results";
@@ -108,10 +108,10 @@ test.describe.serial("not-connected app page", () => {
     await expect(row.getByRole("button", { name: "Connect" })).toBeVisible();
 
     await row.click();
-    await expect(page).toHaveURL(new RegExp(`/${seed.prefix}/apps/app/${applicationId}$`), { timeout: 20_000 });
+    await expect(page).toHaveURL(new RegExp(`/${seed.prefix}/apps/app/${applicationId}/setup$`), { timeout: 20_000 });
     await expect(page.getByRole("heading", { name: "Bla" })).toBeVisible({ timeout: 20_000 });
     await expect(page.getByRole("heading", { name: "Previous setup" })).toBeVisible();
-    await expect(page.getByText("Danger zone")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Reconnect this app" })).toBeVisible();
     await page.screenshot({ path: `${SCREENSHOT_DIR}/apps-nav-w6-01-app-not-connected.png`, fullPage: true });
   });
 
@@ -146,7 +146,7 @@ test.describe.serial("not-connected app page", () => {
 
   test("connected app page redirects from the app route and its row says Open", async ({ page }) => {
     await page.goto(`/${seed.prefix}/apps/app/${applicationId}`);
-    await expect(page).toHaveURL(new RegExp(`/${seed.prefix}/apps/${connectionId}$`), { timeout: 20_000 });
+    await expect(page).toHaveURL(new RegExp(`/${seed.prefix}/apps/${connectionId}/setup$`), { timeout: 20_000 });
 
     await page.goto(`/${seed.prefix}/apps`);
     const row = page.locator("tbody tr", { hasText: "Bla" });
@@ -169,7 +169,7 @@ test.describe.serial("not-connected app page", () => {
     await request.delete(`/api/tool-connections/${secondBody.connectionId}`);
     await request.patch(`/api/tool-applications/${secondBody.application.id}`, { data: { status: "active" } });
 
-    await page.goto(`/${seed.prefix}/apps/app/${secondBody.application.id}`);
+    await page.goto(`/${seed.prefix}/apps/app/${secondBody.application.id}/advanced`);
     await expect(page.getByText("Danger zone")).toBeVisible({ timeout: 30_000 });
     await page.getByRole("button", { name: "Remove app" }).click();
     await page.screenshot({ path: `${SCREENSHOT_DIR}/apps-nav-w6-04-app-page-danger.png`, fullPage: true });

@@ -4,7 +4,7 @@ import { AddressInfo } from "node:net";
 
 // Apps navigation — dark-mode + navigation QA for the prosumer Apps surfaces.
 // Seeds a healthy app and a broken (needs-attention) app, forces dark theme,
-// and screenshots /apps, /apps/attention, and the Advanced/developer doors to
+// and screenshots /apps, the folded attention banner, and the Advanced/developer doors to
 // prove the amber/emerald surfaces read correctly on dark.
 
 const SCREENSHOT_DIR = "test-results";
@@ -117,15 +117,16 @@ test.describe.serial("dark-mode Apps surfaces", () => {
   test("apps list dark mode with attention banner", async ({ page }) => {
     await forceDark(page);
     await page.goto(`/${seed.prefix}/apps`);
-    await expect(page.getByRole("heading", { name: "Apps" })).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByRole("heading", { name: "Connections" })).toBeVisible({ timeout: 30_000 });
     await expect(page.getByText(/needs attention/i).first()).toBeVisible({ timeout: 30_000 });
     await page.screenshot({ path: `${SCREENSHOT_DIR}/apps-nav-01-apps-dark.png`, fullPage: true });
   });
 
-  test("needs attention page dark mode", async ({ page }) => {
+  test("attention banner dark mode", async ({ page }) => {
     await forceDark(page);
-    await page.goto(`/${seed.prefix}/apps/attention`);
-    await expect(page.getByRole("heading", { name: "Needs attention" })).toBeVisible({ timeout: 30_000 });
+    await page.goto(`/${seed.prefix}/apps`);
+    await expect(page.getByRole("heading", { name: "Connections" })).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText(/app needs attention/i).first()).toBeVisible({ timeout: 30_000 });
     await page.screenshot({ path: `${SCREENSHOT_DIR}/apps-nav-02-attention-dark.png`, fullPage: true });
   });
 
@@ -135,7 +136,7 @@ test.describe.serial("dark-mode Apps surfaces", () => {
     await expect(page.getByRole("heading", { name: "Advanced setup" })).toBeVisible({ timeout: 30_000 });
     // Run your own is now the default tab (Apps navigation); merged sidebar shows Apps items too.
     await expect(page.getByText(/isolated workspace/i).first()).toBeVisible({ timeout: 20_000 });
-    await expect(page.getByRole("link", { name: "Needs attention" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Connections" })).toBeVisible();
     await page.screenshot({ path: `${SCREENSHOT_DIR}/apps-nav-03-advanced-run-dark.png`, fullPage: true });
 
     // Sidebar and tab switcher both link Paste a config — either lands on /paste-config.
@@ -160,7 +161,7 @@ test.describe.serial("dark-mode Apps surfaces", () => {
 
   test("app detail rename and danger zone removal", async ({ page }) => {
     await forceDark(page);
-    await page.goto(`/${seed.prefix}/apps/${brokenId}`);
+    await page.goto(`/${seed.prefix}/apps/${brokenId}/advanced`);
     await expect(page.getByText("Danger zone")).toBeVisible({ timeout: 30_000 });
 
     // Rename from the header pencil.

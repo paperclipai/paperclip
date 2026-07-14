@@ -289,7 +289,7 @@ test.describe.serial("MCP prod Phase 5a user-story harness", () => {
     const { seed, scout, mock, connectionId } = await seedConnectedFixture(request, "us1");
     try {
       await page.goto(`/${seed.prefix}/apps/${connectionId}`);
-      await expect(page.getByText(/Sheets Fixture us1/i)).toBeVisible({ timeout: 30_000 });
+      await expect(page.getByRole("heading", { name: /Sheets Fixture us1/i })).toBeVisible({ timeout: 30_000 });
       await screenshot(page, "US-1", "01-connected-app");
 
       await setScoutScript(request, scout, buildGatewayCallScript(connectionId, "sheets:list_rows"));
@@ -299,7 +299,7 @@ test.describe.serial("MCP prod Phase 5a user-story harness", () => {
       expect(mock.captures.some((capture) => capture.method === "tools/call" && capture.toolName === "sheets:list_rows")).toBe(true);
       await expectAuditEvent(request, seed.companyId, { connectionId, agentId: scout.id, search: "sheets:list_rows" });
 
-      await page.goto(`/${seed.prefix}/apps/${connectionId}?tab=activity`);
+      await page.goto(`/${seed.prefix}/apps/${connectionId}/activity`);
       await screenshot(page, "US-1", "02-activity");
     } finally {
       await mock.close();
@@ -313,7 +313,7 @@ test.describe.serial("MCP prod Phase 5a user-story harness", () => {
       expect(pending.decision).toBe("ask_first");
       expect(pending.actionRequestId).toBeTruthy();
 
-      await page.goto(`/${seed.prefix}/apps/${connectionId}?tab=review`);
+      await page.goto(`/${seed.prefix}/apps/${connectionId}/review`);
       await screenshot(page, "US-2", "01-review-pending");
 
       await approveActionRequest(request, seed.companyId, pending.actionRequestId!);
@@ -334,7 +334,7 @@ test.describe.serial("MCP prod Phase 5a user-story harness", () => {
       await pollTestCall(request, connectionId, pending.actionRequestId!, "denied");
       expect(mock.captures.some((capture) => capture.method === "tools/call" && capture.toolName === "sheets:update_cell")).toBe(false);
 
-      await page.goto(`/${seed.prefix}/apps/${connectionId}?tab=review`);
+      await page.goto(`/${seed.prefix}/apps/${connectionId}/review`);
       await screenshot(page, "US-3", "01-review-denied");
     } finally {
       await mock.close();
@@ -363,7 +363,7 @@ test.describe.serial("MCP prod Phase 5a user-story harness", () => {
       expect(allowed.decision).toBe("allowed");
       await expectAuditEvent(request, seed.companyId, { connectionId, agentId: scout.id, search: "sheets:list_rows" });
 
-      await page.goto(`/${seed.prefix}/apps/advanced?tab=policies`);
+      await page.goto(`/${seed.prefix}/apps/advanced/policies`);
       await screenshot(page, "US-4", "01-policy-flip");
     } finally {
       await mock.close();
@@ -404,7 +404,8 @@ test.describe.serial("MCP prod Phase 5a user-story harness", () => {
 
     const health = await request.post(`/api/tool-connections/${connectionId}/health-check`);
     expect(health.status()).toBe(502);
-    await page.goto(`/${seed.prefix}/apps/attention`);
+    await page.goto(`/${seed.prefix}/apps`);
+    await expect(page.getByRole("heading", { name: "Connections" })).toBeVisible({ timeout: 30_000 });
     await screenshot(page, "US-8", "01-needs-attention");
 
     const recovered = await startMockMcp();
@@ -430,7 +431,7 @@ test.describe.serial("MCP prod Phase 5a user-story harness", () => {
       for (const value of ["first", "second"]) {
         const pending = await testCall(request, connectionId, scout, "sheets:update_cell", { cell: "B1", value });
         expect(pending.decision).toBe("ask_first");
-        await page.goto(`/${seed.prefix}/apps/${connectionId}?tab=review`);
+        await page.goto(`/${seed.prefix}/apps/${connectionId}/review`);
         await screenshot(page, "US-9", `review-${value}`);
         await approveActionRequest(request, seed.companyId, pending.actionRequestId!);
         await pollTestCall(request, connectionId, pending.actionRequestId!, "done");
@@ -445,7 +446,7 @@ test.describe.serial("MCP prod Phase 5a user-story harness", () => {
     const { seed, mock, connectionId } = await seedConnectedFixture(request, "us10");
     try {
       await page.goto(`/${seed.prefix}/apps/${connectionId}`);
-      await expect(page.getByText(/Sheets Fixture us10/i)).toBeVisible({ timeout: 30_000 });
+      await expect(page.getByRole("heading", { name: /Sheets Fixture us10/i })).toBeVisible({ timeout: 30_000 });
       await screenshot(page, "US-10", "01-apps-detail");
 
       await page.goto(`/${seed.prefix}/apps/advanced`);

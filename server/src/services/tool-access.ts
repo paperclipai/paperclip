@@ -108,6 +108,7 @@ import { CLASS3_STATIC_LEASE_ALLOWLIST, getToolAppGalleryEntry, isToolConnection
 import { badRequest, conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { logActivity } from "./activity-log.js";
 import { mcpHttpRequestHeaders, parseMcpHttpResponseBody } from "./mcp-http.js";
+import { assertPublicRemoteHttpEndpoint, parseRemoteHttpEndpoint } from "./remote-http-endpoint-guard.js";
 import { secretService } from "./secrets.js";
 import { toolAccessPolicyService } from "./tool-access-policy.js";
 import { readSignedToolArgumentsPayload } from "./tool-content-guards.js";
@@ -1237,13 +1238,7 @@ function sanitizeHttpFailure(error: unknown): { status: ToolConnectionHealthStat
 
 function remoteEndpoint(config: Record<string, unknown>): string {
   const value = config.url ?? config.endpoint ?? config.remoteUrl;
-  if (typeof value !== "string" || value.trim().length === 0) {
-    throw badRequest("Remote MCP connection requires config.url");
-  }
-  const parsed = new URL(value);
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    throw badRequest("Remote MCP connection URL must use http or https");
-  }
+  const parsed = parseRemoteHttpEndpoint(value, (message, code) => badRequest(message, { code }));
   return parsed.toString();
 }
 
@@ -1260,6 +1255,24 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
   const policySvc = toolAccessPolicyService(db);
   const now = options.now ?? (() => new Date());
   const runtimeSupervisor = createToolRuntimeSupervisor(db, options);
+
+  function allowPrivateRemoteEndpoints() {
+    return options.deploymentMode !== "authenticated" || options.deploymentExposure !== "public";
+  }
+
+  async function assertRemoteHttpUrlAllowed(value: string): Promise<string> {
+    const endpoint = parseRemoteHttpEndpoint(value, (message, code) => badRequest(message, { code }));
+    await assertPublicRemoteHttpEndpoint(
+      endpoint,
+      { allowPrivateNetwork: allowPrivateRemoteEndpoints() },
+      (message, code) => badRequest(message, { code }),
+    );
+    return endpoint.toString();
+  }
+
+  async function assertRemoteEndpointAllowed(config: Record<string, unknown>): Promise<string> {
+    return assertRemoteHttpUrlAllowed(remoteEndpoint(config));
+  }
 
   function trustedRuntimeHost() {
     return options.trustedLocalStdioRuntimeHost
@@ -2673,7 +2686,8 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
 
   async function remoteTools(connection: typeof toolConnections.$inferSelect): Promise<McpToolDescriptor[]> {
     const headers = await resolveCredentialHeaders(connection);
-    const response = await fetch(remoteEndpoint(connection.config), {
+    const endpoint = await assertRemoteEndpointAllowed(connection.config);
+    const response = await fetch(endpoint, {
       method: "POST",
       // MCP Streamable HTTP requires advertising that we accept both a JSON body
       // and an SSE stream; spec-compliant servers 406 without it (see mcp-http.ts).
@@ -3677,7 +3691,8 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
 
   async function fetchJsonRecord(url: string): Promise<Record<string, unknown> | null> {
     try {
-      const response = await fetch(url);
+      const safeUrl = await assertRemoteHttpUrlAllowed(url);
+      const response = await fetch(safeUrl);
       if (!response.ok) return null;
       return asRecord(await response.json() as unknown) ?? null;
     } catch {
@@ -3769,7 +3784,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       hints?.metadataUrl ?? null,
     ].filter((value): value is string => Boolean(value));
     if (metadataCandidates.length === 0) {
-      const endpoint = new URL(remoteEndpoint(connection.config));
+      const endpoint = new URL(await assertRemoteEndpointAllowed(connection.config));
       metadataCandidates.push(new URL("/.well-known/oauth-protected-resource", endpoint.origin).toString());
       metadataCandidates.push(new URL("/.well-known/oauth-authorization-server", endpoint.origin).toString());
       metadataCandidates.push(new URL("/.well-known/openid-configuration", endpoint.origin).toString());
@@ -3787,7 +3802,8 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     let authorizationUrl = oauth.authorizationUrl ?? null;
     let tokenUrl = oauth.tokenUrl ?? null;
     if ((!authorizationUrl || !tokenUrl) && oauth.metadataUrl) {
-      const response = await fetch(oauth.metadataUrl);
+      const metadataUrl = await assertRemoteHttpUrlAllowed(oauth.metadataUrl);
+      const response = await fetch(metadataUrl);
       if (!response.ok) throw new HttpError(502, "OAuth provider metadata could not be loaded", { code: "oauth_metadata_failed" });
       const metadata = asRecord(await response.json() as unknown);
       authorizationUrl = authorizationUrl ?? (typeof metadata.authorization_endpoint === "string" ? metadata.authorization_endpoint : null);
@@ -3882,7 +3898,8 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     body.set("client_id", input.clientId);
     if (input.clientSecret) body.set("client_secret", input.clientSecret);
 
-    const response = await fetch(input.tokenUrl, {
+    const tokenUrl = await assertRemoteHttpUrlAllowed(input.tokenUrl);
+    const response = await fetch(tokenUrl, {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded" },
       body,
@@ -4077,7 +4094,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       config = normalizeGoogleSheetsConnectionConfig(config);
       await assertGoogleSheetsSpreadsheetOwnership(companyId, config);
     }
-    if (transport === "remote_http") remoteEndpoint(config);
+    if (transport === "remote_http") await assertRemoteEndpointAllowed(config);
     if (transport === "local_stdio") await stdioTemplateId(companyId, config);
     assertLocalStdioCanBeEnabled(transport, false);
 
@@ -5309,7 +5326,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       const transport = input.transport;
       if (!transport) throw badRequest("Tool connection transport is required");
       const config = normalizeGoogleSheetsConnectionConfig(input.config ?? input.transportConfig ?? {});
-      if (transport === "remote_http") remoteEndpoint(config);
+      if (transport === "remote_http") await assertRemoteEndpointAllowed(config);
       if (transport === "local_stdio") await stdioTemplateId(companyId, config);
       assertLocalStdioCanBeEnabled(transport, input.enabled ?? false);
       await assertGoogleSheetsSpreadsheetOwnership(companyId, config);
@@ -5433,7 +5450,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     updateConnection: async (connectionId: string, input: UpdateToolConnection): Promise<ToolConnection> => {
       const existing = await getConnectionRow(connectionId);
       const config = normalizeGoogleSheetsConnectionConfig(input.config ?? input.transportConfig ?? existing.config);
-      if (existing.transport === "remote_http") remoteEndpoint(config);
+      if (existing.transport === "remote_http") await assertRemoteEndpointAllowed(config);
       if (existing.transport === "local_stdio") await stdioTemplateId(existing.companyId, config);
       assertLocalStdioCanBeEnabled(existing.transport, input.enabled ?? existing.enabled);
       await assertGoogleSheetsSpreadsheetOwnership(existing.companyId, config, { excludeConnectionId: existing.id });

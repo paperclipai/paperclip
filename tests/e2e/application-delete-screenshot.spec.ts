@@ -1,16 +1,14 @@
 import { expect, test } from "@playwright/test";
 
-// One-off visual capture for PAP-10817 (application delete confirm dialog).
-// Boots the throwaway local_trusted instance via the shared webServer, seeds a
-// connection-free application through the board API, then opens the row-actions
-// Delete dialog and screenshots it.
-test("captures the application delete confirm dialog", async ({ page }) => {
+// One-off visual capture for PAP-10817. The retired Tools -> Applications
+// table now redirects into Apps, so capture the current app removal
+// confirmation on the app Advanced tab instead.
+test("captures the current app removal confirmations", async ({ page }) => {
   const flags = await page.request.patch("/api/instance/settings/experimental", { data: { enableApps: true } });
   expect(flags.ok(), `enable apps failed ${flags.status()}: ${await flags.text()}`).toBe(true);
-  await page.goto("/dashboard");
 
   const companyRes = await page.request.post("/api/companies", {
-    data: { name: `PAP-10817 delete dialog ${Date.now()}` },
+    data: { name: `PAP-10817 remove app ${Date.now()}` },
   });
   expect(companyRes.ok(), `create company failed ${companyRes.status()}: ${await companyRes.text()}`).toBe(true);
   const company = await companyRes.json();
@@ -20,27 +18,16 @@ test("captures the application delete confirm dialog", async ({ page }) => {
   const created = await page.request.post(`/api/companies/${companyId}/tools/applications`, {
     data: { name: "Demo Notes", description: "Sample MCP application", type: "mcp_http" },
   });
-  // 409 = the application already exists from a prior run (DB persists); that is fine.
-  if (!created.ok() && created.status() !== 409) {
-    throw new Error(`create failed ${created.status()}: ${await created.text()} (companyId=${companyId})`);
-  }
+  expect(created.ok(), `create failed ${created.status()}: ${await created.text()}`).toBe(true);
+  const application = await created.json();
 
-  await page.goto(`/${prefix}/tools/applications`);
-  await expect(page.getByText("Demo Notes")).toBeVisible({ timeout: 15_000 });
+  await page.goto(`/${prefix}/apps/app/${application.id}/advanced`);
+  await expect(page.getByRole("heading", { name: "Demo Notes" })).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText("Danger zone")).toBeVisible();
+  await page.getByRole("button", { name: "Remove app" }).click();
+  await expect(page.getByRole("button", { name: "Yes, remove it" })).toBeVisible();
+  await page.screenshot({ path: "test-results/pap-10817-delete-dialog.png", fullPage: true });
 
-  await page.getByRole("button", { name: "Actions for Demo Notes" }).click();
-  await page.getByRole("menuitem", { name: "Delete" }).click();
-
-  const dialog = page.getByRole("dialog");
-  await expect(dialog.getByRole("heading", { name: "Delete application" })).toBeVisible();
-  await expect(dialog.getByText("No connections are attached")).toBeVisible();
-
-  await dialog.screenshot({ path: "test-results/pap-10817-delete-dialog.png" });
-
-  await page.keyboard.press("Escape");
-
-  // Second capture: the guarded variant. A connection-bearing application warns
-  // that delete is blocked, matching the server-side 409 guard.
   const conn = await page.request.post(`/api/companies/${companyId}/tools/connections`, {
     data: {
       applicationName: "Guarded MCP",
@@ -49,18 +36,14 @@ test("captures the application delete confirm dialog", async ({ page }) => {
       config: { url: "https://fixture.example/mcp" },
     },
   });
-  if (!conn.ok() && conn.status() !== 409) {
-    throw new Error(`connection create failed ${conn.status()}: ${await conn.text()}`);
-  }
+  expect(conn.ok(), `connection create failed ${conn.status()}: ${await conn.text()}`).toBe(true);
+  const connection = await conn.json();
 
-  await page.goto(`/${prefix}/tools/applications`);
-  await expect(page.getByText("Guarded MCP")).toBeVisible({ timeout: 15_000 });
-  await page.getByRole("button", { name: "Actions for Guarded MCP" }).click();
-  await page.getByRole("menuitem", { name: "Delete" }).click();
+  await page.goto(`/${prefix}/apps/${connection.id}/advanced`);
+  await expect(page.getByRole("heading", { name: "Primary connection" })).toBeVisible({ timeout: 15_000 });
+  await page.getByRole("button", { name: "Remove app" }).click();
+  await expect(page.getByRole("button", { name: "Yes, remove it" })).toBeVisible();
+  await page.screenshot({ path: "test-results/pap-10817-delete-dialog-guarded.png", fullPage: true });
 
-  const guardedDialog = page.getByRole("dialog");
-  await expect(guardedDialog.getByText("delete is blocked while connections exist")).toBeVisible();
-  await guardedDialog.screenshot({ path: "test-results/pap-10817-delete-dialog-guarded.png" });
-
-  await page.request.delete(`/api/companies/${companyId}`);
+  await page.request.delete(`/api/companies/${companyId}`).catch(() => undefined);
 });

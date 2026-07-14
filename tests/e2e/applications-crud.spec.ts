@@ -1,10 +1,8 @@
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
 
-// application CRUD — QA harness for application edit, status lifecycle, and delete
-// covering Phases 2/3/4 of the the applications page work. The spec
-// boots the shared local_trusted Playwright webServer (see playwright.config),
-// seeds applications and connections through the board API, then drives the
-// Tools → Applications UI for each action and captures screenshots.
+// Current Apps lifecycle coverage. The legacy Tools -> Applications CRUD table
+// was retired; old links now redirect to /apps. Keep this harness focused on
+// the user-visible Connections list plus app detail setup/advanced flows.
 
 type SeedResult = {
   companyId: string;
@@ -12,15 +10,14 @@ type SeedResult = {
 };
 
 const SCREENSHOT_DIR = "test-results";
-const APP_PREFIX = `qa10820-${Date.now().toString(36)}`;
+const APP_PREFIX = `QA 10820 ${Date.now().toString(36)}`;
 
 async function discoverCompany(request: APIRequestContext): Promise<SeedResult> {
   const res = await request.post("/api/companies", {
-    data: { name: `applications CRUD ${Date.now()}` },
+    data: { name: `applications lifecycle ${Date.now()}` },
   });
   expect(res.ok(), `create company failed ${res.status()}: ${await res.text()}`).toBe(true);
   const company = await res.json();
-  expect(company?.id, "expected created company id").toBeTruthy();
   const flags = await request.patch("/api/instance/settings/experimental", { data: { enableApps: true } });
   expect(flags.ok(), `enable apps failed ${flags.status()}: ${await flags.text()}`).toBe(true);
   return {
@@ -45,7 +42,7 @@ async function createConnection(
   request: APIRequestContext,
   companyId: string,
   data: { applicationName?: string; applicationId?: string; name: string; transport?: string; config?: object },
-): Promise<{ id: string; applicationId: string }> {
+): Promise<{ id: string; applicationId: string; name: string }> {
   const res = await request.post(`/api/companies/${companyId}/tools/connections`, {
     data: {
       transport: "remote_http",
@@ -59,20 +56,12 @@ async function createConnection(
   return res.json();
 }
 
-async function gotoApplications(page: Page, prefix: string) {
-  await page.goto(`/${prefix}/tools/applications`);
+async function gotoApps(page: Page, prefix: string) {
+  await page.goto(`/${prefix}/apps`);
+  await expect(page.getByRole("heading", { name: "Connections" })).toBeVisible({ timeout: 30_000 });
 }
 
-async function expandApplicationRow(page: Page, name: string) {
-  // The row uses `Expand <name>` / `Collapse <name>` accessible labels so we
-  // wait for the toggle and only click when collapsed.
-  const expand = page.getByRole("button", { name: new RegExp(`^Expand ${name}$`) });
-  if (await expand.isVisible().catch(() => false)) {
-    await expand.click();
-  }
-}
-
-test.describe.serial("applications CRUD", () => {
+test.describe.serial("applications lifecycle", () => {
   let seed: SeedResult;
 
   test.beforeAll(async ({ request }) => {
@@ -84,220 +73,82 @@ test.describe.serial("applications CRUD", () => {
     await request.delete(`/api/companies/${seed.companyId}`).catch(() => undefined);
   });
 
-  test("Phase 2: edit + duplicate-name conflict", async ({ page, request }) => {
-    const first = `${APP_PREFIX}-edit-original`;
-    const second = `${APP_PREFIX}-edit-conflict`;
-    const renamed = `${APP_PREFIX}-edit-renamed`;
-    const description = "Updated description for application CRUD QA";
-
-    await createApplication(request, seed.companyId, { name: first, description: "Initial description" });
-    await createApplication(request, seed.companyId, { name: second });
-
-    await gotoApplications(page, seed.prefix);
-    await page.getByPlaceholder("Search applications…").fill(APP_PREFIX);
-    await expect(page.getByText(first, { exact: true })).toBeVisible({ timeout: 15_000 });
-
-    // Open edit dialog
-    await page.getByRole("button", { name: `Actions for ${first}` }).click();
-    await page.getByRole("menuitem", { name: "Edit" }).click();
-
-    const editDialog = page.getByRole("dialog");
-    await expect(editDialog.getByRole("heading", { name: "Edit application" })).toBeVisible();
-    await editDialog.screenshot({ path: `${SCREENSHOT_DIR}/applications-crud-edit-dialog-open.png` });
-
-    // Rename + new description
-    const nameInput = editDialog.getByLabel("Name");
-    await nameInput.fill(renamed);
-    await editDialog.getByLabel("Description").fill(description);
-    await editDialog.getByRole("button", { name: "Save changes" }).click();
-
-    // Dialog closes; table reflects the new values
-    await expect(editDialog).toBeHidden({ timeout: 10_000 });
-    await page.getByPlaceholder("Search applications…").fill(renamed);
-    await expect(page.getByText(renamed, { exact: true })).toBeVisible();
-    await expect(page.getByText(description, { exact: false })).toBeVisible();
-
-    await page.screenshot({ path: `${SCREENSHOT_DIR}/applications-crud-edit-saved-table.png`, fullPage: true });
-
-    // Now attempt to rename the renamed app to the existing `second` — should
-    // show the friendly conflict error (no crash, no 500, dialog stays open).
-    await page.getByRole("button", { name: `Actions for ${renamed}` }).click();
-    await page.getByRole("menuitem", { name: "Edit" }).click();
-    const conflictDialog = page.getByRole("dialog");
-    await conflictDialog.getByLabel("Name").fill(second);
-    await conflictDialog.getByRole("button", { name: "Save changes" }).click();
-
-    await expect(
-      conflictDialog.getByText("Another application already uses that name."),
-    ).toBeVisible({ timeout: 10_000 });
-    await expect(conflictDialog).toBeVisible();
-    await conflictDialog.screenshot({
-      path: `${SCREENSHOT_DIR}/applications-crud-edit-duplicate-conflict.png`,
+  test("Connections list surfaces connected and not-connected apps", async ({ page, request }) => {
+    const connectedName = `${APP_PREFIX}-connected`;
+    const notConnectedName = `${APP_PREFIX}-not-connected`;
+    const connected = await createConnection(request, seed.companyId, {
+      applicationName: connectedName,
+      name: connectedName,
     });
+    const notConnected = await createApplication(request, seed.companyId, { name: notConnectedName });
 
-    await page.keyboard.press("Escape");
+    await gotoApps(page, seed.prefix);
+
+    const connectedRow = page.locator("tbody tr", { hasText: connectedName });
+    await expect(connectedRow).toBeVisible();
+    await expect(connectedRow.getByText("Healthy")).toBeVisible();
+    await expect(connectedRow.getByRole("button", { name: "Open" })).toBeVisible();
+
+    const notConnectedRow = page.locator("tbody tr", { hasText: notConnectedName });
+    await expect(notConnectedRow).toBeVisible();
+    await expect(notConnectedRow.getByText("Not connected")).toBeVisible();
+    await expect(notConnectedRow.getByRole("button", { name: "Connect" })).toBeVisible();
+    await page.screenshot({ path: `${SCREENSHOT_DIR}/applications-crud-current-list.png`, fullPage: true });
+
+    await connectedRow.getByRole("button", { name: "Open" }).click();
+    await expect(page).toHaveURL(new RegExp(`/${seed.prefix}/apps/${connected.id}`), { timeout: 20_000 });
+
+    await gotoApps(page, seed.prefix);
+    await notConnectedRow.getByRole("button", { name: "Connect" }).click();
+    await expect(page).toHaveURL(new RegExp(`/${seed.prefix}/apps/app/${notConnected.id}`), { timeout: 20_000 });
   });
 
-  test("Phase 3: status lifecycle + disabled-app denial", async ({ page, request }) => {
-    const appName = `${APP_PREFIX}-lifecycle-app`;
-    const connName = `${APP_PREFIX}-lifecycle-conn`;
+  test("connected app detail supports pause, rename, and removal", async ({ page, request }) => {
+    const appName = `${APP_PREFIX}-detail-app`;
+    const renamed = `${APP_PREFIX}-renamed-app`;
     const connection = await createConnection(request, seed.companyId, {
       applicationName: appName,
-      name: connName,
+      name: appName,
     });
-    const applicationId = connection.applicationId;
 
-    await gotoApplications(page, seed.prefix);
-    await page.getByPlaceholder("Search applications…").fill(APP_PREFIX);
-    await expect(page.getByText(appName, { exact: true })).toBeVisible({ timeout: 15_000 });
+    await page.goto(`/${seed.prefix}/apps/${connection.id}/setup`);
+    await expect(page.getByRole("heading", { name: appName })).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByRole("heading", { name: "Agents can use this app" })).toBeVisible();
 
-    // --- Disable flow with impact summary
-    await page.getByRole("button", { name: `Actions for ${appName}` }).click();
-    await page.getByRole("menuitem", { name: "Disable" }).click();
+    await page.getByRole("switch", { name: "Pause this app" }).click();
+    await expect(page.getByRole("heading", { name: "This app is paused" })).toBeVisible({ timeout: 15_000 });
+    await page.getByRole("switch", { name: "Resume this app" }).click();
+    await expect(page.getByRole("heading", { name: "Agents can use this app" })).toBeVisible({ timeout: 15_000 });
 
-    const disableDialog = page.getByRole("dialog");
-    await expect(disableDialog.getByRole("heading", { name: "Disable application" })).toBeVisible();
-    await expect(disableDialog.getByText("Impact summary")).toBeVisible();
-    // Should show 1 connection affected.
-    await expect(disableDialog.getByText(/^1$/)).toBeVisible();
-    await disableDialog.screenshot({ path: `${SCREENSHOT_DIR}/applications-crud-disable-impact-dialog.png` });
-    await disableDialog.getByRole("button", { name: "Disable application" }).click();
+    await page.getByRole("button", { name: "Rename app" }).click();
+    await page.getByLabel("App name").fill(renamed);
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(page.getByRole("heading", { name: renamed })).toBeVisible({ timeout: 15_000 });
+    await page.screenshot({ path: `${SCREENSHOT_DIR}/applications-crud-current-detail.png`, fullPage: true });
 
-    await expect(disableDialog).toBeHidden({ timeout: 10_000 });
-    // Force the badge filter to "all visibility" so disabled apps stay visible.
-    // (default is __all so it's already visible). Wait for the status badge.
-    await expect(
-      page.getByRole("row", { name: new RegExp(appName) }).getByText("disabled", { exact: true }),
-    ).toBeVisible({ timeout: 10_000 });
-
-    // --- Policy test: a tool call through the connection of a disabled app
-    // must be denied with `deny_disabled_application`.
-    const policyRes = await request.post(`/api/companies/${seed.companyId}/tools/policy/test`, {
-      data: {
-        companyId: seed.companyId,
-        actor: { actorType: "user", actorId: "qa-bot" },
-        request: {
-          connectionId: connection.id,
-          toolName: "noop",
-          arguments: {},
-        },
-      },
-    });
-    expect(policyRes.ok(), `policy test failed ${policyRes.status()}: ${await policyRes.text()}`).toBe(true);
-    const policy = await policyRes.json();
-    expect(policy.decision.decision).toBe("deny");
-    expect(policy.decision.allowed).toBe(false);
-    expect(policy.decision.reasonCode).toBe("deny_disabled_application");
-
-    // --- Reactivate from row menu
-    await page.getByRole("button", { name: `Actions for ${appName}` }).click();
-    await page.getByRole("menuitem", { name: "Reactivate" }).click();
-    await expect(
-      page.getByRole("row", { name: new RegExp(appName) }).getByText("active", { exact: true }),
-    ).toBeVisible({ timeout: 10_000 });
-
-    // --- Policy test: now the disabled denial is gone. We expect either an
-    // explicit allow or a non-disabled deny (catalog/profile gating). We
-    // assert only the absence of the `deny_disabled_application` reason.
-    const recheckRes = await request.post(`/api/companies/${seed.companyId}/tools/policy/test`, {
-      data: {
-        companyId: seed.companyId,
-        actor: { actorType: "user", actorId: "qa-bot" },
-        request: {
-          connectionId: connection.id,
-          toolName: "noop",
-          arguments: {},
-        },
-      },
-    });
-    expect(recheckRes.ok()).toBe(true);
-    const recheck = await recheckRes.json();
-    expect(recheck.decision.reasonCode).not.toBe("deny_disabled_application");
-
-    // --- Archive flow: destructive variant of the impact dialog
-    await page.getByRole("button", { name: `Actions for ${appName}` }).click();
-    await page.getByRole("menuitem", { name: "Archive" }).click();
-    const archiveDialog = page.getByRole("dialog");
-    await expect(archiveDialog.getByRole("heading", { name: "Archive application" })).toBeVisible();
-    await expect(archiveDialog.getByText("Impact summary")).toBeVisible();
-    await archiveDialog.screenshot({ path: `${SCREENSHOT_DIR}/applications-crud-archive-impact-dialog.png` });
-    await archiveDialog.getByRole("button", { name: "Archive application" }).click();
-    await expect(archiveDialog).toBeHidden({ timeout: 10_000 });
-
-    // Visibility filter excludes archived by default for "active" but with
-    // __all and "hidden" includes archived; we use __all which is the default.
-    await expect(
-      page.getByRole("row", { name: new RegExp(appName) }).getByText("archived", { exact: true }),
-    ).toBeVisible({ timeout: 10_000 });
-
-    // Reactivate the archived app
-    await page.getByRole("button", { name: `Actions for ${appName}` }).click();
-    await page.getByRole("menuitem", { name: "Reactivate" }).click();
-    await expect(
-      page.getByRole("row", { name: new RegExp(appName) }).getByText("active", { exact: true }),
-    ).toBeVisible({ timeout: 10_000 });
-
-    await page.screenshot({ path: `${SCREENSHOT_DIR}/applications-crud-lifecycle-reactivated.png`, fullPage: true });
+    await page.goto(`/${seed.prefix}/apps/${connection.id}/advanced`);
+    await expect(page.getByText("Danger zone")).toBeVisible({ timeout: 15_000 });
+    await page.getByRole("button", { name: "Remove app" }).click();
+    await expect(page.getByRole("button", { name: "Yes, remove it" })).toBeVisible();
+    await page.screenshot({ path: `${SCREENSHOT_DIR}/applications-crud-current-remove-connected.png`, fullPage: true });
+    await page.getByRole("button", { name: "Yes, remove it" }).click();
+    await expect(page).toHaveURL(new RegExp(`/${seed.prefix}/apps$`), { timeout: 20_000 });
+    await expect(page.getByText("App removed").first()).toBeVisible({ timeout: 20_000 });
+    await expect(page.locator("tbody tr", { hasText: renamed })).toHaveCount(0);
   });
 
-  test("Phase 4: delete guard + clean delete", async ({ page, request }) => {
-    const guardedAppName = `${APP_PREFIX}-guarded-delete-app`;
-    const cleanAppName = `${APP_PREFIX}-clean-delete-app`;
-
-    // Guarded: app with a connection
-    const guardedConn = await createConnection(request, seed.companyId, {
-      applicationName: guardedAppName,
-      name: `${APP_PREFIX}-guarded-delete-conn`,
-    });
-    const guardedAppId = guardedConn.applicationId;
-
-    // Clean: app without connections
+  test("not-connected app advanced page removes the application", async ({ page, request }) => {
+    const cleanAppName = `${APP_PREFIX}-clean-remove-app`;
     const cleanApp = await createApplication(request, seed.companyId, { name: cleanAppName });
 
-    await gotoApplications(page, seed.prefix);
-    await page.getByPlaceholder("Search applications…").fill(APP_PREFIX);
-    await expect(page.getByText(guardedAppName, { exact: true })).toBeVisible({ timeout: 15_000 });
-    await expect(page.getByText(cleanAppName, { exact: true })).toBeVisible();
-
-    // --- Guarded delete: pre-confirm copy
-    await page.getByRole("button", { name: `Actions for ${guardedAppName}` }).click();
-    await page.getByRole("menuitem", { name: "Delete" }).click();
-    const guardedDialog = page.getByRole("dialog");
-    await expect(guardedDialog.getByText("delete is blocked while connections exist")).toBeVisible();
-    await guardedDialog.screenshot({ path: `${SCREENSHOT_DIR}/applications-crud-delete-blocked-precheck.png` });
-
-    // Attempt the delete anyway — server returns 409 and the same dialog
-    // surfaces the error inline.
-    await guardedDialog.getByRole("button", { name: "Delete application" }).click();
-    await expect(
-      guardedDialog.getByText(/connection/i).first(),
-    ).toBeVisible({ timeout: 10_000 });
-    await guardedDialog.screenshot({ path: `${SCREENSHOT_DIR}/applications-crud-delete-409-inline.png` });
-
-    // Confirm the application still exists.
-    const stillThere = await request.get(`/api/companies/${seed.companyId}/tools/applications`);
-    expect(stillThere.ok()).toBe(true);
-    const stillBody = await stillThere.json();
-    expect(stillBody.applications.some((a: { id: string }) => a.id === guardedAppId)).toBe(true);
-    await page.keyboard.press("Escape");
-
-    // --- Clean delete: safe-delete copy then row disappears.
-    await page.getByRole("button", { name: `Actions for ${cleanAppName}` }).click();
-    await page.getByRole("menuitem", { name: "Delete" }).click();
-    const cleanDialog = page.getByRole("dialog");
-    await expect(cleanDialog.getByText("No connections are attached")).toBeVisible();
-    await cleanDialog.screenshot({ path: `${SCREENSHOT_DIR}/applications-crud-delete-clean-precheck.png` });
-    await cleanDialog.getByRole("button", { name: "Delete application" }).click();
-    await expect(cleanDialog).toBeHidden({ timeout: 10_000 });
-
-    // The row should be gone from the table.
-    await expect(page.getByText(cleanAppName, { exact: true })).toBeHidden({ timeout: 10_000 });
-    await page.screenshot({ path: `${SCREENSHOT_DIR}/applications-crud-delete-clean-after.png`, fullPage: true });
-
-    // Verify via API that the application is gone.
-    const after = await request.get(`/api/companies/${seed.companyId}/tools/applications`);
-    expect(after.ok()).toBe(true);
-    const afterBody = await after.json();
-    expect(afterBody.applications.some((a: { id: string }) => a.id === cleanApp.id)).toBe(false);
+    await page.goto(`/${seed.prefix}/apps/app/${cleanApp.id}/advanced`);
+    await expect(page.getByRole("heading", { name: cleanAppName })).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText("Danger zone")).toBeVisible();
+    await page.getByRole("button", { name: "Remove app" }).click();
+    await page.screenshot({ path: `${SCREENSHOT_DIR}/applications-crud-current-remove-not-connected.png`, fullPage: true });
+    await page.getByRole("button", { name: "Yes, remove it" }).click();
+    await expect(page).toHaveURL(new RegExp(`/${seed.prefix}/apps$`), { timeout: 20_000 });
+    await expect(page.getByText("App removed").first()).toBeVisible({ timeout: 20_000 });
+    await expect(page.locator("tbody tr", { hasText: cleanAppName })).toHaveCount(0);
   });
 });

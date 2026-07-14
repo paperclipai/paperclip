@@ -118,7 +118,9 @@ async function gotoApps(page: Page, prefix: string) {
 }
 
 async function gotoConnect(page: Page, prefix: string) {
-  await page.goto(`/${prefix}/apps/connect`);
+  await page.goto(`/${prefix}/apps/browse`);
+  await expect(page.getByRole("heading", { name: "Browse" })).toBeVisible({ timeout: 30_000 });
+  await page.getByRole("button", { name: /Connect your own tool/i }).click();
 }
 
 async function gotoAdvanced(page: Page, prefix: string) {
@@ -126,7 +128,7 @@ async function gotoAdvanced(page: Page, prefix: string) {
 }
 
 async function gotoNeedsAttention(page: Page, prefix: string) {
-  await page.goto(`/${prefix}/apps/attention`);
+  await page.goto(`/${prefix}/apps`);
 }
 
 // ---- Tests ------------------------------------------------------------------
@@ -149,7 +151,7 @@ test.describe.serial("prosumer MCP flow prosumer MCP flow", () => {
 
     await gotoConnect(page, seed.prefix);
 
-    // Gallery step renders with seeded apps + the link-mode entry.
+    // Browse launches the BYO link-mode connect wizard.
     await expect(page.getByRole("heading", { name: "Connect an app" })).toBeVisible({ timeout: 30_000 });
     await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-01-gallery.png`, fullPage: true });
 
@@ -209,7 +211,7 @@ test.describe.serial("prosumer MCP flow prosumer MCP flow", () => {
 
     // The new connection should show up on /apps.
     await gotoApps(page, seed.prefix);
-    await expect(page.getByRole("heading", { name: "Apps" })).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByRole("heading", { name: "Connections" })).toBeVisible({ timeout: 15_000 });
     await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-06-apps-list.png`, fullPage: true });
   });
 
@@ -240,7 +242,8 @@ test.describe.serial("prosumer MCP flow prosumer MCP flow", () => {
 
       // Needs-attention page should surface this connection.
       await gotoNeedsAttention(page, seed.prefix);
-      await expect(page.getByRole("heading", { name: "Needs attention" })).toBeVisible({ timeout: 30_000 });
+      await expect(page.getByRole("heading", { name: "Connections" })).toBeVisible({ timeout: 30_000 });
+      await expect(page.getByText(/app needs attention/i).first()).toBeVisible({ timeout: 30_000 });
       await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-07-needs-attention.png`, fullPage: true });
 
       // App detail should expose the reconnect call-to-action.
