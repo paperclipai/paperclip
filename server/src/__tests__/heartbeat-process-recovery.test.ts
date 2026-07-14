@@ -101,6 +101,7 @@ import {
   redactDetectedSuccessfulRunProgressSummaryForBoard,
 } from "../services/heartbeat.ts";
 import { secretService } from "../services/secrets.ts";
+import { issueService } from "../services/issues.ts";
 import {
   SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY,
   SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY,
@@ -581,6 +582,118 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
 
     return { environmentId, leaseId };
+  }
+
+  async function seedDeadRunFinalizeBarrierFixture(input?: {
+    runStatus?: "running" | "interrupted" | "failed";
+  }) {
+    const runStatus = input?.runStatus ?? "running";
+    const runErrorCode = runStatus === "failed"
+      ? "process_lost"
+      : runStatus === "interrupted"
+        ? "server_shutdown_interrupted"
+        : null;
+    const runError = runStatus === "failed"
+      ? "Process lost during a prior server lifetime"
+      : runStatus === "interrupted"
+        ? "Run interrupted during graceful server shutdown"
+        : null;
+    const seeded = await seedRunFixture({
+      agentStatus: "running",
+      adapterType: "test",
+      runStatus,
+      runErrorCode,
+      runError,
+    });
+    const projectId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+    const dependentAgentId = randomUUID();
+    const dependentIssueId = randomUUID();
+    const now = new Date("2026-03-19T00:01:00.000Z");
+
+    await db.insert(projects).values({
+      id: projectId,
+      companyId: seeded.companyId,
+      name: "Dead run finalize barrier project",
+      status: "in_progress",
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId: seeded.companyId,
+      projectId,
+      sourceIssueId: seeded.issueId,
+      mode: "shared_workspace",
+      strategyType: "project_primary",
+      name: "Dead run finalize barrier workspace",
+      status: "active",
+      cwd: "/workspace/dead-run-finalize",
+    });
+    await db
+      .update(issues)
+      .set({
+        status: "done",
+        projectId,
+        executionWorkspaceId,
+        completedAt: now,
+      })
+      .where(eq(issues.id, seeded.issueId));
+    await db
+      .update(heartbeatRuns)
+      .set({
+        contextSnapshot: {
+          issueId: seeded.issueId,
+          executionWorkspaceId,
+        },
+        ...(runStatus !== "running" ? { finishedAt: now, updatedAt: now } : {}),
+      })
+      .where(eq(heartbeatRuns.id, seeded.runId));
+
+    await db.insert(agents).values({
+      id: dependentAgentId,
+      companyId: seeded.companyId,
+      name: "Dependent Agent",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: dependentIssueId,
+      companyId: seeded.companyId,
+      projectId,
+      title: "Dependent waiting for dead run finalize",
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId: dependentAgentId,
+      responsibleUserId: "responsible-user",
+      issueNumber: 2,
+      identifier: `T${seeded.companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}-2`,
+    });
+    await db.insert(issueRelations).values({
+      companyId: seeded.companyId,
+      issueId: seeded.issueId,
+      relatedIssueId: dependentIssueId,
+      type: "blocks",
+    });
+    await db.insert(workspaceOperations).values({
+      companyId: seeded.companyId,
+      executionWorkspaceId,
+      heartbeatRunId: seeded.runId,
+      issueId: seeded.issueId,
+      phase: "adapter_execute",
+      status: "succeeded",
+      startedAt: now,
+      finishedAt: now,
+    });
+
+    return {
+      ...seeded,
+      dependentAgentId,
+      dependentIssueId,
+      executionWorkspaceId,
+    };
   }
 
   it("does not reap active adapter executions started by another heartbeat service instance", async () => {
@@ -1301,6 +1414,162 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     );
     // Terminal run cleanup releases the checkout lock so future checkout 409s only mean a live owner exists.
     expect(checkoutReleasedIssue?.checkoutRunId).toBeNull();
+  });
+
+  it("releases a done blocker finalize barrier when its run is reaped as process_lost", async () => {
+    const fixture = await seedDeadRunFinalizeBarrierFixture();
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns();
+
+    expect(result).toMatchObject({ reaped: 1, runIds: [fixture.runId] });
+    const syntheticFinalizes = await db
+      .select()
+      .from(workspaceOperations)
+      .where(
+        and(
+          eq(workspaceOperations.heartbeatRunId, fixture.runId),
+          eq(workspaceOperations.phase, "workspace_finalize"),
+        ),
+      );
+    expect(syntheticFinalizes).toHaveLength(1);
+    expect(syntheticFinalizes[0]).toMatchObject({
+      companyId: fixture.companyId,
+      executionWorkspaceId: fixture.executionWorkspaceId,
+      issueId: fixture.issueId,
+      status: "succeeded",
+      metadata: expect.objectContaining({
+        synthetic: true,
+        reason: "process_lost",
+        source: "run.reap",
+        outcome: "terminal_without_finalize",
+      }),
+    });
+
+    await expect(issueService(db).getDependencyReadiness(fixture.dependentIssueId)).resolves.toMatchObject({
+      isDependencyReady: true,
+      pendingFinalizeBlockerIssueIds: [],
+    });
+    const wake = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.agentId, fixture.dependentAgentId),
+          eq(agentWakeupRequests.reason, "issue_blockers_resolved"),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+    expect(wake).toMatchObject({
+      reason: "issue_blockers_resolved",
+      idempotencyKey: `issue_blockers_resolved:${fixture.dependentIssueId}:${fixture.issueId}`,
+    });
+  });
+
+  it("sweeps a pre-existing terminal-run finalize barrier exactly once", async () => {
+    const fixture = await seedDeadRunFinalizeBarrierFixture({ runStatus: "failed" });
+
+    const concurrentResults = await Promise.all([
+      heartbeatService(db).reconcileTerminalRunWorkspaceFinalizes("startup_sweep"),
+      heartbeatService(db).reconcileTerminalRunWorkspaceFinalizes("interval_sweep"),
+    ]);
+    const second = await heartbeatService(db).reconcileTerminalRunWorkspaceFinalizes("interval_sweep");
+
+    expect(concurrentResults.reduce((total, result) => total + result.created, 0)).toBe(1);
+    expect(concurrentResults.reduce((total, result) => total + result.wakesHealed, 0)).toBe(1);
+    expect(concurrentResults.flatMap((result) => result.runIds)).toEqual([fixture.runId]);
+    expect(second).toMatchObject({ checked: 1, created: 0, wakesHealed: 0, runIds: [] });
+    const syntheticFinalizes = await db
+      .select()
+      .from(workspaceOperations)
+      .where(
+        and(
+          eq(workspaceOperations.heartbeatRunId, fixture.runId),
+          eq(workspaceOperations.phase, "workspace_finalize"),
+        ),
+      );
+    expect(syntheticFinalizes).toHaveLength(1);
+    expect(syntheticFinalizes[0]?.metadata).toMatchObject({
+      synthetic: true,
+      reason: "process_lost",
+    });
+    expect(["startup_sweep", "interval_sweep"]).toContain(
+      (syntheticFinalizes[0]?.metadata as Record<string, unknown> | null)?.source,
+    );
+    await expect(issueService(db).getDependencyReadiness(fixture.dependentIssueId)).resolves.toMatchObject({
+      isDependencyReady: true,
+      pendingFinalizeBlockerIssueIds: [],
+    });
+  });
+
+  it("releases a finalize barrier owned by an interrupted run", async () => {
+    const fixture = await seedDeadRunFinalizeBarrierFixture({ runStatus: "interrupted" });
+
+    const result = await heartbeatService(db).reconcileTerminalRunWorkspaceFinalizes("startup_sweep");
+
+    expect(result).toMatchObject({
+      checked: 1,
+      created: 1,
+      wakesHealed: 1,
+      runIds: [fixture.runId],
+    });
+    const syntheticFinalize = await db
+      .select()
+      .from(workspaceOperations)
+      .where(
+        and(
+          eq(workspaceOperations.heartbeatRunId, fixture.runId),
+          eq(workspaceOperations.phase, "workspace_finalize"),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+    expect(syntheticFinalize).toMatchObject({
+      status: "succeeded",
+      metadata: expect.objectContaining({
+        synthetic: true,
+        reason: "server_shutdown_interrupted",
+        terminalRunStatus: "interrupted",
+      }),
+    });
+    await expect(issueService(db).getDependencyReadiness(fixture.dependentIssueId)).resolves.toMatchObject({
+      isDependencyReady: true,
+      pendingFinalizeBlockerIssueIds: [],
+    });
+  });
+
+  it("does not mask an explicit failed workspace finalize with a synthetic success", async () => {
+    const fixture = await seedDeadRunFinalizeBarrierFixture({ runStatus: "failed" });
+    const failedAt = new Date("2026-03-19T00:02:00.000Z");
+    await db.insert(workspaceOperations).values({
+      companyId: fixture.companyId,
+      executionWorkspaceId: fixture.executionWorkspaceId,
+      heartbeatRunId: fixture.runId,
+      issueId: fixture.issueId,
+      phase: "workspace_finalize",
+      status: "failed",
+      metadata: { errorMessage: "sync-back failed" },
+      startedAt: failedAt,
+      finishedAt: failedAt,
+    });
+
+    const result = await heartbeatService(db).reconcileTerminalRunWorkspaceFinalizes("startup_sweep");
+
+    expect(result).toMatchObject({ checked: 1, created: 0, wakesHealed: 0, runIds: [] });
+    const finalizes = await db
+      .select()
+      .from(workspaceOperations)
+      .where(
+        and(
+          eq(workspaceOperations.heartbeatRunId, fixture.runId),
+          eq(workspaceOperations.phase, "workspace_finalize"),
+        ),
+      );
+    expect(finalizes).toHaveLength(1);
+    expect(finalizes[0]).toMatchObject({ status: "failed", metadata: { errorMessage: "sync-back failed" } });
+    await expect(issueService(db).getDependencyReadiness(fixture.dependentIssueId)).resolves.toMatchObject({
+      isDependencyReady: false,
+      pendingFinalizeBlockerIssueIds: [fixture.issueId],
+    });
   });
 
   it("interrupts running runs on graceful shutdown and queues restart recovery without recording a failure", async () => {

@@ -880,6 +880,21 @@ export async function startServer(): Promise<StartedServer> {
           }
         }
 
+        try {
+          const finalized = await heartbeat.reconcileTerminalRunWorkspaceFinalizes("startup_sweep");
+          if (finalized.created > 0) {
+            logger.warn(
+              { ...finalized },
+              "startup terminal-run workspace-finalize reconciliation released stuck barriers",
+            );
+          }
+        } catch (err) {
+          logger.error(
+            { err },
+            "startup terminal-run workspace-finalize reconciliation failed",
+          );
+        }
+
         const promotion = await heartbeat.promoteDueScheduledRetries();
         await heartbeat.resumeQueuedRuns();
         const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
@@ -995,6 +1010,22 @@ export async function startServer(): Promise<StartedServer> {
         // persisted queued work is still being driven forward.
         trackHeartbeatSchedulerWork(heartbeat
           .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 })
+          .then(async () => {
+            try {
+              const finalized = await heartbeat.reconcileTerminalRunWorkspaceFinalizes("interval_sweep");
+              if (finalized.created > 0) {
+                logger.warn(
+                  { ...finalized },
+                  "periodic terminal-run workspace-finalize reconciliation released stuck barriers",
+                );
+              }
+            } catch (err) {
+              logger.error(
+                { err },
+                "periodic terminal-run workspace-finalize reconciliation failed",
+              );
+            }
+          })
           .then(() => heartbeat.promoteDueScheduledRetries())
           .then(async (promotion) => {
             await heartbeat.resumeQueuedRuns();
