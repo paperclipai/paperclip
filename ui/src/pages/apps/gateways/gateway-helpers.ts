@@ -164,7 +164,8 @@ export function deriveGatewayApps(
     const application = applicationsById.get(applicationId);
     if (!application || application.status === "archived") continue;
     const appConnections = connectionsByApplication.get(applicationId) ?? [];
-    const connection = appConnections[0] ?? null;
+    const connection =
+      appConnections.find((conn) => conn.status !== "archived") ?? appConnections[0] ?? null;
     const attentionConnection = appConnections.find((conn) =>
       isToolConnectionAttentionHealth(conn.healthStatus),
     );

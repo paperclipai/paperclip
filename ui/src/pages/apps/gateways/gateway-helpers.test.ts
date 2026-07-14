@@ -197,6 +197,18 @@ describe("deriveGatewayApps", () => {
     expect(sheets.needsAttention).toBe(true);
   });
 
+  it("prefers a live connection over an archived connection", () => {
+    const rows = deriveGatewayApps(profile, applications, [
+      { ...connections[0], id: "conn-gh-archived", status: "archived" },
+      { ...connections[0], id: "conn-gh-active", status: "active" },
+      connections[1],
+    ] as ToolConnection[]);
+
+    expect(rows.find((row) => row.application.id === "app-gh")?.connection?.id).toBe(
+      "conn-gh-active",
+    );
+  });
+
   it("returns nothing without a profile", () => {
     expect(deriveGatewayApps(undefined, applications, connections)).toEqual([]);
   });
