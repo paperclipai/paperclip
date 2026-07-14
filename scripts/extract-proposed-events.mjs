@@ -75,12 +75,11 @@ export function extractProposedEvents(options = {}) {
   const sourceFile = ts.createSourceFile(eventsFile, sourceText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
   const proposals = new Map();
 
-  function recordProposal(wrapper, callExpression, eventNameNode, directive) {
+  function recordProposal(wrapper, wrapperName, eventNameNode, directive) {
     const name = eventNameNode.text;
     assertEventName(name, "event name");
     const position = sourceFile.getLineAndCharacterOfPosition(eventNameNode.getStart(sourceFile));
-    const dimensions = extractWrapperDimensions(wrapper, sourceFile);
-    const wrapperName = wrapper.name?.text ?? "<anonymous>";
+    const dimensions = extractWrapperDimensions(wrapper, sourceFile, wrapperName);
 
     let proposal = proposals.get(name);
     if (!proposal) {
@@ -111,15 +110,15 @@ export function extractProposedEvents(options = {}) {
     });
   }
 
-  function visitWrapper(wrapper) {
+  function visitWrapper(wrapper, wrapperName = wrapper.name?.text ?? "<anonymous>") {
     if (!wrapper.body) return;
 
     function visit(node) {
-      if (ts.isCallExpression(node) && isClientTrackCall(node)) {
+      if (ts.isCallExpression(node) && isIdentifierTrackCall(node)) {
         const eventNameNode = node.arguments[0];
         if (eventNameNode && ts.isStringLiteral(eventNameNode)) {
           const directive = findDirectiveForNode(sourceText, eventNameNode);
-          if (directive) recordProposal(wrapper, node, eventNameNode, directive);
+          if (directive) recordProposal(wrapper, wrapperName, eventNameNode, directive);
         }
       }
       ts.forEachChild(node, visit);
@@ -131,8 +130,17 @@ export function extractProposedEvents(options = {}) {
   function visit(node) {
     if (ts.isFunctionDeclaration(node)) {
       visitWrapper(node);
+    } else if (ts.isVariableDeclaration(node)) {
+      visitVariableWrapper(node);
     }
     ts.forEachChild(node, visit);
+  }
+
+  function visitVariableWrapper(node) {
+    if (!ts.isIdentifier(node.name)) return;
+    const initializer = node.initializer;
+    if (!initializer || (!ts.isArrowFunction(initializer) && !ts.isFunctionExpression(initializer))) return;
+    visitWrapper(initializer, node.name.text);
   }
 
   visit(sourceFile);
@@ -156,13 +164,12 @@ function buildSource(options) {
   return source;
 }
 
-function isClientTrackCall(node) {
+function isIdentifierTrackCall(node) {
   const callee = node.expression;
   return (
     ts.isPropertyAccessExpression(callee) &&
     callee.name.text === "track" &&
-    ts.isIdentifier(callee.expression) &&
-    callee.expression.text === "client"
+    ts.isIdentifier(callee.expression)
   );
 }
 
@@ -186,17 +193,17 @@ function normalizeComment(commentText) {
     .trim();
 }
 
-function extractWrapperDimensions(wrapper, sourceFile) {
+function extractWrapperDimensions(wrapper, sourceFile, wrapperName = wrapper.name?.text ?? "<anonymous>") {
   const dimsParam = wrapper.parameters.find(
     (parameter) => ts.isIdentifier(parameter.name) && parameter.name.text === "dims",
   );
   if (!dimsParam) return [];
   if (!dimsParam.type) {
-    throw new Error(`wrapper ${wrapper.name?.text ?? "<anonymous>"} has an untyped dims parameter`);
+    throw new Error(`wrapper ${wrapperName} has an untyped dims parameter`);
   }
   const typeNode = unwrapTypeNode(dimsParam.type);
   if (!ts.isTypeLiteralNode(typeNode)) {
-    throw new Error(`wrapper ${wrapper.name?.text ?? "<anonymous>"} dims parameter must be a type literal`);
+    throw new Error(`wrapper ${wrapperName} dims parameter must be a type literal`);
   }
 
   return typeNode.members.map((member) => extractDimension(member, sourceFile));
@@ -246,6 +253,8 @@ function classifyTypeNode(typeNode, sourceFile) {
     for (const member of node.types) {
       const unwrapped = unwrapTypeNode(member);
       if (unwrapped.kind === ts.SyntaxKind.UndefinedKeyword) continue;
+      if (unwrapped.kind === ts.SyntaxKind.NullKeyword) continue;
+      if (ts.isLiteralTypeNode(unwrapped) && unwrapped.literal.kind === ts.SyntaxKind.NullKeyword) continue;
       primitiveTypes.add(classifyTypeNode(unwrapped, sourceFile));
     }
     if (primitiveTypes.size !== 1) {

@@ -111,6 +111,68 @@ test("extractor flags a missing proposed-telemetry suffix without hard-failing",
   assert.deepEqual(opened.dimensions, [{ name: "surface", type: "string" }]);
 });
 
+test("extractor scans TelemetryClient wrappers whose receiver is not named client", () => {
+  const output = withFixtureRepo(
+    `type TelemetryClient = { track(name: string, dims: unknown): void };
+
+export function trackWorkspaceOpened(
+  telemetry: TelemetryClient,
+  dims: { surface: string },
+): void {
+  telemetry.track(
+    // @ts-expect-error -- proposed-telemetry(PAP-2463): exercise alternate telemetry client parameter names
+    "workspace.opened",
+    dims,
+  );
+}
+`,
+    ({ repoRoot, eventsFile }) => extractProposedEvents({ repoRoot, eventsFile, ref: "fixture-sha" }),
+  );
+
+  assert.deepEqual(
+    output.proposals.map((proposal) => proposal.name),
+    ["workspace.opened"],
+  );
+  assert.deepEqual(output.proposals[0].dimensions, [{ name: "surface", type: "string" }]);
+});
+
+test("extractor scans variable-assigned wrappers and ignores nullable union members", () => {
+  const output = withFixtureRepo(
+    `type TelemetryClient = { track(name: string, dims: unknown): void };
+
+export const trackWorkspaceArrow = (
+  telemetry: TelemetryClient,
+  dims: { surface: string | null | undefined },
+): void => {
+  telemetry.track(
+    // @ts-expect-error -- proposed-telemetry(PAP-2463): exercise arrow wrapper extraction
+    "workspace.arrow_opened",
+    dims,
+  );
+};
+
+export const trackWorkspaceFunctionExpression = function (
+  tc: TelemetryClient,
+  dims: { accepted: true | false | null },
+): void {
+  tc.track(
+    // @ts-expect-error -- proposed-telemetry(PAP-2463): exercise function-expression wrapper extraction
+    "workspace.function_expression_opened",
+    dims,
+  );
+};
+`,
+    ({ repoRoot, eventsFile }) => extractProposedEvents({ repoRoot, eventsFile, ref: "fixture-sha" }),
+  );
+
+  assert.deepEqual(
+    output.proposals.map((proposal) => proposal.name),
+    ["workspace.arrow_opened", "workspace.function_expression_opened"],
+  );
+  assert.deepEqual(output.proposals[0].dimensions, [{ name: "surface", type: "string" }]);
+  assert.deepEqual(output.proposals[1].dimensions, [{ name: "accepted", type: "boolean" }]);
+});
+
 test("extractor rejects invalid rationale issue references when present", () => {
   assert.throws(
     () =>
