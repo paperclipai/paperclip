@@ -1,5 +1,5 @@
 import { Profiler, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, MessageSquarePlus } from "lucide-react";
+import { AlertTriangle, MessageSquare, MessageSquarePlus } from "lucide-react";
 import type {
   DocumentAnnotationAnchorState,
   DocumentAnnotationThreadStatus,
@@ -9,6 +9,7 @@ import { cn } from "@/lib/utils";
 import {
   buildAnchorFromContainerSelection,
   getContainerTextOffset,
+  isCoarsePointerDevice,
   rangesForNormalizedSpan,
 } from "@/lib/document-annotation-selection";
 import {
@@ -66,6 +67,13 @@ export interface AnnotationLayerProps {
 
 /** Synthetic thread id used to render the in-progress (pending) comment highlight. */
 const PENDING_HIGHLIGHT_THREAD_ID = "__paperclip-pending-annotation__";
+const COARSE_SELECTION_SETTLE_MS = 400;
+const COARSE_GESTURE_END_CAPTURE_MS = 120;
+const FINE_SELECTION_SETTLE_MS = 120;
+const TOOLBAR_FALLBACK_WIDTH = 120;
+const TOOLBAR_HEIGHT = 36;
+const TOOLBAR_VIEWPORT_GAP = 8;
+const TOUCH_CALLOUT_GAP = 12;
 
 interface HighlightRect {
   threadId: string;
@@ -84,6 +92,14 @@ interface HighlightRect {
 interface ToolbarPosition {
   top: number;
   left: number;
+}
+
+interface SelectionSnapshot {
+  startContainer: Node;
+  startOffset: number;
+  endContainer: Node;
+  endOffset: number;
+  selectedText: string;
 }
 
 type NativeHighlightKind = "open" | "focused" | "stale" | "resolved";
@@ -227,6 +243,21 @@ function nativeHighlightKind(input: {
   return "open";
 }
 
+function selectionRangeInsideContainer(selection: Selection | null, container: HTMLElement | null): Range | null {
+  if (!selection || !container || selection.rangeCount === 0 || selection.isCollapsed) return null;
+  const range = selection.getRangeAt(0);
+  return container.contains(range.commonAncestorContainer) ? range : null;
+}
+
+function isAnnotationLayerMutation(mutation: MutationRecord) {
+  const target = elementFromNode(mutation.target);
+  return Boolean(
+    target?.closest(
+      ".paperclip-doc-annotation-layer, .paperclip-doc-annotation-visual-layer, .paperclip-doc-annotation-selection-toolbar",
+    ),
+  );
+}
+
 export function DocumentAnnotationLayer({
   containerRef,
   markdown,
@@ -241,12 +272,25 @@ export function DocumentAnnotationLayer({
   hideResolved = true,
   captureSelectionRequestId,
   pendingHighlightText = null,
+  testWindow,
 }: AnnotationLayerProps) {
   const [highlightRects, setHighlightRects] = useState<HighlightRect[]>([]);
   const [hoveredThreadId, setHoveredThreadId] = useState<string | null>(null);
   const [toolbarPosition, setToolbarPosition] = useState<ToolbarPosition | null>(null);
+  const [coarsePointer, setCoarsePointer] = useState(() =>
+    typeof window === "undefined" ? false : isCoarsePointerDevice(),
+  );
+  const [selectionGestureActive, setSelectionGestureActive] = useState(false);
   const overlayRef = useRef<HTMLDivElement | null>(null);
+  const toolbarRef = useRef<HTMLDivElement | null>(null);
+  const toolbarAnchorRangeRef = useRef<Range | null>(null);
   const lastCaptureSelectionRequestIdRef = useRef<number>(0);
+  const selectionCaptureTimeoutRef = useRef<number | null>(null);
+  const selectionGestureActiveRef = useRef(false);
+  const selectionGestureIdleTimeoutRef = useRef<number | null>(null);
+  const pendingHighlightSyncRef = useRef(false);
+  const lastProcessedSelectionRef = useRef<SelectionSnapshot | null>(null);
+  const hasProcessedSelectionRef = useRef(false);
   const reactId = useId();
   const nativeHighlightInstanceId = useMemo(
     () => `document-annotation-${reactId.replace(/[^a-zA-Z0-9_-]/g, "")}`,
@@ -261,7 +305,27 @@ export function DocumentAnnotationLayer({
     return threads.filter((thread) => thread.status !== "resolved" || thread.anchorState === "orphaned" || thread.id === focusedThreadId);
   }, [threads, hideResolved, focusedThreadId]);
 
-  const computeHighlightRects = useCallback(() => {
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const updateCoarsePointer = () => setCoarsePointer(isCoarsePointerDevice());
+    updateCoarsePointer();
+    const pointerQuery = typeof window.matchMedia === "function"
+      ? window.matchMedia("(pointer: coarse)")
+      : null;
+    if (!pointerQuery) return;
+    pointerQuery.addEventListener?.("change", updateCoarsePointer);
+    pointerQuery.addListener?.(updateCoarsePointer);
+    return () => {
+      pointerQuery.removeEventListener?.("change", updateCoarsePointer);
+      pointerQuery.removeListener?.(updateCoarsePointer);
+    };
+  }, []);
+
+  const computeHighlightRects = useCallback((options?: { force?: boolean }) => {
+    if (!options?.force && selectionGestureActiveRef.current) {
+      pendingHighlightSyncRef.current = true;
+      return;
+    }
     const container = containerRef.current;
     const overlay = overlayRef.current;
     if (!container || !overlay) {
@@ -340,13 +404,82 @@ export function DocumentAnnotationLayer({
     }
     setNativeHighlightRanges(nativeHighlightInstanceId, nativeRanges);
     setHighlightRects(next);
+    pendingHighlightSyncRef.current = false;
   }, [containerRef, focusedThreadId, nativeHighlightInstanceId, pendingHighlightText, visibleThreads]);
+
+  const computeHighlightRectsRef = useRef(computeHighlightRects);
+
+  useEffect(() => {
+    computeHighlightRectsRef.current = computeHighlightRects;
+  }, [computeHighlightRects]);
 
   useLayoutEffect(() => {
     computeHighlightRects();
   }, [computeHighlightRects]);
 
   useEffect(() => () => clearNativeHighlightRanges(nativeHighlightInstanceId), [nativeHighlightInstanceId]);
+
+  const positionToolbar = useCallback((range: Range) => {
+    const overlay = overlayRef.current;
+    if (!overlay) return;
+    const overlayRect = overlay.getBoundingClientRect();
+    const rect = range.getBoundingClientRect();
+    const visualViewport = window.visualViewport;
+    const viewportLeft = visualViewport?.offsetLeft ?? 0;
+    const viewportTop = visualViewport?.offsetTop ?? 0;
+    const viewportWidth = visualViewport?.width ?? testWindow?.innerWidth ?? window.innerWidth;
+    const viewportHeight = visualViewport?.height ?? testWindow?.innerHeight ?? window.innerHeight;
+    const viewportBottom = viewportTop + viewportHeight;
+    const preferredAboveTop = rect.top - TOOLBAR_HEIGHT - TOOLBAR_VIEWPORT_GAP;
+    const preferredBelowTop = rect.bottom + TOUCH_CALLOUT_GAP;
+    const screenTop = coarsePointer
+      ? preferredBelowTop + TOOLBAR_HEIGHT > viewportBottom
+        ? preferredAboveTop
+        : preferredBelowTop
+      : preferredAboveTop < viewportTop + TOOLBAR_VIEWPORT_GAP
+        ? Math.min(rect.bottom + TOOLBAR_VIEWPORT_GAP, viewportBottom - TOOLBAR_HEIGHT - TOOLBAR_VIEWPORT_GAP)
+        : preferredAboveTop;
+    const toolbarWidth = toolbarRef.current?.offsetWidth || TOOLBAR_FALLBACK_WIDTH;
+    const preferredLeft = rect.left + rect.width / 2 - toolbarWidth / 2;
+    const screenLeft = Math.min(
+      Math.max(preferredLeft, viewportLeft + TOOLBAR_VIEWPORT_GAP),
+      viewportLeft + viewportWidth - toolbarWidth - TOOLBAR_VIEWPORT_GAP,
+    );
+    const nextPosition = {
+      top: Math.max(0, screenTop - overlayRect.top),
+      left: Math.max(0, screenLeft - overlayRect.left),
+    };
+    setToolbarPosition((current) =>
+      current?.top === nextPosition.top && current.left === nextPosition.left ? current : nextPosition,
+    );
+  }, [coarsePointer, testWindow]);
+
+  useLayoutEffect(() => {
+    if (!pendingAnchor || !toolbarAnchorRangeRef.current) return;
+    positionToolbar(toolbarAnchorRangeRef.current);
+  }, [pendingAnchor, positionToolbar]);
+
+  useEffect(() => {
+    if (!pendingAnchor || !toolbarAnchorRangeRef.current) return;
+    const visualViewport = window.visualViewport;
+    let frame: number | null = null;
+    const schedule = () => {
+      if (frame !== null) return;
+      frame = window.requestAnimationFrame(() => {
+        frame = null;
+        if (toolbarAnchorRangeRef.current) positionToolbar(toolbarAnchorRangeRef.current);
+      });
+    };
+    visualViewport?.addEventListener("resize", schedule);
+    visualViewport?.addEventListener("scroll", schedule);
+    window.addEventListener("scroll", schedule, true);
+    return () => {
+      if (frame !== null) window.cancelAnimationFrame(frame);
+      visualViewport?.removeEventListener("resize", schedule);
+      visualViewport?.removeEventListener("scroll", schedule);
+      window.removeEventListener("scroll", schedule, true);
+    };
+  }, [pendingAnchor, positionToolbar]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -357,6 +490,10 @@ export function DocumentAnnotationLayer({
 
     const schedule = () => {
       if (cancelled || frame !== null) return;
+      if (selectionGestureActiveRef.current) {
+        pendingHighlightSyncRef.current = true;
+        return;
+      }
       frame = window.requestAnimationFrame(() => {
         frame = null;
         if (!cancelled) computeHighlightRects();
@@ -381,10 +518,7 @@ export function DocumentAnnotationLayer({
           );
           if (markdownMutations.length > 0) recordMarkdownMutations(markdownMutations.length);
         }
-        const onlyLayerMutations = mutations.every((mutation) => {
-          const target = elementFromNode(mutation.target);
-          return !!target?.closest(".paperclip-doc-annotation-layer, .paperclip-doc-annotation-visual-layer");
-        });
+        const onlyLayerMutations = mutations.every(isAnnotationLayerMutation);
         if (!onlyLayerMutations) schedule();
       })
       : null;
@@ -410,7 +544,7 @@ export function DocumentAnnotationLayer({
     };
   }, [computeHighlightRects, containerRef, selectionDebugEnabled]);
 
-  const captureSelection = useCallback((): PendingAnchor | null => {
+  const captureSelection = useCallback((): PendingAnchor | null | undefined => {
     const container = containerRef.current;
     const overlay = overlayRef.current;
     if (!container || !overlay) return null;
@@ -419,57 +553,135 @@ export function DocumentAnnotationLayer({
     const range = selection.getRangeAt(0);
     if (!container.contains(range.commonAncestorContainer)) return null;
     if (selectionTouchesEditableElement(container, range)) return null;
+    const snapshot: SelectionSnapshot = {
+      startContainer: range.startContainer,
+      startOffset: range.startOffset,
+      endContainer: range.endContainer,
+      endOffset: range.endOffset,
+      selectedText: range.toString(),
+    };
+    const previous = lastProcessedSelectionRef.current;
+    if (
+      previous
+      && previous.startContainer === snapshot.startContainer
+      && previous.startOffset === snapshot.startOffset
+      && previous.endContainer === snapshot.endContainer
+      && previous.endOffset === snapshot.endOffset
+      && previous.selectedText === snapshot.selectedText
+    ) {
+      return undefined;
+    }
+    lastProcessedSelectionRef.current = snapshot;
+    hasProcessedSelectionRef.current = true;
     const containerOffset = getContainerTextOffset(container, range);
     if (!containerOffset) return null;
     const anchor = buildAnchorFromContainerSelection({ markdown, containerOffset });
     if (!anchor) return null;
-    const overlayRect = overlay.getBoundingClientRect();
-    const rect = range.getBoundingClientRect();
-    const top = Math.max(0, rect.top - overlayRect.top - 36);
-    const left = Math.max(0, rect.left - overlayRect.left + rect.width / 2 - 80);
-    setToolbarPosition({ top, left });
+    toolbarAnchorRangeRef.current = range;
+    positionToolbar(range);
     return {
       selector: anchor.selector,
       selectedText: containerOffset.selectedText,
     };
-  }, [containerRef, markdown]);
+  }, [containerRef, markdown, positionToolbar]);
 
   useEffect(() => {
     if (typeof document === "undefined") return;
-    const handleSelectionChange = () => {
-      const selection = window.getSelection();
-      const range = selection && selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
-      const selectionIsActive = Boolean(
-        selection && !selection.isCollapsed && range && containerRef.current?.contains(range.commonAncestorContainer),
-      );
-      if (selectionDebugEnabled) recordSelectionChange(selectionIsActive);
+    const clearSelectionCaptureTimeout = () => {
+      if (selectionCaptureTimeoutRef.current === null) return;
+      window.clearTimeout(selectionCaptureTimeoutRef.current);
+      selectionCaptureTimeoutRef.current = null;
+    };
+    const clearSelectionGestureIdleTimeout = () => {
+      if (selectionGestureIdleTimeoutRef.current === null) return;
+      window.clearTimeout(selectionGestureIdleTimeoutRef.current);
+      selectionGestureIdleTimeoutRef.current = null;
+    };
+    const setSelectionGestureActiveValue = (active: boolean) => {
+      selectionGestureActiveRef.current = active;
+      setSelectionGestureActive(active);
+    };
+    const settleSelectionGesture = () => {
+      clearSelectionGestureIdleTimeout();
+      setSelectionGestureActiveValue(false);
+      if (pendingHighlightSyncRef.current) computeHighlightRectsRef.current({ force: true });
+    };
+    const scheduleSelectionGestureSettle = (delay: number) => {
+      clearSelectionGestureIdleTimeout();
+      selectionGestureIdleTimeoutRef.current = window.setTimeout(settleSelectionGesture, delay);
+    };
+    const applySelectionChange = () => {
       const captureStartedAt = selectionDebugEnabled ? performance.now() : 0;
       const anchor = captureSelection();
+      if (anchor === undefined) return;
       if (selectionDebugEnabled) {
         recordCaptureSelection(performance.now() - captureStartedAt, Boolean(anchor));
       }
       if (!anchor) {
+        if (hasProcessedSelectionRef.current && lastProcessedSelectionRef.current === null) return;
+        lastProcessedSelectionRef.current = null;
+        hasProcessedSelectionRef.current = true;
+        toolbarAnchorRangeRef.current = null;
         onPendingAnchorChange(null);
         setToolbarPosition(null);
         return;
       }
       onPendingAnchorChange(anchor);
     };
+    const scheduleSelectionCapture = (delay: number) => {
+      clearSelectionCaptureTimeout();
+      selectionCaptureTimeoutRef.current = window.setTimeout(() => {
+        selectionCaptureTimeoutRef.current = null;
+        applySelectionChange();
+      }, delay);
+    };
+    const handleSelectionChange = () => {
+      const selection = window.getSelection();
+      const range = selectionRangeInsideContainer(selection, containerRef.current);
+      const selectionIsActive = Boolean(range);
+      if (selectionDebugEnabled) recordSelectionChange(selectionIsActive);
+      if (selectionIsActive) {
+        setSelectionGestureActiveValue(true);
+        scheduleSelectionGestureSettle(coarsePointer ? COARSE_SELECTION_SETTLE_MS : FINE_SELECTION_SETTLE_MS);
+      } else {
+        settleSelectionGesture();
+      }
+      if (coarsePointer) {
+        scheduleSelectionCapture(COARSE_SELECTION_SETTLE_MS);
+        return;
+      }
+      applySelectionChange();
+    };
+    const handleGestureEnd = () => {
+      if (selectionCaptureTimeoutRef.current === null) return;
+      scheduleSelectionCapture(COARSE_GESTURE_END_CAPTURE_MS);
+    };
     document.addEventListener("selectionchange", handleSelectionChange);
-    return () => document.removeEventListener("selectionchange", handleSelectionChange);
-  }, [captureSelection, containerRef, onPendingAnchorChange, selectionDebugEnabled]);
+    if (coarsePointer) {
+      document.addEventListener("pointerup", handleGestureEnd);
+      document.addEventListener("touchend", handleGestureEnd);
+    }
+    return () => {
+      clearSelectionCaptureTimeout();
+      clearSelectionGestureIdleTimeout();
+      selectionGestureActiveRef.current = false;
+      document.removeEventListener("selectionchange", handleSelectionChange);
+      document.removeEventListener("pointerup", handleGestureEnd);
+      document.removeEventListener("touchend", handleGestureEnd);
+    };
+  }, [captureSelection, coarsePointer, containerRef, onPendingAnchorChange, selectionDebugEnabled]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (captureSelectionRequestId === undefined) return;
     if (captureSelectionRequestId === 0) return;
     if (lastCaptureSelectionRequestIdRef.current === captureSelectionRequestId) return;
     lastCaptureSelectionRequestIdRef.current = captureSelectionRequestId;
     const anchor = captureSelection();
-    if (anchor) {
-      onPendingAnchorChange(anchor);
-      onRequestComment(anchor);
-    }
-  }, [captureSelectionRequestId, captureSelection, onPendingAnchorChange, onRequestComment]);
+    const requestedAnchor = anchor === undefined ? pendingAnchor : anchor;
+    if (!requestedAnchor) return;
+    if (anchor !== undefined) onPendingAnchorChange(anchor);
+    onRequestComment(requestedAnchor);
+  }, [captureSelectionRequestId, captureSelection, onPendingAnchorChange, onRequestComment, pendingAnchor]);
 
   const handleAddComment = () => {
     if (pendingAnchor) onRequestComment(pendingAnchor);
@@ -523,6 +735,7 @@ export function DocumentAnnotationLayer({
             if (rect.threadId === PENDING_HIGHLIGHT_THREAD_ID) return null;
             const isFocused = rect.focused;
             const isHovered = rect.threadId === hoveredThreadId;
+            const hitTargetInteractive = !coarsePointer && !selectionGestureActive;
             return (
               <button
                 key={`${rect.threadId}-${index}`}
@@ -534,9 +747,10 @@ export function DocumentAnnotationLayer({
                 data-hovered={isHovered || undefined}
                 aria-label="Open annotation thread"
                 className={cn(
-                  "paperclip-doc-annotation-hit-target pointer-events-auto absolute cursor-pointer rounded-none bg-transparent transition-colors",
+                  "paperclip-doc-annotation-hit-target absolute rounded-none bg-transparent transition-colors",
+                  hitTargetInteractive ? "pointer-events-auto cursor-pointer" : "pointer-events-none",
                   // Tint the run on hover so it's obvious which highlight you're over.
-                  isHovered && "bg-amber-400/40 dark:bg-amber-300/30",
+                  hitTargetInteractive && isHovered && "bg-amber-400/40 dark:bg-amber-300/30",
                   isFocused && "ring-1 ring-transparent",
                 )}
                 style={{
@@ -549,15 +763,40 @@ export function DocumentAnnotationLayer({
                 onMouseLeave={() =>
                   setHoveredThreadId((current) => (current === rect.threadId ? null : current))
                 }
-                onMouseDown={(event) => {
-                  event.preventDefault();
-                  onThreadFocus(rect.threadId);
-                }}
+                onClick={() => onThreadFocus(rect.threadId)}
               />
             );
           })}
+          {coarsePointer
+            ? highlightRects.map((rect, index) =>
+              rect.isTail && rect.threadId !== PENDING_HIGHLIGHT_THREAD_ID ? (
+                <button
+                  key={`focus-tail-${rect.threadId}-${index}`}
+                  type="button"
+                  data-testid="document-annotation-focus-tail"
+                  data-thread-id={rect.threadId}
+                  aria-label="Open annotation thread"
+                  className="paperclip-doc-annotation-focus-tail pointer-events-auto absolute inline-flex items-center justify-center rounded-sm bg-amber-500/95 text-amber-50 shadow-sm dark:bg-amber-500/90 dark:text-amber-50"
+                  style={{
+                    top: rect.top + Math.max(0, rect.height / 2 - 8),
+                    left: rect.left + rect.width + 2,
+                    width: 16,
+                    height: 16,
+                  }}
+                  title={rect.anchorState === "stale" ? "Anchor moved — needs review" : "Open annotation thread"}
+                  onClick={() => onThreadFocus(rect.threadId)}
+                >
+                  {rect.anchorState === "stale" ? (
+                    <AlertTriangle className="h-3 w-3" />
+                  ) : (
+                    <MessageSquare className="h-3 w-3" />
+                  )}
+                </button>
+              ) : null,
+            )
+            : null}
           {highlightRects.map((rect, index) =>
-            rect.isTail && rect.anchorState === "stale" ? (
+            !coarsePointer && rect.isTail && rect.anchorState === "stale" ? (
               <span
                 key={`tail-${rect.threadId}-${index}`}
                 aria-hidden="true"
@@ -577,6 +816,7 @@ export function DocumentAnnotationLayer({
           )}
           {pendingAnchor && toolbarPosition ? (
             <div
+              ref={toolbarRef}
               data-testid="document-annotation-selection-toolbar"
               role="toolbar"
               aria-label="Selection actions"

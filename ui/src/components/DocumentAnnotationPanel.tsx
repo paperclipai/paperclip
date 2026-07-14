@@ -26,6 +26,7 @@ import { cn, relativeTime } from "@/lib/utils";
 import { documentAnnotationsApi, type DocumentAnnotationTarget } from "@/api/document-annotations";
 import { authApi } from "@/api/auth";
 import { queryKeys } from "@/lib/queryKeys";
+import { isCoarsePointerDevice } from "@/lib/document-annotation-selection";
 import { AgentIcon } from "./AgentIconPicker";
 import { deriveInitials } from "./Identity";
 import { MarkdownBody } from "./MarkdownBody";
@@ -71,6 +72,7 @@ export function DocumentAnnotationPanel(props: AnnotationPanelProps) {
         <SheetContent
           side="bottom"
           showCloseButton={false}
+          onOpenAutoFocus={(event) => event.preventDefault()}
           className="paperclip-doc-annotation-sheet z-(--z-60) flex max-h-(--sz-88vh) flex-col rounded-none border-t border-border bg-popover p-0 text-popover-foreground shadow-2xl"
         >
           <SheetTitle className="sr-only">
@@ -309,9 +311,9 @@ function AnnotationPanelBody(props: AnnotationPanelProps) {
   }, [props.open]);
 
   useEffect(() => {
-    if (props.pendingAnchor && props.open) {
-      composerRef.current?.focus();
-    }
+    if (!props.pendingAnchor || !props.open) return;
+    if (isCoarsePointerDevice()) return;
+    composerRef.current?.focus();
   }, [props.open, props.pendingAnchor]);
 
   // Keep the comment list congruent with the document: when a thread becomes

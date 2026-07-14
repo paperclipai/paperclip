@@ -84,16 +84,44 @@ function createFreshConfigPath() {
 describe("onboard", () => {
   beforeEach(() => {
     process.env = { ...ORIGINAL_ENV };
-    delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
-    delete process.env.PAPERCLIP_SECRETS_MASTER_KEY;
-    delete process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE;
-    delete process.env.PAPERCLIP_HOME;
-    delete process.env.PAPERCLIP_CONFIG;
-    delete process.env.PAPERCLIP_INSTANCE_ID;
-    delete process.env.PAPERCLIP_BIND;
-    delete process.env.PAPERCLIP_BIND_HOST;
-    delete process.env.PAPERCLIP_TAILNET_BIND_HOST;
-    delete process.env.HOST;
+    for (const key of [
+      "BETTER_AUTH_BASE_URL",
+      "BETTER_AUTH_URL",
+      "DATABASE_URL",
+      "HOST",
+      "PAPERCLIP_AGENT_JWT_SECRET",
+      "PAPERCLIP_ALLOWED_HOSTNAMES",
+      "PAPERCLIP_AUTH_BASE_URL_MODE",
+      "PAPERCLIP_AUTH_PUBLIC_BASE_URL",
+      "PAPERCLIP_BIND",
+      "PAPERCLIP_BIND_HOST",
+      "PAPERCLIP_CONFIG",
+      "PAPERCLIP_DB_BACKUP_DIR",
+      "PAPERCLIP_DB_BACKUP_ENABLED",
+      "PAPERCLIP_DB_BACKUP_INTERVAL_MINUTES",
+      "PAPERCLIP_DB_BACKUP_RETENTION_DAYS",
+      "PAPERCLIP_DEPLOYMENT_EXPOSURE",
+      "PAPERCLIP_DEPLOYMENT_MODE",
+      "PAPERCLIP_HOME",
+      "PAPERCLIP_INSTANCE_ID",
+      "PAPERCLIP_PUBLIC_URL",
+      "PAPERCLIP_SECRETS_MASTER_KEY",
+      "PAPERCLIP_SECRETS_MASTER_KEY_FILE",
+      "PAPERCLIP_SECRETS_PROVIDER",
+      "PAPERCLIP_SECRETS_STRICT_MODE",
+      "PAPERCLIP_STORAGE_LOCAL_DIR",
+      "PAPERCLIP_STORAGE_PROVIDER",
+      "PAPERCLIP_STORAGE_S3_BUCKET",
+      "PAPERCLIP_STORAGE_S3_ENDPOINT",
+      "PAPERCLIP_STORAGE_S3_FORCE_PATH_STYLE",
+      "PAPERCLIP_STORAGE_S3_PREFIX",
+      "PAPERCLIP_STORAGE_S3_REGION",
+      "PAPERCLIP_TAILNET_BIND_HOST",
+      "PORT",
+      "SERVE_UI",
+    ]) {
+      delete process.env[key];
+    }
   });
 
   afterEach(() => {

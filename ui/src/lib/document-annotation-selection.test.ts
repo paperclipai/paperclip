@@ -4,6 +4,7 @@ import { verifyDocumentAnchorSelector } from "@paperclipai/shared";
 import {
   buildAnchorFromContainerSelection,
   getContainerTextOffset,
+  isCoarsePointerDevice,
   rangesForNormalizedSpan,
 } from "./document-annotation-selection";
 
@@ -54,6 +55,34 @@ function selectText(container: HTMLElement, needle: string): Range {
   }
   throw new Error(`Could not find "${needle}" in container`);
 }
+
+describe("isCoarsePointerDevice", () => {
+  it("uses the primary pointer media query on hybrid touch laptops", () => {
+    const targetWindow = {
+      navigator: { maxTouchPoints: 5 },
+      matchMedia: (query: string) => ({ matches: query === "(pointer: fine)" }),
+    } as unknown as Window;
+
+    expect(isCoarsePointerDevice(targetWindow)).toBe(false);
+  });
+
+  it("detects coarse primary pointers when media queries are available", () => {
+    const targetWindow = {
+      navigator: { maxTouchPoints: 0 },
+      matchMedia: (query: string) => ({ matches: query === "(pointer: coarse)" }),
+    } as unknown as Window;
+
+    expect(isCoarsePointerDevice(targetWindow)).toBe(true);
+  });
+
+  it("falls back to legacy touch points without matchMedia", () => {
+    const targetWindow = {
+      navigator: { maxTouchPoints: 1 },
+    } as unknown as Window;
+
+    expect(isCoarsePointerDevice(targetWindow)).toBe(true);
+  });
+});
 
 describe("buildAnchorFromContainerSelection", () => {
   it("produces a selector that verifies against the same markdown", () => {

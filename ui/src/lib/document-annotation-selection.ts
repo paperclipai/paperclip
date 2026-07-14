@@ -19,6 +19,22 @@ export interface ContainerTextOffset {
   selectedText: string;
 }
 
+export function isCoarsePointerDevice(targetWindow: Window = window): boolean {
+  const navigatorWithLegacyTouchPoints = targetWindow.navigator as Navigator & {
+    msMaxTouchPoints?: number;
+  };
+  if (typeof targetWindow.matchMedia === "function") {
+    return targetWindow.matchMedia("(pointer: coarse)").matches;
+  }
+  return (navigatorWithLegacyTouchPoints.maxTouchPoints ?? 0) > 0
+    || (navigatorWithLegacyTouchPoints.msMaxTouchPoints ?? 0) > 0;
+}
+
+export function hasActiveNativeSelection(targetWindow: Window = window): boolean {
+  const selection = targetWindow.getSelection();
+  return Boolean(selection && selection.rangeCount > 0 && !selection.isCollapsed);
+}
+
 export function getContainerTextOffset(
   container: HTMLElement,
   range: Range,

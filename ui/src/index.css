@@ -120,6 +120,9 @@
   --paperclip-doc-annotation-highlight-focused: #fde047;
   --paperclip-doc-annotation-highlight-stale: #fef08a;
   --paperclip-doc-annotation-highlight-resolved: #fef9c3;
+  --motion-doc-annotation-toolbar-duration: 120ms;
+  --motion-doc-annotation-toolbar-offset: 4px;
+  --motion-doc-annotation-toolbar-easing: ease-out;
 
   /* Brand agent-capsule gradient stops (paperclip.ing/brand/).
      "The capsule is the agent" — each agent gets a 2-stop gradient,
@@ -262,6 +265,31 @@
 ::highlight(paperclip-doc-annotation-resolved) {
   background-color: var(--paperclip-doc-annotation-highlight-resolved);
   color: inherit;
+}
+
+.paperclip-doc-annotation-selection-toolbar {
+  animation: paperclip-doc-annotation-toolbar-settle var(--motion-doc-annotation-toolbar-duration)
+    var(--motion-doc-annotation-toolbar-easing);
+}
+
+@keyframes paperclip-doc-annotation-toolbar-settle {
+  from {
+    opacity: 0;
+    transform: translateY(var(--motion-doc-annotation-toolbar-offset));
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .paperclip-doc-annotation-selection-toolbar {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
 }
 
 @layer base {
