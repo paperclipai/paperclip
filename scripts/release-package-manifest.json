@@ -107,12 +107,12 @@
   {
     "dir": "packages/google-sheets-mcp-server",
     "name": "@paperclipai/google-sheets-mcp-server",
-    "publishFromCi": true
+    "publishFromCi": false
   },
   {
     "dir": "packages/kv-demo-mcp-server",
     "name": "@paperclipai/kv-demo-mcp-server",
-    "publishFromCi": true
+    "publishFromCi": false
   },
   {
     "dir": "packages/plugins/create-paperclip-plugin",
