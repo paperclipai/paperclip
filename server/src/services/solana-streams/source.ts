@@ -158,13 +158,13 @@ export class SolanaRpcSource implements SolanaStreamSource {
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       if (!this.running) return;
-      this.subscribe().catch((error: Error) => {
-        this.emit({ type: "error", error });
-      });
       this.reconnectDelayMs = Math.min(
         this.reconnectDelayMs * 2,
         this.maxReconnectDelayMs,
       );
+      this.subscribe().catch((error: Error) => {
+        this.emit({ type: "error", error });
+      });
     }, this.reconnectDelayMs);
   }
 
@@ -173,7 +173,7 @@ export class SolanaRpcSource implements SolanaStreamSource {
       maxSupportedTransactionVersion: 0,
       commitment: normalizeFinality(this.connection.commitment as string),
     });
-    if (!block) return;
+    if (!block || !this.running) return;
     this.emit({ type: "block", data: this.mapBlock(block, BigInt(slot)) });
     for (const tx of block.transactions) {
       const parsed = this.mapTransaction(tx, BigInt(slot), block.blockTime ?? null);
@@ -245,7 +245,12 @@ export class SolanaRpcSource implements SolanaStreamSource {
       try {
         await this.connection.removeSlotChangeListener(sub);
       } catch {
-        // ignore
+        // not a slot-change sub — try account-change
+        try {
+          await this.connection.removeAccountChangeListener(sub);
+        } catch {
+          // ignore
+        }
       }
     }
     this.subs = [];

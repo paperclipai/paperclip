@@ -91,6 +91,7 @@ export interface SolanaStream {
   config: SolanaStreamConfig;
   source: SolanaStreamSource;
   subscribers: Set<SolanaStreamSubscriber>;
+  unsubscribe?: () => void;
 }
 
 export interface SolanaStreamManager {

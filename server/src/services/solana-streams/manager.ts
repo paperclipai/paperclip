@@ -26,7 +26,7 @@ export function createSolanaStreamManager(): SolanaStreamManager {
       };
       const combined = createCombinedFilter(config.filters);
 
-      source.onEvent((event: SolanaStreamEvent) => {
+      stream.unsubscribe = source.onEvent((event: SolanaStreamEvent) => {
         if (event.type === "block") {
           if (!combined.block(event.data)) return;
         } else if (event.type === "transaction") {
@@ -51,6 +51,7 @@ export function createSolanaStreamManager(): SolanaStreamManager {
       const stream = streams.get(streamId);
       if (!stream) return;
       await stream.source.stop();
+      stream.unsubscribe?.();
       stream.subscribers.clear();
       streams.delete(streamId);
     },
