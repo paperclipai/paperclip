@@ -849,7 +849,8 @@ Behavior:
   `PAPERCLIP_RUN_ID`; when the wake carries a task (`context.taskId`) or is
   issue-backed (`context.issueId`), also inject `PAPERCLIP_TASK_ID` from the
   wake context (`taskId` takes priority). Adapter-configured env cannot
-  override these identity fields.
+  override these identity fields, and an adapter-configured
+  `PAPERCLIP_TASK_ID` is removed when the wake carries neither value.
 - stream stdout/stderr to run logs
 - mark run status on exit code/timeout
 - cancel sends SIGTERM then SIGKILL after grace
