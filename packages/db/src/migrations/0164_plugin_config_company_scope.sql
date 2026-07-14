@@ -33,6 +33,57 @@ FROM single_company sc
 WHERE pc."company_id" IS NULL
   AND sc."company_count" = 1;--> statement-breakpoint
 
+DROP INDEX IF EXISTS "plugin_config_plugin_id_idx";--> statement-breakpoint
+
+WITH unbound_config AS (
+  SELECT pc.*
+  FROM "plugin_config" pc
+  WHERE pc."company_id" IS NULL
+    AND NOT EXISTS (
+      SELECT 1
+      FROM "company_secret_bindings" csb
+      WHERE csb."target_type" = 'plugin'
+        AND csb."target_id" = pc."plugin_id"::text
+    )
+), primary_company AS (
+  SELECT min("id"::text)::uuid AS company_id
+  FROM "companies"
+)
+INSERT INTO "plugin_config" (
+  "plugin_id",
+  "company_id",
+  "config_json",
+  "last_error",
+  "created_at",
+  "updated_at"
+)
+SELECT
+  uc."plugin_id",
+  c."id",
+  uc."config_json",
+  uc."last_error",
+  uc."created_at",
+  uc."updated_at"
+FROM unbound_config uc
+CROSS JOIN "companies" c
+CROSS JOIN primary_company pc
+WHERE c."id" <> pc."company_id";--> statement-breakpoint
+
+WITH primary_company AS (
+  SELECT min("id"::text)::uuid AS company_id
+  FROM "companies"
+)
+UPDATE "plugin_config" pc
+SET "company_id" = primary_company."company_id"
+FROM primary_company
+WHERE pc."company_id" IS NULL
+  AND NOT EXISTS (
+    SELECT 1
+    FROM "company_secret_bindings" csb
+    WHERE csb."target_type" = 'plugin'
+      AND csb."target_id" = pc."plugin_id"::text
+  );--> statement-breakpoint
+
 DO $$
 DECLARE
   unresolved_count integer;
@@ -61,8 +112,6 @@ BEGIN
       ON DELETE cascade ON UPDATE no action;
   END IF;
 END $$;--> statement-breakpoint
-
-DROP INDEX IF EXISTS "plugin_config_plugin_id_idx";--> statement-breakpoint
 
 CREATE UNIQUE INDEX IF NOT EXISTS "plugin_config_plugin_company_idx"
   ON "plugin_config" USING btree ("plugin_id", "company_id");
