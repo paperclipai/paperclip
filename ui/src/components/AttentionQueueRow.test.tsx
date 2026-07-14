@@ -160,8 +160,10 @@ describe("AttentionQueueRow", () => {
       />,
     );
     // Deep-link cards carry one solid advance verb — "Review" for review rows.
+    // Selected via data-variant: the footer's first anchor is now the 4a
+    // context link, which is a plain link rather than a Button.
     const actionArea = container?.querySelector('[data-attention-actions="true"]');
-    const cta = actionArea?.querySelector("a");
+    const cta = actionArea?.querySelector("a[data-variant]");
     expect(cta?.textContent).toBe("Review");
     expect(cta?.getAttribute("href")).toBe("/PAP/issues/PAP-1");
     expect(cta?.getAttribute("data-variant")).toBe("default");
@@ -325,9 +327,11 @@ describe("AttentionQueueRow", () => {
     // The third verb stays in the expanded resolver — a card carries at most two CTAs.
     expect(decisionActions?.textContent).not.toContain("Request revision");
 
-    // The action bar is a persistent footer-right band at every width (3a).
+    // The footer band now splits context-left / CTAs-right (4a), so the
+    // justify-end contract moved from the outer bar to the CTA group.
     const actionArea = decisionActions?.closest('[data-attention-actions="true"]');
-    expect(actionArea?.getAttribute("class")).toContain("justify-end");
+    expect(actionArea?.getAttribute("class")).toContain("justify-between");
+    expect(decisionActions?.parentElement?.getAttribute("class")).toContain("justify-end");
 
     const rowMenu = container?.querySelector('[aria-label="Row actions"]');
     expect(rowMenu?.closest('[data-attention-menu="true"]')).toBeTruthy();
@@ -584,5 +588,62 @@ describe("AttentionQueueRow", () => {
       />,
     );
     expect(container?.querySelector('[role="button"][aria-expanded]')).toBeNull();
+  });
+
+  it("always shows a footer-left context link named for the source (4a)", () => {
+    render(
+      <AttentionQueueRow
+        item={buildItem()}
+        companyId="c1"
+        expanded={false}
+        onToggleExpand={noop}
+        onDismiss={noop}
+      />,
+    );
+
+    const link = container?.querySelector('[data-attention-context-link="true"]');
+    expect(link?.textContent).toBe("View request→");
+    expect(link?.getAttribute("href")).toBe("/PAP/approvals/approval-1");
+    // Footer-left: the link leads the footer band, ahead of the CTA group.
+    expect(link?.closest('[data-attention-actions="true"]')?.firstElementChild).toBe(link);
+  });
+
+  it("keeps the context link visible while the resolver is expanded", () => {
+    render(
+      <AttentionQueueRow
+        item={buildItem()}
+        companyId="c1"
+        expanded
+        onToggleExpand={noop}
+        onDismiss={noop}
+      />,
+    );
+
+    const link = container?.querySelector('[data-attention-context-link="true"]');
+    expect(link?.textContent).toContain("View request");
+  });
+
+  it("gives curtain rows the context link beside Restore", () => {
+    const onRestore = vi.fn();
+    render(
+      <AttentionQueueRow
+        item={buildItem({
+          dismissal: { kind: "dismiss", dismissedAt: "2026-07-12T12:00:00Z" } as AttentionItem["dismissal"],
+        })}
+        companyId="c1"
+        expanded={false}
+        onToggleExpand={noop}
+        onDismiss={noop}
+        onRestore={onRestore}
+        variant="hidden"
+      />,
+    );
+
+    const link = container?.querySelector('[data-attention-context-link="true"]');
+    expect(link?.getAttribute("href")).toBe("/PAP/approvals/approval-1");
+    const restore = Array.from(container?.querySelectorAll("button") ?? []).find(
+      (button) => button.textContent === "Restore",
+    );
+    expect(restore).toBeTruthy();
   });
 });

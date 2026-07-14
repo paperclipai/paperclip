@@ -124,6 +124,8 @@ describe("sourceMeta", () => {
     for (const kind of kinds) {
       expect(sourceMeta(kind).label.length).toBeGreaterThan(0);
       expect(sourceMeta(kind).icon).toBeTruthy();
+      // 4a footer-left context link: every kind names its destination.
+      expect(sourceMeta(kind).contextLabel).toMatch(/^View /);
     }
   });
 

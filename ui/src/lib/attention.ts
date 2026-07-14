@@ -41,23 +41,29 @@ export function isInlineResolvable(item: AttentionItem): boolean {
 interface SourceMeta {
   label: string;
   icon: LucideIcon;
+  /**
+   * Footer-left context-link label (plan 4a), named for where `subject.href`
+   * actually lands (issue thread, run page, /costs…) so the link never
+   * over-promises relative to its destination.
+   */
+  contextLabel: string;
 }
 
 const SOURCE_META: Record<AttentionSourceKind, SourceMeta> = {
-  approval: { label: "Approval", icon: ShieldCheck },
-  issue_thread_interaction: { label: "Decision requested", icon: MessageSquareQuote },
-  join_request: { label: "Join request", icon: UserPlus },
-  recovery_action: { label: "Recovery", icon: LifeBuoy },
-  productivity_review: { label: "Productivity review", icon: Zap },
-  blocker_attention: { label: "Blocked dependency", icon: Ban },
-  review: { label: "Review", icon: Eye },
-  failed_run: { label: "Failed run", icon: RefreshCw },
-  budget_alert: { label: "Budget", icon: DollarSign },
-  agent_error_alert: { label: "Agent error", icon: AlertTriangle },
+  approval: { label: "Approval", icon: ShieldCheck, contextLabel: "View request" },
+  issue_thread_interaction: { label: "Decision requested", icon: MessageSquareQuote, contextLabel: "View thread" },
+  join_request: { label: "Join request", icon: UserPlus, contextLabel: "View members" },
+  recovery_action: { label: "Recovery", icon: LifeBuoy, contextLabel: "View issue" },
+  productivity_review: { label: "Productivity review", icon: Zap, contextLabel: "View issue" },
+  blocker_attention: { label: "Blocked dependency", icon: Ban, contextLabel: "View issue" },
+  review: { label: "Review", icon: Eye, contextLabel: "View issue" },
+  failed_run: { label: "Failed run", icon: RefreshCw, contextLabel: "View run" },
+  budget_alert: { label: "Budget", icon: DollarSign, contextLabel: "View budget" },
+  agent_error_alert: { label: "Agent error", icon: AlertTriangle, contextLabel: "View agent" },
 };
 
 export function sourceMeta(kind: AttentionSourceKind): SourceMeta {
-  return SOURCE_META[kind] ?? { label: kind.replaceAll("_", " "), icon: AlertTriangle };
+  return SOURCE_META[kind] ?? { label: kind.replaceAll("_", " "), icon: AlertTriangle, contextLabel: "View source" };
 }
 
 /**

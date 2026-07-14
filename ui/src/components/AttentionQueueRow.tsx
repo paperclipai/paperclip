@@ -134,7 +134,11 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
   const showExpandVerb = !expanded && !decisionCtas && inline;
   const showOpen = !isHidden && !decisionCtas && !inline && !!href;
   const showRestore = isHidden && !!onRestore;
-  const showActionBar = showDecision || showExpandVerb || showOpen || showRestore;
+  const showCtas = showDecision || showExpandVerb || showOpen || showRestore;
+  // Context pathway (4a): every card with a source href carries a footer-left
+  // "View …" link — active, expanded, and curtain rows alike — so context is
+  // never buried in the overflow menu.
+  const showActionBar = showCtas || !!href;
 
   return (
     <div
@@ -225,20 +229,15 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
                       <MoreHorizontal className="h-4 w-4" />
                     </Button>
                   </DropdownMenuTrigger>
+                  {/* Deferral verbs only (4a): the context pathway moved to the
+                      always-visible footer-left link, so the menu no longer
+                      hides navigation. */}
                   <DropdownMenuContent align="end">
                     {onSnooze && <SnoozeSubmenu onSnooze={(iso) => onSnooze(item, iso)} />}
                     <DropdownMenuItem onClick={() => onDismiss(item)}>
                       <X className="h-4 w-4" />
                       Dismiss
                     </DropdownMenuItem>
-                    {href && (
-                      <>
-                        <DropdownMenuSeparator />
-                        <DropdownMenuItem asChild>
-                          <Link to={href}>Open source</Link>
-                        </DropdownMenuItem>
-                      </>
-                    )}
                   </DropdownMenuContent>
                 </DropdownMenu>
               )}
@@ -278,37 +277,54 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
             </div>
           )}
 
-          {/* Persistent footer bar (3a): CTAs sit footer-right at one size on
-              every viewport. Sibling of the headline so taps never toggle
-              expand. */}
+          {/* Persistent footer bar: context link left (4a), CTAs right at one
+              size (3a). Sibling of the headline so taps never toggle expand. */}
           {showActionBar && (
             <div
-              className="flex flex-wrap items-center justify-end gap-2"
+              className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2"
               data-attention-actions="true"
             >
-              {(showDecision || showExpandVerb) && (
-                <CompactDecisionActions
-                  item={item}
-                  companyId={companyId}
-                  ctas={decisionCtas}
-                  onOpen={() => onToggleExpand(item)}
-                />
+              {href ? (
+                <Link
+                  to={href}
+                  className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground hover:underline"
+                  data-attention-context-link="true"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  {meta.contextLabel}
+                  <span aria-hidden>→</span>
+                </Link>
+              ) : (
+                <span aria-hidden />
               )}
 
-              {showOpen && (
-                <Button asChild size="sm">
-                  <Link to={href!}>
-                    {item.sourceKind === "review" ? "Review" : "Open"}
-                    <ExternalLink className="h-3.5 w-3.5" />
-                  </Link>
-                </Button>
-              )}
+              {showCtas && (
+                <div className="flex flex-wrap items-center justify-end gap-2">
+                  {(showDecision || showExpandVerb) && (
+                    <CompactDecisionActions
+                      item={item}
+                      companyId={companyId}
+                      ctas={decisionCtas}
+                      onOpen={() => onToggleExpand(item)}
+                    />
+                  )}
 
-              {showRestore && (
-                <Button type="button" variant="outline" size="sm" onClick={() => onRestore(item)}>
-                  <RotateCcw className="h-3.5 w-3.5" />
-                  Restore
-                </Button>
+                  {showOpen && (
+                    <Button asChild size="sm">
+                      <Link to={href!}>
+                        {item.sourceKind === "review" ? "Review" : "Open"}
+                        <ExternalLink className="h-3.5 w-3.5" />
+                      </Link>
+                    </Button>
+                  )}
+
+                  {showRestore && (
+                    <Button type="button" variant="outline" size="sm" onClick={() => onRestore(item)}>
+                      <RotateCcw className="h-3.5 w-3.5" />
+                      Restore
+                    </Button>
+                  )}
+                </div>
               )}
             </div>
           )}
