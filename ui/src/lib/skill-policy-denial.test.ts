@@ -25,13 +25,12 @@ describe("classifySkillDenial", () => {
     expect(classifySkillDenial(apiError(422, { error: "This skill does not support updates." }))).toBeNull();
   });
 
-  it("classifies an explicit company-policy denial as State B (policy)", () => {
+  it("classifies the redacted mutation denial payload as State B (policy)", () => {
     const denial = classifySkillDenial(
       apiError(403, {
         code: SKILL_POLICY_DENIAL_CODE,
         reason: "explicit_rule",
         action: "skills.install",
-        matchedRuleId: "deny-external-packages",
         remediation: "Contact a company administrator to change the skill policy.",
       }),
       "Installing external skills",

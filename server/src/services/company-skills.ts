@@ -690,6 +690,9 @@ function parseGitHubSourceUrl(rawUrl: string) {
   if (url.protocol !== "https:") {
     throw unprocessable("GitHub source URL must use HTTPS");
   }
+  if (url.username || url.password || url.search || url.hash) {
+    throw unprocessable("Remote skill source URLs cannot include credentials, query parameters, or fragments.");
+  }
   const parts = url.pathname.split("/").filter(Boolean);
   if (parts.length < 2) {
     throw unprocessable("Invalid GitHub URL");
@@ -711,6 +714,24 @@ function parseGitHubSourceUrl(rawUrl: string) {
     explicitRef = true;
   }
   return { hostname: url.hostname, owner, repo, ref, basePath, filePath, explicitRef };
+}
+
+function normalizeRemoteSkillImportSource(rawUrl: string) {
+  const url = new URL(rawUrl);
+  if (url.username || url.password || url.search || url.hash) {
+    throw unprocessable("Remote skill source URLs cannot include credentials, query parameters, or fragments.");
+  }
+  if (isGitRepoSkillImportSource(rawUrl)) {
+    const hostname = url.hostname.toLowerCase() === "www.github.com" ? "github.com" : url.hostname.toLowerCase();
+    const segments = url.pathname.split("/").filter(Boolean);
+    if (segments.length >= 2) {
+      const owner = segments[0]!.toLowerCase();
+      const repo = segments[1]!.replace(/\.git$/i, "").toLowerCase();
+      const suffix = segments.slice(2).join("/");
+      return `https://${hostname}/${owner}/${repo}${suffix ? `/${suffix}` : ""}`;
+    }
+  }
+  return url.toString();
 }
 
 async function resolveGitHubPinnedRef(parsed: ReturnType<typeof parseGitHubSourceUrl>) {
@@ -773,10 +794,14 @@ export function parseSkillImportSourceInput(rawInput: string): ParsedSkillImport
   if (!normalizedSource) {
     throw unprocessable("Skill source is required.");
   }
+  const normalizedRemoteSource = /^https?:\/\//i.test(normalizedSource)
+    ? normalizeRemoteSkillImportSource(normalizedSource)
+    : null;
+  const canonicalSource = normalizedRemoteSource ?? normalizedSource;
 
   // Key-style imports (org/repo/skill) originate from the skills.sh registry
-  if (!/^https?:\/\//i.test(normalizedSource) && /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(normalizedSource)) {
-    const [owner, repo, skillSlugRaw] = normalizedSource.split("/");
+  if (!/^https?:\/\//i.test(canonicalSource) && /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(canonicalSource)) {
+    const [owner, repo, skillSlugRaw] = canonicalSource.split("/");
     return {
       resolvedSource: `https://github.com/${owner}/${repo}`,
       requestedSkillSlug: normalizeSkillSlug(skillSlugRaw),
@@ -785,9 +810,9 @@ export function parseSkillImportSourceInput(rawInput: string): ParsedSkillImport
     };
   }
 
-  if (!/^https?:\/\//i.test(normalizedSource) && /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(normalizedSource)) {
+  if (!/^https?:\/\//i.test(canonicalSource) && /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(canonicalSource)) {
     return {
-      resolvedSource: `https://github.com/${normalizedSource}`,
+      resolvedSource: `https://github.com/${canonicalSource}`,
       requestedSkillSlug,
       originalSkillsShUrl: null,
       warnings,
@@ -795,25 +820,25 @@ export function parseSkillImportSourceInput(rawInput: string): ParsedSkillImport
   }
 
   // Detect skills.sh URLs and resolve to GitHub: https://skills.sh/org/repo/skill → org/repo/skill key
-  const skillsShMatch = normalizedSource.match(/^https?:\/\/(?:www\.)?skills\.sh\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)(?:\/([A-Za-z0-9_.-]+))?(?:[?#].*)?$/i);
+  const skillsShMatch = canonicalSource.match(/^https?:\/\/(?:www\.)?skills\.sh\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)(?:\/([A-Za-z0-9_.-]+))?$/i);
   if (skillsShMatch) {
     const [, owner, repo, skillSlugRaw] = skillsShMatch;
     return {
       resolvedSource: `https://github.com/${owner}/${repo}`,
       requestedSkillSlug: skillSlugRaw ? normalizeSkillSlug(skillSlugRaw) : requestedSkillSlug,
-      originalSkillsShUrl: normalizedSource,
+      originalSkillsShUrl: canonicalSource,
       warnings,
     };
   }
 
-  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(normalizedSource) && !/^https:\/\//i.test(normalizedSource)) {
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(canonicalSource) && !/^https:\/\//i.test(canonicalSource)) {
     throw unprocessable("Remote skill sources must use HTTPS", {
       code: "skill_source_validation_failed",
     });
   }
 
   return {
-    resolvedSource: normalizedSource,
+    resolvedSource: canonicalSource,
     requestedSkillSlug,
     originalSkillsShUrl: null,
     warnings,

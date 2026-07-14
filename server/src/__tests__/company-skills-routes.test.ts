@@ -108,6 +108,15 @@ function denySkillChangeDecision(reason = "deny_no_grant", explanation = "Missin
   };
 }
 
+function denyTaskAssignDecision(reason = "deny_missing_grant", explanation = "Missing permission: tasks:assign") {
+  return {
+    allowed: false,
+    action: "tasks:assign",
+    reason,
+    explanation,
+  };
+}
+
 function denySkillPolicy(action = "skills.import") {
   return {
     allowed: false,
@@ -791,15 +800,36 @@ describe("company skill mutation permissions", () => {
       .send({ source: "https://packages.example.com/skill.tgz" });
 
     expect(res.status, JSON.stringify(res.body)).toBe(403);
-    expect(res.body).toMatchObject({
+    expect(res.body).toEqual({
+      error: "Skill action denied by company policy",
       code: "skill_policy_denied",
-      details: {
-        action: "skills.import",
-        reason: "explicit_rule",
-        matchedRuleId: "deny-external",
-        policyRevision: 4,
-      },
+      reason: "explicit_rule",
+      remediation: "Contact a company administrator to change the skill policy.",
     });
+    expect(JSON.stringify(res.body)).not.toContain("deny-external");
+    expect(JSON.stringify(res.body)).not.toContain("policyRevision");
+    expect(mockCompanySkillService.importFromSource).not.toHaveBeenCalled();
+  });
+
+  it("rejects secret-bearing remote import URLs without echoing the secret", async () => {
+    const source = "https://github.com/acme/private-skill?token=secret#token=secret";
+
+    const res = await request(await createApp({
+      type: "board",
+      userId: "local-board",
+      companyIds: ["company-1"],
+      source: "local_implicit",
+      isInstanceAdmin: false,
+    }))
+      .post("/api/companies/company-1/skills/import")
+      .send({ source });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body).toEqual({
+      error: "Remote skill source URLs cannot include credentials, query parameters, or fragments.",
+    });
+    expect(JSON.stringify(res.body)).not.toContain("secret");
+    expect(mockCompanySkillPolicyService.evaluate).not.toHaveBeenCalled();
     expect(mockCompanySkillService.importFromSource).not.toHaveBeenCalled();
   });
 
@@ -1048,6 +1078,35 @@ describe("company skill mutation permissions", () => {
     expect(mockCatalogService.listCatalogSkillsOrEmpty).not.toHaveBeenCalled();
     expect(mockCatalogService.getCatalogSkillOrThrow).not.toHaveBeenCalled();
     expect(mockCatalogService.readCatalogSkillFile).not.toHaveBeenCalled();
+  });
+
+  it("rejects unauthenticated skill imports before parsing source details", async () => {
+    const app = await createApp({ type: "none" });
+
+    const res = await request(app)
+      .post("/api/companies/company-1/skills/import")
+      .send({ source: "https://github.com/acme/private-skill?token=secret#token=secret" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(401);
+    expect(res.body).toEqual({ error: "Authentication required" });
+    expect(JSON.stringify(res.body)).not.toContain("secret");
+    expect(mockAccessService.decide).not.toHaveBeenCalled();
+    expect(mockCompanySkillPolicyService.evaluate).not.toHaveBeenCalled();
+    expect(mockCompanySkillService.importFromSource).not.toHaveBeenCalled();
+  });
+
+  it("rejects unauthenticated skill edits before loading stored policy resources", async () => {
+    const app = await createApp({ type: "none" });
+
+    const res = await request(app)
+      .patch("/api/companies/company-1/skills/skill-1")
+      .send({ description: "Updated" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(401);
+    expect(res.body).toEqual({ error: "Authentication required" });
+    expect(mockCompanySkillService.getById).not.toHaveBeenCalled();
+    expect(mockCompanySkillPolicyService.evaluate).not.toHaveBeenCalled();
+    expect(mockCompanySkillService.updateSkill).not.toHaveBeenCalled();
   });
 
   it("serves catalog detail and files by catalog reference", async () => {
@@ -1820,11 +1879,18 @@ describe("company skill mutation permissions", () => {
     ["cancel", "post", "/api/companies/company-1/skills/skill-1/test-runs/22222222-2222-4222-8222-222222222222/cancel"],
     ["delete", "delete", "/api/companies/company-1/skills/skill-1/test-runs/22222222-2222-4222-8222-222222222222"],
   ] as const)("denies agents without tasks:assign permission from %s test runs", async (_operation, method, path) => {
-    mockAgentService.getById.mockResolvedValueOnce({
-      id: "agent-1",
-      companyId: "company-1",
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => {
+      if (input.action === "tasks:assign") return denyTaskAssignDecision();
+      return allowSkillChangeDecision();
     });
-    mockAccessService.hasPermission.mockResolvedValueOnce(false);
+    mockCompanySkillService.getTestRunDetail.mockResolvedValue({
+      id: "22222222-2222-4222-8222-222222222222",
+      companyId: "company-1",
+      skillId: "skill-1",
+      issueId: "44444444-4444-4444-8444-444444444444",
+      agentId: "55555555-5555-4555-8555-555555555555",
+      status: "queued",
+    });
 
     const app = await createApp({
       type: "agent",
@@ -1845,12 +1911,13 @@ describe("company skill mutation permissions", () => {
     expect(mockCompanySkillPolicyService.evaluate).toHaveBeenCalledWith(expect.objectContaining({
       action: "skills.test",
     }));
-    expect(mockAccessService.hasPermission).toHaveBeenCalledWith(
-      "company-1",
-      "agent",
-      "agent-1",
-      "tasks:assign",
-    );
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
+      action: "tasks:assign",
+      resource: expect.objectContaining({
+        type: "issue",
+        companyId: "company-1",
+      }),
+    }));
     expect(mockCompanySkillService.createTestRun).not.toHaveBeenCalled();
     expect(mockCompanySkillService.cancelTestRun).not.toHaveBeenCalled();
     expect(mockCompanySkillService.deleteTestRun).not.toHaveBeenCalled();
