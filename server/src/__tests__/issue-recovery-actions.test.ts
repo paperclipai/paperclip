@@ -11,6 +11,7 @@ import {
   createDb,
   environmentLeases,
   environments,
+  heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
   issueRecoveryActions,
@@ -25,6 +26,22 @@ import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
 import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
 import { recoveryService } from "../services/recovery/service.js";
+
+const mockRouteHeartbeatService = vi.hoisted(() => ({
+  cancelRun: vi.fn(async () => null),
+  reportRunActivity: vi.fn(async () => undefined),
+  retryScheduledRetryNow: vi.fn(async () => ({ outcome: "noop", message: "noop", scheduledRetry: null })),
+  triggerIssueMonitor: vi.fn(async () => null),
+  wakeup: vi.fn(async () => null),
+}));
+
+vi.mock(
+  "../services/index.js",
+  async (importOriginal: () => Promise<typeof import("../services/index.js")>) => {
+    const actual = await importOriginal();
+    return { ...actual, heartbeatService: () => mockRouteHeartbeatService };
+  },
+);
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -136,6 +153,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     await db.delete(issueComments);
     await db.delete(environmentLeases);
     await db.delete(activityLog);
+    await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(environments);
@@ -1271,5 +1289,166 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       .from(issueRecoveryActions)
       .where(eq(issueRecoveryActions.id, action.id));
     expect(actionRow?.status).toBe("active");
+  });
+
+  it("allows the named recovery owner to clear stale blockers without taking issue ownership", async () => {
+    const { companyId, coderId, sourceIssueId, prefix } = await seedCompany();
+    await db
+      .update(issues)
+      .set({ status: "blocked" })
+      .where(eq(issues.id, sourceIssueId));
+    const recoveryOwnerAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: recoveryOwnerAgentId,
+      companyId,
+      name: "Recovery Owner",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const recoveryActionSvc = issueRecoveryActionService(db);
+    await recoveryActionSvc.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "issue_graph_liveness",
+      ownerType: "agent",
+      ownerAgentId: recoveryOwnerAgentId,
+      cause: "issue_graph_liveness",
+      fingerprint: "graph-liveness:recovery-owner-clear",
+      evidence: { latestIssueStatus: "blocked" },
+      nextAction: "Clear the stale blockers.",
+      wakePolicy: { type: "manual" },
+    });
+    const runId = randomUUID();
+    await seedHeartbeatRun({ companyId, agentId: recoveryOwnerAgentId, runId, issueId: sourceIssueId });
+    const app = createApp({
+      type: "agent",
+      agentId: recoveryOwnerAgentId,
+      companyId,
+      runId,
+      source: "agent_jwt",
+    });
+
+    const patched = await request(app)
+      .patch(`/api/issues/${sourceIssueId}`)
+      .send({ blockedByIssueIds: [], status: "todo", comment: "cleared" })
+      .expect(200);
+
+    expect(patched.body).toMatchObject({
+      id: sourceIssueId,
+      status: "todo",
+    });
+    expect(patched.body.assigneeAgentId).toBe(coderId);
+  });
+
+  it("rejects an ordinary agent from patching another assignee's issue with recovery-path fields only", async () => {
+    const { companyId, sourceIssueId, prefix } = await seedCompany();
+    await db
+      .update(issues)
+      .set({ status: "blocked" })
+      .where(eq(issues.id, sourceIssueId));
+    const recoveryOwnerAgentId = randomUUID();
+    const thirdAgentId = randomUUID();
+    await db.insert(agents).values([
+      {
+        id: recoveryOwnerAgentId,
+        companyId,
+        name: "Recovery Owner",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: thirdAgentId,
+        companyId,
+        name: "Third Agent",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    const recoveryActionSvc = issueRecoveryActionService(db);
+    await recoveryActionSvc.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "issue_graph_liveness",
+      ownerType: "agent",
+      ownerAgentId: recoveryOwnerAgentId,
+      cause: "issue_graph_liveness",
+      fingerprint: "graph-liveness:third-agent-rejected",
+      evidence: { latestIssueStatus: "blocked" },
+      nextAction: "Clear the stale blockers.",
+      wakePolicy: { type: "manual" },
+    });
+    const runId = randomUUID();
+    await seedHeartbeatRun({ companyId, agentId: thirdAgentId, runId, issueId: sourceIssueId });
+    const app = createApp({
+      type: "agent",
+      agentId: thirdAgentId,
+      companyId,
+      runId,
+      source: "agent_jwt",
+    });
+
+    await request(app)
+      .patch(`/api/issues/${sourceIssueId}`)
+      .send({ blockedByIssueIds: [], status: "todo", comment: "cleared" })
+      .expect(403);
+  });
+
+  it("rejects a recovery-path PATCH if the body also contains non-recovery fields", async () => {
+    const { companyId, sourceIssueId, prefix } = await seedCompany();
+    await db
+      .update(issues)
+      .set({ status: "blocked" })
+      .where(eq(issues.id, sourceIssueId));
+    const recoveryOwnerAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: recoveryOwnerAgentId,
+      companyId,
+      name: "Recovery Owner",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const recoveryActionSvc = issueRecoveryActionService(db);
+    await recoveryActionSvc.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "issue_graph_liveness",
+      ownerType: "agent",
+      ownerAgentId: recoveryOwnerAgentId,
+      cause: "issue_graph_liveness",
+      fingerprint: "graph-liveness:non-recovery-field-rejected",
+      evidence: { latestIssueStatus: "blocked" },
+      nextAction: "Clear the stale blockers.",
+      wakePolicy: { type: "manual" },
+    });
+    const runId = randomUUID();
+    await seedHeartbeatRun({ companyId, agentId: recoveryOwnerAgentId, runId, issueId: sourceIssueId });
+    const app = createApp({
+      type: "agent",
+      agentId: recoveryOwnerAgentId,
+      companyId,
+      runId,
+      source: "agent_jwt",
+    });
+
+    await request(app)
+      .patch(`/api/issues/${sourceIssueId}`)
+      .send({ blockedByIssueIds: [], status: "todo", comment: "cleared", title: "new title" })
+      .expect(403);
   });
 });

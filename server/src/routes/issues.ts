@@ -3392,6 +3392,28 @@ export function issueRoutes(
     return decision.allowed;
   }
 
+  async function agentHasRecoveryActionAuthority(
+    req: Request,
+    issue: { companyId: string; assigneeAgentId: string | null },
+    activeRecoveryAction: Awaited<ReturnType<typeof recoveryActionsSvc.getActiveForIssue>> | null,
+  ) {
+    if (!activeRecoveryAction) return false;
+    const actorAgentId = req.actor.agentId;
+    if (!actorAgentId) return false;
+    if (issue.assigneeAgentId === actorAgentId) return true;
+    if (
+      issue.assigneeAgentId &&
+      await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, issue.assigneeAgentId)
+    ) {
+      return true;
+    }
+    if (activeRecoveryAction.ownerAgentId === actorAgentId) return true;
+    return Boolean(
+      activeRecoveryAction.ownerAgentId &&
+      await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, activeRecoveryAction.ownerAgentId)
+    );
+  }
+
   async function assertAgentIssueMutationAllowed(
     req: Request,
     res: Response,
@@ -3404,12 +3426,24 @@ export function issueRoutes(
       assigneeAgentId: string | null;
       assigneeUserId: string | null;
     },
+    options: {
+      activeRecoveryAction?: Awaited<ReturnType<typeof recoveryActionsSvc.getActiveForIssue>> | null;
+      allowRecoveryActionAuthority?: boolean;
+    } = {},
   ) {
     if (req.actor.type !== "agent") return true;
     const actorAgentId = req.actor.agentId;
     if (!actorAgentId) {
       res.status(403).json({ error: "Agent authentication required" });
       return false;
+    }
+    const isIssueAssignee = issue.assigneeAgentId === actorAgentId;
+    if (
+      options.allowRecoveryActionAuthority === true &&
+      !isIssueAssignee &&
+      await agentHasRecoveryActionAuthority(req, issue, options.activeRecoveryAction ?? null)
+    ) {
+      return true;
     }
     // Task-watchdog runs receive a scoped *grant* to mutate issues inside the
     // watched subtree. This must be evaluated before the base assignee-ownership
@@ -3442,7 +3476,7 @@ export function issueRoutes(
     if (issue.assigneeAgentId === null) {
       return true;
     }
-    if (issue.assigneeAgentId !== actorAgentId) {
+    if (!isIssueAssignee) {
       if (await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, issue.assigneeAgentId)) {
         return true;
       }
@@ -4078,20 +4112,7 @@ export function issueRoutes(
       res.status(403).json({ error: "Agent authentication required" });
       return false;
     }
-    if (issue.assigneeAgentId === actorAgentId) return true;
-    if (
-      issue.assigneeAgentId &&
-      await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, issue.assigneeAgentId)
-    ) {
-      return true;
-    }
-    if (activeRecoveryAction.ownerAgentId === actorAgentId) return true;
-    if (
-      activeRecoveryAction.ownerAgentId &&
-      await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, activeRecoveryAction.ownerAgentId)
-    ) {
-      return true;
-    }
+    if (await agentHasRecoveryActionAuthority(req, issue, activeRecoveryAction)) return true;
 
     res.status(403).json({
       error: "Agent cannot resolve another owner's recovery action",
@@ -5413,8 +5434,15 @@ export function issueRoutes(
       return;
     }
     assertCompanyAccess(req, existing.companyId);
-    if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
     const activeRecoveryAction = await recoveryActionsSvc.getActiveForIssue(existing.companyId, existing.id);
+    if (
+      !(await assertAgentIssueMutationAllowed(req, res, existing, {
+        activeRecoveryAction,
+        allowRecoveryActionAuthority: true,
+      }))
+    ) {
+      return;
+    }
     if (
       !(await assertRecoveryActionAuthority(
         req,
@@ -7535,6 +7563,13 @@ export function issueRoutes(
     res.json(result);
   });
 
+  function isRecoveryOwnerSourceIssuePatchRequest(body: Record<string, unknown>) {
+    const allowedKeys = new Set(["blockedByIssueIds", "comment", "status"]);
+    const keys = Object.keys(body);
+    if (!keys.some((key) => key === "blockedByIssueIds" || key === "status")) return false;
+    return keys.every((key) => allowedKeys.has(key));
+  }
+
   router.patch("/issues/:id", validate(updateIssueRouteSchema), async (req, res) => {
     const id = req.params.id as string;
     const existing = await svc.getById(id);
@@ -7544,7 +7579,25 @@ export function issueRoutes(
     }
     assertCompanyAccess(req, existing.companyId);
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
-    if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+    const sourceMutationTouchesRecoveryPath =
+      req.body.status !== undefined ||
+      req.body.assigneeAgentId !== undefined ||
+      req.body.assigneeUserId !== undefined ||
+      Array.isArray(req.body.blockedByIssueIds) ||
+      req.body.executionPolicy !== undefined ||
+      req.body.resume === true ||
+      req.body.reopen === true;
+    const activeRecoveryActionBeforeUpdate = sourceMutationTouchesRecoveryPath
+      ? await recoveryActionsSvc.getActiveForIssue(existing.companyId, existing.id)
+      : null;
+    if (
+      !(await assertAgentIssueMutationAllowed(req, res, existing, {
+        activeRecoveryAction: activeRecoveryActionBeforeUpdate,
+        allowRecoveryActionAuthority: isRecoveryOwnerSourceIssuePatchRequest(req.body),
+      }))
+    ) {
+      return;
+    }
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
 
     const actor = getActorInfo(req);
@@ -7597,9 +7650,6 @@ export function issueRoutes(
       Array.isArray(req.body.blockedByIssueIds) ||
       req.body.executionPolicy !== undefined ||
       explicitMoveToTodoRequested;
-    const activeRecoveryActionBeforeUpdate = recoveryRelevantSourceMutationRequested
-      ? await recoveryActionsSvc.getActiveForIssue(existing.companyId, existing.id)
-      : null;
     if (
       recoveryRelevantSourceMutationRequested &&
       !(await assertRecoveryActionAuthority(
