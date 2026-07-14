@@ -659,6 +659,7 @@ export const SECRET_BINDING_TARGET_TYPES = [
   "plugin",
   "issue",
   "run",
+  "tool_connection",
   "system",
 ] as const;
 export type SecretBindingTargetType = (typeof SECRET_BINDING_TARGET_TYPES)[number];
@@ -673,6 +674,55 @@ export const SECRET_ACCESS_OUTCOMES = [
   "provider_error",
 ] as const;
 export type SecretAccessOutcome = (typeof SECRET_ACCESS_OUTCOMES)[number];
+
+export const SECRET_PROJECTION_CLASSES = ["unclassified", "class_3_static_lease"] as const;
+export type SecretProjectionClass = (typeof SECRET_PROJECTION_CLASSES)[number];
+
+export const CLASS3_STATIC_LEASE_ALLOWLIST = [
+  {
+    key: "slack.bot_token",
+    label: "Slack bot token",
+    targetType: "agent",
+    configPath: "env.SLACK_BOT_TOKEN",
+    envKey: "SLACK_BOT_TOKEN",
+  },
+  {
+    key: "slack.bot_token",
+    label: "Slack bot token",
+    targetType: "routine",
+    configPath: "env.SLACK_BOT_TOKEN",
+    envKey: "SLACK_BOT_TOKEN",
+  },
+  {
+    key: "slack.bot_token",
+    label: "Slack bot token governance connection",
+    targetType: "tool_connection",
+    configPath: "credentials.bot_token",
+    envKey: "SLACK_BOT_TOKEN",
+  },
+  {
+    key: "discord.bot_token",
+    label: "Discord bot token",
+    targetType: "agent",
+    configPath: "env.DISCORD_BOT_TOKEN",
+    envKey: "DISCORD_BOT_TOKEN",
+  },
+  {
+    key: "discord.bot_token",
+    label: "Discord bot token",
+    targetType: "routine",
+    configPath: "env.DISCORD_BOT_TOKEN",
+    envKey: "DISCORD_BOT_TOKEN",
+  },
+  {
+    key: "discord.bot_token",
+    label: "Discord bot token governance connection",
+    targetType: "tool_connection",
+    configPath: "credentials.bot_token",
+    envKey: "DISCORD_BOT_TOKEN",
+  },
+] as const;
+export type Class3StaticLeaseAllowlistKey = (typeof CLASS3_STATIC_LEASE_ALLOWLIST)[number]["key"];
 
 export const STORAGE_PROVIDERS = ["local_disk", "s3"] as const;
 export type StorageProvider = (typeof STORAGE_PROVIDERS)[number];
@@ -860,6 +910,12 @@ export const PERMISSION_KEYS = [
   "skills:create",
   "skills:suggest-changes",
   "environments:manage",
+  "tools:admin",
+  "tools:manage_connections",
+  "tools:manage_profiles",
+  "tools:view_audit",
+  "tools:use",
+  "tools:manage_runtime",
   "users:invite",
   "users:manage_permissions",
   "tasks:assign",
@@ -869,6 +925,235 @@ export const PERMISSION_KEYS = [
   "joins:approve",
 ] as const;
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];
+
+export const TOOL_APPLICATION_TYPES = ["mcp_http", "mcp_stdio", "paperclip_plugin", "a2a"] as const;
+export type ToolApplicationType = (typeof TOOL_APPLICATION_TYPES)[number];
+
+export const TOOL_APPLICATION_STATUSES = ["draft", "active", "disabled", "archived"] as const;
+export type ToolApplicationStatus = (typeof TOOL_APPLICATION_STATUSES)[number];
+
+export const TOOL_CONNECTION_KINDS = ["managed"] as const;
+export type ToolConnectionKind = (typeof TOOL_CONNECTION_KINDS)[number];
+
+export const TOOL_CONNECTION_HEALTH_STATUSES = [
+  "unknown",
+  "healthy",
+  "degraded",
+  "failed",
+  "unchecked",
+  "ok",
+  "error",
+  "missing_secret",
+] as const;
+export type ToolConnectionHealthStatus = (typeof TOOL_CONNECTION_HEALTH_STATUSES)[number];
+
+/**
+ * Health states that mean an app needs the user's attention (a bad/missing key
+ * or a degraded connection). Single source of truth shared by the needs-
+ * attention aggregation and the prosumer Apps surfaces so their counts agree.
+ */
+export const TOOL_CONNECTION_ATTENTION_HEALTH_STATUSES: readonly ToolConnectionHealthStatus[] = [
+  "degraded",
+  "failed",
+  "error",
+  "missing_secret",
+];
+
+export function isToolConnectionAttentionHealth(status: ToolConnectionHealthStatus): boolean {
+  return TOOL_CONNECTION_ATTENTION_HEALTH_STATUSES.includes(status);
+}
+
+export const TOOL_CATALOG_ENTRY_KINDS = ["tool", "resource", "prompt"] as const;
+export type ToolCatalogEntryKind = (typeof TOOL_CATALOG_ENTRY_KINDS)[number];
+
+export const TOOL_CATALOG_ENTRY_STATUSES = ["active", "disabled", "quarantined", "removed"] as const;
+export type ToolCatalogEntryStatus = (typeof TOOL_CATALOG_ENTRY_STATUSES)[number];
+
+export const TOOL_RISK_LEVELS = ["low", "medium", "high", "critical", "read", "write", "destructive"] as const;
+export type ToolRiskLevel = (typeof TOOL_RISK_LEVELS)[number];
+
+export const TOOL_PROFILE_STATUSES = ["draft", "active", "disabled", "archived"] as const;
+export type ToolProfileStatus = (typeof TOOL_PROFILE_STATUSES)[number];
+
+export const TOOL_PROFILE_DEFAULT_ACTIONS = ["deny", "allow"] as const;
+export type ToolProfileDefaultAction = (typeof TOOL_PROFILE_DEFAULT_ACTIONS)[number];
+
+export const TOOL_PROFILE_ENTRY_SELECTOR_TYPES = [
+  "application",
+  "connection",
+  "catalog_entry",
+  "tool_name",
+  "risk_level",
+] as const;
+export type ToolProfileEntrySelectorType = (typeof TOOL_PROFILE_ENTRY_SELECTOR_TYPES)[number];
+
+export const TOOL_PROFILE_ENTRY_EFFECTS = ["include", "exclude"] as const;
+export type ToolProfileEntryEffect = (typeof TOOL_PROFILE_ENTRY_EFFECTS)[number];
+
+export const TOOL_PROFILE_BINDING_TARGET_TYPES = ["company", "agent", "project", "routine", "issue", "gateway"] as const;
+export type ToolProfileBindingTargetType = (typeof TOOL_PROFILE_BINDING_TARGET_TYPES)[number];
+
+export const TOOL_MCP_GATEWAY_STATUSES = ["draft", "active", "disabled", "archived"] as const;
+export type ToolMcpGatewayStatus = (typeof TOOL_MCP_GATEWAY_STATUSES)[number];
+
+export const TOOL_MCP_GATEWAY_DEFAULT_PROFILE_MODES = [
+  "gateway_only",
+  "inherit_context_then_gateway",
+  "gateway_then_context",
+] as const;
+export type ToolMcpGatewayDefaultProfileMode = (typeof TOOL_MCP_GATEWAY_DEFAULT_PROFILE_MODES)[number];
+
+export const TOOL_MCP_GATEWAY_CONTEXT_SCOPE_TYPES = [
+  "none",
+  "company",
+  "project",
+  "routine",
+  "issue",
+  "agent",
+] as const;
+export type ToolMcpGatewayContextScopeType = (typeof TOOL_MCP_GATEWAY_CONTEXT_SCOPE_TYPES)[number];
+
+export const TOOL_MCP_GATEWAY_TOKEN_SUBJECT_TYPES = ["gateway_client", "heartbeat_run", "board_user", "agent"] as const;
+export type ToolMcpGatewayTokenSubjectType = (typeof TOOL_MCP_GATEWAY_TOKEN_SUBJECT_TYPES)[number];
+
+export const TOOL_MCP_GATEWAY_TOKEN_ACTIONS = ["tools/list", "tools/call"] as const;
+export type ToolMcpGatewayTokenAction = (typeof TOOL_MCP_GATEWAY_TOKEN_ACTIONS)[number];
+
+export const CONNECTION_TOKEN_ISSUANCE_PATHS = ["exchange", "oauth_access", "static"] as const;
+export type ConnectionTokenIssuancePath = (typeof CONNECTION_TOKEN_ISSUANCE_PATHS)[number];
+
+export const CONNECTION_TOKEN_ISSUANCE_OUTCOMES = [
+  "success",
+  "denied",
+  "rate_limited",
+  "use_env_lease",
+  "upstream_error",
+  "failure",
+] as const;
+export type ConnectionTokenIssuanceOutcome = (typeof CONNECTION_TOKEN_ISSUANCE_OUTCOMES)[number];
+
+export const TOOL_POLICY_TYPES = [
+  "allow",
+  "block",
+  "require_approval",
+  "trust_rule",
+  "rate_limit",
+] as const;
+export type ToolPolicyType = (typeof TOOL_POLICY_TYPES)[number];
+
+export const TOOL_POLICY_DECISIONS = ["allow", "deny", "require_approval", "rate_limited", "defer_runtime"] as const;
+export type ToolPolicyDecision = (typeof TOOL_POLICY_DECISIONS)[number];
+
+export const TOOL_INVOCATION_STATUSES = [
+  "pending",
+  "authorized",
+  "denied",
+  "awaiting_approval",
+  "executing",
+  "succeeded",
+  "failed",
+  "cancelled",
+  "timed_out",
+  "rate_limited",
+] as const;
+export type ToolInvocationStatus = (typeof TOOL_INVOCATION_STATUSES)[number];
+
+export const TOOL_INVOCATION_APPROVAL_STATES = [
+  "not_required",
+  "required",
+  "pending",
+  "approved",
+  "rejected",
+  "expired",
+] as const;
+export type ToolInvocationApprovalState = (typeof TOOL_INVOCATION_APPROVAL_STATES)[number];
+
+export const TOOL_ACTION_REQUEST_STATUSES = [
+  "pending",
+  "approved",
+  "executing",
+  "rejected",
+  "expired",
+  "cancelled",
+  "executed",
+  "failed",
+] as const;
+export type ToolActionRequestStatus = (typeof TOOL_ACTION_REQUEST_STATUSES)[number];
+
+export const TOOL_AUDIT_EVENT_TYPES = [
+  "discovery",
+  "policy_decision",
+  "invocation_created",
+  "call_started",
+  "call_completed",
+  "call_failed",
+  "call_denied",
+  "approval_requested",
+  "approval_resolved",
+  "session_revoked",
+  "trust_rule_created",
+  "trust_rule_revoked",
+  "trust_rule_used",
+  "runtime_started",
+  "runtime_stopped",
+  "rate_limited",
+] as const;
+export type ToolAuditEventType = (typeof TOOL_AUDIT_EVENT_TYPES)[number];
+
+export const TOOL_AUDIT_OUTCOMES = ["pending", "success", "failure", "denied", "timeout", "cancelled"] as const;
+export type ToolAuditOutcome = (typeof TOOL_AUDIT_OUTCOMES)[number];
+
+/**
+ * Connection-level lifecycle events surfaced on the per-app Activity tab
+ * alongside tool-call events (PAP-11284). These are derived from the
+ * company activity log rows scoped to a single tool connection.
+ */
+export const TOOL_CONNECTION_LIFECYCLE_EVENT_TYPES = [
+  "app_connected",
+  "app_paused",
+  "app_resumed",
+  "allowlist_changed",
+  "reconnected",
+  "disconnected",
+  "actions_quarantined",
+] as const;
+export type ToolConnectionLifecycleEventType = (typeof TOOL_CONNECTION_LIFECYCLE_EVENT_TYPES)[number];
+
+export const TOOL_RUNTIME_KINDS = ["remote_session", "local_stdio"] as const;
+export type ToolRuntimeKind = (typeof TOOL_RUNTIME_KINDS)[number];
+
+export const TOOL_RUNTIME_SLOT_STATUSES = ["starting", "running", "idle", "stopped", "failed", "disabled", "error"] as const;
+export type ToolRuntimeSlotStatus = (typeof TOOL_RUNTIME_SLOT_STATUSES)[number];
+
+export const TOOL_RATE_LIMIT_WINDOW_KINDS = ["minute", "hour", "day", "month"] as const;
+export type ToolRateLimitWindowKind = (typeof TOOL_RATE_LIMIT_WINDOW_KINDS)[number];
+
+export const TOOL_ACCESS_ACTIVITY_ACTIONS = [
+  "tool_application.created",
+  "tool_application.updated",
+  "tool_application.archived",
+  "tool_connection.created",
+  "tool_connection.updated",
+  "tool_connection.tested",
+  "tool_connection.catalog_refreshed",
+  "tool_profile.created",
+  "tool_profile.updated",
+  "tool_profile.duplicated",
+  "tool_profile.deleted",
+  "tool_profile.new_tools_reviewed",
+  "tool_profile.bound",
+  "tool_profile.unbound",
+  "tool_policy.created",
+  "tool_policy.updated",
+  "tool_policy.disabled",
+  "tool_trust_rule.created",
+  "tool_trust_rule.revoked",
+  "tool_runtime_slot.started",
+  "tool_runtime_slot.stopped",
+  "tool_action_request.created",
+  "tool_action_request.resolved",
+] as const;
+export type ToolAccessActivityAction = (typeof TOOL_ACCESS_ACTIVITY_ACTIONS)[number];
 
 // ---------------------------------------------------------------------------
 // Plugin System — see doc/plugins/PLUGIN_SPEC.md for the full specification

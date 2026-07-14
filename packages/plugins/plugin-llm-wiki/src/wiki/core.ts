@@ -639,11 +639,11 @@ function protectDistillationSourceBody(input: {
 
 async function resolvePaperclipDistillationLimits(
   ctx: PluginContext,
-  input: Pick<PaperclipSourceBundleInput, "maxCharacters" | "maxCharactersPerSource" | "routineRun">,
+  input: Pick<PaperclipSourceBundleInput, "companyId" | "maxCharacters" | "maxCharactersPerSource" | "routineRun">,
 ): Promise<PaperclipDistillationLimits> {
   assertRequestedCharacterLimit("maxCharacters", input.maxCharacters, DEFAULT_MAX_PAPERCLIP_CURSOR_WINDOW_CHARS);
   assertRequestedCharacterLimit("maxCharactersPerSource", input.maxCharactersPerSource, DEFAULT_MAX_PAPERCLIP_ISSUE_SOURCE_CHARS);
-  const config = await ctx.config.get() as Record<string, unknown>;
+  const config = await ctx.config.get(input.companyId) as Record<string, unknown>;
   const maxCharactersPerSource = Math.min(
     normalizeBundleLimit(input.maxCharactersPerSource, DEFAULT_MAX_PAPERCLIP_ISSUE_SOURCE_CHARS),
     normalizeBundleLimit(config.maxPaperclipIssueSourceCharacters, DEFAULT_MAX_PAPERCLIP_ISSUE_SOURCE_CHARS),
@@ -686,8 +686,8 @@ function estimateSourceCostCents(characters: number, costCentsPerThousandSourceC
   return Math.ceil((characters / 1000) * costCentsPerThousandSourceCharacters);
 }
 
-async function assertSourceWithinConfiguredLimit(ctx: PluginContext, contents: string) {
-  const config = await ctx.config.get();
+async function assertSourceWithinConfiguredLimit(ctx: PluginContext, companyId: string, contents: string) {
+  const config = await ctx.config.get(companyId);
   const maxSourceBytes = normalizeMaxSourceBytes(config.maxSourceBytes);
   const sourceBytes = byteLength(contents);
   if (sourceBytes > maxSourceBytes) {
@@ -1866,7 +1866,7 @@ export async function captureWikiSource(ctx: PluginContext, input: CaptureSource
   const wikiId = normalizeWikiId(input.wikiId);
   const space = await resolveSpace(ctx, { companyId: input.companyId, wikiId, spaceSlug: input.spaceSlug });
   const title = stringField(input.title) ?? "Untitled source";
-  await assertSourceWithinConfiguredLimit(ctx, input.contents);
+  await assertSourceWithinConfiguredLimit(ctx, input.companyId, input.contents);
   const hash = contentHash(input.contents);
   const rawPath = input.rawPath
     ? assertRawPath(input.rawPath)
@@ -3308,11 +3308,11 @@ async function upsertPageBinding(ctx: PluginContext, input: {
   );
 }
 
-async function autoApplyEnabled(ctx: PluginContext, requested: boolean | undefined): Promise<boolean> {
+async function autoApplyEnabled(ctx: PluginContext, companyId: string, requested: boolean | undefined): Promise<boolean> {
   if (getDistillationAutoApplyRestriction().autoApplyRestriction) {
     return false;
   }
-  const config = await ctx.config.get();
+  const config = await ctx.config.get(companyId);
   const configured = (config as { autoApplyIngestPatches?: unknown }).autoApplyIngestPatches !== false;
   return configured && requested !== false;
 }
@@ -3462,7 +3462,7 @@ export async function distillPaperclipProjectPage(ctx: PluginContext, input: Pap
   }
 
   const autoApplyRestriction = getDistillationAutoApplyRestriction();
-  const canAutoApply = await autoApplyEnabled(ctx, input.autoApply);
+  const canAutoApply = await autoApplyEnabled(ctx, input.companyId, input.autoApply);
   if (!canAutoApply || reviewRequired) {
     const autoApplyWarning =
       autoApplyRestriction.autoApplyRestriction
