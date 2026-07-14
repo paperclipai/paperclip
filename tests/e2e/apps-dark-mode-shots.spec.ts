@@ -161,7 +161,7 @@ test.describe.serial("dark-mode Apps surfaces", () => {
     await forceDark(page);
     await page.goto(`/${seed.prefix}/apps/advanced/profiles`);
     await expect(page.getByRole("heading", { name: "Developer tools" })).toBeVisible({ timeout: 30_000 });
-    await expect(page.getByRole("heading", { name: "Tool profiles" })).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByRole("heading", { name: "Access profiles" })).toBeVisible({ timeout: 30_000 });
     await expect(page.getByRole("link", { name: "Runtime", exact: true })).toBeVisible();
     await expect(page.getByRole("link", { name: "Audit", exact: true })).toBeVisible();
     await expect(page.getByRole("link", { name: "Applications", exact: true })).toHaveCount(0);
