@@ -140,6 +140,21 @@ describe("AgentToolsTab", () => {
     await flushReact();
   }
 
+  it("preserves checkbox changes made after the last saved install state", async () => {
+    const { mergeInstallDraft } = await import("./AgentToolsTab");
+
+    expect(
+      mergeInstallDraft(
+        { "conn-1": true, "conn-2": false },
+        { "conn-1": true, "conn-2": true },
+        { "conn-1": false, "conn-2": false },
+      ),
+    ).toEqual({
+      draft: { "conn-1": true, "conn-2": true },
+      hasPendingChanges: true,
+    });
+  });
+
   it("renders effective access, access profiles, governing policy, and unavailable tools", async () => {
     const allowed = makeCatalogEntry({ id: "cat-allow", toolName: "github.read_repo" });
     const denied = makeCatalogEntry({

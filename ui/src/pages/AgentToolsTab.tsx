@@ -52,6 +52,21 @@ export function policyGovernsAgent(policy: ToolPolicy, agentId: string): boolean
   return true;
 }
 
+export function mergeInstallDraft(
+  serverDraft: Record<string, boolean>,
+  currentDraft: Record<string, boolean>,
+  lastSavedDraft: Record<string, boolean>,
+): { draft: Record<string, boolean>; hasPendingChanges: boolean } {
+  const draft = { ...serverDraft };
+  let hasPendingChanges = false;
+  for (const [connectionId, installed] of Object.entries(currentDraft)) {
+    if (installed === (lastSavedDraft[connectionId] ?? false)) continue;
+    draft[connectionId] = installed;
+    hasPendingChanges = true;
+  }
+  return { draft, hasPendingChanges };
+}
+
 function InstalledAppsSection({
   agentId,
   agentName,
@@ -293,10 +308,13 @@ export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; 
         isAgentInstalled(installStateFrom(connection.installs), agent.id),
       ]),
     );
-    lastSavedInstallRef.current = next;
-    skipNextInstallAutosaveRef.current = true;
     failedInstallDraftRef.current = null;
-    setInstallDraft(next);
+    setInstallDraft((current) => {
+      const merged = mergeInstallDraft(next, current, lastSavedInstallRef.current);
+      lastSavedInstallRef.current = next;
+      skipNextInstallAutosaveRef.current = !merged.hasPendingChanges;
+      return merged.draft;
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agent.id, connectionInstallSignature]);
 
