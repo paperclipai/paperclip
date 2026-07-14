@@ -71,6 +71,8 @@ const mockIssueThreadInteractionService = vi.hoisted(() => ({
   expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
   expireRequestConfirmationsSupersededByHistoricalComments: vi.fn(async () => []),
   listForIssue: vi.fn(async () => []),
+  getById: vi.fn(),
+  cancelQuestions: vi.fn(),
 }));
 const mockIssueApprovalService = vi.hoisted(() => ({
   link: vi.fn(),
@@ -429,6 +431,8 @@ describe("agent issue mutation checkout ownership", () => {
     mockIssueThreadInteractionService.expireRequestConfirmationsSupersededByHistoricalComments.mockResolvedValue([]);
     mockIssueThreadInteractionService.listForIssue.mockReset();
     mockIssueThreadInteractionService.listForIssue.mockResolvedValue([]);
+    mockIssueThreadInteractionService.getById.mockReset();
+    mockIssueThreadInteractionService.cancelQuestions.mockReset();
     mockIssueRecoveryActionService.getActiveForIssue.mockReset();
     mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue(null);
     mockIssueRecoveryActionService.listActiveForIssues.mockReset();
@@ -840,6 +844,79 @@ describe("agent issue mutation checkout ownership", () => {
     expect(res.body.error).toBe("Issue is outside this actor's authorization boundary");
     expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({ action: "issue:read" }));
     expect(mockIssueThreadInteractionService.listForIssue).not.toHaveBeenCalled();
+  });
+
+  // SYN-1909 R3 / SYN-2112 R4: an agent may cancel (withdraw) an interaction
+  // card iff it authored the card AND it is the current assignee of the
+  // issue the card lives on. Board callers are unaffected (assertBoard()
+  // still gates the /cancel route for them).
+  describe("interaction cancel — agent self-cancel (SYN-1909 R3)", () => {
+    function makeInteraction(overrides: Record<string, unknown> = {}) {
+      return {
+        id: "interaction-1",
+        companyId,
+        issueId,
+        kind: "ask_user_questions",
+        status: "pending",
+        continuationPolicy: "none",
+        idempotencyKey: null,
+        sourceCommentId: null,
+        sourceRunId: null,
+        payload: { version: 1, questions: [] },
+        result: null,
+        createdByAgentId: ownerAgentId,
+        createdByUserId: null,
+        createdAt: "2026-07-14T00:00:00.000Z",
+        updatedAt: "2026-07-14T00:00:00.000Z",
+        resolvedAt: null,
+        ...overrides,
+      };
+    }
+
+    it("allows an agent to cancel its own card on its own issue", async () => {
+      mockIssueThreadInteractionService.getById.mockResolvedValue(makeInteraction({ createdByAgentId: ownerAgentId }));
+      mockIssueThreadInteractionService.cancelQuestions.mockResolvedValue(makeInteraction({
+        createdByAgentId: ownerAgentId,
+        status: "cancelled",
+        result: { version: 1, answers: [], cancelled: true, cancellationReason: null, summaryMarkdown: null },
+      }));
+
+      const res = await request(await createApp(ownerActor()))
+        .post(`/api/issues/${issueId}/interactions/interaction-1/cancel`)
+        .send({});
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body.status).toBe("cancelled");
+      expect(mockIssueThreadInteractionService.cancelQuestions).toHaveBeenCalledWith(
+        expect.objectContaining({ id: issueId }),
+        "interaction-1",
+        {},
+        expect.objectContaining({ agentId: ownerAgentId, userId: null }),
+      );
+    });
+
+    it("rejects an agent cancelling a card authored by a different agent", async () => {
+      mockIssueThreadInteractionService.getById.mockResolvedValue(makeInteraction({ createdByAgentId: peerAgentId }));
+
+      const res = await request(await createApp(ownerActor()))
+        .post(`/api/issues/${issueId}/interactions/interaction-1/cancel`)
+        .send({});
+
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(mockIssueThreadInteractionService.cancelQuestions).not.toHaveBeenCalled();
+    });
+
+    it("rejects an agent cancelling a card on an issue it is not assigned to", async () => {
+      mockIssueService.getById.mockResolvedValue(makeIssue({ status: "todo", assigneeAgentId: ownerAgentId }));
+      mockIssueThreadInteractionService.getById.mockResolvedValue(makeInteraction({ createdByAgentId: peerAgentId }));
+
+      const res = await request(await createApp(peerActor()))
+        .post(`/api/issues/${issueId}/interactions/interaction-1/cancel`)
+        .send({});
+
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(mockIssueThreadInteractionService.cancelQuestions).not.toHaveBeenCalled();
+    });
   });
 
   it("allows mentioned peer agents to list comments through an issue read grant", async () => {
