@@ -1241,6 +1241,8 @@ export function secretService(db: Db) {
         type: "secret_ref",
         secretId: binding.secretId,
         version: binding.version,
+        projectionClass: binding.projectionClass,
+        projectionAllowlistKey: binding.projectionAllowlistKey,
       };
     }
     return normalized;
@@ -1313,6 +1315,8 @@ export function secretService(db: Db) {
         type: "secret_ref",
         secretId: binding.secretId,
         version: binding.version,
+        projectionClass: binding.projectionClass,
+        projectionAllowlistKey: binding.projectionAllowlistKey,
       };
     }
     if (binding.type === "user_secret_ref") {
