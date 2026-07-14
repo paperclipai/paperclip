@@ -669,4 +669,22 @@ describe("evaluateCodexCredentialReadiness", () => {
       await fs.rm(root, { recursive: true, force: true });
     }
   });
+
+  it("restricts permissions on an existing managed MCP config", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-mcp-config-"));
+    try {
+      const configPath = path.join(root, "config.toml");
+      await fs.writeFile(configPath, "model = \"gpt-5\"\n", { mode: 0o644 });
+
+      await writeManagedCodexMcpConfig({
+        codexHome: root,
+        apiBaseUrl: "https://paperclip.example",
+        gateways: [],
+      });
+
+      expect((await fs.stat(configPath)).mode & 0o777).toBe(0o600);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
 });
