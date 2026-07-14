@@ -21,7 +21,6 @@ import {
   attentionDetailImages,
   attentionDetailLine,
   attentionImageUrl,
-  attentionToneStyle,
   isInlineResolvable,
   severityBadge,
   sourceMeta,
@@ -107,7 +106,6 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
   selected = false,
 }: AttentionQueueRowProps) {
   const meta = sourceMeta(item.sourceKind);
-  const tone = attentionToneStyle(item);
   const sevBadge = severityBadge(item.severity);
   const Icon = meta.icon;
   const isHidden = variant === "hidden";
@@ -161,9 +159,6 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
       data-attention-source={item.sourceKind}
       data-attention-severity={item.severity}
     >
-      {/* Type accent bar (canonical color map — never severity). */}
-      <span className={cn("absolute inset-y-0 left-0 w-1", tone.accent)} aria-hidden />
-
       <div className="flex items-start gap-2 py-3 pl-4 pr-3">
         {/* Expand affordance / spacer gutter — keeps headlines aligned across the list. */}
         {expandable ? (
@@ -188,7 +183,7 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
           <div className="flex items-start justify-between gap-2">
             <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
               <span className="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground">
-                <Icon className={cn("h-3.5 w-3.5", tone.icon)} />
+                <Icon className="h-3.5 w-3.5" />
                 {meta.label}
               </span>
               {sevBadge && (
