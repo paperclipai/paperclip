@@ -13,6 +13,12 @@ const DEFAULT_BRIDGE_RESPONSE_TIMEOUT_MS = 30_000;
 const DEFAULT_BRIDGE_STOP_TIMEOUT_MS = 2_000;
 const DEFAULT_BRIDGE_MAX_QUEUE_DEPTH = 64;
 const DEFAULT_BRIDGE_MAX_BODY_BYTES = 256 * 1024;
+// Per-request host-side processing budget. The agent-side bridge server
+// abandons unanswered calls after responseTimeoutMs (30s default); the host
+// worker should not sit wedged on a single file for minutes/hours while the
+// run burns budget blind. Exceeding this fails pending requests and surfaces
+// a fatal worker error so the adapter run can exit and be retried.
+const DEFAULT_BRIDGE_REQUEST_TIMEOUT_MS = 60_000;
 const REMOTE_WRITE_BASE64_CHUNK_SIZE = 32 * 1024;
 const SANDBOX_CALLBACK_BRIDGE_ENTRYPOINT = "paperclip-bridge-server.mjs";
 const SANDBOX_EXEC_CHANNEL_ENV = "PAPERCLIP_SANDBOX_EXEC_CHANNEL";
@@ -165,6 +171,12 @@ export interface SandboxCallbackBridgeQueueClient {
 
 export interface SandboxCallbackBridgeWorkerHandle {
   stop(options?: { drainTimeoutMs?: number }): Promise<void>;
+  /**
+   * Resolves with the fatal error when the worker loop exits abnormally.
+   * Does not settle on a clean `stop()`. Callers race this against the
+   * adapter process so a wedged/dead host drain fails the run loudly.
+   */
+  workerFatalError: Promise<Error>;
 }
 
 export interface StartedSandboxCallbackBridgeServer {
@@ -602,9 +614,16 @@ export async function startSandboxCallbackBridgeWorker(input: {
     body?: string;
   }>;
   maxBodyBytes?: number | null;
+  /**
+   * Hard deadline for processing a single request file (read → handle → write).
+   * Defaults to 60s. Use a smaller value in tests.
+   */
+  requestTimeoutMs?: number | null;
+  onFatalError?: (error: Error) => void | Promise<void>;
 }): Promise<SandboxCallbackBridgeWorkerHandle> {
   const pollIntervalMs = normalizeTimeoutMs(input.pollIntervalMs, DEFAULT_BRIDGE_POLL_INTERVAL_MS);
   const maxBodyBytes = normalizeTimeoutMs(input.maxBodyBytes, DEFAULT_BRIDGE_MAX_BODY_BYTES);
+  const requestTimeoutMs = normalizeTimeoutMs(input.requestTimeoutMs, DEFAULT_BRIDGE_REQUEST_TIMEOUT_MS);
   const directories = sandboxCallbackBridgeDirectories(input.queueDir);
   await input.client.makeDir(directories.rootDir);
   await input.client.makeDir(directories.requestsDir);
@@ -614,15 +633,27 @@ export async function startSandboxCallbackBridgeWorker(input: {
   let stopping = false;
   let inFlight = 0;
   let settled = false;
+  let failedFatally = false;
   let stopDeadline = Number.POSITIVE_INFINITY;
   let settleResolve: (() => void) | null = null;
   const settledPromise = new Promise<void>((resolve) => {
     settleResolve = resolve;
   });
+  let resolveFatalError: ((error: Error) => void) | null = null;
+  const workerFatalError = new Promise<Error>((resolve) => {
+    resolveFatalError = resolve;
+  });
   const authorizeRequest = input.authorizeRequest ??
     ((request: SandboxCallbackBridgeRequest) => authorizeSandboxCallbackBridgeRequestWithRoutes(request));
   const buildWorkerFailureMessage = (error: unknown) =>
     `Sandbox callback bridge worker failed: ${error instanceof Error ? error.message : String(error)}`;
+
+  const signalFatalError = (error: Error) => {
+    if (failedFatally) return;
+    failedFatally = true;
+    resolveFatalError?.(error);
+    void Promise.resolve(input.onFatalError?.(error)).catch(() => undefined);
+  };
 
   const processRequestFile = async (fileName: string) => {
     const requestPath = path.posix.join(directories.requestsDir, fileName);
@@ -732,7 +763,23 @@ export async function startSandboxCallbackBridgeWorker(input: {
           if (stopping && Date.now() >= stopDeadline) break;
           inFlight += 1;
           try {
-            await processRequestFile(fileName);
+            let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+            try {
+              await Promise.race([
+                processRequestFile(fileName),
+                new Promise<never>((_, reject) => {
+                  timeoutHandle = setTimeout(() => {
+                    reject(
+                      new Error(
+                        `Bridge worker timed out processing ${fileName} after ${requestTimeoutMs}ms — queue drain is wedged.`,
+                      ),
+                    );
+                  }, requestTimeoutMs);
+                }),
+              ]);
+            } finally {
+              if (timeoutHandle) clearTimeout(timeoutHandle);
+            }
           } finally {
             inFlight -= 1;
           }
@@ -751,6 +798,9 @@ export async function startSandboxCallbackBridgeWorker(input: {
           `[paperclip] sandbox callback bridge failed to abort queued requests after worker failure: ${failPendingError instanceof Error ? failPendingError.message : String(failPendingError)}`,
         );
       }
+      if (!stopping) {
+        signalFatalError(error instanceof Error ? error : new Error(message));
+      }
     } finally {
       settled = true;
       if (settleResolve) {
@@ -762,6 +812,7 @@ export async function startSandboxCallbackBridgeWorker(input: {
   void loop;
 
   return {
+    workerFatalError,
     stop: async (options = {}) => {
       stopping = true;
       const drainMs = normalizeTimeoutMs(options.drainTimeoutMs, DEFAULT_BRIDGE_STOP_TIMEOUT_MS);

@@ -108,6 +108,12 @@ export interface AdapterExecutionTargetProcessOptions {
    * onLog is suppressed and incremental chunks flow through `onLog` instead.
    */
   runLogTail?: SandboxRunLogTailFactory | null;
+  /**
+   * When provided, raced against the child process. Resolving this promise
+   * (typically `paperclipBridge.workerFatalError`) aborts the run so a wedged
+   * host-side bridge drain cannot leave the agent burning budget blind.
+   */
+  cancelPromise?: Promise<Error> | null;
 }
 
 export interface AdapterExecutionTargetShellOptions {
@@ -126,6 +132,12 @@ export interface AdapterExecutionTargetPaperclipBridgeHandle {
    * `runAdapterExecutionTargetProcess` via `options.runLogTail`.
    */
   runLogTail?: SandboxRunLogTailFactory | null;
+  /**
+   * Settles when the host-side bridge worker fails fatally. Pass to
+   * `runAdapterExecutionTargetProcess` as `cancelPromise` so a wedged drain
+   * fails the adapter run (and triggers retry) instead of leaving it blind.
+   */
+  workerFatalError: Promise<Error>;
   stop(): Promise<void>;
 }
 
@@ -543,7 +555,7 @@ export async function runAdapterExecutionTargetProcess(
       runLogTail.start(options.onLog);
     }
     try {
-      const result = await runner.execute({
+      const executePromise = runner.execute({
         command: execCommand,
         args: execArgs,
         cwd: target.remoteCwd,
@@ -557,6 +569,14 @@ export async function runAdapterExecutionTargetProcess(
           ? async (meta) => options.onSpawn?.({ ...meta, processGroupId: null })
           : undefined,
       });
+      const result = options.cancelPromise
+        ? await Promise.race([
+            executePromise,
+            options.cancelPromise.then((error) => {
+              throw error;
+            }),
+          ])
+        : await executePromise;
       if (runLogTail) {
         await runLogTail.finish({ stdout: result.stdout, stderr: result.stderr });
       }
@@ -574,7 +594,7 @@ export async function runAdapterExecutionTargetProcess(
       ? sanitizeRemoteExecutionEnv(options.env)
       : options.env;
 
-  return await runChildProcess(runId, command, args, {
+  const childPromise = runChildProcess(runId, command, args, {
     cwd: options.cwd,
     env,
     stdin: options.stdin,
@@ -585,6 +605,15 @@ export async function runAdapterExecutionTargetProcess(
     terminalResultCleanup: options.terminalResultCleanup,
     remoteExecution: adapterExecutionTargetToRemoteSpec(target),
   });
+  if (!options.cancelPromise) {
+    return await childPromise;
+  }
+  return await Promise.race([
+    childPromise,
+    options.cancelPromise.then((error) => {
+      throw error;
+    }),
+  ]);
 }
 
 export async function runAdapterExecutionTargetShellCommand(
@@ -1690,6 +1719,12 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
       client,
       queueDir,
       maxBodyBytes,
+      onFatalError: async (error) => {
+        await onLog(
+          "stderr",
+          `[paperclip] ALARM bridge-worker-fatal: ${error.message}\n`,
+        );
+      },
       handleRequest: async (request) => {
         const method = request.method.trim().toUpperCase() || "GET";
         if (bridgeDebugEnabled) {
@@ -1763,6 +1798,7 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
       PAPERCLIP_BRIDGE_QUEUE_DIR: queueDir,
     },
     runLogTail,
+    workerFatalError: worker!.workerFatalError,
     stop: async () => {
       await Promise.allSettled([
         server?.stop(),

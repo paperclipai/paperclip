@@ -469,6 +469,67 @@ describe("sandbox callback bridge", () => {
     }
   });
 
+  it("fails loudly when a single request file wedges the drain loop", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-stuck-request-"));
+    cleanupDirs.push(rootDir);
+
+    const queueDir = path.posix.join(rootDir, "queue");
+    const directories = sandboxCallbackBridgeDirectories(queueDir);
+    await mkdir(directories.requestsDir, { recursive: true });
+    await mkdir(directories.responsesDir, { recursive: true });
+
+    await writeFile(
+      path.posix.join(directories.requestsDir, "00-stuck.json"),
+      `${JSON.stringify({
+        id: "stuck",
+        method: "GET",
+        path: "/api/agents/me",
+        query: "",
+        headers: {},
+        body: "",
+        createdAt: new Date().toISOString(),
+      })}\n`,
+      "utf8",
+    );
+    await writeFile(
+      path.posix.join(directories.requestsDir, "01-after.json"),
+      `${JSON.stringify({
+        id: "after",
+        method: "GET",
+        path: "/api/agents/me",
+        query: "",
+        headers: {},
+        body: "",
+        createdAt: new Date().toISOString(),
+      })}\n`,
+      "utf8",
+    );
+
+    const worker = await startSandboxCallbackBridgeWorker({
+      client: createFileSystemSandboxCallbackBridgeQueueClient(),
+      queueDir,
+      authorizeRequest: async () => null,
+      requestTimeoutMs: 40,
+      handleRequest: async (request) => {
+        if (request.id === "stuck") {
+          await new Promise(() => undefined); // never resolves
+        }
+        return { status: 200, body: "ok" };
+      },
+    });
+    cleanupFns.push(async () => {
+      await worker.stop();
+    });
+
+    const fatal = await worker.workerFatalError;
+    expect(fatal.message).toMatch(/timed out processing 00-stuck\.json/);
+
+    // Pending (including the never-reached follow-up) must be aborted with 503.
+    const afterResponse = await readFile(path.posix.join(directories.responsesDir, "01-after.json"), "utf8");
+    expect(afterResponse).toContain("timed out processing 00-stuck.json");
+    await expect(readdir(directories.requestsDir)).resolves.toEqual([]);
+  });
+
   it("serializes remote response writes so stop does not recreate a late orphaned response", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-response-lock-"));
     cleanupDirs.push(rootDir);

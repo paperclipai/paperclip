@@ -46,6 +46,7 @@ const {
   })),
   syncDirectoryToSsh: vi.fn(async () => undefined),
   startAdapterExecutionTargetPaperclipBridge: vi.fn(async () => ({
+    workerFatalError: new Promise(() => {}),
     env: {
       PAPERCLIP_API_URL: "http://127.0.0.1:4310",
       PAPERCLIP_API_KEY: "bridge-token",
