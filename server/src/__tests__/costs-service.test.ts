@@ -67,6 +67,7 @@ const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockFetchAllQuotaWindows = vi.hoisted(() => vi.fn());
 const mockCostService = vi.hoisted(() => ({
   createEvent: vi.fn(),
+  listEvents: vi.fn().mockResolvedValue({ items: [], nextCursor: null }),
   summary: vi.fn().mockResolvedValue({ spendCents: 0 }),
   byAgent: vi.fn().mockResolvedValue([]),
   byAgentModel: vi.fn().mockResolvedValue([]),
@@ -160,8 +161,8 @@ async function createAppWithActor(actor: any) {
 }
 
 async function loadCostParsers() {
-  const { parseCostDateRange, parseCostLimit } = await import("../routes/costs.js");
-  return { parseCostDateRange, parseCostLimit };
+  const { parseCostDateRange, parseCostEventListQuery, parseCostLimit } = await import("../routes/costs.js");
+  return { parseCostDateRange, parseCostEventListQuery, parseCostLimit };
 }
 
 beforeEach(() => {
@@ -279,6 +280,134 @@ describe("cost routes", () => {
   it("accepts valid finance event list limits", async () => {
     const { parseCostLimit } = await loadCostParsers();
     expect(parseCostLimit({ limit: "25" })).toBe(25);
+  });
+
+  it("lists cost events with default pagination options", async () => {
+    const app = await createApp();
+    const res = await request(app).get("/api/companies/company-1/cost-events");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ items: [], nextCursor: null });
+    expect(mockCostService.listEvents).toHaveBeenCalledWith("company-1", {
+      range: undefined,
+      limit: 100,
+      cursor: undefined,
+      billingTypes: [],
+    });
+  });
+
+  it("passes repeated billing types to the cost event service", async () => {
+    const app = await createApp();
+    const res = await request(app).get(
+      "/api/companies/company-1/cost-events?billingType=subscription_included&billingType=subscription_overage",
+    );
+
+    expect(res.status).toBe(200);
+    expect(mockCostService.listEvents).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        billingTypes: ["subscription_included", "subscription_overage"],
+      }),
+    );
+  });
+
+  it("normalizes cost event range, limit, and cursor options", async () => {
+    const app = await createApp();
+    const res = await request(app)
+      .get("/api/companies/company-1/cost-events")
+      .query({
+        from: "2026-07-01T00:00:00.000Z",
+        to: "2026-07-15T23:59:59.999Z",
+        limit: "25",
+        cursor: "opaque-cursor",
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockCostService.listEvents).toHaveBeenCalledWith("company-1", {
+      range: {
+        from: new Date("2026-07-01T00:00:00.000Z"),
+        to: new Date("2026-07-15T23:59:59.999Z"),
+      },
+      limit: 25,
+      cursor: "opaque-cursor",
+      billingTypes: [],
+    });
+  });
+
+  it.each([
+    ["reversed range", "from=2026-07-16T00:00:00.000Z&to=2026-07-15T00:00:00.000Z"],
+    ["invalid date", "from=not-a-date"],
+    ["zero limit", "limit=0"],
+    ["oversized limit", "limit=501"],
+    ["fractional limit", "limit=1.5"],
+    ["partially numeric limit", "limit=10x"],
+    ["repeated cursor", "cursor=one&cursor=two"],
+    ["unknown billing type", "billingType=per_token"],
+  ])("rejects %s for cost event lists", async (_label, query) => {
+    const app = await createApp();
+    const res = await request(app).get(`/api/companies/company-1/cost-events?${query}`);
+
+    expect(res.status).toBe(400);
+    expect(mockCostService.listEvents).not.toHaveBeenCalled();
+  });
+
+  it("rejects cost event reads for board users outside the company", async () => {
+    const app = await createAppWithActor({
+      type: "board",
+      userId: "board-user",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: ["company-2"],
+    });
+    const res = await request(app).get("/api/companies/company-1/cost-events");
+
+    expect(res.status).toBe(403);
+    expect(mockAccessService.decide).not.toHaveBeenCalled();
+    expect(mockCostService.listEvents).not.toHaveBeenCalled();
+  });
+
+  it("rejects cost event reads denied by the Costs authorization decision", async () => {
+    mockAccessService.decide.mockResolvedValueOnce({
+      allowed: false,
+      action: "company_scope:read",
+      reason: "deny_test",
+      explanation: "Denied by test mock.",
+    });
+    const app = await createApp();
+    const res = await request(app).get("/api/companies/company-1/cost-events");
+
+    expect(res.status).toBe(403);
+    expect(res.body).toEqual({
+      error: "Costs are outside this actor's authorization boundary",
+    });
+    expect(mockCostService.listEvents).not.toHaveBeenCalled();
+  });
+
+  it("allows an authorized agent to read same-company cost events", async () => {
+    const app = await createAppWithActor({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      runId: "run-1",
+      source: "agent_key",
+    });
+    const res = await request(app).get("/api/companies/company-1/cost-events");
+
+    expect(res.status).toBe(200);
+    expect(mockCostService.listEvents).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not write activity or mutate services for a cost event read", async () => {
+    const app = await createApp();
+    const res = await request(app).get("/api/companies/company-1/cost-events");
+
+    expect(res.status).toBe(200);
+    expect(mockLogActivity).not.toHaveBeenCalled();
+    expect(mockCostService.createEvent).not.toHaveBeenCalled();
+    expect(mockFinanceService.createEvent).not.toHaveBeenCalled();
+    expect(mockCompanyService.update).not.toHaveBeenCalled();
+    expect(mockAgentService.update).not.toHaveBeenCalled();
+    expect(mockBudgetService.upsertPolicy).not.toHaveBeenCalled();
   });
 
   it("rejects company budget updates for board users outside the company", async () => {
