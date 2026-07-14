@@ -61,6 +61,7 @@ import {
   routineRuns,
   routines,
   toolMcpGateways,
+  toolMcpGatewayTokens,
   toolConnections,
   toolProfiles,
   workspaceOperations,
@@ -2093,8 +2094,28 @@ type ManagedMcpGatewayRunConfig = {
 };
 
 function paperclipApiBaseUrl(): string {
-  const configured = readNonEmptyString(process.env.PAPERCLIP_API_URL) ?? "http://127.0.0.1:3100";
+  const configured = readNonEmptyString(process.env.PAPERCLIP_API_URL);
+  if (!configured) {
+    throw new Error("PAPERCLIP_API_URL is required to deliver managed runtime MCP servers");
+  }
   return configured.replace(/\/+$/, "").replace(/\/api$/, "");
+}
+
+export async function revokeHeartbeatRunGatewayTokens(input: {
+  db: Db;
+  companyId: string;
+  runId: string;
+}): Promise<void> {
+  const now = new Date();
+  await input.db
+    .update(toolMcpGatewayTokens)
+    .set({ revokedAt: now, updatedAt: now })
+    .where(and(
+      eq(toolMcpGatewayTokens.companyId, input.companyId),
+      eq(toolMcpGatewayTokens.subjectType, "heartbeat_run"),
+      eq(toolMcpGatewayTokens.subjectId, input.runId),
+      isNull(toolMcpGatewayTokens.revokedAt),
+    ));
 }
 
 export async function buildPaperclipRuntimeMcpServers(input: {
@@ -13107,6 +13128,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           );
         }
         throw adapterErr;
+      } finally {
+        try {
+          await revokeHeartbeatRunGatewayTokens({
+            db,
+            companyId: agent.companyId,
+            runId: run.id,
+          });
+        } catch (revokeErr) {
+          logger.warn(
+            { err: revokeErr, runId: run.id, companyId: agent.companyId },
+            "failed to revoke heartbeat-run MCP gateway tokens",
+          );
+        }
       }
       const adapterManagedRuntimeServices = adapterResult.runtimeServices
         ? await persistAdapterManagedRuntimeServices({
