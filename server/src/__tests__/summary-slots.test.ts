@@ -236,7 +236,7 @@ describeEmbeddedPostgres("summary slot service", () => {
       const companyId = await seedCompany();
       const projectId = await seedProject(companyId);
       const summarizerAgentId = await seedSummarizer(companyId);
-      const { svc, runId } = await startGeneration(companyId, projectId, summarizerAgentId);
+      const { svc, generationIssueId, runId } = await startGeneration(companyId, projectId, summarizerAgentId);
 
       const initial = await svc.write(
         {
@@ -244,6 +244,7 @@ describeEmbeddedPostgres("summary slot service", () => {
           markdown:
             "## Needs you\nNothing is waiting on you right now.\n\n## Next\nNothing is next.\n\n## Since last summary\nFirst summary for this scope.",
           model: "cheap-model",
+          generationIssueId,
         },
         { agentId: summarizerAgentId, runId },
       );
@@ -287,10 +288,10 @@ describeEmbeddedPostgres("summary slot service", () => {
       const companyId = await seedCompany();
       const projectId = await seedProject(companyId);
       const summarizerAgentId = await seedSummarizer(companyId);
-      const { svc, runId } = await startGeneration(companyId, projectId, summarizerAgentId);
+      const { svc, generationIssueId, runId } = await startGeneration(companyId, projectId, summarizerAgentId);
 
       const first = await svc.write(
-        { ...projectSelector(companyId, projectId), markdown: "# Summary v1", generationIssueId: undefined },
+        { ...projectSelector(companyId, projectId), markdown: "# Summary v1", generationIssueId },
         { agentId: summarizerAgentId, runId },
       );
 
@@ -307,6 +308,7 @@ describeEmbeddedPostgres("summary slot service", () => {
             ...projectSelector(companyId, projectId),
             markdown: "# Summary v2",
             baseRevisionId: randomUUID(),
+            generationIssueId: second.generatingIssue.id,
           },
           { agentId: summarizerAgentId, runId: runId2 },
         ),
@@ -317,6 +319,7 @@ describeEmbeddedPostgres("summary slot service", () => {
           ...projectSelector(companyId, projectId),
           markdown: "# Summary v2",
           baseRevisionId: first.revision.id,
+          generationIssueId: second.generatingIssue.id,
         },
         { agentId: summarizerAgentId, runId: runId2 },
       );
@@ -342,13 +345,28 @@ describeEmbeddedPostgres("summary slot service", () => {
       const companyId = await seedCompany();
       const projectId = await seedProject(companyId);
       const summarizerAgentId = await seedSummarizer(companyId);
-      await startGeneration(companyId, projectId, summarizerAgentId);
+      const { generationIssueId } = await startGeneration(companyId, projectId, summarizerAgentId);
       const svc = summarySlotService(db);
 
       await expect(
         svc.write(
-          { ...projectSelector(companyId, projectId), markdown: "# Wrong run" },
+          { ...projectSelector(companyId, projectId), markdown: "# Wrong run", generationIssueId },
           { agentId: summarizerAgentId, runId: randomUUID() },
+        ),
+      ).rejects.toMatchObject({ status: 403 });
+    });
+
+    it("rejects using one generation task to write a different slot", async () => {
+      const companyId = await seedCompany();
+      const projectId = await seedProject(companyId);
+      const otherProjectId = await seedProject(companyId);
+      const summarizerAgentId = await seedSummarizer(companyId);
+      const { svc, generationIssueId, runId } = await startGeneration(companyId, projectId, summarizerAgentId);
+
+      await expect(
+        svc.write(
+          { ...projectSelector(companyId, otherProjectId), markdown: "# Wrong slot", generationIssueId },
+          { agentId: summarizerAgentId, runId },
         ),
       ).rejects.toMatchObject({ status: 403 });
     });

@@ -417,16 +417,31 @@ export function summarySlotService(db: Db) {
     }
 
     // The write must originate from the linked, in-flight generation task.
-    const generationIssueId = input.generationIssueId ?? slotRow?.generatingIssueId ?? null;
+    const generationIssueId = input.generationIssueId ?? null;
     if (!generationIssueId) {
-      throw forbidden("No active summary generation is linked to this slot");
+      throw forbidden("Summary writes must identify the active generation task");
     }
-    if (slotRow?.generatingIssueId && slotRow.generatingIssueId !== generationIssueId) {
+    if (!slotRow?.generatingIssueId || slotRow.generatingIssueId !== generationIssueId) {
       throw forbidden("Summary write does not match the active generation task");
     }
     const issueRef = await loadIssueRef(sel.companyId, generationIssueId);
     if (!issueRef.row) {
       throw forbidden("Linked generation task not found");
+    }
+    const payloadMatch = issueRef.row.description?.match(/```json\n([\s\S]*?)\n```/);
+    let payload: Record<string, unknown> | null = null;
+    try {
+      payload = payloadMatch ? (JSON.parse(payloadMatch[1]) as Record<string, unknown>) : null;
+    } catch {
+      payload = null;
+    }
+    if (
+      payload?.generationIssueId !== generationIssueId ||
+      payload.scopeKind !== sel.scopeKind ||
+      (payload.scopeId ?? null) !== sel.scopeId ||
+      payload.slotKey !== sel.slotKey
+    ) {
+      throw forbidden("Generation task does not target this summary slot");
     }
     if (issueRef.row.assigneeAgentId !== actor.agentId) {
       throw forbidden("Generation task is not assigned to this agent");
@@ -464,6 +479,9 @@ export function summarySlotService(db: Db) {
             .where(eq(summarySlots.id, slotRow.id))
             .then((rows) => rows[0] ?? null)
         : null;
+      if (!currentSlot || currentSlot.generatingIssueId !== input.generationIssueId) {
+        throw conflict("Summary generation was superseded by a newer task");
+      }
 
       let documentRow: typeof documents.$inferSelect;
       let revisionRow: typeof documentRevisions.$inferSelect;
@@ -559,25 +577,18 @@ export function summarySlotService(db: Db) {
         updatedAt: now,
       };
 
-      let nextSlot: SummarySlotRow;
-      if (currentSlot) {
-        [nextSlot] = await tx
-          .update(summarySlots)
-          .set(slotPatch)
-          .where(eq(summarySlots.id, currentSlot.id))
-          .returning();
-      } else {
-        [nextSlot] = await tx
-          .insert(summarySlots)
-          .values({
-            companyId: sel.companyId,
-            scopeKind: sel.scopeKind,
-            scopeId: sel.scopeId,
-            slotKey: sel.slotKey,
-            createdAt: now,
-            ...slotPatch,
-          })
-          .returning();
+      const [nextSlot] = await tx
+        .update(summarySlots)
+        .set(slotPatch)
+        .where(
+          and(
+            eq(summarySlots.id, currentSlot.id),
+            eq(summarySlots.generatingIssueId, input.generationIssueId!),
+          ),
+        )
+        .returning();
+      if (!nextSlot) {
+        throw conflict("Summary generation was superseded by a newer task");
       }
 
       return { slot: nextSlot, document: documentRow, revision: revisionRow };
