@@ -10,7 +10,7 @@ import {
   RotateCcw,
   X,
 } from "lucide-react";
-import type { Agent, AttentionDetailImage, AttentionItem } from "@paperclipai/shared";
+import type { Agent, AttentionItem } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { accessApi } from "../api/access";
 import { approvalsApi } from "../api/approvals";
@@ -18,9 +18,7 @@ import { issuesApi } from "../api/issues";
 import { useToastActions } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
 import {
-  attentionDetailImages,
   attentionDetailLine,
-  attentionImageUrl,
   isInlineResolvable,
   severityBadge,
   sourceMeta,
@@ -107,7 +105,6 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
   const href = item.subject.href;
   const snoozedUntil = item.dismissal?.kind === "snooze" ? item.dismissal.snoozedUntil : null;
   const detailLine = attentionDetailLine(item) ?? item.whyNow;
-  const images = attentionDetailImages(item);
   // Only inline-resolvable active rows can expand; that's the only case where a
   // whole-header click has somewhere to go (plan §5). Non-inline rows keep the
   // explicit Open button and never toggle on a stray click.
@@ -268,14 +265,10 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
             <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">{detailLine}</p>
           </div>
 
-          {/* Context row: project identity and evidence thumbnails move below the
-              text so they never squeeze the headline on mobile. */}
-          {(item.project || images.length > 0) && (
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-              {item.project && <ProjectMeta project={item.project} />}
-              {images.length > 0 && <ThumbnailStack images={images} />}
-            </div>
-          )}
+          {/* Context row: project identity only (5b). Evidence thumbnails were
+              dropped from the card — screenshots live one click away behind the
+              footer-left context link, keeping the card two text lines tall. */}
+          {item.project && <ProjectMeta project={item.project} />}
 
           {/* Persistent footer bar: context link left (4a), CTAs right at one
               size (3a). Sibling of the headline so taps never toggle expand. */}
@@ -515,33 +508,6 @@ function ProjectMeta({ project }: { project: NonNullable<AttentionItem["project"
       <ProjectTile color={project.color} icon={project.icon} size="xs" />
       <span className="truncate">{project.name}</span>
     </span>
-  );
-}
-
-/** Square screenshot thumbnails at the right of the description (plan §10). */
-function ThumbnailStack({ images }: { images: AttentionDetailImage[] }) {
-  const visible = images.slice(0, 3);
-  const extra = images.length - visible.length;
-  return (
-    <div className="flex shrink-0 items-center">
-      <div className="flex -space-x-3">
-        {visible.map((img, i) => (
-          <img
-            key={img.assetId}
-            src={attentionImageUrl(img.assetId)}
-            alt={img.alt ?? ""}
-            loading="lazy"
-            style={{ zIndex: visible.length - i }}
-            className="h-11 w-11 rounded-md border border-border bg-muted object-cover shadow-sm"
-          />
-        ))}
-      </div>
-      {extra > 0 && (
-        <span className="ml-1 inline-flex h-6 items-center rounded-md border border-border bg-muted px-1.5 text-(length:--text-nano) font-medium text-muted-foreground">
-          +{extra}
-        </span>
-      )}
-    </div>
   );
 }
 

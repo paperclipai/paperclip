@@ -12,10 +12,8 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import type {
-  AttentionDetailImage,
   AttentionFeed,
   AttentionItem,
-  AttentionItemDetail,
   AttentionProjectRef,
   AttentionSeverity,
   AttentionSourceKind,
@@ -153,21 +151,6 @@ export function attentionDetailLine(item: AttentionItem): string | null {
     default:
       return null;
   }
-}
-
-/** Screenshot / thumbnail images attached to the detail block, if any. */
-export function attentionDetailImages(item: AttentionItem): AttentionDetailImage[] {
-  return (item.detail as AttentionItemDetail | null)?.images ?? [];
-}
-
-/**
- * Content URL for an attention detail image asset. Already-absolute or data
- * URLs pass through unchanged (server may hand back a CDN URL; stories use data
- * URIs), otherwise we resolve the in-app asset content route.
- */
-export function attentionImageUrl(assetId: string): string {
-  if (assetId.startsWith("data:") || assetId.startsWith("http")) return assetId;
-  return `/api/assets/${assetId}/content`;
 }
 
 /**

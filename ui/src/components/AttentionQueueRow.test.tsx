@@ -528,7 +528,10 @@ describe("AttentionQueueRow", () => {
     expect(issuesApi.acceptInteraction).not.toHaveBeenCalled();
   });
 
-  it("renders evidence thumbnails in a centered context row below the text stack", () => {
+  // Anatomy 5b: the thumbnail row was removed from the card — evidence lives
+  // one click away behind the footer-left context link, so detail images must
+  // never render inline even when the payload carries them.
+  it("does not render evidence thumbnails even when the detail payload has images", () => {
     render(
       <AttentionQueueRow
         item={buildItem({
@@ -545,12 +548,8 @@ describe("AttentionQueueRow", () => {
       />,
     );
 
-    const image = container?.querySelector('img[alt="Screenshot"]');
-    expect(image?.getAttribute("src")).toBe("/api/assets/asset-1/content");
-
-    const thumbnailStack = image?.parentElement?.parentElement;
-    expect(thumbnailStack?.getAttribute("class")).toContain("items-center");
-    expect(thumbnailStack?.parentElement?.getAttribute("class")).toContain("items-center");
+    expect(container?.querySelector('img[alt="Screenshot"]')).toBeNull();
+    expect(container?.querySelector('img[src*="asset-1"]')).toBeNull();
   });
 
   it("is memoized — a parent re-render with identical props does not re-render the row", async () => {
