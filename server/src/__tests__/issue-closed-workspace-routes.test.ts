@@ -20,6 +20,7 @@ const mockExecutionWorkspaceService = vi.hoisted(() => ({
 
 const mockAccessService = vi.hoisted(() => ({
   canUser: vi.fn(),
+  decide: vi.fn(async () => ({ allowed: true, explanation: "allowed" })),
   hasPermission: vi.fn(),
 }));
 
@@ -71,6 +72,11 @@ function registerServiceMocks() {
 
   vi.doMock("../services/projects.js", () => ({
     projectService: () => mockProjectService,
+  }));
+
+  vi.doMock("../services/task-watchdog-scope.js", () => ({
+    resolveTaskWatchdogMutationScope: vi.fn(async () => ({ kind: "none" })),
+    taskWatchdogScopeAllowsIssueMutation: vi.fn(),
   }));
 
   vi.doMock("../services/index.js", () => ({
