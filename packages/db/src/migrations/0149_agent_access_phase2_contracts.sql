@@ -6,7 +6,11 @@ ALTER TABLE "tool_applications" ADD COLUMN IF NOT EXISTS "owner_user_id" text;--
 ALTER TABLE "tool_applications" ADD COLUMN IF NOT EXISTS "archived_at" timestamp with time zone;--> statement-breakpoint
 
 UPDATE "tool_applications"
-SET "application_key" = lower(regexp_replace("name", '[^a-zA-Z0-9._:-]+', '-', 'g'))
+SET "application_key" = concat(
+  coalesce(nullif(lower(regexp_replace("name", '[^a-zA-Z0-9._:-]+', '-', 'g')), ''), 'app'),
+  '-',
+  "id"::text
+)
 WHERE "application_key" IS NULL;--> statement-breakpoint
 
 ALTER TABLE "tool_connections" ADD COLUMN IF NOT EXISTS "connection_kind" text DEFAULT 'managed' NOT NULL;--> statement-breakpoint
