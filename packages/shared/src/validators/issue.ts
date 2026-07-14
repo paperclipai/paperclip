@@ -465,6 +465,10 @@ export const updateIssueSchema = createIssueBaseSchema.omit({
   resume: z.boolean().optional(),
   interrupt: z.boolean().optional(),
   hiddenAt: z.string().datetime().nullable().optional(),
+  // References (rather than supplies) provider-generated delivery evidence
+  // for a workspace_delivery terminal transition; see
+  // doc/execution-semantics.md, "Terminal transition contract".
+  deliveryAttestationId: z.string().uuid().optional(),
 });
 
 export type UpdateIssue = z.infer<typeof updateIssueSchema>;

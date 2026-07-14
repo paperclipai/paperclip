@@ -77,6 +77,7 @@ function registerModuleMocks() {
     }),
     ISSUE_LIST_DEFAULT_LIMIT: 500,
     ISSUE_LIST_MAX_LIMIT: 1000,
+    deliveryAttestationService: () => ({ listForIssue: async () => [] }),
     documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
     documentService: () => ({}),
     executionWorkspaceService: () => ({}),

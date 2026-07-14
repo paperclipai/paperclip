@@ -123,6 +123,7 @@ function registerModuleMocks() {
     companySkillService: () => ({
       completeTestRunForIssue: vi.fn(async () => null),
     }),
+    deliveryAttestationService: () => ({ listForIssue: async () => [] }),
     documentAnnotationService: () => mockDocumentAnnotationService,
     documentService: () => ({}),
     executionWorkspaceService: () => ({}),

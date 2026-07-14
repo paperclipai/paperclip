@@ -183,6 +183,7 @@ function registerRouteMocks() {
       completeTestRunForIssue: vi.fn(async () => null),
     }),
     companyService: () => mockCompanyService,
+    deliveryAttestationService: () => ({ listForIssue: async () => [] }),
     documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
     documentService: () => mockDocumentService,
     executionWorkspaceService: () => ({}),

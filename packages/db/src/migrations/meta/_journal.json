@@ -1023,6 +1023,13 @@
       "when": 1783822700000,
       "tag": "0147_issue_completion_requirement",
       "breakpoints": true
+    },
+    {
+      "idx": 148,
+      "version": "7",
+      "when": 1783822800000,
+      "tag": "0148_delivery_attestations",
+      "breakpoints": true
     }
   ]
 }
