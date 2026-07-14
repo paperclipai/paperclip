@@ -79,7 +79,7 @@ export function AgentMcpServersTab({
       data,
     }: {
       serverId: string;
-      data: { bindingMode?: "allowed" | "preferred" | "required"; enabled?: boolean };
+      data: { bindingMode?: "allowed" | "preferred" | "required"; enabled?: boolean; allowedTools?: string[] };
     }) => mcpServersApi.updateAgentBinding(agentId, serverId, data, companyId),
     onSuccess: () => {
       invalidate();
@@ -235,6 +235,53 @@ export function AgentMcpServersTab({
                           />
                           <span>Enabled for this agent</span>
                         </label>
+                        {snapshot && snapshot.tools.length > 0 ? (
+                          <div className="grid gap-1">
+                            <span className="text-muted-foreground">
+                              Tools{" "}
+                              {binding.allowedTools.length === 0
+                                ? "(all allowed)"
+                                : `(${binding.allowedTools.length} of ${snapshot.tools.length} allowed)`}
+                            </span>
+                            <div className="max-h-40 space-y-1 overflow-auto rounded-md border border-border/60 bg-background/60 p-2">
+                              {snapshot.tools.map((tool) => {
+                                const allowed =
+                                  binding.allowedTools.length === 0 ||
+                                  binding.allowedTools.includes(tool.name);
+                                return (
+                                  <label key={tool.name} className="flex items-center gap-2 text-sm">
+                                    <input
+                                      type="checkbox"
+                                      checked={allowed}
+                                      onChange={(event) => {
+                                        const allNames = snapshot.tools.map((t) => t.name);
+                                        const current =
+                                          binding.allowedTools.length === 0
+                                            ? [...allNames]
+                                            : [...binding.allowedTools];
+                                        const nextSet = event.target.checked
+                                          ? Array.from(new Set([...current, tool.name]))
+                                          : current.filter((name) => name !== tool.name);
+                                        // Canonicalize "all selected" back to [] (backend reads empty as no restriction).
+                                        const data =
+                                          nextSet.length === allNames.length ? [] : nextSet;
+                                        updateBindingMutation.mutate({
+                                          serverId: server.id,
+                                          data: { allowedTools: data },
+                                        });
+                                      }}
+                                    />
+                                    <span className="font-mono text-[11px]">{tool.name}</span>
+                                  </label>
+                                );
+                              })}
+                            </div>
+                            <span className="text-[11px] text-muted-foreground">
+                              No restriction (all boxes checked) exposes every tool. Uncheck to limit
+                              which tools this agent may call.
+                            </span>
+                          </div>
+                        ) : null}
                       </div>
                     ) : (
                       <div className="mt-2 text-muted-foreground">
