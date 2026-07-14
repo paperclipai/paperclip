@@ -1,6 +1,7 @@
 {
   "name": "@paperclipai/google-sheets-mcp-server",
   "version": "0.1.0",
+  "description": "Paperclip fixture MCP server for Google Sheets workflows.",
   "license": "MIT",
   "homepage": "https://github.com/paperclipai/paperclip",
   "bugs": {
