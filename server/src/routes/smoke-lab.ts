@@ -10,12 +10,26 @@ import { validate } from "../middleware/validate.js";
 import { assertBoard, assertBoardOrAgent, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { logActivity, smokeLabService } from "../services/index.js";
 
+function configuredPublicBaseUrl() {
+  const raw = (
+    process.env.PAPERCLIP_PUBLIC_URL?.trim()
+    || process.env.PAPERCLIP_AUTH_PUBLIC_BASE_URL?.trim()
+    || process.env.BETTER_AUTH_URL?.trim()
+    || process.env.BETTER_AUTH_BASE_URL?.trim()
+  );
+  if (!raw) return null;
+  try {
+    return new URL(raw).origin;
+  } catch {
+    return null;
+  }
+}
+
 function requestBaseUrl(req: Request) {
-  const forwardedProto = String(req.headers["x-forwarded-proto"] ?? "").split(",")[0]?.trim();
-  const forwardedHost = String(req.headers["x-forwarded-host"] ?? "").split(",")[0]?.trim();
-  const proto = forwardedProto || req.protocol;
-  const host = forwardedHost || req.get("host");
-  return `${proto}://${host}`;
+  const configured = configuredPublicBaseUrl();
+  if (configured) return configured;
+  const host = req.get("host")?.trim() || req.hostname;
+  return `${req.protocol}://${host}`;
 }
 
 function smokeLabBaseUrl(req: Request, companyId: string) {

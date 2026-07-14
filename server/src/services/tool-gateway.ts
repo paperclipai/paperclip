@@ -2572,11 +2572,6 @@ export function createToolGatewayService(
         env[key] = configured;
       }
     }
-    for (const [key, value] of Object.entries(configEnv)) {
-      if (/^[A-Z_][A-Z0-9_]*$/.test(key) && typeof value === "string") {
-        env[key] = value;
-      }
-    }
     return env;
   }
 

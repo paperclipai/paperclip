@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   agents,
@@ -108,6 +108,7 @@ describeEmbeddedPostgres("smoke lab service pack and results API", () => {
   }, 20_000);
 
   afterEach(async () => {
+    vi.unstubAllEnvs();
     await db.delete(activityLog);
     await db.delete(smokeRunSteps);
     await db.delete(smokeRuns);
@@ -262,28 +263,25 @@ describeEmbeddedPostgres("smoke lab service pack and results API", () => {
     const company = await createCompany(db);
     await enableSmokeLab(db);
     const app = createRouteApp(db);
+    vi.stubEnv("PAPERCLIP_PUBLIC_URL", "http://paperclip-dev:45439");
 
     // A redirect host that is neither loopback nor the instance's own origin
     // could leak fixture authorization codes off the gated deployment.
     await request(app)
       .get(`/api/companies/${company.id}/smoke-lab/oauth/authorize`)
-      .query({ client_id: "smoke-client", redirect_uri: "http://paperclip-dev:45439/callback", response_type: "code" })
+      .query({ client_id: "smoke-client", redirect_uri: "http://other-host:45439/callback", response_type: "code" })
       .expect(403);
 
     // The instance's own (non-loopback) origin is fine — the smoke lab runs on
     // any private instance, e.g. an authenticated Tailscale host.
     await request(app)
       .get(`/api/companies/${company.id}/smoke-lab/oauth/authorize`)
-      .set("X-Forwarded-Host", "paperclip-dev:45439")
-      .set("X-Forwarded-Proto", "http")
       .query({ client_id: "smoke-client", redirect_uri: "http://paperclip-dev:45439/callback", response_type: "code" })
       .expect(200);
 
     await request(app)
       .post(`/api/companies/${company.id}/smoke-lab/oauth/authorize`)
       .type("form")
-      .set("X-Forwarded-Host", "paperclip-dev:45439")
-      .set("X-Forwarded-Proto", "http")
       .send({
         client_id: "smoke-client",
         redirect_uri: "http://paperclip-dev:45439/api/tools/oauth/callback",

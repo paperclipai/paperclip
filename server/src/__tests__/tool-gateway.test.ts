@@ -1269,7 +1269,7 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
         toolName: "inspect_env",
         title: "Inspect env",
         envKeys: ["ALLOWED_TOKEN"],
-        connectionConfig: { env: { ALLOWED_TOKEN: "allowed-token", EXTRA_CONFIG: "extra-value" } },
+        connectionConfig: { env: { ALLOWED_TOKEN: "allowed-token", EXTRA_CONFIG: "extra-value", NODE_OPTIONS: "--trace-warnings" } },
         stdioScript: `
 const readline = require("node:readline");
 const rl = readline.createInterface({ input: process.stdin });
@@ -1289,6 +1289,7 @@ rl.on("line", (line) => {
           databaseUrl: process.env.DATABASE_URL ?? null,
           allowedToken: process.env.ALLOWED_TOKEN ?? null,
           extraConfig: process.env.EXTRA_CONFIG ?? null,
+          nodeOptions: process.env.NODE_OPTIONS ?? null,
           hasPath: Boolean(process.env.PATH || process.env.Path),
         },
       },
@@ -1325,7 +1326,8 @@ rl.on("line", (line) => {
             structuredContent: {
               databaseUrl: null,
               allowedToken: "***REDACTED***",
-              extraConfig: "extra-value",
+              extraConfig: null,
+              nodeOptions: null,
               hasPath: true,
             },
           },
