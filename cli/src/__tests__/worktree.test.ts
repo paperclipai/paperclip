@@ -64,27 +64,33 @@ if (!embeddedPostgresSupport.supported) {
   );
 }
 
-async function getAvailableTestPort(reserved = new Set<number>()): Promise<number> {
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    const port = await new Promise<number>((resolve, reject) => {
-      const server = createServer();
-      server.unref();
-      server.on("error", reject);
-      server.listen(0, "127.0.0.1", () => {
-        const address = server.address();
-        if (!address || typeof address === "string") {
-          server.close(() => reject(new Error("Failed to allocate test port")));
-          return;
-        }
-        server.close((error) => {
-          if (error) reject(error);
-          else resolve(address.port);
-        });
-      });
+async function reserveTestPort(): Promise<{ port: number; release: () => Promise<void> }> {
+  const server = createServer();
+  server.unref();
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      server.off("error", reject);
+      resolve();
     });
-    if (!reserved.has(port)) return port;
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    server.close();
+    throw new Error("Failed to reserve test port");
   }
-  throw new Error("Failed to allocate distinct test port");
+  let released = false;
+  return {
+    port: address.port,
+    release: () => new Promise<void>((resolve, reject) => {
+      if (released) {
+        resolve();
+        return;
+      }
+      released = true;
+      server.close((error) => (error ? reject(error) : resolve()));
+    }),
+  };
 }
 
 afterEach(() => {
@@ -922,10 +928,10 @@ describe("worktree helpers", () => {
     });
     const originalCwd = process.cwd();
     const originalPaperclipConfig = process.env.PAPERCLIP_CONFIG;
-    const reservedPorts = new Set<number>();
-    const currentDatabasePort = await getAvailableTestPort(reservedPorts);
-    reservedPorts.add(currentDatabasePort);
-    const sourceDatabasePort = await getAvailableTestPort(reservedPorts);
+    const currentDatabaseReservation = await reserveTestPort();
+    const sourceDatabaseReservation = await reserveTestPort();
+    const currentDatabasePort = currentDatabaseReservation.port;
+    const sourceDatabasePort = sourceDatabaseReservation.port;
 
     try {
       fs.mkdirSync(path.dirname(currentPaths.configPath), { recursive: true });
@@ -963,6 +969,9 @@ describe("worktree helpers", () => {
       delete process.env.PAPERCLIP_CONFIG;
       process.chdir(repoRoot);
 
+      await currentDatabaseReservation.release();
+      await sourceDatabaseReservation.release();
+
       await worktreeReseedCommand({
         fromConfig: sourcePaths.configPath,
         yes: true,
@@ -978,6 +987,8 @@ describe("worktree helpers", () => {
       expect(rewrittenEnv).toContain("PAPERCLIP_WORKTREE_NAME=existing-name");
       expect(rewrittenEnv).toContain("PAPERCLIP_WORKTREE_COLOR=\"#112233\"");
     } finally {
+      await currentDatabaseReservation.release();
+      await sourceDatabaseReservation.release();
       process.chdir(originalCwd);
       if (originalPaperclipConfig === undefined) {
         delete process.env.PAPERCLIP_CONFIG;
