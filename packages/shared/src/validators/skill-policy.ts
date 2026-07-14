@@ -32,14 +32,17 @@ function isSafeSourceLocator(value: string) {
   try {
     const url = new URL(value);
     if (url.username || url.password) return false;
-    return ![...url.searchParams.keys()].some((key) => /token|secret|password|api[-_]?key|authorization/i.test(key));
+    const credentialParameter = /token|secret|password|api[-_]?key|authorization/i;
+    if ([...url.searchParams.keys()].some((key) => credentialParameter.test(key))) return false;
+    const fragment = url.hash.slice(1);
+    return !/(?:^|[?&;])(?:token|secret|password|api[-_]?key|authorization)=/i.test(fragment);
   } catch {
     return true;
   }
 }
 
 const skillPolicySourceLocatorSchema = z.string().trim().min(1).max(2_048)
-  .refine(isSafeSourceLocator, "Source locators must not contain credentials or secret query parameters");
+  .refine(isSafeSourceLocator, "Source locators must not contain credentials or secret query or fragment parameters");
 
 export const skillPolicySubjectSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("all_agents") }).strict(),

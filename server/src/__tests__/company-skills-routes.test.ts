@@ -1815,6 +1815,47 @@ describe("company skill mutation permissions", () => {
     }));
   });
 
+  it.each([
+    ["create", "post", "/api/companies/company-1/skills/skill-1/test-runs"],
+    ["cancel", "post", "/api/companies/company-1/skills/skill-1/test-runs/22222222-2222-4222-8222-222222222222/cancel"],
+    ["delete", "delete", "/api/companies/company-1/skills/skill-1/test-runs/22222222-2222-4222-8222-222222222222"],
+  ] as const)("denies agents without tasks:assign permission from %s test runs", async (_operation, method, path) => {
+    mockAgentService.getById.mockResolvedValueOnce({
+      id: "agent-1",
+      companyId: "company-1",
+    });
+    mockAccessService.hasPermission.mockResolvedValueOnce(false);
+
+    const app = await createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      keyScope: null,
+      runId: "run-1",
+    });
+    const response = method === "post"
+      ? await request(app)[method](path).send({
+        inputId: "11111111-1111-4111-8111-111111111111",
+        agentId: "55555555-5555-4555-8555-555555555555",
+      })
+      : await request(app)[method](path);
+
+    expect(response.status, JSON.stringify(response.body)).toBe(403);
+    expect(response.body.error).toBe("Missing permission: tasks:assign");
+    expect(mockCompanySkillPolicyService.evaluate).toHaveBeenCalledWith(expect.objectContaining({
+      action: "skills.test",
+    }));
+    expect(mockAccessService.hasPermission).toHaveBeenCalledWith(
+      "company-1",
+      "agent",
+      "agent-1",
+      "tasks:assign",
+    );
+    expect(mockCompanySkillService.createTestRun).not.toHaveBeenCalled();
+    expect(mockCompanySkillService.cancelTestRun).not.toHaveBeenCalled();
+    expect(mockCompanySkillService.deleteTestRun).not.toHaveBeenCalled();
+  });
+
   it("does not prune expired harness issues from test run reads", async () => {
     mockCompanySkillService.listTestRuns.mockResolvedValueOnce([]);
     mockCompanySkillService.getTestRunDetail.mockResolvedValueOnce({

@@ -25,7 +25,14 @@ import {
 } from "@paperclipai/shared";
 import { trackSkillImported } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
-import { accessService, companySkillService, heartbeatService, issueService, logActivity } from "../services/index.js";
+import {
+  accessService,
+  agentService,
+  companySkillService,
+  heartbeatService,
+  issueService,
+  logActivity,
+} from "../services/index.js";
 import { isGitRepoSkillImportSource, parseSkillImportSourceInput } from "../services/company-skills.js";
 import {
   getCatalogSkillOrThrow,
@@ -53,6 +60,7 @@ type SkillTelemetryInput = {
 export function companySkillRoutes(db: Db) {
   const router = Router();
   const access = accessService(db);
+  const agents = agentService(db);
   const svc = companySkillService(db);
   const issues = issueService(db);
   const heartbeat = heartbeatService(db);
@@ -196,6 +204,32 @@ export function companySkillRoutes(db: Db) {
         code: "skill_policy_denied",
         ...policyDecision,
       });
+    }
+  }
+
+  async function assertCanControlSkillTestRuns(req: Request, companyId: string) {
+    assertCompanyAccess(req, companyId);
+
+    if (req.actor.type === "board") {
+      if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
+      const allowed = await access.canUser(companyId, req.actor.userId, "tasks:assign");
+      if (!allowed) {
+        throw forbidden("Missing permission: tasks:assign");
+      }
+      return;
+    }
+
+    if (!req.actor.agentId) {
+      throw forbidden("Agent authentication required");
+    }
+
+    const actorAgent = await agents.getById(req.actor.agentId);
+    if (!actorAgent || actorAgent.companyId !== companyId) {
+      throw forbidden("Agent key cannot access another company");
+    }
+    const allowed = await access.hasPermission(companyId, "agent", actorAgent.id, "tasks:assign");
+    if (!allowed) {
+      throw forbidden("Missing permission: tasks:assign");
     }
   }
 
@@ -488,6 +522,7 @@ export function companySkillRoutes(db: Db) {
       const companyId = req.params.companyId as string;
       const skillId = req.params.skillId as string;
       await assertCanMutateCompanySkills(req, companyId, "skills.test", await skillPolicyResource({ companyId, skillId }));
+      await assertCanControlSkillTestRuns(req, companyId);
       const actor = getActorInfo(req);
       const result = await svc.createTestRun(companyId, skillId, req.body, skillActor(req), {
         createHarnessIssue: async (harnessIssue) => {
@@ -574,6 +609,7 @@ export function companySkillRoutes(db: Db) {
     const skillId = req.params.skillId as string;
     const runId = req.params.runId as string;
     await assertCanMutateCompanySkills(req, companyId, "skills.test", await skillPolicyResource({ companyId, skillId }));
+    await assertCanControlSkillTestRuns(req, companyId);
     const actor = getActorInfo(req);
     const result = await svc.cancelTestRun(companyId, skillId, runId, {
       cancelHarnessIssue: async (issueId) => {
@@ -614,6 +650,7 @@ export function companySkillRoutes(db: Db) {
     const skillId = req.params.skillId as string;
     const runId = req.params.runId as string;
     await assertCanMutateCompanySkills(req, companyId, "skills.test", await skillPolicyResource({ companyId, skillId }));
+    await assertCanControlSkillTestRuns(req, companyId);
     const actor = getActorInfo(req);
     const result = await svc.deleteTestRun(companyId, skillId, runId, {
       hideHarnessIssue: async (issueId) => {
