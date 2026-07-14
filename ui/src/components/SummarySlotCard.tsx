@@ -125,6 +125,7 @@ export function SummarySlotCard({
     queryFn: () => summarySlotsApi.get(selector!),
     enabled: Boolean(selector && summariesEnabled),
     retry: false,
+    refetchInterval: (query) => query.state.data?.slot?.status === "generating" ? 3_000 : false,
   });
 
   const revisionsQuery = useQuery({
