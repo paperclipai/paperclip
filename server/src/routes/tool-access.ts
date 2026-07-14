@@ -1145,9 +1145,8 @@ export function toolAccessRoutes(
     "/companies/:companyId/tools/action-requests/:actionRequestId/trust-rule",
     validate(createToolTrustRuleFromActionRequestSchema),
     async (req, res) => {
-      assertBoard(req);
       const companyId = req.params.companyId as string;
-      assertCompanyAccess(req, companyId);
+      assertToolAppMutationAccess(req, companyId);
       const policy = await policySvc.createTrustRuleFromActionRequest({
         companyId,
         actionRequestId: req.params.actionRequestId as string,
@@ -1172,9 +1171,8 @@ export function toolAccessRoutes(
   );
 
   router.post("/companies/:companyId/tools/trust-rules/:policyId/revoke", validate(revokeToolTrustRuleSchema), async (req, res) => {
-    assertBoard(req);
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    assertToolAppMutationAccess(req, companyId);
     const policy = await policySvc.revokeTrustRule({
       companyId,
       policyId: req.params.policyId as string,

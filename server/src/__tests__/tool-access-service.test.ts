@@ -4813,6 +4813,12 @@ describeEmbeddedPostgres("tool access service", () => {
         .send({ enabled: false }),
       await request(viewerApp)
         .delete(`/api/companies/${company.id}/tools/policies/${firstPolicy!.id}`),
+      await request(viewerApp)
+        .post(`/api/companies/${company.id}/tools/action-requests/${randomUUID()}/trust-rule`)
+        .send({ name: "Viewer trust rule" }),
+      await request(viewerApp)
+        .post(`/api/companies/${company.id}/tools/trust-rules/${firstPolicy!.id}/revoke`)
+        .send({ reason: "viewer revoke" }),
     ];
 
     for (const res of responses) {
