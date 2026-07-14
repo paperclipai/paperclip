@@ -233,11 +233,16 @@ async function main() {
       assert(pending.actionRequestId, "ask-first has actionRequestId");
       await page.goto(`${BASE}/${prefix}/apps/${conn.id}/review`, { waitUntil: "networkidle" });
       await api("POST", `/api/tool-gateway/action-requests/${pending.actionRequestId}/approve`, { companyId });
+      let approved = false;
       for (let i = 0; i < 40; i++) {
         const st = await api("GET", `/api/tool-connections/${conn.id}/test-calls/${pending.actionRequestId}`);
-        if (st.phase === "done") break;
+        if (st.phase === "done") {
+          approved = true;
+          break;
+        }
         await new Promise((r) => setTimeout(r, 250));
       }
+      assert(approved, `Timed out waiting for test-call ${pending.actionRequestId} phase done`);
       return `Approved ask-first call ${scenario.lifecycle.askFirstWrite.name}`;
     });
 
