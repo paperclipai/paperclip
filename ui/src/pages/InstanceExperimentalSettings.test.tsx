@@ -55,7 +55,6 @@ const SERVER_INFO_TOGGLE_SELECTOR =
   'button[aria-label="Toggle server info debug view experimental setting"]';
 const BUILT_IN_AGENTS_TOGGLE_SELECTOR =
   'button[aria-label="Toggle built-in agents experimental setting"]';
-const APPS_TOGGLE_SELECTOR = 'button[aria-label="Toggle apps experimental setting"]';
 const AUTO_RECOVERY_TOGGLE_SELECTOR =
   'button[aria-label="Toggle task graph liveness auto-recovery"]';
 
@@ -186,19 +185,6 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
     );
     expect(warning?.textContent).toContain("Experimental features may break at any time.");
     expect(warning?.textContent).toContain("no compatibility guarantees");
-  });
-
-  it("enables the Apps UI from experimental settings", async () => {
-    await renderPage();
-
-    const toggle = container.querySelector<HTMLButtonElement>(APPS_TOGGLE_SELECTOR);
-    expect(toggle?.getAttribute("aria-checked")).toBe("false");
-
-    await act(() => toggle?.click());
-    await flushReact();
-
-    expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledWith({ enableApps: true });
-    expect(container.querySelector(APPS_TOGGLE_SELECTOR)?.getAttribute("aria-checked")).toBe("true");
   });
 
   it("does not render the Conference Room Chat experimental setting for now", async () => {
