@@ -100,6 +100,7 @@ function snapshotV1(overrides?: Partial<RoutineRevisionSnapshotV1["routine"]>): 
       variables: [],
       env: null,
       ...overrides,
+      executionPolicy: overrides?.executionPolicy ?? null,
     },
     triggers: [],
   };

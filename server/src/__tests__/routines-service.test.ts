@@ -1,5 +1,5 @@
 import { createHmac, randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
@@ -20,6 +20,7 @@ import {
   projectWorkspaces,
   projects,
   routineDocuments,
+  routineRevisions,
   routineRuns,
   routines,
   routineTriggers,
@@ -682,6 +683,83 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     const runAfter = await svc.runRoutine(routine.id, { source: "manual" });
     expect(runAfter.routineRevisionId).toBe(updated?.latestRevisionId);
     expect(runAfter.dispatchFingerprint).not.toBe(runBefore.dispatchFingerprint);
+  });
+
+  it("stores routine execution policy, applies it to issues, and binds it into the dispatch fingerprint", async () => {
+    const { agentId, companyId, projectId, svc } = await seedFixture();
+    const executionPolicy = {
+      mode: "normal" as const,
+      commentRequired: false,
+      stages: [],
+    };
+    const routine = await svc.create(
+      companyId,
+      {
+        projectId,
+        goalId: null,
+        parentIssueId: null,
+        title: "comment-optional routine",
+        description: null,
+        assigneeAgentId: agentId,
+        priority: "medium",
+        status: "active",
+        concurrencyPolicy: "always_enqueue",
+        catchUpPolicy: "skip_missed",
+        executionPolicy,
+      },
+      {},
+    );
+
+    expect(routine.executionPolicy).toEqual(executionPolicy);
+    const [revision] = await svc.listRevisions(routine.id);
+    expect(revision?.snapshot.routine.executionPolicy).toEqual(executionPolicy);
+
+    const firstRun = await svc.runRoutine(routine.id, { source: "manual" });
+    const firstIssue = await db
+      .select({ executionPolicy: issues.executionPolicy })
+      .from(issues)
+      .where(eq(issues.id, firstRun.linkedIssueId!))
+      .then((rows) => rows[0] ?? null);
+    expect(firstIssue?.executionPolicy).toEqual(executionPolicy);
+
+    // A fingerprint must bind effective policy content, not only the revision id.
+    // Simulate out-of-band drift while leaving latestRevisionId unchanged.
+    await db
+      .update(routines)
+      .set({ executionPolicy: null })
+      .where(eq(routines.id, routine.id));
+    const secondRun = await svc.runRoutine(routine.id, { source: "manual" });
+    expect(secondRun.routineRevisionId).toBe(firstRun.routineRevisionId);
+    expect(secondRun.dispatchFingerprint).not.toBe(firstRun.dispatchFingerprint);
+  });
+
+  it("restores routine execution policy and treats legacy snapshots without it as null", async () => {
+    const { routine, svc } = await seedFixture();
+    const legacyRevisionId = routine.latestRevisionId!;
+    const executionPolicy = {
+      mode: "normal" as const,
+      commentRequired: false,
+      stages: [],
+    };
+    await svc.update(routine.id, { executionPolicy }, {});
+
+    await db.execute(sql`
+      update ${routineRevisions}
+      set snapshot = jsonb_set(
+        ${routineRevisions.snapshot},
+        '{routine}',
+        (${routineRevisions.snapshot} -> 'routine') - 'executionPolicy'
+      )
+      where ${routineRevisions.id} = ${legacyRevisionId}
+    `);
+
+    const legacyRevision = (await svc.listRevisions(routine.id))
+      .find((entry) => entry.id === legacyRevisionId);
+    expect(legacyRevision?.snapshot.routine.executionPolicy).toBeNull();
+
+    const restored = await svc.restoreRevision(routine.id, legacyRevisionId, {});
+    expect(restored.routine.executionPolicy).toBeNull();
+    expect(restored.revision.snapshot.routine.executionPolicy).toBeNull();
   });
 
   it("rejects stale routine baseRevisionId updates", async () => {

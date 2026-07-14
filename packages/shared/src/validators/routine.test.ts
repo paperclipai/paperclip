@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  createRoutineSchema,
   routineRevisionSnapshotV1Schema,
   routineVariableSchema,
   updateRoutineSchema,
@@ -43,6 +44,44 @@ describe("routine validators", () => {
     });
 
     expect(parsed.triggers[0]?.publicId).toBe("routine_webhook_123");
+    expect(parsed.routine.executionPolicy).toBeNull();
+  });
+
+  it("accepts comment-optional routine policies and defaults legacy snapshots to null", () => {
+    const created = createRoutineSchema.parse({
+      title: "Autonomous triage",
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: false,
+        stages: [],
+      },
+    });
+    expect(created.executionPolicy).toEqual({
+      mode: "normal",
+      commentRequired: false,
+      stages: [],
+    });
+
+    const legacy = routineRevisionSnapshotV1Schema.parse({
+      version: 1,
+      routine: {
+        id: routineId,
+        companyId,
+        projectId: null,
+        goalId: null,
+        parentIssueId: null,
+        title: "Legacy routine",
+        description: null,
+        assigneeAgentId: null,
+        priority: "medium",
+        status: "active",
+        concurrencyPolicy: "coalesce_if_active",
+        catchUpPolicy: "skip_missed",
+        variables: [],
+      },
+      triggers: [],
+    });
+    expect(legacy.routine.executionPolicy).toBeNull();
   });
 
   it("rejects secret-bearing trigger fields in routine revision snapshots", () => {

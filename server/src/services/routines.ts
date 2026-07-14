@@ -29,6 +29,7 @@ import {
 import type {
   CreateRoutine,
   CreateRoutineTrigger,
+  IssueExecutionPolicy,
   Routine,
   RoutineDetail,
   RoutineDescriptionDocument,
@@ -53,6 +54,7 @@ import {
   pluginOperationIssueOriginKind,
   stringifyRoutineVariableValue,
   syncRoutineVariablesWithTemplate,
+  routineRevisionSnapshotSchema,
 } from "@paperclipai/shared";
 import { trackRoutineRun } from "@paperclipai/shared/telemetry";
 import { conflict, forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
@@ -74,6 +76,7 @@ import {
 } from "./instance-settings.js";
 import { queueIssueAssignmentWakeup, type IssueAssignmentWakeupDeps } from "./issue-assignment-wakeup.js";
 import { logActivity } from "./activity-log.js";
+import { normalizeIssueExecutionPolicy } from "./issue-execution-policy.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 
 const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"];
@@ -461,6 +464,7 @@ function createRoutineDispatchFingerprint(input: {
   assigneeAgentId: string | null;
   routineRevisionId: string | null;
   routineEnvFingerprint: string | null;
+  executionPolicy: IssueExecutionPolicy | null;
   executionWorkspaceId?: string | null;
   executionWorkspacePreference?: string | null;
   executionWorkspaceSettings?: Record<string, unknown> | null;
@@ -507,6 +511,7 @@ function routineRevisionSnapshotRoutine(routine: RoutineRow): RoutineRevisionSna
     catchUpPolicy: routine.catchUpPolicy as RoutineRevisionSnapshotV1["routine"]["catchUpPolicy"],
     variables: routine.variables ?? [],
     env: routine.env ?? null,
+    executionPolicy: routine.executionPolicy ?? null,
     responsibleUserId: routine.responsibleUserId ?? null,
   };
 }
@@ -557,10 +562,20 @@ function routineCurrentFieldsMatch(left: RoutineRow, right: RoutineRow) {
   );
 }
 
+function parseRoutineRevisionSnapshot(value: unknown): RoutineRevisionSnapshotV1 {
+  const parsed = routineRevisionSnapshotSchema.safeParse(value);
+  if (!parsed.success) {
+    throw unprocessable("Invalid routine revision snapshot", parsed.error.flatten());
+  }
+  // The runtime schema intentionally accepts legacy variable entries whose
+  // optional presentation fields predate the stricter public interface.
+  return parsed.data as unknown as RoutineRevisionSnapshotV1;
+}
+
 function mapRoutineRevision(row: typeof routineRevisions.$inferSelect): RoutineRevision {
   return {
     ...row,
-    snapshot: row.snapshot as RoutineRevisionSnapshotV1,
+    snapshot: parseRoutineRevisionSnapshot(row.snapshot),
   };
 }
 
@@ -1641,6 +1656,7 @@ export function routineService(
       : "routine_execution";
     const issueOriginId = managedIssueTemplate?.originId ?? input.routine.id;
     const issueBillingCode = managedIssueTemplate?.billingCode ?? null;
+    const executionPolicy = normalizeIssueExecutionPolicy(input.routine.executionPolicy ?? null);
     const dispatchFingerprint = createRoutineDispatchFingerprint({
       payload: triggerPayload,
       projectId,
@@ -1648,6 +1664,7 @@ export function routineService(
       assigneeAgentId,
       routineRevisionId: input.routine.latestRevisionId,
       routineEnvFingerprint: createRoutineEnvFingerprint(input.routine.env),
+      executionPolicy,
       executionWorkspaceId: input.executionWorkspaceId ?? null,
       executionWorkspacePreference: input.executionWorkspacePreference ?? null,
       executionWorkspaceSettings: input.executionWorkspaceSettings ?? null,
@@ -1695,7 +1712,7 @@ export function routineService(
             ))
             .then((rows) => {
               const row = rows[0] ?? null;
-              const snapshot = row?.snapshot as RoutineRevisionSnapshotV1 | undefined;
+              const snapshot = row ? parseRoutineRevisionSnapshot(row.snapshot) : undefined;
               return row?.responsibleUserId ?? snapshot?.routine.responsibleUserId ?? null;
             })
         : null;
@@ -1775,6 +1792,7 @@ export function routineService(
             originRunId: createdRun.id,
             originFingerprint: dispatchFingerprint,
             billingCode: issueBillingCode,
+            executionPolicy: executionPolicy as Record<string, unknown> | null,
             executionWorkspaceId: input.executionWorkspaceId ?? null,
             executionWorkspacePreference: input.executionWorkspacePreference ?? null,
             executionWorkspaceSettings: input.executionWorkspaceSettings ?? null,
@@ -2056,6 +2074,7 @@ export function routineService(
             strictMode: process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true",
             fieldPath: "env",
           });
+      const executionPolicy = normalizeIssueExecutionPolicy(input.executionPolicy ?? null);
       const variables = syncRoutineVariablesWithTemplate(
         [input.title, input.description],
         sanitizeRoutineVariableInputs(input.variables),
@@ -2084,6 +2103,7 @@ export function routineService(
             catchUpPolicy: input.catchUpPolicy,
             variables,
             env,
+            executionPolicy,
             responsibleUserId,
             createdByAgentId: actor.agentId ?? null,
             createdByUserId: actor.userId ?? null,
@@ -2122,6 +2142,9 @@ export function routineService(
               strictMode: process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true",
               fieldPath: "env",
             });
+      const nextExecutionPolicy = patch.executionPolicy === undefined
+        ? existing.executionPolicy
+        : normalizeIssueExecutionPolicy(patch.executionPolicy ?? null);
       const requestedStatus = patch.status ?? existing.status;
       if (patch.status === "active") {
         assertRoutineCanEnable(patch.status, nextAssigneeAgentId);
@@ -2194,6 +2217,7 @@ export function routineService(
           catchUpPolicy: patch.catchUpPolicy ?? locked.catchUpPolicy,
           variables: nextVariables,
           env: nextEnv,
+          executionPolicy: nextExecutionPolicy,
           responsibleUserId: locked.responsibleUserId ?? responsibleUserId,
           updatedByAgentId: actor.agentId ?? null,
           updatedByUserId: actor.userId ?? null,
@@ -2216,7 +2240,7 @@ export function routineService(
               ),
             )
             .then((rows) => rows[0] ?? null);
-          if (latestRevision && snapshotsMatch(nextSnapshot, latestRevision.snapshot as RoutineRevisionSnapshotV1)) {
+          if (latestRevision && snapshotsMatch(nextSnapshot, parseRoutineRevisionSnapshot(latestRevision.snapshot))) {
             if (patch.env !== undefined) {
               await secretsSvc.syncEnvBindingsForTarget(
                 locked.companyId,
@@ -2244,6 +2268,7 @@ export function routineService(
             catchUpPolicy: candidate.catchUpPolicy,
             variables: candidate.variables,
             env: candidate.env,
+            executionPolicy: candidate.executionPolicy,
             responsibleUserId: candidate.responsibleUserId,
             updatedByAgentId: actor.agentId ?? null,
             updatedByUserId: actor.userId ?? null,
@@ -2523,7 +2548,7 @@ export function routineService(
         .then((rows) => rows[0] ?? null);
       if (!targetRevision) throw notFound("Routine revision not found");
 
-      const snapshot = targetRevision.snapshot as RoutineRevisionSnapshotV1;
+      const snapshot = parseRoutineRevisionSnapshot(targetRevision.snapshot);
       const routineSnapshot = snapshot.routine;
       await assertRestorableAssignee(existingRoutine.companyId, routineSnapshot.assigneeAgentId, actor);
 
@@ -2580,6 +2605,7 @@ export function routineService(
             catchUpPolicy: routineSnapshot.catchUpPolicy,
             variables: routineSnapshot.variables,
             env: routineSnapshot.env,
+            executionPolicy: routineSnapshot.executionPolicy ?? null,
             updatedByAgentId: actor.agentId ?? null,
             updatedByUserId: actor.userId ?? null,
             updatedAt: now,

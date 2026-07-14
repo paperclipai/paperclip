@@ -76,14 +76,26 @@ describe("normalizeIssueExecutionPolicy", () => {
     expect(result!.stages[0].participants[0].id).toBeDefined();
   });
 
-  it("always sets commentRequired to true", () => {
+  it("preserves an explicit commentRequired false value", () => {
     const result = normalizeIssueExecutionPolicy({
       commentRequired: false,
       stages: [
         { type: "review", participants: [{ type: "agent", agentId: qaAgentId }] },
       ],
     });
-    expect(result!.commentRequired).toBe(true);
+    expect(result!.commentRequired).toBe(false);
+  });
+
+  it("keeps a comment-optional policy without stages", () => {
+    expect(normalizeIssueExecutionPolicy({
+      mode: "normal",
+      commentRequired: false,
+      stages: [],
+    })).toEqual({
+      mode: "normal",
+      commentRequired: false,
+      stages: [],
+    });
   });
 
   it("defaults mode to normal", () => {
@@ -93,6 +105,7 @@ describe("normalizeIssueExecutionPolicy", () => {
       ],
     });
     expect(result!.mode).toBe("normal");
+    expect(result!.commentRequired).toBe(true);
   });
 
   it("rejects approvalsNeeded values above 1", () => {

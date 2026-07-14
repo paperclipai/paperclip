@@ -204,6 +204,8 @@ responsible user.
 
 Secret-aware env bindings are supported by agents, projects, and routines. Routine env lives in `routines.env`, is captured in `routine_revisions.snapshot`, and routine dispatches store `routine_runs.routine_revision_id` so runtime secret resolution uses the env snapshot that existed when the run was created. Routine secret refs bind with `target_type = 'routine'`, `target_id = routines.id`, and `config_path` values under `env.*`.
 
+Routine-created issues can also carry an issue execution policy. The normalized policy lives in `routines.execution_policy`, is captured in every routine revision (legacy snapshots read it as `null`), is applied to each dispatched issue, and participates in the dispatch fingerprint so runs with different effective policies cannot coalesce.
+
 For local/default installs, the active provider is `local_encrypted`:
 
 - Secret material is encrypted at rest with a local master key.

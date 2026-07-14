@@ -648,4 +648,40 @@ describe("routine routes", () => {
     });
     expect(mockTrackRoutineCreated).toHaveBeenCalledWith(expect.anything());
   });
+
+  it("round-trips a comment-optional execution policy through the create API", async () => {
+    const executionPolicy = {
+      mode: "normal",
+      commentRequired: false,
+      stages: [],
+    };
+    mockRoutineService.create.mockResolvedValue({
+      ...routine,
+      executionPolicy,
+    });
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "session",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await request(app)
+      .post(`/api/companies/${companyId}/routines`)
+      .send({
+        projectId,
+        title: "Autonomous routine",
+        assigneeAgentId: agentId,
+        executionPolicy,
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockRoutineService.create).toHaveBeenCalledWith(
+      companyId,
+      expect.objectContaining({ executionPolicy }),
+      expect.anything(),
+    );
+    expect(res.body.executionPolicy).toEqual(executionPolicy);
+  });
 });

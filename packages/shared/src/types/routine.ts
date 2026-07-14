@@ -9,6 +9,7 @@ import type {
   RoutineVariableType,
 } from "../constants.js";
 import type { EnvBinding } from "./secrets.js";
+import type { IssueExecutionPolicy } from "./issue.js";
 import type { ExecutionWorkspaceMode, IssueExecutionWorkspaceSettings } from "./workspace-runtime.js";
 
 export interface RoutineDescriptionDocument {
@@ -84,6 +85,7 @@ export interface Routine {
   originId?: string | null;
   variables: RoutineVariable[];
   env?: RoutineEnvConfig | null;
+  executionPolicy?: IssueExecutionPolicy | null;
   latestRevisionId: string | null;
   latestRevisionNumber: number;
   createdByAgentId: string | null;
@@ -127,6 +129,7 @@ export interface RoutineRevisionSnapshotRoutineV1 {
   originId?: string | null;
   variables: RoutineVariable[];
   env: RoutineEnvConfig | null;
+  executionPolicy: IssueExecutionPolicy | null;
   responsibleUserId: string | null;
 }
 

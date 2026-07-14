@@ -159,6 +159,7 @@ function makeSnapshot(env: RoutineEnvConfig | null): RoutineRevisionSnapshotV1 {
       catchUpPolicy: "skip_missed",
       variables: [],
       env,
+      executionPolicy: null,
     },
     triggers: [],
   };
