@@ -4819,6 +4819,8 @@ describeEmbeddedPostgres("tool access service", () => {
       await request(viewerApp)
         .post(`/api/companies/${company.id}/tools/trust-rules/${firstPolicy!.id}/revoke`)
         .send({ reason: "viewer revoke" }),
+      await request(viewerApp)
+        .post(`/api/companies/${company.id}/tools/examples/safe-read-only-todo-kv/install`),
     ];
 
     for (const res of responses) {

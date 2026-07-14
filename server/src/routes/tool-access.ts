@@ -371,9 +371,8 @@ export function toolAccessRoutes(
   });
 
   router.post("/companies/:companyId/tools/examples/:id/install", async (req, res) => {
-    assertBoard(req);
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    assertToolAppMutationAccess(req, companyId);
     const result = await svc.installExample(companyId, req.params.id as string, getActorInfo(req));
     await logActivity(db, {
       companyId,
