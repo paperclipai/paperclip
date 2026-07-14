@@ -24,7 +24,7 @@ export const SKILL_POLICY_DENIAL_CODE = "skill_policy_denied";
 /**
  * Non-configurable platform-invariant failure codes (§9.10). Policy can never
  * loosen these — the remediation is always to fix the artifact/source/input,
- * never to change a permission or point at Paperclip EE.
+ * never to change a permission.
  */
 export const SKILL_PLATFORM_INVARIANT_CODES = [
   "skill_authentication_required",
@@ -56,13 +56,6 @@ export interface SkillDenial {
   title: string;
   /** Human remediation — never a curl/API-key snippet. */
   remediation: string;
-  /**
-   * Whether the Paperclip EE affordance is relevant for this denial. Only an
-   * explicit company-policy denial (State B) or a policy-admin requirement can
-   * be resolved by an administrator via EE. Platform-safety failures never
-   * point at EE — policy cannot waive them.
-   */
-  allowsEeRemediation: boolean;
 }
 
 const DEFAULT_POLICY_REMEDIATION =
@@ -134,7 +127,6 @@ export function classifySkillDenial(
       reason,
       title,
       remediation: remediation ?? DEFAULT_POLICY_REMEDIATION,
-      allowsEeRemediation: true,
     };
   }
 
@@ -146,7 +138,6 @@ export function classifySkillDenial(
       reason,
       title: "This change needs administration access.",
       remediation: remediation ?? DEFAULT_ADMIN_REMEDIATION,
-      allowsEeRemediation: true,
     };
   }
 
@@ -164,7 +155,6 @@ export function classifySkillDenial(
         remediation
         ?? (code && PLATFORM_REMEDIATIONS[code])
         ?? "Fix the flagged issue and try again.",
-      allowsEeRemediation: false,
     };
   }
 

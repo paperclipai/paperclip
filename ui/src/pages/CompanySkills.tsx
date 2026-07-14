@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode, type SVGProps } from "react";
-import { Link, useActiveCompanyPrefix, useNavigate, useParams, useSearchParams } from "@/lib/router";
+import { Link, useNavigate, useParams, useSearchParams } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   AgentDesiredSkillEntry,
@@ -37,10 +37,8 @@ import { AgentIcon } from "../components/AgentIconPicker";
 import { AgentMultiSelect } from "../components/AgentMultiSelect";
 import { useAdapterCapabilities } from "../adapters/use-adapter-capabilities";
 import {
-  PaperclipEeAffordance,
   SkillPolicyDenialNotice,
   SkillPolicyPeek,
-  useEeSkillPolicyAvailability,
   useSkillPolicyDenial,
 } from "@/components/skill-studio/SkillPolicySurfaces";
 import {
@@ -911,7 +909,7 @@ export function DiscoveryGrid({
   onScan: () => void;
   scanPending: boolean;
   scanStatus: string | null;
-  /** Read-only effective-policy peek + Paperclip EE discovery affordance (§9.10). */
+  /** Read-only effective-policy summary (§9.10). */
   policyFooter?: ReactNode;
 }) {
   // Source filter (github / skills.sh / local / …) lives in the grid so it
@@ -3504,8 +3502,6 @@ export function CompanySkills() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToastActions();
   const adapterCaps = useAdapterCapabilities();
-  const companyPrefix = useActiveCompanyPrefix();
-  const ee = useEeSkillPolicyAvailability(companyPrefix);
   const policyDenial = useSkillPolicyDenial();
   // Route a failed skill mutation to the persistent policy banner when it is an
   // explicit-policy (State B) or platform-safety (State C) denial; otherwise keep
@@ -4103,7 +4099,7 @@ export function CompanySkills() {
       const message = error instanceof Error ? error.message : "Failed to install catalog skill.";
       setInstallDialogState((current) => ({ ...current, error: message }));
       // Also surface explicit-policy / platform denials in the persistent banner
-      // so the reason (and any EE remediation) stays visible after the dialog closes.
+      // so the reason stays visible after the dialog closes.
       policyDenial.capture(error, "Installing this skill");
     },
   });
@@ -4275,25 +4271,13 @@ export function CompanySkills() {
     ? "Review the fork metadata and create an editable company copy."
     : "Create an editable company skill in the Paperclip workspace.";
 
-  // Read-only effective-policy peek plus the non-blocking Paperclip EE discovery
-  // line. Neither ever gates a core skill action — they only explain policy and
-  // point at EE for detailed administration (§9.10, PAP-13865).
-  const policyFooter = (
-    <div className="space-y-2">
-      <SkillPolicyPeek companyId={selectedCompanyId} />
-      <PaperclipEeAffordance
-        availability={ee.availability}
-        pageLink={ee.pageLink}
-        settingsLink={ee.settingsLink}
-      />
-    </div>
-  );
+  const policyFooter = <SkillPolicyPeek companyId={selectedCompanyId} />;
 
   return (
     <>
       {policyDenial.denial ? (
         <div className="px-4 pt-4">
-          <SkillPolicyDenialNotice denial={policyDenial.denial} ee={ee} onDismiss={policyDenial.reset} />
+          <SkillPolicyDenialNotice denial={policyDenial.denial} onDismiss={policyDenial.reset} />
         </div>
       ) : null}
       <Dialog open={deleteOpen} onOpenChange={closeDeleteDialog}>

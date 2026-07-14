@@ -2,25 +2,13 @@
 
 import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
-import type { AnchorHTMLAttributes, ReactNode } from "react";
-import { afterEach, describe, expect, it, vi } from "vitest";
-
-// The real Link is company-aware and needs a CompanyProvider. Stub it to a
-// plain anchor so we can assert the resolved hrefs without a router.
-vi.mock("@/lib/router", () => ({
-  Link: ({ to, children, ...rest }: AnchorHTMLAttributes<HTMLAnchorElement> & { to: string }) => (
-    <a href={to} {...rest}>
-      {children}
-    </a>
-  ),
-}));
+import type { ReactNode } from "react";
+import { afterEach, describe, expect, it } from "vitest";
 
 import {
-  PaperclipEeAffordance,
   SkillPolicyDenialNotice,
   useSkillPolicyDenial,
 } from "./SkillPolicySurfaces";
-import type { EeSkillPolicyAvailability } from "./SkillPolicySurfaces";
 import { classifySkillDenial } from "@/lib/skill-policy-denial";
 import { ApiError } from "@/api/client";
 
@@ -53,12 +41,6 @@ afterEach(() => {
   container = null;
 });
 
-const eeEnabled: EeSkillPolicyAvailability = {
-  availability: "enabled",
-  pageLink: "/ACME/plugins/ee-uuid",
-  settingsLink: "/company/settings/instance/plugins/paperclipai.paperclip-ee",
-};
-
 function policyDenial() {
   return classifySkillDenial(
     new ApiError("denied", 403, {
@@ -80,72 +62,24 @@ function platformDenial() {
 }
 
 describe("SkillPolicyDenialNotice", () => {
-  it("renders a State B policy denial with title, remediation, and an EE link when EE is enabled", () => {
-    const el = render(<SkillPolicyDenialNotice denial={policyDenial()} ee={eeEnabled} />);
+  it("renders a State B policy denial with title and remediation", () => {
+    const el = render(<SkillPolicyDenialNotice denial={policyDenial()} />);
     expect(el.textContent).toContain("restricted by your company policy");
     expect(el.textContent).toContain("administrator can change the skill policy");
-    const link = el.querySelector("a[href='/ACME/plugins/ee-uuid']");
-    expect(link).not.toBeNull();
-    expect(el.textContent).toContain("Open skill policy in EE");
   });
 
-  it("never shows an EE link for a State C platform-safety denial", () => {
-    const el = render(<SkillPolicyDenialNotice denial={platformDenial()} ee={eeEnabled} />);
+  it("renders a State C platform-safety denial", () => {
+    const el = render(<SkillPolicyDenialNotice denial={platformDenial()} />);
     expect(el.textContent).toContain("secret value");
-    expect(el.querySelector("a[href='/ACME/plugins/ee-uuid']")).toBeNull();
   });
 
-  it("omits the EE link for a policy denial when EE is absent (no broken link)", () => {
+  it("supports dismissing the persistent banner", () => {
+    let dismissed = false;
     const el = render(
-      <SkillPolicyDenialNotice
-        denial={policyDenial()}
-        ee={{ availability: "absent", pageLink: null, settingsLink: null }}
-      />,
+      <SkillPolicyDenialNotice denial={policyDenial()} onDismiss={() => { dismissed = true; }} />,
     );
-    expect(el.querySelector("a")).toBeNull();
-    expect(el.textContent).toContain("administrator can change the skill policy");
-  });
-});
-
-describe("PaperclipEeAffordance", () => {
-  it("absent → text-only marketing link, never disables anything", () => {
-    const el = render(
-      <PaperclipEeAffordance availability="absent" pageLink={null} settingsLink={null} />,
-    );
-    const link = el.querySelector("a[href='https://paperclip.ing/ee']");
-    expect(link).not.toBeNull();
-  });
-
-  it("enabled → in-app deep link", () => {
-    const el = render(
-      <PaperclipEeAffordance
-        availability="enabled"
-        pageLink="/ACME/plugins/ee-uuid"
-        settingsLink={null}
-      />,
-    );
-    expect(el.querySelector("a[href='/ACME/plugins/ee-uuid']")).not.toBeNull();
-  });
-
-  it("disabled → enable hint pointing at plugin settings", () => {
-    const el = render(
-      <PaperclipEeAffordance
-        availability="disabled"
-        pageLink={null}
-        settingsLink="/company/settings/instance/plugins/paperclipai.paperclip-ee"
-      />,
-    );
-    expect(el.textContent).toContain("installed but disabled");
-    expect(
-      el.querySelector("a[href='/company/settings/instance/plugins/paperclipai.paperclip-ee']"),
-    ).not.toBeNull();
-  });
-
-  it("error → still says skill management works", () => {
-    const el = render(
-      <PaperclipEeAffordance availability="error" pageLink={null} settingsLink={null} />,
-    );
-    expect(el.textContent).toContain("Skill management still works");
+    act(() => (el.querySelector("button") as HTMLButtonElement).click());
+    expect(dismissed).toBe(true);
   });
 });
 
