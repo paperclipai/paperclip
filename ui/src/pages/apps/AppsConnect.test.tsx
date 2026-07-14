@@ -555,6 +555,18 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(nameInputFrom(container)?.value).toBe("Zapier");
   });
 
+  it("returns from an app key step to the BYO gallery", async () => {
+    mockSearch.value = "byo=1";
+    mockParams.appKey = "zapier";
+    await render();
+
+    await act(async () => {
+      buttonByText("Back")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(mockNavigate).toHaveBeenCalledWith("/apps/connect?byo=1");
+  });
+
   it("leaving the default name connects with the app name", async () => {
     await render();
 
