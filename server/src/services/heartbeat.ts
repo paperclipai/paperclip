@@ -12,6 +12,7 @@ import {
   envBindingSchema,
   isEnvironmentDriverSupportedForAdapter,
   type BillingType,
+  type CostStatus,
   type EnvironmentLeaseStatus,
   type ExecutionWorkspace,
   type ExecutionWorkspaceConfig,
@@ -2365,6 +2366,16 @@ function normalizeBilledCostCents(costUsd: number | null | undefined, billingTyp
   if (billingType === "subscription_included") return 0;
   if (typeof costUsd !== "number" || !Number.isFinite(costUsd)) return 0;
   return Math.max(0, Math.round(costUsd * 100));
+}
+
+export function resolveLedgerCostStatus(input: {
+  costUsd: number | null | undefined;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+}): CostStatus {
+  const hasTokenUsage = input.inputTokens > 0 || input.cachedInputTokens > 0 || input.outputTokens > 0;
+  return input.costUsd == null && hasTokenUsage ? "unpriced" : "reported";
 }
 
 async function resolveLedgerScopeForRun(
@@ -10867,6 +10878,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const billingType = normalizeLedgerBillingType(result.billingType);
     const additionalCostCents = normalizeBilledCostCents(result.costUsd, billingType);
     const hasTokenUsage = inputTokens > 0 || outputTokens > 0 || cachedInputTokens > 0;
+    const costStatus = resolveLedgerCostStatus({
+      costUsd: result.costUsd,
+      inputTokens,
+      cachedInputTokens,
+      outputTokens,
+    });
     const provider = result.provider ?? "unknown";
     const biller = resolveLedgerBiller(result);
     const ledgerScope = await resolveLedgerScopeForRun(db, agent.companyId, run);
@@ -10897,6 +10914,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         provider,
         biller,
         billingType,
+        costStatus,
         model: result.model ?? "unknown",
         inputTokens,
         cachedInputTokens,
@@ -12967,6 +12985,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               biller: resolveLedgerBiller(adapterResult),
               model: readNonEmptyString(adapterResult.model) ?? "unknown",
               ...(adapterResult.costUsd != null ? { costUsd: adapterResult.costUsd } : {}),
+              costStatus: resolveLedgerCostStatus({
+                costUsd: adapterResult.costUsd,
+                inputTokens: normalizedUsage?.inputTokens ?? 0,
+                cachedInputTokens: normalizedUsage?.cachedInputTokens ?? 0,
+                outputTokens: normalizedUsage?.outputTokens ?? 0,
+              }),
               billingType: normalizeLedgerBillingType(adapterResult.billingType),
             } as Record<string, unknown>)
           : null;

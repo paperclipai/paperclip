@@ -70,6 +70,7 @@ export function parseCodexJsonl(stdout: string) {
     sessionId,
     summary: finalMessage?.trim() ?? "",
     usage,
+    usageBasis: "per_run" as const,
     errorMessage,
   };
 }

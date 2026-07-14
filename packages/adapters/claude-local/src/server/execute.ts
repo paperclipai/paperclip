@@ -1067,7 +1067,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       biller: isBedrockAuth(effectiveEnv) ? "aws_bedrock" : "anthropic",
       model: parsedStream.model || asString(parsed.model, model),
       billingType,
-      costUsd: parsedStream.costUsd ?? asNumber(parsed.total_cost_usd, 0),
+      costUsd: parsedStream.costUsd,
       resultJson: mergedResultJson,
       summary: parsedStream.summary || asString(parsed.result, ""),
       clearSession:
