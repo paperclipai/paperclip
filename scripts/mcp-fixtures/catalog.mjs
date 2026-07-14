@@ -404,7 +404,7 @@ export function listTools({ schemaVariant = "baseline" } = {}) {
             ...tool.inputSchema.properties,
             expiresAt: { type: "string" },
           },
-          required: [...tool.inputSchema.required, "expiresAt"],
+          required: [...(tool.inputSchema.required ?? []), "expiresAt"],
         },
       };
     }

@@ -88,7 +88,12 @@ class StdioFixtureClient {
     });
     const rl = createInterface({ input: this.process.stdout });
     rl.on("line", (line) => {
-      const response = JSON.parse(line);
+      let response;
+      try {
+        response = JSON.parse(line);
+      } catch {
+        return;
+      }
       const pending = this.pending.get(response.id);
       if (!pending) return;
       this.pending.delete(response.id);

@@ -1,7 +1,7 @@
 import type { KvStateSnapshot } from "./store.js";
 
 export interface RenderOptions {
-  token?: string | null;
+  tokenRequired?: boolean;
 }
 
 function escapeHtml(value: string): string {
@@ -34,8 +34,7 @@ function renderRows(snapshot: KvStateSnapshot): string {
  * refresh.
  */
 export function renderStatePage(snapshot: KvStateSnapshot, options: RenderOptions = {}): string {
-  const token = options.token?.trim() || "";
-  const stateUrl = token ? `/api/state?token=${encodeURIComponent(token)}` : "/api/state";
+  const tokenRequired = options.tokenRequired === true;
 
   return `<!doctype html>
 <html lang="en">
@@ -69,7 +68,10 @@ ${renderRows(snapshot)}
     </tbody>
   </table>
   <script>
-    const STATE_URL = ${JSON.stringify(stateUrl)};
+    const TOKEN_REQUIRED = ${JSON.stringify(tokenRequired)};
+    const fragment = new URLSearchParams(window.location.hash.slice(1));
+    const token = fragment.get("token") || "";
+    if (window.location.hash) history.replaceState(null, "", window.location.pathname + window.location.search);
     function escapeHtml(value) {
       return String(value).replace(/[&<>"']/g, (ch) => ({
         "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
@@ -92,7 +94,10 @@ ${renderRows(snapshot)}
     async function refresh() {
       const status = document.getElementById("status");
       try {
-        const res = await fetch(STATE_URL, { headers: { accept: "application/json" } });
+        const headers = { accept: "application/json" };
+        if (token) headers.authorization = "Bearer " + token;
+        if (TOKEN_REQUIRED && !token) throw new Error("Add #token=YOUR_TOKEN to this URL");
+        const res = await fetch("/api/state", { headers });
         if (!res.ok) throw new Error("HTTP " + res.status);
         render(await res.json());
         status.textContent = "Auto-refreshing every 2s.";

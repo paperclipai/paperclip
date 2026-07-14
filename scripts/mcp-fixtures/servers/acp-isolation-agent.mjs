@@ -39,7 +39,12 @@ async function inspectStdioServer(server) {
   const lines = createInterface({ input: child.stdout });
 
   lines.on("line", (line) => {
-    const message = JSON.parse(line);
+    let message;
+    try {
+      message = JSON.parse(line);
+    } catch {
+      return;
+    }
     const waiter = pending.get(message.id);
     if (!waiter) return;
     pending.delete(message.id);

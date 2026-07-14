@@ -60,19 +60,26 @@ describe("kv demo HTTP server", () => {
     expect(html).toContain("mango");
   });
 
-  it("requires KV_DEMO_TOKEN on every route when configured", async () => {
+  it("requires KV_DEMO_TOKEN on data routes without exposing it in URLs", async () => {
     const token = "s3cret-demo-token";
     const { base } = await startServer(token);
 
     expect((await fetch(`${base}/api/state`)).status).toBe(401);
-    expect((await fetch(`${base}/api/state?token=${token}`)).status).toBe(200);
+    expect((await fetch(`${base}/api/state?token=${token}`)).status).toBe(401);
     expect(
       (await fetch(`${base}/api/state`, { headers: { authorization: `Bearer ${token}` } })).status,
     ).toBe(200);
 
+    const page = await (await fetch(`${base}/`)).text();
+    expect(page).not.toContain(token);
+    expect(page).toContain("#token=YOUR_TOKEN");
+
     const client = await mcpClient(base, { authorization: `Bearer ${token}` });
     await client.callTool({ name: "kv_set", arguments: { key: "k", value: "v" } });
-    const state = (await (await fetch(`${base}/api/state?token=${token}`)).json()) as KvStateSnapshot;
+    const stateResponse = await fetch(`${base}/api/state`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    const state = (await stateResponse.json()) as KvStateSnapshot;
     expect(state.count).toBe(1);
     await client.close();
   });

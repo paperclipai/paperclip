@@ -13,7 +13,7 @@ async function main(): Promise<void> {
   console.error(`  Values UI:     ${base}/`);
   console.error(`  JSON state:    ${base}/api/state`);
   if (config.token) {
-    console.error("  Auth:          KV_DEMO_TOKEN required (Bearer header or ?token= query).");
+    console.error("  Auth:          KV_DEMO_TOKEN required (Bearer header; browser UI uses #token=...).");
   } else {
     console.error("  Auth:          none (set KV_DEMO_TOKEN to require a shared secret).");
   }

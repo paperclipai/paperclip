@@ -61,10 +61,12 @@ All configuration is via environment variables:
 | --- | --- | --- |
 | `PORT` (or `KV_DEMO_PORT`) | `8848` | Listen port. Use `0` for a random free port. |
 | `KV_DEMO_HOST` | `127.0.0.1` | Bind host. Use `0.0.0.0` to accept connections from another machine on the LAN. |
-| `KV_DEMO_TOKEN` | unset | Optional shared secret. When set, every route requires it. |
+| `KV_DEMO_TOKEN` | unset | Optional shared secret. When set, data and MCP routes require it. |
 
-When `KV_DEMO_TOKEN` is set, present it either as `Authorization: Bearer
-<token>` or as `?token=<token>` on the URL. The token is a convenience guard
+When `KV_DEMO_TOKEN` is set, present it as `Authorization: Bearer <token>`.
+For the browser UI, open `http://127.0.0.1:8848/#token=<token>`; the fragment is
+not sent to the server and the page removes it from the address bar before
+polling `/api/state` with the bearer header. The token is a convenience guard
 for local demos, not a hardened auth scheme; do not expose this server to
 untrusted networks.
 

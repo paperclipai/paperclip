@@ -37,11 +37,10 @@ function sendHtml(res: ServerResponse, status: number, html: string): void {
   res.end(html);
 }
 
-function presentedToken(req: IncomingMessage, url: URL): string | null {
+function presentedToken(req: IncomingMessage): string | null {
   const header = req.headers.authorization;
   if (header && header.startsWith("Bearer ")) return header.slice("Bearer ".length).trim();
-  const queryToken = url.searchParams.get("token");
-  return queryToken ? queryToken.trim() : null;
+  return null;
 }
 
 async function readJsonBody(req: IncomingMessage): Promise<unknown> {
@@ -97,7 +96,15 @@ export function createKvDemoHttpServer(options: KvDemoHttpOptions = {}): KvDemoH
       try {
         const url = new URL(req.url ?? "/", "http://localhost");
 
-        if (requiredToken && presentedToken(req, url) !== requiredToken) {
+        if (req.method === "GET" && (url.pathname === "/" || url.pathname === "/index.html")) {
+          const snapshot = requiredToken
+            ? { entries: [], count: 0, revision: 0 }
+            : store.snapshot();
+          sendHtml(res, 200, renderStatePage(snapshot, { tokenRequired: Boolean(requiredToken) }));
+          return;
+        }
+
+        if (requiredToken && presentedToken(req) !== requiredToken) {
           sendJson(res, 401, { error: "Unauthorized. Provide the KV_DEMO_TOKEN." });
           return;
         }
@@ -110,11 +117,6 @@ export function createKvDemoHttpServer(options: KvDemoHttpOptions = {}): KvDemoH
         if (req.method === "GET" && url.pathname === "/api/state") {
           const snapshot: KvStateSnapshot = store.snapshot();
           sendJson(res, 200, snapshot);
-          return;
-        }
-
-        if (req.method === "GET" && (url.pathname === "/" || url.pathname === "/index.html")) {
-          sendHtml(res, 200, renderStatePage(store.snapshot(), { token: url.searchParams.get("token") }));
           return;
         }
 
