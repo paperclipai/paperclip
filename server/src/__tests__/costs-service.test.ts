@@ -434,6 +434,179 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
     await tempDb?.cleanup();
   });
 
+  async function seedCostCompany(label: string) {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: `${label} Company`,
+      issuePrefix: label,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: `${label} Agent`,
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    return { companyId, agentId };
+  }
+
+  it("lists inclusive filtered cost events without crossing company boundaries", async () => {
+    const companyA = await seedCostCompany("LSTA");
+    const companyB = await seedCostCompany("LSTB");
+    const from = new Date("2026-07-01T00:00:00.000Z");
+    const to = new Date("2026-07-02T00:00:00.000Z");
+    const includedIds = [
+      "00000000-0000-4000-8000-000000000102",
+      "00000000-0000-4000-8000-000000000101",
+    ];
+
+    await db.insert(costEvents).values([
+      {
+        id: includedIds[1],
+        companyId: companyA.companyId,
+        agentId: companyA.agentId,
+        provider: "openai",
+        billingType: "metered_api",
+        model: "gpt-test",
+        costCents: 1,
+        occurredAt: from,
+      },
+      {
+        id: includedIds[0],
+        companyId: companyA.companyId,
+        agentId: companyA.agentId,
+        provider: "openai",
+        billingType: "credits",
+        model: "gpt-test",
+        costCents: 2,
+        occurredAt: to,
+      },
+      {
+        id: "00000000-0000-4000-8000-000000000103",
+        companyId: companyA.companyId,
+        agentId: companyA.agentId,
+        provider: "openai",
+        billingType: "subscription_included",
+        model: "gpt-test",
+        costCents: 3,
+        occurredAt: new Date("2026-07-01T12:00:00.000Z"),
+      },
+      {
+        id: "00000000-0000-4000-8000-000000000104",
+        companyId: companyA.companyId,
+        agentId: companyA.agentId,
+        provider: "openai",
+        billingType: "metered_api",
+        model: "gpt-test",
+        costCents: 4,
+        occurredAt: new Date("2026-06-30T23:59:59.999Z"),
+      },
+      {
+        id: "00000000-0000-4000-8000-000000000105",
+        companyId: companyB.companyId,
+        agentId: companyB.agentId,
+        provider: "openai",
+        billingType: "metered_api",
+        model: "gpt-test",
+        costCents: 5,
+        occurredAt: new Date("2026-07-01T12:00:00.000Z"),
+      },
+    ]);
+
+    const page = await costs.listEvents(companyA.companyId, {
+      range: { from, to },
+      limit: 20,
+      billingTypes: ["metered_api", "credits"],
+    });
+    expect(page.items.map((event) => event.id)).toEqual(includedIds);
+    expect(page.nextCursor).toBeNull();
+
+    await expect(costs.listEvents(companyA.companyId, {
+      limit: 20,
+      billingTypes: ["fixed"],
+    })).resolves.toEqual({ items: [], nextCursor: null });
+  });
+
+  it("paginates equal timestamps by descending UUID without gaps", async () => {
+    const company = await seedCostCompany("LSTP");
+    const occurredAt = new Date("2026-07-03T00:00:00.000Z");
+    const sameTimeIds = [
+      "00000000-0000-4000-8000-000000000003",
+      "00000000-0000-4000-8000-000000000002",
+      "00000000-0000-4000-8000-000000000001",
+    ];
+
+    await db.insert(costEvents).values(sameTimeIds.map((id) => ({
+      id,
+      companyId: company.companyId,
+      agentId: company.agentId,
+      provider: "openai",
+      billingType: "metered_api",
+      model: "gpt-test",
+      costCents: 1,
+      occurredAt,
+    })));
+
+    const firstPage = await costs.listEvents(company.companyId, {
+      limit: 2,
+      billingTypes: ["metered_api"],
+    });
+    expect(firstPage.nextCursor).not.toBeNull();
+    const secondPage = await costs.listEvents(company.companyId, {
+      limit: 2,
+      cursor: firstPage.nextCursor!,
+      billingTypes: ["metered_api"],
+    });
+
+    expect([...firstPage.items, ...secondPage.items].map((event) => event.id))
+      .toEqual(sameTimeIds);
+    expect(secondPage.nextCursor).toBeNull();
+  });
+
+  it("rejects a pagination cursor when its filters change", async () => {
+    const company = await seedCostCompany("LSTC");
+    await db.insert(costEvents).values([
+      {
+        companyId: company.companyId,
+        agentId: company.agentId,
+        provider: "openai",
+        billingType: "metered_api",
+        model: "gpt-test",
+        costCents: 1,
+        occurredAt: new Date("2026-07-04T00:00:00.000Z"),
+      },
+      {
+        companyId: company.companyId,
+        agentId: company.agentId,
+        provider: "openai",
+        billingType: "metered_api",
+        model: "gpt-test",
+        costCents: 2,
+        occurredAt: new Date("2026-07-03T00:00:00.000Z"),
+      },
+    ]);
+
+    const firstPage = await costs.listEvents(company.companyId, {
+      limit: 1,
+      billingTypes: ["metered_api"],
+    });
+    await expect(costs.listEvents(company.companyId, {
+      limit: 1,
+      cursor: firstPage.nextCursor!,
+      billingTypes: ["credits"],
+    })).rejects.toMatchObject({
+      status: 400,
+      message: "Cost-events cursor does not match request filters",
+    });
+  });
+
   it("persists unpriced token usage without inflating monthly spend", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
