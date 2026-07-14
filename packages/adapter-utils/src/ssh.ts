@@ -1417,10 +1417,19 @@ export async function syncDirectoryFromSsh(input: {
   preserveLocalEntries?: string[];
   onProgress?: RuntimeProgressSink;
   progressLabel?: string;
+  // When localDir is itself a scratch staging directory (as in the baseline
+  // restore path), the caller can anchor the staging root to the real
+  // destination workspace instead. Otherwise resolveStagingRoot would append a
+  // second ".paperclip-staging" beside the scratch dir, leaving an empty nested
+  // ".paperclip-staging/.paperclip-staging" behind on every restore.
+  stagingAnchorDir?: string;
 }): Promise<void> {
   const auth = await createSshAuthArgs(input.spec);
   const stagingDir = await fs.mkdtemp(
-    path.join(await resolveStagingRoot(input.localDir), "paperclip-ssh-sync-back-"),
+    path.join(
+      await resolveStagingRoot(input.stagingAnchorDir ?? input.localDir),
+      "paperclip-ssh-sync-back-",
+    ),
   );
   const remoteTarScript = [
     `cd ${shellQuote(input.remoteDir)}`,
@@ -1608,6 +1617,10 @@ export async function restoreWorkspaceFromSshExecution(input: {
         spec: input.spec,
         remoteDir,
         localDir: stagingDir,
+        // stagingDir is scratch; anchor the inner staging root to the real
+        // workspace so it reuses the same ".paperclip-staging" root rather than
+        // nesting a second one under stagingDir's parent.
+        stagingAnchorDir: input.localDir,
         exclude: input.baselineSnapshot.exclude,
         onProgress: input.onProgress,
         progressLabel: "workspace",

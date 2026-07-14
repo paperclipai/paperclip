@@ -18,6 +18,7 @@ import {
   stopSshEnvLabFixture,
 } from "./ssh.js";
 import { prepareRemoteManagedRuntime } from "./remote-managed-runtime.js";
+import { captureDirectorySnapshot } from "./workspace-restore-merge.js";
 
 const SSH_FIXTURE_TEST_TIMEOUT_MS = 30_000;
 let sshEnvLabUnsupportedReason: string | null = null;
@@ -388,6 +389,55 @@ describe("ssh env-lab fixture", () => {
     await expect(readFile(path.join(restoreDir, "blob-0.bin"))).resolves.toEqual(
       Buffer.alloc(1024 * 1024, 1),
     );
+  }, SSH_FIXTURE_TEST_TIMEOUT_MS);
+
+  // Regression: the baseline-restore path stages the sync-back tar in a scratch dir under
+  // the workspace's .paperclip-staging root, then hands that scratch dir to the inner
+  // syncDirectoryFromSsh as its localDir. Before the fix the inner call re-resolved a
+  // staging root relative to the scratch dir, appending a second ".paperclip-staging" and
+  // leaving an empty nested ".paperclip-staging/.paperclip-staging" behind on every restore
+  // — accumulating cruft on a code path whose whole purpose is disk hygiene.
+  it("does not leave a nested .paperclip-staging behind after a baseline restore", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-fixture-"));
+    cleanupDirs.push(rootDir);
+    const statePath = path.join(rootDir, "state.json");
+    // Restoring into runRoot/workspace means the staging root is runRoot/.paperclip-staging.
+    const runRoot = path.join(rootDir, "run");
+    const localDir = path.join(runRoot, "workspace");
+
+    await mkdir(localDir, { recursive: true });
+    await writeFile(path.join(localDir, "baseline.txt"), "baseline\n", "utf8");
+    // Non-git workspace + a baseline snapshot drives restoreWorkspaceFromSshExecution
+    // down the baseline-merge branch, which is the one that double-stages.
+    const baselineSnapshot = await captureDirectorySnapshot(localDir);
+
+    const started = await startSshEnvLabFixtureOrSkip(statePath, "nested staging regression test");
+    if (!started) return;
+    const config = await buildSshEnvLabFixtureConfig(started);
+    const spec = { ...config, remoteCwd: started.workspaceDir } as const;
+    const remoteDir = path.posix.join(started.workspaceDir, "baseline-source");
+
+    await syncDirectoryToSsh({ spec, localDir, remoteDir });
+    await runSshCommand(
+      config,
+      `printf "from remote\\n" > ${JSON.stringify(path.posix.join(remoteDir, "remote-only.txt"))}`,
+      { timeoutMs: 30_000, maxBuffer: 256 * 1024 },
+    );
+
+    await restoreWorkspaceFromSshExecution({
+      spec,
+      localDir,
+      remoteDir,
+      baselineSnapshot,
+    });
+
+    // The remote edit still round-trips into the workspace.
+    await expect(readFile(path.join(localDir, "remote-only.txt"), "utf8")).resolves.toBe(
+      "from remote\n",
+    );
+    // A single staging root beside the workspace, and no nested one under it.
+    expect(existsSync(path.join(runRoot, ".paperclip-staging"))).toBe(true);
+    expect(existsSync(path.join(runRoot, ".paperclip-staging", ".paperclip-staging"))).toBe(false);
   }, SSH_FIXTURE_TEST_TIMEOUT_MS);
 
   it("reports exact git-history import percentage from the known bundle size", async () => {
