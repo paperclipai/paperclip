@@ -602,6 +602,22 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(revisions[1]?.snapshot.routine.description).toBe("Run the frog routine");
   });
 
+  it("reconciles out-of-band row drift when the desired state matches the latest revision", async () => {
+    const { routine, svc } = await seedFixture();
+
+    await db
+      .update(routines)
+      .set({ title: "DRIFTED BY TEST" })
+      .where(eq(routines.id, routine.id));
+
+    const reconciled = await svc.update(routine.id, { title: routine.title }, {});
+
+    expect(reconciled?.title).toBe(routine.title);
+    expect(reconciled?.latestRevisionId).toBe(routine.latestRevisionId);
+    expect(reconciled?.latestRevisionNumber).toBe(routine.latestRevisionNumber);
+    expect(await svc.listRevisions(routine.id)).toHaveLength(1);
+  });
+
   it("stores routine env in revisions, syncs routine secret bindings, and stamps runs with the dispatch revision", async () => {
     const { agentId, companyId, projectId, svc } = await seedFixture();
     const secrets = secretService(db);

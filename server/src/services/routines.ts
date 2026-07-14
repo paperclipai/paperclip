@@ -2241,6 +2241,29 @@ export function routineService(
             )
             .then((rows) => rows[0] ?? null);
           if (latestRevision && snapshotsMatch(nextSnapshot, parseRoutineRevisionSnapshot(latestRevision.snapshot))) {
+            const [reconciled] = await txDb
+              .update(routines)
+              .set({
+                projectId: candidate.projectId,
+                goalId: candidate.goalId,
+                parentIssueId: candidate.parentIssueId,
+                title: candidate.title,
+                description: candidate.description,
+                assigneeAgentId: candidate.assigneeAgentId,
+                priority: candidate.priority,
+                status: candidate.status,
+                concurrencyPolicy: candidate.concurrencyPolicy,
+                catchUpPolicy: candidate.catchUpPolicy,
+                variables: candidate.variables,
+                env: candidate.env,
+                executionPolicy: candidate.executionPolicy,
+                responsibleUserId: candidate.responsibleUserId,
+                updatedByAgentId: actor.agentId ?? null,
+                updatedByUserId: actor.userId ?? null,
+                updatedAt: new Date(),
+              })
+              .where(eq(routines.id, id))
+              .returning();
             if (patch.env !== undefined) {
               await secretsSvc.syncEnvBindingsForTarget(
                 locked.companyId,
@@ -2249,7 +2272,7 @@ export function routineService(
                 { db: tx },
               );
             }
-            return locked;
+            return reconciled ?? null;
           }
         }
 
