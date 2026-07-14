@@ -4,6 +4,19 @@ export { companySearchService } from "./company-search.js";
 export { feedbackService } from "./feedback.js";
 export { companySkillService } from "./company-skills.js";
 export { agentService, deduplicateAgentName } from "./agents.js";
+export {
+  builtInAgentService,
+  deriveBuiltInAgentStatus,
+  getBuiltInAgentDefinition,
+  listBuiltInAgentDefinitions,
+  reconcileBuiltInAgentsOnStartup,
+  validateBuiltInAgentDefinitions,
+  type BuiltInAgentDefinition,
+  type BuiltInManagedResourceState,
+  type BuiltInManagedResourceStockStatus,
+  type BuiltInAgentState,
+  type BuiltInAgentStatus,
+} from "./built-in-agents.js";
 export { agentInstructionsService, syncInstructionsBundleConfigFromFilePath } from "./agent-instructions.js";
 export { assetService } from "./assets.js";
 export { documentService, extractLegacyPlanBody } from "./documents.js";
@@ -45,6 +58,7 @@ export {
 export { goalService } from "./goals.js";
 export { activityService, type ActivityFilters } from "./activity.js";
 export { workTimelineService, normalizeTimelineWindow } from "./work-timeline.js";
+export { attentionService } from "./attention.js";
 export type {
   WorkTimelineActor,
   WorkTimelineEdge,
@@ -59,7 +73,7 @@ export { secretService } from "./secrets.js";
 export { routineService } from "./routines.js";
 export { costService } from "./costs.js";
 export { financeService } from "./finance.js";
-export { heartbeatService } from "./heartbeat.js";
+export { heartbeatService, resolveHeartbeatSchedulingSuppression } from "./heartbeat.js";
 export {
   productivityReviewService,
   PRODUCTIVITY_REVIEW_ORIGIN_KIND,
@@ -98,6 +112,17 @@ export {
 export {
   environmentCustomImageService,
 } from "./environment-custom-images.js";
+export {
+  environmentCustomImageTerminalConnectionRegistry,
+  environmentCustomImageTerminalSessionStore,
+  EnvironmentCustomImageTerminalConnectionRegistry,
+  EnvironmentCustomImageTerminalSessionStore,
+  parseCustomImageSetupSshCommand,
+  type EnvironmentCustomImageTerminalConnectionClose,
+  type EnvironmentCustomImageTerminalSessionRecord,
+  type MintedEnvironmentCustomImageTerminalSession,
+  type ParsedCustomImageSetupSshCommand,
+} from "./environment-custom-image-terminal-sessions.js";
 export { executionWorkspaceService } from "./execution-workspaces.js";
 export { workspaceOperationService } from "./workspace-operations.js";
 export { workspaceFileResourceService } from "./workspace-file-resources.js";

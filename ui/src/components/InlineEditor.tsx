@@ -356,7 +356,7 @@ export function InlineEditor({
         <div className="flex min-h-4 items-center justify-end pr-1">
           <span
             className={cn(
-              "text-[11px] transition-opacity duration-150",
+              "text-(length:--text-micro) transition-opacity duration-150",
               autosaveState === "error" ? "text-destructive" : "text-muted-foreground",
               autosaveState === "idle" ? "opacity-0" : "opacity-100",
             )}

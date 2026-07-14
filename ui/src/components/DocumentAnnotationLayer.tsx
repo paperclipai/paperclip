@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Profiler, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, MessageSquarePlus } from "lucide-react";
 import type {
   DocumentAnnotationAnchorState,
@@ -11,6 +11,14 @@ import {
   getContainerTextOffset,
   rangesForNormalizedSpan,
 } from "@/lib/document-annotation-selection";
+import {
+  initializeSelectionDebug,
+  isSelectionDebugEnabled,
+  recordAnnotationCommit,
+  recordCaptureSelection,
+  recordMarkdownMutations,
+  recordSelectionChange,
+} from "@/lib/document-annotation-debug";
 import type { DocumentAnnotationAnchorSelector } from "@paperclipai/shared";
 
 export interface AnnotationOverlayThread {
@@ -147,6 +155,24 @@ function elementFromNode(node: Node | null | undefined): HTMLElement | null {
   return parent instanceof HTMLElement ? parent : null;
 }
 
+function selectionTouchesEditableElement(container: HTMLElement, range: Range) {
+  for (const node of [range.startContainer, range.endContainer, range.commonAncestorContainer]) {
+    const element = elementFromNode(node);
+    if (!element || !container.contains(element)) continue;
+    const editableElement = element.closest("input, textarea, select, [contenteditable]");
+    if (!(editableElement instanceof HTMLElement)) continue;
+    if (editableElement.matches("input, textarea, select")) return true;
+    const contentEditableValue = editableElement.getAttribute("contenteditable");
+    if (
+      editableElement.isContentEditable ||
+      (contentEditableValue !== null && contentEditableValue.toLowerCase() !== "false")
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function intersectRects(a: DOMRect, b: DOMRect): DOMRect | null {
   const left = Math.max(a.left, b.left);
   const top = Math.max(a.top, b.top);
@@ -227,6 +253,8 @@ export function DocumentAnnotationLayer({
     [reactId],
   );
   const nativeHighlightsSupported = getNativeHighlightApi() !== null;
+  const selectionDebugEnabled = isSelectionDebugEnabled();
+  if (selectionDebugEnabled) initializeSelectionDebug();
 
   const visibleThreads = useMemo(() => {
     if (!hideResolved) return threads;
@@ -347,6 +375,12 @@ export function DocumentAnnotationLayer({
 
     const mutationObserver = typeof window.MutationObserver === "function" && container
       ? new window.MutationObserver((mutations) => {
+        if (selectionDebugEnabled) {
+          const markdownMutations = mutations.filter((mutation) =>
+            Boolean(elementFromNode(mutation.target)?.closest(".paperclip-markdown")),
+          );
+          if (markdownMutations.length > 0) recordMarkdownMutations(markdownMutations.length);
+        }
         const onlyLayerMutations = mutations.every((mutation) => {
           const target = elementFromNode(mutation.target);
           return !!target?.closest(".paperclip-doc-annotation-layer, .paperclip-doc-annotation-visual-layer");
@@ -374,7 +408,7 @@ export function DocumentAnnotationLayer({
       window.removeEventListener("resize", handleResizeOrScroll);
       window.removeEventListener("scroll", handleResizeOrScroll, true);
     };
-  }, [computeHighlightRects, containerRef]);
+  }, [computeHighlightRects, containerRef, selectionDebugEnabled]);
 
   const captureSelection = useCallback((): PendingAnchor | null => {
     const container = containerRef.current;
@@ -384,6 +418,7 @@ export function DocumentAnnotationLayer({
     if (!selection || selection.rangeCount === 0 || selection.isCollapsed) return null;
     const range = selection.getRangeAt(0);
     if (!container.contains(range.commonAncestorContainer)) return null;
+    if (selectionTouchesEditableElement(container, range)) return null;
     const containerOffset = getContainerTextOffset(container, range);
     if (!containerOffset) return null;
     const anchor = buildAnchorFromContainerSelection({ markdown, containerOffset });
@@ -402,7 +437,17 @@ export function DocumentAnnotationLayer({
   useEffect(() => {
     if (typeof document === "undefined") return;
     const handleSelectionChange = () => {
+      const selection = window.getSelection();
+      const range = selection && selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
+      const selectionIsActive = Boolean(
+        selection && !selection.isCollapsed && range && containerRef.current?.contains(range.commonAncestorContainer),
+      );
+      if (selectionDebugEnabled) recordSelectionChange(selectionIsActive);
+      const captureStartedAt = selectionDebugEnabled ? performance.now() : 0;
       const anchor = captureSelection();
+      if (selectionDebugEnabled) {
+        recordCaptureSelection(performance.now() - captureStartedAt, Boolean(anchor));
+      }
       if (!anchor) {
         onPendingAnchorChange(null);
         setToolbarPosition(null);
@@ -412,7 +457,7 @@ export function DocumentAnnotationLayer({
     };
     document.addEventListener("selectionchange", handleSelectionChange);
     return () => document.removeEventListener("selectionchange", handleSelectionChange);
-  }, [captureSelection, onPendingAnchorChange]);
+  }, [captureSelection, containerRef, onPendingAnchorChange, selectionDebugEnabled]);
 
   useEffect(() => {
     if (captureSelectionRequestId === undefined) return;
@@ -430,7 +475,7 @@ export function DocumentAnnotationLayer({
     if (pendingAnchor) onRequestComment(pendingAnchor);
   };
 
-  return (
+  const content = (
     <>
       {!nativeHighlightsSupported ? (
         <div className="paperclip-doc-annotation-visual-layer pointer-events-none absolute inset-0 z-0" aria-hidden="true">
@@ -454,7 +499,7 @@ export function DocumentAnnotationLayer({
                       : isStale
                         ? "bg-yellow-200 outline outline-2 outline-dashed outline-offset-0 outline-yellow-700/65 dark:bg-yellow-600 dark:outline-yellow-200/70"
                         : isFocused
-                          ? "bg-yellow-300 outline outline-2 outline-offset-0 outline-yellow-700/85 shadow-[0_0_0_1px_var(--color-background)] dark:bg-yellow-500 dark:outline-yellow-200/85"
+                          ? "bg-yellow-300 outline outline-2 outline-offset-0 outline-yellow-700/85 shadow-(--shadow-extract-6) dark:bg-yellow-500 dark:outline-yellow-200/85"
                           : "bg-yellow-200 dark:bg-yellow-600",
                   )}
                   style={{
@@ -470,7 +515,7 @@ export function DocumentAnnotationLayer({
         </div>
       ) : null}
       <div
-        className="paperclip-doc-annotation-layer pointer-events-none absolute inset-0 z-[2]"
+        className="paperclip-doc-annotation-layer pointer-events-none absolute inset-0 z-(--z-2)"
         aria-hidden="true"
       >
         <div ref={overlayRef} className="relative h-full w-full">
@@ -559,4 +604,10 @@ export function DocumentAnnotationLayer({
       </div>
     </>
   );
+
+  return selectionDebugEnabled ? (
+    <Profiler id="DocumentAnnotationLayer" onRender={recordAnnotationCommit}>
+      {content}
+    </Profiler>
+  ) : content;
 }

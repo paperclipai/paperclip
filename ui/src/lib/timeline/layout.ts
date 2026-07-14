@@ -5,6 +5,7 @@
  * Ports the board-locked "Direction C" logic (PAP-12422): agent/system rows only
  * (humans never get a row), overlapping runs packed into concurrency sub-lanes,
  * a kickoff actor derived per run (shown as an avatar chip — may be a human),
+ * with each kickoff edge assigned to only its closest matching run,
  * and straight agent→agent delegation connectors from a source bar's trailing
  * edge to a target bar's leading edge (dashed for retries / changes-requested).
  *
@@ -18,8 +19,6 @@ import type {
   WorkTimelineResult,
   WorkTimelineSpan,
 } from "@paperclipai/shared";
-
-export type ColorMode = "issue" | "status";
 
 export interface LayoutOptions {
   /** px per minute along the x axis (set by the zoom level). */
@@ -53,9 +52,9 @@ export interface PositionedBar {
 }
 
 /**
- * An instant human/actor action (issue created, comment, approval, delegation,
- * assignment) — plotted as a diamond marker at its timestamp on the actor's row.
- * Humans have no "runs", so these markers are their only presence on the chart.
+ * Instant human/actor actions are deliberately not plotted in the main chart.
+ * The shape remains in the layout model so call sites do not need special cases,
+ * but rows now stay focused on actors with actual run participation.
  */
 export interface PositionedMarker {
   event: WorkTimelineEvent;
@@ -73,8 +72,12 @@ export interface ActorRow {
   h: number;
   laneCount: number;
   bars: PositionedBar[];
-  /** instant event markers (issue created / comment / approval / …) on this row. */
+  /** reserved for instant event markers; currently empty by design. */
   markers: PositionedMarker[];
+  /** number of runs plotted on this row (the "Signal" rail count). */
+  runCount: number;
+  /** total active run time on this row in ms (the "Signal" rail active-time). */
+  activeMs: number;
 }
 
 export interface Connector {
@@ -82,6 +85,8 @@ export interface Connector {
   y1: number;
   x2: number;
   y2: number;
+  sourceRunId: string;
+  targetRunId: string;
   /** dashed = a return / retry (changes-requested) hop. */
   dashed: boolean;
 }
@@ -99,15 +104,49 @@ export interface TimelineLayout {
   toMs: number;
   gutter: number;
   pxPerMinute: number;
-  /** ordered list of distinct issue keys present, for the legend + hue map. */
+  /** ordered list of distinct issue keys present for the task hue map. */
   issues: { key: string; label: string; color: string }[];
 }
 
-export const AXIS_H = 22;
+export const AXIS_H = 32;
 const RUNNING_STATUSES = new Set(["running", "in_progress", "queued", "pending"]);
+const CANCELLED_STATUSES = new Set(["cancelled", "canceled", "aborted", "skipped"]);
 
 export function isRunningStatus(status: string): boolean {
   return RUNNING_STATUSES.has(status);
+}
+
+export function isCancelledStatus(status: string): boolean {
+  return CANCELLED_STATUSES.has(status);
+}
+
+/**
+ * "Signal" encoding (PAP-12694, board-picked): colour spends on ONE meaning —
+ * how the run started — instead of a per-issue hash rainbow. Delegated runs
+ * (kicked off by another actor) read blue; automation/self-started runs read
+ * amber. The blue/amber pair is colour-blind-safe and holds contrast on both
+ * light and dark backgrounds so the chart screenshots cleanly. Cancelled runs
+ * drop their fill entirely (rendered as a hollow dashed bar) and a status-blue "now"
+ * line marks the present.
+ */
+export const TIMELINE_COLORS = {
+  delegated: "#5b9bf6",
+  automation: "#f4b740",
+  /** stroke/ink for a hollow, cancelled bar. */
+  cancelled: "#9aa3ad",
+  now: "#2563eb", // Gallery feedback r2: "now" liveness marker = status blue (was teal #2dd4bf); shape (1.5px vertical line) still distinguishes it from #5b9bf6 delegated bars.
+} as const;
+
+export type RunSourceKind = "delegated" | "automation";
+
+/** How a run was started: delegated (has a kickoff actor) vs. automation/self. */
+export function barSourceKind(bar: PositionedBar): RunSourceKind {
+  return bar.kickoff ? "delegated" : "automation";
+}
+
+/** Source colour for a bar under the "Signal" encoding. */
+export function barColor(bar: PositionedBar): string {
+  return TIMELINE_COLORS[barSourceKind(bar)];
 }
 
 export function actorType(actor: WorkTimelineActor | undefined): string {
@@ -140,6 +179,52 @@ function spanEndMs(s: WorkTimelineSpan, nowMs: number): number {
   return raw;
 }
 
+function kickoffEdgeRunDistanceMs(edge: WorkTimelineEdge, span: WorkTimelineSpan): number {
+  return Math.abs(spanStartMs(span) - new Date(edge.at).getTime());
+}
+
+function spanGroupKey(actorId: string, issueId: string): string {
+  return `${actorId}\0${issueId}`;
+}
+
+function closestRunForKickoffEdge(edge: WorkTimelineEdge, spans: readonly WorkTimelineSpan[]): string | null {
+  let closest: { span: WorkTimelineSpan; distance: number } | null = null;
+  for (const span of spans) {
+    const distance = kickoffEdgeRunDistanceMs(edge, span);
+    if (
+      !closest
+      || distance < closest.distance
+      || (distance === closest.distance && span.runId.localeCompare(closest.span.runId) < 0)
+    ) {
+      closest = { span, distance };
+    }
+  }
+  return closest?.span.runId ?? null;
+}
+
+function buildClosestRunByKickoffEdge(
+  spans: readonly WorkTimelineSpan[],
+  edges: readonly WorkTimelineEdge[],
+): Map<WorkTimelineEdge, string> {
+  const spansByActorIssue = new Map<string, WorkTimelineSpan[]>();
+  for (const span of spans) {
+    const key = spanGroupKey(span.actorId, span.issueId);
+    const group = spansByActorIssue.get(key);
+    if (group) group.push(span);
+    else spansByActorIssue.set(key, [span]);
+  }
+
+  const closestRunByEdge = new Map<WorkTimelineEdge, string>();
+  for (const edge of edges) {
+    const closestRunId = closestRunForKickoffEdge(
+      edge,
+      spansByActorIssue.get(spanGroupKey(edge.toActorId, edge.issueId)) ?? [],
+    );
+    if (closestRunId) closestRunByEdge.set(edge, closestRunId);
+  }
+  return closestRunByEdge;
+}
+
 /**
  * Resolve the kickoff actor for a run: the source of the delegation/assignment
  * edge that points at this run's actor on this run's issue, closest at-or-before
@@ -150,6 +235,7 @@ function resolveKickoff(
   span: WorkTimelineSpan,
   edges: WorkTimelineEdge[],
   actorById: Map<string, WorkTimelineActor>,
+  closestRunByKickoffEdge: ReadonlyMap<WorkTimelineEdge, string>,
 ): WorkTimelineActor | null {
   const start = spanStartMs(span);
   let best: { edge: WorkTimelineEdge; delta: number } | null = null;
@@ -158,10 +244,11 @@ function resolveKickoff(
     if (e.fromActorId === span.actorId) continue; // self-kickoff is not a delegation
     const at = new Date(e.at).getTime();
     // Prefer edges at-or-before the run start; otherwise smallest absolute gap.
-    const delta = at <= start ? start - at : (start - at) + 1e12;
+    const delta = at <= start ? start - at : (at - start) + 1e12;
     if (!best || delta < best.delta) best = { edge: e, delta };
   }
   if (!best) return null;
+  if (closestRunByKickoffEdge.get(best.edge) !== span.runId) return null;
   return actorById.get(best.edge.fromActorId) ?? null;
 }
 
@@ -170,34 +257,24 @@ export function computeLayout(result: WorkTimelineResult, opts: LayoutOptions): 
   const fromMs = new Date(result.window.from).getTime();
   const toMs = new Date(result.window.to).getTime();
   const actorById = new Map(result.actors.map((a) => [a.id, a]));
+  const closestRunByKickoffEdge = buildClosestRunByKickoffEdge(result.spans, result.edges);
 
   const x = (ms: number) => gutter + ((ms - fromMs) / 60000) * pxPerMinute;
 
-  // Rows: any actor with in-window activity gets a row — agents/system via their
-  // runs (spans), and humans (type "user") via their instant events, since humans
-  // have no "runs" and would otherwise never appear. Order by first activity so the
-  // eye follows the delegation chain top-to-bottom.
+  // Rows: any actor with in-window runs gets a row. Event-only comments/creates
+  // do not create marker-only rows because they make the chart noisy.
   const firstActivity = new Map<string, number>();
   const noteActivity = (actorId: string, t: number) => {
     const cur = firstActivity.get(actorId);
     if (cur === undefined || t < cur) firstActivity.set(actorId, t);
   };
   for (const s of result.spans) noteActivity(s.actorId, spanStartMs(s));
-  for (const e of result.events) noteActivity(e.actorId, new Date(e.at).getTime());
-
-  // Instant events grouped by the actor who performed them.
-  const eventsByActor = new Map<string, WorkTimelineEvent[]>();
-  for (const e of result.events) {
-    const arr = eventsByActor.get(e.actorId);
-    if (arr) arr.push(e);
-    else eventsByActor.set(e.actorId, [e]);
-  }
 
   const rowActors = result.actors
-    .filter((a) => firstActivity.has(a.id)) // drop idle actors with no run/event in-window
+    .filter((a) => firstActivity.has(a.id)) // drop actors with no run in-window
     .sort((a, b) => (firstActivity.get(a.id)! - firstActivity.get(b.id)!));
 
-  // Issue hue map (ordered by first appearance) for the "by issue" color mode + legend.
+  // Issue hue map (ordered by first appearance) for the task color map.
   const issueOrder: string[] = [];
   const issueLabel = new Map<string, string>();
   for (const s of result.spans) {
@@ -255,23 +332,17 @@ export function computeLayout(result: WorkTimelineResult, opts: LayoutOptions): 
         yc: laneTop + barH / 2,
         height: barH,
         running: isRunningStatus(r.status),
-        kickoff: resolveKickoff(r, result.edges, actorById),
+        kickoff: resolveKickoff(r, result.edges, actorById, closestRunByKickoffEdge),
       };
       barIndex.set(r.runId, bar);
       return bar;
     });
 
-    // Instant markers for this actor, positioned at their timestamp on this row.
-    const markers: PositionedMarker[] = (eventsByActor.get(actor.id) ?? [])
-      .slice()
-      .sort((p, q) => new Date(p.at).getTime() - new Date(q.at).getTime())
-      .map((event) => ({
-        event,
-        x: x(new Date(event.at).getTime()),
-        yc: y + h / 2,
-      }));
+    const markers: PositionedMarker[] = [];
 
-    rows.push({ actor, y, h, laneCount, bars, markers });
+    const activeMs = runs.reduce((sum, r) => sum + Math.max(0, spanEndMs(r, nowMs) - spanStartMs(r)), 0);
+
+    rows.push({ actor, y, h, laneCount, bars, markers, runCount: runs.length, activeMs });
     y += h;
   }
 
@@ -290,6 +361,8 @@ export function computeLayout(result: WorkTimelineResult, opts: LayoutOptions): 
         y1: source.yc,
         x2: bar.x1,
         y2: bar.yc,
+        sourceRunId: source.span.runId,
+        targetRunId: bar.span.runId,
         dashed: Boolean(bar.span.retryOfRunId),
       });
     }

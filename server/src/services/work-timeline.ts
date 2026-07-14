@@ -11,6 +11,7 @@ import {
   issues,
   issueThreadInteractions,
 } from "@paperclipai/db";
+import { visibleIssueCondition } from "./issue-visibility.js";
 
 // DTO types are shared with the UI via @paperclipai/shared so both sides consume
 // one contract. Re-exported here for back-compat with existing server imports.
@@ -73,11 +74,14 @@ type IssueRow = {
   createdAt: Date;
 };
 
+type RunUsage = NonNullable<WorkTimelineSpan["usage"]>;
+
 const DEFAULT_LIMIT = 200;
 const MAX_LIMIT = 500;
 const MAX_WINDOW_MS = 31 * 24 * 60 * 60 * 1000;
 const DEFAULT_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_SOURCE_ROWS = 5_000;
+const ACL_FILTER_CONCURRENCY = 16;
 
 function actorId(type: TimelineActorType, id: string) {
   return `${type}:${id}`;
@@ -118,6 +122,39 @@ function readString(value: unknown) {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
+function readNumber(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
+}
+
+function readUsageToken(source: Record<string, unknown>, ...keys: string[]) {
+  for (const key of keys) {
+    const value = readNumber(source[key]);
+    if (value != null) return Math.max(0, Math.floor(value));
+  }
+  return 0;
+}
+
+function normalizeRunUsage(usageJson: unknown): RunUsage | null {
+  if (!usageJson || typeof usageJson !== "object" || Array.isArray(usageJson)) return null;
+  const source = usageJson as Record<string, unknown>;
+  const inputTokens = readUsageToken(source, "inputTokens", "input_tokens", "rawInputTokens", "raw_input_tokens");
+  const cachedInputTokens = readUsageToken(
+    source,
+    "cachedInputTokens",
+    "cached_input_tokens",
+    "cacheReadInputTokens",
+    "cache_read_input_tokens",
+  );
+  const outputTokens = readUsageToken(source, "outputTokens", "output_tokens", "rawOutputTokens", "raw_output_tokens");
+  const totalTokens = inputTokens + cachedInputTokens + outputTokens;
+  return totalTokens > 0 ? { inputTokens, cachedInputTokens, outputTokens, totalTokens } : null;
+}
+
 function maybeUuidList(ids: Iterable<string>) {
   return Array.from(new Set(Array.from(ids).filter((id) => id.length > 0)));
 }
@@ -132,6 +169,34 @@ function runOverlapsWindow(from: Date, to: Date) {
 }
 
 export function workTimelineService(db: Db) {
+  async function filterReadableIssues(
+    rows: IssueRow[],
+    canReadIssue: NonNullable<WorkTimelineQuery["canReadIssue"]> | undefined,
+  ) {
+    if (!canReadIssue) return rows;
+
+    const allowedRows: IssueRow[] = [];
+    for (let index = 0; index < rows.length; index += ACL_FILTER_CONCURRENCY) {
+      const batch = rows.slice(index, index + ACL_FILTER_CONCURRENCY);
+      const decisions = await Promise.all(batch.map(async (issue) => ({
+        issue,
+        allowed: await canReadIssue({
+          id: issue.id,
+          companyId: issue.companyId,
+          projectId: issue.projectId,
+          parentId: issue.parentId,
+          assigneeAgentId: issue.assigneeAgentId,
+          assigneeUserId: issue.assigneeUserId,
+          status: issue.status,
+        }),
+      })));
+      for (const decision of decisions) {
+        if (decision.allowed) allowedRows.push(decision.issue);
+      }
+    }
+    return allowedRows;
+  }
+
   async function collectIssueIds(input: WorkTimelineQuery, from: Date, to: Date) {
     const ids = new Set<string>();
 
@@ -141,7 +206,7 @@ export function workTimelineService(db: Db) {
 
     const filterConditions = [
       eq(issues.companyId, input.companyId),
-      isNull(issues.hiddenAt),
+      visibleIssueCondition(),
       input.goalId ? eq(issues.goalId, input.goalId) : undefined,
       input.projectId ? eq(issues.projectId, input.projectId) : undefined,
       input.issueId ? eq(issues.id, input.issueId) : undefined,
@@ -267,7 +332,7 @@ export function workTimelineService(db: Db) {
       .where(
         and(
           eq(issues.companyId, input.companyId),
-          isNull(issues.hiddenAt),
+          visibleIssueCondition(),
           inArray(issues.id, issueIds),
           input.goalId ? eq(issues.goalId, input.goalId) : undefined,
           input.projectId ? eq(issues.projectId, input.projectId) : undefined,
@@ -403,20 +468,7 @@ export function workTimelineService(db: Db) {
     const candidateIssueIds = await collectIssueIds(input, from, to);
     const loadedIssues = await loadIssues(input, candidateIssueIds);
     const userScopedIssues = await applyUserLens(input, loadedIssues, from, to);
-    const accessibleIssues = input.canReadIssue
-      ? (await Promise.all(userScopedIssues.map(async (issue) => ({
-        issue,
-        allowed: await input.canReadIssue?.({
-          id: issue.id,
-          companyId: issue.companyId,
-          projectId: issue.projectId,
-          parentId: issue.parentId,
-          assigneeAgentId: issue.assigneeAgentId,
-          assigneeUserId: issue.assigneeUserId,
-          status: issue.status,
-        }),
-      })))).filter((entry) => entry.allowed).map((entry) => entry.issue)
-      : userScopedIssues;
+    const accessibleIssues = await filterReadableIssues(userScopedIssues, input.canReadIssue);
     const sortedIssues = accessibleIssues.sort((left, right) => right.createdAt.getTime() - left.createdAt.getTime());
     const pagedIssues = sortedIssues.slice(offset, offset + limit);
     const issueById = new Map(pagedIssues.map((issue) => [issue.id, issue]));
@@ -492,6 +544,7 @@ export function workTimelineService(db: Db) {
           retryOfRunId: heartbeatRuns.retryOfRunId,
           continuationAttempt: heartbeatRuns.continuationAttempt,
           invocationSource: heartbeatRuns.invocationSource,
+          usageJson: heartbeatRuns.usageJson,
         })
         .from(heartbeatRuns)
         .where(
@@ -513,12 +566,14 @@ export function workTimelineService(db: Db) {
           retryOfRunId: heartbeatRuns.retryOfRunId,
           continuationAttempt: heartbeatRuns.continuationAttempt,
           invocationSource: heartbeatRuns.invocationSource,
+          usageJson: heartbeatRuns.usageJson,
         })
         .from(activityLog)
         .innerJoin(heartbeatRuns, eq(activityLog.runId, heartbeatRuns.id))
         .where(
           and(
             eq(activityLog.companyId, input.companyId),
+            eq(heartbeatRuns.companyId, input.companyId),
             eq(activityLog.entityType, "issue"),
             inArray(activityLog.entityId, readableIssueIds),
             runOverlapsWindow(from, to),
@@ -622,6 +677,7 @@ export function workTimelineService(db: Db) {
         retryOfRunId: row.retryOfRunId ?? null,
         continuationAttempt: row.continuationAttempt,
         invocationSource: row.invocationSource ?? null,
+        usage: normalizeRunUsage(row.usageJson),
       });
     }
 

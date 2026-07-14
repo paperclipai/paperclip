@@ -119,6 +119,54 @@ describe("computeLayout", () => {
     expect(ceoRun.kickoff?.id).toBe("user:dotta"); // human kickoff shown as chip
   });
 
+  it("does not reuse a board-created assignment edge on later automation runs", () => {
+    const data = sample();
+    data.spans.push({
+      actorId: "agent:ceo",
+      laneHint: null,
+      runId: "r1-later-automation",
+      issueId: "i-405",
+      issueIdentifier: "PAP-12405",
+      issueTitle: "PAP-12405 title",
+      start: t("10:30"),
+      end: t("10:36"),
+      status: "completed",
+      retryOfRunId: null,
+      invocationSource: "automation",
+    });
+
+    const layout = computeLayout(data, OPTS);
+    const ceoRuns = layout.rows.find((r) => r.actor.id === "agent:ceo")!.bars;
+    expect(ceoRuns.find((b) => b.span.runId === "r1")?.kickoff?.id).toBe("user:dotta");
+    expect(ceoRuns.find((b) => b.span.runId === "r1-later-automation")?.kickoff).toBeNull();
+  });
+
+  it("prefers the nearest post-start kickoff edge when no prior edge exists", () => {
+    const data = sample();
+    data.spans.push({
+      actorId: "agent:ux",
+      laneHint: null,
+      runId: "late-edge-run",
+      issueId: "i-late",
+      issueIdentifier: "PAP-99999",
+      issueTitle: "Late kickoff fallback",
+      start: t("14:00"),
+      end: t("14:10"),
+      status: "completed",
+      retryOfRunId: null,
+    });
+    data.edges.push(
+      { fromActorId: "agent:qa", toActorId: "agent:ux", issueId: "i-late", at: t("14:30"), kind: "delegation" },
+      { fromActorId: "agent:cto", toActorId: "agent:ux", issueId: "i-late", at: t("14:02"), kind: "delegation" },
+    );
+
+    const layout = computeLayout(data, OPTS);
+    const lateRun = layout.rows
+      .find((r) => r.actor.id === "agent:ux")!
+      .bars.find((b) => b.span.runId === "late-edge-run")!;
+    expect(lateRun.kickoff?.id).toBe("agent:cto");
+  });
+
   it("draws agent→agent connectors only, dashing retries, never from a human", () => {
     const layout = computeLayout(sample(), OPTS);
     // 6 agent→agent edges resolve to bars; the dotta→ceo human edge draws no line.
@@ -155,25 +203,18 @@ describe("human activity markers", () => {
     ],
   });
 
-  it("gives a human actor a row driven purely by their in-window events", () => {
+  it("does not create a marker-only human row from instant events", () => {
     const layout = computeLayout(withUserEvents(), OPTS);
     const dotta = layout.rows.find((r) => r.actor.id === "user:dotta");
-    expect(dotta).toBeDefined();
-    expect(dotta!.actor.type).toBe("user");
-    expect(dotta!.bars).toHaveLength(0); // humans have no runs
+    expect(dotta).toBeUndefined();
   });
 
-  it("positions instant markers at x(event.at) on the owning row, time-ordered", () => {
+  it("does not plot instant markers on run rows", () => {
     const layout = computeLayout(withUserEvents(), OPTS);
-    const dotta = layout.rows.find((r) => r.actor.id === "user:dotta")!;
-    expect(dotta.markers).toHaveLength(3);
-    expect(dotta.markers.map((m) => m.event.kind)).toEqual(["created", "commented", "approved"]);
-    const xs = dotta.markers.map((m) => m.x);
-    expect(xs).toEqual([...xs].sort((a, b) => a - b)); // monotonic in time
-    for (const m of dotta.markers) expect(m.yc).toBeCloseTo(dotta.y + dotta.h / 2);
+    expect(layout.rows.flatMap((r) => r.markers)).toHaveLength(0);
   });
 
-  it("keeps humans marker-only: no run bars, no connectors target them", () => {
+  it("keeps human events visual-only as kickoff chips, not connector targets", () => {
     const layout = computeLayout(withUserEvents(), OPTS);
     // dotta→ceo human kickoff still draws no line; agent→agent count unchanged.
     expect(layout.connectors.length).toBe(6);

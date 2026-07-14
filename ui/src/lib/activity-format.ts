@@ -278,7 +278,7 @@ function formatIssueUpdatedAction(details: ActivityDetails, options: ActivityFor
   }
   if (details.assigneeAgentId !== undefined || details.assigneeUserId !== undefined) {
     const assigneeName = formatAssigneeName(details, options);
-    parts.push(assigneeName ? `assigned the task to ${assigneeName}` : "unassigned the task");
+    parts.push(assigneeName ? `made ${assigneeName} responsible for the task` : "cleared the responsible");
   }
   if (details.title !== undefined) parts.push("updated the title");
   if (details.description !== undefined) parts.push("updated the description");

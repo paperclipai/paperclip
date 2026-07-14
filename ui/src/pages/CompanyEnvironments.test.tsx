@@ -2,9 +2,124 @@
 
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { CompanyEnvironments } from "./CompanyEnvironments";
+
+const xtermMocks = vi.hoisted(() => {
+  class MockTerminal {
+    readonly options: Record<string, unknown>;
+    cols: number;
+    rows: number;
+    writes: string[] = [];
+    focused = false;
+    disposed = false;
+    openedElement: HTMLElement | null = null;
+    private readonly dataHandlers: Array<(data: string) => void> = [];
+
+    constructor(options: Record<string, unknown> = {}) {
+      this.options = options;
+      this.cols = typeof options.cols === "number" ? options.cols : 80;
+      this.rows = typeof options.rows === "number" ? options.rows : 24;
+      xtermMocks.terminalInstances.push(this);
+    }
+
+    loadAddon(addon: { activate?: (terminal: MockTerminal) => void }) {
+      addon.activate?.(this);
+    }
+
+    open(element: HTMLElement) {
+      this.openedElement = element;
+      element.dataset.mockXtermOpen = "true";
+    }
+
+    onData(handler: (data: string) => void) {
+      this.dataHandlers.push(handler);
+      return {
+        dispose: () => {
+          const index = this.dataHandlers.indexOf(handler);
+          if (index >= 0) this.dataHandlers.splice(index, 1);
+        },
+      };
+    }
+
+    emitData(data: string) {
+      for (const handler of this.dataHandlers) handler(data);
+    }
+
+    write(data: string) {
+      this.writes.push(data);
+      if (!this.openedElement) return;
+      const chunk = document.createElement("span");
+      // Keep test DOM readable without reimplementing xterm's ANSI parser.
+      chunk.textContent = data.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "");
+      this.openedElement.appendChild(chunk);
+    }
+
+    resize(cols: number, rows: number) {
+      this.cols = cols;
+      this.rows = rows;
+    }
+
+    focus() {
+      this.focused = true;
+      this.openedElement?.focus();
+    }
+
+    reset() {
+      this.writes = [];
+      if (this.openedElement) this.openedElement.textContent = "";
+    }
+
+    clear() {
+      if (this.openedElement) this.openedElement.textContent = "";
+    }
+
+    dispose() {
+      this.disposed = true;
+    }
+  }
+
+  class MockFitAddon {
+    fitCalls = 0;
+    terminal: MockTerminal | null = null;
+
+    constructor() {
+      xtermMocks.fitAddonInstances.push(this);
+    }
+
+    activate(terminal: MockTerminal) {
+      this.terminal = terminal;
+    }
+
+    fit() {
+      this.fitCalls += 1;
+      this.terminal?.resize(120, 32);
+    }
+  }
+
+  return {
+    MockTerminal,
+    MockFitAddon,
+    terminalInstances: [] as MockTerminal[],
+    fitAddonInstances: [] as MockFitAddon[],
+    reset() {
+      this.terminalInstances.length = 0;
+      this.fitAddonInstances.length = 0;
+    },
+  };
+});
+
+vi.mock("@xterm/xterm", () => ({
+  Terminal: xtermMocks.MockTerminal,
+}));
+
+vi.mock("@xterm/addon-fit", () => ({
+  FitAddon: xtermMocks.MockFitAddon,
+}));
+
+vi.mock("@xterm/xterm/css/xterm.css", () => ({}));
 
 const mockEnvironmentsApi = vi.hoisted(() => ({
   list: vi.fn(),
@@ -18,6 +133,7 @@ const mockEnvironmentsApi = vi.hoisted(() => ({
   customImageTemplate: vi.fn(),
   startCustomImageSetupSession: vi.fn(),
   customImageSetupSession: vi.fn(),
+  createCustomImageTerminalSessionToken: vi.fn(),
   finishCustomImageSetupSession: vi.fn(),
   cancelCustomImageSetupSession: vi.fn(),
   rollbackCustomImageTemplate: vi.fn(),
@@ -34,7 +150,7 @@ const mockSecretsApi = vi.hoisted(() => ({
 vi.mock("@/context/CompanyContext", () => ({
   useCompany: () => ({
     selectedCompanyId: "company-1",
-    selectedCompany: { id: "company-1", name: "Paperclip" },
+    selectedCompany: null,
   }),
 }));
 
@@ -44,6 +160,8 @@ vi.mock("@/context/BreadcrumbContext", () => ({
 
 vi.mock("@/context/ToastContext", () => ({
   useToast: () => ({ pushToast: vi.fn() }),
+  useToastActions: () => ({ pushToast: vi.fn() }),
+  useOptionalToastActions: () => ({ pushToast: vi.fn() }),
 }));
 
 vi.mock("@/api/environments", () => ({
@@ -60,13 +178,52 @@ vi.mock("@/api/secrets", () => ({
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
-// Minimal Radix dialog dependency for jsdom.
+// Minimal browser APIs for jsdom.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).ResizeObserver = class {
   observe() {}
   unobserve() {}
   disconnect() {}
 };
+
+class FakeWebSocket {
+  static CONNECTING = 0;
+  static OPEN = 1;
+  static CLOSING = 2;
+  static CLOSED = 3;
+  static instances: FakeWebSocket[] = [];
+
+  readonly url: string;
+  readyState = FakeWebSocket.CONNECTING;
+  sent: string[] = [];
+  onopen: ((event: Event) => void) | null = null;
+  onmessage: ((event: MessageEvent) => void) | null = null;
+  onclose: ((event: CloseEvent) => void) | null = null;
+  onerror: ((event: Event) => void) | null = null;
+
+  constructor(url: string) {
+    this.url = url;
+    FakeWebSocket.instances.push(this);
+  }
+
+  send(data: string) {
+    this.sent.push(data);
+  }
+
+  close() {
+    this.readyState = FakeWebSocket.CLOSED;
+    this.onclose?.(new Event("close") as CloseEvent);
+  }
+
+  open() {
+    this.readyState = FakeWebSocket.OPEN;
+    this.onopen?.(new Event("open"));
+  }
+
+  emitMessage(data: string) {
+    this.onmessage?.(new MessageEvent("message", { data }));
+  }
+}
 
 async function act(callback: () => void | Promise<void>) {
   await callback();
@@ -106,16 +263,44 @@ function findButton(root: ParentNode, label: string): HTMLButtonElement | undefi
   return Array.from(root.querySelectorAll("button")).find((button) => button.textContent?.trim() === label);
 }
 
-function editButtons(root: ParentNode): HTMLButtonElement[] {
-  return Array.from(root.querySelectorAll("button")).filter((button) => button.textContent?.trim() === "Edit");
+function findAction(root: ParentNode, label: string): HTMLElement | undefined {
+  return Array.from(root.querySelectorAll<HTMLElement>("button,a")).find((element) => element.textContent?.trim() === label);
+}
+
+function editButtons(root: ParentNode): HTMLElement[] {
+  return Array.from(root.querySelectorAll<HTMLElement>("button,a")).filter((element) => element.textContent?.trim() === "Edit");
 }
 
 function click(element: Element | null | undefined) {
-  element?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  element?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
 }
 
-function getOpenDialog(): HTMLElement | null {
-  return document.body.querySelector("[role='dialog']");
+function setInputValue(input: HTMLInputElement, value: string) {
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+  setter?.call(input, value);
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+const ENVIRONMENTS_PATH = "/company/settings/instance/environments";
+
+function getEnvironmentFormPage(): HTMLElement | null {
+  return document.body.querySelector("[data-testid='environment-form-page']");
+}
+
+function renderCompanyEnvironments(queryClient: QueryClient, initialPath = ENVIRONMENTS_PATH) {
+  return (
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter initialEntries={[initialPath]}>
+        <TooltipProvider>
+          <Routes>
+            <Route path={ENVIRONMENTS_PATH} element={<CompanyEnvironments />} />
+            <Route path={`${ENVIRONMENTS_PATH}/new`} element={<CompanyEnvironments mode="create" />} />
+            <Route path={`${ENVIRONMENTS_PATH}/:environmentId/edit`} element={<CompanyEnvironments mode="edit" />} />
+          </Routes>
+        </TooltipProvider>
+      </MemoryRouter>
+    </QueryClientProvider>
+  );
 }
 
 function createSession(overrides: Record<string, unknown> = {}) {
@@ -170,16 +355,42 @@ function createTemplate(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function supportedDaytonaCapabilities() {
+  return {
+    adapters: [],
+    drivers: { local: "supported", ssh: "supported", sandbox: "supported", plugin: "unsupported" },
+    sandboxProviders: {
+      daytona: {
+        status: "supported",
+        supportsSavedProbe: true,
+        supportsUnsavedProbe: true,
+        supportsRunExecution: true,
+        supportsReusableLeases: true,
+        supportsInteractiveSetup: true,
+        interactiveSetupConnectionTypes: ["ssh"],
+        supportsTemplateCapture: true,
+        supportsTemplateDelete: true,
+        displayName: "Daytona",
+      },
+    },
+  };
+}
+
 describe("CompanyEnvironments — test provider button", () => {
   let container: HTMLDivElement;
   let root: ReturnType<typeof createRoot> | null;
   let probeResolvers: Map<string, () => void>;
+  let originalWebSocket: typeof WebSocket | undefined;
 
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
     root = null;
     probeResolvers = new Map();
+    originalWebSocket = globalThis.WebSocket;
+    FakeWebSocket.instances = [];
+    xtermMocks.reset();
+    globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
     mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: null });
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableEnvironments: true });
     mockEnvironmentsApi.capabilities.mockResolvedValue({ adapters: [], sandboxProviders: {} });
@@ -196,6 +407,16 @@ describe("CompanyEnvironments — test provider button", () => {
     mockEnvironmentsApi.customImageSetupSession.mockResolvedValue({
       session: createSession(),
       connectionPayload: { type: "ssh", command: "ssh sandbox@setup.example.invalid" },
+    });
+    mockEnvironmentsApi.createCustomImageTerminalSessionToken.mockResolvedValue({
+      id: "terminal-session-1",
+      token: "terminal-token-terminal-token-123456",
+      expiresAt: "2026-06-25T20:05:00.000Z",
+      setupSessionId: "session-1",
+      environmentId: "env-1",
+      connectionType: "ssh",
+      websocketPath:
+        "/api/environment-custom-image-setup-sessions/session-1/terminal/ws?terminalSessionId=terminal-session-1",
     });
     mockEnvironmentsApi.finishCustomImageSetupSession.mockResolvedValue({
       session: createSession({ status: "promoted", promotedTemplateId: "template-1", finishedAt: "2026-06-25T20:10:00.000Z" }),
@@ -247,6 +468,13 @@ describe("CompanyEnvironments — test provider button", () => {
     root = null;
     container.remove();
     document.body.innerHTML = "";
+    if (originalWebSocket) {
+      globalThis.WebSocket = originalWebSocket;
+    } else {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      delete (globalThis as any).WebSocket;
+    }
+    vi.restoreAllMocks();
     vi.clearAllMocks();
   });
 
@@ -255,13 +483,7 @@ describe("CompanyEnvironments — test provider button", () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 
     await act(async () => {
-      root!.render(
-        <QueryClientProvider client={queryClient}>
-          <TooltipProvider>
-            <CompanyEnvironments />
-          </TooltipProvider>
-        </QueryClientProvider>,
-      );
+      root!.render(renderCompanyEnvironments(queryClient));
     });
     await flushReact();
 
@@ -281,7 +503,84 @@ describe("CompanyEnvironments — test provider button", () => {
     expect(buttonsAfter[0].disabled).toBe(true);
     expect(buttonsAfter[1].textContent?.trim()).toBe("Test provider");
     expect(buttonsAfter[1].disabled).toBe(false);
-    expect(mockEnvironmentsApi.probe).toHaveBeenCalledExactlyOnceWith("env-1");
+    expect(mockEnvironmentsApi.probe).toHaveBeenCalledExactlyOnceWith("env-1", "company-1");
+  });
+
+  it("explains that successful sandbox provider tests use a temporary sandbox", async () => {
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    mockEnvironmentsApi.list.mockResolvedValue([
+      { id: "env-1", name: "Daytona", driver: "sandbox", description: null, config: { provider: "daytona" } },
+    ]);
+    mockEnvironmentsApi.capabilities.mockResolvedValue(supportedDaytonaCapabilities());
+    mockEnvironmentsApi.probe.mockResolvedValue({
+      ok: true,
+      driver: "sandbox",
+      summary: "Connected to Daytona sandbox paperclip-probe.",
+      details: {
+        provider: "daytona",
+        diagnostics: [],
+        metadata: {
+          provider: "daytona",
+          sandboxId: "473167E9",
+          sandboxName: "paperclip-probe",
+        },
+      },
+    });
+
+    await act(async () => {
+      root!.render(renderCompanyEnvironments(queryClient));
+    });
+    await flushReact();
+
+    await act(async () => {
+      testProviderButtons(container)[0].dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(mockEnvironmentsApi.probe).toHaveBeenCalledExactlyOnceWith("env-1", "company-1");
+    expect(container.textContent).toContain("Connected to Daytona sandbox paperclip-probe.");
+    expect(container.textContent).not.toContain("Verified temporary daytona sandbox");
+    expect(container.textContent).not.toContain("Test probes clean up the validation sandbox after the check");
+    expect(container.textContent).not.toContain("provider dashboard");
+  });
+
+  it("does not show sandbox lifecycle success copy for failed sandbox provider tests", async () => {
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    mockEnvironmentsApi.list.mockResolvedValue([
+      { id: "env-1", name: "Daytona", driver: "sandbox", description: null, config: { provider: "daytona" } },
+    ]);
+    mockEnvironmentsApi.capabilities.mockResolvedValue(supportedDaytonaCapabilities());
+    mockEnvironmentsApi.probe.mockResolvedValue({
+      ok: false,
+      driver: "sandbox",
+      summary: "Daytona sandbox probe failed.",
+      details: {
+        provider: "daytona",
+        error: "Sandbox image was not found.",
+        metadata: {
+          provider: "daytona",
+          sandboxId: "473167E9",
+          sandboxName: "paperclip-probe",
+        },
+      },
+    });
+
+    await act(async () => {
+      root!.render(renderCompanyEnvironments(queryClient));
+    });
+    await flushReact();
+
+    await act(async () => {
+      testProviderButtons(container)[0].dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(container.textContent).toContain("Daytona sandbox probe failed.");
+    expect(container.textContent).toContain("Sandbox image was not found.");
+    expect(container.textContent).not.toContain("Verified temporary daytona sandbox");
+    expect(container.textContent).not.toContain("Test probes clean up the validation sandbox after the check");
   });
 
   it("keeps the second environment's testing state when an earlier probe settles", async () => {
@@ -289,13 +588,7 @@ describe("CompanyEnvironments — test provider button", () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 
     await act(async () => {
-      root!.render(
-        <QueryClientProvider client={queryClient}>
-          <TooltipProvider>
-            <CompanyEnvironments />
-          </TooltipProvider>
-        </QueryClientProvider>,
-      );
+      root!.render(renderCompanyEnvironments(queryClient));
     });
     await flushReact();
 
@@ -320,61 +613,63 @@ describe("CompanyEnvironments — test provider button", () => {
     expect(buttons[1].disabled).toBe(true);
   });
 
-  it("opens the add-environment form in a dialog and closes it on cancel", async () => {
+  it("opens the add-environment form on a standalone page and closes it on cancel", async () => {
     root = createRoot(container);
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 
     await act(async () => {
-      root!.render(
-        <QueryClientProvider client={queryClient}>
-          <TooltipProvider>
-            <CompanyEnvironments />
-          </TooltipProvider>
-        </QueryClientProvider>,
-      );
+      root!.render(renderCompanyEnvironments(queryClient));
     });
     await flushReact();
 
     await act(async () => {
-      findButton(container, "Add environment")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      click(findAction(container, "Add environment"));
     });
-    await flushReact();
 
-    expect(getOpenDialog()?.textContent).toContain("Add environment");
+    await waitForAssertion(() => {
+      expect(getEnvironmentFormPage()?.textContent).toContain("Add environment");
+    });
 
     await act(async () => {
       findButton(document.body, "Cancel")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
 
-    expect(getOpenDialog()).toBeNull();
+    expect(getEnvironmentFormPage()).toBeNull();
   });
 
-  it("opens the edit form in a dialog with existing values and closes after save", async () => {
+  it("opens the edit form on a standalone page with existing values and closes after save", async () => {
     root = createRoot(container);
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 
     await act(async () => {
-      root!.render(
-        <QueryClientProvider client={queryClient}>
-          <TooltipProvider>
-            <CompanyEnvironments />
-          </TooltipProvider>
-        </QueryClientProvider>,
-      );
+      root!.render(renderCompanyEnvironments(queryClient));
     });
     await flushReact();
 
     await act(async () => {
-      findButton(container, "Edit")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      click(findAction(container, "Edit"));
+    });
+
+    await waitForAssertion(() => {
+      expect(getEnvironmentFormPage()?.textContent).toContain("Edit environment");
+    });
+
+    const page = getEnvironmentFormPage();
+    expect(document.body.querySelector("[role='dialog']")).toBeNull();
+    expect(
+      Array.from(page?.querySelectorAll("input") ?? []).some((input) => (input as HTMLInputElement).value === "Alpha"),
+    ).toBe(true);
+
+    await act(async () => click(findButton(page!, "Add variable")));
+    await flushReact();
+    const variableName = page!.querySelector<HTMLInputElement>('input[aria-label="Variable name"]')!;
+    const variableValue = page!.querySelector<HTMLInputElement>('input[aria-label="Variable value"]')!;
+    await act(async () => {
+      setInputValue(variableName, "API_TOKEN");
+      setInputValue(variableValue, "draft-token");
     });
     await flushReact();
-
-    const dialog = getOpenDialog();
-    expect(dialog?.textContent).toContain("Edit environment");
-    expect(
-      Array.from(dialog?.querySelectorAll("input") ?? []).some((input) => (input as HTMLInputElement).value === "Alpha"),
-    ).toBe(true);
 
     await act(async () => {
       findButton(document.body, "Save environment")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -383,9 +678,102 @@ describe("CompanyEnvironments — test provider button", () => {
 
     expect(mockEnvironmentsApi.update).toHaveBeenCalledExactlyOnceWith(
       "env-1",
-      expect.objectContaining({ name: "Alpha", driver: "sandbox" }),
+      expect.objectContaining({
+        name: "Alpha",
+        driver: "sandbox",
+        envVars: { API_TOKEN: { type: "plain", value: "draft-token" } },
+      }),
     );
-    expect(getOpenDialog()).toBeNull();
+    expect(getEnvironmentFormPage()).toBeNull();
+  });
+
+  it("confirms before cancelling the edit page with unsaved environment variable drafts", async () => {
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+
+    await act(async () => {
+      root!.render(renderCompanyEnvironments(queryClient));
+    });
+    await flushReact();
+
+    await act(async () => {
+      click(findAction(container, "Edit"));
+    });
+    await waitForAssertion(() => {
+      expect(getEnvironmentFormPage()?.textContent).toContain("Edit environment");
+    });
+    const page = getEnvironmentFormPage()!;
+
+    await act(async () => click(findButton(page, "Add variable")));
+    await flushReact();
+    const variableName = page.querySelector<HTMLInputElement>('input[aria-label="Variable name"]')!;
+    const variableValue = page.querySelector<HTMLInputElement>('input[aria-label="Variable value"]')!;
+    await act(async () => {
+      setInputValue(variableName, "API_TOKEN");
+      setInputValue(variableValue, "draft-token");
+    });
+    await flushReact();
+
+    await act(async () => click(findButton(document.body, "Cancel")));
+    await flushReact();
+
+    expect(confirmSpy).toHaveBeenCalledWith("Discard unsaved environment changes?");
+    expect(getEnvironmentFormPage()).not.toBeNull();
+
+    confirmSpy.mockReturnValue(true);
+    await act(async () => click(findButton(document.body, "Cancel")));
+    await flushReact();
+
+    expect(getEnvironmentFormPage()).toBeNull();
+  });
+
+  it("keeps unload and in-app link warnings after env var changes are staged into the form", async () => {
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+
+    await act(async () => {
+      root!.render(renderCompanyEnvironments(queryClient));
+    });
+    await flushReact();
+
+    await act(async () => {
+      click(findAction(container, "Edit"));
+    });
+    await waitForAssertion(() => {
+      expect(getEnvironmentFormPage()?.textContent).toContain("Edit environment");
+    });
+    const page = getEnvironmentFormPage()!;
+
+    await act(async () => click(findButton(page, "Add variable")));
+    await flushReact();
+    const variableName = page.querySelector<HTMLInputElement>('input[aria-label="Variable name"]')!;
+    const variableValue = page.querySelector<HTMLInputElement>('input[aria-label="Variable value"]')!;
+    await act(async () => {
+      setInputValue(variableName, "API_TOKEN");
+      setInputValue(variableValue, "draft-token");
+    });
+    await flushReact();
+
+    await act(async () => click(findButton(page, "Save")));
+    await flushReact();
+    expect(page.textContent).not.toContain("Unsaved changes");
+
+    const beforeUnload = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(beforeUnload);
+    expect(beforeUnload.defaultPrevented).toBe(true);
+
+    const link = document.createElement("a");
+    link.href = "/agents/dashboard";
+    document.body.appendChild(link);
+    const clickEvent = new MouseEvent("click", { bubbles: true, cancelable: true, button: 0 });
+    link.dispatchEvent(clickEvent);
+
+    expect(confirmSpy).toHaveBeenCalledWith("Discard unsaved environment changes?");
+    expect(clickEvent.defaultPrevented).toBe(true);
+    expect(getEnvironmentFormPage()).not.toBeNull();
+    link.remove();
   });
 
   it("shows image setup controls only for providers advertising setup and capture support", async () => {
@@ -440,40 +828,34 @@ describe("CompanyEnvironments — test provider button", () => {
     });
 
     await act(async () => {
-      root!.render(
-        <QueryClientProvider client={queryClient}>
-          <TooltipProvider>
-            <CompanyEnvironments />
-          </TooltipProvider>
-        </QueryClientProvider>,
-      );
+      root!.render(renderCompanyEnvironments(queryClient));
     });
     await flushReact();
 
-    // Daytona supports setup + capture → "Configure image" in its config dialog.
+    // Daytona supports setup + capture -> "Configure image" on its edit page.
     await act(async () => click(editButtons(container)[0]));
     await waitForAssertion(() => {
-      expect(getOpenDialog()?.textContent).toContain("Configure image");
+      expect(getEnvironmentFormPage()?.textContent).toContain("Configure image");
     });
-    expect(mockEnvironmentsApi.customImageTemplate).toHaveBeenCalledExactlyOnceWith("env-1");
+    expect(mockEnvironmentsApi.customImageTemplate).toHaveBeenCalledExactlyOnceWith("env-1", "company-1");
     await act(async () => click(findButton(document.body, "Cancel")));
-    await waitForAssertion(() => expect(getOpenDialog()).toBeNull());
+    await waitForAssertion(() => expect(getEnvironmentFormPage()).toBeNull());
 
     // E2B does not advertise interactive setup.
     await act(async () => click(editButtons(container)[1]));
     await waitForAssertion(() => {
-      expect(getOpenDialog()?.textContent).toContain("Unsupported provider");
+      expect(getEnvironmentFormPage()?.textContent).toContain("Unsupported provider");
     });
-    expect(getOpenDialog()?.textContent).not.toContain("Configure image");
+    expect(getEnvironmentFormPage()?.textContent).not.toContain("Configure image");
     await act(async () => click(findButton(document.body, "Cancel")));
-    await waitForAssertion(() => expect(getOpenDialog()).toBeNull());
+    await waitForAssertion(() => expect(getEnvironmentFormPage()).toBeNull());
 
     // Provider advertises setup but cannot capture an image.
     await act(async () => click(editButtons(container)[2]));
     await waitForAssertion(() => {
-      expect(getOpenDialog()?.textContent).toContain("Setup capture unavailable");
+      expect(getEnvironmentFormPage()?.textContent).toContain("Setup capture unavailable");
     });
-    expect(getOpenDialog()?.textContent).not.toContain("Configure image");
+    expect(getEnvironmentFormPage()?.textContent).not.toContain("Configure image");
   });
 
   it("shows a live connect command and removes it after cancellation", async () => {
@@ -519,31 +901,148 @@ describe("CompanyEnvironments — test provider button", () => {
     });
 
     await act(async () => {
-      root!.render(
-        <QueryClientProvider client={queryClient}>
-          <TooltipProvider>
-            <CompanyEnvironments />
-          </TooltipProvider>
-        </QueryClientProvider>,
-      );
+      root!.render(renderCompanyEnvironments(queryClient));
     });
     await flushReact();
 
     await act(async () => click(editButtons(container)[0]));
     await waitForAssertion(() => {
-      expect(getOpenDialog()?.textContent).toContain(command);
+      expect(getEnvironmentFormPage()?.textContent).toContain(command);
     });
 
-    await act(async () => click(findButton(getOpenDialog()!, "Cancel")));
+    await act(async () => click(findButton(getEnvironmentFormPage()!, "Cancel")));
     await waitForAssertion(() => {
-      expect(getOpenDialog()?.textContent).toContain("Setup cancelled");
+      expect(getEnvironmentFormPage()?.textContent).toContain("Setup cancelled");
     });
 
     expect(mockEnvironmentsApi.cancelCustomImageSetupSession).toHaveBeenCalledExactlyOnceWith(
       "session-1",
       { reason: "operator cancelled" },
     );
-    expect(getOpenDialog()?.textContent).not.toContain(command);
+    expect(getEnvironmentFormPage()?.textContent).not.toContain(command);
+  });
+
+  it("opens an embedded browser terminal automatically while preserving the SSH command fallback", async () => {
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const command = "ssh sandbox@setup.example.invalid -p 2222";
+    mockEnvironmentsApi.list.mockResolvedValue([
+      { id: "env-1", name: "Daytona", driver: "sandbox", description: null, config: { provider: "daytona" } },
+    ]);
+    mockEnvironmentsApi.capabilities.mockResolvedValue(supportedDaytonaCapabilities());
+    mockEnvironmentsApi.customImageTemplate.mockResolvedValue({
+      activeTemplate: null,
+      activeSession: createSession(),
+      latestSession: createSession(),
+    });
+    mockEnvironmentsApi.customImageSetupSession.mockResolvedValue({
+      session: createSession(),
+      connectionPayload: { type: "ssh", command },
+    });
+
+    await act(async () => {
+      root!.render(renderCompanyEnvironments(queryClient));
+    });
+    await flushReact();
+
+    await act(async () => click(editButtons(container)[0]));
+    await waitForAssertion(() => {
+      expect(getEnvironmentFormPage()?.textContent).toContain(command);
+      expect(getEnvironmentFormPage()?.textContent).toContain("Browser terminal");
+      expect(getEnvironmentFormPage()?.textContent).toContain("SSH command fallback");
+      expect(mockEnvironmentsApi.createCustomImageTerminalSessionToken).toHaveBeenCalledExactlyOnceWith("session-1", {});
+      expect(FakeWebSocket.instances).toHaveLength(1);
+    });
+
+    expect(FakeWebSocket.instances[0].url).toContain(
+      "/api/environment-custom-image-setup-sessions/session-1/terminal/ws?terminalSessionId=terminal-session-1",
+    );
+    expect(FakeWebSocket.instances[0].url).not.toContain("token=");
+    expect(FakeWebSocket.instances[0].url).not.toContain("terminal-token-terminal-token-123456");
+    expect(FakeWebSocket.instances[0].url).toContain("cols=120");
+    expect(FakeWebSocket.instances[0].url).toContain("rows=32");
+    expect(xtermMocks.terminalInstances[0].options.cursorBlink).toBe(true);
+    expect(xtermMocks.terminalInstances[0].options.cursorInactiveStyle).toBe("bar");
+    expect(xtermMocks.terminalInstances[0].options.cursorStyle).toBe("bar");
+    expect(xtermMocks.terminalInstances[0].options.cursorWidth).toBe(2);
+    expect(xtermMocks.terminalInstances[0].options.customGlyphs).toBe(true);
+    expect(xtermMocks.terminalInstances[0].options.letterSpacing).toBe(0);
+    expect(xtermMocks.terminalInstances[0].options.theme).toMatchObject({
+      cursor: "#22d3ee",
+      cursorAccent: "#020617",
+    });
+    expect(String(xtermMocks.terminalInstances[0].options.fontFamily)).toContain("Nerd Font");
+
+    await act(async () => {
+      FakeWebSocket.instances[0].open();
+      FakeWebSocket.instances[0].emitMessage(JSON.stringify({ type: "ready" }));
+      FakeWebSocket.instances[0].emitMessage(JSON.stringify({ type: "output", data: "\u001b[?2004hsetup shell\r\n$ " }));
+    });
+    const terminalScreen = getEnvironmentFormPage()?.querySelector<HTMLElement>(
+      "[data-testid='custom-image-terminal-screen-session-1']",
+    );
+    await waitForAssertion(() => {
+      expect(terminalScreen?.dataset.mockXtermOpen).toBe("true");
+      expect(xtermMocks.terminalInstances[0].writes.join("")).toContain("setup shell");
+      expect(xtermMocks.terminalInstances[0].focused).toBe(true);
+      expect(document.activeElement).toBe(terminalScreen);
+      expect(getEnvironmentFormPage()?.textContent).toContain(command);
+    });
+    expect(FakeWebSocket.instances[0].sent).toContain(JSON.stringify({
+      type: "auth",
+      token: "terminal-token-terminal-token-123456",
+    }));
+    expect(FakeWebSocket.instances[0].sent).toContain(JSON.stringify({ type: "resize", cols: 120, rows: 32 }));
+
+    await act(async () => {
+      xtermMocks.terminalInstances[0].emitData("l");
+      xtermMocks.terminalInstances[0].emitData("\r");
+    });
+
+    expect(FakeWebSocket.instances[0].sent).toContain(JSON.stringify({ type: "input", data: "l" }));
+    expect(FakeWebSocket.instances[0].sent).toContain(JSON.stringify({ type: "input", data: "\r" }));
+  });
+
+  it("keeps the environment edit page open when Escape is pressed in setup terminal", async () => {
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const command = "ssh sandbox@setup.example.invalid -p 2222";
+    mockEnvironmentsApi.list.mockResolvedValue([
+      { id: "env-1", name: "Daytona", driver: "sandbox", description: null, config: { provider: "daytona" } },
+    ]);
+    mockEnvironmentsApi.capabilities.mockResolvedValue(supportedDaytonaCapabilities());
+    mockEnvironmentsApi.customImageTemplate.mockResolvedValue({
+      activeTemplate: null,
+      activeSession: createSession(),
+      latestSession: createSession(),
+    });
+    mockEnvironmentsApi.customImageSetupSession.mockResolvedValue({
+      session: createSession(),
+      connectionPayload: { type: "ssh", command },
+    });
+
+    await act(async () => {
+      root!.render(renderCompanyEnvironments(queryClient));
+    });
+    await flushReact();
+
+    await act(async () => click(editButtons(container)[0]));
+    let terminalScreen: HTMLElement | null = null;
+    await waitForAssertion(() => {
+      terminalScreen = getEnvironmentFormPage()?.querySelector<HTMLElement>(
+        "[data-testid='custom-image-terminal-screen-session-1']",
+      ) ?? null;
+      expect(terminalScreen).toBeTruthy();
+      expect(document.body.querySelector("[role='dialog']")).toBeNull();
+    });
+
+    await act(async () => {
+      terminalScreen?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    await flushReact();
+
+    expect(getEnvironmentFormPage()?.textContent).toContain(command);
+    expect(getEnvironmentFormPage()?.textContent).toContain("Edit environment");
   });
 
   it("does not render connect details when an active session refreshes as expired", async () => {
@@ -582,24 +1081,258 @@ describe("CompanyEnvironments — test provider button", () => {
     });
 
     await act(async () => {
-      root!.render(
-        <QueryClientProvider client={queryClient}>
-          <TooltipProvider>
-            <CompanyEnvironments />
-          </TooltipProvider>
-        </QueryClientProvider>,
-      );
+      root!.render(renderCompanyEnvironments(queryClient));
     });
     await flushReact();
 
     await act(async () => click(editButtons(container)[0]));
     await waitForAssertion(() => {
-      expect(getOpenDialog()?.textContent).toContain("Setup expired");
+      expect(getEnvironmentFormPage()?.textContent).toContain("Setup expired");
     });
-    expect(getOpenDialog()?.textContent).not.toContain(command);
+    expect(getEnvironmentFormPage()?.textContent).not.toContain(command);
+  });
+
+  it("shows a setup connection refresh fallback without breaking finish or cancel", async () => {
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    mockEnvironmentsApi.list.mockResolvedValue([
+      { id: "env-1", name: "Daytona", driver: "sandbox", description: null, config: { provider: "daytona" } },
+    ]);
+    mockEnvironmentsApi.capabilities.mockResolvedValue(supportedDaytonaCapabilities());
+    mockEnvironmentsApi.customImageTemplate.mockResolvedValue({
+      activeTemplate: null,
+      activeSession: createSession(),
+      latestSession: createSession(),
+    });
+    mockEnvironmentsApi.customImageSetupSession.mockRejectedValue(new Error("proxy unavailable"));
+
+    await act(async () => {
+      root!.render(renderCompanyEnvironments(queryClient));
+    });
+    await flushReact();
+
+    await act(async () => click(editButtons(container)[0]));
+    await waitForAssertion(() => {
+      expect(getEnvironmentFormPage()?.textContent).toContain("Setup connection details could not be refreshed.");
+    });
+
+    const dialog = getEnvironmentFormPage()!;
+    expect(findButton(dialog, "Finished")?.disabled).toBe(false);
+    expect(findButton(dialog, "Cancel")?.disabled).toBe(false);
+
+    await act(async () => click(findButton(dialog, "Finished")));
+    await flushReact();
+
+    expect(mockEnvironmentsApi.finishCustomImageSetupSession).toHaveBeenCalledExactlyOnceWith("session-1", {});
+  });
+
+  it("shows provider fallback messaging for unsupported setup connection payloads", async () => {
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    mockEnvironmentsApi.list.mockResolvedValue([
+      { id: "env-1", name: "Daytona", driver: "sandbox", description: null, config: { provider: "daytona" } },
+    ]);
+    mockEnvironmentsApi.capabilities.mockResolvedValue(supportedDaytonaCapabilities());
+    mockEnvironmentsApi.customImageTemplate.mockResolvedValue({
+      activeTemplate: null,
+      activeSession: createSession(),
+      latestSession: createSession(),
+    });
+    mockEnvironmentsApi.customImageSetupSession.mockResolvedValue({
+      session: createSession(),
+      connectionPayload: { type: "browser_terminal", command: null },
+    });
+
+    await act(async () => {
+      root!.render(renderCompanyEnvironments(queryClient));
+    });
+    await flushReact();
+
+    await act(async () => click(editButtons(container)[0]));
+    await waitForAssertion(() => {
+      expect(getEnvironmentFormPage()?.textContent).toContain("Browser terminal is not available for this provider connection.");
+    });
+
+    const dialog = getEnvironmentFormPage()!;
+    expect(findButton(dialog, "Finished")?.disabled).toBe(false);
+    expect(findButton(dialog, "Cancel")?.disabled).toBe(false);
   });
 
   it("shows active template controls for refresh, rollback, and disable", async () => {
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const activeTemplateId = "12345678-90ab-cdef-1234-567890abcdef";
+    mockEnvironmentsApi.list.mockResolvedValue([
+      { id: "env-1", name: "Daytona", driver: "sandbox", description: null, config: { provider: "daytona" } },
+    ]);
+    mockEnvironmentsApi.capabilities.mockResolvedValue({
+      adapters: [],
+      drivers: { local: "supported", ssh: "supported", sandbox: "supported", plugin: "unsupported" },
+      sandboxProviders: {
+        daytona: {
+          status: "supported",
+          supportsSavedProbe: true,
+          supportsUnsavedProbe: true,
+          supportsRunExecution: true,
+          supportsReusableLeases: true,
+          supportsInteractiveSetup: true,
+          interactiveSetupConnectionTypes: ["ssh"],
+          supportsTemplateCapture: true,
+          supportsTemplateDelete: true,
+          displayName: "Daytona",
+        },
+      },
+    });
+    mockEnvironmentsApi.customImageTemplate.mockResolvedValue({
+      activeTemplate: createTemplate({ id: activeTemplateId }),
+      activeSession: null,
+      latestSession: null,
+    });
+
+    await act(async () => {
+      root!.render(renderCompanyEnvironments(queryClient));
+    });
+    await flushReact();
+
+    await act(async () => click(editButtons(container)[0]));
+    await waitForAssertion(() => {
+      const dialog = getEnvironmentFormPage();
+      expect(dialog?.textContent).toContain("Active template");
+      expect(dialog?.textContent).toContain("redacted-template-ref");
+      expect(dialog?.textContent).not.toContain("id 12345678-90a");
+      expect(
+        dialog?.querySelector(
+          "[title='Provider snapshot ref redacted-template-ref (Paperclip template 12345678-90ab-cdef-1234-567890abcdef)']",
+        ),
+      ).toBeTruthy();
+      expect(findButton(dialog!, "Refresh")).toBeTruthy();
+      expect(findButton(dialog!, "Rollback")).toBeTruthy();
+      expect(findButton(dialog!, "Disable")).toBeTruthy();
+    });
+
+    await act(async () => click(findButton(getEnvironmentFormPage()!, "Refresh")));
+    await flushReact();
+
+    expect(mockEnvironmentsApi.startCustomImageSetupSession).toHaveBeenCalledWith(
+      "env-1",
+      "company-1",
+      { templateId: activeTemplateId },
+    );
+    await waitForAssertion(() => {
+      expect(getEnvironmentFormPage()?.textContent).toContain("Browser terminal");
+      expect(getEnvironmentFormPage()?.textContent).toContain("SSH command fallback");
+      expect(mockEnvironmentsApi.createCustomImageTerminalSessionToken).toHaveBeenCalledExactlyOnceWith("session-1", {});
+      expect(FakeWebSocket.instances).toHaveLength(1);
+    });
+  });
+
+  it("allows stale capturing setup sessions to be cancelled back to active template controls", async () => {
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const activeTemplate = createTemplate({ id: "template-active" });
+    let activeSession: ReturnType<typeof createSession> | null = createSession({ status: "capturing" });
+    let latestSession: ReturnType<typeof createSession> | null = activeSession;
+    mockEnvironmentsApi.list.mockResolvedValue([
+      { id: "env-1", name: "Daytona", driver: "sandbox", description: null, config: { provider: "daytona" } },
+    ]);
+    mockEnvironmentsApi.capabilities.mockResolvedValue(supportedDaytonaCapabilities());
+    mockEnvironmentsApi.customImageTemplate.mockImplementation(async () => ({
+      activeTemplate,
+      activeSession,
+      latestSession,
+    }));
+    mockEnvironmentsApi.customImageSetupSession.mockResolvedValue({
+      session: activeSession,
+      connectionPayload: null,
+    });
+    mockEnvironmentsApi.cancelCustomImageSetupSession.mockImplementation(async () => {
+      activeSession = null;
+      latestSession = createSession({ status: "cancelled", finishedAt: "2026-06-25T20:10:00.000Z" });
+      return latestSession;
+    });
+
+    await act(async () => {
+      root!.render(renderCompanyEnvironments(queryClient));
+    });
+    await flushReact();
+
+    await act(async () => click(editButtons(container)[0]));
+    await waitForAssertion(() => {
+      const dialog = getEnvironmentFormPage()!;
+      expect(dialog.textContent).toContain("Capturing template");
+      expect(dialog.textContent).toContain("Capture is in progress.");
+      expect(findButton(dialog, "Finished")?.disabled).toBe(true);
+      expect(findButton(dialog, "Cancel")?.disabled).toBe(false);
+    });
+
+    await act(async () => click(findButton(getEnvironmentFormPage()!, "Cancel")));
+    await waitForAssertion(() => {
+      const dialog = getEnvironmentFormPage()!;
+      expect(dialog.textContent).toContain("Active template");
+      expect(findButton(dialog, "Refresh")).toBeTruthy();
+    });
+
+    expect(mockEnvironmentsApi.cancelCustomImageSetupSession).toHaveBeenCalledExactlyOnceWith(
+      "session-1",
+      { reason: "operator cancelled" },
+    );
+  });
+
+  it("shows an out-of-sync warning when the active template no longer matches the saved config", async () => {
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    mockEnvironmentsApi.list.mockResolvedValue([
+      { id: "env-1", name: "Daytona", driver: "sandbox", description: null, config: { provider: "daytona" } },
+    ]);
+    mockEnvironmentsApi.capabilities.mockResolvedValue(supportedDaytonaCapabilities());
+    mockEnvironmentsApi.customImageTemplate.mockResolvedValue({
+      activeTemplate: createTemplate({ id: "template-active" }),
+      activeTemplateMatchesConfig: false,
+      activeSession: null,
+      latestSession: null,
+    });
+
+    await act(async () => {
+      root!.render(renderCompanyEnvironments(queryClient));
+    });
+    await flushReact();
+
+    await act(async () => click(editButtons(container)[0]));
+    await waitForAssertion(() => {
+      const dialog = getEnvironmentFormPage()!;
+      expect(dialog.textContent).toContain("Active template");
+      expect(dialog.textContent).toContain("Not in use — the environment configuration changed");
+    });
+  });
+
+  it("does not show the out-of-sync warning when the active template matches the saved config", async () => {
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    mockEnvironmentsApi.list.mockResolvedValue([
+      { id: "env-1", name: "Daytona", driver: "sandbox", description: null, config: { provider: "daytona" } },
+    ]);
+    mockEnvironmentsApi.capabilities.mockResolvedValue(supportedDaytonaCapabilities());
+    mockEnvironmentsApi.customImageTemplate.mockResolvedValue({
+      activeTemplate: createTemplate({ id: "template-active" }),
+      activeTemplateMatchesConfig: true,
+      activeSession: null,
+      latestSession: null,
+    });
+
+    await act(async () => {
+      root!.render(renderCompanyEnvironments(queryClient));
+    });
+    await flushReact();
+
+    await act(async () => click(editButtons(container)[0]));
+    await waitForAssertion(() => {
+      const dialog = getEnvironmentFormPage()!;
+      expect(dialog.textContent).toContain("Active template");
+      expect(dialog.textContent).not.toContain("Not in use");
+    });
+  });
+
+  it("passes company context when rolling back and disabling an active template", async () => {
     root = createRoot(container);
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     mockEnvironmentsApi.list.mockResolvedValue([
@@ -630,31 +1363,26 @@ describe("CompanyEnvironments — test provider button", () => {
     });
 
     await act(async () => {
-      root!.render(
-        <QueryClientProvider client={queryClient}>
-          <TooltipProvider>
-            <CompanyEnvironments />
-          </TooltipProvider>
-        </QueryClientProvider>,
-      );
+      root!.render(renderCompanyEnvironments(queryClient));
     });
     await flushReact();
 
     await act(async () => click(editButtons(container)[0]));
     await waitForAssertion(() => {
-      const dialog = getOpenDialog();
+      const dialog = getEnvironmentFormPage();
       expect(dialog?.textContent).toContain("Active template");
-      expect(findButton(dialog!, "Refresh")).toBeTruthy();
       expect(findButton(dialog!, "Rollback")).toBeTruthy();
       expect(findButton(dialog!, "Disable")).toBeTruthy();
     });
 
-    await act(async () => click(findButton(getOpenDialog()!, "Refresh")));
-    await flushReact();
+    await act(async () => click(findButton(getEnvironmentFormPage()!, "Rollback")));
+    await waitForAssertion(() => {
+      expect(mockEnvironmentsApi.rollbackCustomImageTemplate).toHaveBeenCalledExactlyOnceWith("env-1", "company-1");
+    });
 
-    expect(mockEnvironmentsApi.startCustomImageSetupSession).toHaveBeenCalledWith(
-      "env-1",
-      { templateId: "template-active" },
-    );
+    await act(async () => click(findButton(getEnvironmentFormPage()!, "Disable")));
+    await waitForAssertion(() => {
+      expect(mockEnvironmentsApi.disableCustomImageTemplate).toHaveBeenCalledExactlyOnceWith("env-1", "company-1");
+    });
   });
 });

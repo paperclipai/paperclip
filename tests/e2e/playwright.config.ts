@@ -8,7 +8,13 @@ import { defineConfig } from "@playwright/test";
 const PORT = Number(process.env.PAPERCLIP_E2E_PORT ?? 3199);
 const BASE_URL = `http://127.0.0.1:${PORT}`;
 const PAPERCLIP_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-e2e-home-"));
+const PAPERCLIP_CONFIG = path.join(PAPERCLIP_HOME, "instances", "playwright-e2e", "config.json");
+const PAPERCLIP_AGENT_JWT_SECRET = process.env.PAPERCLIP_AGENT_JWT_SECRET ?? "playwright-e2e-agent-jwt-secret";
 const PLAYWRIGHT_CHANNEL = process.env.PAPERCLIP_PLAYWRIGHT_CHANNEL;
+
+process.env.PAPERCLIP_HOME = PAPERCLIP_HOME;
+process.env.PAPERCLIP_CONFIG = PAPERCLIP_CONFIG;
+process.env.PAPERCLIP_AGENT_JWT_SECRET = PAPERCLIP_AGENT_JWT_SECRET;
 
 export default defineConfig({
   testDir: ".",
@@ -53,6 +59,8 @@ export default defineConfig({
       ...process.env,
       PORT: String(PORT),
       PAPERCLIP_HOME,
+      PAPERCLIP_CONFIG,
+      PAPERCLIP_AGENT_JWT_SECRET,
       PAPERCLIP_INSTANCE_ID: "playwright-e2e",
       PAPERCLIP_BIND: "loopback",
       PAPERCLIP_DEPLOYMENT_MODE: "local_trusted",
