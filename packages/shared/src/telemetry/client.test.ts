@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TelemetryClient } from "./client.js";
+import {
+  trackSkillCreated,
+  trackSkillForked,
+  trackSkillShareLinkCopied,
+  trackSkillTestRun,
+  trackSkillVersionSaved,
+} from "./events.js";
 import type { TelemetryConfig, TelemetryState } from "./types.js";
 
 const TEST_STATE: TelemetryState = {
@@ -39,6 +46,44 @@ describe("TelemetryClient runtime event gate", () => {
       "skill_studio.skill_created",
       { sharing_scope: "team" },
     );
+
+    await client.flush();
+
+    expect(stateFactory).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("swallows Skill Studio proposed wrappers before they touch state or the queue", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true }));
+    const { client, stateFactory } = makeClient();
+
+    trackSkillCreated(client, {
+      skill_id: "11111111-1111-4111-8111-111111111111",
+      creation_source: "blank",
+      sharing_scope: "company",
+      category_count: 1,
+      file_count: 2,
+    });
+    trackSkillVersionSaved(client, {
+      skill_id: "11111111-1111-4111-8111-111111111111",
+      revision_number: 2,
+      file_type: "skill",
+    });
+    trackSkillTestRun(client, {
+      skill_id: "11111111-1111-4111-8111-111111111111",
+      status: "queued",
+      run_source: "run",
+      ad_hoc: true,
+      template_used: false,
+    });
+    trackSkillForked(client, {
+      skill_id: "22222222-2222-4222-8222-222222222222",
+      fork_from_skill_id: "11111111-1111-4111-8111-111111111111",
+      source_type: "catalog",
+      sharing_scope: "private",
+      reassign_agent_count: 0,
+    });
+    trackSkillShareLinkCopied(client, { sharing_scope: "public_link" });
 
     await client.flush();
 
