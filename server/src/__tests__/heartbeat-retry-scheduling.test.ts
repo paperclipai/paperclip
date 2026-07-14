@@ -91,6 +91,15 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await cleanupRetryFixture();
+  });
+
+  afterAll(async () => {
+    unregisterServerAdapter(PROVIDER_QUOTA_TEST_ADAPTER);
+    await tempDb?.cleanup();
+  });
+
+  async function cleanupRetryFixture() {
     await db.delete(activityLog);
     await db.delete(heartbeatRunEvents);
     await db.delete(environmentLeases);
@@ -98,7 +107,6 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     await db.delete(issues);
     await db.delete(executionWorkspaces);
     await db.delete(projects);
-    await db.delete(activityLog);
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
@@ -107,12 +115,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     await db.delete(agents);
     await db.delete(companySkills);
     await db.delete(companies);
-  });
-
-  afterAll(async () => {
-    unregisterServerAdapter(PROVIDER_QUOTA_TEST_ADAPTER);
-    await tempDb?.cleanup();
-  });
+  }
 
   async function seedRetryFixture(input: {
     runId: string;
@@ -1445,16 +1448,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       issueId: budgetBlocked.issueId,
     });
 
-    await db.delete(budgetPolicies);
-    await db.delete(issueRelations);
-    await db.delete(issues);
-    await db.delete(heartbeatRunEvents);
-    await db.delete(heartbeatRuns);
-    await db.delete(agentWakeupRequests);
-    await db.delete(agentRuntimeState);
-    await db.delete(agents);
-    await db.delete(companySkills);
-    await db.delete(companies);
+    await cleanupRetryFixture();
 
     const dependencyBlocked = await seedMaxTurnFixture({ now: new Date("2026-04-20T17:00:00.000Z") });
     const blockerId = randomUUID();
@@ -2116,12 +2110,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
         .then((rows) => rows[0] ?? null);
       expect((wakeupRequest?.payload as Record<string, unknown> | null)?.codexTransientFallbackMode).toBe(expectedMode);
 
-      await db.delete(heartbeatRunEvents);
-      await db.delete(heartbeatRuns);
-      await db.delete(agentWakeupRequests);
-      await db.delete(agents);
-      await db.delete(companySkills);
-      await db.delete(companies);
+      await cleanupRetryFixture();
     }
   });
 
