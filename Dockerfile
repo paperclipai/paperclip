@@ -14,6 +14,9 @@ RUN usermod -u $USER_UID --non-unique node \
 
 FROM base AS deps
 WORKDIR /app
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends build-essential \
+  && rm -rf /var/lib/apt/lists/*
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml .npmrc ./
 COPY cli/package.json cli/
 COPY server/package.json server/
@@ -49,6 +52,7 @@ RUN pnpm install --frozen-lockfile
 
 FROM base AS build
 WORKDIR /app
+ENV NODE_OPTIONS=--max-old-space-size=2048
 COPY --from=deps /app /app
 COPY . .
 RUN pnpm --filter @paperclipai/ui build

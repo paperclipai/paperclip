@@ -332,6 +332,9 @@ importers:
       '@paperclipai/shared':
         specifier: workspace:*
         version: link:../shared
+      dotenv:
+        specifier: ^16.4.5
+        version: 16.6.1
       drizzle-orm:
         specifier: ^0.45.2
         version: 0.45.2(@electric-sql/pglite@0.3.15)(kysely@0.29.3)(pg@8.18.0)(postgres@3.4.9)(sqlite3@5.1.7)

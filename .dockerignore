@@ -8,3 +8,7 @@ coverage
 data
 tmp
 *.log
+volumes/
+9router.log
+9router.pid
+.run/

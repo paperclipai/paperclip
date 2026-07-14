@@ -1,6 +1,13 @@
+import { fileURLToPath } from "node:url";
+import { config as loadDotenv } from "dotenv";
+
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import path from "node:path";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+loadDotenv({ path: path.resolve(__dirname, "../../../.env") });
+
 import { ensurePostgresDatabase, getPostgresDataDirectory } from "./client.js";
 import { createEmbeddedPostgresLogBuffer, formatEmbeddedPostgresError } from "./embedded-postgres-error.js";
 import { prepareEmbeddedPostgresNativeRuntime } from "./embedded-postgres-native.js";
@@ -118,7 +125,7 @@ async function ensureEmbeddedPostgresConnection(
       return {
         connectionString: `postgres://paperclip:paperclip@127.0.0.1:${preferredPort}/paperclip`,
         source: `embedded-postgres@${preferredPort}`,
-        stop: async () => {},
+        stop: async () => { },
       };
     } catch {
       // Fall through and attempt to start the configured embedded cluster.
@@ -132,7 +139,7 @@ async function ensureEmbeddedPostgresConnection(
     return {
       connectionString: `postgres://paperclip:paperclip@127.0.0.1:${port}/paperclip`,
       source: `embedded-postgres@${port}`,
-      stop: async () => {},
+      stop: async () => { },
     };
   }
 
@@ -183,12 +190,21 @@ async function ensureEmbeddedPostgresConnection(
 }
 
 export async function resolveMigrationConnection(): Promise<MigrationConnection> {
+  if (process.env.DATABASE_URL) {
+    console.log("[paperclip] FORCE: Using external PostgreSQL (DATABASE_URL)");
+    return {
+      connectionString: process.env.DATABASE_URL,
+      source: "external-postgres",
+      stop: async () => { },
+    };
+  }
+
   const target = resolveDatabaseTarget();
   if (target.mode === "postgres") {
     return {
       connectionString: target.connectionString,
       source: target.source,
-      stop: async () => {},
+      stop: async () => { },
     };
   }
 

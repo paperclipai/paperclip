@@ -1,0 +1,264 @@
+﻿#!/usr/bin/env bash
+set -Eeuo pipefail
+
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENV_FILE="$PROJECT_DIR/.env"
+ENV_EXAMPLE_FILE="$PROJECT_DIR/.env.example"
+RUNTIME_DIR="$PROJECT_DIR/.run"
+COMPOSE_FILE="$RUNTIME_DIR/docker-compose.runtime.yml"
+COMPOSE_PROJECT_NAME_DEFAULT="paperclip"
+APP_SERVICE="paperclip"
+DB_SERVICE="postgres"
+DEFAULT_APP_PORT="3100"
+
+DOCKER_CMD=()
+SUDO_CMD=()
+
+usage() {
+  cat <<'EOF'
+Usage: ./run.sh <command>
+
+Commands:
+  up       Install dependencies, prepare env, build image, and start services
+  down     Stop services and clean compose resources for this stack
+  restart  Restart the full stack cleanly
+  logs     Stream application and database logs
+EOF
+}
+
+log() {
+  printf '[INFO] %s\n' "$*"
+}
+
+warn() {
+  printf '[WARN] %s\n' "$*" >&2
+}
+
+error() {
+  printf '[ERROR] %s\n' "$*" >&2
+}
+
+die() {
+  error "$*"
+  exit 1
+}
+
+on_error() {
+  local exit_code=$?
+  local line_no=$1
+  error "Command failed at line ${line_no} with exit code ${exit_code}."
+  exit "$exit_code"
+}
+
+trap 'on_error $LINENO' ERR
+
+command_exists() {
+  command -v "$1" >/dev/null 2>&1
+}
+
+run_root() {
+  if [[ ${#SUDO_CMD[@]} -gt 0 ]]; then
+    "${SUDO_CMD[@]}" "$@"
+  else
+    "$@"
+  fi
+}
+
+ensure_linux() {
+  [[ "$(uname -s)" == "Linux" ]] || die "run.sh hanya mendukung Linux."
+}
+
+ensure_ubuntu() {
+  [[ -f /etc/os-release ]] || die "Tidak dapat mendeteksi OS."
+  # shellcheck disable=SC1091
+  source /etc/os-release
+  [[ "${ID:-}" == "ubuntu" ]] || warn "Script ini dioptimalkan untuk Ubuntu. OS terdeteksi: ${PRETTY_NAME:-unknown}"
+}
+
+ensure_sudo() {
+  if [[ $EUID -eq 0 ]]; then
+    SUDO_CMD=()
+    return
+  fi
+
+  command_exists sudo || die "sudo tidak ditemukan. Jalankan sebagai root atau install sudo."
+  SUDO_CMD=(sudo)
+}
+
+apt_install() {
+  run_root env DEBIAN_FRONTEND=noninteractive apt-get install -y "$@"
+}
+
+ensure_base_packages() {
+  log "Memastikan package dasar host terpasang..."
+  run_root apt-get update -y
+  apt_install ca-certificates curl gnupg lsb-release git openssl iproute2 jq
+}
+
+ensure_docker() {
+  if command_exists docker && docker compose version >/dev/null 2>&1; then
+    log "Docker dan Docker Compose sudah tersedia."
+    return
+  fi
+
+  log "Docker belum tersedia. Menginstall Docker Engine dan Compose plugin..."
+  ensure_base_packages
+
+  run_root install -m 0755 -d /etc/apt/keyrings
+  if [[ ! -f /etc/apt/keyrings/docker.gpg ]]; then
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | run_root gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+    run_root chmod a+r /etc/apt/keyrings/docker.gpg
+  fi
+
+  local codename
+  codename="$(. /etc/os-release && printf '%s' "$VERSION_CODENAME")"
+  cat <<EOF | run_root tee /etc/apt/sources.list.d/docker.list >/dev/null
+deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu ${codename} stable
+EOF
+
+  run_root apt-get update -y
+  apt_install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+  run_root systemctl enable docker
+  run_root systemctl start docker
+}
+
+ensure_node_and_pnpm() {
+  local need_node=0
+  local need_pnpm=0
+
+  if ! command_exists node; then
+    need_node=1
+  fi
+  if ! command_exists pnpm; then
+    need_pnpm=1
+  fi
+
+  if [[ $need_node -eq 0 && $need_pnpm -eq 0 ]]; then
+    log "Node.js dan pnpm sudah tersedia di host."
+    return
+  fi
+
+  log "Memastikan Node.js 20 dan pnpm tersedia di host..."
+  ensure_base_packages
+
+  if [[ $need_node -eq 1 ]]; then
+    curl -fsSL https://deb.nodesource.com/setup_20.x | run_root bash -
+    apt_install nodejs
+  fi
+
+  if command_exists corepack; then
+    run_root corepack enable
+    corepack prepare pnpm@9.15.4 --activate
+  else
+    npm install -g pnpm@9.15.4
+  fi
+}
+
+install_claude_cli() {
+  log "Memastikan Claude Code CLI terpasang dan terkonfigurasi..."
+  local claude_config_dir="${HOME}/.claude"
+  local claude_settings_file="${claude_config_dir}/settings.json"
+
+  # Install Claude CLI if not present
+  if ! command_exists claude; then
+    log "Menginstall @anthropic-ai/claude-code..."
+    if command_exists sudo; then
+      run_root npm install -g @anthropic-ai/claude-code || die "Gagal menginstall Claude Code CLI."
+    else
+      npm install -g @anthropic-ai/claude-code || die "Gagal menginstall Claude Code CLI."
+    fi
+    log "Claude Code CLI berhasil diinstall."
+  else
+    log "Claude Code CLI sudah terpasang."
+  fi
+
+  # Ensure config directory exists
+  if [[ ! -d "$claude_config_dir" ]]; then
+    log "Membuat direktori konfigurasi Claude: $claude_config_dir"
+    mkdir -p "$claude_config_dir" || die "Gagal membuat direktori $claude_config_dir"
+  fi
+
+  # Generate settings.json from environment variables
+  log "Membuat/memperbarui settings.json dari variabel environment..."
+  
+  # Validate required env vars
+  [[ -z "${ANTHROPIC_API_KEY:-}" ]] && die "ANTHROPIC_API_KEY tidak diset di .env"
+  [[ -z "${ANTHROPIC_BASE_URL:-}" ]] && die "ANTHROPIC_BASE_URL tidak diset di .env"
+
+  cat > "$claude_settings_file" <<CLAUDE_EOF
+{
+  "env": {
+    "ANTHROPIC_API_KEY": "${ANTHROPIC_API_KEY}",
+    "ANTHROPIC_BASE_URL": "${ANTHROPIC_BASE_URL}",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "${CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:-1}",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "${ANTHROPIC_DEFAULT_OPUS_MODEL:-deepseek-v4-flash}",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "${ANTHROPIC_DEFAULT_SONNET_MODEL:-deepseek-v4-flash}",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "${ANTHROPIC_DEFAULT_HAIKU_MODEL:-deepseek-v4-flash}"
+  },
+  "permissions": {
+    "allow": [],
+    "deny": []
+  },
+  "apiKeyHelper": "echo '${ANTHROPIC_API_KEY}'"
+}
+CLAUDE_EOF
+
+  log "Claude Code CLI berhasil dikonfigurasi di $claude_settings_file"
+}
+install_codex_cli() {
+  log "Memastikan OpenAI Codex CLI terpasang dan terkonfigurasi..."
+  local codex_config_dir="${HOME}/.codex"
+  local codex_auth_file="${codex_config_dir}/auth.json"
+  local codex_config_file="${codex_config_dir}/config.toml"
+
+  # Install Codex CLI if not present
+  if ! command_exists codex; then
+    log "Menginstall @openai/codex..."
+    if command_exists sudo; then
+      run_root npm install -g @openai/codex || die "Gagal menginstall OpenAI Codex CLI."
+    else
+      npm install -g @openai/codex || die "Gagal menginstall OpenAI Codex CLI."
+    fi
+    log "OpenAI Codex CLI berhasil diinstall."
+  else
+    log "OpenAI Codex CLI sudah terpasang."
+  fi
+
+  # Ensure config directory exists (recreate if stale)
+  if [[ -d "$codex_config_dir" ]]; then
+    log "Direktori konfigurasi Codex sudah ada, akan diperbarui jika perlu."
+  else
+    log "Membuat direktori konfigurasi Codex: $codex_config_dir"
+    mkdir -p "$codex_config_dir" || die "Gagal membuat direktori $codex_config_dir"
+  fi
+
+  # Generate auth.json from environment variables
+  log "Membuat/memperbarui auth.json dari variabel environment..."
+  
+  # Validate required env vars
+  [[ -z "${OPENAI_API_KEY:-}" ]] && die "OPENAI_API_KEY tidak diset di .env"
+
+  cat > "$codex_auth_file" <<CODEX_AUTH_EOF
+{
+  "OPENAI_API_KEY": "${OPENAI_API_KEY}"
+}
+CODEX_AUTH_EOF
+
+  # Generate config.toml from environment variables
+  log "Membuat/memperbarui config.toml dari variabel environment..."
+
+  cat > "$codex_config_file" <<CODEX_CONFIG_EOF
+model_provider = "${CODEX_MODEL_PROVIDER:-openmodel}"
+model = "${CODEX_MODEL:-deepseek-v4-flash}"
+model_reasoning_effort = "${CODEX_MODEL_REASONING_EFFORT:-high}"
+disable_response_storage = ${CODEX_DISABLE_RESPONSE_STORAGE:-true}
+preferred_auth_method = "${CODEX_PREFERRED_AUTH_METHOD:-apikey}"
+
+[model_providers.openmodel]
+name = "openmodel"
+base_url = "${CODEX_OPENMODEL_BASE_URL:-https://api.openmodel.ai/v1}"
+wire_api = "responses"
+CODEX_CONFIG_EOF
+
+  log "OpenAI Codex CLI berhasil dikonfigurasi di $codex_config_dir"
+}

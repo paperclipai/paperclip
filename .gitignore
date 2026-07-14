@@ -2,19 +2,25 @@ node_modules
 node_modules/
 **/node_modules
 **/node_modules/
+venv/
 dist/
 ui/storybook-static/
 .env
+.env.production
+.run/
 *.tsbuildinfo
 drizzle/meta/
 .vite/
 coverage/
 .DS_Store
 data/
+volumes/
 .paperclip/
 .pnpm-store/
 tmp-*
 cli/tmp/
+DEPLOY.md
+DEPLOYMENT-INSTRUCTIONS.md
 
 # Scratch/seed scripts (but not scripts/ dir)
 check-*.mjs
@@ -66,3 +72,5 @@ tests/storybook-visual/playwright-report/
 .superpowers/
 .claude/worktrees/
 .herenow
+9router.log
+9router.pid
