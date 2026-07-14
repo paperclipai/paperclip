@@ -472,6 +472,18 @@ export interface IssueFilters {
   originKind?: string;
   originKindPrefix?: string;
   originId?: string;
+  /**
+   * Filter by issue priority (`critical`/`high`/`medium`/`low`). Accepts the
+   * same shapes as `status` (single value, comma-separated, or repeated query
+   * key) via the same `parseStatusFilter` normalizer — unrecognized values
+   * simply match zero rows rather than erroring, matching `status`'s existing
+   * looseness.
+   */
+  priority?: string | readonly string[];
+  /** Filter by the goal an issue belongs to (exact UUID match). */
+  goalId?: string;
+  /** Filter by the agent that originally created the issue (exact UUID match). */
+  createdByAgentId?: string;
   includeRoutineExecutions?: boolean;
   excludeRoutineExecutions?: boolean;
   includePluginOperations?: boolean;
@@ -3450,6 +3462,11 @@ async function blockedInboxIssueConditions(
   if (filters?.originKind) conditions.push(eq(issues.originKind, filters.originKind));
   if (filters?.originKindPrefix) conditions.push(like(issues.originKind, `${filters.originKindPrefix}%`));
   if (filters?.originId) conditions.push(eq(issues.originId, filters.originId));
+  if (filters?.goalId) conditions.push(eq(issues.goalId, filters.goalId));
+  if (filters?.createdByAgentId) conditions.push(eq(issues.createdByAgentId, filters.createdByAgentId));
+  const inboxPriorities = parseStatusFilter(filters?.priority);
+  if (inboxPriorities.length === 1) conditions.push(eq(issues.priority, inboxPriorities[0]!));
+  else if (inboxPriorities.length > 1) conditions.push(inArray(issues.priority, inboxPriorities));
   if (filters?.hasPlanDocument !== undefined) {
     conditions.push(hasPlanDocumentCondition(companyId, filters.hasPlanDocument));
   }
@@ -4702,6 +4719,14 @@ export function issueService(db: Db) {
       if (filters?.originKind) conditions.push(eq(issues.originKind, filters.originKind));
       if (filters?.originKindPrefix) conditions.push(like(issues.originKind, `${filters.originKindPrefix}%`));
       if (filters?.originId) conditions.push(eq(issues.originId, filters.originId));
+      if (filters?.goalId) conditions.push(eq(issues.goalId, filters.goalId));
+      if (filters?.createdByAgentId) conditions.push(eq(issues.createdByAgentId, filters.createdByAgentId));
+      const priorities = parseStatusFilter(filters?.priority);
+      if (priorities.length === 1) {
+        conditions.push(eq(issues.priority, priorities[0]!));
+      } else if (priorities.length > 1) {
+        conditions.push(inArray(issues.priority, priorities));
+      }
       if (filters?.hasPlanDocument !== undefined) {
         conditions.push(hasPlanDocumentCondition(companyId, filters.hasPlanDocument));
       }
@@ -4875,6 +4900,11 @@ export function issueService(db: Db) {
       if (filters?.originKind) conditions.push(eq(issues.originKind, filters.originKind));
       if (filters?.originKindPrefix) conditions.push(like(issues.originKind, `${filters.originKindPrefix}%`));
       if (filters?.originId) conditions.push(eq(issues.originId, filters.originId));
+      if (filters?.goalId) conditions.push(eq(issues.goalId, filters.goalId));
+      if (filters?.createdByAgentId) conditions.push(eq(issues.createdByAgentId, filters.createdByAgentId));
+      const countPriorities = parseStatusFilter(filters?.priority);
+      if (countPriorities.length === 1) conditions.push(eq(issues.priority, countPriorities[0]!));
+      else if (countPriorities.length > 1) conditions.push(inArray(issues.priority, countPriorities));
       if (filters?.hasPlanDocument !== undefined) {
         conditions.push(hasPlanDocumentCondition(companyId, filters.hasPlanDocument));
       }

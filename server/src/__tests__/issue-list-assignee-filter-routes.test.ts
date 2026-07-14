@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { activityLog, agents, companies, companyMemberships, createDb, heartbeatRuns, issues, principalPermissionGrants } from "@paperclipai/db";
+import { activityLog, agents, companies, companyMemberships, createDb, goals, heartbeatRuns, issues, principalPermissionGrants } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -41,6 +41,7 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
     await db.delete(heartbeatRuns);
     await db.delete(activityLog);
     await db.delete(agents);
+    await db.delete(goals);
     await db.delete(principalPermissionGrants);
     await db.delete(companyMemberships);
     await db.delete(companies);
@@ -575,6 +576,137 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
     expect(res.body).toMatchObject({
       error: "assigneeAgentId must be a UUID or 'null'",
     });
+  });
+
+  /**
+   * Regression test: the route accepted `priority`, `goalId`, and
+   * `createdByAgentId` query params (Express parsed them into `req.query`
+   * fine) but never forwarded them into the `svc.list()` filters object, so
+   * every value — including one matching no row — fell through to the
+   * unfiltered default list. Exercises the full HTTP route (not just the
+   * service function `issues-service.test.ts` covers) to prove the
+   * route→service wiring itself is fixed, not just the service in isolation.
+   */
+  it("filters by priority, goalId, and createdByAgentId query params", async () => {
+    const companyId = randomUUID();
+    const creatorAgentId = randomUUID();
+    const otherAgentId = randomUUID();
+    const goalId = randomUUID();
+    const matchingIssueId = randomUUID();
+    const otherPriorityIssueId = randomUUID();
+    const otherGoalIssueId = randomUUID();
+    const otherCreatorIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: uniqueIssuePrefix(),
+      requireBoardApprovalForNewAgents: false,
+    });
+    await seedCloudTenantMember(companyId);
+    await db.insert(goals).values({
+      id: goalId,
+      companyId,
+      title: "Target goal",
+      level: "task",
+      status: "active",
+    });
+    await db.insert(agents).values([
+      {
+        id: creatorAgentId,
+        companyId,
+        name: "Creator",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: otherAgentId,
+        companyId,
+        name: "Other",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db.insert(issues).values([
+      {
+        id: matchingIssueId,
+        companyId,
+        goalId,
+        title: "Matches all three filters",
+        status: "todo",
+        priority: "low",
+        createdByAgentId: creatorAgentId,
+      },
+      {
+        id: otherPriorityIssueId,
+        companyId,
+        goalId,
+        title: "Wrong priority",
+        status: "todo",
+        priority: "critical",
+        createdByAgentId: creatorAgentId,
+      },
+      {
+        id: otherGoalIssueId,
+        companyId,
+        title: "No goal",
+        status: "todo",
+        priority: "low",
+        createdByAgentId: creatorAgentId,
+      },
+      {
+        id: otherCreatorIssueId,
+        companyId,
+        goalId,
+        title: "Wrong creator",
+        status: "todo",
+        priority: "low",
+        createdByAgentId: otherAgentId,
+      },
+    ]);
+
+    const app = createApp(companyId);
+
+    const byPriority = await request(app)
+      .get(`/api/companies/${companyId}/issues`)
+      .query({ status: "todo", priority: "low", limit: "20" });
+    expect(byPriority.status, JSON.stringify(byPriority.body)).toBe(200);
+    expect(byPriority.body.map((issue: { id: string }) => issue.id).sort()).toEqual(
+      [matchingIssueId, otherGoalIssueId, otherCreatorIssueId].sort(),
+    );
+
+    const byGoal = await request(app)
+      .get(`/api/companies/${companyId}/issues`)
+      .query({ status: "todo", goalId, limit: "20" });
+    expect(byGoal.status, JSON.stringify(byGoal.body)).toBe(200);
+    expect(byGoal.body.map((issue: { id: string }) => issue.id).sort()).toEqual(
+      [matchingIssueId, otherPriorityIssueId, otherCreatorIssueId].sort(),
+    );
+
+    const byCreator = await request(app)
+      .get(`/api/companies/${companyId}/issues`)
+      .query({ status: "todo", createdByAgentId: creatorAgentId, limit: "20" });
+    expect(byCreator.status, JSON.stringify(byCreator.body)).toBe(200);
+    expect(byCreator.body.map((issue: { id: string }) => issue.id).sort()).toEqual(
+      [matchingIssueId, otherPriorityIssueId, otherGoalIssueId].sort(),
+    );
+
+    // Bogus goalId (matching no real row) must return zero rows, not the
+    // unfiltered default list — the exact contrast the original bug
+    // report used to distinguish "ignored" from "working".
+    const bogusGoal = await request(app)
+      .get(`/api/companies/${companyId}/issues`)
+      .query({ status: "todo", goalId: "00000000-0000-0000-0000-000000000000", limit: "20" });
+    expect(bogusGoal.status, JSON.stringify(bogusGoal.body)).toBe(200);
+    expect(bogusGoal.body).toEqual([]);
   });
 
   it("returns opt-in live descendant counts for offscreen live descendants only", async () => {

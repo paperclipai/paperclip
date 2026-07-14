@@ -837,6 +837,142 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     ).rejects.toThrow(/assigneeAgentId/i);
   });
 
+  /**
+   * Regression test: `priority`, `goalId`, and `createdByAgentId`
+   * were accepted as query params by the route handler but never threaded
+   * into `IssueFilters` or the `WHERE` clause, so they silently no-opped —
+   * any value (including a bogus one matching no row) returned the same
+   * unfiltered, default-sorted list. Verifies all three now genuinely narrow
+   * results, using the same bogus-value contrast the original bug report used.
+   */
+  it("filters by priority, goalId, and createdByAgentId", async () => {
+    const companyId = randomUUID();
+    const creatorAgentId = randomUUID();
+    const otherAgentId = randomUUID();
+    const goalId = randomUUID();
+    const otherGoalId = randomUUID();
+    const matchingIssueId = randomUUID();
+    const otherPriorityIssueId = randomUUID();
+    const otherGoalIssueId = randomUUID();
+    const otherCreatorIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values([
+      {
+        id: creatorAgentId,
+        companyId,
+        name: "Creator",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: otherAgentId,
+        companyId,
+        name: "Other",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    await db.insert(goals).values([
+      { id: goalId, companyId, title: "Target goal", level: "task", status: "active" },
+      { id: otherGoalId, companyId, title: "Other goal", level: "task", status: "active" },
+    ]);
+
+    await db.insert(issues).values([
+      {
+        id: matchingIssueId,
+        companyId,
+        goalId,
+        title: "Matches all three filters",
+        status: "todo",
+        priority: "low",
+        createdByAgentId: creatorAgentId,
+      },
+      {
+        id: otherPriorityIssueId,
+        companyId,
+        goalId,
+        title: "Wrong priority",
+        status: "todo",
+        priority: "critical",
+        createdByAgentId: creatorAgentId,
+      },
+      {
+        id: otherGoalIssueId,
+        companyId,
+        goalId: otherGoalId,
+        title: "Wrong goal",
+        status: "todo",
+        priority: "low",
+        createdByAgentId: creatorAgentId,
+      },
+      {
+        id: otherCreatorIssueId,
+        companyId,
+        goalId,
+        title: "Wrong creator",
+        status: "todo",
+        priority: "low",
+        createdByAgentId: otherAgentId,
+      },
+    ]);
+
+    // priority: a real, non-default-sort-order value must narrow to only that priority.
+    const byPriority = await svc.list(companyId, { priority: "low" });
+    expect(byPriority.map((issue) => issue.id).sort()).toEqual(
+      [matchingIssueId, otherGoalIssueId, otherCreatorIssueId].sort(),
+    );
+    expect(byPriority.map((issue) => issue.id)).not.toContain(otherPriorityIssueId);
+
+    // priority: comma-separated and repeated-key shapes both work, matching `status`'s contract.
+    const byPriorityCsv = await svc.list(companyId, { priority: "low,critical" });
+    expect(byPriorityCsv.map((issue) => issue.id).sort()).toEqual(
+      [matchingIssueId, otherPriorityIssueId, otherGoalIssueId, otherCreatorIssueId].sort(),
+    );
+
+    // goalId: a real value must narrow to only that goal.
+    const byGoal = await svc.list(companyId, { goalId });
+    expect(byGoal.map((issue) => issue.id).sort()).toEqual(
+      [matchingIssueId, otherPriorityIssueId, otherCreatorIssueId].sort(),
+    );
+    expect(byGoal.map((issue) => issue.id)).not.toContain(otherGoalIssueId);
+
+    // createdByAgentId: a real value must narrow to only that creator.
+    const byCreator = await svc.list(companyId, { createdByAgentId: creatorAgentId });
+    expect(byCreator.map((issue) => issue.id).sort()).toEqual(
+      [matchingIssueId, otherPriorityIssueId, otherGoalIssueId].sort(),
+    );
+    expect(byCreator.map((issue) => issue.id)).not.toContain(otherCreatorIssueId);
+
+    // Combined, all three narrow to exactly the one issue matching every filter.
+    const combined = await svc.list(companyId, { priority: "low", goalId, createdByAgentId: creatorAgentId });
+    expect(combined.map((issue) => issue.id)).toEqual([matchingIssueId]);
+
+    // Bogus values (matching no real row) must return zero rows, not the
+    // unfiltered default list — this is the exact contrast the original
+    // bug report used to distinguish "ignored" from "working".
+    const bogusId = "00000000-0000-0000-0000-000000000000";
+    await expect(svc.list(companyId, { goalId: bogusId })).resolves.toEqual([]);
+    await expect(svc.list(companyId, { createdByAgentId: bogusId })).resolves.toEqual([]);
+    const byBogusPriority = await svc.list(companyId, { priority: "bogus-priority-value" });
+    expect(byBogusPriority).toEqual([]);
+  });
+
   it("counts only unassigned issues for assigneeAgentId='null'", async () => {
     const companyId = randomUUID();
     const assigneeAgentId = randomUUID();
