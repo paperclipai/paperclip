@@ -28,6 +28,8 @@ describe("routine validators", () => {
         status: "active",
         concurrencyPolicy: "coalesce_if_active",
         catchUpPolicy: "skip_missed",
+        originKind: "pipeline_automation",
+        originId: "pipeline-stage-123",
         variables: [],
       },
       triggers: [{
@@ -44,6 +46,8 @@ describe("routine validators", () => {
     });
 
     expect(parsed.triggers[0]?.publicId).toBe("routine_webhook_123");
+    expect(parsed.routine.originKind).toBe("pipeline_automation");
+    expect(parsed.routine.originId).toBe("pipeline-stage-123");
     expect(parsed.routine.executionPolicy).toBeNull();
   });
 
