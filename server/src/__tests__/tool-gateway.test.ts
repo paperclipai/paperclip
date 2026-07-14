@@ -24,6 +24,7 @@ import {
   toolCatalogEntries,
   toolCallEvents,
   toolConnections,
+  toolGatewayRateLimitCounters,
   toolGatewaySessions,
   toolInvocations,
   toolMcpGateways,
@@ -490,6 +491,7 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
     await db.delete(toolCallEvents);
     await db.delete(toolRuntimeSlots);
     await db.delete(toolGatewaySessions);
+    await db.delete(toolGatewayRateLimitCounters);
     await db.delete(toolActionRequests);
     await db.delete(toolInvocations);
     await db.delete(toolAccessAuditEvents);
@@ -747,25 +749,24 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
     expect(JSON.stringify(audits)).not.toContain("authorization");
   });
 
-  it("evicts expired public gateway auth limiter keys for unique bad tokens", async () => {
+  it("prunes expired persisted public gateway auth limiter counters", async () => {
     let now = Date.now();
     const company = await createCompany(db);
     const [profile] = await db.insert(toolProfiles).values({
       companyId: company.id,
-      profileKey: `auth-limiter-eviction-${randomUUID()}`,
-      name: `Auth limiter eviction ${randomUUID()}`,
+      profileKey: `auth-limiter-prune-${randomUUID()}`,
+      name: `Auth limiter prune ${randomUUID()}`,
       defaultAction: "deny",
     }).returning();
     const gateway = createTestToolGatewayService(db, {
       now: () => now,
-      mcpGatewayProtocolLimiterMaxKeys: 3,
       mcpGatewayProtocolLimits: {
         authFailures: { max: 100, windowMs: 100 },
       },
     });
     const created = await gateway.createNamedGateway({
       companyId: company.id,
-      body: { name: "Public auth limiter eviction", profileId: profile.id },
+      body: { name: "Public auth limiter prune", profileId: profile.id },
     });
     const app = createGatewayRouteApp(db, gateway);
     const endpoint = `/mcp/gateways/${created.gatewayPublicId}`;
@@ -775,52 +776,56 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
       .set("authorization", `Bearer pcgw_${randomUUID()}.bad-secret`)
       .send({ jsonrpc: "2.0", id: 1, method: "tools/list" })
       .expect(401);
+    const initialCounters = await db.select().from(toolGatewayRateLimitCounters);
+    expect(initialCounters.length).toBeGreaterThan(0);
+
+    now += 60_001;
     await request(app)
       .post(endpoint)
       .set("authorization", `Bearer pcgw_${randomUUID()}.bad-secret`)
       .send({ jsonrpc: "2.0", id: 2, method: "tools/list" })
       .expect(401);
-    await request(app)
-      .post(endpoint)
-      .set("authorization", `Bearer pcgw_${randomUUID()}.bad-secret`)
-      .send({ jsonrpc: "2.0", id: 3, method: "tools/list" })
-      .expect(429);
 
-    now += 101;
-    await request(app)
-      .post(endpoint)
-      .set("authorization", `Bearer pcgw_${randomUUID()}.bad-secret`)
-      .send({ jsonrpc: "2.0", id: 4, method: "tools/list" })
-      .expect(401);
+    const remainingCounters = await db.select().from(toolGatewayRateLimitCounters);
+    expect(remainingCounters.every((counter) => counter.resetAt.getTime() > now)).toBe(true);
   });
 
-  it("fails closed when the public gateway auth limiter store is full", async () => {
+  it("shares public gateway auth limiter counters across service instances", async () => {
     const company = await createCompany(db);
     const [profile] = await db.insert(toolProfiles).values({
       companyId: company.id,
-      profileKey: `auth-limiter-capacity-${randomUUID()}`,
-      name: `Auth limiter capacity ${randomUUID()}`,
+      profileKey: `auth-limiter-shared-${randomUUID()}`,
+      name: `Auth limiter shared ${randomUUID()}`,
       defaultAction: "deny",
     }).returning();
-    const gateway = createTestToolGatewayService(db, {
-      mcpGatewayProtocolLimiterMaxKeys: 1,
+    const serviceA = createTestToolGatewayService(db, {
       mcpGatewayProtocolLimits: {
-        authFailures: { max: 100, windowMs: 60_000 },
+        authFailures: { max: 1, windowMs: 60_000 },
       },
     });
-    const created = await gateway.createNamedGateway({
+    const created = await serviceA.createNamedGateway({
       companyId: company.id,
-      body: { name: "Public auth limiter capacity", profileId: profile.id },
+      body: { name: "Public auth limiter shared", profileId: profile.id },
     });
-    const app = createGatewayRouteApp(db, gateway);
+    const serviceB = createTestToolGatewayService(db, {
+      mcpGatewayProtocolLimits: {
+        authFailures: { max: 1, windowMs: 60_000 },
+      },
+    });
     const badToken = `pcgw_${randomUUID()}.not-a-real-secret`;
 
-    const throttled = await request(app)
+    await request(createGatewayRouteApp(db, serviceA))
       .post(`/mcp/gateways/${created.gatewayPublicId}`)
       .set("authorization", `Bearer ${badToken}`)
-      .set("x-paperclip-client-name", "Capacity test client")
-      .set("x-request-id", "auth-limiter-capacity-test")
       .send({ jsonrpc: "2.0", id: 1, method: "tools/list" })
+      .expect(401);
+
+    const throttled = await request(createGatewayRouteApp(db, serviceB))
+      .post(`/mcp/gateways/${created.gatewayPublicId}`)
+      .set("authorization", `Bearer ${badToken}`)
+      .set("x-paperclip-client-name", "Shared counter client")
+      .set("x-request-id", "auth-limiter-shared-test")
+      .send({ jsonrpc: "2.0", id: 2, method: "tools/list" })
       .expect(429);
     expect(throttled.body.error.data).toMatchObject({
       reasonCode: "gateway_auth_throttled",
@@ -836,11 +841,11 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
       companyId: company.id,
       gatewayId: created.id,
       gatewayPublicId: created.gatewayPublicId,
-      clientName: "Capacity test client",
-      correlationId: "auth-limiter-capacity-test",
+      clientName: "Shared counter client",
+      correlationId: "auth-limiter-shared-test",
     });
     expect(audits[0]!.details).toMatchObject({
-      limiterKeyClass: "token_auth",
+      limiterKeyClass: "gateway_auth",
       tokenPrefix: `pcgw_${badToken.slice(5, 13)}`,
     });
     expect(JSON.stringify(audits)).not.toContain(badToken);

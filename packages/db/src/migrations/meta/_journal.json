@@ -1170,6 +1170,13 @@
       "when": 1783953535660,
       "tag": "0168_tool_connection_installs",
       "breakpoints": true
+    },
+    {
+      "idx": 169,
+      "version": "7",
+      "when": 1783953536660,
+      "tag": "0169_tool_gateway_protocol_rate_limit_counters",
+      "breakpoints": true
     }
   ]
 }

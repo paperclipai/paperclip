@@ -531,6 +531,30 @@ export const toolGatewaySessions = pgTable(
   ],
 );
 
+export const toolGatewayRateLimitCounters = pgTable(
+  "tool_gateway_rate_limit_counters",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    counterKey: text("counter_key").notNull(),
+    windowStartAt: timestamp("window_start_at", { withTimezone: true }).notNull(),
+    windowMs: integer("window_ms").notNull(),
+    limit: integer("limit").notNull(),
+    count: integer("count").notNull().default(0),
+    resetAt: timestamp("reset_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("tool_gateway_rate_limit_counters_company_idx").on(table.companyId),
+    uniqueIndex("tool_gateway_rate_limit_counters_window_uq").on(
+      table.companyId,
+      table.counterKey,
+      table.windowStartAt,
+    ),
+  ],
+);
+
 export const toolInvocations = pgTable(
   "tool_invocations",
   {

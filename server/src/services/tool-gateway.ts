@@ -18,6 +18,7 @@ import {
   toolCallEvents,
   toolCatalogEntries,
   toolConnections,
+  toolGatewayRateLimitCounters,
   toolGatewaySessions,
   toolInvocations,
   toolMcpGateways,
@@ -89,6 +90,7 @@ const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}
 
 type McpGatewayProtocolMethod = "initialize" | "tools/list" | "tools/call";
 type McpGatewayRateLimitConfig = { windowMs: number; max: number };
+type McpGatewayRateLimitState = { limited: boolean; count: number; retryAfterMs: number };
 type McpGatewayProtocolLimitOptions = {
   authFailures: McpGatewayRateLimitConfig;
   gatewayRequests: McpGatewayRateLimitConfig;
@@ -102,7 +104,6 @@ const DEFAULT_MCP_GATEWAY_PROTOCOL_LIMITS: McpGatewayProtocolLimitOptions = {
   tokenRequests: { windowMs: 60 * 1000, max: 120 },
   sessionSetup: { windowMs: 60 * 1000, max: 30 },
 };
-const DEFAULT_MCP_GATEWAY_PROTOCOL_LIMITER_MAX_KEYS = 10_000;
 const TOOL_APPROVAL_DESCRIPTION_SUFFIX =
   "Requires human approval: calling it posts an approval card on your task and you will be woken with the result once decided.";
 
@@ -418,62 +419,8 @@ function safeClientMetadata(headers: Record<string, string | string[] | undefine
   };
 }
 
-function createWindowRateLimiter(options: {
-  now?: () => number;
-  maxKeys?: number;
-} = {}) {
-  const now = options.now ?? (() => Date.now());
-  const configuredMaxKeys = options.maxKeys ?? DEFAULT_MCP_GATEWAY_PROTOCOL_LIMITER_MAX_KEYS;
-  const maxKeys = Number.isFinite(configuredMaxKeys) && configuredMaxKeys > 0
-    ? Math.floor(configuredMaxKeys)
-    : DEFAULT_MCP_GATEWAY_PROTOCOL_LIMITER_MAX_KEYS;
-  const counters = new Map<string, { windowStart: number; expiresAt: number; count: number }>();
-  let nextExpiryAt = Number.POSITIVE_INFINITY;
-
-  function pruneExpired(current: number) {
-    let next = Number.POSITIVE_INFINITY;
-    for (const [key, entry] of counters) {
-      if (entry.expiresAt <= current) {
-        counters.delete(key);
-      } else if (entry.expiresAt < next) {
-        next = entry.expiresAt;
-      }
-    }
-    nextExpiryAt = next;
-  }
-
-  function rememberExpiry(expiresAt: number) {
-    if (expiresAt < nextExpiryAt) nextExpiryAt = expiresAt;
-  }
-
-  return {
-    consume(key: string, config: McpGatewayRateLimitConfig) {
-      const current = now();
-      if (current >= nextExpiryAt || counters.size >= maxKeys) {
-        pruneExpired(current);
-      }
-      const existing = counters.get(key);
-      if (!existing || existing.expiresAt <= current) {
-        if (counters.size >= maxKeys && !existing) {
-          return {
-            limited: true,
-            count: config.max + 1,
-            retryAfterMs: Number.isFinite(nextExpiryAt) ? Math.max(0, nextExpiryAt - current) : config.windowMs,
-          };
-        }
-        const expiresAt = current + config.windowMs;
-        counters.set(key, { windowStart: current, expiresAt, count: 1 });
-        rememberExpiry(expiresAt);
-        return { limited: false, count: 1, retryAfterMs: config.windowMs };
-      }
-      existing.count += 1;
-      return {
-        limited: existing.count > config.max,
-        count: existing.count,
-        retryAfterMs: Math.max(0, config.windowMs - (current - existing.windowStart)),
-      };
-    },
-  };
+function rateLimitWindowStart(current: number, windowMs: number) {
+  return new Date(Math.floor(current / windowMs) * windowMs);
 }
 
 function gatewaySessionFromRow(row: typeof toolGatewaySessions.$inferSelect): ToolGatewaySession {
@@ -806,7 +753,6 @@ export function createToolGatewayService(
       tokenRequests: Partial<McpGatewayRateLimitConfig>;
       sessionSetup: Partial<McpGatewayRateLimitConfig>;
     }>;
-    mcpGatewayProtocolLimiterMaxKeys?: number;
     now?: () => number;
   } = {},
 ) {
@@ -821,14 +767,68 @@ export function createToolGatewayService(
   const policyService = toolAccessPolicyService(db);
   const secrets = secretService(db);
   const protocolLimits = mcpGatewayProtocolLimits(options.mcpGatewayProtocolLimits);
-  const protocolLimiter = createWindowRateLimiter({
-    now: options.now,
-    maxKeys: options.mcpGatewayProtocolLimiterMaxKeys
-      ?? positiveInt(
-        process.env.PAPERCLIP_MCP_GATEWAY_PROTOCOL_LIMITER_MAX_KEYS,
-        DEFAULT_MCP_GATEWAY_PROTOCOL_LIMITER_MAX_KEYS,
-      ),
-  });
+  let nextProtocolRateLimitPruneAt = 0;
+
+  async function pruneExpiredProtocolRateLimitCounters(current: number) {
+    if (current < nextProtocolRateLimitPruneAt) return;
+    nextProtocolRateLimitPruneAt = current + 60_000;
+    await db
+      .delete(toolGatewayRateLimitCounters)
+      .where(lte(toolGatewayRateLimitCounters.resetAt, new Date(current)));
+  }
+
+  async function consumeProtocolRateLimit(input: {
+    companyId: string;
+    counterKey: string;
+    config: McpGatewayRateLimitConfig;
+  }): Promise<McpGatewayRateLimitState> {
+    const current = options.now?.() ?? Date.now();
+    const windowStartAt = rateLimitWindowStart(current, input.config.windowMs);
+    const resetAt = new Date(windowStartAt.getTime() + input.config.windowMs);
+    const nowDate = new Date(current);
+    const windowStartIso = windowStartAt.toISOString();
+    const resetIso = resetAt.toISOString();
+    const nowIso = nowDate.toISOString();
+    await pruneExpiredProtocolRateLimitCounters(current);
+    const rows = Array.from(await db.execute(sql<{ count: number | string }>`
+      INSERT INTO "tool_gateway_rate_limit_counters" (
+        "company_id",
+        "counter_key",
+        "window_start_at",
+        "window_ms",
+        "limit",
+        "count",
+        "reset_at",
+        "created_at",
+        "updated_at"
+      )
+      VALUES (
+        ${input.companyId},
+        ${input.counterKey},
+        ${windowStartIso}::timestamptz,
+        ${input.config.windowMs},
+        ${input.config.max},
+        1,
+        ${resetIso}::timestamptz,
+        ${nowIso}::timestamptz,
+        ${nowIso}::timestamptz
+      )
+      ON CONFLICT ("company_id", "counter_key", "window_start_at")
+      DO UPDATE SET
+        "count" = "tool_gateway_rate_limit_counters"."count" + 1,
+        "window_ms" = ${input.config.windowMs},
+        "limit" = ${input.config.max},
+        "reset_at" = ${resetIso}::timestamptz,
+        "updated_at" = ${nowIso}::timestamptz
+      RETURNING "count"
+    `));
+    const count = Number(rows[0]?.count ?? 1);
+    return {
+      limited: count > input.config.max,
+      count,
+      retryAfterMs: Math.max(0, resetAt.getTime() - current),
+    };
+  }
 
   function pluginTools(): ToolGatewayDescriptor[] {
     return (pluginToolDispatcher?.listToolsForAgent() ?? []).map((tool) => ({
@@ -3405,7 +3405,7 @@ export function createToolGatewayService(
     const action = protocolLimiterKeyClass(method);
     const tokenLimit = method === "initialize" ? protocolLimits.sessionSetup : protocolLimits.tokenRequests;
     const tokenKey = `mcp_gateway_protocol:token:${session.gatewayTokenId ?? session.actorId ?? "unknown"}:${action}`;
-    const tokenState = protocolLimiter.consume(tokenKey, tokenLimit);
+    const tokenState = await consumeProtocolRateLimit({ companyId: session.companyId, counterKey: tokenKey, config: tokenLimit });
     if (tokenState.limited) {
       await writeProtocolRateLimitAudit({
         session,
@@ -3426,7 +3426,7 @@ export function createToolGatewayService(
 
     const gatewayLimit = method === "initialize" ? protocolLimits.sessionSetup : protocolLimits.gatewayRequests;
     const gatewayKey = `mcp_gateway_protocol:gateway:${session.gatewayId ?? session.gatewayPublicId ?? "unknown"}:${action}`;
-    const gatewayState = protocolLimiter.consume(gatewayKey, gatewayLimit);
+    const gatewayState = await consumeProtocolRateLimit({ companyId: session.companyId, counterKey: gatewayKey, config: gatewayLimit });
     if (gatewayState.limited) {
       await writeProtocolRateLimitAudit({
         session,
@@ -3457,11 +3457,22 @@ export function createToolGatewayService(
     const tokenId = namedGatewayTokenId(token);
     const gatewayKey = input.gatewayId ? `id:${input.gatewayId}` : `public:${input.gatewayPublicId ?? "unknown"}`;
     const tokenKey = tokenId ? `id:${tokenId}` : `hash:${hashGatewayToken(token).slice(0, 24)}`;
-    const gatewayState = protocolLimiter.consume(`mcp_gateway_auth_failure:gateway:${gatewayKey}`, protocolLimits.authFailures);
-    const tokenState = protocolLimiter.consume(`mcp_gateway_auth_failure:token:${gatewayKey}:${tokenKey}`, protocolLimits.authFailures);
+    const gateway = await findGatewayForProtocolLocator(input);
+    if (!gateway) {
+      throw new ToolGatewayHttpError(401, "Gateway bearer token is expired or invalid", input.reasonCode);
+    }
+    const gatewayState = await consumeProtocolRateLimit({
+      companyId: gateway.companyId,
+      counterKey: `mcp_gateway_auth_failure:gateway:${gatewayKey}`,
+      config: protocolLimits.authFailures,
+    });
+    const tokenState = await consumeProtocolRateLimit({
+      companyId: gateway.companyId,
+      counterKey: `mcp_gateway_auth_failure:token:${gatewayKey}:${tokenKey}`,
+      config: protocolLimits.authFailures,
+    });
     const limited = gatewayState.limited || tokenState.limited;
-    const gateway = limited ? await findGatewayForProtocolLocator(input) : null;
-    if (limited && gateway) {
+    if (limited) {
       const limiterKeyClass = gatewayState.limited ? "gateway_auth" : "token_auth";
       const count = gatewayState.limited ? gatewayState.count : tokenState.count;
       const retryAfterMs = gatewayState.limited ? gatewayState.retryAfterMs : tokenState.retryAfterMs;

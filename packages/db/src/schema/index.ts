@@ -121,6 +121,7 @@ export {
   toolActionRequests,
   toolCallEvents,
   toolRateLimitCounters,
+  toolGatewayRateLimitCounters,
   toolAccessAuditEvents,
 } from "./tool_access.js";
 export {
