@@ -7,6 +7,7 @@ import type {
   TelemetryEventName,
   TelemetryState,
 } from "./types.js";
+import { PAPERCLIP_EVENTS } from "./generated/paperclip-telemetry.js";
 
 const DEFAULT_ENDPOINTS = [
   "https://telemetry.paperclip.ing/ingest",
@@ -39,6 +40,7 @@ export class TelemetryClient {
    * backend event schema.
    */
   track<K extends TelemetryEventName>(eventName: K, ...args: TrackArgs<K>): void {
+    if (!Object.hasOwn(PAPERCLIP_EVENTS, eventName)) return;
     const [dimensions] = args;
     this.enqueue(eventName, dimensions);
   }
