@@ -23,7 +23,7 @@ import { unprocessable } from "../errors.js";
 function invalidSecretRef(secretRef: unknown): Error {
   const rendered = typeof secretRef === "string" ? secretRef : JSON.stringify(secretRef);
   const err = new Error(
-    `Invalid plugin secret reference: ${rendered ?? "<empty>"}. Use { type: "secret_ref", secretId, version? }`,
+    `Invalid secret reference for plugin: ${rendered ?? "<empty>"}. Use { type: "secret_ref", secretId, version? }`,
   );
   err.name = "InvalidSecretRefError";
   return err;
@@ -45,8 +45,12 @@ function parseSecretRefBinding(value: unknown): EnvSecretRefBinding | null {
   return parsed.success ? parsed.data : null;
 }
 
-function assertSecretRefBinding(value: unknown, path: string): EnvSecretRefBinding | null {
-  if (typeof value === "string" && isUuidSecretRef(value)) {
+function assertSecretRefBinding(
+  value: unknown,
+  path: string,
+  rejectLegacyUuid = false,
+): EnvSecretRefBinding | null {
+  if (rejectLegacyUuid && typeof value === "string" && isUuidSecretRef(value)) {
     throw unprocessable(
       `Plugin secret ref at ${path} must use { type: "secret_ref", secretId, version? }`,
     );
@@ -96,7 +100,7 @@ export function extractSecretRefBindingsFromConfig(
   const secretPaths = collectSecretRefPaths(schema);
   for (const dotPath of secretPaths) {
     const current = readConfigValueAtPath(configJson as Record<string, unknown>, dotPath);
-    const binding = assertSecretRefBinding(current, dotPath);
+    const binding = assertSecretRefBinding(current, dotPath, true);
     if (binding) addRef(binding, dotPath);
   }
 
@@ -217,6 +221,13 @@ export function createPluginSecretsHandler(
 
   return {
     async resolve(params: PluginSecretsResolveParams): Promise<string> {
+      if (typeof params.secretRef === "string") {
+        throw invalidSecretRef(params.secretRef.trim() || "<empty>");
+      }
+
+      const bindingRef = parseSecretRefBinding(params.secretRef);
+      if (!bindingRef) throw invalidSecretRef(params.secretRef);
+
       const companyId = requireCompanyId(params.companyId);
 
       if (!rateLimiter.check(`${companyId}:${pluginId}`)) {
@@ -224,13 +235,6 @@ export function createPluginSecretsHandler(
         err.name = "RateLimitExceededError";
         throw err;
       }
-
-      if (typeof params.secretRef === "string") {
-        throw invalidSecretRef(params.secretRef.trim() || "<empty>");
-      }
-
-      const bindingRef = parseSecretRefBinding(params.secretRef);
-      if (!bindingRef) throw invalidSecretRef(params.secretRef);
 
       const versionSelector = bindingRef.version ?? "latest";
       const bindings = await lookupBinding({

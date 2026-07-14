@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   createPluginSecretsHandler,
+  extractSecretRefBindingsFromConfig,
   PLUGIN_SECRET_REFS_DISABLED_MESSAGE,
 } from "../services/plugin-secrets-handler.js";
 
@@ -25,5 +26,35 @@ describe("createPluginSecretsHandler", () => {
     await expect(
       handler.resolve({ secretRef: "not-a-uuid" }),
     ).rejects.toThrow(/invalid secret reference/i);
+  });
+});
+
+describe("extractSecretRefBindingsFromConfig", () => {
+  it("ignores UUID strings outside schema-declared secret fields", () => {
+    const externalProjectId = "77777777-7777-4777-8777-777777777777";
+
+    expect(
+      extractSecretRefBindingsFromConfig(
+        { externalProjectId },
+        {
+          type: "object",
+          properties: { externalProjectId: { type: "string" } },
+        },
+      ),
+    ).toEqual([]);
+  });
+
+  it("rejects legacy UUID strings at schema-declared secret fields", () => {
+    const secretId = "77777777-7777-4777-8777-777777777777";
+
+    expect(() =>
+      extractSecretRefBindingsFromConfig(
+        { token: secretId },
+        {
+          type: "object",
+          properties: { token: { format: "secret-ref" } },
+        },
+      ),
+    ).toThrow(/must use.*secret_ref/i);
   });
 });
