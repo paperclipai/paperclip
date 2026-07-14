@@ -32,6 +32,7 @@
     "skills"
   ],
   "scripts": {
+    "check:f004": "node ../scripts/check-f004-better-auth.mjs --self-test && node ../scripts/check-f004-better-auth.mjs",
     "dev": "tsx src/index.ts",
     "dev:watch": "cross-env PAPERCLIP_MIGRATION_PROMPT=never PAPERCLIP_MIGRATION_AUTO_APPLY=true tsx ./scripts/dev-watch.ts",
     "prepare:ui-dist": "bash ../scripts/prepare-server-ui-dist.sh",
@@ -40,6 +41,7 @@
     "postpack": "rm -rf ui-dist",
     "clean": "rm -rf dist",
     "start": "node dist/index.js",
+    "pretypecheck": "pnpm run check:f004",
     "typecheck": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit"
   },
   "dependencies": {
