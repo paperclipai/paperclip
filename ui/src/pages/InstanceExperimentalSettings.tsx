@@ -238,6 +238,7 @@ export function InstanceExperimentalSettings() {
   const enableWorktreeRunExecution = experimentalQuery.data?.enableWorktreeRunExecution === true;
   const enableEnvironments = experimentalQuery.data?.enableEnvironments === true;
   const enableIsolatedWorkspaces = experimentalQuery.data?.enableIsolatedWorkspaces === true;
+  const enableApps = experimentalQuery.data?.enableApps === true;
   // Streamlined left navigation is now the standard sidebar (PAP-12472); the
   // experimental opt-out was retired, so it no longer surfaces a toggle here.
   const enableConferenceRoomChat = experimentalQuery.data?.enableConferenceRoomChat === true;
@@ -348,6 +349,26 @@ export function InstanceExperimentalSettings() {
           </div>
         </Card>
       ) : null}
+
+      <Card className="block p-5">
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-1.5">
+            <div className="flex items-center gap-2">
+              <h2 className="text-sm font-semibold">Apps</h2>
+              <Badge variant="secondary">Experimental</Badge>
+            </div>
+            <p className="max-w-2xl text-sm text-muted-foreground">
+              Show the Apps navigation and allow access to app connections, gateways, and advanced app tooling.
+            </p>
+          </div>
+          <ToggleSwitch
+            checked={enableApps}
+            onCheckedChange={() => toggleMutation.mutate({ enableApps: !enableApps })}
+            disabled={toggleMutation.isPending}
+            aria-label="Toggle apps experimental setting"
+          />
+        </div>
+      </Card>
 
       <Card className="block p-5">
         <div className="flex items-start justify-between gap-4">

@@ -12,6 +12,7 @@ const mockHealthApi = vi.hoisted(() => ({
 
 const mockInstanceSettingsApi = vi.hoisted(() => ({
   getGeneral: vi.fn(),
+  getExperimental: vi.fn(),
 }));
 
 const mockNavigate = vi.hoisted(() => vi.fn());
@@ -259,6 +260,7 @@ describe("Layout", () => {
     mockInstanceSettingsApi.getGeneral.mockResolvedValue({
       keyboardShortcuts: false,
     });
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableApps: true });
     mockPluginSlots.slots = [];
     mockPluginSlotContexts.length = 0;
     mockSidebarState.sidebarOpen = true;
@@ -520,6 +522,33 @@ describe("Layout", () => {
     expect(container.textContent).toContain("Main company nav");
     expect(container.textContent).not.toContain("Company settings sidebar");
     expect(mockSetForceCollapsed).toHaveBeenCalledWith(true);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("does not mount the Apps secondary sidebar while experimental apps are disabled", async () => {
+    currentPathname = "/PAP/apps/browse";
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableApps: false });
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Layout />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).not.toContain("Apps sidebar");
+    expect(container.textContent).toContain("Main company nav");
+    expect(mockSetForceCollapsed).toHaveBeenCalledWith(false);
 
     await act(async () => {
       root.unmount();

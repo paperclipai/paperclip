@@ -29,6 +29,7 @@ import { usePanel } from "../context/PanelContext";
 import { useCompany } from "../context/CompanyContext";
 import { useSidebar } from "../context/SidebarContext";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
+import { useAppsEnabled } from "../hooks/useAppsEnabled";
 import { useCompanyPageMemory } from "../hooks/useCompanyPageMemory";
 import { healthApi } from "../api/health";
 import { instanceSettingsApi } from "../api/instanceSettings";
@@ -99,6 +100,7 @@ export function Layout() {
   const navigate = useNavigate();
   const location = useLocation();
   const navigationType = useNavigationType();
+  const { enabled: appsEnabled } = useAppsEnabled();
   const isCompanySettingsRoute = location.pathname.includes("/company/settings");
   const companyPathSegments = getCompanyPathSegments(location.pathname, companyPrefix);
   const isToolsRoute = companyPathSegments[0]?.toLowerCase() === "tools";
@@ -157,11 +159,11 @@ export function Layout() {
   // both desktop (SecondarySidebar) and mobile (off-canvas drawer).
   const secondarySidebar = isCompanySettingsRoute ? (
     <CompanySettingsSidebar />
-  ) : appDetailConnectionId ? (
+  ) : appsEnabled && appDetailConnectionId ? (
     <AppDetailSidebar kind="connection" connectionId={appDetailConnectionId} />
-  ) : appDetailApplicationId ? (
+  ) : appsEnabled && appDetailApplicationId ? (
     <AppDetailSidebar kind="application" applicationId={appDetailApplicationId} />
-  ) : isAppsRoute || isToolsRoute ? (
+  ) : appsEnabled && (isAppsRoute || isToolsRoute) ? (
     <AppsSidebar />
   ) : routeSidebarSlot ? (
     <PluginSlotMount

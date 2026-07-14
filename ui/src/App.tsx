@@ -5,6 +5,7 @@ import { Layout } from "./components/Layout";
 import { ConferenceRoomChatGate } from "./components/ConferenceRoomChatGate";
 import { PipelinesExperimentalGate } from "./components/PipelinesExperimentalGate";
 import { CasesExperimentalGate } from "./components/CasesExperimentalGate";
+import { AppsExperimentalGate } from "./components/AppsExperimentalGate";
 import { Cases } from "./pages/Cases";
 import { CaseDetail } from "./pages/CaseDetail";
 import { OnboardingWizardVariant } from "./components/OnboardingWizardVariant";
@@ -112,26 +113,28 @@ function boardRoutes() {
       <Route path="company/settings/tools/:tab" element={<LegacyToolsSettingsRedirect />} />
       <Route path="tools" element={<LegacyToolsRedirect />} />
       <Route path="tools/:tab" element={<LegacyToolsRedirect />} />
-      <Route path="apps" element={<Connections />} />
-      <Route path="apps/browse" element={<Browse />} />
-      <Route path="apps/connect" element={<AppsConnectEntryRoute />} />
-      <Route path="apps/connect/:appKey" element={<Navigate to="/apps/browse" replace />} />
-      <Route path="apps/connect/:appKey/:stage" element={<Navigate to="/apps/browse" replace />} />
-      <Route path="apps/review" element={<AppsReview />} />
-      {/* Needs attention folded into Connections (PAP-13254); keep legacy links working. */}
-      <Route path="apps/attention" element={<Navigate to="/apps" replace />} />
-      <Route path="apps/gateways" element={<GatewaysList />} />
-      <Route path="apps/gateways/:gatewayId" element={<Navigate to="overview" replace />} />
-      <Route path="apps/gateways/:gatewayId/:tab" element={<GatewayDetail />} />
-      <Route path="apps/advanced" element={<AdvancedToolsRoute />} />
-      <Route path="apps/advanced/profiles/new" element={<ProfileWizardRoute mode="new" />} />
-      <Route path="apps/advanced/profiles/:profileId/edit" element={<ProfileWizardRoute mode="edit" />} />
-      <Route path="apps/advanced/profiles/:profileId" element={<ProfileDetailRoute />} />
-      <Route path="apps/advanced/:tab" element={<AdvancedToolsRoute />} />
-      <Route path="apps/app/:applicationId" element={<AppNotConnected />} />
-      <Route path="apps/app/:applicationId/:tab" element={<AppNotConnected />} />
-      <Route path="apps/:connectionId" element={<Navigate to="setup" replace />} />
-      <Route path="apps/:connectionId/:tab" element={<AppDetail />} />
+      <Route element={<AppsExperimentalGate />}>
+        <Route path="apps" element={<Connections />} />
+        <Route path="apps/browse" element={<Browse />} />
+        <Route path="apps/connect" element={<AppsConnectEntryRoute />} />
+        <Route path="apps/connect/:appKey" element={<Navigate to="/apps/browse" replace />} />
+        <Route path="apps/connect/:appKey/:stage" element={<Navigate to="/apps/browse" replace />} />
+        <Route path="apps/review" element={<AppsReview />} />
+        {/* Needs attention folded into Connections (PAP-13254); keep legacy links working. */}
+        <Route path="apps/attention" element={<Navigate to="/apps" replace />} />
+        <Route path="apps/gateways" element={<GatewaysList />} />
+        <Route path="apps/gateways/:gatewayId" element={<Navigate to="overview" replace />} />
+        <Route path="apps/gateways/:gatewayId/:tab" element={<GatewayDetail />} />
+        <Route path="apps/advanced" element={<AdvancedToolsRoute />} />
+        <Route path="apps/advanced/profiles/new" element={<ProfileWizardRoute mode="new" />} />
+        <Route path="apps/advanced/profiles/:profileId/edit" element={<ProfileWizardRoute mode="edit" />} />
+        <Route path="apps/advanced/profiles/:profileId" element={<ProfileDetailRoute />} />
+        <Route path="apps/advanced/:tab" element={<AdvancedToolsRoute />} />
+        <Route path="apps/app/:applicationId" element={<AppNotConnected />} />
+        <Route path="apps/app/:applicationId/:tab" element={<AppNotConnected />} />
+        <Route path="apps/:connectionId" element={<Navigate to="setup" replace />} />
+        <Route path="apps/:connectionId/:tab" element={<AppDetail />} />
+      </Route>
       <Route path="company/settings/instance" element={<Navigate to="general" replace />} />
       <Route path="company/settings/instance/profile" element={<ProfileSettings />} />
       <Route path="company/settings/instance/general" element={<InstanceGeneralSettings />} />

@@ -23,6 +23,7 @@ describe("instance settings service", () => {
       enableEnvironments: true,
       enableIsolatedWorkspaces: true,
       enableStreamlinedLeftNavigation: true,
+      enableApps: false,
       enableConferenceRoomChat: false,
       enableExternalObjects: false,
       enableSmokeLab: false,
@@ -42,6 +43,12 @@ describe("instance settings service", () => {
       enableWorktreeRunExecution: false,
       issueGraphLivenessAutoRecoveryLookbackHours: 48,
     });
+  });
+
+  it("defaults enableApps to false for empty and legacy stored settings", () => {
+    expect(normalizeExperimentalSettings(undefined).enableApps).toBe(false);
+    expect(normalizeExperimentalSettings({}).enableApps).toBe(false);
+    expect(normalizeExperimentalSettings({ enablePipelines: true }).enableApps).toBe(false);
   });
 
   it("defaults enableConferenceRoomChat to false for empty and legacy stored settings", () => {
