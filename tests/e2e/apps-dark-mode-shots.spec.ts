@@ -96,6 +96,11 @@ test.describe.serial("dark-mode Apps surfaces", () => {
     // connection name differs from the healthy `127.0.0.1` app.
     const ephemeral = await startMockMcp();
     brokenId = await connectApp(request, seed, ephemeral.url.replace("127.0.0.1", "localhost"));
+    const brokenUrl = "http://localhost:65535/";
+    const patch = await request.patch(`/api/tool-connections/${brokenId}`, {
+      data: { config: { url: brokenUrl } },
+    });
+    expect(patch.ok(), `patch broken url failed ${patch.status()}: ${await patch.text()}`).toBe(true);
     await ephemeral.close();
     const health = await request.post(`/api/tool-connections/${brokenId}/health-check`);
     expect(health.status()).toBe(502);
@@ -168,7 +173,7 @@ test.describe.serial("dark-mode Apps surfaces", () => {
     await page.getByLabel("App name").fill("QA Renamed App");
     await page.getByRole("button", { name: "Save", exact: true }).click();
     await expect(page.getByRole("heading", { name: "QA Renamed App" })).toBeVisible({ timeout: 20_000 });
-    await page.getByRole("button", { name: "Remove app" }).click();
+    await page.getByRole("button", { name: "Remove app", exact: true }).click();
     await page.screenshot({ path: `${SCREENSHOT_DIR}/apps-nav-06-danger-zone-dark.png`, fullPage: true });
     await page.getByRole("button", { name: "Yes, remove it" }).click();
     await expect(page).toHaveURL(new RegExp(`/${seed.prefix}/apps$`), { timeout: 20_000 });

@@ -198,6 +198,10 @@ test.describe.serial("prosumer MCP flow prosumer MCP flow", () => {
     await expect(page.getByRole("heading", { name: /Who can use/i })).toBeVisible({ timeout: 15_000 });
     await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-04-who-step.png`, fullPage: true });
 
+    await page.getByRole("button", { name: /Continue to install/i }).click();
+    await expect(page.getByRole("heading", { name: /Install .* tools\?/i })).toBeVisible({ timeout: 15_000 });
+    await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-04b-install-step.png`, fullPage: true });
+
     // Finish.
     await page.getByRole("button", { name: /Finish setup/i }).click();
 

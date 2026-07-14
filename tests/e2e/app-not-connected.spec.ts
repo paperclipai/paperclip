@@ -170,7 +170,7 @@ test.describe.serial("not-connected app page", () => {
 
     await page.goto(`/${seed.prefix}/apps/app/${secondBody.application.id}/advanced`);
     await expect(page.getByText("Danger zone")).toBeVisible({ timeout: 30_000 });
-    await page.getByRole("button", { name: "Remove app" }).click();
+    await page.getByRole("button", { name: "Remove app", exact: true }).click();
     await page.screenshot({ path: `${SCREENSHOT_DIR}/apps-nav-w6-04-app-page-danger.png`, fullPage: true });
     await page.getByRole("button", { name: "Yes, remove it" }).click();
     await expect(page).toHaveURL(new RegExp(`/${seed.prefix}/apps$`), { timeout: 20_000 });

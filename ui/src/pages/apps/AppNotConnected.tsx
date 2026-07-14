@@ -127,7 +127,11 @@ export function AppNotConnected() {
     gallery.find((entry) => entry.name.toLowerCase() === application.name.toLowerCase())?.logoUrl;
 
   const previousAddress = previousConnection ? connectionAddress(previousConnection) : null;
-  const connectHref = "/apps/browse";
+  const connectHref = reconnectHref({
+    applicationId,
+    appName: application.name,
+    previousAddress,
+  });
 
   return (
     <div className="max-w-3xl space-y-6 pb-12">
@@ -344,4 +348,18 @@ function latestArchivedConnection(connections: ToolConnection[]): ToolConnection
     const connectionTime = new Date(connection.updatedAt ?? connection.createdAt ?? 0).getTime();
     return connectionTime > latestTime ? connection : latest;
   });
+}
+
+function reconnectHref({
+  applicationId,
+  appName,
+  previousAddress,
+}: {
+  applicationId: string;
+  appName: string;
+  previousAddress: string | null;
+}): string {
+  const params = new URLSearchParams({ byo: "1", applicationId, name: appName });
+  if (previousAddress && /^https?:\/\//i.test(previousAddress)) params.set("link", previousAddress);
+  return `/apps/connect?${params.toString()}`;
 }

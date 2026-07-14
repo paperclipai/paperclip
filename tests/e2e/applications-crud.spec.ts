@@ -128,7 +128,7 @@ test.describe.serial("applications lifecycle", () => {
 
     await page.goto(`/${seed.prefix}/apps/${connection.id}/advanced`);
     await expect(page.getByText("Danger zone")).toBeVisible({ timeout: 15_000 });
-    await page.getByRole("button", { name: "Remove app" }).click();
+    await page.getByRole("button", { name: "Remove app", exact: true }).click();
     await expect(page.getByRole("button", { name: "Yes, remove it" })).toBeVisible();
     await page.screenshot({ path: `${SCREENSHOT_DIR}/applications-crud-current-remove-connected.png`, fullPage: true });
     await page.getByRole("button", { name: "Yes, remove it" }).click();
@@ -144,7 +144,7 @@ test.describe.serial("applications lifecycle", () => {
     await page.goto(`/${seed.prefix}/apps/app/${cleanApp.id}/advanced`);
     await expect(page.getByRole("heading", { name: cleanAppName })).toBeVisible({ timeout: 30_000 });
     await expect(page.getByText("Danger zone")).toBeVisible();
-    await page.getByRole("button", { name: "Remove app" }).click();
+    await page.getByRole("button", { name: "Remove app", exact: true }).click();
     await page.screenshot({ path: `${SCREENSHOT_DIR}/applications-crud-current-remove-not-connected.png`, fullPage: true });
     await page.getByRole("button", { name: "Yes, remove it" }).click();
     await expect(page).toHaveURL(new RegExp(`/${seed.prefix}/apps$`), { timeout: 20_000 });
