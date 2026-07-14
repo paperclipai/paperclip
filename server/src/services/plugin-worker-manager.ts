@@ -53,6 +53,11 @@ import type {
   InitializeParams,
 } from "@paperclipai/plugin-sdk";
 import { logger } from "../middleware/logger.js";
+import {
+  createPluginStreamBus,
+  type PluginStreamBus,
+  type StreamEventType,
+} from "./plugin-stream-bus.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -357,6 +362,18 @@ export interface PluginWorkerManager {
     params: HostToWorkerMethods[M][0],
     timeoutMs?: number,
   ): Promise<HostToWorkerMethods[M][1]>;
+
+  /**
+   * The stream bus this manager publishes worker `streams.*` notifications to.
+   *
+   * Every worker started by this manager forwards its `ctx.streams` open/emit/
+   * close notifications here, so any host code holding the manager (SSE bridge
+   * routes, the environment runtime's live-output bridge) can `subscribe` to a
+   * (pluginId, channel, companyId) tuple without threading a separate bus. The
+   * real factory always populates it; kept optional so hand-rolled test doubles
+   * of this interface don't have to provide one.
+   */
+  readonly streamBus?: PluginStreamBus;
 }
 
 // ---------------------------------------------------------------------------
@@ -1325,6 +1342,45 @@ export interface PluginWorkerManagerOptions {
     signal?: string | null;
     willRestart?: boolean;
   }) => void;
+
+  /**
+   * Stream bus that worker `streams.*` notifications are published to. When
+   * omitted, the manager creates its own in-memory bus. Exposed on the returned
+   * manager as `.streamBus` so host code (SSE bridge, environment runtime) can
+   * subscribe to worker-emitted channels.
+   */
+  streamBus?: PluginStreamBus;
+}
+
+/** Map a `streams.*` notification method to the SSE-style event type. */
+function streamEventTypeForMethod(method: string): StreamEventType {
+  if (method === "streams.open") return "open";
+  if (method === "streams.close") return "close";
+  return "message";
+}
+
+/**
+ * Publish a worker `streams.*` notification onto the stream bus. The worker's
+ * `ctx.streams` API sends `{ channel, companyId, event? }`; the bus fans it out
+ * to subscribers of (pluginId, channel, companyId). Best-effort: a missing
+ * channel/companyId is dropped rather than thrown.
+ */
+function publishStreamNotification(
+  streamBus: PluginStreamBus,
+  pluginId: string,
+  method: string,
+  params: Record<string, unknown>,
+): void {
+  const channel = typeof params.channel === "string" ? params.channel : "";
+  const companyId = typeof params.companyId === "string" ? params.companyId : "";
+  if (!channel || !companyId) return;
+  streamBus.publish(
+    pluginId,
+    channel,
+    companyId,
+    params.event,
+    streamEventTypeForMethod(method),
+  );
 }
 
 /**
@@ -1360,8 +1416,10 @@ export function createPluginWorkerManager(
   const workers = new Map<string, PluginWorkerHandle>();
   /** Per-plugin startup locks to prevent concurrent spawn races. */
   const startupLocks = new Map<string, Promise<PluginWorkerHandle>>();
+  const streamBus = managerOptions?.streamBus ?? createPluginStreamBus();
 
   return {
+    streamBus,
     async startWorker(
       pluginId: string,
       options: WorkerStartOptions,
@@ -1380,7 +1438,19 @@ export function createPluginWorkerManager(
         );
       }
 
-      const handle = createPluginWorkerHandle(pluginId, options);
+      // Fan worker `streams.*` notifications out to the manager's stream bus so
+      // host subscribers (SSE bridge, environment-runtime live output) receive
+      // them, while preserving any caller-supplied onStreamNotification.
+      const callerOnStreamNotification = options.onStreamNotification;
+      const workerStartOptions: WorkerStartOptions = {
+        ...options,
+        onStreamNotification: (method, params) => {
+          publishStreamNotification(streamBus, pluginId, method, params);
+          callerOnStreamNotification?.(method, params);
+        },
+      };
+
+      const handle = createPluginWorkerHandle(pluginId, workerStartOptions);
       workers.set(pluginId, handle);
 
       // Subscribe to crash/ready events for live event forwarding
