@@ -181,6 +181,10 @@ describeEmbeddedPostgres("summary slot service", () => {
         .then((rows) => rows[0]!);
       expect(issueRow.assigneeAgentId).toBe(summarizerAgentId);
       expect(issueRow.companyId).toBe(companyId);
+      expect(issueRow.description).toContain(
+        '"generationIssueId": "' + result.generatingIssue.id + '"',
+      );
+      expect(issueRow.description).toContain("`## Needs you`, `## Next`, and `## Since last summary`");
     });
 
     it("dedupes duplicate generate clicks while a generation is active", async () => {
@@ -228,19 +232,44 @@ describeEmbeddedPostgres("summary slot service", () => {
       return { svc, generationIssueId: generated.generatingIssue.id, runId };
     }
 
-    it("writes a Markdown revision and clears the generating state", async () => {
+    it("writes a board-readable revision, preserves the previous revision, and clears the generating state", async () => {
       const companyId = await seedCompany();
       const projectId = await seedProject(companyId);
       const summarizerAgentId = await seedSummarizer(companyId);
-      const { svc, generationIssueId, runId } = await startGeneration(companyId, projectId, summarizerAgentId);
+      const { svc, runId } = await startGeneration(companyId, projectId, summarizerAgentId);
 
-      const written = await svc.write(
-        { ...projectSelector(companyId, projectId), markdown: "# Summary\n\nNeeds you: review PR.", model: "cheap-model" },
+      const initial = await svc.write(
+        {
+          ...projectSelector(companyId, projectId),
+          markdown:
+            "## Needs you\nNothing is waiting on you right now.\n\n## Next\nNothing is next.\n\n## Since last summary\nFirst summary for this scope.",
+          model: "cheap-model",
+        },
         { agentId: summarizerAgentId, runId },
       );
 
-      expect(written.revision.revisionNumber).toBe(1);
-      expect(written.document.body).toContain("Needs you");
+      const nextGeneration = await svc.generate(projectSelector(companyId, projectId), {
+        userId: "board-user",
+      });
+      const nextRunId = await seedRun(companyId, summarizerAgentId);
+      await db
+        .update(issues)
+        .set({ checkoutRunId: nextRunId })
+        .where(eq(issues.id, nextGeneration.generatingIssue.id));
+      const written = await svc.write(
+        {
+          ...projectSelector(companyId, projectId),
+          markdown:
+            "## Needs you\n- Review [T-123](/T/issues/T-123).\n\n## Next\n- Merge the approved change.\n\n## Since last summary\n- [T-123](/T/issues/T-123) entered review.",
+          baseRevisionId: initial.revision.id,
+          generationIssueId: nextGeneration.generatingIssue.id,
+          model: "cheap-model",
+        },
+        { agentId: summarizerAgentId, runId: nextRunId },
+      );
+
+      expect(written.revision.revisionNumber).toBe(2);
+      expect(written.document.body).toMatch(/^## Needs you\n[\s\S]*## Next\n[\s\S]*## Since last summary/m);
       expect(written.slot.status).toBe("idle");
       expect(written.slot.generatingIssueId).toBeNull();
       expect(written.slot.documentId).toBe(written.document.id);
@@ -248,9 +277,10 @@ describeEmbeddedPostgres("summary slot service", () => {
       expect(written.slot.lastModel).toBe("cheap-model");
 
       const revisions = await svc.listRevisions(projectSelector(companyId, projectId));
-      expect(revisions.revisions).toHaveLength(1);
-      expect(revisions.revisions[0]!.body).toContain("Needs you");
-      void generationIssueId;
+      expect(revisions.revisions).toHaveLength(2);
+      expect(revisions.revisions[0]!.id).toBe(written.revision.id);
+      expect(revisions.revisions[1]!.id).toBe(initial.revision.id);
+      expect(revisions.revisions[1]!.body).toContain("First summary for this scope.");
     });
 
     it("appends further revisions and enforces optimistic baseRevisionId", async () => {
