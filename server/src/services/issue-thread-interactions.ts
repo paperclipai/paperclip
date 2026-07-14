@@ -1127,11 +1127,8 @@ export function issueThreadInteractionService(db: Db) {
       actor: InteractionActor,
     ) => {
       if (!comment.authorUserId) return [];
-      // A comment authored inside a heartbeat run is machine-originated, even when the
-      // local-CLI adapter posts it under user auth (which nondeterministically sets
-      // authorUserId). Such comments must never supersede pending decision cards — only a
-      // genuine interactive human comment (no run context) should. Without this guard an
-      // agent's own on-thread comment can expire its own (or a teammate's) pending card.
+      // Local-CLI adapters post under user auth, so authorUserId can't tell a human from a
+      // machine; createdByRunId can. Only genuine human comments (no run context) supersede.
       if (comment.createdByRunId) return [];
 
       const rows = await db
@@ -1208,8 +1205,7 @@ export function issueThreadInteractionService(db: Db) {
             eq(issueComments.companyId, issue.companyId),
             eq(issueComments.issueId, issue.id),
             isNotNull(issueComments.authorUserId),
-            // Only genuine interactive human comments (no heartbeat run context) supersede.
-            // Machine-originated comments carry createdByRunId even when posted under user auth.
+            // Only genuine human comments supersede; machine-originated ones carry createdByRunId.
             isNull(issueComments.createdByRunId),
           ))
           .orderBy(asc(issueComments.createdAt)),
