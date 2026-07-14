@@ -50,6 +50,7 @@ function timelineEdgeKey(edge: WorkTimelineResult["edges"][number]) {
 export async function loadTimelineWindow(
   companyId: string,
   params: WorkTimelineParams,
+  signal?: AbortSignal,
 ): Promise<WorkTimelineResult> {
   const actors = new Map<string, WorkTimelineResult["actors"][number]>();
   const spans = new Map<string, WorkTimelineResult["spans"][number]>();
@@ -65,7 +66,7 @@ export async function loadTimelineWindow(
       ...params,
       limit: TIMELINE_PAGE_LIMIT,
       offset,
-    });
+    }, { signal });
     firstPage ??= page;
     totalIssues = Math.max(totalIssues, page.pagination.totalIssues);
     capped ||= page.window.capped;
@@ -88,7 +89,7 @@ export async function loadTimelineWindow(
     events: Array.from(events.values()),
     edges: Array.from(edges.values()),
     pagination: {
-      limit: totalIssues,
+      limit: TIMELINE_PAGE_LIMIT,
       offset: 0,
       totalIssues,
       hasMore: false,
@@ -324,7 +325,7 @@ export function Timeline() {
 
   const { data, isLoading, error } = useQuery({
     queryKey: [...queryKeys.workTimeline(selectedCompanyId ?? ""), dateRange.fromDate, dateRange.toDate],
-    queryFn: () => loadTimelineWindow(selectedCompanyId!, params!),
+    queryFn: ({ signal }) => loadTimelineWindow(selectedCompanyId!, params!, signal),
     enabled: !!selectedCompanyId && !!params,
   });
 

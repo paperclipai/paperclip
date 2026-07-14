@@ -1,5 +1,5 @@
 import type { WorkTimelineResult } from "@paperclipai/shared";
-import { api } from "./client";
+import { api, type RequestOptions } from "./client";
 
 export interface WorkTimelineParams {
   from?: string;
@@ -28,6 +28,6 @@ function query(params: WorkTimelineParams): string {
 }
 
 export const workTimelineApi = {
-  get: (companyId: string, params: WorkTimelineParams = {}) =>
-    api.get<WorkTimelineResult>(`/companies/${companyId}/timeline${query(params)}`),
+  get: (companyId: string, params: WorkTimelineParams = {}, options?: RequestOptions) =>
+    api.get<WorkTimelineResult>(`/companies/${companyId}/timeline${query(params)}`, options),
 };

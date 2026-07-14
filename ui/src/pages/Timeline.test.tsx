@@ -228,23 +228,24 @@ describe("Timeline", () => {
         },
       });
 
+    const controller = new AbortController();
     const result = await loadTimelineWindow("company-1", {
       from: populatedTimeline.window.from,
       to: populatedTimeline.window.to,
-    });
+    }, controller.signal);
 
     expect(mockWorkTimelineApi.get).toHaveBeenNthCalledWith(1, "company-1", expect.objectContaining({
       limit: 500,
       offset: 0,
-    }));
+    }), { signal: controller.signal });
     expect(mockWorkTimelineApi.get).toHaveBeenNthCalledWith(2, "company-1", expect.objectContaining({
       limit: 500,
       offset: 500,
-    }));
+    }), { signal: controller.signal });
     expect(result.actors.map((actor) => actor.id)).toEqual(["agent:codex", "agent:qa"]);
     expect(result.spans.map((span) => span.runId)).toEqual(["run-1", "run-2"]);
     expect(result.pagination).toEqual({
-      limit: 501,
+      limit: 500,
       offset: 0,
       totalIssues: 501,
       hasMore: false,
@@ -352,6 +353,7 @@ describe("Timeline", () => {
         from: expect.any(String),
         to: expect.any(String),
       }),
+      { signal: expect.any(AbortSignal) },
     );
     expect(mockWorkTimelineApi.get.mock.calls[0]?.[1]).not.toHaveProperty("userId");
   });
