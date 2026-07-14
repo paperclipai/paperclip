@@ -108,7 +108,7 @@ export function companySkillPolicyService(db: Db) {
       .from(companySkillPolicies)
       .where(eq(companySkillPolicies.companyId, companyId))
       .then((rows) => rows[0] ?? null);
-    return row ? effectivePolicyFromRow(row) : { ...OPEN_DEFAULT_POLICY, rules: [] };
+    return row ? effectivePolicyFromRow(row) : { ...OPEN_DEFAULT_POLICY };
   }
 
   async function resolveAgentPrincipal(companyId: string, agentId: string): Promise<SkillPolicyPrincipal> {

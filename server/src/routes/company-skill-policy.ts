@@ -117,9 +117,13 @@ export function companySkillPolicyRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       assertSkillPolicyCompanyAccess(req, companyId);
-      const principal = req.body.principal
-        ? (await assertCanAdministerPolicy(req, companyId), await policies.resolveAgentPrincipal(companyId, req.body.principal.agentId))
-        : await currentPrincipal(req, companyId);
+      let principal: SkillPolicyPrincipal;
+      if (req.body.principal) {
+        await assertCanAdministerPolicy(req, companyId);
+        principal = await policies.resolveAgentPrincipal(companyId, req.body.principal.agentId);
+      } else {
+        principal = await currentPrincipal(req, companyId);
+      }
       res.json(await policies.evaluate({
         companyId,
         principal,

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type CSSProperties, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useState, type CSSProperties, type FormEvent } from "react";
 import { useHostContext, usePluginData, usePluginToast, type PluginPageProps } from "@paperclipai/plugin-sdk/ui";
 
 type Effect = "allow" | "deny";
@@ -137,7 +137,7 @@ function useCompanyPolicy(companyId: string | null) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  async function refresh() {
+  const refresh = useCallback(async () => {
     if (!companyId) return;
     setLoading(true);
     setError(null);
@@ -155,11 +155,11 @@ function useCompanyPolicy(companyId: string | null) {
     } finally {
       setLoading(false);
     }
-  }
+  }, [companyId]);
 
   useEffect(() => {
     void refresh();
-  }, [companyId]);
+  }, [refresh]);
 
   return { policy, agents, audit, loading, error, refresh, setPolicy };
 }
