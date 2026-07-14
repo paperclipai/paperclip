@@ -1,0 +1,592 @@
+import { and, desc, eq, isNull } from "drizzle-orm";
+import type { Db } from "@paperclipai/db";
+import {
+  documentRevisions,
+  documents,
+  issues,
+  projectWorkspaces,
+  projects,
+  summarySlots,
+} from "@paperclipai/db";
+import {
+  type GenerateSummarySlotResponse,
+  type GetSummarySlotResponse,
+  type IssueStatus,
+  type ListSummarySlotRevisionsResponse,
+  type SummarySlot,
+  type SummarySlotDocument,
+  type SummarySlotIssueRef,
+  type SummarySlotRevision,
+  type SummarySlotScopeKind,
+  type SummarySlotScopeSelector,
+  summarySlotScopeSelectorSchema,
+  type WriteSummarySlotResponse,
+} from "@paperclipai/shared";
+import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
+import { readBuiltInAgentMarker } from "./built-in-agent-metadata.js";
+import { builtInAgentService } from "./built-in-agents.js";
+import { agentService } from "./agents.js";
+import { issueService } from "./issues.js";
+
+/** Built-in agent key for the Summarizer bundle (see PAP-13920). */
+export const SUMMARIZER_BUILT_IN_KEY = "summarizer";
+
+/** Generation issues in these statuses are no longer active and can be superseded. */
+const TERMINAL_ISSUE_STATUSES = new Set<IssueStatus>(["done", "cancelled"]);
+
+const DEFAULT_SUMMARY_FORMAT = "markdown";
+
+export interface SummarySlotSelectorInput {
+  companyId: string;
+  scopeKind: string;
+  slotKey: string;
+  scopeId?: string | null;
+}
+
+export interface SummaryGenerateActor {
+  agentId?: string | null;
+  userId?: string | null;
+  runId?: string | null;
+}
+
+export interface SummaryWriteActor {
+  agentId?: string | null;
+  runId?: string | null;
+}
+
+type ResolvedSelector = SummarySlotScopeSelector & {
+  companyId: string;
+  scopeId: string | null;
+};
+
+type SummarySlotRow = typeof summarySlots.$inferSelect;
+
+function mapSlot(row: SummarySlotRow): SummarySlot {
+  return {
+    id: row.id,
+    companyId: row.companyId,
+    scopeKind: row.scopeKind,
+    scopeId: row.scopeId ?? null,
+    slotKey: row.slotKey,
+    documentId: row.documentId ?? null,
+    status: row.status,
+    generatingIssueId: row.generatingIssueId ?? null,
+    lastGeneratedAt: row.lastGeneratedAt ?? null,
+    lastGeneratedByAgentId: row.lastGeneratedByAgentId ?? null,
+    lastModel: row.lastModel ?? null,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
+function mapDocument(row: typeof documents.$inferSelect): SummarySlotDocument {
+  return {
+    id: row.id,
+    companyId: row.companyId,
+    title: row.title ?? null,
+    format: row.format as SummarySlotDocument["format"],
+    body: row.latestBody,
+    latestRevisionId: row.latestRevisionId ?? null,
+    latestRevisionNumber: row.latestRevisionNumber,
+    createdByAgentId: row.createdByAgentId ?? null,
+    createdByUserId: row.createdByUserId ?? null,
+    updatedByAgentId: row.updatedByAgentId ?? null,
+    updatedByUserId: row.updatedByUserId ?? null,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
+function mapRevision(row: typeof documentRevisions.$inferSelect): SummarySlotRevision {
+  return {
+    id: row.id,
+    companyId: row.companyId,
+    documentId: row.documentId,
+    revisionNumber: row.revisionNumber,
+    title: row.title ?? null,
+    format: row.format as SummarySlotRevision["format"],
+    body: row.body,
+    changeSummary: row.changeSummary ?? null,
+    createdByAgentId: row.createdByAgentId ?? null,
+    createdByUserId: row.createdByUserId ?? null,
+    createdByRunId: row.createdByRunId ?? null,
+    createdAt: row.createdAt,
+  };
+}
+
+function scopeLabel(scopeKind: SummarySlotScopeKind): string {
+  switch (scopeKind) {
+    case "project":
+      return "project";
+    case "project_workspace":
+      return "workspace";
+    case "workspaces_overview":
+      return "workspaces overview";
+    default:
+      return "target";
+  }
+}
+
+export function summarySlotService(db: Db) {
+  const builtIns = builtInAgentService(db);
+  const agents = agentService(db);
+  const issuesSvc = issueService(db);
+
+  function resolveSelector(input: SummarySlotSelectorInput): ResolvedSelector {
+    const parsed = summarySlotScopeSelectorSchema.safeParse({
+      scopeKind: input.scopeKind,
+      slotKey: input.slotKey,
+      scopeId: input.scopeId ?? undefined,
+    });
+    if (!parsed.success) {
+      throw unprocessable("Invalid summary slot selector", parsed.error.issues);
+    }
+    return {
+      ...parsed.data,
+      companyId: input.companyId,
+      scopeId: parsed.data.scopeId ?? null,
+    };
+  }
+
+  /** Enforce that the scope target exists inside the company boundary. */
+  async function assertTargetVisible(sel: ResolvedSelector): Promise<void> {
+    if (sel.scopeKind === "workspaces_overview") return;
+    if (!sel.scopeId) {
+      // Guaranteed by the selector schema, but keep the invariant explicit.
+      throw unprocessable(`${sel.scopeKind} summary slots require scopeId`);
+    }
+    if (sel.scopeKind === "project") {
+      const row = await db
+        .select({ id: projects.id })
+        .from(projects)
+        .where(and(eq(projects.id, sel.scopeId), eq(projects.companyId, sel.companyId)))
+        .then((rows) => rows[0] ?? null);
+      if (!row) throw notFound("Summary target not found");
+      return;
+    }
+    if (sel.scopeKind === "project_workspace") {
+      const row = await db
+        .select({ id: projectWorkspaces.id })
+        .from(projectWorkspaces)
+        .where(and(eq(projectWorkspaces.id, sel.scopeId), eq(projectWorkspaces.companyId, sel.companyId)))
+        .then((rows) => rows[0] ?? null);
+      if (!row) throw notFound("Summary target not found");
+    }
+  }
+
+  function findSlotRow(sel: ResolvedSelector) {
+    return db
+      .select()
+      .from(summarySlots)
+      .where(
+        and(
+          eq(summarySlots.companyId, sel.companyId),
+          eq(summarySlots.scopeKind, sel.scopeKind),
+          eq(summarySlots.slotKey, sel.slotKey),
+          sel.scopeId === null ? isNull(summarySlots.scopeId) : eq(summarySlots.scopeId, sel.scopeId),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+  }
+
+  async function loadDocument(companyId: string, documentId: string | null) {
+    if (!documentId) return null;
+    return db
+      .select()
+      .from(documents)
+      .where(and(eq(documents.id, documentId), eq(documents.companyId, companyId)))
+      .then((rows) => rows[0] ?? null);
+  }
+
+  async function loadIssueRef(companyId: string, issueId: string | null): Promise<{
+    ref: SummarySlotIssueRef | null;
+    row: typeof issues.$inferSelect | null;
+  }> {
+    if (!issueId) return { ref: null, row: null };
+    const row = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)))
+      .then((rows) => rows[0] ?? null);
+    if (!row) return { ref: null, row: null };
+    return {
+      row,
+      ref: {
+        id: row.id,
+        identifier: row.identifier ?? null,
+        title: row.title,
+        status: row.status as IssueStatus,
+      },
+    };
+  }
+
+  function isIssueActive(row: typeof issues.$inferSelect | null): boolean {
+    return !!row && !TERMINAL_ISSUE_STATUSES.has(row.status as IssueStatus);
+  }
+
+  async function getSlot(input: SummarySlotSelectorInput): Promise<GetSummarySlotResponse> {
+    const sel = resolveSelector(input);
+    await assertTargetVisible(sel);
+    const slotRow = await findSlotRow(sel);
+    if (!slotRow) return { slot: null, document: null, generatingIssue: null };
+    const [documentRow, issueRef] = await Promise.all([
+      loadDocument(sel.companyId, slotRow.documentId ?? null),
+      loadIssueRef(sel.companyId, slotRow.generatingIssueId ?? null),
+    ]);
+    return {
+      slot: mapSlot(slotRow),
+      document: documentRow ? mapDocument(documentRow) : null,
+      generatingIssue: issueRef.ref,
+    };
+  }
+
+  async function listRevisions(input: SummarySlotSelectorInput): Promise<ListSummarySlotRevisionsResponse> {
+    const sel = resolveSelector(input);
+    await assertTargetVisible(sel);
+    const slotRow = await findSlotRow(sel);
+    if (!slotRow || !slotRow.documentId) {
+      return { slot: slotRow ? mapSlot(slotRow) : null, revisions: [] };
+    }
+    const revisions = await db
+      .select()
+      .from(documentRevisions)
+      .where(
+        and(
+          eq(documentRevisions.documentId, slotRow.documentId),
+          eq(documentRevisions.companyId, sel.companyId),
+        ),
+      )
+      .orderBy(desc(documentRevisions.revisionNumber));
+    return { slot: mapSlot(slotRow), revisions: revisions.map(mapRevision) };
+  }
+
+  async function upsertSlot(
+    sel: ResolvedSelector,
+    patch: Partial<typeof summarySlots.$inferInsert>,
+  ): Promise<SummarySlotRow> {
+    const existing = await findSlotRow(sel);
+    const now = new Date();
+    if (existing) {
+      const [updated] = await db
+        .update(summarySlots)
+        .set({ ...patch, updatedAt: now })
+        .where(eq(summarySlots.id, existing.id))
+        .returning();
+      return updated ?? existing;
+    }
+    const [created] = await db
+      .insert(summarySlots)
+      .values({
+        companyId: sel.companyId,
+        scopeKind: sel.scopeKind,
+        scopeId: sel.scopeId,
+        slotKey: sel.slotKey,
+        status: "idle",
+        createdAt: now,
+        updatedAt: now,
+        ...patch,
+      })
+      .returning();
+    return created;
+  }
+
+  async function resolveGenerationTargetProject(sel: ResolvedSelector): Promise<{
+    projectId: string | null;
+    projectWorkspaceId: string | null;
+  }> {
+    if (sel.scopeKind === "project") {
+      return { projectId: sel.scopeId, projectWorkspaceId: null };
+    }
+    if (sel.scopeKind === "project_workspace" && sel.scopeId) {
+      const row = await db
+        .select({ projectId: projectWorkspaces.projectId })
+        .from(projectWorkspaces)
+        .where(and(eq(projectWorkspaces.id, sel.scopeId), eq(projectWorkspaces.companyId, sel.companyId)))
+        .then((rows) => rows[0] ?? null);
+      return { projectId: row?.projectId ?? null, projectWorkspaceId: sel.scopeId };
+    }
+    return { projectId: null, projectWorkspaceId: null };
+  }
+
+  function generationIssueDescription(sel: ResolvedSelector): string {
+    const target = sel.scopeId ? `\`${sel.scopeId}\`` : "the workspaces overview";
+    return [
+      `Generate the ${scopeLabel(sel.scopeKind)} summary for ${target}.`,
+      "",
+      "Follow the Summarizer skill and write the Markdown summary through the summary-slot write API:",
+      "",
+      "```json",
+      JSON.stringify(
+        {
+          scopeKind: sel.scopeKind,
+          scopeId: sel.scopeId,
+          slotKey: sel.slotKey,
+        },
+        null,
+        2,
+      ),
+      "```",
+      "",
+      "Lead with what needs the operator, then what is next, then what changed since the last summary.",
+      "Close this task with a short comment once the summary revision is written.",
+    ].join("\n");
+  }
+
+  async function generate(
+    input: SummarySlotSelectorInput,
+    actor: SummaryGenerateActor,
+  ): Promise<GenerateSummarySlotResponse> {
+    const sel = resolveSelector(input);
+    await assertTargetVisible(sel);
+
+    const builtIn = await builtIns.get(sel.companyId, SUMMARIZER_BUILT_IN_KEY);
+    if (builtIn.status !== "ready" || !builtIn.agentId) {
+      throw unprocessable("Summarizer built-in agent is not configured", {
+        code: "summarizer_not_configured",
+        status: builtIn.status,
+      });
+    }
+    const summarizerAgentId = builtIn.agentId;
+
+    // Dedupe: if a generation is already active, return the in-flight state.
+    const existing = await findSlotRow(sel);
+    if (existing && existing.status === "generating" && existing.generatingIssueId) {
+      const active = await loadIssueRef(sel.companyId, existing.generatingIssueId);
+      if (isIssueActive(active.row)) {
+        return {
+          slot: mapSlot(existing),
+          generatingIssue: active.ref!,
+          alreadyGenerating: true,
+        };
+      }
+    }
+
+    const { projectId, projectWorkspaceId } = await resolveGenerationTargetProject(sel);
+    const created = await issuesSvc.create(sel.companyId, {
+      projectId,
+      projectWorkspaceId,
+      title: `Summarize ${scopeLabel(sel.scopeKind)}`,
+      description: generationIssueDescription(sel),
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: summarizerAgentId,
+      createdByAgentId: actor.agentId ?? null,
+      createdByUserId: actor.userId ?? null,
+    });
+
+    const slotRow = await upsertSlot(sel, {
+      status: "generating",
+      generatingIssueId: created.id,
+    });
+
+    return {
+      slot: mapSlot(slotRow),
+      generatingIssue: {
+        id: created.id,
+        identifier: created.identifier ?? null,
+        title: created.title,
+        status: created.status as IssueStatus,
+      },
+      alreadyGenerating: false,
+    };
+  }
+
+  async function assertSummarizerWriter(
+    sel: ResolvedSelector,
+    slotRow: SummarySlotRow | null,
+    input: { generationIssueId?: string | null },
+    actor: SummaryWriteActor,
+  ): Promise<void> {
+    if (!actor.agentId) {
+      throw forbidden("Only the Summarizer built-in agent may write summaries");
+    }
+    const agent = await agents.getById(actor.agentId);
+    if (!agent || agent.companyId !== sel.companyId) {
+      throw forbidden("Only the Summarizer built-in agent may write summaries");
+    }
+    const marker = readBuiltInAgentMarker(agent.metadata);
+    if (marker?.key !== SUMMARIZER_BUILT_IN_KEY) {
+      throw forbidden("Only the Summarizer built-in agent may write summaries");
+    }
+
+    // The write must originate from the linked, in-flight generation task.
+    const generationIssueId = input.generationIssueId ?? slotRow?.generatingIssueId ?? null;
+    if (!generationIssueId) {
+      throw forbidden("No active summary generation is linked to this slot");
+    }
+    if (slotRow?.generatingIssueId && slotRow.generatingIssueId !== generationIssueId) {
+      throw forbidden("Summary write does not match the active generation task");
+    }
+    const issueRef = await loadIssueRef(sel.companyId, generationIssueId);
+    if (!issueRef.row) {
+      throw forbidden("Linked generation task not found");
+    }
+    if (issueRef.row.assigneeAgentId !== actor.agentId) {
+      throw forbidden("Generation task is not assigned to this agent");
+    }
+    const runId = actor.runId ?? null;
+    const runMatches =
+      !!runId && (issueRef.row.checkoutRunId === runId || issueRef.row.executionRunId === runId);
+    if (!runMatches) {
+      throw forbidden("Summary write must run from the linked generation task");
+    }
+  }
+
+  async function write(
+    input: SummarySlotSelectorInput & {
+      markdown: string;
+      title?: string | null;
+      changeSummary?: string | null;
+      baseRevisionId?: string | null;
+      generationIssueId?: string | null;
+      model?: string | null;
+    },
+    actor: SummaryWriteActor,
+  ): Promise<WriteSummarySlotResponse> {
+    const sel = resolveSelector(input);
+    await assertTargetVisible(sel);
+    const slotRow = await findSlotRow(sel);
+    await assertSummarizerWriter(sel, slotRow, input, actor);
+
+    const now = new Date();
+    const result = await db.transaction(async (tx) => {
+      const currentSlot = slotRow
+        ? await tx
+            .select()
+            .from(summarySlots)
+            .where(eq(summarySlots.id, slotRow.id))
+            .then((rows) => rows[0] ?? null)
+        : null;
+
+      let documentRow: typeof documents.$inferSelect;
+      let revisionRow: typeof documentRevisions.$inferSelect;
+
+      const existingDocument = currentSlot?.documentId
+        ? await tx
+            .select()
+            .from(documents)
+            .where(and(eq(documents.id, currentSlot.documentId), eq(documents.companyId, sel.companyId)))
+            .then((rows) => rows[0] ?? null)
+        : null;
+
+      if (existingDocument) {
+        if (input.baseRevisionId && input.baseRevisionId !== existingDocument.latestRevisionId) {
+          throw conflict("Summary was updated by someone else", {
+            currentRevisionId: existingDocument.latestRevisionId,
+          });
+        }
+        const nextRevisionNumber = existingDocument.latestRevisionNumber + 1;
+        [revisionRow] = await tx
+          .insert(documentRevisions)
+          .values({
+            companyId: sel.companyId,
+            documentId: existingDocument.id,
+            revisionNumber: nextRevisionNumber,
+            title: input.title ?? null,
+            format: DEFAULT_SUMMARY_FORMAT,
+            body: input.markdown,
+            changeSummary: input.changeSummary ?? null,
+            createdByAgentId: actor.agentId ?? null,
+            createdByRunId: actor.runId ?? null,
+            createdAt: now,
+          })
+          .returning();
+        [documentRow] = await tx
+          .update(documents)
+          .set({
+            title: input.title ?? null,
+            format: DEFAULT_SUMMARY_FORMAT,
+            latestBody: input.markdown,
+            latestRevisionId: revisionRow.id,
+            latestRevisionNumber: nextRevisionNumber,
+            updatedByAgentId: actor.agentId ?? null,
+            updatedAt: now,
+          })
+          .where(eq(documents.id, existingDocument.id))
+          .returning();
+      } else {
+        [documentRow] = await tx
+          .insert(documents)
+          .values({
+            companyId: sel.companyId,
+            title: input.title ?? null,
+            format: DEFAULT_SUMMARY_FORMAT,
+            latestBody: input.markdown,
+            latestRevisionId: null,
+            latestRevisionNumber: 1,
+            createdByAgentId: actor.agentId ?? null,
+            updatedByAgentId: actor.agentId ?? null,
+            createdAt: now,
+            updatedAt: now,
+          })
+          .returning();
+        [revisionRow] = await tx
+          .insert(documentRevisions)
+          .values({
+            companyId: sel.companyId,
+            documentId: documentRow.id,
+            revisionNumber: 1,
+            title: input.title ?? null,
+            format: DEFAULT_SUMMARY_FORMAT,
+            body: input.markdown,
+            changeSummary: input.changeSummary ?? null,
+            createdByAgentId: actor.agentId ?? null,
+            createdByRunId: actor.runId ?? null,
+            createdAt: now,
+          })
+          .returning();
+        [documentRow] = await tx
+          .update(documents)
+          .set({ latestRevisionId: revisionRow.id })
+          .where(eq(documents.id, documentRow.id))
+          .returning();
+      }
+
+      const slotPatch = {
+        documentId: documentRow.id,
+        status: "idle" as const,
+        generatingIssueId: null,
+        lastGeneratedAt: now,
+        lastGeneratedByAgentId: actor.agentId ?? null,
+        lastModel: input.model ?? null,
+        updatedAt: now,
+      };
+
+      let nextSlot: SummarySlotRow;
+      if (currentSlot) {
+        [nextSlot] = await tx
+          .update(summarySlots)
+          .set(slotPatch)
+          .where(eq(summarySlots.id, currentSlot.id))
+          .returning();
+      } else {
+        [nextSlot] = await tx
+          .insert(summarySlots)
+          .values({
+            companyId: sel.companyId,
+            scopeKind: sel.scopeKind,
+            scopeId: sel.scopeId,
+            slotKey: sel.slotKey,
+            createdAt: now,
+            ...slotPatch,
+          })
+          .returning();
+      }
+
+      return { slot: nextSlot, document: documentRow, revision: revisionRow };
+    });
+
+    return {
+      slot: mapSlot(result.slot),
+      document: mapDocument(result.document),
+      revision: mapRevision(result.revision),
+    };
+  }
+
+  return {
+    getSlot,
+    listRevisions,
+    generate,
+    write,
+  };
+}

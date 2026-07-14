@@ -12,6 +12,8 @@ import {
   createAgentKeySchema,
   builtInAgentEmptyMutationSchema,
   builtInAgentProvisionSchema,
+  generateSummarySlotSchema,
+  writeSummarySlotSchema,
   wakeAgentSchema,
   resetAgentSessionSchema,
   agentSkillSyncSchema,
@@ -1367,6 +1369,65 @@ for (const route of [
     },
   });
 }
+
+const summarySlotParams = z.object({
+  companyId: z.string(),
+  scopeKind: z.string(),
+  slotKey: z.string(),
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/summary-slots/{scopeKind}/{slotKey}",
+  tags: ["summaries"],
+  summary: "Get a summary slot with its latest document and generation state",
+  request: { params: summarySlotParams },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/summary-slots/{scopeKind}/{slotKey}/revisions",
+  tags: ["summaries"],
+  summary: "List dated revisions for a summary slot",
+  request: { params: summarySlotParams },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/summary-slots/{scopeKind}/{slotKey}/generate",
+  tags: ["summaries"],
+  summary: "Manually generate (or refresh) a summary slot",
+  request: { params: summarySlotParams, body: jsonBody(generateSummarySlotSchema) },
+  responses: {
+    200: r.ok(),
+    202: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
+});
+
+registry.registerPath({
+  method: "put",
+  path: "/api/companies/{companyId}/summary-slots/{scopeKind}/{slotKey}",
+  tags: ["summaries"],
+  summary: "Write a summary revision (Summarizer built-in agent only)",
+  request: { params: summarySlotParams, body: jsonBody(writeSummarySlotSchema) },
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
+});
 
 registry.registerPath({
   method: "get",
