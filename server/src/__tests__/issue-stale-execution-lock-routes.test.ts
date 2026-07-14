@@ -262,6 +262,53 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
     });
   });
 
+  it("self-heals a stale executionRunId on GET /api/issues/:identifier after the owning run is gone", async () => {
+    const { companyId, agentId, failedRunId, currentRunId } = await seedCompanyAgentAndRuns();
+    const issueId = randomUUID();
+    const identifier = "MOD-1127";
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Blocked helper residue",
+      identifier,
+      status: "blocked",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: null,
+      executionRunId: failedRunId,
+      executionAgentNameKey: "codexcoder",
+      executionLockedAt: new Date(),
+    });
+
+    const res = await request(createApp(agentActor(companyId, agentId, currentRunId)))
+      .get(`/api/issues/${identifier}`);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toMatchObject({
+      id: issueId,
+      identifier,
+      status: "blocked",
+      checkoutRunId: null,
+      executionRunId: null,
+      executionLockedAt: null,
+    });
+
+    const row = await db
+      .select({
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+        executionLockedAt: issues.executionLockedAt,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(row).toEqual({
+      checkoutRunId: null,
+      executionRunId: null,
+      executionLockedAt: null,
+    });
+  });
+
   it("still returns 409 when a different live checkout owner is active", async () => {
     const { companyId, agentId, failedRunId } = await seedCompanyAgentAndRuns();
     const liveOwnerRunId = randomUUID();
