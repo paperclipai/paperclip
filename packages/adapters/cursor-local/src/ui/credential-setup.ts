@@ -6,7 +6,7 @@ export const cursorLocalCredentialSetup: AdapterCredentialSetup = {
       envKey: "CURSOR_API_KEY",
       kind: "api_key",
       label: "Cursor API key",
-      setupUrl: "https://cursor.com/settings",
+      setupUrl: "https://cursor.com/dashboard",
       placeholder: "key_…",
     },
   ],

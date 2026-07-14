@@ -12,7 +12,7 @@ describe("cursorLocalCredentialSetup", () => {
     expect(apiKeyOption).toBeDefined();
     expect(apiKeyOption?.kind).toBe("api_key");
     expect(apiKeyOption?.label).toBe("Cursor API key");
-    expect(apiKeyOption?.setupUrl).toBe("https://cursor.com/settings");
+    expect(apiKeyOption?.setupUrl).toBe("https://cursor.com/dashboard");
     expect(apiKeyOption?.placeholder).toBe("key_…");
   });
 });

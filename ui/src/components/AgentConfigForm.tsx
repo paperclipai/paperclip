@@ -419,6 +419,12 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
   function handleCredentialBind(envKey: string, secretId: string) {
     updateEnv({ ...currentEnv, [envKey]: { type: "secret_ref", secretId } });
+    // The newly created secret isn't in the company secrets list query cache
+    // yet, so without invalidating, SecretPicker would render this env row
+    // as "Missing secret (…)" until something else happens to refetch.
+    if (selectedCompanyId) {
+      queryClient.invalidateQueries({ queryKey: queryKeys.secrets.list(selectedCompanyId) });
+    }
   }
 
   const rawCurrentDefaultEnvironmentId = isCreate

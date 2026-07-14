@@ -5,6 +5,7 @@ import { flushSync } from "react-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AdapterCredentialSetup } from "@paperclipai/adapter-utils";
 import type { CompanySecret } from "@paperclipai/shared";
+import { ApiError } from "../api/client";
 
 const mockSecretsApi = vi.hoisted(() => ({
   create: vi.fn(),
@@ -200,10 +201,14 @@ describe("AdapterCredentialConnect", () => {
     expect(clearedInput?.value ?? "").toBe("");
   });
 
-  it("retries once with a -2 suffix when the create call rejects, then binds on the retry", async () => {
+  it("retries once with a -2 suffix when the create call rejects with a 409 name conflict, then binds on the retry", async () => {
     const onBind = vi.fn();
     mockSecretsApi.create
-      .mockRejectedValueOnce(new Error("a secret with this name already exists"))
+      .mockRejectedValueOnce(
+        new ApiError("a secret with this name already exists", 409, {
+          message: "a secret with this name already exists",
+        }),
+      )
       .mockResolvedValueOnce(makeSecret({ id: "secret-retry" }));
 
     await render({ onBind });
@@ -231,11 +236,11 @@ describe("AdapterCredentialConnect", () => {
     expect(onBind).toHaveBeenCalledWith("ANTHROPIC_API_KEY", "secret-retry");
   });
 
-  it("shows an inline error and keeps the input when both the create and the retry reject", async () => {
+  it("shows an inline error and keeps the input when both the create and the 409 retry reject", async () => {
     const onBind = vi.fn();
     mockSecretsApi.create
-      .mockRejectedValueOnce(new Error("first failure"))
-      .mockRejectedValueOnce(new Error("still conflicted"));
+      .mockRejectedValueOnce(new ApiError("first failure", 409, { message: "first failure" }))
+      .mockRejectedValueOnce(new ApiError("still conflicted", 409, { message: "still conflicted" }));
 
     await render({ onBind });
 
@@ -255,5 +260,109 @@ describe("AdapterCredentialConnect", () => {
     expect(container.textContent).toContain("still conflicted");
     const keptInput = container.querySelector<HTMLInputElement>('input[type="password"]');
     expect(keptInput?.value).toBe("sk-ant-test");
+  });
+
+  it("does not retry on a non-409 rejection and surfaces the error immediately", async () => {
+    const onBind = vi.fn();
+    mockSecretsApi.create.mockRejectedValueOnce(new Error("network error"));
+
+    await render({ onBind });
+
+    const input = container.querySelector<HTMLInputElement>('input[type="password"]')!;
+    await act(() => setInputValue(input, "sk-ant-test"));
+
+    const connectButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("Connect"),
+    )!;
+    await act(() => {
+      connectButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(mockSecretsApi.create).toHaveBeenCalledTimes(1);
+    expect(onBind).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("network error");
+    const keptInput = container.querySelector<HTMLInputElement>('input[type="password"]');
+    expect(keptInput?.value).toBe("sk-ant-test");
+  });
+
+  it("sends the trimmed value to secretsApi.create", async () => {
+    const onBind = vi.fn();
+    mockSecretsApi.create.mockResolvedValueOnce(makeSecret({ id: "secret-trim" }));
+
+    await render({ onBind });
+
+    const input = container.querySelector<HTMLInputElement>('input[type="password"]')!;
+    await act(() => setInputValue(input, "  sk-ant-test  "));
+
+    const connectButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("Connect"),
+    )!;
+    await act(() => {
+      connectButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(mockSecretsApi.create).toHaveBeenCalledWith("company-1", {
+      name: "claude-local-anthropic-api-key",
+      value: "sk-ant-test",
+    });
+  });
+
+  it("submits on Enter in the password input", async () => {
+    const onBind = vi.fn();
+    mockSecretsApi.create.mockResolvedValueOnce(makeSecret({ id: "secret-enter" }));
+
+    await render({ onBind });
+
+    const input = container.querySelector<HTMLInputElement>('input[type="password"]')!;
+    await act(() => setInputValue(input, "sk-ant-test"));
+
+    await act(() => {
+      input.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }),
+      );
+    });
+    await flushReact();
+
+    expect(mockSecretsApi.create).toHaveBeenCalledTimes(1);
+    expect(onBind).toHaveBeenCalledWith("ANTHROPIC_API_KEY", "secret-enter");
+  });
+
+  it("does not submit on Enter when the value is blank", async () => {
+    await render({});
+
+    const input = container.querySelector<HTMLInputElement>('input[type="password"]')!;
+    await act(() => {
+      input.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }),
+      );
+    });
+    await flushReact();
+
+    expect(mockSecretsApi.create).not.toHaveBeenCalled();
+  });
+
+  it("associates the inline error with the input via aria-describedby and role=alert", async () => {
+    mockSecretsApi.create.mockRejectedValueOnce(new Error("boom"));
+
+    await render({});
+
+    const input = container.querySelector<HTMLInputElement>('input[type="password"]')!;
+    await act(() => setInputValue(input, "sk-ant-test"));
+
+    const connectButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("Connect"),
+    )!;
+    await act(() => {
+      connectButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    const errorEl = container.querySelector('[role="alert"]');
+    expect(errorEl).not.toBeNull();
+    expect(errorEl?.textContent).toBe("boom");
+    expect(errorEl?.id).toBeTruthy();
+    expect(input.getAttribute("aria-describedby")).toBe(errorEl?.id);
   });
 });

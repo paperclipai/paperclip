@@ -1,10 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { Check, Copy, ExternalLink, Loader2 } from "lucide-react";
 import type { AdapterCredentialSetup } from "@paperclipai/adapter-utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
+import { ApiError } from "../api/client";
 import { secretsApi } from "../api/secrets";
 import { CopyText } from "./CopyText";
 
@@ -40,6 +41,7 @@ export function AdapterCredentialConnect({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [forceShowForm, setForceShowForm] = useState(false);
+  const errorId = useId();
 
   const boundOption = setup.options.find((option) => boundEnvKeys.includes(option.envKey));
 
@@ -87,16 +89,23 @@ export function AdapterCredentialConnect({
     const baseName = `${toKebab(adapterType)}-${toKebab(envKey)}`;
 
     try {
-      const created = await secretsApi.create(companyId, { name: baseName, value });
+      const created = await secretsApi.create(companyId, { name: baseName, value: trimmed });
       onBind(envKey, created.id);
       setValue("");
-    } catch {
-      try {
-        const created = await secretsApi.create(companyId, { name: `${baseName}-2`, value });
-        onBind(envKey, created.id);
-        setValue("");
-      } catch (retryError) {
-        setError(retryError instanceof Error ? retryError.message : "Failed to create secret");
+    } catch (err) {
+      // Only retry on a name conflict (409). Any other failure (network,
+      // validation, auth, etc.) surfaces immediately — retrying under a new
+      // name would silently create a second secret for an unrelated error.
+      if (err instanceof ApiError && err.status === 409) {
+        try {
+          const created = await secretsApi.create(companyId, { name: `${baseName}-2`, value: trimmed });
+          onBind(envKey, created.id);
+          setValue("");
+        } catch (retryError) {
+          setError(retryError instanceof Error ? retryError.message : "Failed to create secret");
+        }
+      } else {
+        setError(err instanceof Error ? err.message : "Failed to create secret");
       }
     } finally {
       setSubmitting(false);
@@ -162,9 +171,16 @@ export function AdapterCredentialConnect({
           placeholder={active.placeholder}
           value={value}
           aria-label={`${active.label} value`}
+          aria-describedby={error ? errorId : undefined}
           onChange={(event) => {
             setValue(event.target.value);
             if (error) setError(null);
+          }}
+          onKeyDown={(event) => {
+            if (event.key !== "Enter") return;
+            event.preventDefault();
+            if (!value.trim() || submitting) return;
+            void handleConnect();
           }}
         />
         <Button
@@ -178,7 +194,11 @@ export function AdapterCredentialConnect({
         </Button>
       </div>
 
-      {error ? <p className="text-xs text-destructive">{error}</p> : null}
+      {error ? (
+        <p id={errorId} role="alert" className="text-xs text-destructive">
+          {error}
+        </p>
+      ) : null}
     </div>
   );
 }

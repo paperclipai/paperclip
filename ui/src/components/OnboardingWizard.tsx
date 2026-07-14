@@ -4,6 +4,7 @@ import type {
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestResult
 } from "@paperclipai/shared";
+import type { AdapterCredentialSetup } from "@paperclipai/adapter-utils";
 import { useLocation, useNavigate, useParams } from "@/lib/router";
 import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
@@ -75,6 +76,52 @@ const MISSION_PROMPT_CHIPS = [
   "Scale a content business",
   "Launch a marketplace"
 ];
+
+type CredentialBinding = { type: "secret_ref"; secretId: string };
+
+/**
+ * Merges guided-credential-connect bindings into a base adapter config's
+ * `env`, scoped to the *current* adapter's credential-setup envKeys.
+ *
+ * `credentialBindings` accumulates across the whole wizard session (a user
+ * can pick claude_local, bind ANTHROPIC_API_KEY, then switch to
+ * gemini_local) — without filtering, a binding collected under a
+ * previously-selected adapter would leak into the config of whichever
+ * adapter the user ends up hiring. Only entries whose envKey appears in the
+ * current adapter's `credentialSetup` options survive the merge.
+ *
+ * Also merges on top of `baseConfig.env` (rather than replacing it) so
+ * unrelated env entries already produced by `buildAdapterConfig` — notably
+ * the `forceUnsetAnthropicApiKey` plain-value marker — survive alongside
+ * the bindings. If there's nothing to merge (no matching bindings and no
+ * base env), `env` is omitted entirely to preserve the existing
+ * regression-guarded "no env key when nothing is bound" behavior.
+ */
+function mergeCredentialBindings(
+  baseConfig: Record<string, unknown>,
+  bindings: Record<string, CredentialBinding>,
+  setup: AdapterCredentialSetup | undefined
+): Record<string, unknown> {
+  const allowedEnvKeys = new Set((setup?.options ?? []).map((option) => option.envKey));
+  const filteredBindings = Object.fromEntries(
+    Object.entries(bindings).filter(([envKey]) => allowedEnvKeys.has(envKey))
+  );
+  const baseEnv =
+    typeof baseConfig.env === "object" &&
+    baseConfig.env !== null &&
+    !Array.isArray(baseConfig.env)
+      ? (baseConfig.env as Record<string, unknown>)
+      : undefined;
+
+  if (Object.keys(filteredBindings).length === 0 && !baseEnv) {
+    return baseConfig;
+  }
+
+  return {
+    ...baseConfig,
+    env: { ...(baseEnv ?? {}), ...filteredBindings }
+  };
+}
 
 function buildMissionFromQuestionnaire(q1: string, q2: string, q3: string, q4: string): string {
   const parts: string[] = [];
@@ -535,12 +582,8 @@ export function OnboardingWizard() {
         adapterType,
         {
           adapterConfig:
-            adapterConfigOverride ?? {
-              ...buildAdapterConfig(),
-              ...(Object.keys(credentialBindings).length > 0
-                ? { env: { ...credentialBindings } }
-                : {})
-            }
+            adapterConfigOverride ??
+            mergeCredentialBindings(buildAdapterConfig(), credentialBindings, credentialSetup)
         }
       );
       setAdapterEnvResult(result);
@@ -566,10 +609,9 @@ export function OnboardingWizard() {
     };
     setCredentialBindings(nextBindings);
     setAdapterEnvResult(null);
-    void runAdapterEnvironmentTest({
-      ...buildAdapterConfig(),
-      env: { ...nextBindings }
-    });
+    void runAdapterEnvironmentTest(
+      mergeCredentialBindings(buildAdapterConfig(), nextBindings, credentialSetup)
+    );
   }
 
   // Step 2 → 3 ("Confirm mission"): create the company + its company-level
@@ -665,12 +707,7 @@ export function OnboardingWizard() {
         name: agentName.trim(),
         role: "ceo",
         adapterType,
-        adapterConfig: {
-          ...buildAdapterConfig(),
-          ...(Object.keys(credentialBindings).length > 0
-            ? { env: { ...credentialBindings } }
-            : {})
-        },
+        adapterConfig: mergeCredentialBindings(buildAdapterConfig(), credentialBindings, credentialSetup),
         runtimeConfig: buildNewAgentRuntimeConfig()
       });
       if (hire.approval) {

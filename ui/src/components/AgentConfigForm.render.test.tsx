@@ -770,4 +770,69 @@ describe("AgentConfigForm guided credential connect", () => {
     );
     expect(nameInputs.some((input) => input.value === "ANTHROPIC_API_KEY")).toBe(true);
   });
+
+  it("invalidates the company secrets list after binding so the picker doesn't show 'Missing secret'", async () => {
+    const createdSecret = {
+      id: "secret-42",
+      companyId: "company-1",
+      scope: "company" as const,
+      ownerUserId: null,
+      userSecretDefinitionId: null,
+      key: "claude-local-anthropic-api-key",
+      name: "claude-local-anthropic-api-key",
+      provider: "local_encrypted" as const,
+      status: "active" as const,
+      managedMode: "paperclip_managed" as const,
+      externalRef: null,
+      providerConfigId: null,
+      providerMetadata: null,
+      latestVersion: 1,
+      description: null,
+      lastResolvedAt: null,
+      lastRotatedAt: null,
+      deletedAt: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      createdAt: new Date(0),
+      updatedAt: new Date(0),
+    };
+    mockSecretsApi.create.mockResolvedValueOnce(createdSecret);
+    // Before the bind, the list query resolves empty. After the bind fires
+    // an invalidation, react-query refetches and this resolves with the
+    // freshly created secret — simulating the server now knowing about it.
+    mockSecretsApi.list.mockResolvedValueOnce([]).mockResolvedValue([createdSecret]);
+
+    const result = await renderForm(
+      [makeEnvironment({ id: "local-1", name: "Local", driver: "local" })],
+      { adapterType: "claude_local", adapterConfig: {} },
+    );
+    roots.push(result.root);
+
+    const valueInput = result.container.querySelector<HTMLInputElement>(
+      'input[aria-label="Anthropic API key value"]',
+    );
+    expect(valueInput).toBeTruthy();
+
+    await act(async () => {
+      setInputValue(valueInput!, "sk-ant-test");
+    });
+    await flushReact();
+
+    const connectButton = Array.from(result.container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("Connect"),
+    );
+    expect(connectButton).toBeTruthy();
+
+    await act(async () => {
+      connectButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    // The secrets list query was invalidated (and thus refetched) rather
+    // than left stale, so the picker resolves the bound secret instead of
+    // rendering the destructive "Missing secret" fallback.
+    expect(mockSecretsApi.list.mock.calls.length).toBeGreaterThan(1);
+    expect(result.container.textContent).not.toContain("Missing secret");
+    expect(result.container.textContent).toContain("claude-local-anthropic-api-key");
+  });
 });
