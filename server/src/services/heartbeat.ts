@@ -15625,13 +15625,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             .where(eq(issues.id, issue.id));
         }
 
-        if (!activeExecutionRun) {
+        if (!activeExecutionRun && issue.assigneeAgentId) {
+          // Legacy backfill must honor the same assignee-only ownership boundary as
+          // claimQueuedRun(); otherwise a foreign mention/comment wake can re-stamp
+          // executionRunId on blocked issues during follow-up wakes.
           const legacyRun = await tx
             .select()
             .from(heartbeatRuns)
             .where(
               and(
                 eq(heartbeatRuns.companyId, issue.companyId),
+                eq(heartbeatRuns.agentId, issue.assigneeAgentId),
                 inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
                 sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
               ),

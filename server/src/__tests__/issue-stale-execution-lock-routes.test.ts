@@ -6,6 +6,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
   agents,
+  agentWakeupRequests,
   companies,
   createDb,
   heartbeatRuns,
@@ -19,6 +20,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
+import { heartbeatService } from "../services/heartbeat.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -33,11 +35,13 @@ if (!embeddedPostgresSupport.supported) {
 
 describeEmbeddedPostgres("stale issue execution lock routes", () => {
   let db!: ReturnType<typeof createDb>;
+  let heartbeat!: ReturnType<typeof heartbeatService>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-stale-execution-lock-routes-");
     db = createDb(tempDb.connectionString);
+    heartbeat = heartbeatService(db);
   }, 20_000);
 
   afterEach(async () => {
@@ -45,6 +49,7 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
     await db.delete(issueRelations);
     await db.delete(activityLog);
     await db.delete(issues);
+    await db.delete(agentWakeupRequests);
     await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(companies);
@@ -480,6 +485,129 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
       assigneeAgentId: otherAgentId,
       checkoutRunId: currentRunId,
       executionRunId: currentRunId,
+    });
+  });
+
+  it("does not backfill a blocked issue's execution lock from a foreign running report wake", async () => {
+    const { companyId, agentId: assigneeAgentId, currentRunId } = await seedCompanyAgentAndRuns();
+    const foreignAgentId = randomUUID();
+    const foreignRunId = randomUUID();
+    const blockerIssueId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(agents).values({
+      id: foreignAgentId,
+      companyId,
+      name: "CoCEOReporter",
+      role: "executive",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values([
+      {
+        id: blockerIssueId,
+        companyId,
+        title: "Live blocker",
+        status: "todo",
+        priority: "high",
+      },
+      {
+        id: issueId,
+        companyId,
+        title: "Blocked issue under cross-agent report",
+        status: "blocked",
+        priority: "high",
+        assigneeAgentId,
+        checkoutRunId: null,
+        executionRunId: null,
+        executionAgentNameKey: null,
+        executionLockedAt: null,
+      },
+    ]);
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerIssueId,
+      relatedIssueId: issueId,
+      type: "blocks",
+    });
+    await db.insert(heartbeatRuns).values({
+      id: foreignRunId,
+      companyId,
+      agentId: foreignAgentId,
+      status: "running",
+      invocationSource: "automation",
+      triggerDetail: "system",
+      startedAt: new Date(),
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "issue_comment_mentioned",
+        source: "comment.mention",
+      },
+    });
+
+    const wake = await heartbeat.wakeup(assigneeAgentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId },
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "issue_assigned",
+      },
+      requestedByActorType: "system",
+      requestedByActorId: null,
+    });
+
+    expect(wake).toBeNull();
+
+    const row = await db
+      .select({
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+        executionLockedAt: issues.executionLockedAt,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(row).toEqual({
+      checkoutRunId: null,
+      executionRunId: null,
+      executionLockedAt: null,
+    });
+
+    const issueRes = await request(createApp(agentActor(companyId, assigneeAgentId, currentRunId)))
+      .get(`/api/issues/${issueId}`);
+    expect(issueRes.status, JSON.stringify(issueRes.body)).toBe(200);
+    expect(issueRes.body).toMatchObject({
+      id: issueId,
+      checkoutRunId: null,
+      executionRunId: null,
+      executionLockedAt: null,
+    });
+
+    const contextRes = await request(createApp(agentActor(companyId, assigneeAgentId, currentRunId)))
+      .get(`/api/issues/${issueId}/heartbeat-context`);
+    expect(contextRes.status, JSON.stringify(contextRes.body)).toBe(200);
+    expect(contextRes.body.issue).toMatchObject({ id: issueId, status: "blocked" });
+
+    const rowAfterHeartbeatContext = await db
+      .select({
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+        executionLockedAt: issues.executionLockedAt,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(rowAfterHeartbeatContext).toEqual({
+      checkoutRunId: null,
+      executionRunId: null,
+      executionLockedAt: null,
     });
   });
 });
