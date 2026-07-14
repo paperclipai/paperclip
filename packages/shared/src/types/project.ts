@@ -75,6 +75,31 @@ export interface ProjectManagedByPlugin {
   updatedAt: Date;
 }
 
+export type ProjectEnvBindingMetadata =
+  | { type: "plain"; configured: true }
+  | {
+      type: "secret_ref";
+      configured: true;
+      secretId?: string;
+      version?: number | "latest";
+      projectionClass?: string;
+      projectionAllowlistKey?: string | null;
+    }
+  | {
+      type: "user_secret_ref";
+      configured: true;
+      key?: string;
+      version?: number | "latest";
+      required?: boolean;
+      allowMissingOverride?: boolean;
+    }
+  | { type: "unknown"; configured: true };
+
+export interface ProjectEnvMetadata {
+  keys: string[];
+  bindings: Record<string, ProjectEnvBindingMetadata>;
+}
+
 export interface Project {
   id: string;
   companyId: string;
@@ -91,6 +116,8 @@ export interface Project {
   color: string | null;
   icon: string | null;
   env: AgentEnvConfig | null;
+  /** Value-free metadata for configured project env bindings. */
+  envMetadata?: ProjectEnvMetadata | null;
   pauseReason: PauseReason | null;
   pausedAt: Date | null;
   executionWorkspacePolicy: ProjectExecutionWorkspacePolicy | null;

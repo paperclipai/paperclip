@@ -240,6 +240,8 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
     onUpdate?.(data);
   };
   const fieldState = (field: ProjectConfigFieldKey): ProjectFieldSaveState => getFieldSaveState?.(field) ?? "idle";
+  const configuredEnvKeys = project.envMetadata?.keys ?? [];
+  const envValuesAreWriteOnly = project.env === null && configuredEnvKeys.length > 0;
 
   const { data: allGoals } = useQuery({
     queryKey: queryKeys.goals.list(selectedCompanyId!),
@@ -632,16 +634,32 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
           valueClassName="space-y-2"
         >
           <div className="space-y-2">
-            <EnvironmentVariablesEditor
-              value={project.env ?? {}}
-              secrets={availableSecrets}
-              userSecretDefinitions={userSecretDefinitions}
-              onCreateSecret={async (name, value) => {
-                const created = await createSecret.mutateAsync({ name, value });
-                return created;
-              }}
-              onChange={(env) => commitField("env", { env: env ?? null })}
-            />
+            {envValuesAreWriteOnly ? (
+              <div className="space-y-2 rounded-md border border-border/70 p-3">
+                <div className="flex flex-wrap gap-1.5">
+                  {configuredEnvKeys.map((key) => (
+                    <Badge key={key} variant="outline" className="font-mono text-(length:--text-micro)">
+                      {key}
+                    </Badge>
+                  ))}
+                </div>
+                <p className="text-(length:--text-micro) text-muted-foreground">
+                  Values are write-only and are never returned by the control plane. Rotate or replace bindings through
+                  the company secrets workflow.
+                </p>
+              </div>
+            ) : (
+              <EnvironmentVariablesEditor
+                value={project.env ?? {}}
+                secrets={availableSecrets}
+                userSecretDefinitions={userSecretDefinitions}
+                onCreateSecret={async (name, value) => {
+                  const created = await createSecret.mutateAsync({ name, value });
+                  return created;
+                }}
+                onChange={(env) => commitField("env", { env: env ?? null })}
+              />
+            )}
             <p className="text-(length:--text-micro) text-muted-foreground">
               Applied to all runs for tasks in this project. Project values override agent env on key conflicts.
             </p>

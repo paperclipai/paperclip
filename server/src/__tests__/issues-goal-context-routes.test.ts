@@ -410,6 +410,11 @@ describe.sequential("issue goal context routes", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.project.env).toBeNull();
+    expect(res.body.project.envMetadata).toEqual({
+      keys: ["API_KEY"],
+      bindings: { API_KEY: { type: "plain", configured: true } },
+    });
+    expect(JSON.stringify(res.body)).not.toContain("should-not-ship");
     expect(res.body.project.workspaces[0]).not.toHaveProperty("metadata");
     expect(res.body.project.workspaces[0]).not.toHaveProperty("runtimeServices");
     expect(res.body.project.primaryWorkspace).not.toHaveProperty("metadata");
@@ -422,6 +427,29 @@ describe.sequential("issue goal context routes", () => {
       url: "http://localhost:3100",
     });
     expect(res.body.currentExecutionWorkspace.runtimeServices[0]).not.toHaveProperty("metadata");
+  });
+
+  it("keeps mentioned-project embeds value-free", async () => {
+    const mentionedProjectId = "66666666-6666-4666-8666-666666666666";
+    const currentProject = await mockProjectService.getById();
+    mockIssueService.findMentionedProjectIds.mockResolvedValue([mentionedProjectId]);
+    mockProjectService.listByIds.mockResolvedValue([{
+      ...currentProject,
+      id: mentionedProjectId,
+      name: "Mentioned project",
+      env: { MENTIONED_TOKEN: { type: "plain", value: "mentioned-value-must-not-serialize" } },
+    }]);
+
+    const res = await request(createApp()).get("/api/issues/11111111-1111-4111-8111-111111111111");
+
+    expect(res.status).toBe(200);
+    expect(res.body.mentionedProjects).toHaveLength(1);
+    expect(res.body.mentionedProjects[0].env).toBeNull();
+    expect(res.body.mentionedProjects[0].envMetadata).toEqual({
+      keys: ["MENTIONED_TOKEN"],
+      bindings: { MENTIONED_TOKEN: { type: "plain", configured: true } },
+    });
+    expect(JSON.stringify(res.body)).not.toContain("mentioned-value-must-not-serialize");
   });
 
   it("surfaces the project goal from GET /issues/:id/heartbeat-context", async () => {

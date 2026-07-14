@@ -165,6 +165,61 @@ describe("project env routes", () => {
     mockSecretService.normalizeEnvBindingsForPersistence.mockImplementation(async (_companyId, env) => env);
   });
 
+  it("returns only value-free env metadata from project list and detail reads", async () => {
+    const project = buildProject({
+      env: {
+        LEGACY_PLAIN: "legacy-value-must-not-serialize",
+        PLAIN: { type: "plain", value: "plain-value-must-not-serialize" },
+        SECRET: {
+          type: "secret_ref",
+          secretId: "11111111-1111-4111-8111-111111111111",
+          version: 3,
+        },
+        USER_SECRET: {
+          type: "user_secret_ref",
+          key: "USER_TOKEN",
+          version: "latest",
+          required: true,
+        },
+      },
+    });
+    mockProjectService.list.mockResolvedValue([project]);
+    mockProjectService.getById.mockResolvedValue(project);
+
+    const app = await createApp();
+    const [listRes, detailRes] = await Promise.all([
+      request(app).get("/api/companies/company-1/projects"),
+      request(app).get("/api/projects/project-1"),
+    ]);
+
+    expect(listRes.status, JSON.stringify(listRes.body)).toBe(200);
+    expect(detailRes.status, JSON.stringify(detailRes.body)).toBe(200);
+    for (const responseProject of [listRes.body[0], detailRes.body]) {
+      expect(responseProject.env).toBeNull();
+      expect(responseProject.envMetadata).toEqual({
+        keys: ["LEGACY_PLAIN", "PLAIN", "SECRET", "USER_SECRET"],
+        bindings: {
+          LEGACY_PLAIN: { type: "plain", configured: true },
+          PLAIN: { type: "plain", configured: true },
+          SECRET: {
+            type: "secret_ref",
+            configured: true,
+            secretId: "11111111-1111-4111-8111-111111111111",
+            version: 3,
+          },
+          USER_SECRET: {
+            type: "user_secret_ref",
+            configured: true,
+            key: "USER_TOKEN",
+            version: "latest",
+            required: true,
+          },
+        },
+      });
+      expect(JSON.stringify(responseProject)).not.toContain("value-must-not-serialize");
+    }
+  });
+
   it("normalizes env bindings on create and logs only env keys", async () => {
     const normalizedEnv = {
       API_KEY: {
@@ -202,6 +257,13 @@ describe("project env routes", () => {
         }),
       }),
     );
+    expect(res.body.env).toBeNull();
+    expect(res.body.envMetadata.bindings.API_KEY).toEqual({
+      type: "secret_ref",
+      configured: true,
+      secretId: "11111111-1111-4111-8111-111111111111",
+      version: "latest",
+    });
   });
 
   it("normalizes env bindings on update and avoids logging raw values", async () => {
@@ -229,5 +291,22 @@ describe("project env routes", () => {
         },
       }),
     );
+    expect(res.body.env).toBeNull();
+    expect(res.body.envMetadata.bindings.PLAIN_KEY).toEqual({ type: "plain", configured: true });
+    expect(JSON.stringify(res.body)).not.toContain("top-secret");
+  });
+
+  it("does not echo env values from project delete responses", async () => {
+    mockProjectService.getById.mockResolvedValue(buildProject());
+    mockProjectService.remove.mockResolvedValue(buildProject({
+      env: { DELETED_SECRET: { type: "plain", value: "deleted-value-must-not-serialize" } },
+    }));
+
+    const res = await request(await createApp()).delete("/api/projects/project-1");
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.env).toBeNull();
+    expect(res.body.envMetadata.bindings.DELETED_SECRET).toEqual({ type: "plain", configured: true });
+    expect(JSON.stringify(res.body)).not.toContain("deleted-value-must-not-serialize");
   });
 });
