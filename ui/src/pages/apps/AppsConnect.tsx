@@ -139,7 +139,7 @@ export function AppsConnect() {
     setInstallMode("none");
     setInstallAgentIds(new Set());
     setStep("gallery");
-    navigate("/apps/connect");
+    navigate("/apps/connect?byo=1");
   };
 
   useEffect(() => {

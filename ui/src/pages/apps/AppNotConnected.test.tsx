@@ -198,6 +198,7 @@ describe("AppNotConnected", () => {
     ["setup", "Reconnect this app"],
     ["review", "Nothing is waiting for your OK right now."],
     ["permissions", "Permissions paused"],
+    ["test", "Reconnect to test this app."],
     ["activity", "No activity yet."],
     ["advanced", "Danger zone"],
   ])("renders the %s tab with persistent app identity", async (tab, expectedText) => {

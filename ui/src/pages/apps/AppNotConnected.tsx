@@ -157,6 +157,12 @@ export function AppNotConnected() {
       {activeTab === "permissions" && (
         <PermissionsTab previousConnection={previousConnection} />
       )}
+      {activeTab === "test" && (
+        <EmptyTab
+          title="Reconnect to test this app."
+          body="Testing becomes available after this app is connected again."
+        />
+      )}
       {activeTab === "activity" && (
         previousConnection ? (
           <ActivityPanel
