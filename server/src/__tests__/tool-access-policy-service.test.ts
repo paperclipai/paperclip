@@ -920,6 +920,40 @@ describeEmbeddedPostgres("tool access policy service", () => {
     });
   });
 
+  it("atomically consumes the final rate-limit slot", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { connection } = await createTool(db, company.id);
+    await db.insert(principalPermissionGrants).values({
+      companyId: company.id,
+      principalType: "agent",
+      principalId: agent.id,
+      permissionKey: "tools:use",
+      scope: { toolName: "send_email" },
+    });
+    await db.insert(toolPolicies).values({
+      companyId: company.id,
+      name: "One concurrent send per minute",
+      policyType: "rate_limit",
+      selectors: { toolName: "send_email" },
+      config: { limit: 1, windowSeconds: 60, keyBy: ["agent", "tool"] },
+    });
+    const input = {
+      companyId: company.id,
+      actor: { actorType: "agent" as const, actorId: agent.id, agentId: agent.id },
+      request: { connectionId: connection.id, toolName: "send_email" },
+      consumeRateLimit: true,
+    };
+
+    const decisions = await Promise.all([
+      toolAccessPolicyService(db).decide(input),
+      toolAccessPolicyService(db).decide(input),
+    ]);
+
+    expect(decisions.filter((decision) => decision.allowed)).toHaveLength(1);
+    expect(decisions.filter((decision) => decision.reasonCode === "rate_limited")).toHaveLength(1);
+  });
+
   it("rejects unsupported policy semantics at create and update time", async () => {
     const company = await createCompany(db);
     const svc = toolAccessPolicyService(db);
