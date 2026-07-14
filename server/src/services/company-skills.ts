@@ -89,7 +89,7 @@ import type {
 } from "@paperclipai/shared";
 import { isUuidLike, normalizeAgentUrlKey, parseFrontmatterMarkdown } from "@paperclipai/shared";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
-import { conflict, notFound, unprocessable } from "../errors.js";
+import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
 import { agentService } from "./agents.js";
 import { issueDocumentSelect, mapIssueDocumentRow } from "./documents.js";
@@ -804,6 +804,12 @@ export function parseSkillImportSourceInput(rawInput: string): ParsedSkillImport
       originalSkillsShUrl: normalizedSource,
       warnings,
     };
+  }
+
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(normalizedSource) && !/^https:\/\//i.test(normalizedSource)) {
+    throw unprocessable("Remote skill sources must use HTTPS", {
+      code: "skill_source_validation_failed",
+    });
   }
 
   return {
@@ -2575,6 +2581,32 @@ async function listLastEditorsBySkillId(
 export function companySkillService(db: Db) {
   const agents = agentService(db);
   const projects = projectService(db);
+
+  async function assertLocalImportSourceAllowed(companyId: string, source: string) {
+    const sourceRealPath = await fs.realpath(path.resolve(source)).catch(() => null);
+    if (!sourceRealPath) {
+      throw unprocessable("Local skill source is not available", {
+        code: "skill_source_validation_failed",
+      });
+    }
+    const projectRows = await projects.list(companyId);
+    const configuredRoots = [
+      resolveManagedSkillsRoot(companyId),
+      ...projectRows.flatMap((project) => project.workspaces.map((workspace) => workspace.cwd)),
+    ].filter((root): root is string => typeof root === "string" && root.trim().length > 0);
+    const approvedRoots = (await Promise.all(
+      configuredRoots.map((root) => fs.realpath(path.resolve(root)).catch(() => null)),
+    )).filter((root): root is string => Boolean(root));
+    const allowed = approvedRoots.some(
+      (root) => sourceRealPath === root || sourceRealPath.startsWith(`${root}${path.sep}`),
+    );
+    if (!allowed) {
+      throw forbidden("Local skill source is outside approved company workspace roots", {
+        code: "skill_workspace_boundary_denied",
+        remediation: "Import from a configured Paperclip workspace or the company managed-skill directory.",
+      });
+    }
+  }
 
   async function ensureBundledSkills(companyId: string) {
     for (const skillsRoot of resolveBundledSkillsRoot()) {
@@ -5099,6 +5131,9 @@ export function companySkillService(db: Db) {
     await ensureSkillInventoryCurrent(companyId);
     const parsed = parseSkillImportSourceInput(source);
     const local = !/^https?:\/\//i.test(parsed.resolvedSource);
+    if (local) {
+      await assertLocalImportSourceAllowed(companyId, parsed.resolvedSource);
+    }
     const { skills, warnings } = local
       ? {
         skills: (await readLocalSkillImports(companyId, parsed.resolvedSource))
