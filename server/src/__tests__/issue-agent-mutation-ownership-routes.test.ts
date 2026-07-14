@@ -1572,6 +1572,34 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueRecoveryActionService.resolveActiveForIssue).toHaveBeenCalled();
   });
 
+  it("allows the recorded return owner to resolve a source-scoped recovery action on another agent's blocked issue", async () => {
+    mockIssueService.getById.mockResolvedValue(
+      makeIssue({ status: "blocked", assigneeAgentId: peerAgentId }),
+    );
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue({ status: "blocked", assigneeAgentId: peerAgentId }),
+      ...patch,
+    }));
+    mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue({
+      id: recoveryActionId,
+      ownerAgentId: peerAgentId,
+      previousOwnerAgentId: ownerAgentId,
+      returnOwnerAgentId: ownerAgentId,
+    });
+
+    const res = await request(await createApp(ownerActor()))
+      .post(`/api/issues/${issueId}/recovery-actions/resolve`)
+      .send({
+        actionId: recoveryActionId,
+        outcome: "restored",
+        sourceIssueStatus: "done",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalled();
+    expect(mockIssueRecoveryActionService.resolveActiveForIssue).toHaveBeenCalled();
+  });
+
   it("wakes the assigned agent when recovery resolution restores a source issue to todo", async () => {
     mockIssueService.getById.mockResolvedValue(
       makeIssue({ status: "blocked", assigneeAgentId: ownerAgentId }),
