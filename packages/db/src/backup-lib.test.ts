@@ -3,7 +3,12 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import postgres from "postgres";
-import { createBufferedTextFileWriter, runDatabaseBackup, runDatabaseRestore } from "./backup-lib.js";
+import {
+  cleanupStaleBackupTempFiles,
+  createBufferedTextFileWriter,
+  runDatabaseBackup,
+  runDatabaseRestore,
+} from "./backup-lib.js";
 import { ensurePostgresDatabase } from "./client.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -70,6 +75,39 @@ describe("createBufferedTextFileWriter", () => {
     await writer.close();
 
     expect(fs.readFileSync(outputPath, "utf8")).toBe(lines.join("\n"));
+  });
+});
+
+describe("cleanupStaleBackupTempFiles", () => {
+  const setMtime = (filePath: string, ageMs: number) => {
+    const when = new Date(Date.now() - ageMs);
+    fs.utimesSync(filePath, when, when);
+  };
+
+  it("removes only stale uncompressed .sql partials, leaving fresh partials and completed backups", () => {
+    const dir = createTempDir("valadrien-os-stale-sweep-");
+    const stalePartial = path.join(dir, "valadrien-os-20260101-000000.sql");
+    const freshPartial = path.join(dir, "valadrien-os-20260102-000000.sql");
+    const completed = path.join(dir, "valadrien-os-20260101-010000.sql.gz");
+    const foreign = path.join(dir, "some-other-tool-20260101-000000.sql");
+    for (const f of [stalePartial, freshPartial, completed, foreign]) fs.writeFileSync(f, "x");
+    setMtime(stalePartial, 3 * 60 * 60 * 1000); // 3h old -> stale
+    setMtime(freshPartial, 5 * 60 * 1000); // 5m old -> still possibly running
+    setMtime(completed, 3 * 60 * 60 * 1000); // old but .sql.gz -> keep
+    setMtime(foreign, 3 * 60 * 60 * 1000); // wrong prefix -> keep
+
+    const removed = cleanupStaleBackupTempFiles(dir, "valadrien-os");
+
+    expect(removed).toEqual([stalePartial]);
+    expect(fs.existsSync(stalePartial)).toBe(false);
+    expect(fs.existsSync(freshPartial)).toBe(true);
+    expect(fs.existsSync(completed)).toBe(true);
+    expect(fs.existsSync(foreign)).toBe(true);
+  });
+
+  it("returns an empty list for a missing directory", () => {
+    const removed = cleanupStaleBackupTempFiles(path.join(os.tmpdir(), "valadrien-os-does-not-exist-xyz"));
+    expect(removed).toEqual([]);
   });
 });
 
@@ -450,6 +488,47 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
         expect(rows).toEqual([{ payload: "hello" }]);
       } finally {
         await restoreSql.end();
+      }
+    },
+    20_000,
+  );
+
+  it(
+    "aborts and rejects when the run exceeds timeoutMs, leaving no partial .gz behind",
+    async () => {
+      const sourceConnectionString = await createTempDatabase();
+      const backupDir = createTempDir("valadrien-os-db-backup-timeout-");
+      const sourceSql = postgres(sourceConnectionString, { max: 1, onnotice: () => {} });
+
+      try {
+        await sourceSql.unsafe(`
+          CREATE TABLE "public"."timeout_test" (
+            "id" serial PRIMARY KEY,
+            "payload" text NOT NULL
+          );
+        `);
+        await sourceSql.unsafe(`
+          INSERT INTO "public"."timeout_test" ("payload")
+          SELECT repeat('x', 512) FROM generate_series(1, 2000);
+        `);
+
+        // 1ms ceiling fires before any engine can finish a real dump.
+        await expect(
+          runDatabaseBackup({
+            connectionString: sourceConnectionString,
+            backupDir,
+            retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+            filenamePrefix: "valadrien-os",
+            timeoutMs: 1,
+          }),
+        ).rejects.toThrow(/timeout|abort/i);
+
+        const leftovers = fs
+          .readdirSync(backupDir)
+          .filter((name) => name.startsWith("valadrien-os-") && name.endsWith(".sql.gz"));
+        expect(leftovers).toEqual([]);
+      } finally {
+        await sourceSql.end();
       }
     },
     20_000,

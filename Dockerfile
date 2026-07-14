@@ -2,8 +2,10 @@
 FROM node:lts-trixie-slim AS base
 ARG USER_UID=1000
 ARG USER_GID=1000
+# postgresql-client provides pg_dump. Without it the DB backup falls back to the
+# slower, stall-prone JavaScript engine (per-table COPY streams over the pooler).
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates gosu curl gh git wget ripgrep python3 \
+  && apt-get install -y --no-install-recommends ca-certificates gosu curl gh git wget ripgrep python3 postgresql-client \
   && rm -rf /var/lib/apt/lists/* \
   && corepack enable
 

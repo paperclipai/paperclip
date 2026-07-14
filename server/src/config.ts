@@ -68,6 +68,7 @@ export interface Config {
   databaseBackupEnabled: boolean;
   databaseBackupIntervalMinutes: number;
   databaseBackupRetentionDays: number;
+  databaseBackupTimeoutMinutes: number;
   databaseBackupDir: string;
   serveUi: boolean;
   uiDevMiddleware: boolean;
@@ -260,6 +261,18 @@ export function loadConfig(): Config {
       fileDatabaseBackup?.retentionDays ||
       7,
   );
+  // Hard ceiling on a single backup run. A stalled dump (e.g. a wedged COPY
+  // stream against the pooler) must self-abort well within the backup interval,
+  // otherwise the in-flight guard never clears and every later run is skipped.
+  const databaseBackupTimeoutMinutes = Math.min(
+    Math.max(1, databaseBackupIntervalMinutes),
+    Math.max(
+      1,
+      Number(process.env.VALADRIEN_OS_DB_BACKUP_TIMEOUT_MINUTES) ||
+        fileDatabaseBackup?.timeoutMinutes ||
+        15,
+    ),
+  );
   const databaseBackupDir = resolveHomeAwarePath(
     process.env.VALADRIEN_OS_DB_BACKUP_DIR ??
       fileDatabaseBackup?.dir ??
@@ -306,6 +319,7 @@ export function loadConfig(): Config {
     databaseBackupEnabled,
     databaseBackupIntervalMinutes,
     databaseBackupRetentionDays,
+    databaseBackupTimeoutMinutes,
     databaseBackupDir,
     serveUi:
       process.env.SERVE_UI !== undefined

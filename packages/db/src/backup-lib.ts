@@ -28,6 +28,13 @@ export type RunDatabaseBackupOptions = {
   excludeTables?: string[];
   nullifyColumns?: Record<string, string[]>;
   backupEngine?: "auto" | "pg_dump" | "javascript";
+  /**
+   * Hard ceiling on the whole backup run in milliseconds. When exceeded the dump
+   * is aborted (pg_dump child killed / active COPY stream destroyed) and the call
+   * rejects, so a stalled dump can never wedge a caller's in-flight guard. Omit or
+   * pass <= 0 to disable (default: no timeout).
+   */
+  timeoutMs?: number;
 };
 
 export type RunDatabaseBackupResult = {
@@ -315,7 +322,11 @@ async function runPgDumpBackup(opts: {
   connectionString: string;
   backupFile: string;
   connectTimeout: number;
+  signal?: AbortSignal;
 }): Promise<void> {
+  if (opts.signal?.aborted) {
+    throw opts.signal.reason instanceof Error ? opts.signal.reason : new Error("Backup aborted");
+  }
   const pgDumpBin = process.env.VALADRIEN_OS_PG_DUMP_PATH || "pg_dump";
   const child = spawn(
     pgDumpBin,
@@ -336,14 +347,29 @@ async function runPgDumpBackup(opts: {
     },
   );
 
-  if (!child.stdout) {
-    throw new Error("pg_dump did not expose stdout");
-  }
+  // A stalled pg_dump would otherwise leave the pipeline (and the caller) hanging
+  // forever. On abort, SIGKILL the child so waitForChildExit rejects promptly.
+  const onAbort = () => {
+    try {
+      child.kill("SIGKILL");
+    } catch {
+      // Child may have already exited; nothing to kill.
+    }
+  };
+  opts.signal?.addEventListener("abort", onAbort, { once: true });
 
-  await Promise.all([
-    pipeline(child.stdout, createGzip(), createWriteStream(opts.backupFile)),
-    waitForChildExit(child, pgDumpBin),
-  ]);
+  try {
+    if (!child.stdout) {
+      throw new Error("pg_dump did not expose stdout");
+    }
+
+    await Promise.all([
+      pipeline(child.stdout, createGzip(), createWriteStream(opts.backupFile)),
+      waitForChildExit(child, pgDumpBin),
+    ]);
+  } finally {
+    opts.signal?.removeEventListener("abort", onAbort);
+  }
 }
 
 async function restoreWithPsql(opts: RunDatabaseRestoreOptions, connectTimeout: number): Promise<void> {
@@ -523,6 +549,21 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
   const retention = opts.retention;
   const connectTimeout = Math.max(1, Math.trunc(opts.connectTimeoutSeconds ?? 5));
   const backupEngine = opts.backupEngine ?? "auto";
+  // Overall watchdog: a stalled dump self-aborts instead of hanging the caller.
+  const timeoutMs = opts.timeoutMs && opts.timeoutMs > 0 ? Math.trunc(opts.timeoutMs) : 0;
+  const abortController = new AbortController();
+  const signal = abortController.signal;
+  const timeoutHandle = timeoutMs > 0
+    ? setTimeout(
+        () => abortController.abort(new Error(`Database backup exceeded ${timeoutMs}ms timeout`)),
+        timeoutMs,
+      )
+    : null;
+  const throwIfAborted = () => {
+    if (signal.aborted) {
+      throw signal.reason instanceof Error ? signal.reason : new Error("Backup aborted");
+    }
+  };
   const canUsePgDump = !hasBackupTransforms(opts);
   const excludedTableNames = normalizeTableNameSet(opts.excludeTables);
   const nullifiedColumnsByTable = normalizeNullifyColumnMap(opts.nullifyColumns);
@@ -547,6 +588,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
           connectionString: opts.connectionString,
           backupFile,
           connectTimeout,
+          signal,
         });
         await writer.abort();
         const sizeBytes = statSync(backupFile).size;
@@ -560,7 +602,9 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
         if (existsSync(backupFile)) {
           try { unlinkSync(backupFile); } catch { /* ignore */ }
         }
-        if (backupEngine === "pg_dump") {
+        // A timeout/abort must fail the whole backup, not silently fall back to
+        // the (slower, more stall-prone) JavaScript engine.
+        if (backupEngine === "pg_dump" || signal.aborted) {
           throw error;
         }
         sql = postgres(opts.connectionString, { max: 1, connect_timeout: connectTimeout });
@@ -879,6 +923,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
 
     // Dump data for each table
     for (const { schema_name, tablename } of tables) {
+      throwIfAborted();
       const currentTableKey = tableKey(schema_name, tablename);
       const qualifiedTableName = quoteQualifiedName(schema_name, tablename);
       const count = await sql.unsafe<{ n: number }[]>(`SELECT count(*)::int AS n FROM ${qualifiedTableName}`);
@@ -900,14 +945,22 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
         emit(`COPY ${qualifiedTableName} (${colNames}) FROM stdin;`);
         await writer.writeRaw("\n");
         const copySql = postgres(opts.connectionString, { max: 1, connect_timeout: connectTimeout });
+        // Destroy the COPY stream on abort so a stalled read can't hang forever.
+        let copyStream: Awaited<ReturnType<ReturnType<typeof copySql.unsafe>["readable"]>> | null = null;
+        const onCopyAbort = () => {
+          copyStream?.destroy(signal.reason instanceof Error ? signal.reason : new Error("Backup aborted"));
+        };
+        signal.addEventListener("abort", onCopyAbort, { once: true });
         try {
-          const copyStream = await copySql
+          throwIfAborted();
+          copyStream = await copySql
             .unsafe(`COPY ${qualifiedTableName} (${colNames}) TO STDOUT`)
             .readable();
           for await (const chunk of copyStream) {
             await writer.writeRaw(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
           }
         } finally {
+          signal.removeEventListener("abort", onCopyAbort);
           await copySql.end();
         }
         await writer.writeRaw("\\.\n");
@@ -921,6 +974,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
         .values()
         .cursor(BACKUP_DATA_CURSOR_ROWS) as AsyncIterable<unknown[][]>;
       for await (const rows of rowCursor) {
+        throwIfAborted();
         for (const row of rows) {
           const values = row.map((rawValue, index) =>
             formatSqlValue(rawValue, cols[index]?.column_name, nullifiedColumns, cols[index]?.data_type),
@@ -979,6 +1033,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     }
     throw error;
   } finally {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
     await closeSql();
   }
 }
@@ -1022,4 +1077,37 @@ export function formatDatabaseBackupResult(result: RunDatabaseBackupResult): str
   const size = formatBackupSize(result.sizeBytes);
   const pruned = result.prunedCount > 0 ? `; pruned ${result.prunedCount} old backup(s)` : "";
   return `${result.backupFile} (${size}${pruned})`;
+}
+
+/**
+ * Remove orphaned uncompressed `.sql` temp files left behind by a backup that
+ * crashed or was aborted mid-write. A successful backup always ends as a
+ * `.sql.gz` and unlinks its `.sql` scratch file, so any `.sql` older than
+ * `maxAgeMs` is a dead partial. The age guard avoids deleting the scratch file
+ * of a dump that is legitimately still running.
+ *
+ * Returns the list of removed file paths.
+ */
+export function cleanupStaleBackupTempFiles(
+  backupDir: string,
+  filenamePrefix = "valadrien-os",
+  maxAgeMs = 60 * 60 * 1000,
+): string[] {
+  if (!existsSync(backupDir)) return [];
+  const now = Date.now();
+  const removed: string[] = [];
+  for (const name of readdirSync(backupDir)) {
+    if (!name.startsWith(`${filenamePrefix}-`)) continue;
+    // Completed backups are `.sql.gz`; a bare `.sql` is a partial/scratch file.
+    if (!name.endsWith(".sql")) continue;
+    const fullPath = resolve(backupDir, name);
+    try {
+      if (now - statSync(fullPath).mtimeMs < maxAgeMs) continue;
+      unlinkSync(fullPath);
+      removed.push(fullPath);
+    } catch {
+      // Best-effort cleanup; ignore races/permission issues.
+    }
+  }
+  return removed;
 }

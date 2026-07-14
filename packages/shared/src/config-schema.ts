@@ -24,6 +24,9 @@ export const databaseBackupConfigSchema = z.object({
   enabled: z.boolean().default(true),
   intervalMinutes: z.number().int().min(1).max(7 * 24 * 60).default(60),
   retentionDays: z.number().int().min(1).max(3650).default(7),
+  // Hard ceiling on a single backup run; a stalled dump self-aborts after this
+  // so the in-flight guard can never wedge future runs. Clamped to the interval.
+  timeoutMinutes: z.number().int().min(1).max(7 * 24 * 60).default(15),
   dir: z.string().default("~/.valadrien-os/instances/default/data/backups"),
 });
 

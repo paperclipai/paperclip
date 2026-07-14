@@ -21,6 +21,7 @@ import {
   reconcilePendingMigrationHistory,
   formatDatabaseBackupResult,
   runDatabaseBackup,
+  cleanupStaleBackupTempFiles,
   authUsers,
   companies,
   companyMemberships,
@@ -695,6 +696,7 @@ export async function startServer(): Promise<StartedServer> {
         backupDir: config.databaseBackupDir,
         retention,
         filenamePrefix: "valadrien-os",
+        timeoutMs: config.databaseBackupTimeoutMinutes * 60 * 1000,
       });
       const finishedAt = new Date();
       const response: InstanceDatabaseBackupRunResult = {
@@ -936,9 +938,21 @@ export async function startServer(): Promise<StartedServer> {
   if (config.databaseBackupEnabled) {
     const backupIntervalMs = config.databaseBackupIntervalMinutes * 60 * 1000;
 
+    // Sweep orphaned `.sql` partials left by a backup that was killed/aborted
+    // mid-write (e.g. before the watchdog existed). Best-effort; never fatal.
+    try {
+      const swept = cleanupStaleBackupTempFiles(config.databaseBackupDir, "valadrien-os");
+      if (swept.length > 0) {
+        logger.info({ count: swept.length, backupDir: config.databaseBackupDir }, "Removed stale backup temp files");
+      }
+    } catch (err) {
+      logger.warn({ err, backupDir: config.databaseBackupDir }, "Failed to sweep stale backup temp files");
+    }
+
     logger.info(
       {
         intervalMinutes: config.databaseBackupIntervalMinutes,
+        timeoutMinutes: config.databaseBackupTimeoutMinutes,
         retentionSource: "instance-settings-db",
         backupDir: config.databaseBackupDir,
       },
