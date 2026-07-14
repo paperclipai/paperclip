@@ -287,6 +287,7 @@ export class SolanaRpcSource implements SolanaStreamSource {
     this.subs.push(id);
     return () => {
       this.connection.removeAccountChangeListener(id).catch(() => {});
+      this.subs = this.subs.filter((sub) => sub !== id);
     };
   }
 }

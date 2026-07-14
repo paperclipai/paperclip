@@ -66,7 +66,7 @@ export const models: Array<{ id: string; label: string }> = [
 export const DEFAULT_OPENCODE_CHEAP_MODEL = "openai/gpt-5.1-codex";
 
 // The "cheap" budget profile (used for recovery retries and other low-cost lanes).
-// Defaults to OpenCode's known Codex mini model, but is overridable so a deployment
+// Defaults to OpenCode's known Codex model, but is overridable so a deployment
 // routing through a gateway that does not serve that model (e.g. an EU LLM gateway)
 // can point the budget lane at a gateway-served model instead -- otherwise recovery
 // retries fail with "model not found". PAPERCLIP_OPENCODE_CHEAP_MODEL takes priority;
