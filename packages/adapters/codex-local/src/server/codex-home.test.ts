@@ -6,12 +6,30 @@ import {
   codexHomeHasUsableAuth,
   ensureSymlink,
   evaluateCodexCredentialReadiness,
+  mergeManagedCodexMcpGateways,
   isManagedCodexHomePath,
   prepareManagedCodexHome,
   reconcileManagedCodexHome,
   seedManagedCodexHome,
   writeManagedCodexMcpConfig,
 } from "./codex-home.js";
+
+describe("mergeManagedCodexMcpGateways", () => {
+  it("keeps runtime gateways and appends non-overlapping context gateways", () => {
+    expect(
+      mergeManagedCodexMcpGateways(
+        [{ name: "runtime", endpointPath: "/runtime", bearerToken: "runtime-token" }],
+        [
+          { name: "runtime", endpointPath: "/stale", bearerToken: "stale-token" },
+          { name: "manual", endpointPath: "/manual", bearerToken: "manual-token" },
+        ],
+      ),
+    ).toEqual([
+      { name: "runtime", endpointPath: "/runtime", bearerToken: "runtime-token" },
+      { name: "manual", endpointPath: "/manual", bearerToken: "manual-token" },
+    ]);
+  });
+});
 
 describe("codex managed home", () => {
   afterEach(() => {

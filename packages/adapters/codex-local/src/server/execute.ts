@@ -53,6 +53,7 @@ import {
   resolveManagedCodexHomeDir,
   resolveSharedCodexHomeDir,
   seedManagedCodexHome,
+  mergeManagedCodexMcpGateways,
   writeManagedCodexMcpConfig,
   type ManagedCodexMcpGateway,
 } from "./codex-home.js";
@@ -485,9 +486,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       endpointPath: server.url,
       bearerToken: server.token,
     }));
-    const managedMcpGateways = runtimeMcpGateways.length > 0
-      ? runtimeMcpGateways
-      : managedMcpGatewaysFromContext(context);
+    const managedMcpGateways = mergeManagedCodexMcpGateways(
+      runtimeMcpGateways,
+      managedMcpGatewaysFromContext(context),
+    );
     const managedMcp = await writeManagedCodexMcpConfig({
       codexHome: effectiveCodexHome,
       apiBaseUrl: paperclipBaseEnv.PAPERCLIP_API_URL,

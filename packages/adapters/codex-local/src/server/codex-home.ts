@@ -17,6 +17,20 @@ export type ManagedCodexMcpGateway = {
   bearerToken: string;
 };
 
+export function mergeManagedCodexMcpGateways(
+  primary: ManagedCodexMcpGateway[],
+  secondary: ManagedCodexMcpGateway[],
+): ManagedCodexMcpGateway[] {
+  const merged = [...primary];
+  const names = new Set(primary.map((gateway) => gateway.name));
+  for (const gateway of secondary) {
+    if (names.has(gateway.name)) continue;
+    merged.push(gateway);
+    names.add(gateway.name);
+  }
+  return merged;
+}
+
 function nonEmpty(value: string | undefined): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
