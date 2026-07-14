@@ -63,7 +63,7 @@ export function shouldEnableAuthRateLimit(input: {
   if (override === "true") return true;
   if (override === "false") return false;
 
-  return input.deploymentMode === "authenticated" && input.deploymentExposure === "public";
+  return input.deploymentMode === "authenticated";
 }
 
 export function buildBetterAuthRateLimitOptions(input: {

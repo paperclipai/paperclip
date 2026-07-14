@@ -104,15 +104,12 @@ export function toolAccessRoutes(
     }
   }
 
-  function requestBaseUrl(req: Request) {
+  function oauthRedirectUri() {
     const configured = configuredPublicBaseUrl();
-    if (configured) return configured;
-    const host = req.get("host")?.trim() || req.hostname;
-    return `${req.protocol}://${host}`;
-  }
-
-  function oauthRedirectUri(req: Request) {
-    return new URL("/api/tools/oauth/callback", requestBaseUrl(req)).toString();
+    if (!configured) {
+      throw unprocessable("OAuth connections require PAPERCLIP_PUBLIC_URL or an auth public base URL");
+    }
+    return new URL("/api/tools/oauth/callback", configured).toString();
   }
   const access = accessService(db);
 
@@ -241,7 +238,7 @@ export function toolAccessRoutes(
       const result = await svc.connectGalleryApp(companyId, req.body, getActorInfo(req));
       if (result.auth?.kind === "oauth") {
         const start = await svc.startOAuth(companyId, result.connectionId, {
-          redirectUri: oauthRedirectUri(req),
+          redirectUri: oauthRedirectUri(),
           actor: getActorInfo(req),
         });
         result.auth.startUrl = start.authorizationUrl;
@@ -272,7 +269,7 @@ export function toolAccessRoutes(
     const existing = await svc.getConnection(req.params.connectionId as string);
     assertToolAppMutationAccess(req, existing.companyId);
     const result = await svc.startOAuth(existing.companyId, existing.id, {
-      redirectUri: oauthRedirectUri(req),
+      redirectUri: oauthRedirectUri(),
       actor: getActorInfo(req),
     });
     res.json(result);
@@ -294,7 +291,7 @@ export function toolAccessRoutes(
       code,
       error,
       errorDescription,
-      redirectUri: oauthRedirectUri(req),
+      redirectUri: oauthRedirectUri(),
       actor: getActorInfo(req),
     });
     await logActivity(db, {
