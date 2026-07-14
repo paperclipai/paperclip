@@ -59,7 +59,7 @@
     "@paperclipai/plugin-sdk": "workspace:*",
     "@paperclipai/shared": "workspace:*",
     "@paperclipai/skills-catalog": "workspace:*",
-    "@solana/web3.js": "^1.95.0",
+    "@solana/web3.js": "1.95.8",
     "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1",
     "better-auth": "1.6.20",
