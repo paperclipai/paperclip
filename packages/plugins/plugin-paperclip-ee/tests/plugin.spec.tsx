@@ -191,6 +191,28 @@ describe("Paperclip EE plugin", () => {
     });
   });
 
+  it("requires confirmation before resetting an explicit skill policy", async () => {
+    const { calls } = installFetch({
+      schemaVersion: 1,
+      revision: 3,
+      defaultEffect: "deny",
+      materialized: true,
+      rules: [{ id: "allow-admins-all-skill-actions", priority: 10, effect: "allow", subject: { type: "roles", roles: ["admin"] }, actions: ["skills.install"] }],
+    });
+    await renderUi(<SkillPolicyEditorPage context={{} as never} />);
+
+    await click(await findButton("Reset to open default"));
+
+    expect(await findByText("Confirm reset to open default")).toBeTruthy();
+    expect(calls.some((call) => call.url.includes("/skill-policy") && call.init?.method === "DELETE")).toBe(false);
+
+    await click(await findButton("Confirm reset"));
+
+    await waitForAssertion(() => {
+      expect(calls.some((call) => call.url.includes("/skill-policy") && call.init?.method === "DELETE")).toBe(true);
+    });
+  });
+
   it("renders denial explanations from core simulation responses", async () => {
     installFetch({
       schemaVersion: 1,
@@ -206,6 +228,21 @@ describe("Paperclip EE plugin", () => {
 
     expect(await findByText(/Matched explicit rule/)).toBeTruthy();
     expect(getByText(/Contact a company administrator/)).toBeTruthy();
+
+    await click(await findByText("View matched override in editor"));
+
+    expect(await findByText("Add override")).toBeTruthy();
+    expect(document.body.querySelector('[aria-label="Matched rule deny-external-installs"]')).toBeTruthy();
+  });
+
+  it("shows raw JSON for skill policy audit entries", async () => {
+    await renderUi(<SkillPolicyEditorPage context={{} as never} />);
+
+    await click(await findButton("audit"));
+
+    expect(await findByText("Raw JSON")).toBeTruthy();
+    expect(document.body.textContent).toContain('"action": "company.skill_policy_replaced"');
+    expect(document.body.textContent).toContain('"ruleCount": 2');
   });
 
   it("shows a plugin load-failure state without claiming core skills are unavailable", async () => {

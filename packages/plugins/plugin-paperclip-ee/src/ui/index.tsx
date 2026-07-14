@@ -81,6 +81,7 @@ const inputStyle: CSSProperties = { width: "100%", border: "1px solid var(--bord
 const tableStyle: CSSProperties = { width: "100%", borderCollapse: "separate", borderSpacing: 0, fontSize: "var(--text-xs, 0.75rem)" };
 const thStyle: CSSProperties = { textAlign: "left", padding: "var(--space-2, 0.5rem)", background: "color-mix(in oklab, var(--accent) 55%, transparent)", color: "var(--muted-foreground)", borderBottom: "1px solid var(--border)" };
 const tdStyle: CSSProperties = { padding: "var(--space-2, 0.5rem)", borderBottom: "1px solid var(--border)", verticalAlign: "top" };
+const rawJsonStyle: CSSProperties = { margin: 0, padding: "var(--space-3, 0.75rem)", borderRadius: "var(--radius-lg)", background: "var(--muted)", color: "var(--foreground)", overflowX: "auto", whiteSpace: "pre-wrap", wordBreak: "break-word", fontFamily: "var(--font-mono)", fontSize: "var(--text-xs, 0.75rem)", lineHeight: 1.5 };
 
 function buttonStyle(variant: "primary" | "secondary" | "danger" = "secondary"): CSSProperties {
   const primary = variant === "primary";
@@ -322,7 +323,7 @@ function RuleEditor({ draft, setDraft, agents }: { draft: EffectiveSkillPolicy; 
   </form>;
 }
 
-function RuleTable({ draft, setDraft }: { draft: EffectiveSkillPolicy; setDraft: (policy: EffectiveSkillPolicy) => void }) {
+function RuleTable({ draft, setDraft, highlightedRuleId }: { draft: EffectiveSkillPolicy; setDraft: (policy: EffectiveSkillPolicy) => void; highlightedRuleId: string | null }) {
   function removeRule(id: string) {
     setDraft({ ...draft, rules: draft.rules.filter((rule) => rule.id !== id) });
   }
@@ -335,7 +336,9 @@ function RuleTable({ draft, setDraft }: { draft: EffectiveSkillPolicy; setDraft:
     <div style={{ overflowX: "auto" }}>
       <table style={tableStyle}>
         <thead><tr><th style={thStyle}>Priority</th><th style={thStyle}>Effect</th><th style={thStyle}>Subject</th><th style={thStyle}>Actions</th><th style={thStyle}>Resource</th><th style={thStyle}>Order</th></tr></thead>
-        <tbody>{sorted.map((rule) => <tr key={rule.id} id={`rule-${rule.id}`}>
+        <tbody>{sorted.map((rule) => {
+          const isHighlighted = highlightedRuleId === rule.id;
+          return <tr key={rule.id} id={`rule-${rule.id}`} tabIndex={isHighlighted ? 0 : undefined} aria-label={isHighlighted ? `Matched rule ${rule.id}` : undefined} style={{ background: isHighlighted ? "color-mix(in oklab, var(--primary) 10%, transparent)" : undefined, scrollMarginBlock: "var(--space-6, 1.5rem)" }}>
           <td style={tdStyle}>{rule.priority}<br /><span style={mutedStyle}>{rule.id}</span></td>
           <td style={tdStyle}><span style={badgeStyle(rule.effect === "allow" ? "allow" : "deny")}>{rule.effect}</span></td>
           <td style={tdStyle}>{subjectLabel(rule.subject)}</td>
@@ -346,13 +349,14 @@ function RuleTable({ draft, setDraft }: { draft: EffectiveSkillPolicy; setDraft:
             <button type="button" style={buttonStyle()} onClick={() => moveRule(rule.id, 10)}>Move down</button>
             <button type="button" style={buttonStyle("danger")} onClick={() => removeRule(rule.id)}>Remove</button>
           </div></td>
-        </tr>)}</tbody>
+        </tr>;
+        })}</tbody>
       </table>
     </div>
   </div>;
 }
 
-function SimulationPanel({ companyId, rules }: { companyId: string; rules: SkillPolicyRule[] }) {
+function SimulationPanel({ companyId, rules, onOpenRule }: { companyId: string; rules: SkillPolicyRule[]; onOpenRule: (ruleId: string) => void }) {
   const [action, setAction] = useState<SkillPolicyAction>("skills.install");
   const [sourceType, setSourceType] = useState<SkillPolicySourceType>("external_package");
   const [skillKey, setSkillKey] = useState("");
@@ -393,7 +397,11 @@ function SimulationPanel({ companyId, rules }: { companyId: string; rules: Skill
       <span style={badgeStyle(decision.allowed ? "allow" : "deny")}>{decision.allowed ? "Allowed" : "Denied"}</span>
       <div><strong>Reason:</strong> {decision.reason === "platform_invariant" ? "Platform safety - cannot be changed" : decision.reason === "explicit_rule" ? "Matched explicit rule" : decision.reason === "legacy_compatibility" ? "Legacy grant applied as compatibility allow" : decision.reason === "no_policy_default" ? "Open default" : "Company policy default"}</div>
       <div><strong>Policy revision:</strong> {decision.policyRevision}</div>
-      {matched ? <a href={`#rule-${matched.id}`}>Matched rule {matched.id}</a> : null}
+      {matched ? <div style={{ ...cardStyle, background: "color-mix(in oklab, var(--primary) 8%, var(--card))" }}>
+        <div style={rowStyle}><strong>Matched override</strong><span style={badgeStyle(matched.effect === "allow" ? "allow" : "deny")}>{matched.effect}</span></div>
+        <p style={mutedStyle}>{matched.id} · {subjectLabel(matched.subject)} · {resourceLabel(matched)}</p>
+        <a href={`#rule-${matched.id}`} style={buttonStyle()} onClick={(event) => { event.preventDefault(); onOpenRule(matched.id); }}>View matched override in editor</a>
+      </div> : null}
       {decision.remediation ? <div><strong>Remediation:</strong> {decision.remediation}</div> : null}
       <p style={mutedStyle}>Legacy `skills:create` and `skills:suggest-changes` grants can only allow compatibility when no explicit rule matched; they never override a deny or platform invariant.</p>
     </div> : null}
@@ -406,6 +414,10 @@ function AuditHistory({ entries }: { entries: ActivityEntry[] }) {
     {entries.length === 0 ? <p style={mutedStyle}>No policy mutations have been recorded yet.</p> : entries.map((entry) => <article key={entry.id} style={cardStyle}>
       <div style={rowStyle}><span style={badgeStyle("neutral")}>{String(entry.details?.previousRevision ?? "?")} {"->"} {String(entry.details?.newRevision ?? "?")}</span><strong>{entry.action.replace("company.skill_policy_", "")}</strong><span style={mutedStyle}>{relativeTime(entry.createdAt)}</span></div>
       <p style={mutedStyle}>Actor {entry.actorType}:{entry.actorId} changed {entry.entityType}. Summary: {entry.details ? JSON.stringify(entry.details) : "No details"}</p>
+      <details>
+        <summary style={{ cursor: "pointer" }}>Raw JSON</summary>
+        <pre style={rawJsonStyle}>{JSON.stringify(entry, null, 2)}</pre>
+      </details>
     </article>)}
   </section>;
 }
@@ -431,6 +443,8 @@ function SkillPolicyEditor() {
   const [activeTab, setActiveTab] = useState<"overview" | "overrides" | "simulate" | "audit">("overview");
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [resetConfirmationOpen, setResetConfirmationOpen] = useState(false);
+  const [highlightedRuleId, setHighlightedRuleId] = useState<string | null>(null);
 
   useEffect(() => {
     if (policy) setDraft(policy);
@@ -440,6 +454,14 @@ function SkillPolicyEditor() {
     if (!draft) return null;
     return draft.materialized ? <span style={badgeStyle(draft.defaultEffect === "deny" ? "warn" : "neutral")}>Restricted</span> : <span style={badgeStyle("neutral")}>Open default</span>;
   }, [draft]);
+
+  useEffect(() => {
+    if (activeTab !== "overrides" || !highlightedRuleId) return;
+    const scheduleFrame = window.requestAnimationFrame ?? ((callback: FrameRequestCallback) => window.setTimeout(callback, 0));
+    const cancelFrame = window.cancelAnimationFrame ?? ((handle: number) => window.clearTimeout(handle));
+    const frame = scheduleFrame(() => document.getElementById(`rule-${highlightedRuleId}`)?.scrollIntoView?.({ block: "center" }));
+    return () => cancelFrame(frame);
+  }, [activeTab, highlightedRuleId]);
 
   if (availability.error) return <LoadFailure message={availability.error.message} />;
   if (!companyId) return <LoadFailure message="No active company context was provided." />;
@@ -473,6 +495,7 @@ function SkillPolicyEditor() {
     try {
       await apiJson<EffectiveSkillPolicy>(`/api/companies/${encodeURIComponent(companyId)}/skill-policy`, { method: "DELETE" });
       toast({ tone: "success", title: "Skill policy reset", body: "The company is back on the unrestricted open default." });
+      setResetConfirmationOpen(false);
       await refresh();
     } catch (err) {
       setSaveError(err instanceof Error ? err.message : String(err));
@@ -483,7 +506,13 @@ function SkillPolicyEditor() {
 
   function previewPreset(preset: Pick<EffectiveSkillPolicy, "schemaVersion" | "defaultEffect" | "rules">, tab: typeof activeTab = "overview") {
     setDraft({ ...preset, revision: policy?.revision ?? 0, materialized: preset.rules.length > 0 || preset.defaultEffect === "deny" });
+    setHighlightedRuleId(null);
     setActiveTab(tab);
+  }
+
+  function openMatchedRule(ruleId: string) {
+    setHighlightedRuleId(ruleId);
+    setActiveTab("overrides");
   }
 
   return <main style={pageStyle}>
@@ -494,8 +523,16 @@ function SkillPolicyEditor() {
       <div style={rowStyle}>
         <button style={buttonStyle("primary")} type="button" onClick={() => void savePolicy()} disabled={saving}>{saving ? "Saving..." : "Save policy"}</button>
         <button style={buttonStyle()} type="button" onClick={() => previewPreset(buildOpenPreset())}>Preview Open</button>
-        <button style={buttonStyle("danger")} type="button" onClick={() => void resetPolicy()}>Reset to open default</button>
+        <button style={buttonStyle("danger")} type="button" aria-expanded={resetConfirmationOpen} onClick={() => setResetConfirmationOpen(true)}>Reset to open default</button>
       </div>
+      {resetConfirmationOpen ? <div role="alertdialog" aria-labelledby="reset-policy-title" aria-describedby="reset-policy-description" style={{ ...cardStyle, borderColor: "var(--destructive)" }}>
+        <strong id="reset-policy-title">Confirm reset to open default</strong>
+        <p id="reset-policy-description" style={mutedStyle}>Resetting removes the explicit policy and allows every authenticated company agent to manage skills again. Core platform safety checks still apply, but these EE restrictions will be deleted.</p>
+        <div style={rowStyle}>
+          <button type="button" style={buttonStyle("danger")} onClick={() => void resetPolicy()} disabled={saving}>{saving ? "Resetting..." : "Confirm reset"}</button>
+          <button type="button" style={buttonStyle()} onClick={() => setResetConfirmationOpen(false)} disabled={saving}>Cancel</button>
+        </div>
+      </div> : null}
       {saveError ? <div role="alert" style={{ ...cardStyle, borderColor: "var(--status-task-todo)" }}>{saveError} <button type="button" style={buttonStyle()} onClick={() => void refresh()}>Reload</button></div> : null}
     </section>
 
@@ -525,10 +562,10 @@ function SkillPolicyEditor() {
 
     {activeTab === "overrides" ? <>
       <RuleEditor draft={draft} setDraft={setDraft} agents={agents} />
-      <RuleTable draft={draft} setDraft={setDraft} />
+      <RuleTable draft={draft} setDraft={setDraft} highlightedRuleId={highlightedRuleId} />
     </> : null}
 
-    {activeTab === "simulate" ? <SimulationPanel companyId={companyId} rules={draft.rules} /> : null}
+    {activeTab === "simulate" ? <SimulationPanel companyId={companyId} rules={draft.rules} onOpenRule={openMatchedRule} /> : null}
     {activeTab === "audit" ? <AuditHistory entries={audit} /> : null}
   </main>;
 }
