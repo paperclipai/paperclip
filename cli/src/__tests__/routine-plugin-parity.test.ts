@@ -79,9 +79,9 @@ describe("routine and plugin parity commands", () => {
     await run(["plugin", "health", "plug"]);
     await run(["plugin", "logs", "plug"]);
     await run(["plugin", "upgrade", "plug"]);
-    await run(["plugin", "config", "plug"]);
-    await run(["plugin", "config:set", "plug", "--payload-json", "{}"]);
-    await run(["plugin", "config:test", "plug", "--payload-json", "{}"]);
+    await run(["plugin", "config", "plug", "--company-id", COMPANY_ID]);
+    await run(["plugin", "config:set", "plug", "--company-id", COMPANY_ID, "--payload-json", "{}"]);
+    await run(["plugin", "config:test", "plug", "--company-id", COMPANY_ID, "--payload-json", "{}"]);
     await run(["plugin", "jobs", "plug"]);
     await run(["plugin", "job:runs", "plug", "job1"]);
     await run(["plugin", "job:trigger", "plug", "job1"]);
@@ -104,7 +104,7 @@ describe("routine and plugin parity commands", () => {
       ["GET", "http://localhost:3100/api/plugins/plug/health"],
       ["GET", "http://localhost:3100/api/plugins/plug/logs"],
       ["POST", "http://localhost:3100/api/plugins/plug/upgrade"],
-      ["GET", "http://localhost:3100/api/plugins/plug/config"],
+      ["GET", `http://localhost:3100/api/plugins/plug/config?companyId=${COMPANY_ID}`],
       ["POST", "http://localhost:3100/api/plugins/plug/config"],
       ["POST", "http://localhost:3100/api/plugins/plug/config/test"],
       ["GET", "http://localhost:3100/api/plugins/plug/jobs"],
