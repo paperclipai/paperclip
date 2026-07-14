@@ -5255,6 +5255,9 @@ export function createToolGatewayService(
           status: "rejected",
           resolvedByAgentId: input.actor.agentId ?? null,
           resolvedByUserId: input.actor.userId ?? null,
+          decidedByAgentId: input.actor.agentId ?? null,
+          decidedByUserId: input.actor.userId ?? null,
+          decidedAt: now,
           resolvedAt: now,
           updatedAt: now,
         })

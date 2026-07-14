@@ -611,6 +611,8 @@ describeEmbeddedPostgres("tool gateway service", () => {
     });
     expect(declined.status).toBe("rejected");
     expect(declined.resolvedByUserId).toBe("board-user");
+    expect(declined.decidedByUserId).toBe("board-user");
+    expect(declined.decidedAt).toBeInstanceOf(Date);
 
     const [invocation] = await db.select().from(toolInvocations);
     expect(invocation.approvalState).toBe("rejected");
