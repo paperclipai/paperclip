@@ -216,7 +216,7 @@ export function AppDetail() {
   const updateConfig = useMutation({
     mutationFn: (config: Record<string, unknown>) => toolsApi.updateConnection(connectionId, {
       config,
-      transportConfig: config,
+      transportConfig: connection?.transportConfig ?? {},
     }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.tools.connection(connectionId) });

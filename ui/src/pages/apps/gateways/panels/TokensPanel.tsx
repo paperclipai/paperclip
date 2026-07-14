@@ -23,7 +23,7 @@ function defaultExpiry(): string {
 
 const STATUS_CLASS: Record<TokenStatus, string> = {
   active: "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
-  expiring: "border-foreground bg-foreground text-background",
+  expiring: "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300",
   expired: "border-border bg-muted text-muted-foreground",
   revoked: "border-foreground bg-foreground text-background",
 };

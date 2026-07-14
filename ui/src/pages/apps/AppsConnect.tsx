@@ -55,7 +55,8 @@ const ROUTE_STAGE_BY_STEP: Partial<Record<Step, string>> = {
 
 function appConnectHref(appKey: string, step: Step): string {
   const stage = ROUTE_STAGE_BY_STEP[step] ?? "setup";
-  return `/apps/connect/${encodeURIComponent(appKey)}/${stage}`;
+  const params = new URLSearchParams({ appKey, stage });
+  return `/apps/connect?${params.toString()}`;
 }
 type AppAccessSelection = "all_agents" | { agentIds: string[] };
 type InstallMode = "none" | "specific" | "all";
@@ -88,11 +89,12 @@ function isGoogleSheetsEntry(entry: AppGalleryEntry | null): boolean {
 
 export function AppsConnect() {
   const navigate = useNavigate();
-  const { appKey } = useParams<{ appKey?: string }>();
+  const routeParams = useParams<{ appKey?: string }>();
   const { selectedCompany, selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToast();
   const [searchParams] = useSearchParams();
+  const appKey = routeParams.appKey ?? searchParams.get("appKey") ?? undefined;
   const zapierSource = searchParams.get("source") === "zapier";
 
   // Prefill arrives from the app page for reconnects; read once so later
