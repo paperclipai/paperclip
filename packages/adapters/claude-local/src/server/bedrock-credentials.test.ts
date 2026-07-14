@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { classifyBedrockCredentialProbe } from "./bedrock-credentials.js";
+import {
+  classifyBedrockCredentialProbe,
+  runBedrockCredentialRefresh,
+} from "./bedrock-credentials.js";
 
 describe("classifyBedrockCredentialProbe", () => {
   it("returns valid when the probe exits 0", () => {
@@ -57,5 +60,24 @@ describe("classifyBedrockCredentialProbe", () => {
         stderr: "sh: aws: command not found",
       }).status,
     ).toBe("indeterminate");
+  });
+});
+
+describe("runBedrockCredentialRefresh", () => {
+  const baseInput = {
+    runId: "run-1",
+    target: null,
+    cwd: "/tmp",
+    env: {} as Record<string, string>,
+  };
+
+  it("no-ops (skipped) when no refresh command is configured, without spawning anything", async () => {
+    expect(await runBedrockCredentialRefresh({ ...baseInput, command: null })).toEqual({
+      status: "skipped",
+      detail: "no bedrockCredentialRefreshCommand configured",
+    });
+    expect((await runBedrockCredentialRefresh({ ...baseInput, command: "   " })).status).toBe(
+      "skipped",
+    );
   });
 });

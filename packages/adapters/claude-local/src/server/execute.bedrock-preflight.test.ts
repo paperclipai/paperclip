@@ -1,18 +1,18 @@
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RunProcessResult } from "@paperclipai/adapter-utils/server-utils";
 
-const { runChildProcess, ensureCommandResolvable, resolveCommandForLogs } = vi.hoisted(() => {
-  const claudeStdout = [
-    JSON.stringify({ type: "system", subtype: "init", session_id: "claude-session-1", model: "claude-sonnet" }),
-    JSON.stringify({ type: "assistant", session_id: "claude-session-1", message: { content: [{ type: "text", text: "hello" }] } }),
-    JSON.stringify({ type: "result", session_id: "claude-session-1", result: "hello", usage: { input_tokens: 1, cache_read_input_tokens: 0, output_tokens: 1 } }),
-  ].join("\n");
-  return {
+const { runChildProcess, ensureCommandResolvable, resolveCommandForLogs, defaultRunChildProcess } =
+  vi.hoisted(() => {
+    const claudeStdout = [
+      JSON.stringify({ type: "system", subtype: "init", session_id: "claude-session-1", model: "claude-sonnet" }),
+      JSON.stringify({ type: "assistant", session_id: "claude-session-1", message: { content: [{ type: "text", text: "hello" }] } }),
+      JSON.stringify({ type: "result", session_id: "claude-session-1", result: "hello", usage: { input_tokens: 1, cache_read_input_tokens: 0, output_tokens: 1 } }),
+    ].join("\n");
     // Default: STS probe succeeds (exit 0), Claude spawn returns a normal result.
-    runChildProcess: vi.fn(async (_runId: string, command: string): Promise<RunProcessResult> => {
+    const defaultRunChildProcess = async (_runId: string, command: string): Promise<RunProcessResult> => {
       if (command === "aws") {
         return {
           exitCode: 0,
@@ -33,11 +33,14 @@ const { runChildProcess, ensureCommandResolvable, resolveCommandForLogs } = vi.h
         pid: 123,
         startedAt: new Date().toISOString(),
       };
-    }),
-    ensureCommandResolvable: vi.fn(async () => undefined),
-    resolveCommandForLogs: vi.fn(async () => "claude"),
-  };
-});
+    };
+    return {
+      defaultRunChildProcess,
+      runChildProcess: vi.fn(defaultRunChildProcess),
+      ensureCommandResolvable: vi.fn(async () => undefined),
+      resolveCommandForLogs: vi.fn(async () => "claude"),
+    };
+  });
 
 vi.mock("@paperclipai/adapter-utils/server-utils", async () => {
   const actual = await vi.importActual<typeof import("@paperclipai/adapter-utils/server-utils")>(
@@ -59,6 +62,7 @@ const EXPIRED_STS_STDERR =
 async function runExecute(input: {
   workspaceDir: string;
   bedrock: boolean;
+  refreshCommand?: string;
 }) {
   const logs: Array<{ stream: string; chunk: string }> = [];
   const result = await execute({
@@ -78,6 +82,7 @@ async function runExecute(input: {
     },
     config: {
       command: "claude",
+      ...(input.refreshCommand ? { bedrockCredentialRefreshCommand: input.refreshCommand } : {}),
       ...(input.bedrock
         ? { env: { CLAUDE_CODE_USE_BEDROCK: "1", AWS_REGION: "us-east-1" } }
         : {}),
@@ -98,8 +103,22 @@ async function runExecute(input: {
 describe("claude execute Bedrock pre-flight credential gate", () => {
   const cleanupDirs: string[] = [];
 
+  beforeEach(() => {
+    // clearAllMocks() wipes call history but NOT per-test mockImplementation
+    // overrides, so restore the default probe/spawn behavior before each test to
+    // keep cases that rely on it isolated from cases that set their own.
+    runChildProcess.mockImplementation(defaultRunChildProcess);
+    // execute() folds process.env into effectiveEnv, so a host that itself runs
+    // on Bedrock (CLAUDE_CODE_USE_BEDROCK=1) would make isBedrockAuth() true even
+    // for the non-Bedrock case. Neutralize the ambient Bedrock signals so each
+    // test controls auth mode purely through its own config.
+    vi.stubEnv("CLAUDE_CODE_USE_BEDROCK", "");
+    vi.stubEnv("ANTHROPIC_BEDROCK_BASE_URL", "");
+  });
+
   afterEach(async () => {
     vi.clearAllMocks();
+    vi.unstubAllEnvs();
     while (cleanupDirs.length > 0) {
       const dir = cleanupDirs.pop();
       if (!dir) continue;
@@ -150,6 +169,127 @@ describe("claude execute Bedrock pre-flight credential gate", () => {
     // (c) exactly one greppable alert on entering the deferred state.
     const alerts = logs.filter((entry) => entry.chunk.includes("BEDROCK_CREDENTIAL_EXPIRED"));
     expect(alerts).toHaveLength(1);
+  });
+
+  it("self-heals: refresh command recovers expired creds, re-probe passes, and the CLI spawns (MAS-751)", async () => {
+    // First STS probe = expired; refresh command (sh) succeeds; second STS
+    // probe = valid; Claude then spawns normally.
+    let awsProbeCalls = 0;
+    runChildProcess.mockImplementation(async (_runId: string, command: string) => {
+      if (command === "aws") {
+        awsProbeCalls += 1;
+        if (awsProbeCalls === 1) {
+          return {
+            exitCode: 255,
+            signal: null,
+            timedOut: false,
+            stdout: "",
+            stderr: EXPIRED_STS_STDERR,
+            pid: 100,
+            startedAt: new Date().toISOString(),
+          };
+        }
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          stdout: '{"Account":"123456789012","Arn":"arn:aws:sts::123456789012:assumed-role/x"}',
+          stderr: "",
+          pid: 101,
+          startedAt: new Date().toISOString(),
+        };
+      }
+      if (command === "sh") {
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          stdout: "refreshed",
+          stderr: "",
+          pid: 102,
+          startedAt: new Date().toISOString(),
+        };
+      }
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: [
+          JSON.stringify({ type: "system", subtype: "init", session_id: "s", model: "m" }),
+          JSON.stringify({ type: "result", session_id: "s", result: "hello", usage: { input_tokens: 1, cache_read_input_tokens: 0, output_tokens: 1 } }),
+        ].join("\n"),
+        stderr: "",
+        pid: 123,
+        startedAt: new Date().toISOString(),
+      };
+    });
+
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-claude-preflight-refresh-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+
+    const { result } = await runExecute({
+      workspaceDir,
+      bedrock: true,
+      refreshCommand: "ada credentials update --once",
+    });
+
+    const commandsRun = runChildProcess.mock.calls.map((call) => call[1]);
+    // probe -> refresh (sh) -> re-probe -> claude
+    expect(commandsRun).toContain("sh");
+    expect(commandsRun).toContain("claude");
+    expect(awsProbeCalls).toBe(2);
+    expect(result.errorCode).toBeFalsy();
+    expect(result.summary).toBe("hello");
+  });
+
+  it("defers when a configured refresh command fails to recover expired creds (MAS-751)", async () => {
+    runChildProcess.mockImplementation(async (_runId: string, command: string) => {
+      if (command === "aws") {
+        return {
+          exitCode: 255,
+          signal: null,
+          timedOut: false,
+          stdout: "",
+          stderr: EXPIRED_STS_STDERR,
+          pid: 100,
+          startedAt: new Date().toISOString(),
+        };
+      }
+      if (command === "sh") {
+        // Refresh command itself fails (e.g. SSO session also expired).
+        return {
+          exitCode: 1,
+          signal: null,
+          timedOut: false,
+          stdout: "",
+          stderr: "ada: could not refresh credentials",
+          pid: 102,
+          startedAt: new Date().toISOString(),
+        };
+      }
+      throw new Error(`Claude CLI should not spawn when refresh fails (got command=${command})`);
+    });
+
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-claude-preflight-refresh-fail-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+
+    const { result } = await runExecute({
+      workspaceDir,
+      bedrock: true,
+      refreshCommand: "ada credentials update --once",
+    });
+
+    const commandsRun = runChildProcess.mock.calls.map((call) => call[1]);
+    expect(commandsRun).toContain("sh"); // refresh attempted
+    expect(commandsRun).not.toContain("claude"); // but never spawned
+    // Falls back to the transient defer contract.
+    expect(result.errorFamily).toBe("transient_upstream");
+    expect(result.errorCode).toBe("claude_transient_upstream");
+    expect(result.retryNotBefore).toBeTruthy();
   });
 
   it("spawns the CLI as normal when the pre-flight probe reports valid credentials", async () => {
