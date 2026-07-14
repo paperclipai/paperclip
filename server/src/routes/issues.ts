@@ -125,7 +125,7 @@ import {
 import type { TaskWatchdogServiceDeps, taskWatchdogService } from "../services/task-watchdogs.js";
 import { logger } from "../middleware/logger.js";
 import { conflict, forbidden, HttpError, notFound, unauthorized, unprocessable } from "../errors.js";
-import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertBoard, assertCompanyAccess, attributedUserId, getActorInfo } from "./authz.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
   collectIssueWorkspaceCommandPaths,
@@ -8965,7 +8965,11 @@ export function issueRoutes(
       sourceRunId: req.actor.type === "agent" ? agentSourceRunId : req.body.sourceRunId ?? null,
     }, {
       agentId: actor.agentId,
-      userId: actor.actorType === "user" ? actor.actorId : null,
+      // SYN-1926 item 1: never let a keyless (local_implicit) caller's card
+      // render as authored by Cole. attributedUserId() returns the
+      // "local-implicit" sentinel instead of "local-board" for that case;
+      // it is a no-op for genuinely authenticated board requests.
+      userId: actor.actorType === "user" ? attributedUserId(req) : null,
     });
 
     await logActivity(db, {
@@ -9006,7 +9010,7 @@ export function issueRoutes(
       const actor = getActorInfo(req);
       const { interaction, createdIssues, continuationIssue } = await issueThreadInteractionService(db).acceptInteraction(issue, interactionId, req.body, {
         agentId: actor.agentId,
-        userId: actor.actorType === "user" ? actor.actorId : null,
+        userId: actor.actorType === "user" ? attributedUserId(req) : null,
       });
       const continuationWakeIssue = continuationIssue ?? issue;
 
@@ -9114,7 +9118,7 @@ export function issueRoutes(
       const actor = getActorInfo(req);
       const interaction = await issueThreadInteractionService(db).rejectInteraction(issue, interactionId, req.body, {
         agentId: actor.agentId,
-        userId: actor.actorType === "user" ? actor.actorId : null,
+        userId: actor.actorType === "user" ? attributedUserId(req) : null,
       });
 
       await logActivity(db, {
@@ -9171,7 +9175,7 @@ export function issueRoutes(
       const actor = getActorInfo(req);
       const interaction = await issueThreadInteractionService(db).answerQuestions(issue, interactionId, req.body, {
         agentId: actor.agentId,
-        userId: actor.actorType === "user" ? actor.actorId : null,
+        userId: actor.actorType === "user" ? attributedUserId(req) : null,
       });
 
       await logActivity(db, {
@@ -9228,7 +9232,7 @@ export function issueRoutes(
         req.body,
         {
           agentId: actor.agentId,
-          userId: actor.actorType === "user" ? actor.actorId : null,
+          userId: actor.actorType === "user" ? attributedUserId(req) : null,
         },
       );
 

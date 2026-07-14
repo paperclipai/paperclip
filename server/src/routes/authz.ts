@@ -119,6 +119,38 @@ export function assertCompanyAccess(req: Request, companyId: string) {
   }
 }
 
+/**
+ * Sentinel recorded as the human author/resolver of a durable, human-facing
+ * artifact (an interaction card, an issue comment) when the request carried
+ * no `Authorization` header at all.
+ *
+ * `local_trusted` deployment mode grants EVERY unauthenticated caller the
+ * board's identity (`req.actor.type === "board"`, `source: "local_implicit"`)
+ * so Cole's own local CLI works without a token. An agent process that
+ * simply forgot to send its bearer key is granted the exact same identity —
+ * the two are indistinguishable at the network layer. Do not remove this
+ * distinction to "simplify" attribution: collapsing it back to the literal
+ * `local-board` user id is precisely the SYN-1910/SYN-1926 defect (a keyless
+ * agent write renders, in every audit trail, as Cole having clicked
+ * something he never saw).
+ */
+export const LOCAL_IMPLICIT_ATTRIBUTION_USER_ID = "local-implicit";
+
+/**
+ * The user id to persist onto a createdBy*/resolvedBy*-style attribution
+ * column for the current request. Deliberately separate from
+ * `getActorInfo().actorId` (which stays "local-board" / session-derived) so
+ * that authorization checks (`assertBoard`, `isInstanceAdmin`, the
+ * local-trusted bootstrap principal FK in `ensureLocalTrustedBoardPrincipal`)
+ * are completely unaffected — this only changes what gets WRITTEN, never who
+ * is authorized to write it.
+ */
+export function attributedUserId(req: Request): string | null {
+  if (req.actor.type !== "board") return null;
+  if (req.actor.source === "local_implicit") return LOCAL_IMPLICIT_ATTRIBUTION_USER_ID;
+  return req.actor.userId ?? null;
+}
+
 export function getActorInfo(req: Request): (
   {
     actorType: "agent";
