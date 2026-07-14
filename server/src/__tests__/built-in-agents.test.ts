@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import {
   activityLog,
   agentConfigRevisions,
@@ -156,7 +156,7 @@ describeEmbeddedPostgres("built-in agents", () => {
   }
 
   it("validates the static registry and rejects invalid definitions", () => {
-    expect(listBuiltInAgentDefinitions().map((definition) => definition.key).sort()).toEqual(["briefs", "learning", "reflection-coach"]);
+    expect(listBuiltInAgentDefinitions().map((definition) => definition.key).sort()).toEqual(["briefs", "learning", "reflection-coach", "summarizer"]);
     expect(() => validateBuiltInAgentDefinitions([
       {
         key: "briefs",
@@ -627,8 +627,8 @@ describeEmbeddedPostgres("built-in agents", () => {
     const result = await reconcileBuiltInAgentsOnStartup(db);
 
     expect(result).toMatchObject({
-      autoEnsured: 1,
-      pendingApprovals: 1,
+      autoEnsured: 2,
+      pendingApprovals: 2,
     });
     const state = await builtInAgentService(db).get(companyId, "reflection-coach");
     expect(state).toMatchObject({
@@ -646,7 +646,10 @@ describeEmbeddedPostgres("built-in agents", () => {
     });
     expect(state.resources.map((resource) => resource.stockStatus)).toEqual(["missing", "missing", "missing"]);
 
-    const [approval] = await db.select().from(approvals).where(eq(approvals.companyId, companyId));
+    const allApprovals = await db.select().from(approvals).where(eq(approvals.companyId, companyId));
+    const approval = allApprovals.find(
+      (row) => (row.payload as { agentId?: string } | null)?.agentId === state.agentId,
+    )!;
     expect(approval).toMatchObject({
       type: "hire_agent",
       status: "pending",
@@ -662,7 +665,7 @@ describeEmbeddedPostgres("built-in agents", () => {
     });
 
     const pendingReconcile = await reconcileBuiltInAgentsOnStartup(db);
-    expect(pendingReconcile.pendingApprovals).toBe(1);
+    expect(pendingReconcile.pendingApprovals).toBe(2);
     const stillPending = await builtInAgentService(db).get(companyId, "reflection-coach");
     expect(stillPending).toMatchObject({
       status: "pending_approval",
@@ -698,7 +701,7 @@ describeEmbeddedPostgres("built-in agents", () => {
     const agentRows = await db.select().from(agents).where(eq(agents.companyId, companyId));
     expect(agentRows.filter((row) => readBuiltInAgentMarker(row.metadata)?.key === "reflection-coach")).toHaveLength(1);
     const approvalRows = await db.select().from(approvals).where(eq(approvals.companyId, companyId));
-    expect(approvalRows).toHaveLength(1);
+    expect(approvalRows).toHaveLength(2);
   });
 
   it("preserves Reflection Coach instruction drift on reconcile and restores it on reset", async () => {
@@ -935,6 +938,140 @@ describeEmbeddedPostgres("built-in agents", () => {
     expect(grantKeys).not.toContain("tasks:assign");
     expect(grantKeys).not.toContain("agents:configure");
     expect(grantKeys).not.toContain("skills:create");
+  });
+
+  it("materializes the Summarizer bundle paused on the cheap model lane with a disabled routine", async () => {
+    const companyId = await seedCompany();
+    const root = await agentService(db).create(companyId, {
+      name: "CEO",
+      role: "ceo",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: { model: "gpt-5.4" },
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const state = await builtInAgentService(db).ensure(companyId, "summarizer");
+
+    expect(state.agent).toMatchObject({
+      companyId,
+      name: "Summarizer",
+      title: "Summarizer",
+      icon: "sparkles",
+      role: "general",
+      reportsTo: root.id,
+      adapterType: "codex_local",
+      budgetMonthlyCents: 0,
+    });
+    expect(state.status).toBe("paused");
+    expect(state.pauseReason).toBe("Built-in Summarizer is disabled until explicitly configured.");
+    expect(readBuiltInAgentMarker(state.agent?.metadata)).toEqual({
+      key: "summarizer",
+      featureKeys: ["summarizer"],
+    });
+
+    // Cheap-model default lane is declared and enabled so summary runs can request it.
+    expect(state.agent?.runtimeConfig).toMatchObject({
+      modelProfiles: { cheap: { enabled: true, label: "Low-cost summariser model", adapterConfig: {} } },
+    });
+
+    expect(state.resources.map((resource) => [resource.resourceKind, resource.stockStatus])).toEqual([
+      ["instructions", "stock_current"],
+      ["skill", "stock_current"],
+      ["routine", "stock_current"],
+    ]);
+
+    const [skill] = await db
+      .select()
+      .from(companySkills)
+      .where(eq(companySkills.key, "paperclipai/bundled/paperclip-operations/summarize-status"));
+    expect(skill).toMatchObject({
+      key: "paperclipai/bundled/paperclip-operations/summarize-status",
+      slug: "summarize-status",
+    });
+    expect(readPaperclipSkillSyncPreference(state.agent!.adapterConfig).desiredSkills).toContain(skill!.key);
+
+    const [routine] = await db
+      .select()
+      .from(routines)
+      .where(and(eq(routines.companyId, companyId), eq(routines.assigneeAgentId, state.agentId!)));
+    expect(routine).toMatchObject({
+      title: "Refresh stale summary slots",
+      status: "paused",
+      assigneeAgentId: state.agentId,
+      originKind: "built_in_agent_bundle",
+      originId: "summarizer:refresh-stale-summaries",
+    });
+    const [trigger] = await db.select().from(routineTriggers).where(eq(routineTriggers.routineId, routine!.id));
+    expect(trigger).toMatchObject({
+      kind: "schedule",
+      enabled: false,
+      cronExpression: "0 8 * * *",
+      timezone: "UTC",
+    });
+  });
+
+  it("keeps the Summarizer not-configured until an adapter model is set", async () => {
+    const companyId = await seedCompany();
+
+    await expect(builtInAgentService(db).requireBuiltInAgent(companyId, "summarizer")).rejects.toMatchObject({
+      status: 412,
+      details: {
+        code: "built_in_agent_not_configured",
+        key: "summarizer",
+      },
+    });
+
+    // Provisioning without a model leaves it paused (default), still not runnable as "ready".
+    const paused = await builtInAgentService(db).ensure(companyId, "summarizer");
+    expect(paused.status).toBe("paused");
+    await expect(builtInAgentService(db).requireBuiltInAgent(companyId, "summarizer")).resolves.toMatchObject({
+      warning: { code: "built_in_agent_paused", key: "summarizer" },
+    });
+  });
+
+  it("preserves an operator-overridden cheap summariser model across reconcile", async () => {
+    const companyId = await seedCompany();
+    const builtIns = builtInAgentService(db);
+    const created = await builtIns.ensure(companyId, "summarizer");
+
+    // Operator overrides the cheap lane with a provider-specific low-cost model.
+    await agentService(db).update(created.agentId!, {
+      runtimeConfig: {
+        modelProfiles: { cheap: { enabled: true, label: "Cheap", adapterConfig: { model: "haiku-cheap" } } },
+      },
+    }, { allowBuiltInAgentMetadata: true });
+
+    const reconciled = await builtIns.ensure(companyId, "summarizer");
+    expect(reconciled.agent?.runtimeConfig).toMatchObject({
+      modelProfiles: { cheap: { adapterConfig: { model: "haiku-cheap" } } },
+    });
+  });
+
+  it("restores Summarizer instruction drift on reset", async () => {
+    const companyId = await seedCompany();
+    const builtIns = builtInAgentService(db);
+    const created = await builtIns.ensure(companyId, "summarizer");
+    const instructions = agentInstructionsService();
+
+    await instructions.writeFile(created.agent!, "AGENTS.md", "# Custom Summarizer\n\nOperator edit.\n");
+
+    const reconciled = await builtIns.ensure(companyId, "summarizer");
+    expect(reconciled.resources.find((resource) => resource.resourceKind === "instructions")).toMatchObject({
+      stockStatus: "operator_modified",
+      resetAvailable: true,
+      changedFiles: ["AGENTS.md"],
+    });
+
+    const reset = await builtIns.reset(companyId, "summarizer");
+    expect(reset.resources.find((resource) => resource.resourceKind === "instructions")).toMatchObject({
+      stockStatus: "stock_current",
+      resetAvailable: false,
+    });
+    const resetFile = await instructions.readFile(reset.agent!, "AGENTS.md");
+    expect(resetFile.content).toContain("Summarizer");
+    expect(resetFile.content).not.toContain("Operator edit.");
   });
 
   it("controls the Reflection Coach routine schedule without enabling it by default", async () => {

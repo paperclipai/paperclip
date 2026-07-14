@@ -38,6 +38,7 @@ export interface BuiltInAgentDefinition {
   defaultManager?: "single_root_agent" | null;
   allowedAdapterTypes?: string[];
   defaultBudgetMonthlyCents?: number;
+  defaultRuntimeConfig?: Record<string, unknown>;
   bundle?: BuiltInAgentBundleDefinition;
 }
 
@@ -173,6 +174,35 @@ const FALLBACK_REFLECTION_COACH_SKILL = [
   "",
 ].join("\n");
 
+const FALLBACK_SUMMARIZER_INSTRUCTIONS = [
+  "You are Summarizer, a built-in reporting agent at Paperclip.",
+  "",
+  "Turn the current state of a Paperclip scope (project, workspaces overview, or a single project workspace) into a short, honest, human-readable Markdown summary and write it back to that scope's summary slot as a new revision. Use the `summarize-status` skill as your operating procedure.",
+  "",
+  "Read-and-report only: never change issues, workspaces, or code. Cite issue identifiers, never fabricate status, keep every read company-scoped, and run on the low-cost model profile lane by default.",
+  "",
+].join("\n");
+
+const FALLBACK_SUMMARIZER_ROUTINE = [
+  "Regenerate summary slots whose scope has changed since their last revision.",
+  "",
+  "Paused by default; spends no tokens until an operator enables the schedule or runs it manually. Read-and-report only — the only write is the summary revision.",
+  "",
+].join("\n");
+
+const FALLBACK_SUMMARIZER_SKILL = [
+  "---",
+  "name: summarize-status",
+  "description: Write a short, human-readable Markdown status summary for a Paperclip summary slot so the first read answers what needs me, what is next, and what changed.",
+  "key: paperclipai/bundled/paperclip-operations/summarize-status",
+  "---",
+  "",
+  "# Summarize status",
+  "",
+  "Turn a Paperclip scope's current state into a short Markdown summary answering what needs a human, what is in flight, and what changed since the last revision, then write it back to the scope's summary slot. Read-and-report only; cite issue identifiers and never fabricate status.",
+  "",
+].join("\n");
+
 const warnedBuiltInTextFallbacks = new Set<string>();
 const warnedBuiltInTextReadErrors = new Set<string>();
 
@@ -245,6 +275,25 @@ const REFLECTION_COACH_SKILL = readBuiltInTextWithFallback(
       : []),
   ],
   FALLBACK_REFLECTION_COACH_SKILL,
+);
+
+const SUMMARIZER_INSTRUCTIONS = readBuiltInText("summarizer/AGENTS.md", FALLBACK_SUMMARIZER_INSTRUCTIONS);
+const SUMMARIZER_ROUTINE = readBuiltInText(
+  "summarizer/routines/refresh-stale-summaries.md",
+  FALLBACK_SUMMARIZER_ROUTINE,
+);
+const SUMMARIZER_SKILL = readBuiltInTextWithFallback(
+  "summarizer/SKILL.md",
+  [
+    path.resolve(
+      moduleDir,
+      "../../../packages/skills-catalog/catalog/bundled/paperclip-operations/summarize-status/SKILL.md",
+    ),
+    ...(skillsCatalogRoot
+      ? [path.join(skillsCatalogRoot, "catalog/bundled/paperclip-operations/summarize-status/SKILL.md")]
+      : []),
+  ],
+  FALLBACK_SUMMARIZER_SKILL,
 );
 
 const DEFINITIONS = validateBuiltInAgentDefinitions([
@@ -337,6 +386,82 @@ const DEFINITIONS = validateBuiltInAgentDefinitions([
             label: "Weekly reflection review",
             enabled: false,
             cronExpression: "0 9 * * 1",
+            timezone: "UTC",
+          },
+        ],
+      },
+    },
+  },
+  {
+    key: "summarizer",
+    displayName: "Summarizer",
+    featureKeys: ["summarizer"],
+    shortPurpose:
+      "Writes short, human-readable Markdown status summaries into project, workspaces-overview, and project-workspace summary slots on demand.",
+    defaultInstructions: SUMMARIZER_INSTRUCTIONS,
+    defaultRole: "general",
+    defaultTitle: "Summarizer",
+    defaultIcon: "sparkles",
+    defaultPermissions: {
+      canCreateAgents: false,
+      canCreateSkills: false,
+    },
+    defaultStatus: "paused",
+    defaultManager: "single_root_agent",
+    allowedAdapterTypes: ["claude_local", "codex_local", "gemini_local", "opencode_local", "process"],
+    defaultBudgetMonthlyCents: 0,
+    defaultRuntimeConfig: {
+      modelProfiles: {
+        cheap: {
+          enabled: true,
+          label: "Low-cost summariser model",
+          adapterConfig: {},
+        },
+      },
+    },
+    bundle: {
+      stockVersion: "2026-07-14",
+      instructions: {
+        entryFile: "AGENTS.md",
+        files: {
+          "AGENTS.md": SUMMARIZER_INSTRUCTIONS,
+        },
+      },
+      skill: {
+        skillKey: "summarize-status",
+        displayName: "Summarize status",
+        slug: "summarize-status",
+        canonicalKey: "paperclipai/bundled/paperclip-operations/summarize-status",
+        files: {
+          "summarize-status/SKILL.md": SUMMARIZER_SKILL,
+        },
+      },
+      routine: {
+        routineKey: "refresh-stale-summaries",
+        title: "Refresh stale summary slots",
+        description: SUMMARIZER_ROUTINE,
+        status: "paused",
+        priority: "medium",
+        concurrencyPolicy: "coalesce_if_active",
+        catchUpPolicy: "skip_missed",
+        variables: [
+          { name: "staleAfterHours", label: "Refresh slots older than (hours)", type: "number", defaultValue: 24, required: true, options: [] },
+          { name: "maxSlots", label: "Max slots to refresh per run", type: "number", defaultValue: 10, required: true, options: [] },
+          {
+            name: "scopeKinds",
+            label: "Scope kinds to include",
+            type: "select",
+            defaultValue: "all",
+            required: true,
+            options: ["all", "project", "workspaces_overview", "project_workspace"],
+          },
+        ],
+        triggers: [
+          {
+            kind: "schedule",
+            label: "Daily stale-summary refresh",
+            enabled: false,
+            cronExpression: "0 8 * * *",
             timezone: "UTC",
           },
         ],
@@ -1455,11 +1580,13 @@ export function builtInAgentService(db: Db) {
     const created = await agentSvc.create(companyId, {
       ...definitionPatch(definition, resolvedInput),
       status: definition.defaultStatus ?? "idle",
-      pauseReason: definition.defaultStatus === "paused" ? "Built-in Reflection Coach is disabled until explicitly configured." : null,
+      pauseReason: definition.defaultStatus === "paused"
+        ? `Built-in ${definition.displayName} is disabled until explicitly configured.`
+        : null,
       pausedAt: definition.defaultStatus === "paused" ? new Date() : null,
       reportsTo,
       metadata: builtInMetadata(definition),
-      runtimeConfig: {},
+      runtimeConfig: definition.defaultRuntimeConfig ?? {},
       permissions: definition.defaultPermissions ?? {},
       spentMonthlyCents: 0,
       lastHeartbeatAt: null,
@@ -1532,7 +1659,7 @@ export function builtInAgentService(db: Db) {
       status: "pending_approval",
       reportsTo,
       metadata: builtInMetadata(definition),
-      runtimeConfig: {},
+      runtimeConfig: definition.defaultRuntimeConfig ?? {},
       permissions: definition.defaultPermissions ?? {},
       spentMonthlyCents: 0,
       lastHeartbeatAt: null,
