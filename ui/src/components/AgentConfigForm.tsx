@@ -1402,6 +1402,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
               {credentialSetup && selectedCompanyId && (
                 <AdapterCredentialConnect
+                  key={adapterType}
                   companyId={selectedCompanyId}
                   adapterType={adapterType}
                   setup={credentialSetup}
