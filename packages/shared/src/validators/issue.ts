@@ -707,6 +707,8 @@ export const askUserQuestionsResultSchema = z.object({
   cancellationReason: z.string().trim().max(4000).nullable().optional(),
   expirationReason: z.literal("superseded_by_comment").optional(),
   commentId: z.string().uuid().nullable().optional(),
+  supersededByCommentAuthorUserId: z.string().trim().min(1).max(255).nullable().optional(),
+  supersededByCommentAuthorAgentId: z.string().uuid().nullable().optional(),
   summaryMarkdown: z.string().max(20000).nullable().optional(),
 });
 
@@ -872,6 +874,8 @@ export const requestConfirmationResultSchema = z.object({
   outcome: z.enum(["accepted", "rejected", "superseded_by_comment", "stale_target"]),
   reason: z.string().trim().max(4000).nullable().optional(),
   commentId: z.string().uuid().nullable().optional(),
+  supersededByCommentAuthorUserId: z.string().trim().min(1).max(255).nullable().optional(),
+  supersededByCommentAuthorAgentId: z.string().uuid().nullable().optional(),
   staleTarget: requestConfirmationTargetSchema.nullable().optional(),
   resumeFailure: requestConfirmationResumeFailureSchema.nullable().optional(),
 });
@@ -995,6 +999,8 @@ export const requestItemVerdictsResultSchema = z.object({
   items: z.array(requestItemVerdictsResultItemSchema)
     .max(REQUEST_ITEM_VERDICTS_ITEM_LIMIT),
   commentId: z.string().uuid().nullable().optional(),
+  supersededByCommentAuthorUserId: z.string().trim().min(1).max(255).nullable().optional(),
+  supersededByCommentAuthorAgentId: z.string().uuid().nullable().optional(),
   staleTarget: requestConfirmationTargetSchema.nullable().optional(),
 }).superRefine((value, ctx) => {
   const itemIds = new Set<string>();

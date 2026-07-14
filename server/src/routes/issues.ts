@@ -8373,7 +8373,7 @@ export function issueRoutes(
         comment,
         {
           agentId: actor.agentId,
-          userId: actor.actorType === "user" ? actor.actorId : null,
+          userId: actor.actorType === "user" ? attributedUserId(req) : null,
         },
       );
       await logExpiredRequestConfirmations({
@@ -9996,7 +9996,7 @@ export function issueRoutes(
       comment,
       {
         agentId: actor.agentId,
-        userId: actor.actorType === "user" ? actor.actorId : null,
+        userId: actor.actorType === "user" ? attributedUserId(req) : null,
       },
     );
     await logExpiredRequestConfirmations({

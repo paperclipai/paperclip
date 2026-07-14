@@ -267,13 +267,19 @@ function normalizeCreateInteractionInput(input: CreateIssueThreadInteraction): C
   }
 }
 
-function buildSupersededByCommentResult(row: IssueThreadInteractionRow, commentId: string) {
+function buildSupersededByCommentResult(
+  row: IssueThreadInteractionRow,
+  commentId: string,
+  commentAuthor: { userId: string | null; agentId: string | null },
+) {
   if (row.kind === "ask_user_questions") {
     return {
       version: 1,
       answers: [],
       expirationReason: "superseded_by_comment",
       commentId,
+      supersededByCommentAuthorUserId: commentAuthor.userId,
+      supersededByCommentAuthorAgentId: commentAuthor.agentId,
       summaryMarkdown: null,
     } as const;
   }
@@ -286,6 +292,8 @@ function buildSupersededByCommentResult(row: IssueThreadInteractionRow, commentI
       complete: false,
       items: interaction.result?.items ?? [],
       commentId,
+      supersededByCommentAuthorUserId: commentAuthor.userId,
+      supersededByCommentAuthorAgentId: commentAuthor.agentId,
     } satisfies RequestItemVerdictsResult;
   }
 
@@ -293,6 +301,8 @@ function buildSupersededByCommentResult(row: IssueThreadInteractionRow, commentI
     version: 1,
     outcome: "superseded_by_comment",
     commentId,
+    supersededByCommentAuthorUserId: commentAuthor.userId,
+    supersededByCommentAuthorAgentId: commentAuthor.agentId,
   } as const;
 }
 
@@ -1608,7 +1618,15 @@ export function issueThreadInteractionService(db: Db) {
           .update(issueThreadInteractions)
           .set({
             status: "expired",
-            result: buildSupersededByCommentResult(row, comment.id),
+            // This path runs synchronously inside the comment-post request
+            // itself, so `actor` IS the comment's live, authenticated author
+            // (already de-ambiguated by the caller via attributedUserId) —
+            // unlike the historical catch-up below, attributing the
+            // resolution to them here is correct, not a defect.
+            result: buildSupersededByCommentResult(row, comment.id, {
+              userId: actor.userId ?? null,
+              agentId: actor.agentId ?? null,
+            }),
             resolvedByAgentId: actor.agentId ?? null,
             resolvedByUserId: actor.userId ?? null,
             resolvedAt: now,
@@ -1707,9 +1725,18 @@ export function issueThreadInteractionService(db: Db) {
             .update(issueThreadInteractions)
             .set({
               status: "expired",
-              result: buildSupersededByCommentResult(sampleQuestionRow, comment.id),
+              // SYN-1926 item 3: this is an automatic, opportunistic catch-up
+              // (runs on any GET, decoupled from the comment's own request) —
+              // never attribute it to a human. resolvedByAgentId/UserId both
+              // null is the existing "system" sentinel (see resolveActorKind
+              // below); who actually wrote the superseding comment is still
+              // fully preserved as provenance in `result`.
+              result: buildSupersededByCommentResult(sampleQuestionRow, comment.id, {
+                userId: comment.authorUserId ?? null,
+                agentId: comment.authorAgentId ?? null,
+              }),
               resolvedByAgentId: null,
-              resolvedByUserId: comment.authorUserId,
+              resolvedByUserId: null,
               resolvedAt: now,
               updatedAt: now,
             })
@@ -1728,9 +1755,13 @@ export function issueThreadInteractionService(db: Db) {
             .update(issueThreadInteractions)
             .set({
               status: "expired",
-              result: buildSupersededByCommentResult(sampleConfirmationRow, comment.id),
+              // SYN-1926 item 3: see the ask_user_questions branch above.
+              result: buildSupersededByCommentResult(sampleConfirmationRow, comment.id, {
+                userId: comment.authorUserId ?? null,
+                agentId: comment.authorAgentId ?? null,
+              }),
               resolvedByAgentId: null,
-              resolvedByUserId: comment.authorUserId,
+              resolvedByUserId: null,
               resolvedAt: now,
               updatedAt: now,
             })
@@ -1747,9 +1778,13 @@ export function issueThreadInteractionService(db: Db) {
             .update(issueThreadInteractions)
             .set({
               status: "expired",
-              result: buildSupersededByCommentResult(row, comment.id),
+              // SYN-1926 item 3: see the ask_user_questions branch above.
+              result: buildSupersededByCommentResult(row, comment.id, {
+                userId: comment.authorUserId ?? null,
+                agentId: comment.authorAgentId ?? null,
+              }),
               resolvedByAgentId: null,
-              resolvedByUserId: comment.authorUserId,
+              resolvedByUserId: null,
               resolvedAt: now,
               updatedAt: now,
             })

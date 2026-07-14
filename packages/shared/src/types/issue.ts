@@ -1017,6 +1017,11 @@ export interface AskUserQuestionsResult {
   cancellationReason?: string | null;
   expirationReason?: "superseded_by_comment";
   commentId?: string | null;
+  /** SYN-1926 item 3: who actually wrote the superseding comment, kept as
+   * provenance independent of resolvedByUserId/resolvedByAgentId (which are
+   * null — this is a system-triggered expiry, not a human resolution). */
+  supersededByCommentAuthorUserId?: string | null;
+  supersededByCommentAuthorAgentId?: string | null;
   summaryMarkdown?: string | null;
 }
 
@@ -1111,6 +1116,9 @@ export interface RequestConfirmationResult {
   outcome: "accepted" | "rejected" | "superseded_by_comment" | "stale_target";
   reason?: string | null;
   commentId?: string | null;
+  /** SYN-1926 item 3: see AskUserQuestionsResult. */
+  supersededByCommentAuthorUserId?: string | null;
+  supersededByCommentAuthorAgentId?: string | null;
   staleTarget?: RequestConfirmationTarget | null;
   resumeFailure?: {
     status: "retrying" | "needs_attention";
@@ -1143,6 +1151,9 @@ export interface RequestItemVerdictsResult {
   complete: boolean;
   items: RequestItemVerdictsResultItem[];
   commentId?: string | null;
+  /** SYN-1926 item 3: see AskUserQuestionsResult. */
+  supersededByCommentAuthorUserId?: string | null;
+  supersededByCommentAuthorAgentId?: string | null;
   staleTarget?: RequestConfirmationTarget | null;
 }
 
