@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
+import { createServer as createNetServer } from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { and, desc, eq, inArray } from "drizzle-orm";
@@ -53,6 +54,38 @@ const SMOKE_LAB_FIXTURES_DIR = (() => {
 
 function smokeLabFixturePath(fixtureFile: string) {
   return path.join(SMOKE_LAB_FIXTURES_DIR, fixtureFile);
+}
+
+const FETCH_BLOCKED_PORTS = new Set([
+  1, 7, 9, 11, 13, 15, 17, 19, 20, 21, 22, 23, 25, 37, 42, 43, 53, 69, 77, 79,
+  87, 95, 101, 102, 103, 104, 109, 110, 111, 113, 115, 117, 119, 123, 135, 137,
+  139, 143, 161, 179, 389, 427, 465, 512, 513, 514, 515, 526, 530, 531, 532, 540,
+  548, 554, 556, 563, 587, 601, 636, 989, 990, 993, 995, 1719, 1720, 1723,
+  2049, 3659, 4045, 4190, 5060, 5061, 6000, 6566, 6665, 6666, 6667, 6668, 6669,
+  6697, 10080,
+]);
+
+async function allocateFetchAllowedLoopbackPort() {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const server = createNetServer();
+    const port = await new Promise<number>((resolve, reject) => {
+      const onError = (error: Error) => {
+        server.off("error", onError);
+        reject(error);
+      };
+      server.once("error", onError);
+      server.listen(0, "127.0.0.1", () => {
+        server.off("error", onError);
+        const address = server.address();
+        resolve(typeof address === "object" && address ? address.port : 0);
+      });
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => error ? reject(error) : resolve());
+    });
+    if (port > 0 && !FETCH_BLOCKED_PORTS.has(port)) return port;
+  }
+  throw new Error("Unable to allocate a Fetch-allowed Smoke Lab fixture port");
 }
 
 const HTTP_APP_KEY = "paperclip.smoke-lab.http-fixture";
@@ -927,8 +960,9 @@ export function smokeLabService(db: Db, options: {
     if (httpSidecar && !httpSidecar.child.killed) return httpSidecar;
     httpSidecarError = null;
     const fixturePath = smokeLabFixturePath("http-fixture.mjs");
+    const port = await allocateFetchAllowedLoopbackPort();
     const child = spawn(process.execPath, [fixturePath], {
-      env: { ...process.env, HOST: "127.0.0.1", PORT: "0" },
+      env: { ...process.env, HOST: "127.0.0.1", PORT: String(port) },
       stdio: ["ignore", "pipe", "pipe"],
       detached: process.platform !== "win32",
     });

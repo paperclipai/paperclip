@@ -1,6 +1,6 @@
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
 import { createServer, type Server } from "node:http";
-import { AddressInfo } from "node:net";
+import { listenOnFetchAllowedPort } from "./fetch-allowed-port";
 import { storyById } from "./mcp-user-stories.catalog";
 
 const SCREENSHOT_DIR = "test-results/mcp-user-stories";
@@ -186,8 +186,7 @@ async function startMockMcp(): Promise<MockMcpServer> {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ jsonrpc: "2.0", id: payload.id ?? null, result: {} }));
   });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const port = (server.address() as AddressInfo).port;
+  const port = await listenOnFetchAllowedPort(server);
   return {
     url: `http://127.0.0.1:${port}/`,
     captures,

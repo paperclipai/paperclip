@@ -1,6 +1,6 @@
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
 import { createServer, type Server } from "node:http";
-import { AddressInfo } from "node:net";
+import { listenOnFetchAllowedPort } from "./fetch-allowed-port";
 
 // Apps navigation — dark-mode + navigation QA for the prosumer Apps surfaces.
 // Seeds a healthy app and a broken (needs-attention) app, forces dark theme,
@@ -58,8 +58,7 @@ async function startMockMcp(): Promise<MockMcpServer> {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ jsonrpc: "2.0", id: payload.id ?? null, result: {} }));
   });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const { port } = server.address() as AddressInfo;
+  const port = await listenOnFetchAllowedPort(server);
   return {
     url: `http://127.0.0.1:${port}`,
     close: () => new Promise((resolve) => server.close(() => resolve())),
