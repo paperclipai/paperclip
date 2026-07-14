@@ -1,4 +1,4 @@
-import { memo, useState, type MouseEvent } from "react";
+import { memo, useState, type KeyboardEvent, type MouseEvent } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   AlarmClock,
@@ -126,9 +126,17 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
     if (expandable) onToggleExpand(item);
   };
   const activateFromCard = (event: MouseEvent<HTMLDivElement>) => {
-    if (event.target instanceof Element && event.target.closest("a,button,input,textarea,select,[role='menuitem']")) {
+    if (
+      event.target instanceof Element &&
+      event.target.closest("a,button,input,textarea,select,[role='button'],[role='menuitem']") !== event.currentTarget
+    ) {
       return;
     }
+    activate();
+  };
+  const activateFromCardKeyboard = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.target !== event.currentTarget || (event.key !== "Enter" && event.key !== " ")) return;
+    event.preventDefault();
     activate();
   };
 
@@ -167,6 +175,11 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
       <div
         className={cn("flex items-start gap-2 py-3 pl-4 pr-3", expandable && "cursor-pointer")}
         onClick={activateFromCard}
+        onKeyDown={activateFromCardKeyboard}
+        role={expandable ? "button" : undefined}
+        tabIndex={expandable ? 0 : undefined}
+        aria-expanded={expandable ? expanded : undefined}
+        aria-label={expandable ? (expanded ? "Collapse decision" : "Expand decision") : undefined}
         data-attention-card-body
       >
         {/* Expand affordance / spacer gutter — keeps headlines aligned across the list. */}

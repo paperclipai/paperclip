@@ -207,6 +207,47 @@ describe("AttentionQueueRow", () => {
     expect(onToggleExpand).toHaveBeenCalledTimes(2);
   });
 
+  it("toggles expand from the keyboard-focused decision body", () => {
+    const onToggleExpand = vi.fn();
+    render(
+      <AttentionQueueRow
+        item={buildItem()}
+        companyId="c1"
+        expanded={false}
+        onToggleExpand={onToggleExpand}
+        onDismiss={noop}
+      />,
+    );
+    const body = container?.querySelector<HTMLElement>("[data-attention-card-body]");
+    expect(body?.getAttribute("role")).toBe("button");
+    expect(body?.tabIndex).toBe(0);
+    expect(body?.getAttribute("aria-expanded")).toBe("false");
+    act(() => {
+      body?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      body?.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true }));
+    });
+    expect(onToggleExpand).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not toggle when an ARIA button inside the decision body is clicked", () => {
+    const onToggleExpand = vi.fn();
+    render(
+      <AttentionQueueRow
+        item={buildItem()}
+        companyId="c1"
+        expanded={false}
+        onToggleExpand={onToggleExpand}
+        onDismiss={noop}
+      />,
+    );
+    const body = container?.querySelector("[data-attention-card-body]");
+    const ariaButton = document.createElement("span");
+    ariaButton.setAttribute("role", "button");
+    body?.appendChild(ariaButton);
+    act(() => ariaButton.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(onToggleExpand).not.toHaveBeenCalled();
+  });
+
   it("exposes the visible expand chevron as an accessible button", () => {
     const onToggleExpand = vi.fn();
     render(
