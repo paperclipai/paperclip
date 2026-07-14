@@ -296,6 +296,54 @@ describe("project env routes", () => {
     expect(JSON.stringify(res.body)).not.toContain("top-secret");
   });
 
+  it("patches write-only env bindings without returning or replacing untouched values", async () => {
+    const existingEnv = {
+      KEEP: { type: "plain", value: "untouched-value" },
+      REMOVE: { type: "plain", value: "removed-value" },
+      REPLACE: { type: "plain", value: "old-value" },
+    };
+    const patchSet = {
+      REPLACE: {
+        type: "secret_ref",
+        secretId: "11111111-1111-4111-8111-111111111111",
+        version: "latest",
+      },
+    };
+    const expectedEnv = {
+      KEEP: existingEnv.KEEP,
+      REPLACE: patchSet.REPLACE,
+    };
+    mockProjectService.getById.mockResolvedValue(buildProject({ env: existingEnv }));
+    mockSecretService.normalizeEnvBindingsForPersistence.mockResolvedValue(patchSet);
+    mockProjectService.update.mockResolvedValue(buildProject({ env: expectedEnv }));
+
+    const res = await request(await createApp())
+      .patch("/api/projects/project-1")
+      .send({ envPatch: { set: patchSet, remove: ["REMOVE"] } });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockSecretService.normalizeEnvBindingsForPersistence).toHaveBeenCalledWith(
+      "company-1",
+      patchSet,
+      expect.objectContaining({ fieldPath: "envPatch.set" }),
+    );
+    expect(mockProjectService.update).toHaveBeenCalledWith("project-1", { env: expectedEnv });
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        details: {
+          changedKeys: ["envPatch"],
+          envKeys: ["KEEP", "REPLACE"],
+        },
+      }),
+    );
+    expect(res.body.env).toBeNull();
+    expect(res.body.envMetadata.keys).toEqual(["KEEP", "REPLACE"]);
+    expect(JSON.stringify(res.body)).not.toContain("untouched-value");
+    expect(JSON.stringify(res.body)).not.toContain("removed-value");
+    expect(JSON.stringify(res.body)).not.toContain("old-value");
+  });
+
   it("does not echo env values from project delete responses", async () => {
     mockProjectService.getById.mockResolvedValue(buildProject());
     mockProjectService.remove.mockResolvedValue(buildProject({

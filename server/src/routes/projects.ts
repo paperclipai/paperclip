@@ -247,11 +247,30 @@ export function projectRoutes(db: Db) {
     if (typeof body.archivedAt === "string") {
       body.archivedAt = new Date(body.archivedAt);
     }
+    if (body.envPatch !== undefined) {
+      const normalizedSet = await secretsSvc.normalizeEnvBindingsForPersistence(
+        existing.companyId,
+        body.envPatch.set ?? {},
+        {
+          strictMode: strictSecretsMode,
+          fieldPath: "envPatch.set",
+        },
+      );
+      const nextEnv = { ...(existing.env ?? {}) };
+      for (const key of body.envPatch.remove ?? []) {
+        delete nextEnv[key];
+      }
+      Object.assign(nextEnv, normalizedSet ?? {});
+      body.env = Object.keys(nextEnv).length > 0 ? nextEnv : null;
+      delete body.envPatch;
+    }
     if (body.env !== undefined) {
-      body.env = await secretsSvc.normalizeEnvBindingsForPersistence(existing.companyId, body.env, {
-        strictMode: strictSecretsMode,
-        fieldPath: "env",
-      });
+      if (req.body.envPatch === undefined) {
+        body.env = await secretsSvc.normalizeEnvBindingsForPersistence(existing.companyId, body.env, {
+          strictMode: strictSecretsMode,
+          fieldPath: "env",
+        });
+      }
     }
     const project = await svc.update(id, body);
     if (!project) {

@@ -113,6 +113,17 @@ const projectFields = {
   archivedAt: z.string().datetime().optional().nullable(),
 };
 
+const projectEnvPatchSchema = z
+  .object({
+    set: envConfigSchema.optional(),
+    remove: z.array(z.string().min(1)).optional(),
+  })
+  .strict()
+  .refine(
+    (patch) => Object.keys(patch.set ?? {}).length > 0 || (patch.remove?.length ?? 0) > 0,
+    "Environment patch must set or remove at least one binding.",
+  );
+
 export const createProjectSchema = z.object({
   ...projectFields,
   workspace: createProjectWorkspaceSchema.optional(),
@@ -120,7 +131,16 @@ export const createProjectSchema = z.object({
 
 export type CreateProject = z.infer<typeof createProjectSchema>;
 
-export const updateProjectSchema = z.object(projectFields).partial();
+export const updateProjectSchema = z
+  .object({
+    ...projectFields,
+    envPatch: projectEnvPatchSchema.optional(),
+  })
+  .partial()
+  .refine((update) => update.env === undefined || update.envPatch === undefined, {
+    message: "Use either env or envPatch, not both.",
+    path: ["envPatch"],
+  });
 
 export type UpdateProject = z.infer<typeof updateProjectSchema>;
 
