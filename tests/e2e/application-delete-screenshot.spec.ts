@@ -5,6 +5,8 @@ import { expect, test } from "@playwright/test";
 // connection-free application through the board API, then opens the row-actions
 // Delete dialog and screenshots it.
 test("captures the application delete confirm dialog", async ({ page }) => {
+  const flags = await page.request.patch("/api/instance/settings/experimental", { data: { enableApps: true } });
+  expect(flags.ok(), `enable apps failed ${flags.status()}: ${await flags.text()}`).toBe(true);
   await page.goto("/dashboard");
 
   const companyRes = await page.request.post("/api/companies", {

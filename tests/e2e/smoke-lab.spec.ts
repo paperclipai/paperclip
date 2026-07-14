@@ -82,7 +82,7 @@ async function createScout(request: APIRequestContext, companyId: string): Promi
 }
 
 async function enableSmokeLab(request: APIRequestContext) {
-  await json(await request.patch("/api/instance/settings/experimental", { data: { enableSmokeLab: true } }));
+  await json(await request.patch("/api/instance/settings/experimental", { data: { enableSmokeLab: true, enableApps: true } }));
 }
 
 async function createSmokeRun(request: APIRequestContext, companyId: string) {
