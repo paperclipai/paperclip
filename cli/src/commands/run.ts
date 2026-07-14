@@ -23,6 +23,7 @@ interface RunOptions {
   repair?: boolean;
   yes?: boolean;
   bind?: "loopback" | "lan" | "tailnet";
+  maintenance?: boolean;
 }
 
 interface StartedServer {
@@ -32,19 +33,60 @@ interface StartedServer {
   listenPort: number;
 }
 
+export function resolveRunPreparationPolicy(
+  maintenance: boolean,
+  requestedRepair: boolean | undefined,
+): {
+  createInstanceDirectories: boolean;
+  allowOnboarding: boolean;
+  doctorRepair: boolean;
+  generateBootstrapInvite: boolean;
+} {
+  return maintenance
+    ? {
+        createInstanceDirectories: false,
+        allowOnboarding: false,
+        doctorRepair: false,
+        generateBootstrapInvite: false,
+      }
+    : {
+        createInstanceDirectories: true,
+        allowOnboarding: true,
+        doctorRepair: requestedRepair ?? true,
+        generateBootstrapInvite: true,
+      };
+}
+
+export function applyMaintenanceEnvironmentOverrides(enabled: boolean): void {
+  if (!enabled) return;
+  process.env.PAPERCLIP_MAINTENANCE_MODE = "true";
+  process.env.HOST = "127.0.0.1";
+  process.env.PAPERCLIP_BIND = "loopback";
+  delete process.env.PAPERCLIP_BIND_HOST;
+  process.env.HEARTBEAT_SCHEDULER_ENABLED = "false";
+  process.env.PAPERCLIP_DB_BACKUP_ENABLED = "false";
+}
+
 export async function runCommand(opts: RunOptions): Promise<void> {
+  const preparation = resolveRunPreparationPolicy(opts.maintenance === true, opts.repair);
   const instanceId = resolvePaperclipInstanceId(opts.instance);
   process.env.PAPERCLIP_INSTANCE_ID = instanceId;
 
   const homeDir = resolvePaperclipHomeDir();
-  fs.mkdirSync(homeDir, { recursive: true });
-
   const paths = describeLocalInstancePaths(instanceId);
-  fs.mkdirSync(paths.instanceRoot, { recursive: true });
+  if (preparation.createInstanceDirectories) {
+    fs.mkdirSync(homeDir, { recursive: true });
+    fs.mkdirSync(paths.instanceRoot, { recursive: true });
+  }
 
   const configPath = resolveConfigPath(opts.config);
   process.env.PAPERCLIP_CONFIG = configPath;
   loadPaperclipEnvFile(configPath);
+
+  // Command-level maintenance overrides must win over both the shell and the
+  // instance env file. This keeps an inspection boot loopback-only and
+  // disables autonomous/background execution before the server is imported.
+  applyMaintenanceEnvironmentOverrides(opts.maintenance === true);
 
   p.intro(pc.bgCyan(pc.black(" paperclipai run ")));
   p.log.message(pc.dim(`Home: ${paths.homeDir}`));
@@ -52,6 +94,10 @@ export async function runCommand(opts: RunOptions): Promise<void> {
   p.log.message(pc.dim(`Config: ${configPath}`));
 
   if (!configExists(configPath)) {
+    if (!preparation.allowOnboarding) {
+      p.log.error("Maintenance mode requires an existing configuration and will not run onboarding.");
+      process.exit(1);
+    }
     if (!process.stdin.isTTY || !process.stdout.isTTY) {
       p.log.error("No config found and terminal is non-interactive.");
       p.log.message(`Run ${pc.cyan("paperclipai onboard")} once, then retry ${pc.cyan("paperclipai run")}.`);
@@ -65,7 +111,7 @@ export async function runCommand(opts: RunOptions): Promise<void> {
   p.log.step("Running doctor checks...");
   const summary = await doctor({
     config: configPath,
-    repair: opts.repair ?? true,
+    repair: preparation.doctorRepair,
     yes: opts.yes ?? true,
   });
 
@@ -83,7 +129,7 @@ export async function runCommand(opts: RunOptions): Promise<void> {
   p.log.step("Starting Paperclip server...");
   const startedServer = await importServerEntry();
 
-  if (shouldGenerateBootstrapInviteAfterStart(config)) {
+  if (preparation.generateBootstrapInvite && shouldGenerateBootstrapInviteAfterStart(config)) {
     p.log.step("Generating bootstrap CEO invite");
     await bootstrapCeoInvite({
       config: configPath,

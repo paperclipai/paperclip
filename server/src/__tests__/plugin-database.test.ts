@@ -354,6 +354,52 @@ describeEmbeddedPostgres("plugin database namespaces", () => {
     expect(migrations).toHaveLength(2);
   });
 
+  it("purges plugin namespaces idempotently, including when the ledger row is missing", async () => {
+    const pluginManifest = manifest();
+    const namespace = derivePluginDatabaseNamespace(pluginManifest.id);
+    const packageRoot = await createPluginPackage(
+      pluginManifest,
+      `CREATE TABLE ${namespace}.rows (id uuid PRIMARY KEY);`,
+    );
+    const pluginId = await installPluginRecord(pluginManifest);
+    const pluginDb = pluginDatabaseService(db);
+    await pluginDb.applyMigrations(pluginId, pluginManifest, packageRoot);
+
+    await db.delete(pluginDatabaseNamespaces).where(eq(pluginDatabaseNamespaces.pluginId, pluginId));
+    await expect(pluginDb.purgeNamespace(pluginId, pluginManifest)).resolves.toBe(namespace);
+    await expect(pluginDb.purgeNamespace(pluginId, pluginManifest)).resolves.toBe(namespace);
+
+    const schemas = Array.from(
+      await db.execute(
+        sql<{ schema_name: string }>`SELECT schema_name FROM information_schema.schemata WHERE schema_name = ${namespace}`,
+      ) as Iterable<{ schema_name: string }>,
+    );
+    expect(schemas).toHaveLength(0);
+  });
+
+  it("purges a recorded namespace even when the current manifest no longer declares database access", async () => {
+    const pluginManifest = manifest();
+    const namespace = derivePluginDatabaseNamespace(pluginManifest.id);
+    const packageRoot = await createPluginPackage(
+      pluginManifest,
+      `CREATE TABLE ${namespace}.rows (id uuid PRIMARY KEY);`,
+    );
+    const pluginId = await installPluginRecord(pluginManifest);
+    const pluginDb = pluginDatabaseService(db);
+    await pluginDb.applyMigrations(pluginId, pluginManifest, packageRoot);
+
+    const manifestWithoutDatabase = { ...pluginManifest, database: undefined };
+    await expect(pluginDb.purgeNamespace(pluginId, manifestWithoutDatabase)).resolves.toBe(namespace);
+    await expect(pluginDb.purgeNamespace(pluginId, manifestWithoutDatabase)).resolves.toBe(namespace);
+
+    const schemas = Array.from(
+      await db.execute(
+        sql<{ schema_name: string }>`SELECT schema_name FROM information_schema.schemata WHERE schema_name = ${namespace}`,
+      ) as Iterable<{ schema_name: string }>,
+    );
+    expect(schemas).toHaveLength(0);
+  });
+
   it("applies the bundled LLM Wiki migrations through the production validator", async () => {
     const pluginManifest = llmWikiManifest();
     const repoRoot = path.basename(process.cwd()) === "server" ? path.resolve(process.cwd(), "..") : process.cwd();

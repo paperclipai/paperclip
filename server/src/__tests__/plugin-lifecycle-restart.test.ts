@@ -10,7 +10,7 @@
  * via the plugin loader, which re-reads the manifest from disk and runs
  * `applyMigrations` (idempotently) before starting the new worker.
  */
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const pluginRecord = {
   id: "plugin-1",
@@ -31,6 +31,7 @@ const mockRegistry = vi.hoisted(() => ({
   getConfig: vi.fn(),
   list: vi.fn(),
   delete: vi.fn(),
+  uninstall: vi.fn(),
 }));
 
 vi.mock("../services/plugin-registry.js", () => ({
@@ -59,6 +60,9 @@ function makeWorkerManagerStub() {
 }
 
 describe("pluginLifecycleManager.restartWorker", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
   it("does a full deactivate+reactivate cycle when the loader has runtime services", async () => {
     mockRegistry.getById.mockResolvedValue(pluginRecord);
     mockRegistry.updateStatus.mockResolvedValue(pluginRecord);
@@ -125,5 +129,60 @@ describe("pluginLifecycleManager.restartWorker", () => {
     expect(stopped).toHaveBeenCalledWith({ pluginId: "plugin-1", pluginKey: "example.plugin" });
     expect(started).toHaveBeenCalledTimes(1);
     expect(started).toHaveBeenCalledWith({ pluginId: "plugin-1", pluginKey: "example.plugin" });
+  });
+});
+
+describe("pluginLifecycleManager.unload", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function makeUnloadLoader(): PluginLoader {
+    return {
+      hasRuntimeServices: vi.fn().mockReturnValue(false),
+      cleanupInstallArtifacts: vi.fn().mockResolvedValue(undefined),
+    } as unknown as PluginLoader;
+  }
+
+  it("purges plugin-owned data before hard-deleting the registry row", async () => {
+    const disabledPlugin = { ...pluginRecord, status: "disabled" };
+    mockRegistry.getById.mockResolvedValue(disabledPlugin);
+    mockRegistry.uninstall.mockResolvedValue(null);
+    const purgePluginData = vi.fn().mockResolvedValue(undefined);
+    const lifecycle = pluginLifecycleManager({} as never, {
+      loader: makeUnloadLoader(),
+      purgePluginData,
+    });
+
+    await lifecycle.unload(pluginRecord.id, true);
+
+    expect(purgePluginData).toHaveBeenCalledWith(disabledPlugin);
+    expect(mockRegistry.uninstall).toHaveBeenCalledWith(pluginRecord.id, true);
+    expect(purgePluginData.mock.invocationCallOrder[0]).toBeLessThan(
+      mockRegistry.uninstall.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it("fails closed before registry deletion when namespace purge fails", async () => {
+    const disabledPlugin = { ...pluginRecord, status: "disabled" };
+    mockRegistry.getById.mockResolvedValue(disabledPlugin);
+    const lifecycle = pluginLifecycleManager({} as never, {
+      loader: makeUnloadLoader(),
+      purgePluginData: vi.fn().mockRejectedValue(new Error("drop failed")),
+    });
+
+    await expect(lifecycle.unload(pluginRecord.id, true)).rejects.toThrow("drop failed");
+    expect(mockRegistry.uninstall).not.toHaveBeenCalled();
+  });
+
+  it("treats repeated hard uninstall as an idempotent no-op", async () => {
+    mockRegistry.getById.mockResolvedValue(null);
+    const lifecycle = pluginLifecycleManager({} as never, {
+      loader: makeUnloadLoader(),
+      purgePluginData: vi.fn(),
+    });
+
+    await expect(lifecycle.unload(pluginRecord.id, true)).resolves.toBeNull();
+    expect(mockRegistry.uninstall).not.toHaveBeenCalled();
   });
 });

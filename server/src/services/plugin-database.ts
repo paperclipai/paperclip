@@ -460,6 +460,23 @@ export function pluginDatabaseService(db: PluginDatabaseRootClient) {
   return {
     ensureNamespace,
 
+    /**
+     * Drop all plugin-owned database objects. The namespace ledger may be
+     * absent after an older partial uninstall, so derive the deterministic
+     * namespace from the manifest as a repair fallback. DROP IF EXISTS makes
+     * repeated cleanup safe.
+     */
+    async purgeNamespace(pluginId: string, manifest: PaperclipPluginManifestV1) {
+      const recorded = await getNamespace(pluginId);
+      if (!recorded && !manifest.database) return null;
+      const namespaceName = recorded?.namespaceName ?? derivePluginDatabaseNamespace(
+        manifest.id,
+        manifest.database!.namespaceSlug,
+      );
+      await db.execute(sql.raw(`DROP SCHEMA IF EXISTS ${quoteIdentifier(namespaceName)} CASCADE`));
+      return namespaceName;
+    },
+
     async applyMigrations(
       pluginId: string,
       manifest: PaperclipPluginManifestV1,

@@ -23,6 +23,14 @@ const {
   resolveHeartbeatSchedulingSuppressionMock,
   routineServiceFactoryMock,
   routineServiceMock,
+  backfillPrincipalAccessCompatibilityMock,
+  bootstrapExecutionPolicyFromEnvMock,
+  reconcileCloudUpstreamRunsOnStartupMock,
+  reconcileCodexLocalManagedHomesOnStartupMock,
+  reconcileBuiltInAgentsOnStartupMock,
+  reconcilePersistedRuntimeServicesOnStartupMock,
+  initializeBoardClaimChallengeMock,
+  maybePersistWorktreeRuntimePortsMock,
 } = vi.hoisted(() => {
   const createAppMock = vi.fn(async () => ((_: unknown, __: unknown) => {}) as never);
   const createBetterAuthInstanceMock = vi.fn(() => ({}));
@@ -81,6 +89,31 @@ const {
     close: vi.fn(),
   };
   const loadConfigMock = vi.fn();
+  const backfillPrincipalAccessCompatibilityMock = vi.fn(async () => ({
+    agentMembershipsInserted: 0,
+    humanGrantsInserted: 0,
+  }));
+  const bootstrapExecutionPolicyFromEnvMock = vi.fn(async () => null);
+  const reconcileCloudUpstreamRunsOnStartupMock = vi.fn(async () => ({ reconciled: 0 }));
+  const reconcileCodexLocalManagedHomesOnStartupMock = vi.fn(async () => ({
+    scanned: 0,
+    seeded: 0,
+    alreadySeeded: 0,
+    externalOverride: 0,
+    noManagedHome: 0,
+    sourceAuthMissing: 0,
+    failed: 0,
+    seededAgentIds: [],
+  }));
+  const reconcileBuiltInAgentsOnStartupMock = vi.fn(async () => ({
+    scanned: 0,
+    reconciled: 0,
+    unknown: 0,
+    duplicates: 0,
+  }));
+  const reconcilePersistedRuntimeServicesOnStartupMock = vi.fn(async () => ({ reconciled: 0 }));
+  const initializeBoardClaimChallengeMock = vi.fn(async () => undefined);
+  const maybePersistWorktreeRuntimePortsMock = vi.fn();
 
   return {
     createAppMock,
@@ -99,11 +132,20 @@ const {
     resolveHeartbeatSchedulingSuppressionMock,
     routineServiceFactoryMock,
     routineServiceMock,
+    backfillPrincipalAccessCompatibilityMock,
+    bootstrapExecutionPolicyFromEnvMock,
+    reconcileCloudUpstreamRunsOnStartupMock,
+    reconcileCodexLocalManagedHomesOnStartupMock,
+    reconcileBuiltInAgentsOnStartupMock,
+    reconcilePersistedRuntimeServicesOnStartupMock,
+    initializeBoardClaimChallengeMock,
+    maybePersistWorktreeRuntimePortsMock,
   };
 });
 
 function buildTestConfig(overrides: Record<string, unknown> = {}) {
   return {
+    maintenanceMode: false,
     deploymentMode: "authenticated",
     deploymentExposure: "private",
     bind: "loopback",
@@ -190,12 +232,9 @@ vi.mock("../realtime/live-events-ws.js", () => ({
 }));
 
 vi.mock("../services/index.js", () => ({
-  backfillPrincipalAccessCompatibility: vi.fn(async () => ({
-    agentMembershipsInserted: 0,
-    humanGrantsInserted: 0,
-  })),
+  backfillPrincipalAccessCompatibility: backfillPrincipalAccessCompatibilityMock,
   feedbackService: feedbackServiceFactoryMock,
-  bootstrapExecutionPolicyFromEnv: vi.fn(async () => null),
+  bootstrapExecutionPolicyFromEnv: bootstrapExecutionPolicyFromEnvMock,
   environmentCustomImageService: environmentCustomImagesServiceFactoryMock,
   heartbeatService: heartbeatServiceFactoryMock,
   instanceSettingsService: vi.fn(() => ({
@@ -207,24 +246,10 @@ vi.mock("../services/index.js", () => ({
       },
     })),
   })),
-  reconcileCloudUpstreamRunsOnStartup: vi.fn(async () => ({ reconciled: 0 })),
-  reconcileCodexLocalManagedHomesOnStartup: vi.fn(async () => ({
-    scanned: 0,
-    seeded: 0,
-    alreadySeeded: 0,
-    externalOverride: 0,
-    noManagedHome: 0,
-    sourceAuthMissing: 0,
-    failed: 0,
-    seededAgentIds: [],
-  })),
-  reconcileBuiltInAgentsOnStartup: vi.fn(async () => ({
-    scanned: 0,
-    reconciled: 0,
-    unknown: 0,
-    duplicates: 0,
-  })),
-  reconcilePersistedRuntimeServicesOnStartup: vi.fn(async () => ({ reconciled: 0 })),
+  reconcileCloudUpstreamRunsOnStartup: reconcileCloudUpstreamRunsOnStartupMock,
+  reconcileCodexLocalManagedHomesOnStartup: reconcileCodexLocalManagedHomesOnStartupMock,
+  reconcileBuiltInAgentsOnStartup: reconcileBuiltInAgentsOnStartupMock,
+  reconcilePersistedRuntimeServicesOnStartup: reconcilePersistedRuntimeServicesOnStartupMock,
   resolveHeartbeatSchedulingSuppression: resolveHeartbeatSchedulingSuppressionMock,
   routineService: routineServiceFactoryMock,
 }));
@@ -247,7 +272,11 @@ vi.mock("../startup-banner.js", () => ({
 
 vi.mock("../board-claim.js", () => ({
   getBoardClaimWarningUrl: vi.fn(() => null),
-  initializeBoardClaimChallenge: vi.fn(async () => undefined),
+  initializeBoardClaimChallenge: initializeBoardClaimChallengeMock,
+}));
+
+vi.mock("../worktree-config.js", () => ({
+  maybePersistWorktreeRuntimePorts: maybePersistWorktreeRuntimePortsMock,
 }));
 
 vi.mock("../auth/better-auth.js", () => ({
@@ -284,6 +313,22 @@ describe("startServer feedback export wiring", () => {
       storageService: { id: "storage-service" },
       serverPort: 3210,
     });
+  });
+
+  it("keeps maintenance startup free of autonomous reconciliation", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({ maintenanceMode: true }));
+
+    await startServer();
+
+    expect(backfillPrincipalAccessCompatibilityMock).not.toHaveBeenCalled();
+    expect(bootstrapExecutionPolicyFromEnvMock).not.toHaveBeenCalled();
+    expect(reconcileCloudUpstreamRunsOnStartupMock).not.toHaveBeenCalled();
+    expect(reconcileCodexLocalManagedHomesOnStartupMock).not.toHaveBeenCalled();
+    expect(reconcileBuiltInAgentsOnStartupMock).not.toHaveBeenCalled();
+    expect(reconcilePersistedRuntimeServicesOnStartupMock).not.toHaveBeenCalled();
+    expect(initializeBoardClaimChallengeMock).not.toHaveBeenCalled();
+    expect(maybePersistWorktreeRuntimePortsMock).not.toHaveBeenCalled();
+    expect(createAppMock.mock.calls[0]?.[1]).toMatchObject({ maintenanceMode: true });
   });
 
   it("keeps routine ticks and setup cleanup active when heartbeat scheduling is suppressed", async () => {
@@ -438,6 +483,28 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
       expect.arrayContaining(["http://custom-api:3100"]),
     );
     expect(JSON.parse(process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON ?? "[]")[0]).toBe("http://custom-api:3100");
+  });
+
+  it("ignores an external PAPERCLIP_API_URL in maintenance mode", async () => {
+    process.env.PAPERCLIP_API_URL = "https://public.example.test";
+    loadConfigMock.mockReturnValueOnce(buildTestConfig({ maintenanceMode: true }));
+
+    const started = await startServer();
+
+    expect(started.apiUrl).toBe("http://127.0.0.1:3210");
+    expect(process.env.PAPERCLIP_API_URL).toBe("http://127.0.0.1:3210");
+  });
+
+  it("refuses embedded PostgreSQL in maintenance mode before creating a database", async () => {
+    loadConfigMock.mockReturnValueOnce(buildTestConfig({
+      maintenanceMode: true,
+      databaseUrl: undefined,
+    }));
+
+    await expect(startServer()).rejects.toThrow(
+      "Maintenance mode requires an existing external DATABASE_URL",
+    );
+    expect(createDbMock).not.toHaveBeenCalled();
   });
 
   it("falls back to host-based URL when PAPERCLIP_API_URL is not set", async () => {
