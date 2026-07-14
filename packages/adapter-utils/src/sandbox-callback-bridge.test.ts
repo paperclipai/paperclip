@@ -668,6 +668,7 @@ describe("sandbox callback bridge", () => {
     });
 
     const queueDir = path.posix.join(prepared.runtimeRootDir, "paperclip-bridge");
+    const directories = sandboxCallbackBridgeDirectories(queueDir);
     const bridgeToken = createSandboxCallbackBridgeToken();
     const bridge = await startSandboxCallbackBridgeServer({
       runner,
@@ -693,6 +694,84 @@ describe("sandbox callback bridge", () => {
     await expect(response.json()).resolves.toEqual({
       error: "Timed out waiting for host bridge response.",
     });
+    // Timed-out requests must not leave residue that permanently occupies a queue slot.
+    await expect(readdir(directories.requestsDir)).resolves.toEqual([]);
+    await expect(readdir(directories.responsesDir)).resolves.toEqual([]);
+  });
+
+  it("does not brick the run when unanswered calls exceed maxQueueDepth", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-ratchet-"));
+    cleanupDirs.push(rootDir);
+
+    const localWorkspaceDir = path.join(rootDir, "local-workspace");
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+    await mkdir(localWorkspaceDir, { recursive: true });
+    await mkdir(remoteWorkspaceDir, { recursive: true });
+    await writeFile(path.join(localWorkspaceDir, "README.md"), "bridge ratchet test\n", "utf8");
+
+    const runner = createExecRunner();
+    const bridgeAsset = await createSandboxCallbackBridgeAsset();
+    cleanupFns.push(bridgeAsset.cleanup);
+    const prepared = await prepareCommandManagedRuntime({
+      runner,
+      spec: {
+        remoteCwd: remoteWorkspaceDir,
+        timeoutMs: 30_000,
+      },
+      adapterKey: "codex",
+      workspaceLocalDir: localWorkspaceDir,
+      assets: [{ key: "bridge", localDir: bridgeAsset.localDir }],
+    });
+
+    const queueDir = path.posix.join(prepared.runtimeRootDir, "paperclip-bridge");
+    const directories = sandboxCallbackBridgeDirectories(queueDir);
+    const bridgeToken = createSandboxCallbackBridgeToken();
+    const bridge = await startSandboxCallbackBridgeServer({
+      runner,
+      remoteCwd: remoteWorkspaceDir,
+      assetRemoteDir: prepared.assetDirs.bridge,
+      queueDir,
+      bridgeToken,
+      timeoutMs: 30_000,
+      pollIntervalMs: 10,
+      responseTimeoutMs: 75,
+      maxQueueDepth: 4,
+    });
+    cleanupFns.push(async () => {
+      await bridge.stop();
+    });
+
+    // Burst of unanswered calls equal to maxQueueDepth — without unlink-on-abandon,
+    // every slot would remain occupied forever and the next call would 503.
+    const timedOut = await Promise.all(
+      Array.from({ length: 4 }, () =>
+        fetch(`${bridge.baseUrl}/api/agents/me`, {
+          headers: { authorization: `Bearer ${bridgeToken}` },
+        }),
+      ),
+    );
+    for (const response of timedOut) {
+      expect(response.status).toBe(502);
+    }
+    await expect(readdir(directories.requestsDir)).resolves.toEqual([]);
+
+    // A subsequent answered call must succeed — the queue must not be bricked.
+    const answeredPromise = fetch(`${bridge.baseUrl}/api/agents/me`, {
+      headers: { authorization: `Bearer ${bridgeToken}` },
+    });
+    const requestFile = await waitForJsonFile(directories.requestsDir);
+    await writeFile(
+      path.posix.join(directories.responsesDir, requestFile),
+      JSON.stringify({
+        status: 200,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ok: true }),
+      }),
+      "utf8",
+    );
+    const answered = await answeredPromise;
+    expect(answered.status).toBe(200);
+    await expect(answered.json()).resolves.toEqual({ ok: true });
   });
 
   it("returns a 502 for malformed host response files", async () => {
