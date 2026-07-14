@@ -112,6 +112,12 @@ export const queryKeys = {
   builtInAgents: {
     list: (companyId: string) => ["built-in-agents", companyId] as const,
   },
+  summarySlots: {
+    detail: (companyId: string, scopeKind: string, slotKey: string, scopeId?: string | null) =>
+      ["summary-slots", companyId, scopeKind, slotKey, scopeId ?? null] as const,
+    revisions: (companyId: string, scopeKind: string, slotKey: string, scopeId?: string | null) =>
+      ["summary-slots", companyId, scopeKind, slotKey, scopeId ?? null, "revisions"] as const,
+  },
   issues: {
     list: (companyId: string) => ["issues", companyId] as const,
     mentionPool: (companyId: string) => ["issues", companyId, "mention-pool"] as const,
