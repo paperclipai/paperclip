@@ -276,6 +276,7 @@ export async function writeManagedCodexMcpConfig(input: {
     ? `${unmanagedConfig}${unmanagedConfig ? "\n\n" : ""}${block}\n`
     : `${unmanagedConfig}${unmanagedConfig ? "\n" : ""}`;
   await fs.writeFile(configPath, next, { mode: 0o600 });
+  await fs.chmod(configPath, 0o600);
   return { configPath, warnings };
 }
 

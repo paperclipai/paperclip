@@ -674,8 +674,8 @@ const PUBLIC_OPERATIONS = new Set([
   "GET /api/invites/{token}/test-resolution",
   "POST /api/invites/{token}/accept",
   "POST /api/join-requests/{requestId}/claim-api-key",
-  "GET /api/mcp/gateways/{gatewayPublicId}",
-  "POST /api/mcp/gateways/{gatewayPublicId}",
+  "GET /mcp/gateways/{gatewayPublicId}",
+  "POST /mcp/gateways/{gatewayPublicId}",
   "GET /api/tool-gateway/gateways/{gatewayId}/mcp",
   "POST /api/tool-gateway/gateways/{gatewayId}/mcp",
 ]);
@@ -6054,14 +6054,14 @@ const mcpGatewayProtocolSchema = z.record(z.unknown());
 
 registerCurrentRoute({
   method: "get",
-  path: "/api/mcp/gateways/{gatewayPublicId}",
+  path: "/mcp/gateways/{gatewayPublicId}",
   tags: ["tool-gateway"],
   summary: "Describe a public MCP gateway endpoint",
 });
 
 registerCurrentRoute({
   method: "post",
-  path: "/api/mcp/gateways/{gatewayPublicId}",
+  path: "/mcp/gateways/{gatewayPublicId}",
   tags: ["tool-gateway"],
   summary: "Handle MCP gateway protocol requests by public id",
   body: mcpGatewayProtocolSchema,
