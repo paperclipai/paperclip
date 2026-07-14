@@ -123,6 +123,19 @@ describe("routine and plugin parity commands", () => {
       ["PUT", `http://localhost:3100/api/plugins/plug/companies/${COMPANY_ID}/local-folders/source`],
     ]);
   });
+
+  it("resolves plugin config company context from the environment", async () => {
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse()));
+    vi.stubGlobal("fetch", fetchMock);
+    process.env.PAPERCLIP_COMPANY_ID = COMPANY_ID;
+
+    await run(["plugin", "config", "plug"]);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      `http://localhost:3100/api/plugins/plug/config?companyId=${COMPANY_ID}`,
+      expect.objectContaining({ method: "GET" }),
+    );
+  });
 });
 
 function jsonResponse(body: unknown = { ok: true }, init: ResponseInit = { status: 200 }): Response {

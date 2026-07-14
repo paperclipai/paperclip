@@ -766,7 +766,7 @@ function addPluginConfigGet(parent: Command, name: string, description: string):
       .command(name)
       .description(description)
       .argument("<pluginId>", "Plugin ID or key")
-      .requiredOption("-C, --company-id <id>", "Company ID")
+      .option("-C, --company-id <id>", "Company ID")
       .action(async (pluginId: string, opts: PluginCompanyOptions) => {
         try {
           const ctx = resolveCommandContext(opts, { requireCompany: true });
@@ -789,7 +789,7 @@ function addPluginConfigPost(parent: Command, name: string, description: string,
       .command(name)
       .description(description)
       .argument("<pluginId>", "Plugin ID or key")
-      .requiredOption("-C, --company-id <id>", "Company ID")
+      .option("-C, --company-id <id>", "Company ID")
       .option("--payload-json <json>", "JSON payload", "{}")
       .action(async (pluginId: string, opts: PluginCompanyOptions) => {
         try {
