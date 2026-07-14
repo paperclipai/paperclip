@@ -4809,7 +4809,7 @@ export function resolveHeartbeatRunOutcome(input: {
   if (isHeartbeatRunTerminalStatus(input.latestStatus)) return input.latestStatus;
   if (input.timedOut) return "timed_out";
   if (
-    (input.exitCode ?? 0) === 0 &&
+    (input.exitCode ?? 1) === 0 &&
     input.signal === null &&
     !input.errorMessage
   ) {

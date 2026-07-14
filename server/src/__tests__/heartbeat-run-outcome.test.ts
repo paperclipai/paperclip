@@ -26,4 +26,52 @@ describe("heartbeat run outcome finalization", () => {
       }),
     ).toBe("failed");
   });
+
+  it("returns timed_out when the adapter timed out", () => {
+    expect(
+      resolveHeartbeatRunOutcome({
+        latestStatus: "running",
+        timedOut: true,
+        exitCode: 0,
+        signal: null,
+        errorMessage: null,
+      }),
+    ).toBe("timed_out");
+  });
+
+  it("returns failed when the process was signaled", () => {
+    expect(
+      resolveHeartbeatRunOutcome({
+        latestStatus: "running",
+        timedOut: false,
+        exitCode: 0,
+        signal: "SIGTERM",
+        errorMessage: null,
+      }),
+    ).toBe("failed");
+  });
+
+  it("passes through an already-terminal latestStatus", () => {
+    expect(
+      resolveHeartbeatRunOutcome({
+        latestStatus: "cancelled",
+        timedOut: false,
+        exitCode: 0,
+        signal: null,
+        errorMessage: null,
+      }),
+    ).toBe("cancelled");
+  });
+
+  it("treats null exitCode as failure (consistent with execute.ts)", () => {
+    expect(
+      resolveHeartbeatRunOutcome({
+        latestStatus: "running",
+        timedOut: false,
+        exitCode: null,
+        signal: null,
+        errorMessage: null,
+      }),
+    ).toBe("failed");
+  });
 });
