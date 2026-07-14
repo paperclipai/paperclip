@@ -151,8 +151,10 @@ function isPrivateOrReservedIpv6(address: string): boolean {
   if (/^fe[89ab]/.test(address)) return true;
   if (address.startsWith("ff")) return true;
   if (address === "100::" || address.startsWith("100:")) return true;
+  if (/^2001:(?:0{0,4}:|:)/.test(address)) return true;
   if (address.startsWith("2001:db8:") || address === "2001:db8::") return true;
   if (address.startsWith("2001:2:") || address === "2001:2::") return true;
+  if (/^2001:0?2[0-9a-f]:/.test(address)) return true;
   if (address.startsWith("2002:")) return true;
   if (address.startsWith("64:ff9b:")) return true;
   return false;

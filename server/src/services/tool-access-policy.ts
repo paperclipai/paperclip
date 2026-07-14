@@ -573,6 +573,13 @@ function assertGenericPolicyType(policyType: string) {
   }
 }
 
+function isSafePolicyRegex(pattern: string): boolean {
+  if (pattern.length > 256) return false;
+  if (/\\[1-9]/.test(pattern)) return false;
+  if (/\((?:[^()\\]|\\.)*[+*](?:[^()\\]|\\.)*\)[+*{]/.test(pattern)) return false;
+  return true;
+}
+
 function assertSupportedPolicyConditions(conditions: Record<string, unknown> | null | undefined) {
   if (!conditions || Object.keys(conditions).length === 0) return;
   const parsed = toolPolicyConditionsSchema.safeParse(conditions);
@@ -583,6 +590,14 @@ function assertSupportedPolicyConditions(conditions: Record<string, unknown> | n
         message: issue.message,
       })),
     });
+  }
+  const fieldMatches = parsed.data.arguments?.fieldMatches;
+  if (fieldMatches) {
+    for (const pattern of Object.values(fieldMatches)) {
+      if (!isSafePolicyRegex(pattern)) {
+        throw unprocessable("Tool policy fieldMatches includes an unsafe regular expression");
+      }
+    }
   }
 }
 

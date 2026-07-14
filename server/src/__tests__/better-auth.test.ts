@@ -50,11 +50,11 @@ describe("Better Auth cookie scoping", () => {
     } as BetterAuthOptions).sessionToken.name).toBe("paperclip-pap-worktree.session_token");
   });
 
-  it("disables Better Auth rate limiting for authenticated private instances by default", () => {
+  it("enables Better Auth rate limiting for authenticated private instances by default", () => {
     expect(buildBetterAuthRateLimitOptions({
       deploymentMode: "authenticated",
       deploymentExposure: "private",
-    })).toEqual({ enabled: false });
+    })).toEqual({ enabled: true });
   });
 
   it("keeps Better Auth rate limiting enabled for authenticated public instances", () => {

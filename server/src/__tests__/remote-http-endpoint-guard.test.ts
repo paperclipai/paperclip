@@ -21,4 +21,17 @@ describe("remote HTTP endpoint guard", () => {
       guardError,
     )).resolves.toBeUndefined();
   });
+
+  it.each([
+    "http://[2001::1]/mcp",
+    "http://[2001:20::1]/mcp",
+    "http://[2001:2f::1]/mcp",
+    "http://[64:ff9b:1::1]/mcp",
+  ])("rejects reserved IPv6 endpoint %s", async (url) => {
+    await expect(assertPublicRemoteHttpEndpoint(
+      new URL(url),
+      {},
+      guardError,
+    )).rejects.toMatchObject({ code: "remote_http_private_endpoint" });
+  });
 });
