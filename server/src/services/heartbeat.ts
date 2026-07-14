@@ -11184,6 +11184,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         biller,
         billingType,
         costStatus,
+        usageBasis: "per_run",
         model: result.model ?? "unknown",
         inputTokens,
         cachedInputTokens,
