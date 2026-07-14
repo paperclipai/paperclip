@@ -415,6 +415,30 @@ describe("issue attachment routes", () => {
     expect(res.body.error).toBe("Internal server error");
   });
 
+  it("terminates the archive response when an attachment stream fails", async () => {
+    const storage = createStorageService();
+    mockIssueService.listAttachments.mockResolvedValue([makeAttachment("text/plain", "report.txt")]);
+    vi.mocked(storage.getObject).mockResolvedValue({
+      stream: new Readable({
+        read() {
+          this.push("partial");
+          queueMicrotask(() => this.destroy(new Error("stream failed")));
+        },
+      }),
+      contentLength: 7,
+    });
+    const app = await createApp(storage);
+
+    const result = await Promise.race([
+      request(app)
+        .get("/api/issues/11111111-1111-4111-8111-111111111111/attachments/archive")
+        .then(() => "completed", () => "aborted"),
+      new Promise<string>((resolve) => setTimeout(() => resolve("timed-out"), 1_000)),
+    ]);
+
+    expect(result).toBe("aborted");
+  });
+
   it("rejects cross-company issue archive reads before loading entries", async () => {
     const storage = createStorageService();
     const app = await createApp(storage, { companyIds: ["company-2"], source: "session" });

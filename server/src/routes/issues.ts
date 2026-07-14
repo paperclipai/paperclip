@@ -10209,11 +10209,20 @@ export function issueRoutes(
       return;
     }
 
-    const archive = new ZipStream({ zlib: { level: 9 } });
+    const archive = new ZipStream({ zlib: { level: 1 } });
     const attachmentPaths = buildAttachmentArchivePaths(attachments);
     const appendEntry = (source: Buffer | Readable, name: string, date: Date) =>
       new Promise<void>((resolve, reject) => {
-        archive.entry(source, { name, date }, (err) => err ? reject(err) : resolve());
+        let settled = false;
+        const settle = (err?: Error | null) => {
+          if (settled) return;
+          settled = true;
+          if (!Buffer.isBuffer(source)) source.off("error", settle);
+          if (err) reject(err);
+          else resolve();
+        };
+        if (!Buffer.isBuffer(source)) source.once("error", settle);
+        archive.entry(source, { name, date }, settle);
       });
     let handledError = false;
     const handleArchiveError = (err: unknown, context: Record<string, unknown>) => {
@@ -10257,17 +10266,20 @@ export function issueRoutes(
           );
           throw err;
         }
-        object.stream.on("error", (err) => {
-          logger.error(
-            { err, issueId: issue.id, attachmentId: attachment.id, objectKey: attachment.objectKey },
-            "attachment stream failed while streaming issue archive",
+        try {
+          await appendEntry(
+            object.stream,
+            attachmentPaths.get(attachment.id) ?? `attachments/attachment-${attachment.id}`,
+            attachment.createdAt,
           );
-        });
-        await appendEntry(
-          object.stream,
-          attachmentPaths.get(attachment.id) ?? `attachments/attachment-${attachment.id}`,
-          attachment.createdAt,
-        );
+        } catch (err) {
+          handleArchiveError(err, {
+            stage: "attachment-stream",
+            attachmentId: attachment.id,
+            objectKey: attachment.objectKey,
+          });
+          throw err;
+        }
       }
 
       for (const document of issueDocuments) {
