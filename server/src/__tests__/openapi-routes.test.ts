@@ -58,6 +58,8 @@ const explicitOpenApiCoverageExclusions = new Set([
   "pipelines.ts",
   // Case routes are experimental (enableCases flag) and not yet in the public OpenAPI document.
   "cases.ts",
+  // Tool access routes are staged for a later split and are not mounted yet.
+  "tool-access.ts",
 ]);
 
 function createApp() {

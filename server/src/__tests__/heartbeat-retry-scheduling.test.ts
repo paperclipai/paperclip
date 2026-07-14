@@ -91,22 +91,24 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
   }, 20_000);
 
   afterEach(async () => {
-    await db.delete(activityLog);
-    await db.delete(heartbeatRunEvents);
-    await db.delete(environmentLeases);
-    await db.delete(issueRelations);
-    await db.delete(issues);
-    await db.delete(executionWorkspaces);
-    await db.delete(projects);
-    await db.delete(activityLog);
-    await db.delete(heartbeatRunEvents);
-    await db.delete(heartbeatRuns);
-    await db.delete(agentWakeupRequests);
-    await db.delete(agentRuntimeState);
-    await db.delete(budgetPolicies);
-    await db.delete(agents);
-    await db.delete(companySkills);
-    await db.delete(companies);
+    await db.execute(sql`
+      truncate table
+        "activity_log",
+        "heartbeat_run_events",
+        "environment_leases",
+        "issue_relations",
+        "issues",
+        "execution_workspaces",
+        "projects",
+        "heartbeat_runs",
+        "agent_wakeup_requests",
+        "agent_runtime_state",
+        "budget_policies",
+        "agents",
+        "company_skills",
+        "companies"
+      restart identity cascade
+    `);
   });
 
   afterAll(async () => {
