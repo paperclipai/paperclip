@@ -230,6 +230,13 @@ test.describe.serial("prosumer MCP flow prosumer MCP flow", () => {
       expect(connect.ok(), `connect failed ${connect.status()}: ${await connect.text()}`).toBe(true);
       const connectResult = await connect.json();
       const connectionId = connectResult.connectionId as string;
+      const enabledCatalogEntryIds = (connectResult.actions?.readOnly ?? []).map(
+        (action: { catalogEntryId: string }) => action.catalogEntryId,
+      );
+      const finish = await request.post(`/api/companies/${seed.companyId}/tools/apps/${connectionId}/finish`, {
+        data: { enabledCatalogEntryIds, askFirstCatalogEntryIds: [], access: "all_agents" },
+      });
+      expect(finish.ok(), `finish failed ${finish.status()}: ${await finish.text()}`).toBe(true);
 
       // Break the mock so the next health-check fails (simulates expired key /
       // dead remote — the same observable shape the server uses to mark a

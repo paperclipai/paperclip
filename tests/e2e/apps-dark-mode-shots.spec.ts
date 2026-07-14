@@ -71,6 +71,13 @@ async function connectApp(request: APIRequestContext, seed: Seed, url: string): 
   });
   expect(connect.ok(), `connect failed ${connect.status()}: ${await connect.text()}`).toBe(true);
   const body = await connect.json();
+  const enabledCatalogEntryIds = (body.actions?.readOnly ?? []).map(
+    (action: { catalogEntryId: string }) => action.catalogEntryId,
+  );
+  const finish = await request.post(`/api/companies/${seed.companyId}/tools/apps/${body.connectionId}/finish`, {
+    data: { enabledCatalogEntryIds, askFirstCatalogEntryIds: [], access: "all_agents" },
+  });
+  expect(finish.ok(), `finish failed ${finish.status()}: ${await finish.text()}`).toBe(true);
   return body.connectionId as string;
 }
 
