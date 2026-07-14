@@ -2180,6 +2180,20 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
+  path: "/api/issues/{id}/attachments/archive",
+  tags: ["assets"],
+  summary: "Download issue attachments and documents as a ZIP archive",
+  request: { params: z.object({ id: z.string() }) },
+  responses: {
+    200: { description: "ZIP archive content" },
+    401: r.unauthorized,
+    404: r.notFound,
+    422: r.unprocessable,
+  },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/api/companies/{companyId}/labels",
   tags: ["issues"],
   summary: "List labels in a company",
