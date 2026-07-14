@@ -59,6 +59,7 @@ import {
   issueCommentAuthorTypeSchema,
   issueCommentMetadataSchema,
   issueCommentPresentationSchema,
+  isPluginOperationIssueOriginKind,
   isUuidLike,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
 } from "@paperclipai/shared";
@@ -1405,6 +1406,62 @@ function nonPluginOperationIssueCondition() {
     OR ${issues.originKind} LIKE 'plugin:%:operation:%'
     OR ${inArray(issues.originKind, LEGACY_PLUGIN_OPERATION_ORIGIN_KINDS)}
   )`;
+}
+
+export const WIP_CAP_REACHED_MESSAGE = "Company WIP cap reached";
+
+/**
+ * Enforce the company-level WIP cap on concurrent `in_progress` issues (HELA-3909).
+ *
+ * MUST be called inside a transaction: it takes a `FOR UPDATE` row lock on the
+ * companies row so concurrent checkout/update transitions into `in_progress`
+ * serialize on that row. Without the lock, two agents checking out at the same
+ * time could both read `count = cap - 1` and both proceed, breaching the cap.
+ *
+ * The count mirrors the `issues_company_status_idx` access pattern
+ * (`company_id, status`) and excludes hidden issues and plugin-operation
+ * (service) issues, which the platform does not treat as agent WIP. The issue
+ * being transitioned is excluded from the count via `excludeIssueId` so that
+ * re-adopting an already-`in_progress` issue never trips the gate.
+ */
+async function ensureWipCapNotExceeded(
+  dbOrTx: any,
+  companyId: string,
+  options: { excludeIssueId?: string } = {},
+): Promise<void> {
+  const companyRow = await dbOrTx
+    .select({ cap: companies.wipCapInProgress })
+    .from(companies)
+    .where(eq(companies.id, companyId))
+    .for("update")
+    .then((rows: Array<{ cap: number }>) => rows[0] ?? null);
+  // No company row (or an unbounded/non-positive cap) means nothing to enforce.
+  if (!companyRow) return;
+  const cap = Number(companyRow.cap);
+  if (!Number.isFinite(cap) || cap <= 0) return;
+
+  const conditions = [
+    eq(issues.companyId, companyId),
+    eq(issues.status, "in_progress"),
+    isNull(issues.hiddenAt),
+    nonPluginOperationIssueCondition(),
+  ];
+  if (options.excludeIssueId) {
+    conditions.push(ne(issues.id, options.excludeIssueId));
+  }
+  const [countRow] = await dbOrTx
+    .select({ count: sql<number>`count(*)` })
+    .from(issues)
+    .where(and(...conditions));
+  const currentInProgress = Number(countRow?.count ?? 0);
+  if (currentInProgress >= cap) {
+    throw conflict(WIP_CAP_REACHED_MESSAGE, {
+      companyId,
+      cap,
+      currentInProgress,
+      issueId: options.excludeIssueId ?? null,
+    });
+  }
 }
 
 function shouldIncludePluginOperationIssues(filters: IssueFilters | undefined) {
@@ -6366,6 +6423,16 @@ export function issueService(db: Db) {
       }
 
       const runUpdate = async (tx: any) => {
+        // WIP-cap gate (HELA-3909): enforce on a cold transition into in_progress
+        // via PATCH. Skip when the issue is already in_progress (no new slot) or is
+        // a plugin-operation (service) issue that the platform excludes from WIP.
+        if (
+          patch.status === "in_progress" &&
+          existing.status !== "in_progress" &&
+          !isPluginOperationIssueOriginKind(existing.originKind)
+        ) {
+          await ensureWipCapNotExceeded(tx, existing.companyId, { excludeIssueId: id });
+        }
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, existing.companyId);
         const [currentProjectGoalId, nextProjectGoalId] = await Promise.all([
           getProjectDefaultGoalId(tx, existing.companyId, existing.projectId),
@@ -6573,27 +6640,44 @@ export function issueService(db: Db) {
       const executionLockCondition = checkoutRunId
         ? or(isNull(issues.executionRunId), eq(issues.executionRunId, checkoutRunId))
         : isNull(issues.executionRunId);
-      const updated = await db
-        .update(issues)
-        .set({
-          assigneeAgentId: agentId,
-          assigneeUserId: null,
-          checkoutRunId,
-          executionRunId: checkoutRunId,
-          status: "in_progress",
-          startedAt: now,
-          updatedAt: now,
-        })
-        .where(
-          and(
-            eq(issues.id, id),
-            inArray(issues.status, expectedStatuses),
-            or(isNull(issues.assigneeAgentId), sameRunAssigneeCondition),
-            executionLockCondition,
-          ),
-        )
-        .returning()
-        .then((rows) => rows[0] ?? null);
+      const updated = await db.transaction(async (tx) => {
+        // WIP-cap gate (HELA-3909): only enforce on a genuine cold transition into
+        // in_progress. Re-adopting an already in_progress issue keeps its existing
+        // slot, and plugin-operation (service) issues are not counted as agent WIP.
+        const gateRow = await tx
+          .select({ status: issues.status, originKind: issues.originKind })
+          .from(issues)
+          .where(eq(issues.id, id))
+          .then((rows: Array<{ status: string; originKind: string | null }>) => rows[0] ?? null);
+        if (
+          gateRow &&
+          gateRow.status !== "in_progress" &&
+          !isPluginOperationIssueOriginKind(gateRow.originKind)
+        ) {
+          await ensureWipCapNotExceeded(tx, issueCompany.companyId, { excludeIssueId: id });
+        }
+        return tx
+          .update(issues)
+          .set({
+            assigneeAgentId: agentId,
+            assigneeUserId: null,
+            checkoutRunId,
+            executionRunId: checkoutRunId,
+            status: "in_progress",
+            startedAt: now,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(issues.id, id),
+              inArray(issues.status, expectedStatuses),
+              or(isNull(issues.assigneeAgentId), sameRunAssigneeCondition),
+              executionLockCondition,
+            ),
+          )
+          .returning()
+          .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
+      });
 
       if (updated) {
         const [enriched] = await withIssueLabels(db, [updated]);

@@ -13,6 +13,9 @@ export const companies = pgTable(
     issueCounter: integer("issue_counter").notNull().default(0),
     budgetMonthlyCents: integer("budget_monthly_cents").notNull().default(0),
     spentMonthlyCents: integer("spent_monthly_cents").notNull().default(0),
+    // Company-level cap on concurrent `in_progress` issues (WIP limit). Enforced in
+    // issueService.checkout()/update() via ensureWipCapNotExceeded (HELA-3909).
+    wipCapInProgress: integer("wip_cap_in_progress").notNull().default(9),
     attachmentMaxBytes: integer("attachment_max_bytes")
       .notNull()
       .default(10 * 1024 * 1024),

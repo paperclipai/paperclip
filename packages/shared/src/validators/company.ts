@@ -28,6 +28,9 @@ export const updateCompanySchema = createCompanySchema
   .extend({
     status: z.enum(COMPANY_STATUSES).optional(),
     spentMonthlyCents: z.number().int().nonnegative().optional(),
+    // Company-level WIP cap on concurrent in_progress issues (HELA-3909). Board/CEO
+    // can retune without a redeploy; agents use the strict branding schema and cannot set it.
+    wipCapInProgress: z.number().int().min(1).max(1000).optional(),
     requireBoardApprovalForNewAgents: z.boolean().optional(),
     feedbackDataSharingEnabled: z.boolean().optional(),
     feedbackDataSharingConsentAt: z.coerce.date().nullable().optional(),
