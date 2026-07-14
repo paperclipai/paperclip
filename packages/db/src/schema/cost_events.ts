@@ -1,3 +1,4 @@
+import type { CostUsageBasis } from "@paperclipai/shared";
 import { pgTable, uuid, text, timestamp, integer, index } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { agents } from "./agents.js";
@@ -21,6 +22,10 @@ export const costEvents = pgTable(
     biller: text("biller").notNull().default("unknown"),
     billingType: text("billing_type").notNull().default("unknown"),
     costStatus: text("cost_status").notNull().default("reported"),
+    usageBasis: text("usage_basis")
+      .$type<CostUsageBasis>()
+      .notNull()
+      .default("unknown"),
     model: text("model").notNull(),
     inputTokens: integer("input_tokens").notNull().default(0),
     cachedInputTokens: integer("cached_input_tokens").notNull().default(0),

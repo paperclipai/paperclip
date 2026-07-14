@@ -471,7 +471,22 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
     });
 
     expect(event.costStatus).toBe("unpriced");
+    expect(event.usageBasis).toBe("unknown");
     expect(event.inputTokens).toBe(2_732_577);
+
+    const explicitEvent = await costs.createEvent(companyId, {
+      agentId,
+      provider: "openai",
+      biller: "openai",
+      billingType: "metered_api",
+      costStatus: "reported",
+      usageBasis: "per_request",
+      model: "gpt-5",
+      costCents: 12,
+      occurredAt: new Date("2026-07-13T14:23:54.000Z"),
+    });
+    expect(explicitEvent.usageBasis).toBe("per_request");
+
     const [agent] = await db.select().from(agents).where(eq(agents.id, agentId));
     expect(agent?.spentMonthlyCents).toBe(0);
   });
