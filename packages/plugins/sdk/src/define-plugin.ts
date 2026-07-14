@@ -163,6 +163,22 @@ export interface PluginApiResponse {
   body?: unknown;
 }
 
+/**
+ * Result returned from the `handleWebhook` RPC method.
+ *
+ * Allows the plugin to control the HTTP response sent back to the external
+ * webhook caller (e.g. echoing a challenge string during a provider's
+ * handshake, or returning a 401/429 on verification/rate-limit failure)
+ * instead of the host always responding with a hardcoded 200 success body.
+ *
+ * @see PLUGIN_SPEC.md §13.7 — `handleWebhook`
+ */
+export interface PluginWebhookResponse {
+  status?: number;
+  headers?: Record<string, string>;
+  body?: unknown;
+}
+
 // ---------------------------------------------------------------------------
 // Plugin definition
 // ---------------------------------------------------------------------------
@@ -249,10 +265,16 @@ export interface PluginDefinition {
    * If not implemented but webhooks are declared in the manifest, the host
    * returns HTTP 501 for webhook deliveries.
    *
+   * The optional resolved return value lets the plugin control the HTTP
+   * response sent back to the external caller (status/headers/body) --
+   * e.g. echoing a provider's handshake challenge, or returning 401/429 on
+   * verification/rate-limit failure. If omitted, the host responds with its
+   * default `{ deliveryId, status: "success" }` body at HTTP 200.
+   *
    * @param input - Webhook delivery metadata and payload
    * @see PLUGIN_SPEC.md §13.7 — `handleWebhook`
    */
-  onWebhook?(input: PluginWebhookInput): Promise<void>;
+  onWebhook?(input: PluginWebhookInput): Promise<PluginWebhookResponse | void>;
 
   /**
    * Called for manifest-declared scoped JSON API routes under

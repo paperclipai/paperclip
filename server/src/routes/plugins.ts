@@ -2599,11 +2599,18 @@ export function pluginRoutes(
    * The delivery is recorded in the `plugin_webhook_deliveries` table and
    * dispatched to the worker via the `handleWebhook` RPC method.
    *
+   * If the worker's `onWebhook` handler resolves a `{ status, headers, body }`
+   * result, the host relays that status/headers/body to the external caller
+   * (e.g. echoing a provider's handshake challenge, or a 401/429 on
+   * verification/rate-limit failure). If the handler resolves `void` (or
+   * omits fields), the host falls back to its default
+   * `{ deliveryId, status: "success" }` body at HTTP 200.
+   *
    * **Note:** This route does NOT require board authentication — webhook
    * endpoints must be publicly accessible for external callers. Signature
    * verification is the plugin's responsibility.
    *
-   * Response: `{ deliveryId: string, status: string }`
+   * Response: RPC result body (or `{ deliveryId: string, status: string }` by default)
    * Errors:
    * - 404 if plugin not found or endpointKey not declared
    * - 400 if plugin is not in ready state or lacks webhooks.receive capability
@@ -2694,13 +2701,13 @@ export function pluginRoutes(
 
     // Step 7: Dispatch to the worker via handleWebhook RPC
     try {
-      await webhookDeps.workerManager.call(plugin.id, "handleWebhook", {
+      const result = await webhookDeps.workerManager.call(plugin.id, "handleWebhook", {
         endpointKey,
         headers: req.headers as Record<string, string | string[]>,
         rawBody,
         parsedBody,
         requestId,
-      });
+      }) as PluginScopedApiResponse | void;
 
       // Step 8: Update delivery record to success
       const finishedAt = new Date();
@@ -2714,10 +2721,25 @@ export function pluginRoutes(
         })
         .where(eq(pluginWebhookDeliveries.id, delivery.id));
 
-      res.status(200).json({
-        deliveryId: delivery.id,
-        status: "success",
-      });
+      const status = result && Number.isInteger(result.status) && Number(result.status) >= 200 && Number(result.status) <= 599
+        ? Number(result.status)
+        : 200;
+      if (result?.headers) {
+        applyPluginScopedApiResponseHeaders(res, result.headers);
+      }
+      if (result && "body" in result && result.body !== undefined) {
+        res.status(status).json(result.body);
+      } else if (result) {
+        res.status(status).json({
+          deliveryId: delivery.id,
+          status: "success",
+        });
+      } else {
+        res.status(200).json({
+          deliveryId: delivery.id,
+          status: "success",
+        });
+      }
     } catch (err) {
       // Step 8 (error): Update delivery record to failed
       const finishedAt = new Date();
