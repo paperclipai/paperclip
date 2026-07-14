@@ -173,6 +173,9 @@ export {
   ISSUE_WORK_MODES,
   ISSUE_HARNESS_KINDS,
   MAX_ISSUE_REQUEST_DEPTH,
+  SUMMARY_SLOT_SCOPE_KINDS,
+  SUMMARY_SLOT_KEYS,
+  SUMMARY_SLOT_STATUSES,
   ISSUE_COMMENT_AUTHOR_TYPES,
   ISSUE_COMMENT_METADATA_ROW_TYPES,
   ISSUE_COMMENT_PRESENTATION_KINDS,
@@ -354,6 +357,9 @@ export {
   type IssuePriority,
   type IssueWorkMode,
   type IssueHarnessKind,
+  type SummarySlotScopeKind,
+  type SummarySlotKey,
+  type SummarySlotStatus,
   type IssueCommentAuthorType,
   type IssueCommentMetadataRowType,
   type IssueCommentPresentationKind,
@@ -482,6 +488,19 @@ export {
 } from "./constants.js";
 
 export {
+  generateSummarySlotSchema,
+  summarySlotKeySchema,
+  summarySlotQuerySchema,
+  summarySlotScopeKindSchema,
+  summarySlotScopeSelectorSchema,
+  summarySlotStatusSchema,
+  writeSummarySlotSchema,
+  type GenerateSummarySlotInput,
+  type SummarySlotScopeSelectorInput,
+  type WriteSummarySlotInput,
+} from "./validators/summary-slot.js";
+
+export {
   ALL_INTERFACES_BIND_HOST,
   LOOPBACK_BIND_HOST,
   inferBindModeFromHost,
@@ -502,6 +521,17 @@ export {
 
 export type {
   Company,
+  GenerateSummarySlotRequest,
+  GenerateSummarySlotResponse,
+  GetSummarySlotResponse,
+  ListSummarySlotRevisionsResponse,
+  SummarySlot,
+  SummarySlotDocument,
+  SummarySlotIssueRef,
+  SummarySlotRevision,
+  SummarySlotScopeSelector,
+  WriteSummarySlotRequest,
+  WriteSummarySlotResponse,
   Environment,
   EnvironmentDeleteBlastRadius,
   EnvironmentDeleteBlockedReason,

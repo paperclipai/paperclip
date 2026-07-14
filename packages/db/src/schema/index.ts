@@ -84,6 +84,7 @@ export { issueAttachments } from "./issue_attachments.js";
 export { documents } from "./documents.js";
 export { documentRevisions } from "./document_revisions.js";
 export { issueDocuments } from "./issue_documents.js";
+export { summarySlots } from "./summary_slots.js";
 export { routineDocuments } from "./routine_documents.js";
 export { documentAnnotationThreads } from "./document_annotation_threads.js";
 export { documentAnnotationComments } from "./document_annotation_comments.js";
