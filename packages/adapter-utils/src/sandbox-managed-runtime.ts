@@ -27,6 +27,14 @@ import {
 import { isRelativePathOrDescendant, shouldExcludePath } from "./exclude-patterns.js";
 
 const execFile = promisify(execFileCallback);
+const CODEX_AUTH_MERGE_EXTRACT_SCRIPT_NAME = "codex-auth-merge-extract.sh";
+const CODEX_AUTH_MERGE_DECISION_SCRIPT_NAME = "codex-auth-merge-decision.cjs";
+const CODEX_AUTH_MERGE_EXTRACT_SCRIPT_BYTES = readFileSync(
+  new URL(`./${CODEX_AUTH_MERGE_EXTRACT_SCRIPT_NAME}`, import.meta.url),
+);
+const CODEX_AUTH_MERGE_DECISION_SCRIPT_BYTES = readFileSync(
+  new URL(`./${CODEX_AUTH_MERGE_DECISION_SCRIPT_NAME}`, import.meta.url),
+);
 const SANDBOX_WORKSPACE_HEAVY_DIR_NAMES = [
   "node_modules",
   "vendor",
@@ -110,16 +118,12 @@ function shellQuote(value: string) {
   return `'${value.replace(/'/g, `'\"'\"'`)}'`;
 }
 
-const CODEX_AUTH_MERGE_DECISION_SCRIPT = readFileSync(
-  new URL("./codex-auth-merge-decision.cjs", import.meta.url),
-  "utf8",
-).trimEnd();
-
 function buildExtractRuntimeAssetCommand(input: {
   adapterKey: string;
   assetKey: string;
   remoteAssetDir: string;
   remoteAssetTar: string;
+  remoteCodexAuthMergeExtractScript?: string;
 }): string {
   if (input.adapterKey !== "codex" || input.assetKey !== "home") {
     return `rm -rf ${shellQuote(input.remoteAssetDir)} && ` +
@@ -128,62 +132,12 @@ function buildExtractRuntimeAssetCommand(input: {
       `rm -f ${shellQuote(input.remoteAssetTar)}`;
   }
 
-  return `asset_dir=${shellQuote(input.remoteAssetDir)}
-asset_tar=${shellQuote(input.remoteAssetTar)}
-auth_name=auth.json
-stage_root="$asset_dir.paperclip-extract.$$"
-stage_dir="$stage_root/stage"
-preserve_dir="$stage_root/preserve"
-sandbox_auth="$asset_dir/$auth_name"
-host_auth="$stage_dir/$auth_name"
-preserve_auth="$preserve_dir/$auth_name"
-cleanup() {
-  rm -rf "$stage_root" "$asset_tar"
-}
-trap cleanup EXIT HUP INT TERM
-rm -rf "$stage_root" &&
-mkdir -p "$stage_dir" "$preserve_dir" &&
-tar -xf "$asset_tar" -C "$stage_dir" || exit 1
+  if (!input.remoteCodexAuthMergeExtractScript) {
+    throw new Error("Codex auth merge extract script path is required for codex home assets");
+  }
 
-keep_sandbox=0
-if [ -f "$sandbox_auth" ]; then
-  if command -v node >/dev/null 2>&1; then
-    node - "$sandbox_auth" "$host_auth" <<'NODE'
-${CODEX_AUTH_MERGE_DECISION_SCRIPT}
-NODE
-    decision_rc=$?
-    if [ "$decision_rc" -eq 10 ]; then
-      keep_sandbox=1
-    else
-      keep_sandbox=0
-    fi
-  else
-    echo "[paperclip] node not found in PATH; cannot evaluate auth-merge decision - aborting sandbox restore" >&2
-    exit 1
-  fi
-fi
-
-if [ "$keep_sandbox" -eq 1 ]; then
-  if ! ( umask 077 && rm -f "$preserve_auth" && cat "$sandbox_auth" > "$preserve_auth" ); then
-    keep_sandbox=0
-  fi
-fi
-
-rm -rf "$asset_dir" || exit 1
-mkdir -p "$asset_dir" || exit 1
-find "$stage_dir" -mindepth 1 -maxdepth 1 ! -name "$auth_name" -exec mv -f -- {} "$asset_dir/" \\; || exit 1
-
-source_auth="$host_auth"
-if [ "$keep_sandbox" -eq 1 ] && [ -f "$preserve_auth" ]; then
-  source_auth="$preserve_auth"
-fi
-
-if [ -f "$source_auth" ]; then
-  target_auth="$asset_dir/$auth_name"
-  target_tmp="$asset_dir/.auth.json.paperclip.$$"
-  ( umask 077 && rm -f "$target_tmp" && cat "$source_auth" > "$target_tmp" ) || exit 1
-  mv -f "$target_tmp" "$target_auth" || exit 1
-fi`;
+  return `sh ${shellQuote(input.remoteCodexAuthMergeExtractScript)} ` +
+    `${shellQuote(input.remoteAssetDir)} ${shellQuote(input.remoteAssetTar)}`;
 }
 
 export function parseSandboxRemoteExecutionSpec(value: unknown): SandboxRemoteExecutionSpec | null {
@@ -640,6 +594,9 @@ export async function prepareSandboxManagedRuntime(input: {
       const assetTarBytes = await fs.readFile(assetTarPath);
       const remoteAssetDir = path.posix.join(runtimeRootDir, asset.key);
       const remoteAssetTar = path.posix.join(runtimeRootDir, `${asset.key}-upload.tar`);
+      const remoteCodexAuthMergeExtractScript = input.adapterKey === "codex" && asset.key === "home"
+        ? path.posix.join(runtimeRootDir, CODEX_AUTH_MERGE_EXTRACT_SCRIPT_NAME)
+        : undefined;
       const assetUpload = makeTransferProgress(
         input.onProgress,
         "Syncing",
@@ -649,6 +606,16 @@ export async function prepareSandboxManagedRuntime(input: {
       );
       await input.client.writeFile(remoteAssetTar, toArrayBuffer(assetTarBytes), assetUpload.options);
       await assetUpload.finish(assetTarBytes.byteLength, assetTarBytes.byteLength);
+      if (remoteCodexAuthMergeExtractScript) {
+        await input.client.writeFile(
+          remoteCodexAuthMergeExtractScript,
+          toArrayBuffer(CODEX_AUTH_MERGE_EXTRACT_SCRIPT_BYTES),
+        );
+        await input.client.writeFile(
+          path.posix.join(runtimeRootDir, CODEX_AUTH_MERGE_DECISION_SCRIPT_NAME),
+          toArrayBuffer(CODEX_AUTH_MERGE_DECISION_SCRIPT_BYTES),
+        );
+      }
       await input.client.run(
         `sh -c ${shellQuote(
           buildExtractRuntimeAssetCommand({
@@ -656,6 +623,7 @@ export async function prepareSandboxManagedRuntime(input: {
             assetKey: asset.key,
             remoteAssetDir,
             remoteAssetTar,
+            remoteCodexAuthMergeExtractScript,
           }),
         )}`,
         { timeoutMs: input.spec.timeoutMs },

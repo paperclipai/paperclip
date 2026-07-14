@@ -127,6 +127,7 @@ describe("codex home auth merge on sandbox asset extract", () => {
     hostAuth: string;
   }): Promise<{
     commandText: string;
+    writtenPaths: string[];
     finalAuth: string;
     finalMode: number;
     combinedOutput: string;
@@ -148,11 +149,13 @@ describe("codex home auth merge on sandbox asset extract", () => {
 
     const commands: string[] = [];
     const outputs: string[] = [];
+    const writtenPaths: string[] = [];
     const client: SandboxManagedRuntimeClient = {
       makeDir: async (remotePath) => {
         await mkdir(remotePath, { recursive: true });
       },
       writeFile: async (remotePath, bytes) => {
+        writtenPaths.push(remotePath);
         await mkdir(path.dirname(remotePath), { recursive: true });
         await writeFile(remotePath, Buffer.from(bytes));
       },
@@ -187,10 +190,11 @@ describe("codex home auth merge on sandbox asset extract", () => {
       }],
     });
 
-    const commandText = commands.find((command) => command.includes("paperclip-extract")) ?? "";
+    const commandText = commands.find((command) => command.includes("codex-auth-merge-extract.sh")) ?? "";
     const finalAuthPath = path.join(remoteHomeDir, "auth.json");
     return {
       commandText,
+      writtenPaths,
       finalAuth: await readFile(finalAuthPath, "utf8"),
       finalMode: (await lstat(finalAuthPath)).mode & 0o777,
       combinedOutput: outputs.join("\n"),
@@ -215,15 +219,13 @@ describe("codex home auth merge on sandbox asset extract", () => {
     expect(result.finalMode).toBe(0o600);
     expect(result.combinedOutput).not.toContain("SENTINEL");
     expect(result.commandText).not.toContain("SENTINEL");
-    const compareIndex = result.commandText.indexOf('node - "$sandbox_auth" "$host_auth"');
-    const liveRmIndex = result.commandText.indexOf('rm -rf "$asset_dir"');
-    expect(compareIndex).toBeGreaterThanOrEqual(0);
-    expect(liveRmIndex).toBeGreaterThanOrEqual(0);
-    expect(compareIndex).toBeLessThan(liveRmIndex);
-    expect(result.commandText).toContain('target_tmp="$asset_dir/.auth.json.paperclip.$$"');
-    expect(result.commandText).toContain('mv -f "$target_tmp" "$target_auth"');
-    expect(result.commandText).not.toContain('> "$target_auth"');
-    expect(result.commandText).not.toContain("cp ");
+    expect(result.commandText).toContain("codex-auth-merge-extract.sh");
+    expect(result.commandText).not.toContain("paperclip-extract");
+    expect(result.commandText).not.toContain("node -");
+    expect(result.commandText).not.toContain("target_tmp=");
+    expect(result.commandText).not.toContain("mv -f");
+    expect(result.writtenPaths.some((entry) => entry.endsWith("codex-auth-merge-extract.sh"))).toBe(true);
+    expect(result.writtenPaths.some((entry) => entry.endsWith("codex-auth-merge-decision.cjs"))).toBe(true);
   });
 
   it("installs same-account host auth when host last_refresh is strictly newer", async () => {
