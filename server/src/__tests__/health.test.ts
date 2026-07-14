@@ -16,6 +16,7 @@ const testServerInfo = {
     available: true,
     fullSha: "0123456789abcdef0123456789abcdef01234567",
     shortSha: "0123456",
+    branchName: "master",
     subject: "Add server info debug view",
     committedAt: "2026-06-25T23:00:00.000Z",
     localChanges: {

@@ -930,6 +930,7 @@ registry.registerPath({
             available: z.literal(true),
             fullSha: z.string(),
             shortSha: z.string(),
+            branchName: z.string().nullable(),
             subject: z.string(),
             committedAt: z.string().datetime().nullable(),
             localChanges: z.union([
