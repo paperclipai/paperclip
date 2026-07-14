@@ -686,7 +686,7 @@ async function resolveGitHubCommitSha(owner: string, repo: string, ref: string, 
 }
 
 function parseGitHubSourceUrl(rawUrl: string) {
-  const url = new URL(rawUrl);
+  const url = parseRemoteSkillImportUrl(rawUrl);
   if (url.protocol !== "https:") {
     throw unprocessable("GitHub source URL must use HTTPS");
   }
@@ -716,8 +716,16 @@ function parseGitHubSourceUrl(rawUrl: string) {
   return { hostname: url.hostname, owner, repo, ref, basePath, filePath, explicitRef };
 }
 
+function parseRemoteSkillImportUrl(rawUrl: string) {
+  try {
+    return new URL(rawUrl);
+  } catch {
+    throw unprocessable("Invalid remote skill source URL.");
+  }
+}
+
 function normalizeRemoteSkillImportSource(rawUrl: string) {
-  const url = new URL(rawUrl);
+  const url = parseRemoteSkillImportUrl(rawUrl);
   if (url.username || url.password || url.search || url.hash) {
     throw unprocessable("Remote skill source URLs cannot include credentials, query parameters, or fragments.");
   }

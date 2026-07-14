@@ -833,6 +833,25 @@ describe("company skill mutation permissions", () => {
     expect(mockCompanySkillService.importFromSource).not.toHaveBeenCalled();
   });
 
+  it("rejects malformed remote import URLs before policy evaluation", async () => {
+    const res = await request(await createApp({
+      type: "board",
+      userId: "local-board",
+      companyIds: ["company-1"],
+      source: "local_implicit",
+      isInstanceAdmin: false,
+    }))
+      .post("/api/companies/company-1/skills/import")
+      .send({ source: "https://" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body).toEqual({
+      error: "Invalid remote skill source URL.",
+    });
+    expect(mockCompanySkillPolicyService.evaluate).not.toHaveBeenCalled();
+    expect(mockCompanySkillService.importFromSource).not.toHaveBeenCalled();
+  });
+
   it("keeps platform actor restrictions separate from optional policy denials", async () => {
     mockAccessService.decide.mockResolvedValue(denySkillChangeDecision(
       "deny_low_trust_boundary",

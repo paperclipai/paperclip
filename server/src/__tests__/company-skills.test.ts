@@ -98,6 +98,12 @@ describe("company skill import source parsing", () => {
     }
   });
 
+  it("rejects malformed remote URLs as validation errors", () => {
+    expect(() => parseSkillImportSourceInput("https://")).toThrow(
+      "Invalid remote skill source URL.",
+    );
+  });
+
   it("canonicalizes clean GitHub URLs before persistence", () => {
     const parsed = parseSkillImportSourceInput(
       "https://www.github.com/Vercel-Labs/Agent-Browser/blob/main/skills/Upper/SKILL.MD",
