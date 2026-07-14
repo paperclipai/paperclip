@@ -4742,6 +4742,85 @@ describeEmbeddedPostgres("tool access service", () => {
     }
   });
 
+  it("keeps direct profile and policy mutation routes viewer-safe", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const service = toolAccessService(db);
+    const profile = await service.createProfile(company.id, {
+      profileKey: `viewer-guarded-profile-${randomUUID()}`,
+      name: "Viewer guarded profile",
+      defaultAction: "deny",
+    });
+    const entry = await service.addProfileEntry(profile.id, {
+      selectorType: "tool_name",
+      effect: "include",
+      toolName: "read_notes",
+    });
+    await service.bindProfile(profile.id, { targetType: "agent", targetId: agent.id }, { actorType: "user", actorId: "board" });
+    const [firstPolicy, secondPolicy] = await db.insert(toolPolicies).values([
+      {
+        companyId: company.id,
+        name: `Viewer guarded allow ${randomUUID()}`,
+        policyType: "allow",
+        priority: 100,
+        selectors: { toolName: "read_notes" },
+      },
+      {
+        companyId: company.id,
+        name: `Viewer guarded block ${randomUUID()}`,
+        policyType: "block",
+        priority: 200,
+        selectors: { toolName: "delete_notes" },
+      },
+    ]).returning();
+    const viewerApp = createRouteApp(db, boardSessionActor(company.id, "viewer", "viewer-user"));
+
+    await request(viewerApp).get(`/api/companies/${company.id}/tools/profiles`).expect(200);
+    await request(viewerApp).get(`/api/companies/${company.id}/tools/policies`).expect(200);
+
+    const responses = [
+      await request(viewerApp)
+        .post(`/api/companies/${company.id}/tools/profiles`)
+        .send({ profileKey: `viewer-created-profile-${randomUUID()}`, name: "Viewer created profile", defaultAction: "deny" }),
+      await request(viewerApp)
+        .patch(`/api/tool-profiles/${profile.id}`)
+        .send({ name: "Viewer edited profile" }),
+      await request(viewerApp)
+        .post(`/api/tool-profiles/${profile.id}/entries`)
+        .send({ selectorType: "tool_name", effect: "include", toolName: "viewer_tool" }),
+      await request(viewerApp)
+        .patch(`/api/tool-profile-entries/${entry.id}`)
+        .send({ effect: "exclude" }),
+      await request(viewerApp)
+        .delete(`/api/tool-profile-entries/${entry.id}`),
+      await request(viewerApp)
+        .post(`/api/companies/${company.id}/tools/profiles/${profile.id}/bind`)
+        .send({ targetType: "agent", targetId: agent.id, priority: 10 }),
+      await request(viewerApp)
+        .post(`/api/companies/${company.id}/tools/profiles/${profile.id}/unbind`)
+        .send({ targetType: "agent", targetId: agent.id }),
+      await request(viewerApp)
+        .post(`/api/companies/${company.id}/tools/policies/reorder`)
+        .send({ policyIds: [secondPolicy!.id, firstPolicy!.id] }),
+      await request(viewerApp)
+        .post(`/api/companies/${company.id}/tools/policies`)
+        .send({ name: "Viewer policy", policyType: "allow", selectors: { toolName: "viewer_tool" } }),
+      await request(viewerApp)
+        .post(`/api/companies/${company.id}/tools/policies/${firstPolicy!.id}/duplicate`)
+        .send({ name: "Viewer policy copy" }),
+      await request(viewerApp)
+        .patch(`/api/companies/${company.id}/tools/policies/${firstPolicy!.id}`)
+        .send({ enabled: false }),
+      await request(viewerApp)
+        .delete(`/api/companies/${company.id}/tools/policies/${firstPolicy!.id}`),
+    ];
+
+    for (const res of responses) {
+      expect(res.status).toBe(403);
+      expect(res.body.error).toContain("Viewer access is read-only");
+    }
+  });
+
   it("deletes an application with zero connections and records activity", async () => {
     const company = await createCompany(db);
     const service = toolAccessService(db);

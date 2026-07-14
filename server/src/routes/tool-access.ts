@@ -775,9 +775,8 @@ export function toolAccessRoutes(
   });
 
   router.post("/companies/:companyId/tools/profiles", validate(createToolProfileWithEntriesSchema), async (req, res) => {
-    assertBoard(req);
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    assertToolAppMutationAccess(req, companyId);
     try {
       const profile = await svc.createProfile(companyId, req.body);
       await logActivity(db, {
@@ -803,9 +802,8 @@ export function toolAccessRoutes(
   });
 
   router.patch("/tool-profiles/:profileId", validate(updateToolProfileWithEntriesSchema), async (req, res) => {
-    assertBoard(req);
     const existing = await svc.getProfile(req.params.profileId as string);
-    assertCompanyAccess(req, existing.companyId);
+    assertToolAppMutationAccess(req, existing.companyId);
     try {
       const profile = await svc.updateProfile(existing.id, req.body);
       await logActivity(db, {
@@ -824,9 +822,8 @@ export function toolAccessRoutes(
   });
 
   router.post("/tool-profiles/:profileId/duplicate", validate(duplicateToolProfileSchema), async (req, res) => {
-    assertBoard(req);
     const existing = await svc.getProfile(req.params.profileId as string);
-    assertCompanyAccess(req, existing.companyId);
+    assertToolAppMutationAccess(req, existing.companyId);
     try {
       const profile = await svc.duplicateProfile(existing.id, req.body);
       await logActivity(db, {
@@ -850,9 +847,8 @@ export function toolAccessRoutes(
   });
 
   router.delete("/tool-profiles/:profileId", validate(deleteToolProfileSchema), async (req, res) => {
-    assertBoard(req);
     const existing = await svc.getProfile(req.params.profileId as string);
-    assertCompanyAccess(req, existing.companyId);
+    assertToolAppMutationAccess(req, existing.companyId);
     const result = await svc.deleteProfile(existing.id, req.body);
     await logActivity(db, {
       companyId: existing.companyId,
@@ -872,9 +868,8 @@ export function toolAccessRoutes(
   });
 
   router.post("/tool-profiles/:profileId/new-tools/review", validate(reviewToolProfileNewToolsSchema), async (req, res) => {
-    assertBoard(req);
     const existing = await svc.getProfile(req.params.profileId as string);
-    assertCompanyAccess(req, existing.companyId);
+    assertToolAppMutationAccess(req, existing.companyId);
     const result = await svc.reviewProfileNewTools(existing.id, req.body, getActorInfo(req));
     await logActivity(db, {
       companyId: existing.companyId,
@@ -893,9 +888,8 @@ export function toolAccessRoutes(
   });
 
   router.post("/tool-profiles/:profileId/entries", validate(createToolProfileEntryForProfileSchema), async (req, res) => {
-    assertBoard(req);
     const existing = await svc.getProfile(req.params.profileId as string);
-    assertCompanyAccess(req, existing.companyId);
+    assertToolAppMutationAccess(req, existing.companyId);
     const entry = await svc.addProfileEntry(existing.id, req.body);
     await logActivity(db, {
       companyId: entry.companyId,
@@ -910,9 +904,8 @@ export function toolAccessRoutes(
   });
 
   router.patch("/tool-profile-entries/:entryId", validate(updateToolProfileEntrySchema), async (req, res) => {
-    assertBoard(req);
     const existing = await svc.getProfileEntry(req.params.entryId as string);
-    assertCompanyAccess(req, existing.companyId);
+    assertToolAppMutationAccess(req, existing.companyId);
     const entry = await svc.updateProfileEntry(existing.id, req.body);
     await logActivity(db, {
       companyId: entry.companyId,
@@ -927,9 +920,8 @@ export function toolAccessRoutes(
   });
 
   router.delete("/tool-profile-entries/:entryId", async (req, res) => {
-    assertBoard(req);
     const existing = await svc.getProfileEntry(req.params.entryId as string);
-    assertCompanyAccess(req, existing.companyId);
+    assertToolAppMutationAccess(req, existing.companyId);
     const entry = await svc.deleteProfileEntry(existing.id);
     await logActivity(db, {
       companyId: entry.companyId,
@@ -947,9 +939,8 @@ export function toolAccessRoutes(
     "/companies/:companyId/tools/profiles/:profileId/bind",
     validate(createToolProfileBindingForProfileSchema),
     async (req, res) => {
-      assertBoard(req);
       const companyId = req.params.companyId as string;
-      assertCompanyAccess(req, companyId);
+      assertToolAppMutationAccess(req, companyId);
       const existing = await svc.getProfile(req.params.profileId as string, companyId);
       try {
         const binding = await svc.bindProfile(existing.id, req.body, getActorInfo(req));
@@ -973,9 +964,8 @@ export function toolAccessRoutes(
     "/companies/:companyId/tools/profiles/:profileId/unbind",
     validate(unbindToolProfileBindingSchema),
     async (req, res) => {
-      assertBoard(req);
       const companyId = req.params.companyId as string;
-      assertCompanyAccess(req, companyId);
+      assertToolAppMutationAccess(req, companyId);
       const existing = await svc.getProfile(req.params.profileId as string, companyId);
       const result = await svc.unbindProfile(existing.id, req.body);
       await logActivity(db, {
@@ -1040,9 +1030,8 @@ export function toolAccessRoutes(
   // Rules UI sentence slots map exactly onto policy selectors:
   // capability -> riskLevel, app -> applicationId, actions -> toolNames.
   router.post("/companies/:companyId/tools/policies/reorder", validate(reorderToolPoliciesSchema), async (req, res) => {
-    assertBoard(req);
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    assertToolAppMutationAccess(req, companyId);
     const policies = await policySvc.reorderPolicies(companyId, req.body);
     await logActivity(db, {
       companyId,
@@ -1060,9 +1049,8 @@ export function toolAccessRoutes(
   });
 
   router.post("/companies/:companyId/tools/policies", validate(createToolPolicySchema), async (req, res) => {
-    assertBoard(req);
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    assertToolAppMutationAccess(req, companyId);
     try {
       const policy = await policySvc.createPolicy(companyId, req.body, { userId: req.actor.userId ?? null });
       await logActivity(db, {
@@ -1081,9 +1069,8 @@ export function toolAccessRoutes(
   });
 
   router.post("/companies/:companyId/tools/policies/:policyId/duplicate", validate(duplicateToolPolicySchema), async (req, res) => {
-    assertBoard(req);
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    assertToolAppMutationAccess(req, companyId);
     try {
       const policy = await policySvc.duplicatePolicy({
         companyId,
@@ -1112,9 +1099,8 @@ export function toolAccessRoutes(
   });
 
   router.patch("/companies/:companyId/tools/policies/:policyId", validate(updateToolPolicySchema), async (req, res) => {
-    assertBoard(req);
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    assertToolAppMutationAccess(req, companyId);
     try {
       const policy = await policySvc.updatePolicy({
         companyId,
@@ -1137,9 +1123,8 @@ export function toolAccessRoutes(
   });
 
   router.delete("/companies/:companyId/tools/policies/:policyId", async (req, res) => {
-    assertBoard(req);
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
+    assertToolAppMutationAccess(req, companyId);
     const policy = await policySvc.deletePolicy({
       companyId,
       policyId: req.params.policyId as string,
