@@ -171,13 +171,24 @@ async function withTempDir<T>(prefix: string, fn: (dir: string) => Promise<T>): 
 }
 
 async function execTar(args: string[]): Promise<void> {
-  await execFile("tar", args, {
-    env: {
-      ...process.env,
-      COPYFILE_DISABLE: "1",
-    },
-    maxBuffer: 32 * 1024 * 1024,
-  });
+  try {
+    await execFile("tar", args, {
+      env: {
+        ...process.env,
+        COPYFILE_DISABLE: "1",
+      },
+      maxBuffer: 32 * 1024 * 1024,
+    });
+  } catch (err) {
+    // tar exits 1 for benign warnings ("file changed as we read it" when
+    // archiving a live workspace, "Removing leading '/'", etc). That is not a
+    // failure for our archive/extract use — only exit code 2 is a real error.
+    // Swallow exactly exit 1; rethrow anything else (including spawn errors,
+    // which carry no numeric `code`).
+    const code = (err as { code?: unknown }).code;
+    if (code === 1) return;
+    throw err;
+  }
 }
 
 async function createTarballFromDirectory(input: {
@@ -323,6 +334,19 @@ function tarExcludeFlags(exclude: string[] | undefined): string {
   return ["._*", ...(exclude ?? [])].map((entry) => `--exclude ${shellQuote(entry)}`).join(" ");
 }
 
+// Wrap a remote `tar` invocation so a benign exit code 1 is not treated as a
+// failure. GNU/busybox tar exits 1 for warnings such as "file changed as we
+// read it" / "Removing leading '/'" / "some files differ" — guaranteed when
+// archiving a LIVE workspace whose files mutate mid-archive (every active agent
+// run hits this). Exit code 2 is a real archive error and stays fatal: `tar`
+// runs, and only an exit status of exactly 1 is rewritten to 0; any other
+// non-zero status is preserved. Portable across POSIX `sh` (no GNU-only
+// `--warning=` flag, which busybox tar rejects). The caller still composes the
+// surrounding `&&` chain; this only softens the single tar step.
+function tolerantTar(tarCommand: string): string {
+  return `{ ${tarCommand}; __pc_tar_rc=$?; [ "$__pc_tar_rc" -le 1 ]; }`;
+}
+
 function createRemoteTarballFromDirectoryCommand(input: {
   remoteDir: string;
   archivePath: string;
@@ -338,7 +362,7 @@ function createRemoteTarballFromDirectoryCommand(input: {
     `for entry in .[!.]* ..?*; do [ -e "$entry" ] || [ -L "$entry" ] || continue; set -- "$@" "$entry"; done`,
     `if [ "$#" -eq 0 ]; then ` +
       `dd if=/dev/zero of=${shellQuote(input.archivePath)} bs=1024 count=1; ` +
-      `else tar -cf ${shellQuote(input.archivePath)} ${tarExcludeFlags(input.exclude)} -- "$@"; fi`,
+      `else ${tolerantTar(`tar -cf ${shellQuote(input.archivePath)} ${tarExcludeFlags(input.exclude)} -- "$@"`)}; fi`,
   ].join(" && ");
 }
 
@@ -491,7 +515,7 @@ export async function prepareSandboxManagedRuntime(input: {
           `sh -c ${shellQuote(
             `mkdir -p ${shellQuote(workspaceRemoteDir)} && ` +
               `find ${shellQuote(workspaceRemoteDir)} -mindepth 1 -maxdepth 1 ${preserveFindArgs([".paperclip-runtime"])} -exec rm -rf -- {} + && ` +
-              `tar -xf ${shellQuote(remoteGitTar)} -C ${shellQuote(workspaceRemoteDir)} && ` +
+              `${tolerantTar(`tar -xf ${shellQuote(remoteGitTar)} -C ${shellQuote(workspaceRemoteDir)}`)} && ` +
               `rm -f ${shellQuote(remoteGitTar)}`,
           )}`,
           { timeoutMs: input.spec.timeoutMs },
@@ -533,11 +557,11 @@ export async function prepareSandboxManagedRuntime(input: {
     await workspaceUpload.finish(workspaceTarBytes.byteLength, workspaceTarBytes.byteLength);
     const extractWorkspaceTarCommand = gitSnapshot
       ? `mkdir -p ${shellQuote(workspaceRemoteDir)} && ` +
-        `tar -xf ${shellQuote(remoteWorkspaceTar)} -C ${shellQuote(workspaceRemoteDir)} && ` +
+        `${tolerantTar(`tar -xf ${shellQuote(remoteWorkspaceTar)} -C ${shellQuote(workspaceRemoteDir)}`)} && ` +
         `rm -f ${shellQuote(remoteWorkspaceTar)}`
       : `mkdir -p ${shellQuote(workspaceRemoteDir)} && ` +
         `find ${shellQuote(workspaceRemoteDir)} -mindepth 1 -maxdepth 1 ${preserveFindArgs([...preservedNames])} -exec rm -rf -- {} + && ` +
-        `tar -xf ${shellQuote(remoteWorkspaceTar)} -C ${shellQuote(workspaceRemoteDir)} && ` +
+        `${tolerantTar(`tar -xf ${shellQuote(remoteWorkspaceTar)} -C ${shellQuote(workspaceRemoteDir)}`)} && ` +
         `rm -f ${shellQuote(remoteWorkspaceTar)}`;
     await input.client.run(
       `sh -c ${shellQuote(extractWorkspaceTarCommand)}`,
@@ -577,7 +601,7 @@ export async function prepareSandboxManagedRuntime(input: {
         `sh -c ${shellQuote(
           `rm -rf ${shellQuote(remoteAssetDir)} && ` +
             `mkdir -p ${shellQuote(remoteAssetDir)} && ` +
-            `tar -xf ${shellQuote(remoteAssetTar)} -C ${shellQuote(remoteAssetDir)} && ` +
+            `${tolerantTar(`tar -xf ${shellQuote(remoteAssetTar)} -C ${shellQuote(remoteAssetDir)}`)} && ` +
             `rm -f ${shellQuote(remoteAssetTar)}`,
         )}`,
         { timeoutMs: input.spec.timeoutMs },

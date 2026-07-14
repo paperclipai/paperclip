@@ -1,4 +1,4 @@
-import { lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
@@ -594,6 +594,151 @@ describe("sandbox managed runtime", () => {
     const downloadMembers = await listTarMembers(rootDir, "workspace-download-list.tar", downloadedTars[0]!.bytes);
     expect(downloadMembers).not.toContain(".");
     expect(downloadMembers).not.toContain("./");
+  });
+
+  it("tolerates a tar exit code 1 (benign 'file changed as we read it') when restoring the workspace", async () => {
+    // GNU/busybox tar returns exit code 1 for benign warnings — most commonly
+    // "file changed as we read it" when archiving a live workspace whose files
+    // mutate during the `tar -c`. That is guaranteed for an active agent run and
+    // must NOT abort the run; only exit code 2 (a real archive error) is fatal.
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-tarexit1-"));
+    cleanupDirs.push(rootDir);
+    const localWorkspaceDir = path.join(rootDir, "local-workspace");
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+    const fakeBinDir = path.join(rootDir, "fakebin");
+    await mkdir(localWorkspaceDir, { recursive: true });
+    await mkdir(fakeBinDir, { recursive: true });
+    await writeFile(path.join(localWorkspaceDir, "README.md"), "ws\n", "utf8");
+
+    // A `tar` shim that does the real work via the system tar, then exits 1 to
+    // simulate the benign warning. Used only for the remote (client.run) tar
+    // invocations; the local helper tars still use the real system tar.
+    const realTar = (await execFile("sh", ["-c", "command -v tar"]))
+      .stdout.trim();
+    const tarShimPath = path.join(fakeBinDir, "tar");
+    await writeFile(
+      tarShimPath,
+      `#!/bin/sh\n${realTar} "$@"\nstatus=$?\nif [ "$status" -eq 0 ]; then exit 1; fi\nexit "$status"\n`,
+      "utf8",
+    );
+    await chmod(tarShimPath, 0o755);
+
+    const client: SandboxManagedRuntimeClient = {
+      makeDir: async (remotePath) => {
+        await mkdir(remotePath, { recursive: true });
+      },
+      writeFile: async (remotePath, bytes) => {
+        await mkdir(path.dirname(remotePath), { recursive: true });
+        await writeFile(remotePath, Buffer.from(bytes));
+      },
+      readFile: async (remotePath) => await readFile(remotePath),
+      listFiles: async () => [],
+      remove: async (remotePath) => {
+        await rm(remotePath, { recursive: true, force: true });
+      },
+      // Mirror command-managed-runtime semantics: throw on any non-zero exit so
+      // the test exercises the real fatality contract. With the tar shim on PATH
+      // (so the scripts' bare `tar` resolves to it) the restore script must still
+      // exit 0 — proving the tar exit-1 tolerance is baked into the script.
+      run: async (command) => {
+        await execFile("sh", ["-c", command], {
+          maxBuffer: 32 * 1024 * 1024,
+          env: { ...process.env, PATH: `${fakeBinDir}:${process.env.PATH ?? ""}` },
+        }).catch((err: NodeJS.ErrnoException & { code?: number }) => {
+          throw new Error(`run failed with exit code ${err.code ?? "null"}`);
+        });
+      },
+    };
+
+    const prepared = await prepareSandboxManagedRuntime({
+      spec: {
+        transport: "sandbox",
+        provider: "test",
+        sandboxId: "sandbox-1",
+        remoteCwd: remoteWorkspaceDir,
+        timeoutMs: 30_000,
+        apiKey: null,
+      },
+      adapterKey: "test-adapter",
+      client,
+      workspaceLocalDir: localWorkspaceDir,
+    });
+
+    await writeFile(path.join(remoteWorkspaceDir, "README.md"), "remote\n", "utf8");
+    // The restore tar exits 1 via the shim; the script must swallow that and the
+    // workspace must still round-trip back to the local dir.
+    await expect(prepared.restoreWorkspace()).resolves.toBeUndefined();
+    await expect(readFile(path.join(localWorkspaceDir, "README.md"), "utf8")).resolves.toBe("remote\n");
+  });
+
+  it("still fails the restore when tar exits 2 (real archive error)", async () => {
+    // Negative counterpart to the exit-1 tolerance test: exit code 2 is a real
+    // tar error and must stay fatal. The tolerantTar wrapper rewrites only an
+    // exit status of exactly 1 to 0 (`[ $rc -le 1 ]`); this locks in that a
+    // future loosening (e.g. `-le 2`) breaks the safety contract visibly.
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-tarexit2-"));
+    cleanupDirs.push(rootDir);
+    const localWorkspaceDir = path.join(rootDir, "local-workspace");
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+    const fakeBinDir = path.join(rootDir, "fakebin");
+    await mkdir(localWorkspaceDir, { recursive: true });
+    await mkdir(fakeBinDir, { recursive: true });
+    await writeFile(path.join(localWorkspaceDir, "README.md"), "ws\n", "utf8");
+
+    // A `tar` shim that fails unconditionally with exit 2, activated only for
+    // the restore phase so prepare still uses the real system tar.
+    const tarShimPath = path.join(fakeBinDir, "tar");
+    await writeFile(tarShimPath, "#!/bin/sh\nexit 2\n", "utf8");
+    await chmod(tarShimPath, 0o755);
+    let tarShimActive = false;
+
+    const client: SandboxManagedRuntimeClient = {
+      makeDir: async (remotePath) => {
+        await mkdir(remotePath, { recursive: true });
+      },
+      writeFile: async (remotePath, bytes) => {
+        await mkdir(path.dirname(remotePath), { recursive: true });
+        await writeFile(remotePath, Buffer.from(bytes));
+      },
+      readFile: async (remotePath) => await readFile(remotePath),
+      listFiles: async () => [],
+      remove: async (remotePath) => {
+        await rm(remotePath, { recursive: true, force: true });
+      },
+      run: async (command) => {
+        await execFile("sh", ["-c", command], {
+          maxBuffer: 32 * 1024 * 1024,
+          env: {
+            ...process.env,
+            PATH: tarShimActive ? `${fakeBinDir}:${process.env.PATH ?? ""}` : process.env.PATH ?? "",
+          },
+        }).catch((err: NodeJS.ErrnoException & { code?: number }) => {
+          throw new Error(`run failed with exit code ${err.code ?? "null"}`);
+        });
+      },
+    };
+
+    const prepared = await prepareSandboxManagedRuntime({
+      spec: {
+        transport: "sandbox",
+        provider: "test",
+        sandboxId: "sandbox-1",
+        remoteCwd: remoteWorkspaceDir,
+        timeoutMs: 30_000,
+        apiKey: null,
+      },
+      adapterKey: "test-adapter",
+      client,
+      workspaceLocalDir: localWorkspaceDir,
+    });
+
+    await writeFile(path.join(remoteWorkspaceDir, "README.md"), "remote\n", "utf8");
+    tarShimActive = true;
+    // The restore tar exits 2 via the shim; the script must propagate that as a
+    // non-zero exit (the `[ $rc -le 1 ]` guard fails, so the && chain aborts),
+    // and the local workspace must be left untouched.
+    await expect(prepared.restoreWorkspace()).rejects.toThrow(/run failed with exit code/);
+    await expect(readFile(path.join(localWorkspaceDir, "README.md"), "utf8")).resolves.toBe("ws\n");
   });
 
   it("excludes transient symlinked home dirs from the asset tar while keeping required content", async () => {

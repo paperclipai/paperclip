@@ -355,6 +355,59 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
     expect(result.persistedExecutionWorkspace).toEqual(updatedEw);
   });
 
+  it("threads the realized remoteCwd from a sandbox driver onto the lease metadata before resolving the target", async () => {
+    // Regression: a plugin-backed sandbox (e.g. the kubernetes provider) reports
+    // its in-environment cwd ("/workspace") via realizeWorkspace, but acquireLease
+    // never records it on the lease. Without persisting it here,
+    // resolveEnvironmentExecutionTarget falls back to the bounded default ("/tmp")
+    // and the adapter syncs/execs the workspace under /tmp inside the server pod.
+    mockResolveEnvironmentExecutionTarget.mockResolvedValue({
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "kubernetes",
+      remoteCwd: "/workspace",
+      environmentId: "env-1",
+      leaseId: "lease-1",
+    });
+
+    const runtime = makeMockRuntime({
+      realizeWorkspace: vi.fn().mockResolvedValue({
+        // Plugin returns the realized cwd, but NO `workspaceRealization` record
+        // (matches the kubernetes plugin's onEnvironmentRealizeWorkspace shape).
+        cwd: "/workspace",
+        metadata: {
+          provider: "kubernetes",
+          remoteCwd: "/workspace",
+        },
+      }),
+    });
+    const orchestrator = environmentRunOrchestrator(mockDb, { environmentRuntime: runtime });
+
+    await orchestrator.realizeForRun(
+      makeRealizeInput({
+        environment: makeEnvironment("sandbox"),
+        lease: makeLease({
+          provider: "kubernetes",
+          metadata: { driver: "sandbox", sandboxProviderPlugin: true },
+        }),
+      }),
+    );
+
+    // The realized cwd must be persisted as remoteCwd on the lease metadata...
+    expect(mockUpdateLeaseMetadata).toHaveBeenCalledWith(
+      "lease-1",
+      expect.objectContaining({ remoteCwd: "/workspace" }),
+    );
+
+    // ...and threaded into resolveEnvironmentExecutionTarget so it does NOT fall
+    // back to the bounded /tmp default.
+    expect(mockResolveEnvironmentExecutionTarget).toHaveBeenCalledWith(
+      expect.objectContaining({
+        leaseMetadata: expect.objectContaining({ remoteCwd: "/workspace" }),
+      }),
+    );
+  });
+
   it("runs a remote provision command after workspace realization when configured", async () => {
     mockBuildWorkspaceRealizationRequest.mockReturnValue({
       version: 1,
