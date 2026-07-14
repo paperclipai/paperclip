@@ -4,6 +4,10 @@ import { constants as fsConstants, promises as fs, type Dirent } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
+import {
+  buildLocalProcessSandboxSpawnTarget,
+  type LocalProcessSandboxOptions,
+} from "./local-process-sandbox.js";
 import { buildSshSpawnTarget, type SshRemoteExecutionSpec } from "./ssh.js";
 import { redactCommandText } from "./command-redaction.js";
 import type {
@@ -51,6 +55,7 @@ interface SpawnTarget {
   command: string;
   args: string[];
   cwd?: string;
+  env?: Record<string, string | undefined>;
   cleanup?: () => Promise<void>;
 }
 
@@ -2056,6 +2061,7 @@ async function resolveSpawnTarget(
   options: {
     remoteExecution?: RemoteExecutionSpec | null;
     remoteEnv?: Record<string, string> | null;
+    localProcessSandbox?: LocalProcessSandboxOptions | null;
   } = {},
 ): Promise<SpawnTarget> {
   const remote = options.remoteExecution ?? null;
@@ -2082,6 +2088,26 @@ async function resolveSpawnTarget(
 
   const resolved = await resolveCommandPath(command, cwd, env);
   const executable = resolved ?? command;
+
+  if (options.localProcessSandbox) {
+    if (!resolved) {
+      throw new Error(`Command not found in PATH: "${command}"`);
+    }
+    const requestedSandboxCommand = options.localProcessSandbox.command?.trim() || "bwrap";
+    const sandboxCommand = await resolveCommandPath(requestedSandboxCommand, cwd, env);
+    if (!sandboxCommand) {
+      throw new Error(
+        `Local process confinement requires Bubblewrap, but "${requestedSandboxCommand}" was not found in PATH. Install bwrap or configure filesystemSandboxCommand.`,
+      );
+    }
+    const sandboxTarget = await buildLocalProcessSandboxSpawnTarget({
+      executable,
+      args,
+      cwd,
+      options: options.localProcessSandbox,
+    });
+    return { ...sandboxTarget, command: sandboxCommand };
+  }
 
   if (process.platform !== "win32") {
     return { command: executable, args };
@@ -2898,6 +2924,7 @@ export async function runChildProcess(
     terminalResultCleanup?: TerminalResultCleanupOptions;
     stdin?: string;
     remoteExecution?: RemoteExecutionSpec | null;
+    localProcessSandbox?: LocalProcessSandboxOptions | null;
   },
 ): Promise<RunProcessResult> {
   const onLogError = opts.onLogError ?? ((err, id, msg) => console.warn({ err, runId: id }, msg));
@@ -2923,14 +2950,22 @@ export async function runChildProcess(
     }
 
     const mergedEnv = ensurePathInEnv(rawMerged);
+    if (opts.localProcessSandbox?.homeDir) {
+      mergedEnv.HOME = opts.localProcessSandbox.homeDir;
+    }
     void resolveSpawnTarget(command, args, opts.cwd, mergedEnv, {
       remoteExecution: opts.remoteExecution ?? null,
       remoteEnv: opts.remoteExecution ? opts.env : null,
+      localProcessSandbox: opts.localProcessSandbox ?? null,
     })
       .then((target) => {
+        const childEnv = { ...mergedEnv, ...target.env };
+        for (const [key, value] of Object.entries(childEnv)) {
+          if (value === undefined) delete childEnv[key];
+        }
         const child = spawn(target.command, target.args, {
           cwd: target.cwd ?? opts.cwd,
-          env: mergedEnv,
+          env: childEnv,
           detached: process.platform !== "win32",
           shell: false,
           stdio: [opts.stdin != null ? "pipe" : "ignore", "pipe", "pipe"],

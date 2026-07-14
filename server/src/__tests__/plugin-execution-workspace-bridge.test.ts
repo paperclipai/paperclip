@@ -48,7 +48,10 @@ describe("plugin execution workspace bridge", () => {
     });
 
     await expect(
-      handlers["executionWorkspaces.get"]({ workspaceId: "workspace-1", companyId: "company-1" }),
+      handlers["executionWorkspaces.get"](
+        { workspaceId: "workspace-1", companyId: "company-1" },
+        { invocationScope: { companyId: "company-1" } },
+      ),
     ).rejects.toMatchObject({
       code: PLUGIN_RPC_ERROR_CODES.CAPABILITY_DENIED,
     });

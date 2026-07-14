@@ -38,6 +38,7 @@ describe("instance settings service", () => {
       enableExperimentalFileViewer: true,
       enableTaskWatchdogs: true,
       enableCloudSync: true,
+      enableSmokeLab: false,
       enableBuiltInAgents: true,
       enableDecisions: false,
       enableGoalsSidebarLink: true,
