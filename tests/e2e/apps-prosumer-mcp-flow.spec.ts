@@ -284,7 +284,7 @@ test.describe.serial("prosumer MCP flow prosumer MCP flow", () => {
         await recovered.close();
       }
     } finally {
-      // ephemeral already closed above
+      await ephemeral.close().catch(() => {});
     }
   });
 

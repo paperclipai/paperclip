@@ -20,17 +20,18 @@
  *                                      (budget-bounding for the daily D5 routine;
  *                                      selects scenarios, does NOT fork the steps)
  *   SMOKE_TRIGGER=manual|ci|routine    smoke_run trigger (default "manual")
+ *   SMOKE_CHROMIUM_PATH=/path/to/chromium optional browser executable override
  *   SMOKE_FORCE_FAIL=<detail>          inject one synthetic failing step on the
  *                                      first scenario — the canonical self-test for
  *                                      the §D5 routine's file-on-failure wiring.
  */
 import { promises as fs } from "node:fs";
+import { chromium } from "playwright";
 import { ciSmokeLabScenarios } from "./smoke-lab.catalog.ts";
 
 const BASE = (process.env.SMOKE_BASE ?? "http://127.0.0.1:3211").replace(/\/$/, "");
 const SHOT_DIR = process.env.SMOKE_SHOT_DIR ?? "/tmp/pap13350-shots";
-const PW = "/srv/paperclip/home/paperclipai/paperclip/node_modules/.pnpm/playwright@1.58.2/node_modules/playwright/index.js";
-const WRAP = "/srv/paperclip/home/paperclipai/paperclip/.paperclip/browser-runtime/chromium-arm64/bin/chromium-agent-browser";
+const CHROMIUM_PATH = process.env.SMOKE_CHROMIUM_PATH?.trim() || null;
 const DEMO_EMAIL = "smoke@paperclip.test";
 const DEMO_PASSWORD = "smoke-password";
 const ONLY = (process.env.SMOKE_ONLY ?? "")
@@ -66,16 +67,14 @@ async function uploadShot(companyId: string, file: string): Promise<string> {
     headers: { origin: BASE },
     body: form as any,
   });
-  const j = await res.json();
-  if (!res.ok) throw new Error(`asset upload failed ${res.status}: ${JSON.stringify(j).slice(0, 200)}`);
+  const text = await res.text();
+  if (!res.ok) throw new Error(`asset upload failed ${res.status}: ${text.slice(0, 200)}`);
+  const j = text ? JSON.parse(text) : {};
   return `${BASE}${j.contentPath}`;
 }
 
 async function main() {
   await fs.mkdir(SHOT_DIR, { recursive: true });
-  const pw = await import(PW);
-  const chromium = pw.chromium ?? pw.default?.chromium;
-  assert(chromium, "playwright chromium export resolved");
 
   // Company + scout
   let companyId = process.env.SMOKE_COMPANY_ID ?? "";
@@ -108,7 +107,10 @@ async function main() {
   })).run;
   console.log(`smoke_run=${run.id}`);
 
-  const browser = await chromium.launch({ executablePath: WRAP, headless: true });
+  const browser = await chromium.launch({
+    ...(CHROMIUM_PATH ? { executablePath: CHROMIUM_PATH } : {}),
+    headless: true,
+  });
   const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 });
   const page = await ctx.newPage();
   const failed: string[] = [];

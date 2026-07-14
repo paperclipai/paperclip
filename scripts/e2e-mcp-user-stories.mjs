@@ -21,4 +21,5 @@ const result = spawnSync(
   { stdio: "inherit", shell: process.platform === "win32" },
 );
 
+if (result.error) console.error(result.error);
 process.exitCode = result.status ?? 1;
