@@ -286,7 +286,7 @@ export function GatewaysTab({ companyId }: { companyId: string }) {
 
       {creating ? (
         <form className="space-y-3 rounded-md border border-border p-4" onSubmit={submitCreateGateway}>
-          <div className="grid gap-3 md:grid-cols-[1fr_1fr]">
+          <div className="grid gap-3 md:grid-cols-(--gtc-60)">
             <label className="space-y-1.5 text-sm">
               <span className="text-xs font-medium text-muted-foreground">Gateway name</span>
               <input

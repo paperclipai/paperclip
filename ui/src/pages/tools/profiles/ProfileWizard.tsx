@@ -230,7 +230,7 @@ export function ProfileWizard({
     <div className="mx-auto flex w-full max-w-3xl flex-col gap-6 pb-24">
       <Stepper current={step} />
 
-      <div className="min-h-[320px]">
+      <div className="min-h-(--sz-320px)">
         {step === 1 ? (
           <StepName
             template={template}

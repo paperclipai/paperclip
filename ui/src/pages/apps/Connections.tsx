@@ -263,7 +263,7 @@ export function Connections() {
           <div className="overflow-hidden rounded-lg border border-border">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-border bg-muted/40 text-left text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                <tr className="border-b border-border bg-muted/40 text-left text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">
                   <th className="px-4 py-2.5">App</th>
                   <th className="px-4 py-2.5">Status</th>
                   <th className="px-4 py-2.5">Actions</th>

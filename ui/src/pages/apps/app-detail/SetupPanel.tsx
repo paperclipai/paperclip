@@ -139,7 +139,7 @@ function GoogleSheetsAllowlistSection({
                   <span className="block truncate font-mono text-xs font-normal text-muted-foreground">
                     {sheetUrl}
                   </span>
-                  <span className="block truncate font-mono text-[11px] font-normal text-muted-foreground/80">
+                  <span className="block truncate font-mono text-(length:--text-micro) font-normal text-muted-foreground/80">
                     ID: {id}
                   </span>
                 </a>

@@ -78,7 +78,7 @@ export function SmokeLabDashboardCard({ companyId }: { companyId: string }) {
             {HEALTH_LABEL[health]}
             {failing.length > 0 && `: ${failing.join(", ")}`}
           </p>
-          <p className="mt-0.5 truncate text-[11px] text-muted-foreground/80">
+          <p className="mt-0.5 truncate text-(length:--text-micro) text-muted-foreground/80">
             {latestRun ? `Last run ${formatTime(latestRun.startedAt)}` : "Run one from the Smoke Lab tab"}
           </p>
         </div>

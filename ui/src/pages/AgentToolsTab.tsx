@@ -469,7 +469,7 @@ export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; 
                       <td className="px-3 py-2">
                         <div className="font-mono text-xs text-foreground">{tool.toolName}</div>
                         {tool.title ? (
-                          <div className="text-[11px] text-muted-foreground">{tool.title}</div>
+                          <div className="text-(length:--text-micro) text-muted-foreground">{tool.title}</div>
                         ) : null}
                       </td>
                       <td className="px-3 py-2">
@@ -504,12 +504,12 @@ export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; 
             {/* Access profiles */}
             <div className="mt-3 space-y-1.5">
               <div className="flex items-center justify-between gap-2">
-                <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                <div className="text-(length:--text-micro) font-medium uppercase tracking-wide text-muted-foreground">
                   Access profiles
                 </div>
                 <Link
                   to={`${profilesHref}?check=1`}
-                  className="text-[11px] font-medium text-primary hover:underline"
+                  className="text-(length:--text-micro) font-medium text-primary hover:underline"
                 >
                   Check access
                 </Link>
@@ -530,7 +530,7 @@ export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; 
                       </Link>
                       {profile.summary.isCompanyDefault ? (
                         <div className="mt-1">
-                          <span className="rounded border border-border px-1.5 py-0.5 text-[10px] uppercase text-muted-foreground">
+                          <span className="rounded border border-border px-1.5 py-0.5 text-(length:--text-nano) uppercase text-muted-foreground">
                             Company default
                           </span>
                         </div>
@@ -543,7 +543,7 @@ export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; 
 
             {/* Policies mutating the allow list */}
             <div className="mt-3 space-y-1.5">
-              <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+              <div className="text-(length:--text-micro) font-medium uppercase tracking-wide text-muted-foreground">
                 Active policies
               </div>
               {policiesQuery.isLoading ? (
@@ -563,12 +563,12 @@ export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; 
                       >
                         #{order} {policy.name}
                       </Link>
-                      <span className="shrink-0 rounded border border-border px-1.5 py-0.5 text-[10px] uppercase text-muted-foreground">
+                      <span className="shrink-0 rounded border border-border px-1.5 py-0.5 text-(length:--text-nano) uppercase text-muted-foreground">
                         {POLICY_EFFECT_LABEL[policy.policyType] ?? policy.policyType}
                       </span>
                     </div>
                     {policy.description ? (
-                      <div className="mt-0.5 truncate text-[11px] text-muted-foreground">
+                      <div className="mt-0.5 truncate text-(length:--text-micro) text-muted-foreground">
                         {policy.description}
                       </div>
                     ) : null}
@@ -579,7 +579,7 @@ export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; 
 
             {/* Unavailable tools */}
             <div className="mt-3 space-y-1.5">
-              <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+              <div className="text-(length:--text-micro) font-medium uppercase tracking-wide text-muted-foreground">
                 Unavailable tools
               </div>
               {catalogLoading ? (
@@ -590,14 +590,14 @@ export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; 
                 </p>
               ) : (
                 <>
-                  <p className="text-[11px] text-muted-foreground">
+                  <p className="text-(length:--text-micro) text-muted-foreground">
                     Tools the agent could name but Paperclip would block:
                   </p>
                   <div className="flex flex-wrap gap-1">
                     {deniedTools.slice(0, DENIED_TOOLS_DISPLAY_LIMIT).map((tool) => (
                       <span
                         key={tool.id}
-                        className="inline-flex items-center gap-1 rounded border border-border/70 bg-muted/40 px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground"
+                        className="inline-flex items-center gap-1 rounded border border-border/70 bg-muted/40 px-1.5 py-0.5 font-mono text-(length:--text-micro) text-muted-foreground"
                         title={connectionNameById.get(tool.connectionId) ?? undefined}
                       >
                         {tool.toolName}
@@ -605,7 +605,7 @@ export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; 
                     ))}
                   </div>
                   {deniedTools.length > DENIED_TOOLS_DISPLAY_LIMIT ? (
-                    <p className="text-[11px] text-muted-foreground">
+                    <p className="text-(length:--text-micro) text-muted-foreground">
                       +{deniedTools.length - DENIED_TOOLS_DISPLAY_LIMIT} more
                     </p>
                   ) : null}

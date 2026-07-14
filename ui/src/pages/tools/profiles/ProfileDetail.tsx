@@ -388,7 +388,7 @@ function NewToolsReviewDialog({
             There are no new tools waiting for review.
           </div>
         ) : (
-          <div className="max-h-[52vh] divide-y divide-border overflow-y-auto rounded-lg border border-border">
+          <div className="max-h-(--sz-52vh) divide-y divide-border overflow-y-auto rounded-lg border border-border">
             {tools.map((tool) => (
               <div key={tool.catalogEntryId} className="grid gap-3 px-3 py-3 sm:grid-cols-[1fr_auto]">
                 <div className="min-w-0">

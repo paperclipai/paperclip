@@ -355,7 +355,7 @@ export function SmokeLabTab({ companyId }: { companyId: string }) {
                   <th scope="row" className="sticky left-0 z-10 bg-card px-3 py-2 text-left">
                     <span className="font-mono font-semibold text-foreground">{path}</span>
                     <span className="ml-2 text-foreground">{SMOKE_PATH_LABELS[path].title}</span>
-                    <span className="block text-[11px] font-normal text-muted-foreground">
+                    <span className="block text-(length:--text-micro) font-normal text-muted-foreground">
                       {SMOKE_PATH_LABELS[path].detail}
                     </span>
                   </th>
@@ -400,7 +400,7 @@ export function SmokeLabTab({ companyId }: { companyId: string }) {
           </Button>
         </div>
 
-        <div className="grid gap-4 lg:grid-cols-[minmax(0,20rem)_1fr]">
+        <div className="grid gap-4 lg:grid-cols-(--gtc-64)">
           <div className="rounded-lg border border-border">
             {runs.length === 0 && (
               <p className="p-4 text-sm text-muted-foreground">No runs recorded yet.</p>
@@ -420,7 +420,7 @@ export function SmokeLabTab({ companyId }: { companyId: string }) {
                     >
                       <span className="min-w-0">
                         <span className="block text-xs font-medium text-foreground">{formatTime(run.startedAt)}</span>
-                        <span className="block text-[11px] text-muted-foreground">{run.trigger}</span>
+                        <span className="block text-(length:--text-micro) text-muted-foreground">{run.trigger}</span>
                       </span>
                       <StatusBadge status={run.status} />
                     </button>
@@ -462,21 +462,21 @@ export function SmokeLabTab({ companyId }: { companyId: string }) {
                             <span className="font-mono">{step.path}</span> · {step.scenarioStep}
                           </p>
                           {step.detail && (
-                            <p className="mt-0.5 break-words text-[11px] text-muted-foreground">{step.detail}</p>
+                            <p className="mt-0.5 break-words text-(length:--text-micro) text-muted-foreground">{step.detail}</p>
                           )}
                           {step.screenshotArtifactRef && typeof step.screenshotArtifactRef.url === "string" && (
                             <a
                               href={step.screenshotArtifactRef.url}
                               target="_blank"
                               rel="noreferrer"
-                              className="mt-1 inline-block text-[11px] font-medium text-primary hover:underline"
+                              className="mt-1 inline-block text-(length:--text-micro) font-medium text-primary hover:underline"
                             >
                               View screenshot
                             </a>
                           )}
                         </div>
                         {typeof step.durationMs === "number" && (
-                          <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">
+                          <span className="shrink-0 text-(length:--text-micro) tabular-nums text-muted-foreground">
                             {step.durationMs}ms
                           </span>
                         )}

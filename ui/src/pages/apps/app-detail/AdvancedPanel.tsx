@@ -207,7 +207,7 @@ function TechnicalDetails({ connection }: { connection: ToolConnection }) {
   return (
     <section className="rounded-xl border border-border bg-card px-5 py-4">
       <h2 className="text-sm font-bold text-foreground">Technical details</h2>
-      <dl className="mt-3 grid gap-2 text-xs sm:grid-cols-[8rem_1fr]">
+      <dl className="mt-3 grid gap-2 text-xs sm:grid-cols-(--gtc-59)">
         <dt className="text-muted-foreground">Address</dt>
         <dd className="break-all font-mono text-foreground">{connectionAddress(connection)}</dd>
         <dt className="text-muted-foreground">Connection type</dt>

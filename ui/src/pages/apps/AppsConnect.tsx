@@ -690,7 +690,7 @@ function GalleryStep({
               )}
             >
               <AppLogo name={app.name} logoUrl={app.logoUrl} size={36} />
-              <div className="mt-3 text-[15px] font-bold text-foreground">{app.name}</div>
+              <div className="mt-3 text-sm font-bold text-foreground">{app.name}</div>
               <div className="mt-1 line-clamp-2 text-xs text-muted-foreground">{copy.tagline}</div>
               <div className="mt-3 text-xs font-semibold text-foreground">
                 {unavailable ? (
@@ -713,7 +713,7 @@ function GalleryStep({
       <div
         ref={linkSectionRef}
         className={cn(
-          "grid gap-4 border-t border-border pt-5 md:grid-cols-[minmax(0,1fr)_auto]",
+          "grid gap-4 border-t border-border pt-5 md:grid-cols-(--gtc-13)",
           byo && "-mx-3 rounded-xl border border-primary/40 bg-primary/[0.04] px-3 pb-4 md:mx-0",
         )}
       >
@@ -764,7 +764,7 @@ function GalleryStep({
             </div>
           )}
         </div>
-        <div className="flex min-w-0 flex-col gap-2 sm:min-w-[360px]">
+        <div className="flex min-w-0 flex-col gap-2 sm:min-w-(--sz-360px)">
           <div className="flex gap-2">
             <Input
               ref={linkInputRef}
@@ -988,7 +988,7 @@ function SegmentedOption({
       onClick={onClick}
       aria-pressed={selected}
       className={cn(
-        "min-w-[64px] rounded-md px-4 py-1.5 text-sm font-medium transition-colors",
+        "min-w-(--sz-64px) rounded-md px-4 py-1.5 text-sm font-medium transition-colors",
         selected
           ? "bg-background text-foreground shadow-sm"
           : "text-muted-foreground hover:text-foreground",
@@ -1392,7 +1392,7 @@ function WhoStep({
             <div>
               <div className="flex items-center gap-2">
                 <span className="font-bold text-foreground">All agents</span>
-                <span className="rounded-full bg-foreground px-2 py-0.5 text-[10px] font-bold text-background">
+                <span className="rounded-full bg-foreground px-2 py-0.5 text-(length:--text-nano) font-bold text-background">
                   Recommended
                 </span>
               </div>

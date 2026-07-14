@@ -2,14 +2,14 @@ import { useState } from "react";
 import { cn } from "@/lib/utils";
 
 const TILE_COLORS = [
-  "bg-[#FF4F00]",
-  "bg-[#24292f]",
-  "bg-[#4A154B]",
-  "bg-[#0f172a]",
-  "bg-[#5E6AD2]",
-  "bg-[#1a73e8]",
-  "bg-[#0f9d58]",
-  "bg-[#ea4335]",
+  "bg-(--app-logo-tile-1)",
+  "bg-(--app-logo-tile-2)",
+  "bg-(--app-logo-tile-3)",
+  "bg-(--app-logo-tile-4)",
+  "bg-(--app-logo-tile-5)",
+  "bg-(--app-logo-tile-6)",
+  "bg-(--app-logo-tile-7)",
+  "bg-(--app-logo-tile-8)",
 ];
 
 function colorFor(seed: string): string {

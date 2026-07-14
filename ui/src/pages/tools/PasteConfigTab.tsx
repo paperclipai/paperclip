@@ -182,7 +182,7 @@ export function PasteConfigTab({ companyId }: { companyId: string }) {
           spellCheck={false}
           rows={10}
           placeholder={SAMPLE_CONFIG}
-          className="min-h-[220px] bg-slate-900 font-mono text-[13px] leading-relaxed text-slate-100 placeholder:text-slate-500 focus-visible:ring-slate-400"
+          className="min-h-(--sz-220px) bg-slate-900 font-mono text-(length:--text-compact) leading-relaxed text-slate-100 placeholder:text-slate-500 focus-visible:ring-slate-400"
         />
         {localParseError ? (
           <p className="text-xs text-amber-600">{localParseError}</p>
@@ -312,7 +312,7 @@ function DraftCard({
                 {humanizeKey(field.label || field.key)}
               </div>
               <div className="flex items-center gap-2">
-                <code className="rounded border border-border bg-muted/40 px-2 py-1 font-mono text-[11px] text-muted-foreground">
+                <code className="rounded border border-border bg-muted/40 px-2 py-1 font-mono text-(length:--text-micro) text-muted-foreground">
                   {field.key}
                 </code>
                 <Input

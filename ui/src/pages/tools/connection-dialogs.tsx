@@ -88,7 +88,7 @@ export function CatalogDialog({ connection, onClose }: { connection: ToolConnect
             No tools discovered yet. Use “Refresh catalog” to discover tools from this connection.
           </p>
         ) : (
-          <ul className="max-h-[60vh] divide-y divide-border overflow-y-auto">
+          <ul className="max-h-(--sz-60vh) divide-y divide-border overflow-y-auto">
             {(catalog.data?.catalog ?? []).map((entry) => (
               <li key={entry.id} className="flex flex-wrap items-center gap-2 py-2.5">
                 <span className="font-mono text-sm text-foreground">{entry.toolName}</span>
@@ -523,7 +523,7 @@ export function AddConnectionDialog({
                 {probeResult.connection.lastError ? (
                   <p className="mt-1 text-xs text-destructive">{probeResult.connection.lastError}</p>
                 ) : null}
-                <p className="mt-2 text-[11px] text-muted-foreground">
+                <p className="mt-2 text-(length:--text-micro) text-muted-foreground">
                   Probe latency is a single round-trip sample. Aggregate p95 latency across traffic is tracked on
                   the Runtime tab once the connection is live.
                 </p>

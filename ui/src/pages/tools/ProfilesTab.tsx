@@ -375,7 +375,7 @@ function EntryFields({
   connections: Array<{ id: string; name: string }>;
 }) {
   return (
-    <div className="grid gap-3 sm:grid-cols-[1fr_1fr]">
+    <div className="grid gap-3 sm:grid-cols-(--gtc-60)">
       <div className="space-y-1.5">
         <Label>Selector</Label>
         <Select value={selectorType} onValueChange={(value) => setSelectorType(value as ToolProfileEntrySelectorType)}>
@@ -562,7 +562,7 @@ function SourceBadge({ source }: { source: AllowSource }) {
   return (
     <Badge variant="outline" className="gap-1 border-amber-500/50 text-amber-700 dark:text-amber-400">
       <AlertTriangle className="h-3 w-3" />
-      <span className="font-mono text-[11px]">pattern {source.label}</span>
+      <span className="font-mono text-(length:--text-micro)">pattern {source.label}</span>
     </Badge>
   );
 }
@@ -940,7 +940,7 @@ export function ProfilesTab({ companyId }: { companyId: string }) {
           onAction={() => setCreateOpen(true)}
         />
       ) : (
-        <div className="grid gap-4 md:grid-cols-[280px_1fr]">
+        <div className="grid gap-4 md:grid-cols-(--gtc-63)">
           {/* Master rail */}
           <Card className="h-fit">
             <CardContent className="p-0">
@@ -966,7 +966,7 @@ export function ProfilesTab({ companyId }: { companyId: string }) {
                         <span className="flex items-center gap-2">
                           <span className="truncate font-medium text-foreground">{profile.name}</span>
                           {profile.status !== "active" ? (
-                            <Badge variant={statusVariant(profile.status)} className="text-[10px]">
+                            <Badge variant={statusVariant(profile.status)} className="text-(length:--text-nano)">
                               {profile.status}
                             </Badge>
                           ) : null}

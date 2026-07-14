@@ -79,7 +79,7 @@ export function ConnectClientDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="grid gap-4 sm:grid-cols-[10rem_1fr]">
+        <div className="grid gap-4 sm:grid-cols-(--gtc-10)">
           <nav className="flex gap-1 overflow-x-auto sm:flex-col" aria-label="Clients">
             {snippets.map((snippet) => (
               <button

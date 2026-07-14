@@ -67,7 +67,7 @@ export function AppsSidebar() {
       </div>
 
       <nav className="flex-1 min-h-0 overflow-y-auto scrollbar-auto-hide px-3 py-2">
-        <div className="px-3 pb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+        <div className="px-3 pb-1 text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">
           Apps
         </div>
         <div className="flex flex-col gap-0.5">
@@ -82,10 +82,10 @@ export function AppsSidebar() {
             badgeLabel="waiting for your OK"
           />
         </div>
-        <div className="px-3 pb-1 pt-4 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+        <div className="px-3 pb-1 pt-4 text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">
           Developer
         </div>
-        <p className="px-3 pb-1.5 text-[11px] leading-snug text-muted-foreground/70">
+        <p className="px-3 pb-1.5 text-(length:--text-micro) leading-snug text-muted-foreground/70">
           Advanced setup for developers. Most teams never open this.
         </p>
         <div className="flex flex-col gap-0.5">

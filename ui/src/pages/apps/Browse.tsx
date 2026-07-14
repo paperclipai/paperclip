@@ -103,7 +103,7 @@ export function Browse() {
         <>
           {!trimmed && popular.length > 0 && (
             <section className="space-y-3">
-              <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+              <div className="text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">
                 Popular
               </div>
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
@@ -120,7 +120,7 @@ export function Browse() {
           )}
 
           <section className="space-y-3">
-            <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+            <div className="text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">
               {trimmed ? `Results (${filtered.length})` : "All apps"}
             </div>
             {filtered.length === 0 ? (

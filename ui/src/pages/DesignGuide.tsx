@@ -1867,7 +1867,7 @@ export function DesignGuide() {
         </SubSection>
 
         <SubSection title="Action approval card — mobile (390×844, surface 99)">
-          <div className="w-[390px] max-w-full rounded-xl border border-border bg-background p-3">
+          <div className="w-(--sz-390px) max-w-full rounded-xl border border-border bg-background p-3">
             <ActionCardMobile
               toolName="slack.post_message"
               risk="medium"

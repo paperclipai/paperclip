@@ -98,7 +98,7 @@ export function WizardToolsStep(props: WizardToolsStepProps) {
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-2">
-        <div className="relative min-w-[220px] flex-1">
+        <div className="relative min-w-(--sz-220px) flex-1">
           <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <Input
             value={search}
@@ -231,7 +231,7 @@ function AppRow({
                 <span className="flex min-w-0 flex-1 flex-col gap-0.5">
                   <span className="flex flex-wrap items-center gap-2">
                     <code className="font-mono text-xs text-foreground">{tool.toolName}</code>
-                    <Badge variant={CAPABILITY_VARIANT[cap]} className="text-[10px]">
+                    <Badge variant={CAPABILITY_VARIANT[cap]} className="text-(length:--text-nano)">
                       {CAPABILITY_LABEL[cap]}
                     </Badge>
                   </span>
@@ -285,7 +285,7 @@ function NewToolsRadio({
               <span className="flex items-center gap-2 text-sm font-medium text-foreground">
                 {opt.label}
                 {opt.recommended ? (
-                  <Badge variant="outline" className="text-[10px]">
+                  <Badge variant="outline" className="text-(length:--text-nano)">
                     Recommended
                   </Badge>
                 ) : (

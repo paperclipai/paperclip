@@ -162,7 +162,7 @@ function bindingRows(binding: ActionCardBinding, isStale: boolean): BindingRow[]
         <span className="inline-flex items-center gap-1.5">
           <ShieldCheck className="h-3.5 w-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
           <span>{shortSha(binding.payloadSha256)}</span>
-          <span className="font-sans text-[11px] uppercase tracking-normal text-muted-foreground">signed</span>
+          <span className="font-sans text-(length:--text-micro) uppercase tracking-normal text-muted-foreground">signed</span>
         </span>
       ),
       mono: true,

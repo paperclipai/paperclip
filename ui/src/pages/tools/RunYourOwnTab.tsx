@@ -119,7 +119,7 @@ export function RunYourOwnTab({ companyId }: { companyId: string }) {
             onChange={(event) => setCommand(event.target.value)}
             placeholder="npx -y @acme/mcp-tool"
             spellCheck={false}
-            className="bg-slate-900 font-mono text-[13px] text-slate-100 placeholder:text-slate-500 focus-visible:ring-slate-400"
+            className="bg-slate-900 font-mono text-(length:--text-compact) text-slate-100 placeholder:text-slate-500 focus-visible:ring-slate-400"
           />
           <p className="text-xs text-muted-foreground">The command that runs the tool. From the tool's README.</p>
         </div>
@@ -146,7 +146,7 @@ export function RunYourOwnTab({ companyId }: { companyId: string }) {
                         }
                         placeholder="API_KEY"
                         spellCheck={false}
-                        className={`font-mono text-[13px] ${invalid ? "border-destructive" : ""}`}
+                        className={`font-mono text-(length:--text-compact) ${invalid ? "border-destructive" : ""}`}
                       />
                       <Button
                         type="button"
@@ -211,7 +211,7 @@ export function RunYourOwnTab({ companyId }: { companyId: string }) {
           <div className="overflow-hidden rounded-lg border border-border">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-border bg-muted/40 text-left text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                <tr className="border-b border-border bg-muted/40 text-left text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">
                   <th className="px-4 py-2.5">Name</th>
                   <th className="px-4 py-2.5">Command</th>
                   <th className="px-4 py-2.5">Keys</th>
@@ -265,7 +265,7 @@ function RunYourOwnRow({
         {disabled ? <Badge variant="outline">off</Badge> : null}
       </td>
       <td className="px-4 py-3">
-        <code className="font-mono text-[11px] text-muted-foreground">{fullCommand || "—"}</code>
+        <code className="font-mono text-(length:--text-micro) text-muted-foreground">{fullCommand || "—"}</code>
       </td>
       <td className="px-4 py-3 text-muted-foreground">
         {template.envKeys.length > 0 ? template.envKeys.join(", ") : "none"}

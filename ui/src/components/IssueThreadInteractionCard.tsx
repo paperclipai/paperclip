@@ -1410,13 +1410,13 @@ function ToolActionIdentityHeader({
     <div className={cn("flex items-start gap-3", dimmed && "opacity-60 grayscale")}>
       <div
         aria-hidden
-        className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[9px] border border-border/70 bg-muted/60 text-base font-semibold text-foreground"
+        className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-border/70 bg-muted/60 text-base font-semibold text-foreground"
       >
         {toolActionInitial(payload)}
       </div>
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-          <span className="text-[17px] font-[750] leading-tight text-foreground">
+          <span className="text-base font-bold leading-tight text-foreground">
             {payload.toolDisplayName}
           </span>
           <span
@@ -1430,7 +1430,7 @@ function ToolActionIdentityHeader({
           </span>
         </div>
         {subParts.length > 0 ? (
-          <div className="mt-1 truncate font-mono text-[12.5px] text-muted-foreground">
+          <div className="mt-1 truncate font-mono text-(length:--text-compact) text-muted-foreground">
             {subParts.join(" · ")}
           </div>
         ) : null}
@@ -1459,11 +1459,11 @@ function ToolActionTechnicalDetails({
       </CollapsibleTrigger>
       <CollapsibleContent className="space-y-2 pt-2">
         {hasArgs ? (
-          <pre className="max-h-64 overflow-auto rounded-sm border border-border/70 bg-muted/40 p-3 font-mono text-[12px] leading-5 text-foreground">
+          <pre className="max-h-64 overflow-auto rounded-sm border border-border/70 bg-muted/40 p-3 font-mono text-xs leading-5 text-foreground">
             {payload.argumentsSummaryJson}
           </pre>
         ) : null}
-        <div className="flex items-center gap-2 text-[12px] text-muted-foreground">
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
           <span className="font-semibold uppercase tracking-(--tracking-eyebrow) text-(length:--text-nano)">
             args hash
           </span>

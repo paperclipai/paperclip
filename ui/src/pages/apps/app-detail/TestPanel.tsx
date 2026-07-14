@@ -248,7 +248,7 @@ export function TestPanel({
 
       <div className="space-y-3">
         <div className="flex flex-wrap items-center gap-2">
-          <div className="relative min-w-[12rem] flex-1">
+          <div className="relative min-w-(--sz-12rem) flex-1">
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <Input
               aria-label="Find an action"
@@ -473,7 +473,7 @@ function AgentPicker({
             })
           )}
         </div>
-        <div className="border-t border-border px-3 py-2 text-[11px] text-muted-foreground">
+        <div className="border-t border-border px-3 py-2 text-(length:--text-micro) text-muted-foreground">
           <p>Only agents you can assign tasks to are listed.</p>
           <p>Pick one to preview what they'd see in {appName}.</p>
         </div>
@@ -489,7 +489,7 @@ function AgentPicker({
               </Link>.
             </li>
           </ul>
-          <p className="mt-2 text-[11px] text-muted-foreground">
+          <p className="mt-2 text-(length:--text-micro) text-muted-foreground">
             Badges reflect this agent's current settings, not yours. Swap agents to see how an action would behave for each.
           </p>
         </div>
@@ -1052,7 +1052,7 @@ function PrettyPreview({ value }: { value: unknown }) {
           </tbody>
         </table>
         {rows.length > shown.length && (
-          <p className="px-2.5 py-1.5 text-[11px] text-muted-foreground">… {rows.length - shown.length} more rows</p>
+          <p className="px-2.5 py-1.5 text-(length:--text-micro) text-muted-foreground">… {rows.length - shown.length} more rows</p>
         )}
       </div>
     );
@@ -1356,7 +1356,7 @@ function OffExplanation({
   const tryAgents = others.filter((a) => decisionOf(a) !== "off");
 
   return (
-    <div className="grid gap-3 md:grid-cols-[1fr_minmax(0,18rem)]">
+    <div className="grid gap-3 md:grid-cols-(--gtc-62)">
       <div className="space-y-3">
         <div className="flex items-start gap-2 rounded-md border border-border bg-muted/40 p-3">
           <Ban className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
@@ -1381,11 +1381,11 @@ function OffExplanation({
       <aside className="rounded-md border border-border bg-card p-3">
         <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Why this is off</p>
         <p className="mt-1.5 text-xs text-muted-foreground">{whyBody}</p>
-        {auditHint && <p className="mt-1.5 text-[11px] text-muted-foreground">{auditHint}</p>}
+        {auditHint && <p className="mt-1.5 text-(length:--text-micro) text-muted-foreground">{auditHint}</p>}
         {otherSettings.length > 0 && (
           <div className="mt-3">
-            <p className="text-[11px] font-medium text-muted-foreground">Other agents using {appName}:</p>
-            <ul className="mt-1 space-y-0.5 text-[11px] text-muted-foreground">
+            <p className="text-(length:--text-micro) font-medium text-muted-foreground">Other agents using {appName}:</p>
+            <ul className="mt-1 space-y-0.5 text-(length:--text-micro) text-muted-foreground">
               {otherSettings.map((s) => (
                 <li key={s.name}>
                   {s.name}: <span className="text-foreground">{DECISION_META[s.decision].label}</span>
@@ -1396,14 +1396,14 @@ function OffExplanation({
         )}
         {tryAgents.length > 0 && (
           <div className="mt-3">
-            <p className="text-[11px] font-medium text-muted-foreground">Try as a different agent:</p>
+            <p className="text-(length:--text-micro) font-medium text-muted-foreground">Try as a different agent:</p>
             <div className="mt-1 flex flex-wrap gap-1.5">
               {tryAgents.slice(0, 4).map((other) => (
                 <button
                   key={other.id}
                   type="button"
                   onClick={() => onSelectAgent(other.id)}
-                  className="rounded-full border border-border px-2.5 py-1 text-[11px] font-medium text-foreground hover:bg-accent"
+                  className="rounded-full border border-border px-2.5 py-1 text-(length:--text-micro) font-medium text-foreground hover:bg-accent"
                 >
                   {other.name}
                 </button>

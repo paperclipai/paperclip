@@ -210,9 +210,9 @@ export function GatewaysList() {
               <>
                 {/* Desktop / tablet: full table. */}
                 <div className="hidden overflow-x-auto rounded-lg border border-border sm:block">
-                  <table className="w-full min-w-[40rem] text-sm">
+                  <table className="w-full min-w-(--sz-40rem) text-sm">
                     <thead>
-                      <tr className="border-b border-border bg-muted/40 text-left text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                      <tr className="border-b border-border bg-muted/40 text-left text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">
                         <th className="px-4 py-2.5">Gateway</th>
                         <th className="px-4 py-2.5">Scope</th>
                         <th className="px-4 py-2.5">Apps</th>
@@ -332,7 +332,7 @@ function endpointHost(endpointPath: string, slug: string): string {
 function MobileField({ label, value }: { label: string; value: ReactNode }) {
   return (
     <div className="min-w-0">
-      <dt className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{label}</dt>
+      <dt className="text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">{label}</dt>
       <dd className="mt-0.5 truncate text-foreground">{value}</dd>
     </div>
   );

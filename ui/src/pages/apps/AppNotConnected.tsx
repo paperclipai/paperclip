@@ -269,7 +269,7 @@ function PreviousSetup({
           Last error: {connection.healthMessage}
         </p>
       )}
-      <dl className="mt-3 grid gap-2 text-xs sm:grid-cols-[8rem_1fr]">
+      <dl className="mt-3 grid gap-2 text-xs sm:grid-cols-(--gtc-59)">
         <dt className="text-muted-foreground">Address</dt>
         <dd className="break-all font-mono text-foreground">{previousAddress}</dd>
         <dt className="text-muted-foreground">Connection type</dt>

@@ -1477,6 +1477,14 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --project-none: #64748b; /* Semantic rename of --hex-64748b (DECISION-SHEET.md A3, value unchanged). 'No project assigned' muted-slate fallback (TOKEN-AUDIT.md 1.3) across Routines/MarkdownEditor/RoutineRunVariablesDialog/RoutineList/IssueColumns/editable-sections; also ActivityCharts.tsx status 'backlog'. */
   --project-seed: #6366f1; /* Semantic rename of --hex-6366f1 (DECISION-SHEET.md A3, value unchanged). Project-color-fallback indigo seed default (ProjectDetail/PipelineSettings/IssueProperties/NewIssueDialog) — new-project-color-picker-seed family per TOKEN-AUDIT.md 1.3. */
   --liveness-blue: #2563eb; /* DECISION-SHEET.md A6: IssueChatThread.tsx human-message 'liveness blue' bubble (PAP-95 rev 5). Same value as --status-task-in_progress by coincidence, decoupled on purpose so a future status-hue change doesn't drag the chat bubble along. */
+  --app-logo-tile-1: #ff4f00;
+  --app-logo-tile-2: #24292f;
+  --app-logo-tile-3: #4a154b;
+  --app-logo-tile-4: #0f172a;
+  --app-logo-tile-5: #5e6ad2;
+  --app-logo-tile-6: #1a73e8;
+  --app-logo-tile-7: #0f9d58;
+  --app-logo-tile-8: #ea4335;
   --gradient-extract-1: linear-gradient(180deg,rgba(255,80,80,0.12),rgba(255,255,255,0.02)); /* Dashboard.tsx budget-alert card gradient. */
   --gradient-extract-2: linear-gradient(180deg,rgba(255,255,255,0.05),rgba(255,255,255,0.02)); /* Costs.tsx subtle white card gradient. */
   --gradient-extract-3: radial-gradient(circle at top left,rgba(244,114,182,0.08),transparent 35%),radial-gradient(circle at bottom right,rgba(56,189,248,0.1),transparent 32%); /* AccountingModelCard.tsx decorative overlay. */
@@ -1548,6 +1556,8 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
 */
 :root {
   --sz-320px: 320px; /* Extracted from ui/src/components/ActiveAgentsPanel.tsx (h-[320px]). */
+  --sz-390px: 390px;
+  --sz-64px: 64px;
   --sz-3px: 3px; /* Extracted from ui/src/components/ActivityCharts.tsx (gap-[3px]). */
   --sz-calc-1: calc(100% - 1.5rem); /* Extracted from ui/src/components/ActivityFeed.tsx (w-[calc(100%-1.5rem)]). */
   --sz-calc-2: calc(100% - 0.75rem); /* Extracted from ui/src/components/ActivityFeed.tsx (w-[calc(100%-0.75rem)]). */
@@ -1577,6 +1587,13 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --sz-94vw: 94vw; /* Extracted from ui/src/components/FileViewerSheet.tsx (w-[94vw]). */
   --sz-1280px: 1280px; /* Extracted from ui/src/components/FileViewerSheet.tsx (max-w-[1280px]). */
   --sz-60vh: 60vh; /* Extracted from ui/src/components/FrontDoor.tsx (min-h-[60vh]). */
+  --sz-52vh: 52vh;
+  --sz-40rem: 40rem;
+  --sz-44rem: 44rem;
+  --sz-30pct: 30%;
+  --sz-24pct: 24%;
+  --sz-18pct: 18%;
+  --sz-12pct: 12%;
   --sz-calc-6: min(20rem,calc(100vw - 2rem)); /* Extracted from ui/src/components/InlineEntitySelector.tsx (w-[min(20rem,calc(100vw-2rem))]). */
   --sz-18rem: 18rem; /* Extracted from ui/src/components/IssueBlockedNotice.tsx (max-w-[18rem]). */
   --sz-70vh: 70vh; /* Extracted from ui/src/components/IssueChatThread.test.tsx (max-h-[70vh]). */
@@ -1801,6 +1818,12 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --gtc-56: minmax(0,1fr) minmax(14rem,18rem); /* Extracted from ui/src/pages/TeamCatalog.tsx (grid-cols-[minmax(0,1fr)_minmax(14rem,18rem)]). */
   --gtc-57: repeat(14,minmax(0,1fr)); /* Extracted from ui/src/pages/UserProfile.tsx (grid-cols-[repeat(14,minmax(0,1fr))]). */
   --gtc-58: auto 1fr auto; /* Extracted from ui/src/pages/UserProfile.tsx (grid-cols-[auto_1fr_auto]). */
+  --gtc-59: 8rem 1fr;
+  --gtc-60: 1fr 1fr;
+  --gtc-61: 1fr 1fr 1fr;
+  --gtc-62: 1fr minmax(0,18rem);
+  --gtc-63: 280px 1fr;
+  --gtc-64: minmax(0,20rem) 1fr;
   --gtr-1: auto auto; /* Extracted from ui/src/components/ui/card.tsx (grid-rows-[auto_auto]). */
   --gtr-2: 1fr; /* Extracted from ui/src/pages/CompanySkills.tsx (grid-rows-[1fr]). */
   --gtr-3: 0fr; /* Extracted from ui/src/pages/CompanySkills.tsx (grid-rows-[0fr]). */

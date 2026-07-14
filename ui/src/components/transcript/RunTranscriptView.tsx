@@ -831,7 +831,7 @@ function ToolDecisionBadge({ decision }: { decision: ToolRunDecision | null }) {
   const summary = summarizeToolDecision(decision);
   if (!summary) return null;
   return (
-    <span className={cn("text-[10px] font-semibold uppercase tracking-[0.14em]", summary.className)}>
+    <span className={cn("text-(length:--text-nano) font-semibold uppercase tracking-(--tracking-eyebrow)", summary.className)}>
       {summary.label}
     </span>
   );
@@ -841,7 +841,7 @@ function ToolDecisionInlineDetail({ decision }: { decision: ToolRunDecision | nu
   const summary = summarizeToolDecision(decision);
   if (!summary?.detail) return null;
   return (
-    <div className="mt-1 break-words text-[11px] text-muted-foreground">
+    <div className="mt-1 break-words text-(length:--text-micro) text-muted-foreground">
       {summary.detail}
     </div>
   );
@@ -853,10 +853,10 @@ function ToolDecisionDetails({ decision, compact }: { decision: ToolRunDecision 
   return (
     <div className={cn(
       "rounded-lg border border-border/60 bg-background/60 p-2",
-      compact ? "text-[11px]" : "text-xs",
+      compact ? "text-(length:--text-micro)" : "text-xs",
     )}>
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-        <span className="font-semibold uppercase tracking-[0.14em] text-muted-foreground">Decision</span>
+        <span className="font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">Decision</span>
         <ToolDecisionBadge decision={decision} />
         {decision.reasonCode && <span className="font-mono text-muted-foreground">{decision.reasonCode}</span>}
       </div>
@@ -872,7 +872,7 @@ function ToolDecisionDetails({ decision, compact }: { decision: ToolRunDecision 
         {actionRequest?.interactionId && <span>card {actionRequest.interactionId.slice(0, 8)}</span>}
       </div>
       {decision.pendingAction?.previewMarkdown && (
-        <MarkdownBody className="mt-2 text-[11px] leading-5 text-foreground/75 [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">
+        <MarkdownBody className="mt-2 text-(length:--text-micro) leading-5 text-foreground/75 [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">
           {decision.pendingAction.previewMarkdown}
         </MarkdownBody>
       )}

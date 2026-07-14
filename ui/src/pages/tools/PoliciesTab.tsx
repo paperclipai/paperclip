@@ -575,7 +575,7 @@ function RuleBuilder({
         <RuleSentence sentence={sentence} />
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-[1fr_1fr_1fr]">
+      <div className="grid gap-4 lg:grid-cols-(--gtc-61)">
         <section className="space-y-3">
           <h3 className="text-sm font-semibold text-foreground">When</h3>
           <div className="grid gap-2">

@@ -115,7 +115,7 @@ function DetailFact({ label, value, mono }: { label: string; value: string; mono
   return (
     <div className="flex gap-2">
       <span className="w-28 shrink-0 text-muted-foreground">{label}</span>
-      <span className={cn("min-w-0 break-all text-foreground", mono && "font-mono text-[11px]")}>{value}</span>
+      <span className={cn("min-w-0 break-all text-foreground", mono && "font-mono text-(length:--text-micro)")}>{value}</span>
     </div>
   );
 }

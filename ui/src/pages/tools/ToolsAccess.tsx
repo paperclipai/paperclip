@@ -86,7 +86,7 @@ export function ToolsAccess() {
         <header>
           <div className="flex items-center gap-2.5">
             <h1 className="text-xl font-bold text-foreground">Advanced setup</h1>
-            <span className="inline-flex items-center rounded-full bg-foreground px-2.5 py-0.5 text-[11px] font-bold text-background">
+            <span className="inline-flex items-center rounded-full bg-foreground px-2.5 py-0.5 text-(length:--text-micro) font-bold text-background">
               Advanced
             </span>
           </div>
@@ -117,7 +117,7 @@ export function ToolsAccess() {
           ))}
         </nav>
 
-        <div className="min-h-[300px]">{renderTab(activeTab, selectedCompanyId)}</div>
+        <div className="min-h-(--sz-300px)">{renderTab(activeTab, selectedCompanyId)}</div>
 
         <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
           <Wrench className="h-3.5 w-3.5" />
@@ -143,7 +143,7 @@ export function ToolsAccess() {
         </p>
       </div>
 
-      <div className="min-h-[300px]">{renderTab(activeTab, selectedCompanyId)}</div>
+      <div className="min-h-(--sz-300px)">{renderTab(activeTab, selectedCompanyId)}</div>
     </div>
   );
 }

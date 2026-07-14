@@ -204,11 +204,11 @@ export function ProfilesIndex({
         <div className="overflow-hidden rounded-lg border border-border">
           <table className="w-full table-fixed text-sm">
             <colgroup>
-              <col className="w-[30%]" />
-              <col className="w-[18%]" />
-              <col className="w-[24%]" />
-              <col className="w-[12%]" />
-              <col className="w-[12%]" />
+              <col className="w-(--sz-30pct)" />
+              <col className="w-(--sz-18pct)" />
+              <col className="w-(--sz-24pct)" />
+              <col className="w-(--sz-12pct)" />
+              <col className="w-(--sz-12pct)" />
               <col className="w-10" />
             </colgroup>
             <thead>
