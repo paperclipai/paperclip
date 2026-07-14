@@ -452,6 +452,27 @@ describe("Sidebar", () => {
     });
   });
 
+  it("hides the Apps nav item unless experimental apps are enabled", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableApps: false });
+    const disabledRoot = await renderSidebar();
+
+    expect([...container.querySelectorAll("a")].some((anchor) => anchor.textContent === "Apps")).toBe(false);
+
+    flushSync(() => {
+      disabledRoot.unmount();
+    });
+
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableApps: true });
+    const enabledRoot = await renderSidebar();
+
+    const link = [...container.querySelectorAll("a")].find((anchor) => anchor.textContent === "Apps");
+    expect(link?.getAttribute("href")).toBe("/apps");
+
+    flushSync(() => {
+      enabledRoot.unmount();
+    });
+  });
+
   it("shows the Pipelines nav item when pipelines are enabled", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableIsolatedWorkspaces: false,

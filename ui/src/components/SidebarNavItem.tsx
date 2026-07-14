@@ -46,7 +46,7 @@ interface SidebarNavItemProps {
   className?: string;
   labelClassName?: string;
   badge?: number;
-  badgeTone?: "default" | "danger";
+  badgeTone?: "default" | "danger" | "warning";
   /**
    * Accessible noun for the numeric badge when collapsed to the rail, where the
    * count is rendered as a dot (e.g. `badgeLabel="unread"` → "Inbox, 28 unread").
@@ -152,7 +152,11 @@ export function SidebarNavItem({
           <span
             className={cn(
               "absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full shadow-(--shadow-extract-12)",
-              badgeTone === "danger" ? "bg-red-600" : "bg-primary",
+              badgeTone === "danger"
+                ? "bg-red-600"
+                : badgeTone === "warning"
+                  ? "bg-amber-500"
+                  : "bg-primary",
             )}
             aria-hidden="true"
           />
@@ -192,7 +196,9 @@ export function SidebarNavItem({
             "ml-auto px-1.5 leading-none",
             badgeTone === "danger"
               ? "bg-red-600/90 text-red-50"
-              : "bg-primary text-primary-foreground",
+              : badgeTone === "warning"
+                ? "bg-amber-500/90 text-amber-50"
+                : "bg-primary text-primary-foreground",
           )}
         >
           {badge}
