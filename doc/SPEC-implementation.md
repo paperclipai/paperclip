@@ -845,6 +845,10 @@ Config shape:
 Behavior:
 
 - spawn child process
+- inject runtime-owned `PAPERCLIP_AGENT_ID`, `PAPERCLIP_COMPANY_ID`, and
+  `PAPERCLIP_RUN_ID`; when the wake is issue-backed, also inject
+  `PAPERCLIP_TASK_ID` from the wake context. Adapter-configured env cannot
+  override these identity fields.
 - stream stdout/stderr to run logs
 - mark run status on exit code/timeout
 - cancel sends SIGTERM then SIGKILL after grace
