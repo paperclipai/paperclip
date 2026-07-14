@@ -553,6 +553,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
 
     expect(container.textContent).toContain("Connect Zapier");
     expect(nameInputFrom(container)?.value).toBe("Zapier");
+    expect(mockNavigate).toHaveBeenCalledWith("/apps/connect?byo=1&appKey=zapier&stage=setup");
   });
 
   it("returns from an app key step to the BYO gallery", async () => {
@@ -584,7 +585,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await flushReact();
 
     expect(connectAppMock).toHaveBeenCalledTimes(1);
-    expect(mockNavigate).toHaveBeenCalledWith("/apps/connect?appKey=zapier&stage=actions");
+    expect(mockNavigate).toHaveBeenCalledWith("/apps/connect?byo=1&appKey=zapier&stage=actions");
     const [, input] = connectAppMock.mock.calls[0];
     expect(input).toMatchObject({ galleryKey: "zapier", name: "Zapier" });
   });

@@ -55,7 +55,7 @@ const ROUTE_STAGE_BY_STEP: Partial<Record<Step, string>> = {
 
 function appConnectHref(appKey: string, step: Step): string {
   const stage = ROUTE_STAGE_BY_STEP[step] ?? "setup";
-  const params = new URLSearchParams({ appKey, stage });
+  const params = new URLSearchParams({ byo: "1", appKey, stage });
   return `/apps/connect?${params.toString()}`;
 }
 type AppAccessSelection = "all_agents" | { agentIds: string[] };
