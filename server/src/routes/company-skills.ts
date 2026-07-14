@@ -26,7 +26,7 @@ import {
 import { trackSkillImported } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
 import { accessService, companySkillService, heartbeatService, issueService, logActivity } from "../services/index.js";
-import { parseSkillImportSourceInput } from "../services/company-skills.js";
+import { isGitRepoSkillImportSource, parseSkillImportSourceInput } from "../services/company-skills.js";
 import {
   getCatalogSkillOrThrow,
   listCatalogSkillsOrEmpty,
@@ -130,19 +130,6 @@ export function companySkillRoutes(db: Db) {
     };
   }
 
-  function isGitRepoImportSource(source: string) {
-    try {
-      const url = new URL(source);
-      if (url.protocol !== "https:") return false;
-      const hostname = url.hostname.toLowerCase();
-      if (hostname.endsWith(".githubusercontent.com") || hostname === "gist.github.com") return false;
-      const segments = url.pathname.split("/").filter(Boolean);
-      return segments.length >= 2 && !url.pathname.toLowerCase().endsWith(".md");
-    } catch {
-      return false;
-    }
-  }
-
   function normalizeGitHubPolicyLocator(source: string) {
     try {
       const url = new URL(source);
@@ -164,7 +151,7 @@ export function companySkillRoutes(db: Db) {
     const resolvedSource = parsed.resolvedSource;
     return {
       sourceType: normalizeSkillPolicySourceType(
-        isGitRepoImportSource(resolvedSource) ? "git" : /^https?:\/\//i.test(resolvedSource) ? "external_package" : "workspace",
+        isGitRepoSkillImportSource(resolvedSource) ? "git" : /^https?:\/\//i.test(resolvedSource) ? "external_package" : "workspace",
       ),
       sourceLocator: normalizeGitHubPolicyLocator(resolvedSource),
     };

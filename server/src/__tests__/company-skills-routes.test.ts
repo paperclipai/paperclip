@@ -904,6 +904,56 @@ describe("company skill mutation permissions", () => {
     expect(mockCompanySkillService.importFromSource).not.toHaveBeenCalled();
   });
 
+  it.each([
+    {
+      label: "tree directory",
+      source: "https://github.com/Vercel-Labs/Agent-Browser/tree/main/skills/Upper.MD",
+      sourceLocator: "https://github.com/vercel-labs/agent-browser/tree/main/skills/Upper.MD",
+    },
+    {
+      label: "blob file",
+      source: "https://github.com/Vercel-Labs/Agent-Browser/blob/main/skills/Upper/SKILL.MD",
+      sourceLocator: "https://github.com/vercel-labs/agent-browser/blob/main/skills/Upper/SKILL.MD",
+    },
+  ])("blocks uppercase .MD GitHub $label imports when policy denies the canonical git source locator", async ({ source, sourceLocator }) => {
+    mockAccessService.decide.mockResolvedValue(denySkillChangeDecision());
+    mockCompanySkillPolicyService.evaluate.mockImplementation(async (input: { resource?: { sourceType?: string; sourceLocator?: string } }) => {
+      const resource = input.resource ?? {};
+      return resource.sourceType === "git" && resource.sourceLocator === sourceLocator
+        ? denySkillPolicy("skills.import")
+        : {
+          allowed: true,
+          action: "skills.import",
+          reason: "policy_default",
+          policyRevision: 1,
+          matchedRuleId: null,
+          remediation: null,
+        };
+    });
+
+    const res = await request(await createApp({
+      type: "board",
+      userId: "board-user",
+      companyIds: ["company-1"],
+      source: "session",
+      isInstanceAdmin: false,
+    }))
+      .post("/api/companies/company-1/skills/import")
+      .send({ source });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Skill action denied by company policy");
+    expect(mockCompanySkillPolicyService.evaluate).toHaveBeenCalledWith(expect.objectContaining({
+      companyId: "company-1",
+      action: "skills.import",
+      resource: expect.objectContaining({
+        sourceType: "git",
+        sourceLocator,
+      }),
+    }));
+    expect(mockCompanySkillService.importFromSource).not.toHaveBeenCalled();
+  });
+
   it("serves catalog listing without mutating company skills", async () => {
     mockCatalogService.listCatalogSkillsOrEmpty.mockReturnValue([
       {

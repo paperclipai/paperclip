@@ -820,6 +820,19 @@ export function parseSkillImportSourceInput(rawInput: string): ParsedSkillImport
   };
 }
 
+export function isGitRepoSkillImportSource(source: string) {
+  try {
+    const parsed = new URL(source.trim());
+    if (parsed.protocol !== "https:") return false;
+    const hostname = parsed.hostname.toLowerCase();
+    if (hostname.endsWith(".githubusercontent.com") || hostname === "gist.github.com") return false;
+    const segments = parsed.pathname.split("/").filter(Boolean);
+    return segments.length >= 2 && !parsed.pathname.endsWith(".md");
+  } catch {
+    return false;
+  }
+}
+
 function resolveBundledSkillsRoot() {
   const moduleDir = path.dirname(fileURLToPath(import.meta.url));
   return [
@@ -1291,14 +1304,7 @@ async function readUrlSkillImports(
 ): Promise<{ skills: ImportedSkill[]; warnings: string[] }> {
   const url = sourceUrl.trim();
   const warnings: string[] = [];
-  const looksLikeRepoUrl = (() => { try {
-    const parsed = new URL(url);
-    if (parsed.protocol !== "https:") return false;
-    const h = parsed.hostname.toLowerCase();
-    if (h.endsWith(".githubusercontent.com") || h === "gist.github.com") return false;
-    const segments = parsed.pathname.split("/").filter(Boolean);
-    return segments.length >= 2 && !parsed.pathname.endsWith(".md");
-  } catch { return false; } })();
+  const looksLikeRepoUrl = isGitRepoSkillImportSource(url);
   if (looksLikeRepoUrl) {
     const parsed = parseGitHubSourceUrl(url);
     const apiBase = gitHubApiBase(parsed.hostname);
