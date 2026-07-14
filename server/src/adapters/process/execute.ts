@@ -21,7 +21,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const envConfig = parseObject(config.env);
   const env: Record<string, string> = {
     ...buildPaperclipEnv(agent),
-    PAPERCLIP_RUN_ID: runId,
   };
   for (const [k, v] of Object.entries(envConfig)) {
     if (typeof v === "string") env[k] = v;
