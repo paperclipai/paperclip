@@ -58,10 +58,19 @@ import { buildSameOriginWebSocketUrl } from "../lib/websocket-url";
 import { formatCents, formatDate, relativeTime, formatTokens, visibleRunCostUsd } from "../lib/utils";
 import { cn } from "../lib/utils";
 import { describeRunRetryState } from "../lib/runRetryState";
+import {
+  agentDetailTabPath,
+  isAgentPluginDetailView,
+  parseAgentDetailView,
+  resolveCanonicalAgentTab,
+  type AgentDetailView,
+  type AgentPluginDetailView,
+} from "../lib/agent-detail-tabs";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { PluginSlotMount, usePluginSlots } from "@/plugins/slots";
 import {
   CheckCircle2,
   XCircle,
@@ -262,17 +271,6 @@ function scrollToContainerBottom(container: ScrollContainer, behavior: ScrollBeh
   }
 
   container.scrollTo({ top: container.scrollHeight, behavior });
-}
-
-type AgentDetailView = "dashboard" | "instructions" | "configuration" | "skills" | "runs" | "budget";
-
-function parseAgentDetailView(value: string | null): AgentDetailView {
-  if (value === "instructions" || value === "prompts") return "instructions";
-  if (value === "configure" || value === "configuration") return "configuration";
-  if (value === "skills") return "skills";
-  if (value === "budget") return "budget";
-  if (value === "runs") return value;
-  return "dashboard";
 }
 
 function usageNumber(usage: Record<string, unknown> | null, ...keys: string[]) {
@@ -719,6 +717,21 @@ export function AgentDetail() {
   const canonicalAgentRef = agent ? agentRouteRef(agent) : routeAgentRef;
   const agentLookupRef = agent?.id ?? routeAgentRef;
   const resolvedAgentId = agent?.id ?? null;
+  const { slots: pluginDetailSlots, isLoading: pluginDetailSlotsLoading } = usePluginSlots({
+    slotTypes: ["detailTab"],
+    entityType: "agent",
+    companyId: resolvedCompanyId,
+    enabled: Boolean(resolvedCompanyId),
+  });
+  const pluginTabItems = useMemo(
+    () => pluginDetailSlots.map((slot) => ({
+      value: `plugin:${slot.pluginKey}:${slot.id}` as AgentPluginDetailView,
+      label: slot.displayName,
+      slot,
+    })),
+    [pluginDetailSlots],
+  );
+  const activePluginTab = pluginTabItems.find((item) => item.value === activeView) ?? null;
   const membershipsQuery = useResourceMemberships(resolvedCompanyId);
   const membershipMutation = useResourceMembershipMutation(resolvedCompanyId);
   const agentMembershipState = resolvedAgentId
@@ -879,23 +892,27 @@ export function AgentDetail() {
       }
       return;
     }
-    const canonicalTab =
-      activeView === "instructions"
-        ? "instructions"
-        : activeView === "configuration"
-          ? "configuration"
-          : activeView === "skills"
-            ? "skills"
-            : activeView === "runs"
-              ? "runs"
-              : activeView === "budget"
-                ? "budget"
-              : "dashboard";
+    const canonicalTab = resolveCanonicalAgentTab(
+      activeView,
+      pluginDetailSlotsLoading,
+      new Set(pluginTabItems.map((item) => item.value)),
+    );
+    if (canonicalTab === null) return;
     if (routeAgentRef !== canonicalAgentRef || urlTab !== canonicalTab) {
-      navigate(`/agents/${canonicalAgentRef}/${canonicalTab}`, { replace: true });
+      navigate(agentDetailTabPath(canonicalAgentRef, canonicalTab), { replace: true });
       return;
     }
-  }, [agent, routeAgentRef, canonicalAgentRef, urlRunId, urlTab, activeView, navigate]);
+  }, [
+    agent,
+    routeAgentRef,
+    canonicalAgentRef,
+    urlRunId,
+    urlTab,
+    activeView,
+    pluginDetailSlotsLoading,
+    pluginTabItems,
+    navigate,
+  ]);
 
   useEffect(() => {
     if (!agent?.companyId || agent.companyId === selectedCompanyId) return;
@@ -997,12 +1014,14 @@ export function AgentDetail() {
         crumbs.push({ label: "Runs" });
       } else if (activeView === "budget") {
         crumbs.push({ label: "Budget" });
+      } else if (isAgentPluginDetailView(activeView)) {
+        crumbs.push({ label: activePluginTab?.label ?? "Plugin" });
       } else {
         crumbs.push({ label: "Dashboard" });
       }
     }
     setBreadcrumbs(crumbs);
-  }, [setBreadcrumbs, agent, routeAgentRef, canonicalAgentRef, activeView, urlRunId]);
+  }, [setBreadcrumbs, agent, routeAgentRef, canonicalAgentRef, activeView, activePluginTab?.label, urlRunId]);
 
   useEffect(() => {
     closePanel();
@@ -1229,7 +1248,7 @@ export function AgentDetail() {
       {!urlRunId && (
         <Tabs
           value={activeView}
-          onValueChange={(value) => navigate(`/agents/${canonicalAgentRef}/${value}`)}
+          onValueChange={(value) => navigate(agentDetailTabPath(canonicalAgentRef, value))}
         >
           <PageTabBar
             items={[
@@ -1239,9 +1258,10 @@ export function AgentDetail() {
               { value: "configuration", label: "Configuration" },
               { value: "runs", label: "Runs" },
               { value: "budget", label: "Budget" },
+              ...pluginTabItems.map(({ value, label }) => ({ value, label })),
             ]}
             value={activeView}
-            onValueChange={(value) => navigate(`/agents/${canonicalAgentRef}/${value}`)}
+            onValueChange={(value) => navigate(agentDetailTabPath(canonicalAgentRef, value))}
           />
         </Tabs>
       )}
@@ -1375,6 +1395,19 @@ export function AgentDetail() {
             variant="plain"
           />
         </div>
+      ) : null}
+
+      {activePluginTab && resolvedCompanyId ? (
+        <PluginSlotMount
+          slot={activePluginTab.slot}
+          context={{
+            companyId: resolvedCompanyId,
+            companyPrefix: companyPrefix ?? null,
+            entityId: agent.id,
+            entityType: "agent",
+          }}
+          missingBehavior="placeholder"
+        />
       ) : null}
     </div>
   );
