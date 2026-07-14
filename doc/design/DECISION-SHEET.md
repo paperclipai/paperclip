@@ -43,6 +43,21 @@ Every open question from TOKEN-AUDIT.md §8 + batch logs and COMPONENT-INVENTORY
 
 The five-tone type→color system (sky/violet/rose/amber/neutral accent bar + tinted source icon) is retired from the Decisions feed: the left accent bar is deleted and the source icon renders in `text-muted-foreground`, so a row's type reads through icon shape + text label alone and color is freed up for severity (Critical `destructive`, per 2a) and CTAs. Judgment call in the same commit: `attentionTone`/`attentionToneStyle`/`TONE_STYLE` (lib/attention.ts) were deleted rather than kept as an unused map — a repo-wide grep found exactly one consumer (AttentionQueueRow itself), so no other surface loses the palette and no debt remains; the tone unit tests went with them (type identity is still covered by the `sourceMeta` label/icon tests).
 
+## Decisions-page CTA vocabulary → persistent footer-right bar, six verbs (PAP-316 / PAP-313 anatomy 3a, Jul 14 2026)
+
+Collapsed Decisions cards carry a persistent footer-right CTA bar — one size (`sm`, the same 36px buttons the expanded resolvers already use), one **solid advance verb** + at most one **outline counter-verb** per card, drawn from a fixed six-verb vocabulary:
+
+| Verb | Variant | Cards | Behavior |
+|---|---|---|---|
+| **Approve** | solid | approvals, join requests, confirmations | acts in place — the card renders the fixed verb, never the server verb label, which kills the "Approve vs Accept/Confirm" drift (the expanded resolver keeps the configured wording, e.g. "Approve plan") |
+| **Reject** | outline | approvals, join requests, confirmations | acts in place; confirmations expand the resolver to collect a reason. Outline, not `destructive` — red stays reserved for the Critical badge (2a) |
+| **Answer** | solid | question interactions | expands the inline resolver |
+| **Review** | solid | multi-item interactions (suggested tasks, checkbox confirmations, item verdicts) and review deep-links | expands the resolver / navigates |
+| **Open** | solid | all other deep-link cards | navigates to the native surface |
+| **Restore** | outline | snoozed/dismissed curtains | lifts the curtain |
+
+Judgment calls in the same commit: (1) approvals' third verb **Request revision** drops off the collapsed card (resolver-only) to hold the two-CTA ceiling; (2) board approvals show Approve/Reject only — the duplicate Open button beside them is gone (the deep link stays in the overflow menu until 4a's footer-left View-thread link lands); (3) **Restore stays outline** — the dimmed curtain shouldn't carry the loudest button on the page (matches the approved concept artifact, where Restore is the one outline advance verb); (4) curtains no longer show Open next to Restore (one verb per curtain); (5) the mobile full-width / `@xl` container-query button sizing (`ACTION_BTN`) is deleted — the bar is footer-right at every viewport, per 3a.
+
 ## Decisions-page severity badges → outline, red = Critical only (PAP-314 / PAP-313 anatomy 2a, Jul 14 2026)
 
 Severity on the Decisions feed now renders as an *outline* badge — Critical on the `destructive` tokens (`border-destructive/60 text-destructive`; manual AA check: 4.76:1 light / 4.69:1 dark vs `--card`, WCAG 2.1 small-text pass with no dark override), High as a neutral outline (`border-border text-muted-foreground`), Medium/Low no badge (unchanged). Red is reserved for Critical alone so it reads as an alarm, not decoration. Judgment call in the same commit: the exported `severityStyle`/`SEVERITY_STYLE` map (filled red/orange/yellow/blue accents + dots) was deleted rather than retokenized — it had zero component consumers (only its own unit test) and its filled-accent model is exactly what the plan retires; severity keys a badge, never card color (invariant test preserved).

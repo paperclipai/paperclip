@@ -44,12 +44,6 @@ import { ProjectTile } from "./ProjectTile";
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
 
-// Decision-action buttons: a comfortable tap target when the row is narrow
-// (h-9 / text-sm), shrinking back to the dense pill (h-6 / text-xs) once the
-// row's own container is wide enough (`@xl` ≈ 576px). Container-query driven so
-// the row also reflows correctly inside narrow side panels, not just on phones.
-const ACTION_BTN = "h-9 gap-1.5 px-3 text-sm @xl:h-6 @xl:gap-1 @xl:px-2 @xl:text-xs";
-
 /** Tomorrow at 9am local time. */
 function tomorrowMorningIso(): string {
   const d = new Date();
@@ -130,16 +124,17 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
     }
   };
 
-  // Which rows contribute an action bar. Inline rows carry compact decision
-  // verbs; deep-link rows carry an Open button; curtain rows carry Restore.
-  const compactActions = !isHidden ? collectCompactActions(item) : [];
-  const showCompact = !expanded && compactActions.length > 0;
-  const showOpen = !inline && !!href;
+  // Footer CTAs (3a): every card carries one solid advance verb and at most one
+  // outline counter-verb from the six-verb vocabulary. One-tap decision cards
+  // get Approve/Reject; other inline cards get Answer/Review (expand); deep-link
+  // cards get Review/Open; curtain rows get Restore. Mutually exclusive so no
+  // card ever shows more than one advance verb.
+  const decisionCtas = !isHidden ? collectDecisionCtas(item) : null;
+  const showDecision = !expanded && decisionCtas !== null;
+  const showExpandVerb = !expanded && !decisionCtas && inline;
+  const showOpen = !isHidden && !decisionCtas && !inline && !!href;
   const showRestore = isHidden && !!onRestore;
-  const showActionBar = showCompact || showOpen || showRestore;
-  // Left gutter width (chevron + gap) so the stacked content aligns under the
-  // headline in the wide layout; when narrow, everything runs full-bleed.
-  const gutterIndent = "@xl:pl-6";
+  const showActionBar = showDecision || showExpandVerb || showOpen || showRestore;
 
   return (
     <div
@@ -283,40 +278,35 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
             </div>
           )}
 
-          {/* Action bar: full-width, thumb-reachable buttons on mobile;
-              right-aligned dense pills on desktop. Sibling of the headline so
-              taps never toggle expand. */}
+          {/* Persistent footer bar (3a): CTAs sit footer-right at one size on
+              every viewport. Sibling of the headline so taps never toggle
+              expand. */}
           {showActionBar && (
             <div
-              className={cn("flex flex-wrap items-center gap-2 @xl:justify-end", gutterIndent)}
+              className="flex flex-wrap items-center justify-end gap-2"
               data-attention-actions="true"
             >
-              {showCompact && (
+              {(showDecision || showExpandVerb) && (
                 <CompactDecisionActions
                   item={item}
                   companyId={companyId}
+                  ctas={decisionCtas}
                   onOpen={() => onToggleExpand(item)}
                 />
               )}
 
               {showOpen && (
-                <Button asChild variant="outline" size="xs" className={cn(ACTION_BTN, "w-full @xl:w-auto")}>
+                <Button asChild size="sm">
                   <Link to={href!}>
-                    Open
-                    <ExternalLink className="h-3 w-3" />
+                    {item.sourceKind === "review" ? "Review" : "Open"}
+                    <ExternalLink className="h-3.5 w-3.5" />
                   </Link>
                 </Button>
               )}
 
               {showRestore && (
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="xs"
-                  className={cn(ACTION_BTN, "w-full @xl:w-auto")}
-                  onClick={() => onRestore(item)}
-                >
-                  <RotateCcw className="h-3 w-3" />
+                <Button type="button" variant="outline" size="sm" onClick={() => onRestore(item)}>
+                  <RotateCcw className="h-3.5 w-3.5" />
                   Restore
                 </Button>
               )}
@@ -340,57 +330,76 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
   );
 });
 
-type CompactDecisionAction = "accept" | "approve" | "reject" | "request_revision";
+type CompactDecisionAction = "accept" | "approve" | "reject";
 
-function compactDecisionAction(item: AttentionItem, verbId: string): CompactDecisionAction | null {
-  if (item.sourceKind === "approval" && (verbId === "approve" || verbId === "reject" || verbId === "request_revision")) {
-    return verbId;
-  }
-  if (item.sourceKind === "join_request" && (verbId === "approve" || verbId === "reject")) {
-    return verbId;
+/**
+ * The one-tap decision pair a collapsed card can resolve in place. Labels are
+ * fixed to the six-verb vocabulary (Approve / Reject) rather than echoing the
+ * server verb labels, so "Approve" never drifts to "Accept"/"Confirm" between
+ * sources — the expanded resolver still shows the full configured wording.
+ * Approvals' third verb (Request revision) lives in the resolver only.
+ */
+interface CompactDecisionCtas {
+  /** Solid advance verb ("Approve"), when the card has one. */
+  advance: { action: "accept" | "approve" } | null;
+  /** Outline counter-verb ("Reject"); confirmations collect a reason in the resolver. */
+  counter: { viaResolver: boolean } | null;
+}
+
+function collectDecisionCtas(item: AttentionItem): CompactDecisionCtas | null {
+  const has = (id: string) => item.decisionVerbs.some((verb) => verb.id === id);
+  if (item.sourceKind === "approval" || item.sourceKind === "join_request") {
+    if (!has("approve") && !has("reject")) return null;
+    return {
+      advance: has("approve") ? { action: "approve" } : null,
+      counter: has("reject") ? { viaResolver: false } : null,
+    };
   }
   if (
     item.sourceKind === "issue_thread_interaction"
     && item.subject.metadata?.kind === "request_confirmation"
-    && (verbId === "accept" || verbId === "reject")
   ) {
-    return verbId;
+    if (!has("accept") && !has("reject")) return null;
+    return {
+      advance: has("accept") ? { action: "accept" } : null,
+      counter: has("reject") ? { viaResolver: true } : null,
+    };
   }
   return null;
 }
 
-/** The compact accept/reject verbs a collapsed row can resolve in place. */
-function collectCompactActions(item: AttentionItem): Array<{ action: CompactDecisionAction; label: string; id: string }> {
-  return item.decisionVerbs.slice(0, 3).flatMap((verb) => {
-    const action = compactDecisionAction(item, verb.id);
-    return action ? [{ action, label: verb.label, id: verb.id }] : [];
-  });
+/** Advance verb for inline cards that resolve through the expanded form. */
+function expandVerbLabel(item: AttentionItem): "Answer" | "Review" {
+  return item.subject.metadata?.kind === "ask_user_questions" ? "Answer" : "Review";
 }
 
 function CompactDecisionActions({
   item,
   companyId,
+  ctas,
   onOpen,
 }: {
   item: AttentionItem;
   companyId: string;
+  ctas: CompactDecisionCtas | null;
   onOpen: () => void;
 }) {
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
-  const actions = collectCompactActions(item);
+  const advance = ctas?.advance ?? null;
+  const counter = ctas?.counter ?? null;
 
   const decision = useMutation<unknown, Error, CompactDecisionAction>({
     mutationFn: (action: CompactDecisionAction) => {
       if (item.sourceKind === "approval") {
-        if (action === "approve") return approvalsApi.approve(item.subject.id);
-        if (action === "reject") return approvalsApi.reject(item.subject.id);
-        return approvalsApi.requestRevision(item.subject.id);
+        return action === "reject"
+          ? approvalsApi.reject(item.subject.id)
+          : approvalsApi.approve(item.subject.id);
       }
       if (item.sourceKind === "join_request") {
-        return action === "approve"
-          ? accessApi.approveJoinRequest(companyId, item.subject.id)
-          : accessApi.rejectJoinRequest(companyId, item.subject.id);
+        return action === "reject"
+          ? accessApi.rejectJoinRequest(companyId, item.subject.id)
+          : accessApi.approveJoinRequest(companyId, item.subject.id);
       }
       if (item.sourceKind === "issue_thread_interaction") {
         const issueId = item.subject.metadata?.issueId;
@@ -414,59 +423,69 @@ function CompactDecisionActions({
     },
     onError: (error, action) => {
       pushToast({
-        title: `Could not ${decisionLabel(action)}`,
+        title: `Could not ${action === "reject" ? "reject" : "approve"}`,
         body: error instanceof Error ? error.message : "Please try again.",
         tone: "error",
       });
     },
   });
 
-  if (actions.length === 0) return null;
-
   return (
-    <div className="flex w-full flex-wrap items-center gap-2 @xl:w-auto @xl:justify-end @xl:gap-1" aria-label="Decision actions">
-      {actions.map(({ action, id, label }) => (
+    <div className="flex flex-wrap items-center justify-end gap-2" aria-label="Decision actions">
+      {counter && (
         <Button
-          key={id}
           type="button"
-          variant={decisionVerbVariant({ id, label, description: "" })}
-          size="xs"
-          className={cn(ACTION_BTN, "min-w-0 flex-1 @xl:flex-none")}
+          variant="outline"
+          size="sm"
           disabled={decision.isPending}
           onClick={(event) => {
             event.stopPropagation();
-            if (item.sourceKind === "issue_thread_interaction" && action === "reject") {
+            if (counter.viaResolver) {
               onOpen();
               return;
             }
-            decision.mutate(action);
+            decision.mutate("reject");
           }}
         >
-          {decision.isPending && decision.variables === action && <Loader2 className="h-3 w-3 animate-spin" />}
-          {label}
+          {decision.isPending && decision.variables === "reject" && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+          Reject
         </Button>
-      ))}
+      )}
+      {advance && (
+        <Button
+          type="button"
+          size="sm"
+          disabled={decision.isPending}
+          onClick={(event) => {
+            event.stopPropagation();
+            decision.mutate(advance.action);
+          }}
+        >
+          {decision.isPending && decision.variables !== "reject" && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+          Approve
+        </Button>
+      )}
+      {!ctas && (
+        <Button
+          type="button"
+          size="sm"
+          onClick={(event) => {
+            event.stopPropagation();
+            onOpen();
+          }}
+        >
+          {expandVerbLabel(item)}
+        </Button>
+      )}
     </div>
   );
 }
 
-function decisionLabel(action: CompactDecisionAction): string {
-  if (action === "request_revision") return "sent for revision";
-  if (action === "accept" || action === "approve") return "approved";
-  return "rejected";
-}
-
 function compactDecisionSuccessLabel(sourceKind: AttentionItem["sourceKind"], action: CompactDecisionAction): string {
-  if (sourceKind === "approval") return `Approval ${decisionLabel(action)}`;
-  if (sourceKind === "join_request") return `Join request ${decisionLabel(action)}`;
-  return action === "accept" ? "Confirmation accepted" : "Confirmation declined";
-}
-
-function decisionVerbVariant(verb: AttentionItem["decisionVerbs"][number]): "default" | "outline" | "destructive" {
-  const text = `${verb.label} ${verb.description ?? ""}`.toLowerCase();
-  if (/\b(reject|decline|deny|delete|remove)\b/.test(text)) return "destructive";
-  if (/\b(accept|approve|confirm|apply)\b/.test(text)) return "default";
-  return "outline";
+  const outcome = action === "reject" ? "rejected" : "approved";
+  if (sourceKind === "approval") return `Approval ${outcome}`;
+  if (sourceKind === "join_request") return `Join request ${outcome}`;
+  return action === "reject" ? "Confirmation declined" : "Confirmation accepted";
 }
 
 /** Inline project identity keeps useful context without a competing badge. */
