@@ -176,7 +176,6 @@ export function toggleTool(
   if (willSelect) included.add(toolId);
   else included.delete(toolId);
   if (included.size === 0) return { kind: "none" };
-  if (included.size >= group.tools.length) return { kind: "all" };
   return { kind: "some", included: group.tools.filter((t) => included.has(t.id)).map((t) => t.id) };
 }
 
@@ -311,8 +310,7 @@ export function parseEntries(
     if (on) {
       selections[group.appKey] = excluded.length > 0 ? { kind: "all_except", excluded } : { kind: "all" };
     } else if (included.length > 0) {
-      selections[group.appKey] =
-        included.length >= group.tools.length ? { kind: "all" } : { kind: "some", included };
+      selections[group.appKey] = { kind: "some", included };
     } else {
       selections[group.appKey] = { kind: "none" };
     }

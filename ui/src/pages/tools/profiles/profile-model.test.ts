@@ -120,6 +120,13 @@ describe("toggleApp / toggleTool", () => {
     expect(appSelectionLabel(g, sel)).toBe("2 of 4 Gmail tools");
   });
 
+  it("keeps an explicit selection when every current tool is checked", () => {
+    const g = gmail();
+    let sel: ReturnType<typeof toggleTool> | undefined;
+    for (const id of ["g-list", "g-read", "g-send", "g-delete"]) sel = toggleTool(g, sel, id);
+    expect(sel).toEqual({ kind: "some", included: ["g-delete", "g-list", "g-read", "g-send"] });
+  });
+
   it("excluding every tool collapses to none", () => {
     const g = gmail();
     let sel: ReturnType<typeof toggleApp> = { kind: "all" };
@@ -177,6 +184,23 @@ describe("parseEntries round-trips buildEntries", () => {
     );
     const parsed = parseEntries([g], entries);
     expect(parsed.selections[g.appKey]).toEqual({ kind: "some", included: ["g-list", "g-read"] });
+  });
+
+  it("keeps all explicit catalog entries as a bounded selection", () => {
+    const g = gmail();
+    const entries = g.tools.map((tool, index) => entry({
+      id: `e${index}`,
+      selectorType: "catalog_entry",
+      catalogEntryId: tool.id,
+      effect: "include",
+    }));
+
+    const parsed = parseEntries([g], entries);
+
+    expect(parsed.selections[g.appKey]).toEqual({
+      kind: "some",
+      included: ["g-delete", "g-list", "g-read", "g-send"],
+    });
   });
 
   it("surfaces a wildcard rule as an advanced rule", () => {
