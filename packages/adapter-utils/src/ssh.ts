@@ -373,8 +373,16 @@ async function resolveStagingRoot(localDir: string | undefined): Promise<string>
       await fs.mkdir(candidate, { recursive: true });
       await fs.access(candidate, fsConstants.W_OK);
       return candidate;
-    } catch {
+    } catch (err) {
       // Unwritable or missing parent - fall through to the next candidate.
+      // Surface a diagnostic when the explicit override cannot be used so an
+      // operator-set PAPERCLIP_STAGING_DIR is not silently ignored.
+      if (configured && candidate === configured) {
+        const reason = err instanceof Error ? err.message : String(err);
+        console.warn(
+          `[paperclip] PAPERCLIP_STAGING_DIR=${configured} is not usable (${reason}); falling back`,
+        );
+      }
     }
   }
   return os.tmpdir();
