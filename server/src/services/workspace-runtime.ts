@@ -24,6 +24,8 @@ import {
   createLocalServiceKey,
   findLocalServiceRegistryRecordByRuntimeServiceId,
   findAdoptableLocalService,
+  isLocalServiceProcessInWorkspace,
+  readLocalServiceProcessCwd,
   readLocalServicePortOwner,
   removeLocalServiceRegistryRecord,
   terminateLocalService,
@@ -3989,10 +3991,20 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
     }
   }
   if (identityPort) {
-    const ownerPid = await readLocalServicePortOwner(identityPort);
+      const ownerPid = await readLocalServicePortOwner(identityPort);
     if (ownerPid) {
+      const ownerCwd = await readLocalServiceProcessCwd(ownerPid);
+      const ownerIsInWorkspace = ownerCwd
+        ? await isLocalServiceProcessInWorkspace(ownerCwd, serviceCwd)
+        : null;
+      const ownerDescription = ownerCwd ? `pid ${ownerPid} (cwd: ${ownerCwd})` : `pid ${ownerPid} (cwd unavailable)`;
+      if (ownerIsInWorkspace === false) {
+        throw new Error(
+          `Runtime service "${serviceName}" could not start because port ${identityPort} has a cross-workspace port conflict with ${ownerDescription}; requested workspace: ${serviceCwd}. Stop the other service or configure a different port.`,
+        );
+      }
       throw new Error(
-        `Runtime service "${serviceName}" could not start because port ${identityPort} is already in use by pid ${ownerPid}`,
+        `Runtime service "${serviceName}" could not start because port ${identityPort} is already in use by ${ownerDescription}`,
       );
     }
   }

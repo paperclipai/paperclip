@@ -50,6 +50,7 @@ import {
   routineService,
   toolAccessService,
 } from "./services/index.js";
+import { resolveWorktreeRunExecutionActivationState } from "./services/instance-settings.js";
 import {
   parseAdapterRegistryEnv,
   reconcileAdapterAvailability,
@@ -851,6 +852,16 @@ export async function startServer(): Promise<StartedServer> {
         ?? process.env.PAPERCLIP_TOOL_RUNTIME_TRUSTED_HOST
         ?? null,
     });
+    const worktreeRunExecutionActivation = await resolveWorktreeRunExecutionActivationState({
+      getExperimental: () => instanceSettingsService(db).getExperimental(),
+    });
+    logger.info(
+      {
+        state: worktreeRunExecutionActivation.armed ? "armed" : "disarmed",
+        cutoff: worktreeRunExecutionActivation.cutoff,
+      },
+      "worktree run-execution cutoff state",
+    );
     const heartbeatSchedulingSuppression = await heartbeat.resolveSchedulingSuppression();
 
     // Reap orphaned runs before timer ticks start so wakeups cannot coalesce

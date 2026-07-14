@@ -167,6 +167,7 @@ export const pluginEnvironmentDriverDeclarationSchema = z.object({
   supportsTemplateCapture: z.boolean().optional(),
   templateRefKind: z.string().min(1).max(100).optional(),
   templateConfigBinding: pluginEnvironmentTemplateConfigBindingSchema.optional(),
+  templateIdentityPaths: z.array(z.string().min(1).max(200)).max(20).optional(),
   supportsTemplateDelete: z.boolean().optional(),
   configSchema: jsonSchemaSchema,
 });

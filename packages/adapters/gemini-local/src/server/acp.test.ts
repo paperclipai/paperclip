@@ -264,10 +264,11 @@ describe("gemini_local ACP lane", () => {
     ).resolves.toEqual({ engine: "acp", explicit: true });
   });
 
-  it("falls back to the CLI lane for remote auto runs", async () => {
+  it("falls back to the CLI lane for non-sandbox remote auto runs", async () => {
+    setNodeVersion("v20.0.0");
     await expect(
       resolveGeminiExecutionEngineForRun({
-        config: {},
+        config: { agentCommand: "gemini --acp" },
         executionTarget: {
           kind: "remote",
           transport: "ssh",
@@ -287,7 +288,55 @@ describe("gemini_local ACP lane", () => {
     ).resolves.toMatchObject({
       engine: "cli",
       explicit: false,
-      fallbackReason: expect.stringContaining("remote environment"),
+      fallbackReason: expect.stringContaining("sandbox remote targets only"),
+    });
+  });
+
+  it("falls back to the CLI lane for one-shot sandbox auto runs", async () => {
+    setNodeVersion("v20.0.0");
+    await expect(
+      resolveGeminiExecutionEngineForRun({
+        config: {},
+        executionTarget: {
+          kind: "remote",
+          transport: "sandbox",
+          providerKey: "fake-plugin",
+          remoteCwd: "/work",
+        },
+      }),
+    ).resolves.toMatchObject({
+      engine: "cli",
+      explicit: false,
+      fallbackReason: expect.stringContaining("bidirectional remote process"),
+    });
+  });
+
+  it("uses ACP for bridged sandbox auto runs when the ACP command is configured as a shell command", async () => {
+    setNodeVersion("v20.0.0");
+    await expect(
+      resolveGeminiExecutionEngineForRun({
+        config: { agentCommand: "gemini --acp" },
+        executionTarget: {
+          kind: "remote",
+          transport: "sandbox",
+          providerKey: "fake-plugin",
+          remoteCwd: "/work",
+          runner: {
+            execute: async () => ({
+              exitCode: 0,
+              signal: null,
+              timedOut: false,
+              stdout: "",
+              stderr: "",
+              pid: null,
+              startedAt: new Date().toISOString(),
+            }),
+          },
+        },
+      }),
+    ).resolves.toEqual({
+      engine: "acp",
+      explicit: false,
     });
   });
 

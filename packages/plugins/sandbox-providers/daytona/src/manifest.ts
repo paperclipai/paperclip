@@ -32,6 +32,7 @@ const manifest: PaperclipPluginManifestV1 = {
         field: "snapshot",
         unsetFields: ["image"],
       },
+      templateIdentityPaths: ["apiUrl"],
       supportsTemplateDelete: true,
       configSchema: {
         type: "object",

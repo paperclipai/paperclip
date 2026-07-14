@@ -59,6 +59,7 @@ export interface InstanceExperimentalSettings {
   enableExternalObjects: boolean;
   enableSmokeLab: boolean;
   enableBuiltInAgents: boolean;
+  enableDecisions: boolean;
   enableGoalsSidebarLink: boolean;
   enableServerInfoDebugView: boolean;
   autoRestartDevServerWhenIdle: boolean;
@@ -72,6 +73,16 @@ export interface InstanceExperimentalSettings {
    * runs actually execute inside the preview. Ignored outside a worktree.
    */
   enableWorktreeRunExecution: boolean;
+  /**
+   * Server-managed cutoff recorded when worktree run execution is enabled in
+   * this instance. Client PATCH payloads must not control this value.
+   */
+  worktreeRunExecutionActivatedAt: string | null;
+  /**
+   * Server-managed instance id captured with the cutoff so copied settings rows
+   * from another instance fail closed.
+   */
+  worktreeRunExecutionActivationInstanceId: string | null;
   issueGraphLivenessAutoRecoveryLookbackHours: number;
 }
 

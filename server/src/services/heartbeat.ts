@@ -12,6 +12,7 @@ import {
   envBindingSchema,
   isEnvironmentDriverSupportedForAdapter,
   type BillingType,
+  type CostStatus,
   type EnvironmentLeaseStatus,
   type ExecutionWorkspace,
   type ExecutionWorkspaceConfig,
@@ -104,6 +105,14 @@ import {
   classifyRunLiveness,
   type RunLivenessClassificationInput,
 } from "./run-liveness.js";
+import {
+  ISSUE_NEW_INPUT_ACTIVITY_ACTIONS,
+  ISSUE_PROGRESS_ACTIVITY_ACTIONS,
+  ISSUE_REWAKE_LOOKBACK_MS,
+  ISSUE_REWAKE_RUN_SAMPLE_LIMIT,
+  evaluateIssueRewakeThrottle,
+  isThrottleCandidateIssueRewake,
+} from "./issue-rewake-throttle.js";
 import { logActivity, publishPluginDomainEvent, type LogActivityInput } from "./activity-log.js";
 import {
   buildWorkspaceReadyComment,
@@ -166,7 +175,10 @@ import {
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_MESSAGE,
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_REMEDIATION,
 } from "./execution-workspace-policy.js";
-import { instanceSettingsService } from "./instance-settings.js";
+import {
+  instanceSettingsService,
+  resolveWorktreeRunExecutionActivation,
+} from "./instance-settings.js";
 import {
   evaluateExecutionAllowlist,
   isExecutionForcedToKubernetes,
@@ -220,6 +232,8 @@ import {
 } from "@paperclipai/adapter-utils";
 import {
   readPaperclipSkillSyncPreference,
+  UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
+  UNMANAGED_BACKGROUND_TASK_STOP_REASON,
   writePaperclipSkillSyncPreference,
 } from "@paperclipai/adapter-utils/server-utils";
 import { extractSkillMentionIds, isUuidLike } from "@paperclipai/shared";
@@ -2602,6 +2616,16 @@ function normalizeBilledCostCents(costUsd: number | null | undefined, billingTyp
   return Math.max(0, Math.round(costUsd * 100));
 }
 
+export function resolveLedgerCostStatus(input: {
+  costUsd: number | null | undefined;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+}): CostStatus {
+  const hasTokenUsage = input.inputTokens > 0 || input.cachedInputTokens > 0 || input.outputTokens > 0;
+  return input.costUsd == null && hasTokenUsage ? "unpriced" : "reported";
+}
+
 async function resolveLedgerScopeForRun(
   db: Db,
   companyId: string,
@@ -4194,6 +4218,8 @@ const INTERACTION_CONTINUATION_CONTEXT_KEYS = [
   "interactionStatus",
   "continuationPolicy",
   "checkboxSelection",
+  "itemVerdicts",
+  "newlyResolvedItemIds",
 ] as const;
 
 function isInteractionResolutionWakePayload(payload: Record<string, unknown> | null | undefined) {
@@ -5264,30 +5290,45 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   // Only worktree runtimes ever read the setting; a short TTL keeps the hot-path
   // suppression checks off the DB, and a read failure falls back to prior/default
   // (fail closed to suppression).
-  let cachedWorktreeRunExecutionOverride: { value: boolean; at: number } = { value: false, at: 0 };
+  let cachedWorktreeRunExecutionOverride: { allowed: boolean; cutoff: Date | null; at: number } = {
+    allowed: false,
+    cutoff: null,
+    at: 0,
+  };
   const WORKTREE_RUN_EXECUTION_OVERRIDE_TTL_MS = 3_000;
-  const resolveWorktreeRunExecutionOverride = async (): Promise<boolean> => {
-    if (!inWorktreeRuntime) return false;
+  const resolveWorktreeRunExecutionOverride = async () => {
+    if (!inWorktreeRuntime) return { allowed: false, cutoff: null };
     const now = Date.now();
     if (now - cachedWorktreeRunExecutionOverride.at < WORKTREE_RUN_EXECUTION_OVERRIDE_TTL_MS) {
-      return cachedWorktreeRunExecutionOverride.value;
+      return cachedWorktreeRunExecutionOverride;
     }
     try {
-      const experimental = await instanceSettings.getExperimental();
+      const activation = resolveWorktreeRunExecutionActivation(
+        await instanceSettings.getExperimental(),
+        runtimeEnv.PAPERCLIP_INSTANCE_ID?.trim() || null,
+      );
+      const cutoff = activation.armed ? new Date(activation.cutoff) : null;
       cachedWorktreeRunExecutionOverride = {
-        value: experimental.enableWorktreeRunExecution === true,
+        allowed: Boolean(activation.armed && cutoff && !Number.isNaN(cutoff.getTime())),
+        cutoff: cutoff && !Number.isNaN(cutoff.getTime()) ? cutoff : null,
         at: now,
       };
     } catch {
       // Keep the prior (default-false) value so a settings read failure fails
       // closed to the safe suppressed state.
     }
-    return cachedWorktreeRunExecutionOverride.value;
+    return cachedWorktreeRunExecutionOverride;
   };
-  const getSchedulingSuppression = async () =>
-    resolveHeartbeatSchedulingSuppression(runtimeEnv, {
-      allowWorktreeRunExecution: await resolveWorktreeRunExecutionOverride(),
+  const getSchedulingSuppression = async () => {
+    const override = await resolveWorktreeRunExecutionOverride();
+    return resolveHeartbeatSchedulingSuppression(runtimeEnv, {
+      allowWorktreeRunExecution: override.allowed,
     });
+  };
+  const getWorktreeExecutionCutoff = async () => {
+    const override = await resolveWorktreeRunExecutionOverride();
+    return override.allowed ? override.cutoff : null;
+  };
 
   const runLogStore = getRunLogStore();
   const secretsSvc = secretService(db);
@@ -6786,9 +6827,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     runId: string;
     sessionId: string | null;
     rawUsage: UsageTotals | null;
+    usageBasis?: "per_run" | "session_cumulative" | null;
   }) {
-    const { agentId, runId, sessionId, rawUsage } = input;
-    if (!sessionId || !rawUsage) {
+    const { agentId, runId, sessionId, rawUsage, usageBasis } = input;
+    // Adapters that declare per-run usage (e.g. the ACPX lane reports each
+    // turn's tokens, not session totals) must not be session-delta'd, or
+    // consecutive runs would be undercounted.
+    if (!sessionId || !rawUsage || usageBasis === "per_run") {
       return {
         normalizedUsage: rawUsage,
         previousRawUsage: null as UsageTotals | null,
@@ -7640,9 +7685,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return `[${label}](/${prefix}/issues/${label})`;
   }
 
+  function hasUnmanagedBackgroundTaskEvidence(resultJson: Record<string, unknown> | null | undefined) {
+    const evidence = parseObject(resultJson?.unmanagedBackgroundTask);
+    return evidence.stopped === true &&
+      (evidence.stopReason === UNMANAGED_BACKGROUND_TASK_STOP_REASON ||
+        evidence.reason === UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON);
+  }
+
+  function withUnmanagedBackgroundTaskStopReason(resultJson: Record<string, unknown> | null | undefined) {
+    return {
+      ...(resultJson ?? {}),
+      stopReason: UNMANAGED_BACKGROUND_TASK_STOP_REASON,
+    };
+  }
+
   async function buildDetectedSuccessfulRunProgressSummary(run: typeof heartbeatRuns.$inferSelect) {
     const resultJson = parseObject(run.resultJson);
     const candidates = [
+      hasUnmanagedBackgroundTaskEvidence(resultJson) ? UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON : null,
       readNonEmptyString(run.nextAction) ? `Next action noted: ${readNonEmptyString(run.nextAction)}` : null,
       readNonEmptyString(run.livenessReason),
       readNonEmptyString(resultJson.summary),
@@ -7706,6 +7766,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         assigneeAgentId: issues.assigneeAgentId,
         assigneeUserId: issues.assigneeUserId,
         executionState: issues.executionState,
+        monitorNextCheckAt: issues.monitorNextCheckAt,
         projectId: issues.projectId,
       })
       .from(issues)
@@ -7882,6 +7943,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       hasActiveExecutionPath: Boolean(activeExecutionPath),
       hasQueuedWake: Boolean(queuedWake),
       hasPendingInteractionOrApproval: Boolean(pendingInteraction || pendingApproval),
+      hasPersistedMonitor: Boolean(issue?.monitorNextCheckAt),
       hasExplicitBlockerPath: Boolean(explicitBlocker),
       hasOpenRecoveryIssue: Boolean(openRecoveryIssue),
       hasPauseHold: Boolean(pauseHold),
@@ -7891,6 +7953,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     });
 
     if (decision.kind !== "enqueue" || !issue) return;
+
+    if (hasUnmanagedBackgroundTaskEvidence(parseObject(run.resultJson))) {
+      await db
+        .update(heartbeatRuns)
+        .set({
+          livenessReason: UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
+          resultJson: withUnmanagedBackgroundTaskStopReason(parseObject(run.resultJson)),
+          updatedAt: new Date(),
+        })
+        .where(eq(heartbeatRuns.id, run.id));
+    }
 
     const handoffRun = await enqueueWakeup(run.agentId, {
       source: "automation",
@@ -9680,6 +9753,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   async function promoteDueScheduledRetries(now = new Date()) {
+    const cutoff = await getWorktreeExecutionCutoff();
     const dueRuns = await db
       .select()
       .from(heartbeatRuns)
@@ -9687,6 +9761,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         and(
           eq(heartbeatRuns.status, "scheduled_retry"),
           lte(heartbeatRuns.scheduledRetryAt, now),
+          cutoff ? gte(heartbeatRuns.createdAt, cutoff) : undefined,
         ),
       )
       .orderBy(asc(heartbeatRuns.scheduledRetryAt), asc(heartbeatRuns.createdAt), asc(heartbeatRuns.id))
@@ -10870,20 +10945,39 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       const shouldRetry = tracksLocalChild && (!!run.processPid || !!run.processGroupId) && (run.processLossRetryCount ?? 0) < 1;
       const baseMessage = buildProcessLossMessage(run, descendantOnlyCleanup ? { descendantOnly: true } : undefined);
+      const unmanagedBackgroundTaskEvidence = descendantOnlyCleanup
+        ? {
+          kind: "orphaned_process_group_cleanup",
+          stopped: true,
+          stopReason: UNMANAGED_BACKGROUND_TASK_STOP_REASON,
+          reason: UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
+          processPid: run.processPid ?? null,
+          processGroupId: run.processGroupId ?? null,
+        }
+        : null;
 
       let finalizedRun = await setRunStatus(run.id, "failed", {
         error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
         errorCode: "process_lost",
         finishedAt: now,
-        resultJson: mergeRunStopMetadataForAgent(
-          { adapterType, adapterConfig },
-          "failed",
-          {
-            resultJson: parseObject(run.resultJson),
-            errorCode: "process_lost",
-            errorMessage: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
-          },
-        ),
+        resultJson: (() => {
+          const result = mergeRunStopMetadataForAgent(
+            { adapterType, adapterConfig },
+            "failed",
+            {
+              resultJson: parseObject(run.resultJson),
+              errorCode: "process_lost",
+              errorMessage: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
+            },
+          );
+          return unmanagedBackgroundTaskEvidence
+            ? {
+              ...result,
+              stopReason: UNMANAGED_BACKGROUND_TASK_STOP_REASON,
+              unmanagedBackgroundTask: unmanagedBackgroundTaskEvidence,
+            }
+            : result;
+        })(),
       });
       await setWakeupStatus(run.wakeupRequestId, "failed", {
         finishedAt: now,
@@ -10944,6 +11038,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
   async function resumeQueuedRuns() {
     if ((await getSchedulingSuppression()).suppressed) return;
+    const cutoff = await getWorktreeExecutionCutoff();
 
     const queuedRuns = await db
       .select({ agentId: heartbeatRuns.agentId })
@@ -10952,6 +11047,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .where(and(
         eq(heartbeatRuns.status, "queued"),
         eq(companies.status, "active"),
+        cutoff ? gte(heartbeatRuns.createdAt, cutoff) : undefined,
       ));
 
     const agentIds = [...new Set(queuedRuns.map((r) => r.agentId))];
@@ -10961,7 +11057,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   async function reconcileStrandedAssignedIssues() {
-    return recovery.reconcileStrandedAssignedIssues();
+    return recovery.reconcileStrandedAssignedIssues({ issueCreatedAtGte: await getWorktreeExecutionCutoff() });
   }
 
   async function sweepStaleIssueLocks() {
@@ -10982,15 +11078,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   async function scanSilentActiveRuns(opts?: { now?: Date; companyId?: string }) {
-    return recovery.scanSilentActiveRuns(opts);
+    return recovery.scanSilentActiveRuns({ ...opts, issueCreatedAtGte: await getWorktreeExecutionCutoff() });
   }
 
   async function reconcileProductivityReviews(opts?: { now?: Date; companyId?: string }) {
-    return productivityReviews.reconcileProductivityReviews(opts);
+    return productivityReviews.reconcileProductivityReviews({ ...opts, issueCreatedAtGte: await getWorktreeExecutionCutoff() });
   }
 
   async function reconcileTaskWatchdogs(opts?: { companyId?: string | null; runId?: string | null }) {
-    return taskWatchdogs.reconcileTaskWatchdogs(opts);
+    return taskWatchdogs.reconcileTaskWatchdogs({ ...opts, issueCreatedAtGte: await getWorktreeExecutionCutoff() });
   }
 
   async function buildRunOutputSilence(
@@ -11012,7 +11108,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     force?: boolean;
     lookbackHours?: number;
   }) {
-    return recovery.reconcileIssueGraphLiveness(opts);
+    return recovery.reconcileIssueGraphLiveness({ ...opts, issueCreatedAtGte: await getWorktreeExecutionCutoff() });
   }
 
   async function updateRuntimeState(
@@ -11030,6 +11126,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const billingType = normalizeLedgerBillingType(result.billingType);
     const additionalCostCents = normalizeBilledCostCents(result.costUsd, billingType);
     const hasTokenUsage = inputTokens > 0 || outputTokens > 0 || cachedInputTokens > 0;
+    const costStatus = resolveLedgerCostStatus({
+      costUsd: result.costUsd,
+      inputTokens,
+      cachedInputTokens,
+      outputTokens,
+    });
     const provider = result.provider ?? "unknown";
     const biller = resolveLedgerBiller(result);
     const ledgerScope = await resolveLedgerScopeForRun(db, agent.companyId, run);
@@ -11060,6 +11162,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         provider,
         biller,
         billingType,
+        costStatus,
         model: result.model ?? "unknown",
         inputTokens,
         cachedInputTokens,
@@ -11072,6 +11175,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
   async function startNextQueuedRunForAgent(agentId: string) {
     if ((await getSchedulingSuppression()).suppressed) return [];
+    const cutoff = await getWorktreeExecutionCutoff();
 
     return withAgentStartLock(agentId, async () => {
       const agent = await getAgent(agentId);
@@ -11091,7 +11195,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const queuedRuns = await db
         .select()
         .from(heartbeatRuns)
-        .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "queued")))
+        .where(and(
+          eq(heartbeatRuns.agentId, agentId),
+          eq(heartbeatRuns.status, "queued"),
+          cutoff ? gte(heartbeatRuns.createdAt, cutoff) : undefined,
+        ))
         .orderBy(asc(heartbeatRuns.createdAt));
       if (queuedRuns.length === 0) return [];
 
@@ -12554,19 +12662,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         if (stream === "stderr") stderrExcerpt = appendExcerpt(stderrExcerpt, sanitizedChunk);
         const ts = new Date().toISOString();
 
+        outputSeq += 1;
+        const chunkSeq = outputSeq;
         let appendedBytes = 0;
         if (handle) {
           appendedBytes = await runLogStore.append(handle, {
             stream,
             chunk: sanitizedChunk,
             ts,
+            seq: chunkSeq,
           });
           persistedLogBytes += appendedBytes;
         }
-        outputSeq += 1;
         outputProgressState.pending = {
           at: new Date(ts),
-          seq: outputSeq,
+          seq: chunkSeq,
           stream,
           bytes: persistedLogBytes,
         };
@@ -12607,6 +12717,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             agentId: run.agentId,
             issueId,
             ts,
+            seq: chunkSeq,
             stream,
             chunk: payloadChunk,
             truncated: payloadChunk.length !== sanitizedChunk.length,
@@ -13072,6 +13183,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         runId: run.id,
         sessionId: nextSessionState.displayId ?? nextSessionState.legacySessionId,
         rawUsage,
+        usageBasis: adapterResult.usageBasis ?? null,
       });
       const normalizedUsage = sessionUsageResolution.normalizedUsage;
       const runErrorMessage =
@@ -13122,7 +13234,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 rawCachedInputTokens: rawUsage.cachedInputTokens,
                 rawOutputTokens: rawUsage.outputTokens,
               } : {}),
-              ...(sessionUsageResolution.derivedFromSessionTotals ? { usageSource: "session_delta" } : {}),
+              ...(sessionUsageResolution.derivedFromSessionTotals
+                ? { usageSource: "session_delta" }
+                : adapterResult.usageBasis === "per_run"
+                  ? { usageSource: "per_run" }
+                  : {}),
               ...((nextSessionState.displayId ?? nextSessionState.legacySessionId)
                 ? { persistedSessionId: nextSessionState.displayId ?? nextSessionState.legacySessionId }
                 : {}),
@@ -13136,6 +13252,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               biller: resolveLedgerBiller(adapterResult),
               model: readNonEmptyString(adapterResult.model) ?? "unknown",
               ...(adapterResult.costUsd != null ? { costUsd: adapterResult.costUsd } : {}),
+              costStatus: resolveLedgerCostStatus({
+                costUsd: adapterResult.costUsd,
+                inputTokens: normalizedUsage?.inputTokens ?? 0,
+                cachedInputTokens: normalizedUsage?.cachedInputTokens ?? 0,
+                outputTokens: normalizedUsage?.outputTokens ?? 0,
+              }),
               billingType: normalizeLedgerBillingType(adapterResult.billingType),
             } as Record<string, unknown>)
           : null;
@@ -14112,9 +14234,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           .limit(1)
           .then((rows) => rows[0] ?? null);
 
-      const issueHasScheduledMonitor =
-        issue.monitorNextCheckAt instanceof Date &&
-        issue.monitorNextCheckAt.getTime() > Date.now();
+      const issueHasPersistedMonitor = Boolean(issue.monitorNextCheckAt);
+      const findExplicitBlockerPath = () =>
+        tx
+          .select({ id: issueRelations.issueId })
+          .from(issueRelations)
+          .innerJoin(issues, eq(issueRelations.issueId, issues.id))
+          .where(
+            and(
+              eq(issueRelations.companyId, issue.companyId),
+              eq(issueRelations.relatedIssueId, issue.id),
+              eq(issueRelations.type, "blocks"),
+              eq(issues.companyId, issue.companyId),
+              notInArray(issues.status, ["done", "cancelled"]),
+              isNull(issues.hiddenAt),
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
       const executionState = parseIssueExecutionState(issue.executionState);
       const currentParticipant = executionState?.status === "pending"
         ? executionState.currentParticipant
@@ -14134,7 +14271,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         if (
           options.suppressImmediateRecovery ||
           existingReviewParticipantExecutionPath ||
-          issueHasScheduledMonitor ||
+          issueHasPersistedMonitor ||
           await isAutomaticRecoverySuppressedByPauseHold(db, issue.companyId, issue.id, treeControlSvc)
         ) {
           return { kind: "released" as const };
@@ -14253,7 +14390,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
 
       const existingExecutionPath = await findExistingExecutionPath();
-      if (existingExecutionPath) {
+      if (existingExecutionPath || issueHasPersistedMonitor || await findExplicitBlockerPath()) {
         return { kind: "released" as const };
       }
 
@@ -14504,6 +14641,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return null;
     }
 
+    const worktreeExecutionCutoff = opts.requestedByActorType === "user"
+      ? null
+      : await getWorktreeExecutionCutoff();
+
     const company = await db
       .select({ status: companies.status })
       .from(companies)
@@ -14569,11 +14710,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         ? or(eq(issues.id, issueId), eq(issues.identifier, issueId.toUpperCase()))
         : eq(issues.identifier, issueId.toUpperCase());
       const resolvedIssue = await db
-        .select({ id: issues.id, projectId: issues.projectId })
+      .select({ id: issues.id, projectId: issues.projectId, createdAt: issues.createdAt })
         .from(issues)
         .where(and(eq(issues.companyId, agent.companyId), idMatch))
         .then((rows) => rows[0] ?? null);
       if (resolvedIssue) {
+        if (worktreeExecutionCutoff && resolvedIssue.createdAt < worktreeExecutionCutoff) {
+          await writeSkippedHeartbeatRequest("heartbeat.worktree_execution_cutoff", {
+            reason: "worktree_execution_cutoff",
+            cutoff: worktreeExecutionCutoff.toISOString(),
+            issueId: resolvedIssue.id,
+          });
+          return null;
+        }
         projectId = resolvedIssue.projectId ?? null;
         // Canonicalize context to the UUID so downstream lookups always use UUID
         if (resolvedIssue.id !== issueId) {
@@ -14748,6 +14897,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             assigneeAgentId: issues.assigneeAgentId,
             executionRunId: issues.executionRunId,
             executionAgentNameKey: issues.executionAgentNameKey,
+            createdAt: issues.createdAt,
           })
           .from(issues)
           .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId)))
@@ -14761,6 +14911,30 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             triggerDetail,
             reason: "issue_execution_issue_not_found",
             payload,
+            status: "skipped",
+            requestedByActorType: opts.requestedByActorType ?? null,
+            requestedByActorId: opts.requestedByActorId ?? null,
+            idempotencyKey: opts.idempotencyKey ?? null,
+            finishedAt: new Date(),
+          });
+          return { kind: "skipped" as const };
+        }
+
+        if (worktreeExecutionCutoff && issue.createdAt < worktreeExecutionCutoff) {
+          await tx.insert(agentWakeupRequests).values({
+            companyId: agent.companyId,
+            agentId,
+            source,
+            triggerDetail,
+            reason: "heartbeat.worktree_execution_cutoff",
+            payload: {
+              ...(payload ?? {}),
+              heartbeatSkip: {
+                reason: "worktree_execution_cutoff",
+                cutoff: worktreeExecutionCutoff.toISOString(),
+                issueId: issue.id,
+              },
+            },
             status: "skipped",
             requestedByActorType: opts.requestedByActorType ?? null,
             requestedByActorId: opts.requestedByActorId ?? null,
@@ -15271,6 +15445,113 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             });
 
             return { kind: "deferred" as const };
+          }
+        }
+
+        // PAP-13775: no live run holds the lock, so this wake would start a
+        // fresh adapter session. If this agent's recent runs on this issue
+        // keep succeeding without any issue-visible progress and the wake
+        // carries no new information, hold it back for an escalating cooldown
+        // so external pollers/reconcilers can't storm full-price sessions.
+        // Server-side recovery retries insert runs directly and never reach
+        // this gate.
+        if (
+          isThrottleCandidateIssueRewake({
+            reason,
+            wakeCommentId: wakeCommentId ?? null,
+            forceFreshSession: enrichedContextSnapshot.forceFreshSession === true,
+            hasExplicitResume: Boolean(explicitResumeSession),
+          })
+        ) {
+          const throttleNow = new Date();
+          const recentTerminalRuns = await tx
+            .select({
+              id: heartbeatRuns.id,
+              status: heartbeatRuns.status,
+              finishedAt: heartbeatRuns.finishedAt,
+            })
+            .from(heartbeatRuns)
+            .where(
+              and(
+                eq(heartbeatRuns.companyId, agent.companyId),
+                eq(heartbeatRuns.agentId, agentId),
+                sql`${heartbeatRuns.finishedAt} is not null`,
+                gte(heartbeatRuns.finishedAt, new Date(throttleNow.getTime() - ISSUE_REWAKE_LOOKBACK_MS)),
+                sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
+              ),
+            )
+            .orderBy(desc(heartbeatRuns.finishedAt))
+            .limit(ISSUE_REWAKE_RUN_SAMPLE_LIMIT);
+
+          if (recentTerminalRuns.length > 0) {
+            const sampleRunIds = recentTerminalRuns.map((sampleRun) => sampleRun.id);
+            const progressRows = await tx
+              .select({ runId: activityLog.runId })
+              .from(activityLog)
+              .where(
+                and(
+                  eq(activityLog.companyId, agent.companyId),
+                  eq(activityLog.entityType, "issue"),
+                  eq(activityLog.entityId, issue.id),
+                  inArray(activityLog.runId, sampleRunIds),
+                  inArray(activityLog.action, ISSUE_PROGRESS_ACTIVITY_ACTIONS),
+                ),
+              );
+            const lastRunFinishedAt = recentTerminalRuns[0]?.finishedAt ?? null;
+            const newInputRows = lastRunFinishedAt
+              ? await tx
+                .select({ id: activityLog.id })
+                .from(activityLog)
+                .where(
+                  and(
+                    eq(activityLog.companyId, agent.companyId),
+                    eq(activityLog.entityType, "issue"),
+                    eq(activityLog.entityId, issue.id),
+                    gt(activityLog.createdAt, lastRunFinishedAt),
+                    inArray(activityLog.action, ISSUE_NEW_INPUT_ACTIVITY_ACTIONS),
+                  ),
+                )
+                .limit(1)
+              : [];
+
+            const throttleDecision = evaluateIssueRewakeThrottle({
+              now: throttleNow,
+              recentTerminalRuns,
+              runIdsWithIssueProgress: new Set(
+                progressRows
+                  .map((row) => row.runId)
+                  .filter((runId): runId is string => Boolean(runId)),
+              ),
+              hasNewIssueInputSinceLastRun: newInputRows.length > 0,
+            });
+
+            if (throttleDecision.blocked) {
+              await tx.insert(agentWakeupRequests).values({
+                companyId: agent.companyId,
+                agentId,
+                source,
+                triggerDetail,
+                reason: "issue_rewake_throttled",
+                payload: {
+                  ...(payload ?? {}),
+                  issueId,
+                  heartbeatSkip: {
+                    reason: "issue_rewake_throttled",
+                    requestedReason: reason,
+                    noProgressStreak: throttleDecision.noProgressStreak,
+                    cooldownMs: throttleDecision.cooldownMs,
+                    lastRunFinishedAt: throttleDecision.lastRunFinishedAt.toISOString(),
+                    nextAllowedAt: throttleDecision.nextAllowedAt.toISOString(),
+                  },
+                },
+                status: "skipped",
+                requestedByActorType: opts.requestedByActorType ?? null,
+                requestedByActorId: opts.requestedByActorId ?? null,
+                idempotencyKey: opts.idempotencyKey ?? null,
+                finishedAt: throttleNow,
+              });
+              return { kind: "skipped" as const };
+            }
           }
         }
 
@@ -16152,6 +16433,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           skipped: 0,
         };
       }
+      const cutoff = await getWorktreeExecutionCutoff();
 
       const allAgents = await db
         .select({ ...getTableColumns(agents) })
@@ -16168,6 +16450,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         if (!invokability.invokable) continue;
         const policy = parseHeartbeatPolicy(agent);
         if (!policy.enabled || policy.intervalSec <= 0) continue;
+
+        if (cutoff) {
+          const eligibleIssue = await db
+            .select({ id: issues.id })
+            .from(issues)
+            .where(and(
+              eq(issues.companyId, agent.companyId),
+              eq(issues.assigneeAgentId, agent.id),
+              inArray(issues.status, ["todo", "in_progress"]),
+              gte(issues.createdAt, cutoff),
+            ))
+            .limit(1)
+            .then((rows) => rows[0] ?? null);
+          if (!eligibleIssue) continue;
+        }
 
         checked += 1;
         const baseline = new Date(agent.lastHeartbeatAt ?? agent.createdAt).getTime();

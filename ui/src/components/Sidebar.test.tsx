@@ -12,6 +12,10 @@ const mockHeartbeatsApi = vi.hoisted(() => ({
   liveRunsForCompany: vi.fn(),
 }));
 
+const mockAttentionApi = vi.hoisted(() => ({
+  list: vi.fn(),
+}));
+
 const mockInstanceSettingsApi = vi.hoisted(() => ({
   getExperimental: vi.fn(),
 }));
@@ -64,6 +68,10 @@ vi.mock("../context/SidebarContext", () => ({
 
 vi.mock("../api/heartbeats", () => ({
   heartbeatsApi: mockHeartbeatsApi,
+}));
+
+vi.mock("../api/attention", () => ({
+  attentionApi: mockAttentionApi,
 }));
 
 vi.mock("../api/instanceSettings", () => ({
@@ -139,6 +147,7 @@ describe("Sidebar", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([]);
+    mockAttentionApi.list.mockResolvedValue({ items: [] });
     mockSidebar.isMobile = false;
     mockSidebar.collapsed = false;
     mockSidebar.peeking = false;
@@ -283,6 +292,17 @@ describe("Sidebar", () => {
     const root = await renderSidebar();
 
     expect(container.textContent).not.toContain("Workspaces");
+
+    flushSync(() => {
+      root.unmount();
+    });
+  });
+
+  it("does not poll attention until Decisions is enabled", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableDecisions: false });
+    const root = await renderSidebar();
+
+    expect(mockAttentionApi.list).not.toHaveBeenCalled();
 
     flushSync(() => {
       root.unmount();

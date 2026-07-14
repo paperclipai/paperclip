@@ -53,6 +53,7 @@ export const instanceExperimentalSettingsSchema = z.object({
   enableExternalObjects: z.boolean().default(false),
   enableSmokeLab: z.boolean().default(false),
   enableBuiltInAgents: z.boolean().default(false),
+  enableDecisions: z.boolean().default(false),
   enableGoalsSidebarLink: z.boolean().default(false),
   enableServerInfoDebugView: z.boolean().default(false),
   autoRestartDevServerWhenIdle: z.boolean().default(false),
@@ -60,6 +61,8 @@ export const instanceExperimentalSettingsSchema = z.object({
   enableWorkspaceBranchReconcileForward: z.boolean().default(true),
   enableWorkspaceDirtyQuarantineRepair: z.boolean().default(true),
   enableWorktreeRunExecution: z.boolean().default(false),
+  worktreeRunExecutionActivatedAt: z.string().datetime().nullable().default(null),
+  worktreeRunExecutionActivationInstanceId: z.string().min(1).nullable().default(null),
   issueGraphLivenessAutoRecoveryLookbackHours: z
     .number()
     .int()
@@ -68,7 +71,13 @@ export const instanceExperimentalSettingsSchema = z.object({
     .default(DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS),
 }).strict();
 
-export const patchInstanceExperimentalSettingsSchema = instanceExperimentalSettingsSchema.partial();
+export const patchInstanceExperimentalSettingsSchema = instanceExperimentalSettingsSchema
+  .omit({
+    worktreeRunExecutionActivatedAt: true,
+    worktreeRunExecutionActivationInstanceId: true,
+  })
+  .partial()
+  .strip();
 
 export const patchInstanceSettingsSchema = z.object({
   defaultEnvironmentId: z.string().uuid().nullable().optional(),

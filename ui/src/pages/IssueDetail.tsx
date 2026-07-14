@@ -76,6 +76,7 @@ import {
 import { clearIssueExecutionRun, removeLiveRunById, upsertInterruptedRun } from "../lib/optimistic-issue-runs";
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import { relativeTime, cn, formatDurationMs, formatTokens, visibleRunCostUsd } from "../lib/utils";
+import { liveBlueBadge } from "../lib/status-colors";
 import { ApprovalCard } from "../components/ApprovalCard";
 import { InlineEditor } from "../components/InlineEditor";
 import {
@@ -198,6 +199,8 @@ import {
   type IssueThreadInteraction,
   type RequestCheckboxConfirmationInteraction,
   type RequestConfirmationInteraction,
+  type RequestItemVerdictsInteraction,
+  type RequestItemVerdictValue,
   type SuggestTasksInteraction,
   type IssueTreeControlMode,
   type WorkspaceFileRef,
@@ -917,6 +920,10 @@ type IssueDetailChatTabProps = {
     answers: AskUserQuestionsAnswer[],
   ) => Promise<void>;
   onCancelInteraction: (interaction: AskUserQuestionsInteraction) => Promise<void>;
+  onSubmitInteractionVerdicts: (
+    interaction: RequestItemVerdictsInteraction,
+    verdicts: { id: string; verdict: RequestItemVerdictValue; reason?: string }[],
+  ) => Promise<void>;
   assigneeUserId: string | null;
   onResumeFromBacklog?: () => Promise<void> | void;
   resumeFromBacklogPending?: boolean;
@@ -989,6 +996,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   onRejectInteraction,
   onSubmitInteractionAnswers,
   onCancelInteraction,
+  onSubmitInteractionVerdicts,
   assigneeUserId,
   onResumeFromBacklog,
   resumeFromBacklogPending,
@@ -1210,6 +1218,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
           onSubmitInteractionAnswers(interaction, answers)
         }
         onCancelInteraction={onCancelInteraction}
+        onSubmitInteractionVerdicts={onSubmitInteractionVerdicts}
         issueWorkMode={issueWorkMode}
         onWorkModeChange={onWorkModeChange}
         onCancelRun={runningIssueRun && onPauseWorkRun
@@ -2588,6 +2597,38 @@ export function IssueDetail() {
     },
   });
 
+  const submitInteractionVerdicts = useMutation({
+    mutationFn: ({
+      interaction,
+      verdicts,
+    }: {
+      interaction: RequestItemVerdictsInteraction;
+      verdicts: { id: string; verdict: RequestItemVerdictValue; reason?: string }[];
+    }) => issuesApi.submitInteractionVerdicts(issueId!, interaction.id, verdicts),
+    onSuccess: (interaction, variables) => {
+      upsertInteractionInCache(interaction);
+      invalidateIssueDetail();
+      invalidateIssueCollections();
+      const applied = variables.verdicts.length;
+      const complete = interaction.kind === "request_item_verdicts"
+        ? interaction.result?.complete ?? false
+        : false;
+      pushToast({
+        title: complete
+          ? "All verdicts applied"
+          : `Applied ${applied} decision${applied === 1 ? "" : "s"}`,
+        tone: "success",
+      });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Apply failed",
+        body: err instanceof Error ? err.message : "Unable to apply the verdicts",
+        tone: "error",
+      });
+    },
+  });
+
   const cancelInteraction = useMutation({
     mutationFn: ({ interaction }: { interaction: AskUserQuestionsInteraction }) =>
       issuesApi.cancelInteraction(issueId!, interaction.id),
@@ -3589,6 +3630,12 @@ export function IssueDetail() {
   const handleCancelInteraction = useCallback(async (interaction: AskUserQuestionsInteraction) => {
     await cancelInteraction.mutateAsync({ interaction });
   }, [cancelInteraction]);
+  const handleSubmitInteractionVerdicts = useCallback(async (
+    interaction: RequestItemVerdictsInteraction,
+    verdicts: { id: string; verdict: RequestItemVerdictValue; reason?: string }[],
+  ) => {
+    await submitInteractionVerdicts.mutateAsync({ interaction, verdicts });
+  }, [submitInteractionVerdicts]);
   const canResumeFromBacklog = issue?.status === "backlog" && Boolean(issue.assigneeAgentId || issue.assigneeUserId);
   const handleResumeFromBacklog = useCallback(async () => {
     await updateIssue.mutateAsync({ status: "todo" });
@@ -4112,7 +4159,7 @@ export function IssueDetail() {
           <span className="text-sm font-mono text-muted-foreground shrink-0">{issue.identifier ?? issue.id.slice(0, 8)}</span>
 
           {hasLiveRuns && (
-            <Badge variant="outline" className="gap-1.5 bg-blue-500/10 border-blue-500/30 text-(length:--text-nano) text-blue-600 dark:text-blue-400">
+            <Badge variant="outline" className={cn("gap-1.5 text-(length:--text-nano)", liveBlueBadge)}>
               <span className="relative flex h-1.5 w-1.5">
                 <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
                 <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-blue-500" />
@@ -4742,6 +4789,7 @@ export function IssueDetail() {
               onRejectInteraction={handleRejectInteraction}
               onSubmitInteractionAnswers={handleSubmitInteractionAnswers}
               onCancelInteraction={handleCancelInteraction}
+              onSubmitInteractionVerdicts={handleSubmitInteractionVerdicts}
               assigneeUserId={issue.assigneeUserId ?? null}
               onResumeFromBacklog={canResumeFromBacklog ? handleResumeFromBacklog : undefined}
               resumeFromBacklogPending={

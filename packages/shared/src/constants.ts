@@ -248,10 +248,12 @@ export const ISSUE_THREAD_INTERACTION_KINDS = [
   "ask_user_questions",
   "request_confirmation",
   "request_checkbox_confirmation",
+  "request_item_verdicts",
 ] as const;
 export type IssueThreadInteractionKind = (typeof ISSUE_THREAD_INTERACTION_KINDS)[number];
 
 export const REQUEST_CHECKBOX_CONFIRMATION_OPTION_LIMIT = 200;
+export const REQUEST_ITEM_VERDICTS_ITEM_LIMIT = REQUEST_CHECKBOX_CONFIRMATION_OPTION_LIMIT;
 
 export const ISSUE_THREAD_INTERACTION_STATUSES = [
   "pending",
@@ -734,6 +736,9 @@ export const BILLING_TYPES = [
   "unknown",
 ] as const;
 export type BillingType = (typeof BILLING_TYPES)[number];
+
+export const COST_STATUSES = ["reported", "unpriced"] as const;
+export type CostStatus = (typeof COST_STATUSES)[number];
 
 export const FINANCE_EVENT_KINDS = [
   "inference_charge",

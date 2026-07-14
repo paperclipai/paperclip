@@ -51,6 +51,7 @@ interface DaytonaDriverConfig {
   autoArchiveInterval: number | null;
   autoDeleteInterval: number | null;
   reuseLease: boolean;
+  archiveOnRelease: boolean;
 }
 
 type WorkspaceSentinelResult = {
@@ -92,6 +93,12 @@ const WORKSPACE_SENTINEL_RELATIVE_PATH = ".paperclip-runtime/reusable-sandbox-le
 const DEFAULT_AUTO_STOP_INTERVAL_MINUTES = 15;
 const DEFAULT_AUTO_ARCHIVE_INTERVAL_MINUTES = 60;
 const DEFAULT_AUTO_DELETE_INTERVAL_MINUTES = 7 * 24 * 60; // 7 days
+
+// Sandboxes released with `archiveOnRelease` (test/probe runs) are archived so
+// operators can inspect them from the Daytona dashboard, then expired by
+// Daytona itself after this interval (counted from the stop that precedes the
+// archive) so debugging copies don't accumulate.
+const ARCHIVE_ON_RELEASE_AUTO_DELETE_MINUTES = 60;
 
 // Fail-fast cap for git network operations (push, fetch, pull, ls-remote, etc.)
 // so a stalled remote or missing credential never consumes the full 900 s adapter
@@ -145,6 +152,7 @@ function parseDriverConfig(raw: Record<string, unknown>): DaytonaDriverConfig {
     autoArchiveInterval: parseOptionalInteger(raw.autoArchiveInterval) ?? DEFAULT_AUTO_ARCHIVE_INTERVAL_MINUTES,
     autoDeleteInterval: parseOptionalInteger(raw.autoDeleteInterval) ?? DEFAULT_AUTO_DELETE_INTERVAL_MINUTES,
     reuseLease: raw.reuseLease === true,
+    archiveOnRelease: raw.archiveOnRelease === true,
   };
 }
 
@@ -434,6 +442,9 @@ function leaseMetadata(input: {
     target: input.sandbox.target,
     timeoutMs: input.config.timeoutMs,
     reuseLease: input.config.reuseLease,
+    // Persisted so the release path (which rebuilds config from lease
+    // metadata) still knows to archive instead of delete.
+    ...(input.config.archiveOnRelease ? { archiveOnRelease: true } : {}),
     remoteCwd: input.remoteCwd,
     resumedLease: input.resumedLease,
     // Record the resources Paperclip attempted to request so future diagnosis
@@ -890,7 +901,14 @@ const plugin = definePlugin({
       });
       return {
         providerLeaseId: sandbox.id,
-        metadata: leaseMetadata({ config, sandbox, shellCommand, remoteCwd, resumedLease: false, workspaceSentinel }),
+        metadata: leaseMetadata({
+          config,
+          sandbox,
+          shellCommand,
+          remoteCwd,
+          resumedLease: false,
+          workspaceSentinel,
+        }),
       };
     } catch (error) {
       await sandbox.delete(toTimeoutSeconds(config.timeoutMs)).catch(() => undefined);
@@ -922,7 +940,14 @@ const plugin = definePlugin({
       const shellCommand = await detectSandboxShellCommand(sandbox, toTimeoutSeconds(config.timeoutMs));
       return {
         providerLeaseId: sandbox.id,
-        metadata: leaseMetadata({ config, sandbox, shellCommand, remoteCwd, resumedLease: true, workspaceSentinel }),
+        metadata: leaseMetadata({
+          config,
+          sandbox,
+          shellCommand,
+          remoteCwd,
+          resumedLease: true,
+          workspaceSentinel,
+        }),
       };
     } catch (error) {
       await sandbox.delete(toTimeoutSeconds(config.timeoutMs)).catch(() => undefined);
@@ -954,6 +979,21 @@ const plugin = definePlugin({
         }
       }
       return;
+    }
+
+    if (config.archiveOnRelease) {
+      try {
+        if (sandbox.state !== "stopped") {
+          await sandbox.stop(toTimeoutSeconds(config.timeoutMs));
+        }
+        await sandbox.setAutoDeleteInterval(ARCHIVE_ON_RELEASE_AUTO_DELETE_MINUTES);
+        await sandbox.archive();
+        return;
+      } catch (error) {
+        console.warn(
+          `Failed to archive Daytona sandbox during lease release: ${formatErrorMessage(error)}. Falling back to delete.`,
+        );
+      }
     }
 
     await sandbox.delete(toTimeoutSeconds(config.timeoutMs));

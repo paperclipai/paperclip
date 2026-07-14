@@ -1128,7 +1128,7 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
 }
 
 .paperclip-markdown :where(ul, ol) {
-  padding-left: 1.15rem;
+  padding-left: 1.5rem;
 }
 
 .paperclip-markdown ul {
@@ -1136,7 +1136,10 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
 }
 
 .paperclip-markdown ol {
+  /* Enough inline start room to hold outside markers without clipped digits
+     when markdown lists sit flush against an overflow-constrained container. */
   list-style-type: decimal;
+  padding-left: 2.5rem;
 }
 
 .paperclip-markdown li {

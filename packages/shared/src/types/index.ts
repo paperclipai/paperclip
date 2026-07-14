@@ -1,5 +1,19 @@
 export type { Company } from "./company.js";
 export type {
+  AttentionDecisionVerb,
+  AttentionDetailImage,
+  AttentionFeed,
+  AttentionItem,
+  AttentionItemDetail,
+  AttentionItemDismissal,
+  AttentionProjectRef,
+  AttentionSeverity,
+  AttentionSourceKind,
+  AttentionSubject,
+  AttentionSubjectKind,
+  AttentionWorkspaceRef,
+} from "./attention.js";
+export type {
   Environment,
   EnvironmentDeleteBlastRadius,
   EnvironmentDeleteBlockedReason,
@@ -544,6 +558,11 @@ export type {
   RequestCheckboxConfirmationOption,
   RequestCheckboxConfirmationPayload,
   RequestCheckboxConfirmationResult,
+  RequestItemVerdictValue,
+  RequestItemVerdictsItem,
+  RequestItemVerdictsPayload,
+  RequestItemVerdictsResultItem,
+  RequestItemVerdictsResult,
   AcceptedPlanDecompositionStatus,
   AcceptedPlanDecompositionChild,
   AcceptedPlanDecomposition,
@@ -555,6 +574,7 @@ export type {
   AskUserQuestionsInteraction,
   RequestConfirmationInteraction,
   RequestCheckboxConfirmationInteraction,
+  RequestItemVerdictsInteraction,
   IssueThreadInteraction,
   IssueThreadInteractionPayload,
   IssueThreadInteractionResult,
@@ -702,7 +722,7 @@ export type {
   UpdateResourceMembership,
 } from "./resource-memberships.js";
 export { RESOURCE_MEMBERSHIP_STATES } from "./resource-memberships.js";
-export type { InboxDismissal } from "./inbox-dismissal.js";
+export type { InboxDismissal, InboxDismissalKind } from "./inbox-dismissal.js";
 export type {
   AccessUserProfile,
   CompanyMemberRecord,

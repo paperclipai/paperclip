@@ -7,6 +7,7 @@ import {
   buildClaudeAcpConfig,
   createClaudeAcpExecutor,
   nodeVersionMeetsClaudeAcpMinimum,
+  resolveClaudeAcpBillingIdentity,
   resolveClaudeExecutionEngine,
   resolveClaudeExecutionEngineForRun,
   testClaudeAcpEnvironment,
@@ -258,6 +259,79 @@ describe("claude_local ACP lane", () => {
     ).resolves.toEqual({ engine: "acp", explicit: true });
   });
 
+  it("uses ACP for bridged sandbox auto runs when the ACP command is configured as a shell command", async () => {
+    setNodeVersion("v22.12.0");
+    await expect(
+      resolveClaudeExecutionEngineForRun({
+        config: { agentCommand: "claude-agent-acp" },
+        executionTarget: {
+          kind: "remote",
+          transport: "sandbox",
+          providerKey: "fake-plugin",
+          remoteCwd: "/work",
+          runner: {
+            execute: async () => ({
+              exitCode: 0,
+              signal: null,
+              timedOut: false,
+              stdout: "",
+              stderr: "",
+              pid: null,
+              startedAt: new Date().toISOString(),
+            }),
+          },
+        },
+      }),
+    ).resolves.toEqual({ engine: "acp", explicit: false });
+  });
+
+  it("falls back to the CLI lane for one-shot sandbox auto runs", async () => {
+    setNodeVersion("v22.12.0");
+    await expect(
+      resolveClaudeExecutionEngineForRun({
+        config: {},
+        executionTarget: {
+          kind: "remote",
+          transport: "sandbox",
+          providerKey: "fake-plugin",
+          remoteCwd: "/work",
+        },
+      }),
+    ).resolves.toMatchObject({
+      engine: "cli",
+      explicit: false,
+      fallbackReason: expect.stringContaining("bidirectional remote process"),
+    });
+  });
+
+  it("falls back to the CLI lane for non-sandbox remote auto runs", async () => {
+    setNodeVersion("v22.12.0");
+    await expect(
+      resolveClaudeExecutionEngineForRun({
+        config: {},
+        executionTarget: {
+          kind: "remote",
+          transport: "ssh",
+          remoteCwd: "/work",
+          spec: {
+            host: "127.0.0.1",
+            port: 22,
+            username: "fixture",
+            remoteCwd: "/work",
+            remoteWorkspacePath: "/work",
+            privateKey: null,
+            knownHosts: null,
+            strictHostKeyChecking: true,
+          },
+        },
+      }),
+    ).resolves.toMatchObject({
+      engine: "cli",
+      explicit: false,
+      fallbackReason: expect.stringContaining("sandbox remote targets only"),
+    });
+  });
+
   it("reports ACP prerequisites for the ACP lane", async () => {
     const root = await makeTempRoot("paperclip-claude-acp-env-");
     const commandPath = path.join(root, "bin", "claude-agent-acp");
@@ -371,5 +445,53 @@ describe("claude_local ACP lane", () => {
     expect(second.exitCode).toBe(0);
     expect(runtimes).toHaveLength(2);
     expect(runtimes[1]?.ensureInputs[0]?.resumeSessionId).toBe("acp-1");
+  });
+});
+
+describe("resolveClaudeAcpBillingIdentity", () => {
+  const originalApiKey = process.env.ANTHROPIC_API_KEY;
+  const originalBedrock = process.env.CLAUDE_CODE_USE_BEDROCK;
+  const originalBedrockBase = process.env.ANTHROPIC_BEDROCK_BASE_URL;
+
+  afterEach(() => {
+    if (originalApiKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+    else process.env.ANTHROPIC_API_KEY = originalApiKey;
+    if (originalBedrock === undefined) delete process.env.CLAUDE_CODE_USE_BEDROCK;
+    else process.env.CLAUDE_CODE_USE_BEDROCK = originalBedrock;
+    if (originalBedrockBase === undefined) delete process.env.ANTHROPIC_BEDROCK_BASE_URL;
+    else process.env.ANTHROPIC_BEDROCK_BASE_URL = originalBedrockBase;
+  });
+
+  it("classifies an adapter-config API key as api billing", () => {
+    expect(
+      resolveClaudeAcpBillingIdentity({ config: { env: { ANTHROPIC_API_KEY: "sk-ant-test" } } }),
+    ).toEqual({ provider: "anthropic", biller: "anthropic", billingType: "api" });
+  });
+
+  it("classifies Bedrock auth as metered_api billed to aws_bedrock", () => {
+    expect(
+      resolveClaudeAcpBillingIdentity({ config: { env: { CLAUDE_CODE_USE_BEDROCK: "1" } } }),
+    ).toEqual({ provider: "anthropic", biller: "aws_bedrock", billingType: "metered_api" });
+  });
+
+  it("falls back to subscription without API-key or Bedrock auth", () => {
+    delete process.env.ANTHROPIC_API_KEY;
+    delete process.env.CLAUDE_CODE_USE_BEDROCK;
+    delete process.env.ANTHROPIC_BEDROCK_BASE_URL;
+    expect(resolveClaudeAcpBillingIdentity({ config: {} })).toEqual({
+      provider: "anthropic",
+      biller: "anthropic",
+      billingType: "subscription",
+    });
+  });
+
+  it("ignores host env for remote execution targets", () => {
+    process.env.ANTHROPIC_API_KEY = "sk-ant-host-only";
+    expect(
+      resolveClaudeAcpBillingIdentity({
+        config: {},
+        executionTarget: { kind: "remote", transport: "sandbox", remoteCwd: "/work" },
+      } as never).billingType,
+    ).toBe("subscription");
   });
 });

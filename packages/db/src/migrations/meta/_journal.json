@@ -885,269 +885,290 @@
       "breakpoints": true
     },
     {
-      "idx": 126,
+      "idx": 127,
       "version": "7",
       "when": 1782526500000,
       "tag": "0127_environment_custom_images_instance_scoped",
       "breakpoints": true
     },
     {
-      "idx": 127,
+      "idx": 128,
       "version": "7",
       "when": 1782923938661,
       "tag": "0128_user_specific_secrets",
       "breakpoints": true
     },
     {
-      "idx": 128,
+      "idx": 129,
       "version": "7",
       "when": 1783025124120,
       "tag": "0129_agent_api_key_responsible_user",
       "breakpoints": true
     },
     {
-      "idx": 129,
+      "idx": 131,
       "version": "7",
       "when": 1783025324120,
       "tag": "0131_repair_run_responsible_user_context_refs",
       "breakpoints": true
     },
     {
-      "idx": 130,
+      "idx": 132,
       "version": "7",
       "when": 1783025424120,
       "tag": "0132_issue_comment_derived_attribution_fast",
       "breakpoints": true
     },
     {
-      "idx": 131,
+      "idx": 133,
       "version": "7",
       "when": 1783034521000,
       "tag": "0133_resource_membership_stars",
       "breakpoints": true
     },
     {
-      "idx": 132,
+      "idx": 134,
       "version": "7",
       "when": 1783025624120,
       "tag": "0134_run_responsible_user_invariant",
       "breakpoints": true
     },
     {
-      "idx": 133,
+      "idx": 135,
       "version": "7",
       "when": 1783025724120,
       "tag": "0135_repair_run_responsible_user_updated_at_sweep",
       "breakpoints": true
     },
     {
-      "idx": 134,
+      "idx": 136,
       "version": "7",
       "when": 1783555200000,
       "tag": "0136_acpx_default_engine_migration",
       "breakpoints": true
     },
     {
-      "idx": 135,
+      "idx": 137,
       "version": "7",
       "when": 1783555201000,
       "tag": "0137_skill_studio_server_foundation",
       "breakpoints": true
     },
     {
-      "idx": 136,
+      "idx": 138,
       "version": "7",
       "when": 1783555202000,
       "tag": "0138_skill_studio_run_retention",
       "breakpoints": true
     },
     {
-      "idx": 137,
+      "idx": 139,
       "version": "7",
       "when": 1783555203000,
       "tag": "0139_skill_studio_run_templates",
       "breakpoints": true
     },
     {
-      "idx": 138,
+      "idx": 140,
       "version": "7",
       "when": 1783555300000,
       "tag": "0140_built_in_managed_resources",
       "breakpoints": true
     },
     {
-      "idx": 139,
+      "idx": 141,
       "version": "7",
       "when": 1783555301000,
       "tag": "0141_heartbeat_runs_company_created_at_index",
       "breakpoints": true
     },
     {
-      "idx": 140,
+      "idx": 142,
       "version": "7",
       "when": 1783555301100,
       "tag": "0142_company_search_sort_indexes",
       "breakpoints": true
     },
     {
-      "idx": 141,
+      "idx": 143,
       "version": "7",
       "when": 1783457051766,
       "tag": "0143_cases_foundation",
       "breakpoints": true
     },
     {
-      "idx": 142,
+      "idx": 144,
       "version": "7",
       "when": 1783520000000,
       "tag": "0144_case_document_annotations",
       "breakpoints": true
     },
     {
-      "idx": 143,
-      "version": "7",
-      "when": 1782526500000,
-      "tag": "0145_tool_access_mcp_connections",
-      "breakpoints": true
-    },
-    {
-      "idx": 144,
-      "version": "7",
-      "when": 1782526600000,
-      "tag": "0146_agent_access_phase2_contracts",
-      "breakpoints": true
-    },
-    {
       "idx": 145,
       "version": "7",
-      "when": 1782526700000,
-      "tag": "0147_tool_invocation_catalog_snapshots",
+      "when": 1783641600000,
+      "tag": "0145_inbox_dismissal_snooze_kind",
       "breakpoints": true
     },
     {
       "idx": 146,
       "version": "7",
-      "when": 1782526800000,
-      "tag": "0148_tool_gateway_sessions",
+      "when": 1783822632557,
+      "tag": "0146_routine_activity_gate",
       "breakpoints": true
     },
     {
       "idx": 147,
       "version": "7",
-      "when": 1782526900000,
-      "tag": "0149_tool_connection_application_no_cascade",
+      "when": 1783953514660,
+      "tag": "0147_cost_event_status",
       "breakpoints": true
     },
     {
       "idx": 148,
       "version": "7",
-      "when": 1782527000000,
-      "tag": "0150_tool_stdio_command_templates",
+      "when": 1782526500000,
+      "tag": "0148_tool_access_mcp_connections",
       "breakpoints": true
     },
     {
       "idx": 149,
       "version": "7",
-      "when": 1782527100000,
-      "tag": "0151_tool_oauth_states",
+      "when": 1782526600000,
+      "tag": "0149_agent_access_phase2_contracts",
       "breakpoints": true
     },
     {
       "idx": 150,
       "version": "7",
-      "when": 1782527200000,
-      "tag": "0152_tool_oauth_state_actor_binding",
+      "when": 1782526700000,
+      "tag": "0150_tool_invocation_catalog_snapshots",
       "breakpoints": true
     },
     {
       "idx": 151,
       "version": "7",
-      "when": 1782527300000,
-      "tag": "0153_tool_oauth_state_session_binding",
+      "when": 1782526800000,
+      "tag": "0151_tool_gateway_sessions",
       "breakpoints": true
     },
     {
       "idx": 152,
       "version": "7",
-      "when": 1782527400000,
-      "tag": "0154_tool_profile_new_tools_review",
+      "when": 1782526900000,
+      "tag": "0152_tool_connection_application_no_cascade",
       "breakpoints": true
     },
     {
       "idx": 153,
       "version": "7",
-      "when": 1782527500000,
-      "tag": "0155_tool_invocation_connected_mcp_metadata",
+      "when": 1782527000000,
+      "tag": "0153_tool_stdio_command_templates",
       "breakpoints": true
     },
     {
       "idx": 154,
       "version": "7",
-      "when": 1782527600000,
-      "tag": "0156_named_mcp_gateways",
+      "when": 1782527100000,
+      "tag": "0154_tool_oauth_states",
       "breakpoints": true
     },
     {
       "idx": 155,
       "version": "7",
-      "when": 1782527700000,
-      "tag": "0157_mcp_gateway_contract_expansion",
+      "when": 1782527200000,
+      "tag": "0155_tool_oauth_state_actor_binding",
       "breakpoints": true
     },
     {
       "idx": 156,
       "version": "7",
-      "when": 1782527800000,
-      "tag": "0158_environment_custom_image_company_scope_repair",
+      "when": 1782527300000,
+      "tag": "0156_tool_oauth_state_session_binding",
       "breakpoints": true
     },
     {
       "idx": 157,
       "version": "7",
-      "when": 1783271100000,
-      "tag": "0159_tool_runtime_metric_counters",
+      "when": 1782527400000,
+      "tag": "0157_tool_profile_new_tools_review",
       "breakpoints": true
     },
     {
       "idx": 158,
       "version": "7",
-      "when": 1783271200000,
-      "tag": "0160_secret_binding_projection_class",
+      "when": 1782527500000,
+      "tag": "0158_tool_invocation_connected_mcp_metadata",
       "breakpoints": true
     },
     {
       "idx": 159,
       "version": "7",
-      "when": 1783632000000,
-      "tag": "0161_plugin_config_company_scope",
+      "when": 1782527600000,
+      "tag": "0159_named_mcp_gateways",
       "breakpoints": true
     },
     {
       "idx": 160,
       "version": "7",
-      "when": 1783632600000,
-      "tag": "0162_connection_token_issuances",
+      "when": 1782527700000,
+      "tag": "0160_mcp_gateway_contract_expansion",
       "breakpoints": true
     },
     {
       "idx": 161,
       "version": "7",
-      "when": 1783633200000,
-      "tag": "0163_smoke_lab_results",
+      "when": 1782527800000,
+      "tag": "0161_environment_custom_image_company_scope_repair",
       "breakpoints": true
     },
     {
       "idx": 162,
       "version": "7",
-      "when": 1783633300000,
-      "tag": "0164_environment_custom_image_instance_scope_cleanup",
+      "when": 1783271100000,
+      "tag": "0162_tool_runtime_metric_counters",
       "breakpoints": true
     },
     {
       "idx": 163,
       "version": "7",
+      "when": 1783271200000,
+      "tag": "0163_secret_binding_projection_class",
+      "breakpoints": true
+    },
+    {
+      "idx": 164,
+      "version": "7",
+      "when": 1783632000000,
+      "tag": "0164_plugin_config_company_scope",
+      "breakpoints": true
+    },
+    {
+      "idx": 165,
+      "version": "7",
+      "when": 1783632600000,
+      "tag": "0165_connection_token_issuances",
+      "breakpoints": true
+    },
+    {
+      "idx": 166,
+      "version": "7",
+      "when": 1783633200000,
+      "tag": "0166_smoke_lab_results",
+      "breakpoints": true
+    },
+    {
+      "idx": 167,
+      "version": "7",
+      "when": 1783633300000,
+      "tag": "0167_environment_custom_image_instance_scope_cleanup",
+      "breakpoints": true
+    },
+    {
+      "idx": 168,
+      "version": "7",
       "when": 1783774800000,
-      "tag": "0165_tool_connection_installs",
+      "tag": "0168_tool_connection_installs",
       "breakpoints": true
     }
   ]

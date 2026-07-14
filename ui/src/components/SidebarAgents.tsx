@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -63,6 +63,7 @@ import type { Agent } from "@paperclipai/shared";
  * recently-active agents plus a "See all agents" link (IA Phase 5).
  */
 const RECENT_AGENT_LIMIT = 3;
+const LIVE_AGENT_LINGER_MS = 120_000;
 
 const AGENT_SORT_CHOICES: SidebarSectionRadioChoice[] = [
   { value: "top", label: "Top" },
@@ -298,6 +299,8 @@ function SidebarAgentItem({
 export function SidebarAgents({ streamlined = false }: { streamlined?: boolean } = {}) {
   const [open, setOpen] = useState(true);
   const [pendingAgentIds, setPendingAgentIds] = useState<Set<string>>(() => new Set());
+  const [liveLingerVersion, setLiveLingerVersion] = useState(0);
+  const lastSeenLiveAtRef = useRef<Map<string, number>>(new Map());
   const queryClient = useQueryClient();
   const { selectedCompanyId } = useCompany();
   const { openNewAgent } = useDialogActions();
@@ -354,6 +357,13 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
     }
     return counts;
   }, [liveRuns]);
+  const liveAgentIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const [agentId, count] of liveCountByAgent) {
+      if (count > 0) ids.add(agentId);
+    }
+    return ids;
+  }, [liveCountByAgent]);
 
   const visibleAgents = useMemo(() => {
     const filtered = (agents ?? []).filter(
@@ -384,15 +394,39 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
     () => sortAgents(orderedAgents, sortMode),
     [orderedAgents, sortMode],
   );
+  const sortedAgentIdSet = useMemo(
+    () => new Set(sortedAgents.map((agent: Agent) => agent.id)),
+    [sortedAgents],
+  );
+
+  useEffect(() => {
+    const now = Date.now();
+    for (const agentId of liveAgentIds) {
+      lastSeenLiveAtRef.current.set(agentId, now);
+    }
+    for (const agentId of lastSeenLiveAtRef.current.keys()) {
+      if (!sortedAgentIdSet.has(agentId)) {
+        lastSeenLiveAtRef.current.delete(agentId);
+      }
+    }
+  }, [liveAgentIds, sortedAgentIdSet]);
 
   // IA Phase 5 (streamlined): if any agent has a live run, show only those
-  // active agents. Otherwise fall back to up to RECENT_AGENT_LIMIT agents. Either
-  // way a "See all agents" link is shown so the full list is always reachable.
+  // active agents. Agents that just stopped running linger briefly so clustered
+  // run boundaries do not make rows pop out and the section does not immediately
+  // swap to the recent fallback during short all-idle gaps. Otherwise fall back
+  // to up to RECENT_AGENT_LIMIT agents. Either way a "See all agents" link is
+  // shown so the full list is always reachable.
   // Classic mode (PAP-89, flag OFF) restores the show-all behavior.
-  const runningAgents = useMemo(
-    () => sortedAgents.filter((agent: Agent) => (liveCountByAgent.get(agent.id) ?? 0) > 0),
-    [sortedAgents, liveCountByAgent],
-  );
+  const runningAgents = useMemo(() => {
+    const nowForLiveLinger = Date.now();
+    const lastSeenLiveAtByAgent = lastSeenLiveAtRef.current;
+    return sortedAgents.filter((agent: Agent) => {
+      if ((liveCountByAgent.get(agent.id) ?? 0) > 0) return true;
+      const lastSeenLiveAt = lastSeenLiveAtByAgent.get(agent.id);
+      return lastSeenLiveAt !== undefined && nowForLiveLinger - lastSeenLiveAt <= LIVE_AGENT_LINGER_MS;
+    });
+  }, [liveCountByAgent, liveLingerVersion, sortedAgents]);
   const hasActiveAgents = runningAgents.length > 0;
   const displayedAgents = !streamlined
     ? sortedAgents
@@ -436,6 +470,30 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
       window.removeEventListener(AGENT_SORT_MODE_UPDATED_EVENT, onCustomEvent);
     };
   }, [sortModeStorageKey]);
+
+  useEffect(() => {
+    if (!streamlined) return;
+
+    const now = Date.now();
+    let nextExpiryAt: number | null = null;
+    for (const agent of sortedAgents) {
+      if ((liveCountByAgent.get(agent.id) ?? 0) > 0) continue;
+      const lastSeenLiveAt = lastSeenLiveAtRef.current.get(agent.id);
+      if (lastSeenLiveAt === undefined) continue;
+      const expiresAt = lastSeenLiveAt + LIVE_AGENT_LINGER_MS;
+      if (expiresAt < now) continue;
+      nextExpiryAt = nextExpiryAt === null ? expiresAt : Math.min(nextExpiryAt, expiresAt);
+    }
+    if (nextExpiryAt === null) return;
+
+    const timeoutId = window.setTimeout(() => {
+      setLiveLingerVersion((version) => version + 1);
+    }, Math.max(0, nextExpiryAt - now + 1));
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [streamlined, sortedAgents, liveCountByAgent, liveLingerVersion]);
 
   const persistSortMode = useCallback(
     (value: string) => {
