@@ -162,11 +162,11 @@ test.describe.serial("dark-mode Apps surfaces", () => {
     await page.goto(`/${seed.prefix}/apps/advanced/profiles`);
     await expect(page.getByRole("heading", { name: "Developer tools" })).toBeVisible({ timeout: 30_000 });
     await expect(page.getByRole("heading", { name: "Access profiles" })).toBeVisible({ timeout: 30_000 });
-    await expect(page.getByRole("link", { name: "Health", exact: true })).toBeVisible();
-    await expect(page.getByRole("link", { name: "Activity", exact: true })).toBeVisible();
+    await expect(page.locator('a[href$="/apps/advanced/runtime"]', { hasText: "Health" })).toBeVisible();
+    await expect(page.locator('a[href$="/apps/advanced/audit"]', { hasText: "Activity" })).toBeVisible();
     await expect(page.getByRole("link", { name: "Applications", exact: true })).toHaveCount(0);
     // Apps section lives in the same sidebar now.
-    await expect(page.getByRole("link", { name: "Connections", exact: true })).toBeVisible();
+    await expect(page.locator('a[href$="/apps"]', { hasText: "Connections" })).toBeVisible();
     await page.screenshot({ path: `${SCREENSHOT_DIR}/apps-nav-05-developer-overview-dark.png`, fullPage: true });
   });
 
