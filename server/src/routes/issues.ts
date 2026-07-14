@@ -8517,9 +8517,20 @@ export function issueRoutes(
         blockerIssueIds: string[];
         source: string;
       }) => {
-        const nextBlockerIssueIds: string[] = [];
-        const removedBlockerIssueIds = [...new Set(input.blockerIssueIds.filter(Boolean))];
+        const currentBlockerIssueIds = [...new Set(input.blockerIssueIds.filter(Boolean))];
+        if (currentBlockerIssueIds.length === 0 || typeof dependencyReadinessSvc.getDependencyReadiness !== "function") {
+          return;
+        }
+        const readiness = await dependencyReadinessSvc.getDependencyReadiness(input.dependentIssueId);
+        if (!readiness.isDependencyReady) return;
+        const satisfiedBlockerIssueIds = new Set(readiness.blockerIssueIds.filter(Boolean));
+        const removedBlockerIssueIds = currentBlockerIssueIds.filter((blockerIssueId) =>
+          satisfiedBlockerIssueIds.has(blockerIssueId),
+        );
         if (removedBlockerIssueIds.length === 0) return;
+        const nextBlockerIssueIds = currentBlockerIssueIds.filter(
+          (blockerIssueId) => !satisfiedBlockerIssueIds.has(blockerIssueId),
+        );
         await svc.update(input.dependentIssueId, {
           blockedByIssueIds: nextBlockerIssueIds,
           actorAgentId: actor.actorType === "agent" ? actor.actorId : null,
@@ -8541,6 +8552,7 @@ export function issueRoutes(
             remainingBlockerIssueIds: nextBlockerIssueIds,
           },
         });
+        return { removedBlockerIssueIds, remainingBlockerIssueIds: nextBlockerIssueIds };
       };
 
       if (executionStageWakeup) {
@@ -8668,18 +8680,19 @@ export function issueRoutes(
       if (becameDone) {
         const dependents = await svc.listWakeableBlockedDependents(issue.id);
         for (const dependent of dependents) {
+          const blockerRepair = await repairSatisfiedDependencyBlockers({
+            dependentIssueId: dependent.id,
+            blockerIssueIds: dependent.blockerIssueIds,
+            source: "issue.blockers_resolved",
+          });
+          if (!blockerRepair) continue;
           await addDependencyResolvedWakeup({
             agentId: dependent.assigneeAgentId,
             dependentIssueId: dependent.id,
             resolvedBlockerIssueId: issue.id,
-            blockerIssueIds: dependent.blockerIssueIds,
+            blockerIssueIds: blockerRepair.removedBlockerIssueIds,
             source: "issue.blockers_resolved",
             mutation: "blocker_done",
-          });
-          await repairSatisfiedDependencyBlockers({
-            dependentIssueId: dependent.id,
-            blockerIssueIds: dependent.blockerIssueIds,
-            source: "issue.blockers_resolved",
           });
         }
       }
