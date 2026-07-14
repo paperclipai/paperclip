@@ -9,6 +9,7 @@ import { ThemeProvider } from "../context/ThemeContext";
 import { TooltipProvider } from "./ui/tooltip";
 import {
   pendingAskUserQuestionsInteraction,
+  acceptedRequestCheckboxConfirmationInteraction,
   commentExpiredAskUserQuestionsInteraction,
   commentExpiredRequestConfirmationInteraction,
   disabledDeclineReasonRequestConfirmationInteraction,
@@ -19,6 +20,7 @@ import {
   pendingSuggestedTasksInteraction,
   completeRequestItemVerdictsInteraction,
   supersededRequestItemVerdictsInteraction,
+  rejectedRequestCheckboxConfirmationInteraction,
   staleTargetRequestConfirmationInteraction,
   rejectedSuggestedTasksInteraction,
 } from "../fixtures/issueThreadInteractionFixtures";
@@ -584,5 +586,59 @@ describe("IssueThreadInteractionCard", () => {
     expect(host.textContent).toContain("expired after a later comment");
     expect(host.textContent).toContain("cannot be");
     expect(host.textContent?.toLowerCase()).toContain("revert");
+  });
+
+  it("keeps checkbox confirmation details available behind a toggle after acceptance", async () => {
+    const host = renderCard({
+      interaction: acceptedRequestCheckboxConfirmationInteraction,
+    });
+
+    expect(host.textContent).toContain("Confirmed 2 of 4 options");
+    expect(host.textContent).not.toContain(
+      "Check the draft documents you want me to delete.",
+    );
+
+    const toggle = Array.from(host.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Show details"),
+    );
+    expect(toggle).toBeTruthy();
+
+    await act(async () => {
+      toggle?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(host.textContent).toContain("Hide details");
+    expect(host.textContent).toContain(
+      "Check the draft documents you want me to delete.",
+    );
+    expect(host.textContent).toContain(
+      "Only the checked items will be deleted. Leave an item unchecked to keep it for now.",
+    );
+  });
+
+  it("keeps checkbox confirmation details available behind a toggle after decline", async () => {
+    const host = renderCard({
+      interaction: rejectedRequestCheckboxConfirmationInteraction,
+    });
+
+    expect(host.textContent).toContain(
+      "Don't delete anything yet — let me confirm with the data owner first.",
+    );
+
+    const toggle = Array.from(host.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Show details"),
+    );
+    expect(toggle).toBeTruthy();
+
+    await act(async () => {
+      toggle?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(host.textContent).toContain(
+      "Check the draft documents you want me to delete.",
+    );
+    expect(host.textContent).toContain(
+      "Only the checked items will be deleted. Leave an item unchecked to keep it for now.",
+    );
   });
 });

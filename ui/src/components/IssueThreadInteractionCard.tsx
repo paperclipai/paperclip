@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Agent } from "@paperclipai/shared";
-import { AlertTriangle, ArrowUpRight, Check, CheckCircle2, ChevronRight, CircleDashed, ExternalLink, FileText, GitBranch, ImagePlus, Loader2, MessageSquareQuote, MinusCircle, ThumbsUp, X, XCircle } from "lucide-react";
+import { AlertTriangle, ArrowUpRight, Check, CheckCircle2, ChevronDown, ChevronRight, CircleDashed, ExternalLink, FileText, GitBranch, ImagePlus, Loader2, MessageSquareQuote, MinusCircle, ThumbsUp, X, XCircle } from "lucide-react";
 import { Link } from "@/lib/router";
 import { formatAssigneeUserLabel } from "../lib/assignees";
 import {
@@ -30,6 +30,7 @@ import { cn, formatDateTime, formatShortDate } from "../lib/utils";
 import { MarkdownBody, type MarkdownExternalReferenceMap } from "./MarkdownBody";
 import { Button } from "./ui/button";
 import { Checkbox } from "./ui/checkbox";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./ui/collapsible";
 import { PriorityIcon } from "./PriorityIcon";
 import { Textarea } from "./ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
@@ -1688,6 +1689,7 @@ function RequestCheckboxConfirmationCard({
   const [rejectAttempted, setRejectAttempted] = useState(false);
   const [acceptAttempted, setAcceptAttempted] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [detailsOpen, setDetailsOpen] = useState(false);
 
   const optionSeed = useMemo(() => optionIds.join("\n"), [optionIds]);
 
@@ -1780,8 +1782,46 @@ function RequestCheckboxConfirmationCard({
 
   if (interaction.status !== "pending") {
     return (
-      <div className="space-y-4">
+      <div className="space-y-2">
         <RequestCheckboxConfirmationResolution interaction={interaction} />
+        {interaction.payload.prompt || interaction.payload.detailsMarkdown ? (
+          <Collapsible open={detailsOpen} onOpenChange={setDetailsOpen}>
+            <CollapsibleTrigger asChild>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-7 w-full justify-between px-2 text-xs text-muted-foreground hover:text-foreground"
+              >
+                <span>{detailsOpen ? "Hide details" : "Show details"}</span>
+                <ChevronDown
+                  className={cn(
+                    "h-3.5 w-3.5 transition-transform duration-200",
+                    detailsOpen && "rotate-180",
+                  )}
+                />
+              </Button>
+            </CollapsibleTrigger>
+            <CollapsibleContent>
+              <div className="mt-1 space-y-3 rounded-sm border border-border/70 bg-background/75 p-4">
+                {interaction.payload.prompt ? (
+                  <div className="text-sm leading-6 text-foreground">
+                    {interaction.payload.prompt}
+                  </div>
+                ) : null}
+                {interaction.payload.detailsMarkdown ? (
+                  <div
+                    className={cn(
+                      "text-sm",
+                      interaction.payload.prompt && "border-t border-border/60 pt-3",
+                    )}
+                  >
+                    <MarkdownBody externalReferences={externalReferences}>{interaction.payload.detailsMarkdown}</MarkdownBody>
+                  </div>
+                ) : null}
+              </div>
+            </CollapsibleContent>
+          </Collapsible>
+        ) : null}
       </div>
     );
   }
