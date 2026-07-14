@@ -656,6 +656,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     runSource?: string | null;
     assignToUser?: boolean;
     activePauseHold?: boolean;
+    adapterType?: string;
     livenessState?: "completed" | "advanced" | "plan_only" | "empty_response" | "blocked" | "failed" | "needs_followup" | null;
     runErrorCode?: string | null;
     runError?: string | null;
@@ -685,7 +686,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       name: "CodexCoder",
       role: "engineer",
       status: "idle",
-      adapterType: "codex_local",
+      adapterType: input.adapterType ?? "codex_local",
       adapterConfig: {},
       runtimeConfig: {},
       permissions: {},
@@ -972,6 +973,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     kind?: string;
     previousOwnerAgentId?: string | null;
     returnOwnerAgentId?: string | null;
+    expectWakeup?: boolean;
   }) {
     const action = await waitForValue(async () =>
       db.select().from(issueRecoveryActions).where(
@@ -1005,6 +1007,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
     if (input.cause === "execution_review_participant_recovery") {
       expect(action.nextAction).toContain("failed review participant path");
+    } else if (input.cause === "adapter_setup_failed") {
+      expect(action.nextAction).toContain("local Claude adapter setup");
     } else {
       expect(action.nextAction).toContain(
         input.kind === "missing_disposition" ? "valid issue disposition" : "Restore a live execution path",
@@ -1034,17 +1038,21 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           payload?.strandedRunId === input.runId;
       }) ?? null;
     });
-    expect(recoveryWakeup).toMatchObject({
-      companyId: input.companyId,
-      reason: "source_scoped_recovery_action",
-      source: "assignment",
-      payload: expect.objectContaining({
-        modelProfile: "cheap",
-        allowDeliverableWork: false,
-        allowDocumentUpdates: false,
-        resumeRequiresNormalModel: true,
-      }),
-    });
+    if (input.expectWakeup === false) {
+      expect(recoveryWakeup).toBeNull();
+    } else {
+      expect(recoveryWakeup).toMatchObject({
+        companyId: input.companyId,
+        reason: "source_scoped_recovery_action",
+        source: "assignment",
+        payload: expect.objectContaining({
+          modelProfile: "cheap",
+          allowDeliverableWork: false,
+          allowDocumentUpdates: false,
+          resumeRequiresNormalModel: true,
+        }),
+      });
+    }
 
     const recoveryRun = recoveryWakeup?.runId
       ? await db
@@ -1053,18 +1061,22 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         .where(eq(heartbeatRuns.id, recoveryWakeup.runId))
         .then((rows) => rows[0] ?? null)
       : null;
-    expect(recoveryRun?.contextSnapshot).toMatchObject({
-      issueId: input.issueId,
-      taskId: input.issueId,
-      source: "issue_recovery_action",
-      recoveryActionId: action.id,
-      sourceIssueId: input.issueId,
-      strandedRunId: input.runId,
-      modelProfile: "cheap",
-      allowDeliverableWork: false,
-      allowDocumentUpdates: false,
-      resumeRequiresNormalModel: true,
-    });
+    if (input.expectWakeup === false) {
+      expect(recoveryRun).toBeNull();
+    } else {
+      expect(recoveryRun?.contextSnapshot).toMatchObject({
+        issueId: input.issueId,
+        taskId: input.issueId,
+        source: "issue_recovery_action",
+        recoveryActionId: action.id,
+        sourceIssueId: input.issueId,
+        strandedRunId: input.runId,
+        modelProfile: "cheap",
+        allowDeliverableWork: false,
+        allowDocumentUpdates: false,
+        resumeRequiresNormalModel: true,
+      });
+    }
     await waitForHeartbeatIdle(db);
     const sourceIssue = await db
       .select()
@@ -1090,7 +1102,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .then((rows) => rows.map((row) => row.blockerIssueId));
   }
 
-  async function seedQueuedIssueRunFixture() {
+  async function seedQueuedIssueRunFixture(input?: {
+    adapterType?: string;
+    contextSnapshot?: Record<string, unknown>;
+  }) {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const runId = randomUUID();
@@ -1113,7 +1128,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       name: "CodexCoder",
       role: "engineer",
       status: "idle",
-      adapterType: "codex_local",
+      adapterType: input?.adapterType ?? "codex_local",
       adapterConfig: {},
       runtimeConfig: {
         heartbeat: {
@@ -1150,6 +1165,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         issueId,
         taskId: issueId,
         wakeReason: "issue_assigned",
+        ...(input?.contextSnapshot ?? {}),
       },
       updatedAt: now,
       createdAt: now,
@@ -2412,6 +2428,74 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       return rows.find((comment) => comment.body.includes("secret/env bindings are missing")) ?? null;
     });
     expect(configurationComment).toBeTruthy();
+  });
+
+  it("blocks claude_local local adapter setup failures without creating follow-on work", async () => {
+    mockAdapterExecute.mockResolvedValueOnce({
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorCode: "acpx_session_init_failed",
+      errorMessage: "spawn C:\\\\Users\\\\shani\\\\.paperclip\\\\wrappers\\\\claude-local.sh ENOENT",
+      summary: "Failed during ensure_session wrapper bootstrap.",
+      provider: "anthropic",
+      model: "claude-code",
+      resultJson: {
+        phase: "ensure_session",
+        message: "spawn wrapper ENOENT",
+      },
+    });
+
+    const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture({
+      adapterType: "claude_local",
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId, 5_000);
+    await waitForHeartbeatIdle(db, 5_000);
+
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toMatchObject({
+      id: runId,
+      status: "failed",
+      errorCode: "acpx_session_init_failed",
+    });
+
+    const issue = await waitForValue(async () =>
+      db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => {
+        const row = rows[0] ?? null;
+        return row?.status === "blocked" ? row : null;
+      }),
+    );
+    expect(issue?.executionRunId).toBeNull();
+
+    await expectSourceScopedStrandedRecoveryAction({
+      companyId,
+      agentId,
+      issueId,
+      runId,
+      previousStatus: "in_progress",
+      cause: "adapter_setup_failed",
+      kind: "configuration_validation",
+      expectWakeup: false,
+    });
+
+    const wakeups = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakeups).toHaveLength(1);
+    expect(
+      wakeups.some((wakeup) => [
+        "missing_issue_comment",
+        "issue_assignment_recovery",
+        "issue_continuation_needed",
+        "source_scoped_recovery_action",
+      ].includes(wakeup.reason ?? "")),
+    ).toBe(false);
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toContain("local session setup failed before Claude launched");
   });
 
   it("queues one finish-handoff wake when a successful run leaves in-progress work without a next action", async () => {
@@ -4546,6 +4630,178 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     if (retryRun) {
       await waitForRunToSettle(heartbeat, retryRun.id);
     }
+  });
+
+  it("does not let stranded recovery requeue claude_local setup failures", async () => {
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "todo",
+      runStatus: "failed",
+      adapterType: "claude_local",
+      runErrorCode: "acpx_session_init_failed",
+      runError: "spawn C:\\\\Users\\\\shani\\\\.paperclip\\\\wrappers\\\\claude-local.sh ENOENT",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.dispatchRequeued).toBe(0);
+    expect(result.escalated).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(1);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("blocked");
+
+    await expectSourceScopedStrandedRecoveryAction({
+      companyId,
+      agentId,
+      issueId,
+      runId,
+      previousStatus: "todo",
+      cause: "adapter_setup_failed",
+      kind: "configuration_validation",
+      expectWakeup: false,
+    });
+  });
+
+  it("does not classify non-claude_local setup-looking failures as local Claude setup failures", async () => {
+    const { agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "todo",
+      runStatus: "failed",
+      adapterType: "codex_local",
+      runErrorCode: "acpx_session_init_failed",
+      runError: "spawn C:\\\\Users\\\\shani\\\\.paperclip\\\\wrappers\\\\claude-local.sh ENOENT",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.dispatchRequeued).toBe(1);
+    expect(result.escalated).toBe(0);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(2);
+
+    const retryRun = runs.find((row) => row.id !== runId);
+    expect((retryRun?.contextSnapshot as Record<string, unknown>)?.retryReason).toBe("assignment_recovery");
+    if (retryRun) {
+      await waitForRunToSettle(heartbeat, retryRun.id);
+    }
+  });
+
+  it("suppresses follow-on wakes in manual safe-run mode so one claude_local run stays one run", async () => {
+    const { agentId, runId } = await seedQueuedIssueRunFixture({
+      adapterType: "claude_local",
+      contextSnapshot: { manualSafeRun: true },
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId, 5_000);
+    await waitForHeartbeatIdle(db, 5_000);
+
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.status).toBe("succeeded");
+
+    const wakeups = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakeups).toHaveLength(1);
+    expect(
+      wakeups.some((wakeup) => [
+        "finish_successful_run_handoff",
+        "missing_issue_comment",
+        "issue_assignment_recovery",
+        "issue_continuation_needed",
+      ].includes(wakeup.reason ?? "")),
+    ).toBe(false);
+  });
+
+  it("uses a global Claude quota-open event as the recovery retry-budget window across companies", async () => {
+    mockAdapterExecute.mockClear();
+    const quotaCompanyId = randomUUID();
+    const quotaAgentId = randomUUID();
+    const quotaOpenedAt = new Date("2026-03-19T00:10:00.000Z");
+    await db.insert(companies).values({
+      id: quotaCompanyId,
+      name: "Quota Source",
+      issuePrefix: `Q${quotaCompanyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      defaultResponsibleUserId: "responsible-user",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: quotaAgentId,
+      companyId: quotaCompanyId,
+      name: "Claude Source",
+      role: "engineer",
+      status: "idle",
+      adapterType: "claude_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(activityLog).values({
+      companyId: quotaCompanyId,
+      actorType: "system",
+      actorId: "claude_quota_guard",
+      action: "claude.quota_circuit_opened",
+      entityType: "system",
+      entityId: "claude_local",
+      agentId: quotaAgentId,
+      details: {
+        reason: "blocked_by_claude_quota",
+        blockedUntil: null,
+        operatorResumeRequired: true,
+      },
+      createdAt: quotaOpenedAt,
+    });
+
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      adapterType: "claude_local",
+    });
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId,
+      invocationSource: "automation",
+      triggerDetail: "system",
+      status: "cancelled",
+      retryOfRunId: runId,
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "issue_continuation_needed",
+        retryReason: "issue_continuation_needed",
+      },
+      createdAt: new Date("2026-03-19T00:11:00.000Z"),
+      updatedAt: new Date("2026-03-19T00:11:00.000Z"),
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(2);
+    const budgetEvents = await db
+      .select()
+      .from(activityLog)
+      .where(and(
+        eq(activityLog.companyId, companyId),
+        eq(activityLog.action, "claude.automatic_recovery_retry_budget_exhausted"),
+      ));
+    expect(budgetEvents).toHaveLength(1);
+    expect(budgetEvents[0]?.details).toMatchObject({
+      state: "degraded_retry_budget_exhausted",
+      adapterType: "claude_local",
+      retryReason: "issue_continuation_needed",
+      windowStart: quotaOpenedAt.toISOString(),
+      maxRetries: 1,
+    });
   });
 
   it("does not continue seeded in-progress work that has no run linkage", async () => {
