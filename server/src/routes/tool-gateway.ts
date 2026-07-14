@@ -266,6 +266,21 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
     throw forbidden(`Missing permission: ${permissionKey}`);
   }
 
+  function assertBoardMutationAccess(req: import("express").Request, companyId: string) {
+    assertBoard(req);
+    assertCompanyAccess(req, companyId);
+    if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
+    const membership = Array.isArray(req.actor.memberships)
+      ? req.actor.memberships.find((item) => item.companyId === companyId)
+      : null;
+    if (!membership || membership.status !== "active") {
+      throw forbidden("User does not have active company access");
+    }
+    if (!membership.membershipRole || membership.membershipRole === "viewer") {
+      throw forbidden("Viewer access is read-only");
+    }
+  }
+
   router.get("/companies/:companyId/tools/gateways", async (req, res) => {
     try {
       await assertBoardPermission(req, req.params.companyId, "tools:admin");
@@ -508,7 +523,7 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
         res.status(400).json({ error: "companyId is required" });
         return;
       }
-      assertCompanyAccess(req, companyId);
+      assertBoardMutationAccess(req, companyId);
       const actor = getActorInfo(req);
       const actionRequest = await toolGateway.approveActionRequest({
         companyId,
@@ -533,7 +548,7 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
         res.status(400).json({ error: "companyId is required" });
         return;
       }
-      assertCompanyAccess(req, companyId);
+      assertBoardMutationAccess(req, companyId);
       const actor = getActorInfo(req);
       const actionRequest = await toolGateway.declineActionRequest({
         companyId,

@@ -2949,6 +2949,31 @@ rl.on("line", (line) => {
     expect(ownRunDenied.body.reasonCode).toBe("session_revoked");
   });
 
+  it("keeps action request approval routes viewer-safe", async () => {
+    const company = await createCompany(db);
+    const gateway = createTestToolGatewayService(db);
+    const app = createGatewayRouteApp(db, gateway, {
+      type: "board",
+      userId: "viewer-user",
+      source: "session",
+      companyIds: [company.id],
+      memberships: [{ companyId: company.id, membershipRole: "viewer", status: "active" }],
+      isInstanceAdmin: false,
+    });
+
+    const approve = await request(app)
+      .post(`/api/tool-gateway/action-requests/${randomUUID()}/approve`)
+      .send({ companyId: company.id });
+    const decline = await request(app)
+      .post(`/api/tool-gateway/action-requests/${randomUUID()}/decline`)
+      .send({ companyId: company.id });
+
+    for (const res of [approve, decline]) {
+      expect(res.status).toBe(403);
+      expect(res.body.error).toContain("Viewer access is read-only");
+    }
+  });
+
   it("denies agent actors from runtime control and raw gateway audit routes", async () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
