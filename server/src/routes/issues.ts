@@ -3434,18 +3434,6 @@ export function issueRoutes(
       }
       return assertFreshTaskWatchdogSourceMutation(res, watchdogScope, issue);
     }
-    // Managers with the narrow active-checkout management permission must be
-    // able to repair dependency metadata on reports' issues even when the
-    // ordinary assignee boundary denies issue:mutate. Evaluate that scoped
-    // grant before the base boundary; the authorization service still checks
-    // same-company membership and the reporting subtree.
-    if (
-      issue.assigneeAgentId &&
-      issue.assigneeAgentId !== actorAgentId &&
-      await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, issue.assigneeAgentId)
-    ) {
-      return true;
-    }
     const boundaryDecision = await decideIssueAccess(req, issue, "issue:mutate");
     if (!boundaryDecision.allowed) {
       res.status(403).json({ error: "Issue is outside this actor's authorization boundary" });
@@ -3455,6 +3443,9 @@ export function issueRoutes(
       return true;
     }
     if (issue.assigneeAgentId !== actorAgentId) {
+      if (await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, issue.assigneeAgentId)) {
+        return true;
+      }
       if (issue.status === "in_progress") {
         res.status(409).json({
           error: "Issue is checked out by another agent",
@@ -3503,6 +3494,49 @@ export function issueRoutes(
       });
     }
     return true;
+  }
+
+  async function assertAgentIssuePatchMutationAllowed(
+    req: Request,
+    res: Response,
+    issue: {
+      id: string;
+      companyId: string;
+      projectId: string | null;
+      parentId: string | null;
+      status: string;
+      assigneeAgentId: string | null;
+      assigneeUserId: string | null;
+    },
+    patch: Record<string, unknown>,
+  ) {
+    const patchKeys = Object.keys(patch);
+    const isBlockerReplacementOnly =
+      patchKeys.length === 1 &&
+      patchKeys[0] === "blockedByIssueIds" &&
+      Array.isArray(patch.blockedByIssueIds);
+    const actorAgentId = req.actor.type === "agent" ? req.actor.agentId : null;
+    if (
+      typeof actorAgentId === "string" &&
+      isBlockerReplacementOnly &&
+      issue.assigneeAgentId &&
+      issue.assigneeAgentId !== actorAgentId &&
+      await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, issue.assigneeAgentId)
+    ) {
+      if (issue.status === "in_progress") {
+        res.status(409).json({
+          error: "Issue is checked out by another agent",
+          details: {
+            issueId: issue.id,
+            assigneeAgentId: issue.assigneeAgentId,
+            actorAgentId,
+          },
+        });
+        return false;
+      }
+      return true;
+    }
+    return assertAgentIssueMutationAllowed(req, res, issue);
   }
 
   async function assertFreshTaskWatchdogSourceMutation(
@@ -7553,7 +7587,7 @@ export function issueRoutes(
     }
     assertCompanyAccess(req, existing.companyId);
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
-    if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+    if (!(await assertAgentIssuePatchMutationAllowed(req, res, existing, req.body))) return;
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
 
     const actor = getActorInfo(req);

@@ -936,10 +936,14 @@ describe("agent issue mutation checkout ownership", () => {
         ? "Allowed for a report in the manager subtree."
         : "Outside the ordinary issue mutation boundary.",
     }));
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue({ status: "blocked" }),
+      ...patch,
+    }));
 
     const res = await request(await createApp(peerActor()))
       .patch(`/api/issues/${issueId}`)
-      .send({ status: "blocked", blockedByIssueIds: [liveBlockerId] });
+      .send({ blockedByIssueIds: [liveBlockerId] });
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body.status).toBe("blocked");
@@ -951,11 +955,104 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.update).toHaveBeenCalledWith(
       issueId,
       expect.objectContaining({
-        status: "blocked",
         blockedByIssueIds: [liveBlockerId],
         actorAgentId: peerAgentId,
       }),
     );
+  });
+
+  it("requires the active checkout owner even for manager-authorized blocker replacement", async () => {
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: input.action === "tasks:manage_active_checkouts",
+      action: input.action,
+      reason: input.action === "tasks:manage_active_checkouts" ? "allow_manager" : "deny_scope",
+      explanation: input.action === "tasks:manage_active_checkouts"
+        ? "Allowed for a report in the manager subtree."
+        : "Outside the ordinary issue mutation boundary.",
+    }));
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ blockedByIssueIds: ["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"] });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.error).toBe("Issue is checked out by another agent");
+    expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("allows the active checkout owner to replace blockers", async () => {
+    const liveBlockerId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    mockIssueService.getRelationSummaries
+      .mockResolvedValueOnce({ blockedBy: [], blocks: [] })
+      .mockResolvedValueOnce({
+        blockedBy: [{ id: liveBlockerId, status: "in_review" }],
+        blocks: [],
+      });
+
+    const res = await request(await createApp(ownerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ blockedByIssueIds: [liveBlockerId] });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.assertCheckoutOwner).toHaveBeenCalledWith(issueId, ownerAgentId, ownerRunId);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({ blockedByIssueIds: [liveBlockerId], actorAgentId: ownerAgentId }),
+    );
+  });
+
+  it.each([
+    ["title", (app: express.Express) => request(app).patch(`/api/issues/${issueId}`).send({ title: "Denied" })],
+    ["status", (app: express.Express) => request(app).patch(`/api/issues/${issueId}`).send({ status: "done" })],
+    [
+      "assignee",
+      (app: express.Express) => request(app).patch(`/api/issues/${issueId}`).send({ assigneeAgentId: peerAgentId }),
+    ],
+    [
+      "blockers combined with title",
+      (app: express.Express) => request(app).patch(`/api/issues/${issueId}`).send({
+        title: "Denied",
+        blockedByIssueIds: ["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"],
+      }),
+    ],
+    ["comment", (app: express.Express) => request(app).post(`/api/issues/${issueId}/comments`).send({ body: "Denied" })],
+    [
+      "document",
+      (app: express.Express) =>
+        request(app).put(`/api/issues/${issueId}/documents/plan`).send({ format: "markdown", body: "# denied" }),
+    ],
+    ["work product", (app: express.Express) => request(app).patch("/api/work-products/product-1").send({ title: "Denied" })],
+    [
+      "attachment upload",
+      (app: express.Express) =>
+        request(app)
+          .post(`/api/companies/${companyId}/issues/${issueId}/attachments`)
+          .attach("file", Buffer.from("denied"), { filename: "denied.txt", contentType: "text/plain" }),
+    ],
+    ["attachment delete", (app: express.Express) => request(app).delete("/api/attachments/attachment-1")],
+    ["issue delete", (app: express.Express) => request(app).delete(`/api/issues/${issueId}`)],
+  ])("does not use active-checkout management permission to authorize %s mutation", async (_name, sendRequest) => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "blocked" }));
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: input.action === "tasks:manage_active_checkouts",
+      action: input.action,
+      reason: input.action === "tasks:manage_active_checkouts" ? "allow_manager" : "deny_scope",
+      explanation: input.action === "tasks:manage_active_checkouts"
+        ? "Allowed for a report in the manager subtree."
+        : "Outside the ordinary issue mutation boundary.",
+    }));
+
+    const res = await sendRequest(await createApp(peerActor()));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    expect(mockDocumentService.upsertIssueDocument).not.toHaveBeenCalled();
+    expect(mockWorkProductService.update).not.toHaveBeenCalled();
+    expect(mockStorageService.putFile).not.toHaveBeenCalled();
+    expect(mockStorageService.deleteObject).not.toHaveBeenCalled();
+    expect(mockIssueService.remove).not.toHaveBeenCalled();
   });
 
   it("keeps blocker replacement denied for unrelated agents", async () => {
