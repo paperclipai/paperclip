@@ -54,6 +54,7 @@
     "test:storybook-visual": "node scripts/storybook-visual-baseline.mjs download && node scripts/storybook-visual-baseline.mjs verify && pnpm build-storybook && npx playwright test --config tests/storybook-visual/playwright.config.ts",
     "test:storybook-visual:update": "node scripts/storybook-visual-baseline.mjs download && pnpm build-storybook && npx playwright test --config tests/storybook-visual/playwright.config.ts --update-snapshots && node scripts/storybook-visual-baseline.mjs pack",
     "test:e2e": "npx playwright test --config tests/e2e/playwright.config.ts",
+    "test:e2e:mcp-user-stories": "node scripts/e2e-mcp-user-stories.mjs",
     "test:e2e:headed": "npx playwright test --config tests/e2e/playwright.config.ts --headed",
     "test:e2e:multiuser-authenticated": "npx playwright test --config tests/e2e/playwright-multiuser-authenticated.config.ts",
     "evals:smoke": "cd evals/promptfoo && npx promptfoo@0.103.3 eval",
