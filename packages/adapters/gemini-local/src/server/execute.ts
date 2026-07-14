@@ -618,6 +618,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       onRuntimeProgress: ctx.onRuntimeProgress,
       onLog,
       runLogTail: paperclipBridge?.runLogTail,
+      cancelPromise: paperclipBridge?.workerFatalError,
     });
     return {
       proc,
