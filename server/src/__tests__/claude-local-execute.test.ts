@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import type { AdapterRuntimeMcpServer } from "@paperclipai/adapter-utils";
 import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
 import {
   claudeCommandSupportsEffortFlag,
@@ -52,6 +53,8 @@ const addDirIndex = argv.indexOf("--add-dir");
 const addDir = addDirIndex >= 0 ? argv[addDirIndex + 1] : null;
 const instructionsIndex = argv.indexOf("--append-system-prompt-file");
 const instructionsFilePath = instructionsIndex >= 0 ? argv[instructionsIndex + 1] : null;
+const mcpConfigIndex = argv.indexOf("--mcp-config");
+const mcpConfigPath = mcpConfigIndex >= 0 ? argv[mcpConfigIndex + 1] : null;
 const capturePath = process.env.PAPERCLIP_TEST_CAPTURE_PATH;
 const payload = {
   argv,
@@ -59,6 +62,8 @@ const payload = {
   addDir,
   instructionsFilePath,
   instructionsContents: instructionsFilePath ? fs.readFileSync(instructionsFilePath, "utf8") : null,
+  mcpConfigPath,
+  mcpConfigContents: mcpConfigPath ? fs.readFileSync(mcpConfigPath, "utf8") : null,
   skillEntries: addDir ? fs.readdirSync(path.join(addDir, ".claude", "skills")).sort() : [],
   claudeConfigDir: process.env.CLAUDE_CONFIG_DIR || null,
   claudeConfigEntries: process.env.CLAUDE_CONFIG_DIR && fs.existsSync(process.env.CLAUDE_CONFIG_DIR)
@@ -345,6 +350,59 @@ function createLocalSandboxRunner() {
 }
 
 describe("claude execute", () => {
+  it("uses a strict per-agent MCP config only when managed servers are present", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-mcp-config-"));
+    const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root);
+    try {
+      const run = async (runId: string, agentId: string, servers: AdapterRuntimeMcpServer[]) => {
+        await execute({
+          runId,
+          agent: { id: agentId, companyId: "co-1", name: agentId, adapterType: "claude_local", adapterConfig: { engine: "cli" } },
+          runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+          config: {
+            engine: "cli",
+            command: commandPath,
+            cwd: workspace,
+            env: { PAPERCLIP_TEST_CAPTURE_PATH: capturePath },
+            promptTemplate: "Do work.",
+          },
+          runtimeMcp: { getServers: () => servers },
+          context: {},
+          authToken: "tok",
+          onLog: async () => {},
+        });
+        return JSON.parse(await fs.readFile(capturePath, "utf8"));
+      };
+
+      const alpha = await run("run-alpha", "agent-alpha", [{
+        name: "alpha",
+        url: "https://paperclip.example/api/tool-gateway/gateways/alpha/mcp",
+        token: "alpha-token",
+        connectionId: "connection-alpha",
+      }]);
+      const zero = await run("run-zero", "agent-zero", []);
+
+      expect(alpha.argv).toEqual(expect.arrayContaining(["--strict-mcp-config", "--mcp-config"]));
+      expect(JSON.parse(alpha.mcpConfigContents)).toEqual({
+        mcpServers: {
+          alpha: {
+            type: "http",
+            url: "https://paperclip.example/api/tool-gateway/gateways/alpha/mcp",
+            headers: { Authorization: "Bearer alpha-token" },
+          },
+        },
+      });
+      expect(zero.argv).not.toContain("--mcp-config");
+      expect(zero.argv).not.toContain("--strict-mcp-config");
+      expect(zero.mcpConfigPath).toBeNull();
+      expect(zero.mcpConfigContents).toBeNull();
+      expect(alpha.mcpConfigPath).toContain("/agents/agent-alpha/");
+    } finally {
+      restore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   /**
    * Regression tests for https://github.com/paperclipai/paperclip/issues/2848
    *

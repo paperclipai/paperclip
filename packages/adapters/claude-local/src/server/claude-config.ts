@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
+import type { AdapterExecutionContext, AdapterRuntimeMcpServer } from "@paperclipai/adapter-utils";
 import {
   runAdapterExecutionTargetShellCommand,
   type AdapterExecutionTarget,
@@ -131,6 +131,48 @@ export function resolveManagedClaudeConfigSeedDir(
   return companyId
     ? path.resolve(instanceRoot, "companies", companyId, "claude-config-seed")
     : path.resolve(instanceRoot, "claude-config-seed");
+}
+
+export function resolveManagedClaudeRuntimeStateDir(
+  env: NodeJS.ProcessEnv,
+  companyId: string,
+  agentId: string,
+): string {
+  const instanceRoot = resolvePaperclipInstanceRootForAdapter({
+    homeDir: nonEmpty(env.PAPERCLIP_HOME) ?? undefined,
+    instanceId: nonEmpty(env.PAPERCLIP_INSTANCE_ID) ?? undefined,
+    env,
+  });
+  return path.join(instanceRoot, "companies", companyId, "agents", agentId, "claude-runtime");
+}
+
+export async function writePaperclipClaudeMcpConfig(input: {
+  stateDir: string;
+  runId: string;
+  servers: AdapterRuntimeMcpServer[];
+}): Promise<string> {
+  const configDir = path.join(input.stateDir, "runs", input.runId, "mcp");
+  const configPath = path.join(configDir, "mcp-config.json");
+  const usedNames = new Set<string>();
+  const mcpServers: Record<string, unknown> = {};
+  for (const server of input.servers) {
+    let name = server.name;
+    if (usedNames.has(name)) name = `${name}-${server.connectionId.slice(0, 8)}`;
+    let suffix = 2;
+    while (usedNames.has(name)) {
+      name = `${server.name}-${server.connectionId.slice(0, 8)}-${suffix}`;
+      suffix += 1;
+    }
+    usedNames.add(name);
+    mcpServers[name] = {
+      type: "http",
+      url: server.url,
+      headers: { Authorization: `Bearer ${server.token}` },
+    };
+  }
+  await fs.mkdir(configDir, { recursive: true });
+  await fs.writeFile(configPath, JSON.stringify({ mcpServers }), { mode: 0o600 });
+  return configPath;
 }
 
 export async function prepareClaudeConfigSeed(

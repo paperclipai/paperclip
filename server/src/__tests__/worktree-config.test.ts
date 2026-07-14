@@ -109,6 +109,7 @@ describe("worktree config repair", () => {
     process.env.PAPERCLIP_IN_WORKTREE = "true";
     process.env.PAPERCLIP_WORKTREE_NAME = "PAP-884-ai-commits-component";
     process.env.PAPERCLIP_WORKTREES_DIR = isolatedHome;
+    delete process.env.PORT;
     delete process.env.PAPERCLIP_HOME;
     delete process.env.PAPERCLIP_INSTANCE_ID;
     delete process.env.PAPERCLIP_CONFIG;
@@ -136,7 +137,49 @@ describe("worktree config repair", () => {
     expect(repairedEnv).toContain(`PAPERCLIP_CONTEXT=${JSON.stringify(path.join(isolatedHome, "context.json"))}`);
     expect(repairedEnv).toContain('PAPERCLIP_AGENT_JWT_SECRET="shared-secret"');
     expect(process.env.PAPERCLIP_HOME).toBe(isolatedHome);
+    expect(process.env.PORT).toBe("3101");
     expect(process.env.PAPERCLIP_INSTANCE_ID).toBe("pap-884-ai-commits-component");
+  });
+
+  it("preserves an externally supplied PORT while repairing worktree config", async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-repair-external-port-"));
+    const worktreeRoot = path.join(tempRoot, "PAP-10341-runtime-managed-port");
+    const paperclipDir = path.join(worktreeRoot, ".paperclip");
+    const configPath = path.join(paperclipDir, "config.json");
+    const envPath = path.join(paperclipDir, ".env");
+    const sharedRoot = path.join(tempRoot, ".paperclip", "instances", "default");
+    const isolatedHome = path.join(tempRoot, ".paperclip-worktrees");
+
+    await fs.mkdir(paperclipDir, { recursive: true });
+    await fs.writeFile(configPath, JSON.stringify(buildLegacyConfig(sharedRoot), null, 2) + "\n", "utf8");
+    await fs.writeFile(
+      envPath,
+      [
+        "# Paperclip environment variables",
+        "PAPERCLIP_IN_WORKTREE=true",
+        "PAPERCLIP_WORKTREE_NAME=PAP-10341-runtime-managed-port",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    process.chdir(worktreeRoot);
+    process.env.PAPERCLIP_IN_WORKTREE = "true";
+    process.env.PAPERCLIP_WORKTREE_NAME = "PAP-10341-runtime-managed-port";
+    process.env.PAPERCLIP_WORKTREES_DIR = isolatedHome;
+    process.env.PORT = "32987";
+    delete process.env.PAPERCLIP_HOME;
+    delete process.env.PAPERCLIP_INSTANCE_ID;
+    delete process.env.PAPERCLIP_CONFIG;
+    delete process.env.PAPERCLIP_CONTEXT;
+
+    const result = maybeRepairLegacyWorktreeConfigAndEnvFiles();
+    const repairedConfig = JSON.parse(await fs.readFile(configPath, "utf8"));
+
+    expect(result.repairedConfig).toBe(true);
+    expect(repairedConfig.server.port).toBe(3101);
+    expect(process.env.PORT).toBe("32987");
+    expect(process.env.PAPERCLIP_HOME).toBe(isolatedHome);
   });
 
   it("avoids sibling worktree ports when repairing legacy configs", async () => {
@@ -480,6 +523,10 @@ describe("worktree config repair", () => {
     process.env.PAPERCLIP_IN_WORKTREE = "true";
     process.env.PAPERCLIP_WORKTREE_NAME = "PAP-884-ai-commits-component";
     process.env.PAPERCLIP_WORKTREES_DIR = isolatedHome;
+    delete process.env.PAPERCLIP_HOME;
+    delete process.env.PAPERCLIP_INSTANCE_ID;
+    delete process.env.PAPERCLIP_CONFIG;
+    delete process.env.PAPERCLIP_CONTEXT;
 
     const result = maybeRepairLegacyWorktreeConfigAndEnvFiles();
     const repairedConfig = JSON.parse(await fs.readFile(configPath, "utf8"));

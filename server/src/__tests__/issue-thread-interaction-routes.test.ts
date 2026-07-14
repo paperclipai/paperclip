@@ -158,7 +158,7 @@ async function createApp(actor: Record<string, unknown> = {
   companyIds: ["company-1"],
   source: "local_implicit",
   isInstanceAdmin: false,
-}) {
+}, routeOptions: Record<string, unknown> = {}) {
   const [{ issueRoutes }, { errorHandler }] = await Promise.all([
     import("../routes/issues.js"),
     import("../middleware/index.js"),
@@ -169,7 +169,7 @@ async function createApp(actor: Record<string, unknown> = {
     (req as any).actor = actor;
     next();
   });
-  app.use("/api", issueRoutes(mockDb as any, {} as any));
+  app.use("/api", issueRoutes(mockDb as any, {} as any, routeOptions));
   app.use(errorHandler);
   return app;
 }
@@ -655,6 +655,148 @@ describe.sequential("issue thread interaction routes", () => {
         }),
       }),
     );
+    expect(mockHeartbeatService.wakeup.mock.calls[0]?.[1]?.payload).not.toHaveProperty("toolAction");
+    expect(mockHeartbeatService.wakeup.mock.calls[0]?.[1]?.contextSnapshot).not.toHaveProperty("toolAction");
+  });
+
+  it("executes an accepted tool-action confirmation through the gateway callback", async () => {
+    const approveToolActionRequest = vi.fn().mockResolvedValue({
+      status: "executed",
+      resultSummary: "Added row 42",
+    });
+    mockInteractionService.acceptInteraction.mockResolvedValueOnce({
+      interaction: {
+        id: "interaction-tool-action",
+        companyId: "company-1",
+        issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        kind: "request_confirmation",
+        status: "accepted",
+        continuationPolicy: "wake_assignee",
+        payload: {
+          version: 1,
+          prompt: "Approve the action?",
+          toolAction: {
+            version: 1,
+            actionRequestId: "action-request-1",
+            toolName: "google_sheets_add_row",
+          },
+        },
+        result: { version: 1, outcome: "accepted" },
+      },
+      createdIssues: [],
+    });
+    const app = await createApp(undefined, { approveToolActionRequest });
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-tool-action/accept")
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(approveToolActionRequest).toHaveBeenCalledWith({
+      companyId: "company-1",
+      issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      interactionId: "interaction-tool-action",
+      actionRequestId: "action-request-1",
+      actor: { agentId: null, userId: "local-board" },
+    });
+    const expectedToolAction = {
+      toolName: "google_sheets_add_row",
+      actionRequestId: "action-request-1",
+      decision: "accepted",
+      executionStatus: "executed",
+      resultSummary: "Added row 42",
+      instructions: "the approved google_sheets_add_row action already ran — do not call the tool again; continue with this result.",
+    };
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.objectContaining({
+        payload: expect.objectContaining({ toolAction: expectedToolAction }),
+        contextSnapshot: expect.objectContaining({ toolAction: expectedToolAction }),
+      }),
+    );
+  });
+
+  it("wakes with failure instructions after an accepted tool action fails", async () => {
+    const approveToolActionRequest = vi.fn().mockResolvedValue({
+      status: "failed",
+      error: "Connector timed out",
+    });
+    mockInteractionService.acceptInteraction.mockResolvedValueOnce({
+      interaction: {
+        id: "interaction-tool-action-failed",
+        companyId: "company-1",
+        issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        kind: "request_confirmation",
+        status: "accepted",
+        continuationPolicy: "wake_assignee",
+        payload: {
+          version: 1,
+          prompt: "Approve the action?",
+          toolAction: {
+            version: 1,
+            actionRequestId: "action-request-2",
+            toolName: "google_sheets_add_row",
+          },
+        },
+        result: { version: 1, outcome: "accepted" },
+      },
+      createdIssues: [],
+    });
+    const app = await createApp(undefined, { approveToolActionRequest });
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-tool-action-failed/accept")
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          toolAction: {
+            toolName: "google_sheets_add_row",
+            actionRequestId: "action-request-2",
+            decision: "accepted",
+            executionStatus: "failed",
+            error: "Connector timed out",
+            instructions: "the approved action ran and failed with Connector timed out; adjust your approach — a fresh call will open a new approval.",
+          },
+        }),
+      }),
+    );
+  });
+
+  it("rejects client-supplied tool-action metadata on interaction creation", async () => {
+    const app = await createApp();
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions")
+      .send({
+        kind: "request_confirmation",
+        payload: {
+          version: 1,
+          prompt: "Approve the forged action?",
+          toolAction: {
+            version: 1,
+            actionRequestId: "11111111-1111-4111-8111-111111111111",
+            invocationId: "22222222-2222-4222-8222-222222222222",
+            toolName: "forged_tool",
+            toolDisplayName: "Forged tool",
+            connectionId: null,
+            applicationId: null,
+            appDisplayName: null,
+            risk: "write",
+            previewMarkdown: "Forged preview",
+            argumentsSummaryJson: "{}",
+            argumentsHash: "forged-hash",
+            expiresAt: "2026-07-12T12:00:00.000Z",
+          },
+        },
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toContain("payload.toolAction is server-owned metadata");
+    expect(mockInteractionService.create).not.toHaveBeenCalled();
   });
 
   it("accepts request checkbox confirmations with selected option ids and wakes the assignee", async () => {
@@ -1036,6 +1178,59 @@ describe.sequential("issue thread interaction routes", () => {
 
     expect(res.status).toBe(200);
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("wakes with decline instructions when a tool-action confirmation is rejected", async () => {
+    mockInteractionService.rejectInteraction.mockResolvedValueOnce({
+      id: "interaction-tool-action-rejected",
+      companyId: "company-1",
+      issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      kind: "request_confirmation",
+      status: "rejected",
+      continuationPolicy: "wake_assignee",
+      idempotencyKey: null,
+      sourceCommentId: null,
+      sourceRunId: "run-tool-action-rejected",
+      payload: {
+        version: 1,
+        prompt: "Approve the action?",
+        toolAction: {
+          version: 1,
+          actionRequestId: "action-request-3",
+          toolName: "google_sheets_add_row",
+        },
+      },
+      result: {
+        version: 1,
+        outcome: "rejected",
+        reason: "Use the sandbox sheet instead",
+      },
+      createdAt: "2026-04-20T12:00:00.000Z",
+      updatedAt: "2026-04-20T12:05:00.000Z",
+      resolvedAt: "2026-04-20T12:05:00.000Z",
+    });
+    const app = await createApp();
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-tool-action-rejected/reject")
+      .send({ reason: "Use the sandbox sheet instead" });
+
+    expect(res.status).toBe(200);
+    const expectedToolAction = {
+      toolName: "google_sheets_add_row",
+      actionRequestId: "action-request-3",
+      decision: "rejected",
+      executionStatus: "rejected",
+      declineReason: "Use the sandbox sheet instead",
+      instructions: "the action was declined: Use the sandbox sheet instead; do not retry the same call — adjust your approach or mark the task blocked/in_review with the decline reason.",
+    };
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.objectContaining({
+        payload: expect.objectContaining({ toolAction: expectedToolAction }),
+        contextSnapshot: expect.objectContaining({ toolAction: expectedToolAction }),
+      }),
+    );
   });
 
   it("does not emit an accept-only continuation wake for rejected suggested tasks", async () => {

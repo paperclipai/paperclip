@@ -26,7 +26,10 @@ describe("plugin execution workspace bridge", () => {
     });
 
     await expect(
-      handlers["executionWorkspaces.get"]({ workspaceId: "workspace-1", companyId: "company-1" }),
+      handlers["executionWorkspaces.get"](
+        { workspaceId: "workspace-1", companyId: "company-1" },
+        { invocationScope: { companyId: "company-1" } },
+      ),
     ).resolves.toMatchObject({
       id: "workspace-1",
       cwd: "/tmp/workspace-1",

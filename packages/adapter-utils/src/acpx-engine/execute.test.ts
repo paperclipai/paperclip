@@ -5,6 +5,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import type { AcpRuntimeOptions } from "acpx/runtime";
+import type { AdapterRuntimeMcpAccess } from "@paperclipai/adapter-utils";
 import { DEFAULT_REMOTE_SANDBOX_ADAPTER_TIMEOUT_SEC } from "@paperclipai/adapter-utils/execution-target";
 import {
   createAcpxEngineExecutor,
@@ -115,6 +116,7 @@ async function runExecutor(
     executionTransport?: Record<string, unknown>;
     authToken?: string;
     executionTarget?: Record<string, unknown>;
+    runtimeMcp?: AdapterRuntimeMcpAccess;
   } = {},
 ) {
   const runtimeOptions: Record<string, unknown>[] = [];
@@ -139,6 +141,7 @@ async function runExecutor(
       executionTransport: options.executionTransport,
       authToken: options.authToken,
       executionTarget: options.executionTarget,
+      runtimeMcp: options.runtimeMcp,
       onLog: async (stream: "stdout" | "stderr", text: string) => {
         logs.push({ stream, text });
       },
@@ -1137,6 +1140,46 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(first.result.sessionParams?.configFingerprint).toBeTypeOf("string");
     expect(second.result.sessionParams?.configFingerprint).toBeTypeOf("string");
     expect(first.result.sessionParams?.configFingerprint).not.toBe(second.result.sessionParams?.configFingerprint);
+  });
+
+  it("injects runtime MCP servers and fingerprints their identity without persisting bearer tokens", async () => {
+    const root = await makeTempRoot();
+    const baseConfig = {
+      agent: "custom",
+      agentCommand: "node ./fake-acp.js",
+      stateDir: path.join(root, "state"),
+    };
+    const server = {
+      name: "github",
+      url: "https://paperclip.example/api/tool-gateway/gateways/github/mcp",
+      connectionId: "connection-1",
+    };
+    const first = await runExecutor(baseConfig, {
+      runtimeMcp: { getServers: () => [{ ...server, token: "token-one" }] },
+    });
+    const rotatedToken = await runExecutor(baseConfig, {
+      runtimeMcp: { getServers: () => [{ ...server, token: "token-two" }] },
+    });
+    const changedSet = await runExecutor(baseConfig, {
+      runtimeMcp: {
+        getServers: () => [{ ...server, connectionId: "connection-2", token: "token-two" }],
+      },
+    });
+
+    expect(first.runtimeOptions[0]?.mcpServers).toEqual([{
+      type: "http",
+      name: "github",
+      url: server.url,
+      headers: [{ name: "Authorization", value: "Bearer token-one" }],
+    }]);
+    expect(first.result.sessionParams?.mcpServers).toEqual([{
+      name: "github",
+      url: server.url,
+      connectionId: "connection-1",
+    }]);
+    expect(JSON.stringify(first.result.sessionParams)).not.toContain("token-one");
+    expect(first.result.sessionParams?.configFingerprint).toBe(rotatedToken.result.sessionParams?.configFingerprint);
+    expect(first.result.sessionParams?.configFingerprint).not.toBe(changedSet.result.sessionParams?.configFingerprint);
   });
 });
 

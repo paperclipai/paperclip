@@ -53,6 +53,8 @@ import {
   resolveManagedCodexHomeDir,
   resolveSharedCodexHomeDir,
   seedManagedCodexHome,
+  writeManagedCodexMcpConfig,
+  type ManagedCodexMcpGateway,
 } from "./codex-home.js";
 import { prepareCodexRuntimeConfig } from "./runtime-config.js";
 import { resolveCodexDesiredSkillNames } from "./skills.js";
@@ -241,6 +243,22 @@ function fallbackModeUsesSaferInvocation(mode: CodexTransientFallbackMode | null
 
 function fallbackModeUsesFreshSession(mode: CodexTransientFallbackMode | null): boolean {
   return mode === "fresh_session" || mode === "fresh_session_safer_invocation";
+}
+
+function managedMcpGatewaysFromContext(context: Record<string, unknown>): ManagedCodexMcpGateway[] {
+  const managedMcp = parseObject(context.paperclipManagedMcp);
+  if (managedMcp.managedMcpOnly !== true) return [];
+  const gateways = Array.isArray(managedMcp.gateways) ? managedMcp.gateways : [];
+  return gateways
+    .map((raw): ManagedCodexMcpGateway | null => {
+      const gateway = parseObject(raw);
+      const name = asString(gateway.name, "").trim();
+      const endpointPath = asString(gateway.endpointPath, "").trim();
+      const bearerToken = asString(gateway.bearerToken, "").trim();
+      if (!name || !endpointPath || !bearerToken) return null;
+      return { name, endpointPath, bearerToken };
+    })
+    .filter((gateway): gateway is ManagedCodexMcpGateway => Boolean(gateway));
 }
 
 function buildCodexTransientHandoffNote(input: {
@@ -461,6 +479,29 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     for (const note of preparedRuntimeConfig.notes) {
       await onLog("stdout", `[paperclip] ${note}\n`);
     }
+    const paperclipBaseEnv = buildPaperclipEnv(agent);
+    const runtimeMcpGateways = (ctx.runtimeMcp?.getServers() ?? []).map((server) => ({
+      name: server.name,
+      endpointPath: server.url,
+      bearerToken: server.token,
+    }));
+    const managedMcpGateways = runtimeMcpGateways.length > 0
+      ? runtimeMcpGateways
+      : managedMcpGatewaysFromContext(context);
+    const managedMcp = await writeManagedCodexMcpConfig({
+      codexHome: effectiveCodexHome,
+      apiBaseUrl: paperclipBaseEnv.PAPERCLIP_API_URL,
+      gateways: managedMcpGateways,
+    });
+    if (managedMcpGateways.length > 0) {
+      await onLog(
+        "stdout",
+        `[paperclip] Wrote ${managedMcpGateways.length} managed MCP gateway(s) into Codex config "${managedMcp.configPath}".\n`,
+      );
+    }
+    for (const warning of managedMcp.warnings) {
+      await onLog("stderr", `[paperclip] ${warning}\n`);
+    }
     // Inject skills into the same CODEX_HOME that Codex will actually run with
     // (managed home in the default case, or an explicit override from adapter config).
     const codexSkillsDir = resolveCodexSkillsDir(effectiveCodexHome);
@@ -532,7 +573,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       : null;
     const hasExplicitApiKey =
       typeof envConfig.PAPERCLIP_API_KEY === "string" && envConfig.PAPERCLIP_API_KEY.trim().length > 0;
-    const env: Record<string, string> = { ...buildPaperclipEnv(agent) };
+    const env: Record<string, string> = { ...paperclipBaseEnv };
     env.PAPERCLIP_RUN_ID = runId;
     const wakeTaskId =
       (typeof context.taskId === "string" && context.taskId.trim().length > 0 && context.taskId.trim()) ||

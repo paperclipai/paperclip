@@ -14,6 +14,9 @@ const payload = {
   argv: process.argv.slice(2),
   prompt: fs.readFileSync(0, "utf8"),
   codexHome: process.env.CODEX_HOME || null,
+  codexConfigContents: process.env.CODEX_HOME && fs.existsSync(process.env.CODEX_HOME + "/config.toml")
+    ? fs.readFileSync(process.env.CODEX_HOME + "/config.toml", "utf8")
+    : null,
   paperclipWakePayloadJson: process.env.PAPERCLIP_WAKE_PAYLOAD_JSON || null,
   paperclipApiUrl: process.env.PAPERCLIP_API_URL || null,
   paperclipApiKey: process.env.PAPERCLIP_API_KEY || null,
@@ -46,6 +49,7 @@ type CapturePayload = {
   argv: string[];
   prompt: string;
   codexHome: string | null;
+  codexConfigContents?: string | null;
   paperclipWakePayloadJson: string | null;
   paperclipApiUrl?: string | null;
   paperclipApiKey?: string | null;
@@ -207,6 +211,123 @@ describe("codex execute", () => {
       else process.env.PAPERCLIP_INSTANCE_ID = previousPaperclipInstanceId;
       if (previousPaperclipInWorktree === undefined) delete process.env.PAPERCLIP_IN_WORKTREE;
       else process.env.PAPERCLIP_IN_WORKTREE = previousPaperclipInWorktree;
+      if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = previousCodexHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("writes managed MCP gateways into Codex config and warns on overlapping direct entries without logging tokens", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-managed-mcp-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    const capturePath = path.join(root, "capture.json");
+    const sharedCodexHome = path.join(root, "shared-codex-home");
+    const paperclipHome = path.join(root, "paperclip-home");
+    const managedCodexHome = path.join(
+      paperclipHome,
+      "instances",
+      "default",
+      "companies",
+      "company-1",
+      "codex-home",
+    );
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.mkdir(sharedCodexHome, { recursive: true });
+    await fs.writeFile(path.join(sharedCodexHome, "auth.json"), '{"token":"shared"}\n', "utf8");
+    await fs.writeFile(
+      path.join(sharedCodexHome, "config.toml"),
+      [
+        'model = "codex-mini-latest"',
+        "",
+        '[mcp_servers.github]',
+        'url = "https://raw.example/mcp"',
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    await writeFakeCodexCommand(commandPath);
+
+    const previousHome = process.env.HOME;
+    const previousPaperclipHome = process.env.PAPERCLIP_HOME;
+    const previousPaperclipApiUrl = process.env.PAPERCLIP_API_URL;
+    const previousPaperclipRuntimeApiUrl = process.env.PAPERCLIP_RUNTIME_API_URL;
+    const previousCodexHome = process.env.CODEX_HOME;
+    process.env.HOME = root;
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_API_URL = "http://paperclip.local:3100";
+    process.env.PAPERCLIP_RUNTIME_API_URL = "http://paperclip.local:3100";
+    process.env.CODEX_HOME = sharedCodexHome;
+
+    try {
+      const logs: LogEntry[] = [];
+      const result = await execute({
+        runId: "run-managed-mcp",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          engine: "cli",
+          command: commandPath,
+          cwd: workspace,
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          },
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        runtimeMcp: {
+          getServers: () => [
+            {
+              name: "github",
+              url: "http://paperclip.local:3100/api/tool-gateway/gateways/gateway-1/mcp",
+              token: "pcgw_secret-managed-token",
+              connectionId: "connection-github",
+            },
+          ],
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async (stream, chunk) => {
+          logs.push({ stream, chunk });
+        },
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.errorMessage).toBeNull();
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      const configText = capture.codexConfigContents ?? "";
+      expect(configText).toContain("[mcp_servers.github]");
+      expect(configText).toContain("[mcp_servers.\"paperclip-github\"]");
+      expect(configText).toContain('url = "http://paperclip.local:3100/api/tool-gateway/gateways/gateway-1/mcp"');
+      expect(configText).toContain('Authorization = "Bearer pcgw_secret-managed-token"');
+      expect(logs).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            stream: "stderr",
+            chunk: expect.stringContaining("Paperclip cannot enforce policies for that direct entry"),
+          }),
+        ]),
+      );
+      expect(JSON.stringify(logs)).not.toContain("pcgw_secret-managed-token");
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
+      else process.env.PAPERCLIP_HOME = previousPaperclipHome;
+      if (previousPaperclipApiUrl === undefined) delete process.env.PAPERCLIP_API_URL;
+      else process.env.PAPERCLIP_API_URL = previousPaperclipApiUrl;
+      if (previousPaperclipRuntimeApiUrl === undefined) delete process.env.PAPERCLIP_RUNTIME_API_URL;
+      else process.env.PAPERCLIP_RUNTIME_API_URL = previousPaperclipRuntimeApiUrl;
       if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
       else process.env.CODEX_HOME = previousCodexHome;
       await fs.rm(root, { recursive: true, force: true });

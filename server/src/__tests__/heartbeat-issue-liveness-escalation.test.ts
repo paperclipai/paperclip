@@ -113,7 +113,7 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
-  });
+  }, 30_000);
 
   async function enableAutoRecovery() {
     await instanceSettingsService(db).updateExperimental({
