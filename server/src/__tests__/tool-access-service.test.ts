@@ -101,6 +101,7 @@ function createRouteApp(
   db: ReturnType<typeof createDb>,
   actor?: Express.Request["actor"],
   toolGateway?: ToolGatewayService,
+  deployment?: { deploymentMode: "authenticated"; deploymentExposure: "public" },
 ) {
   const app = express();
   app.use(express.json());
@@ -115,7 +116,7 @@ function createRouteApp(
     };
     next();
   });
-  app.use("/api", toolAccessRoutes(db, { toolGateway }));
+  app.use("/api", toolAccessRoutes(db, { toolGateway, ...deployment }));
   app.use(errorHandler);
   return app;
 }
@@ -533,6 +534,26 @@ describeEmbeddedPostgres("tool access service", () => {
         outcome: "success",
       }),
     ]));
+  });
+
+  it("rejects connection token minting after the heartbeat run completes", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const { connection } = await createBrokerConnection(db, company.id);
+    await allowConnectionForAgent(db, company.id, agent.id, connection.id);
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, run.id));
+    const app = createRouteApp(db, agentJwtActor(company.id, agent.id, run.id));
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("inactive runs must not call upstream"));
+
+    const res = await request(app)
+      .post(`/api/agents/me/connections/${connection.id}/token`)
+      .set("X-Paperclip-Run-Id", run.id)
+      .send({ scope: "pages:publish:ns/dotta" });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Agent run is not active");
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("denies broker minting when the agent only has a generic connection profile grant", async () => {
@@ -2801,6 +2822,7 @@ describeEmbeddedPostgres("tool access service", () => {
 
   it("requires non-viewer board access to start OAuth for active app connections", async () => {
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
+    vi.stubEnv("PAPERCLIP_PUBLIC_URL", "http://paperclip.test");
     const company = await createCompany(db);
     const service = toolAccessService(db);
     const connect = await service.connectGalleryApp(company.id, { galleryKey: "slack", name: "Slack reauth" });
@@ -2876,6 +2898,7 @@ describeEmbeddedPostgres("tool access service", () => {
   it("binds OAuth callback completion to the initiating board session", async () => {
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET", "slack-client-secret");
+    vi.stubEnv("PAPERCLIP_PUBLIC_URL", "http://paperclip.test");
     const company = await createCompany(db);
     const service = toolAccessService(db);
     const connect = await service.connectGalleryApp(company.id, { galleryKey: "slack", name: "Slack bound" });
@@ -3874,9 +3897,53 @@ describeEmbeddedPostgres("tool access service", () => {
     await expect(db.select().from(toolConnections)).resolves.toHaveLength(0);
   });
 
+  it("rejects OAuth metadata redirects to private endpoints", async () => {
+    const company = await createCompany(db);
+    const app = createRouteApp(db, undefined, undefined, {
+      deploymentMode: "authenticated",
+      deploymentExposure: "public",
+    });
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      const href = String(url);
+      if (href === "https://8.8.8.8/mcp") {
+        return {
+          ok: false,
+          status: 401,
+          headers: { get: (name: string) => name.toLowerCase() === "www-authenticate"
+            ? 'Bearer resource_metadata="https://8.8.8.8/.well-known/oauth-protected-resource"'
+            : null },
+          text: async () => "",
+          json: async () => ({}),
+        } as Response;
+      }
+      if (href === "https://8.8.8.8/.well-known/oauth-protected-resource") {
+        expect(init?.redirect).toBe("manual");
+        return {
+          ok: false,
+          status: 302,
+          headers: { get: (name: string) => name.toLowerCase() === "location" ? "http://169.254.169.254/oauth" : null },
+          json: async () => ({}),
+        } as Response;
+      }
+      throw new Error(`unexpected fetch ${href}`);
+    });
+
+    const res = await request(app)
+      .post(`/api/companies/${company.id}/tools/apps/connect`)
+      .send({ link: "https://8.8.8.8/mcp", name: "Redirect OAuth MCP" });
+
+    expect(res.status).toBe(502);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://8.8.8.8/.well-known/oauth-protected-resource",
+      expect.objectContaining({ redirect: "manual" }),
+    );
+    expect(fetchMock.mock.calls.some(([url]) => String(url).startsWith("http://169.254.169.254"))).toBe(false);
+  });
+
   it("discovers OAuth for pasted MCP links and completes sign-in without a gallery entry", async () => {
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_GENERIC_EXAMPLE_TEST_CLIENT_ID", "generic-client-id");
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_GENERIC_EXAMPLE_TEST_CLIENT_SECRET", "generic-client-secret");
+    vi.stubEnv("PAPERCLIP_PUBLIC_URL", "http://paperclip.test");
     const company = await createCompany(db);
     const app = createRouteApp(db);
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {

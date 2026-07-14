@@ -122,6 +122,10 @@ type ActorInfo = {
   sessionId?: string | null;
 };
 
+const ACTIVE_BROKER_RUN_STATUSES = new Set(["running"]);
+const REMOTE_HTTP_REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+const MAX_REMOTE_HTTP_REDIRECTS = 5;
+
 type OAuthProviderEndpoints = {
   provider: string;
   scopes: string[];
@@ -1270,6 +1274,27 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     return endpoint.toString();
   }
 
+  async function fetchRemoteHttpUrl(value: string, init: RequestInit = {}): Promise<Response> {
+    let currentUrl = value;
+    const method = (init.method ?? "GET").toUpperCase();
+    for (let redirectCount = 0; redirectCount <= MAX_REMOTE_HTTP_REDIRECTS; redirectCount += 1) {
+      const safeUrl = await assertRemoteHttpUrlAllowed(currentUrl);
+      const response = await fetch(safeUrl, { ...init, redirect: "manual" });
+      const location = REMOTE_HTTP_REDIRECT_STATUSES.has(response.status)
+        ? response.headers?.get?.("location") ?? null
+        : null;
+      if (!location) return response;
+      if (method !== "GET" && method !== "HEAD") {
+        throw new HttpError(502, "Remote OAuth endpoint redirected unexpectedly", { code: "oauth_redirect_rejected" });
+      }
+      if (redirectCount >= MAX_REMOTE_HTTP_REDIRECTS) {
+        throw new HttpError(502, "Remote OAuth endpoint redirected too many times", { code: "oauth_redirect_limit" });
+      }
+      currentUrl = new URL(location, safeUrl).toString();
+    }
+    throw new HttpError(502, "Remote OAuth endpoint redirected too many times", { code: "oauth_redirect_limit" });
+  }
+
   async function assertRemoteEndpointAllowed(config: Record<string, unknown>): Promise<string> {
     return assertRemoteHttpUrlAllowed(remoteEndpoint(config));
   }
@@ -1484,6 +1509,9 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, input.runId));
     if (!run || run.companyId !== input.companyId || run.agentId !== input.agentId) {
       throw forbidden("Agent run context does not match the authenticated actor");
+    }
+    if (!ACTIVE_BROKER_RUN_STATUSES.has(run.status)) {
+      throw forbidden("Agent run is not active");
     }
     const snapshot = asRecord(run.contextSnapshot);
     const paperclipIssue = asRecord(snapshot.paperclipIssue);
@@ -3691,8 +3719,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
 
   async function fetchJsonRecord(url: string): Promise<Record<string, unknown> | null> {
     try {
-      const safeUrl = await assertRemoteHttpUrlAllowed(url);
-      const response = await fetch(safeUrl);
+      const response = await fetchRemoteHttpUrl(url);
       if (!response.ok) return null;
       return asRecord(await response.json() as unknown) ?? null;
     } catch {
@@ -3802,8 +3829,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     let authorizationUrl = oauth.authorizationUrl ?? null;
     let tokenUrl = oauth.tokenUrl ?? null;
     if ((!authorizationUrl || !tokenUrl) && oauth.metadataUrl) {
-      const metadataUrl = await assertRemoteHttpUrlAllowed(oauth.metadataUrl);
-      const response = await fetch(metadataUrl);
+      const response = await fetchRemoteHttpUrl(oauth.metadataUrl);
       if (!response.ok) throw new HttpError(502, "OAuth provider metadata could not be loaded", { code: "oauth_metadata_failed" });
       const metadata = asRecord(await response.json() as unknown);
       authorizationUrl = authorizationUrl ?? (typeof metadata.authorization_endpoint === "string" ? metadata.authorization_endpoint : null);
@@ -3898,8 +3924,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     body.set("client_id", input.clientId);
     if (input.clientSecret) body.set("client_secret", input.clientSecret);
 
-    const tokenUrl = await assertRemoteHttpUrlAllowed(input.tokenUrl);
-    const response = await fetch(tokenUrl, {
+    const response = await fetchRemoteHttpUrl(input.tokenUrl, {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded" },
       body,
