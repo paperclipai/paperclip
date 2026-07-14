@@ -105,6 +105,9 @@ const mockHeartbeatService = vi.hoisted(() => ({
   getActiveRunForAgent: vi.fn(async () => null),
   cancelRun: vi.fn(async () => null),
 }));
+const mockRoutineService = vi.hoisted(() => ({
+  syncRunStatusForIssue: vi.fn(async () => undefined),
+}));
 const mockExternalObjectService = vi.hoisted(() => ({
   getIssueSummaries: vi.fn(async () => new Map()),
   getIssueSummary: vi.fn(async () => ({
@@ -223,9 +226,7 @@ function registerRouteMocks() {
     taskWatchdogService: () => mockTaskWatchdogService,
     logActivity: mockLogActivity,
     projectService: () => ({}),
-    routineService: () => ({
-      syncRunStatusForIssue: vi.fn(async () => undefined),
-    }),
+    routineService: () => mockRoutineService,
     workProductService: () => mockWorkProductService,
   }));
 }
@@ -490,6 +491,8 @@ describe("agent issue mutation checkout ownership", () => {
     mockHeartbeatService.getActiveRunForAgent.mockResolvedValue(null);
     mockHeartbeatService.cancelRun.mockReset();
     mockHeartbeatService.cancelRun.mockResolvedValue(null);
+    mockRoutineService.syncRunStatusForIssue.mockReset();
+    mockRoutineService.syncRunStatusForIssue.mockResolvedValue(undefined);
     mockIssueApprovalService.link.mockReset();
     mockIssueApprovalService.unlink.mockReset();
     mockIssueApprovalService.listApprovalsForIssue.mockReset();
@@ -1020,6 +1023,22 @@ describe("agent issue mutation checkout ownership", () => {
       { agentId: peerAgentId, userId: null },
     );
     expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueRecoveryActionService.resolveActiveForIssue).not.toHaveBeenCalled();
+    expect(mockRoutineService.syncRunStatusForIssue).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.reportRunActivity).not.toHaveBeenCalled();
+    expect(mockTaskWatchdogService.reconcileForIssueAndAncestors).not.toHaveBeenCalled();
+    expect(mockIssueService.listWakeableBlockedDependents).not.toHaveBeenCalled();
+    expect(mockIssueService.create).not.toHaveBeenCalled();
+    expect(mockLogActivity).toHaveBeenCalledTimes(2);
+    expect(mockLogActivity).toHaveBeenNthCalledWith(1, expect.anything(), expect.objectContaining({
+      action: "issue.updated",
+      details: expect.objectContaining({ blockedByIssueIds: [liveBlockerId] }),
+    }));
+    expect(mockLogActivity).toHaveBeenNthCalledWith(2, expect.anything(), expect.objectContaining({
+      action: "issue.blockers_updated",
+      details: expect.objectContaining({ blockedByIssueIds: [liveBlockerId] }),
+    }));
   });
 
   it("requires the active checkout owner even for manager-authorized blocker replacement", async () => {

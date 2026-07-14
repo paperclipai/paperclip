@@ -8038,6 +8038,64 @@ export function issueRoutes(
         blocks: updatedRelations.blocks,
       };
     }
+
+    const logBlockerReplacementActivity = async () => {
+      if (!Array.isArray(req.body.blockedByIssueIds)) return;
+      const previousBlockedByIds = new Set((existingRelations?.blockedBy ?? []).map((relation) => relation.id));
+      const nextBlockedByIds = new Set(req.body.blockedByIssueIds as string[]);
+      const addedBlockedByIssueIds = [...nextBlockedByIds].filter((candidate) => !previousBlockedByIds.has(candidate));
+      const removedBlockedByIssueIds = [...previousBlockedByIds].filter((candidate) => !nextBlockedByIds.has(candidate));
+      if (addedBlockedByIssueIds.length === 0 && removedBlockedByIssueIds.length === 0) return;
+
+      const nextBlockedByRelations = updatedRelations?.blockedBy ?? [];
+      const previousBlockedByRelations = existingRelations?.blockedBy ?? [];
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.blockers_updated",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          identifier: issue.identifier,
+          blockedByIssueIds: req.body.blockedByIssueIds,
+          addedBlockedByIssueIds,
+          removedBlockedByIssueIds,
+          blockedByIssues: nextBlockedByRelations.map(summarizeIssueRelationForActivity),
+          addedBlockedByIssues: nextBlockedByRelations
+            .filter((relation) => addedBlockedByIssueIds.includes(relation.id))
+            .map(summarizeIssueRelationForActivity),
+          removedBlockedByIssues: previousBlockedByRelations
+            .filter((relation) => removedBlockedByIssueIds.includes(relation.id))
+            .map(summarizeIssueRelationForActivity),
+        },
+      });
+    };
+
+    if (isManagerBlockerReplacement) {
+      const previousBlockedByIssueIds = existingRelations?.blockedBy.map((relation) => relation.id) ?? [];
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          identifier: issue.identifier,
+          blockedByIssueIds: req.body.blockedByIssueIds,
+          _previous: { blockedByIssueIds: previousBlockedByIssueIds },
+        },
+      });
+      await logBlockerReplacementActivity();
+      res.json({ ...issueResponse, comment: null });
+      return;
+    }
+
     await routinesSvc.syncRunStatusForIssue(issue.id);
 
     if (actor.runId) {
@@ -8173,39 +8231,7 @@ export function issueRoutes(
         });
     }
 
-    if (Array.isArray(req.body.blockedByIssueIds)) {
-      const previousBlockedByIds = new Set((existingRelations?.blockedBy ?? []).map((relation) => relation.id));
-      const nextBlockedByIds = new Set(req.body.blockedByIssueIds as string[]);
-      const addedBlockedByIssueIds = [...nextBlockedByIds].filter((candidate) => !previousBlockedByIds.has(candidate));
-      const removedBlockedByIssueIds = [...previousBlockedByIds].filter((candidate) => !nextBlockedByIds.has(candidate));
-      const nextBlockedByRelations = updatedRelations?.blockedBy ?? [];
-      const previousBlockedByRelations = existingRelations?.blockedBy ?? [];
-      if (addedBlockedByIssueIds.length > 0 || removedBlockedByIssueIds.length > 0) {
-        await logActivity(db, {
-          companyId: issue.companyId,
-          actorType: actor.actorType,
-          actorId: actor.actorId,
-          agentId: actor.agentId,
-          runId: actor.runId,
-          action: "issue.blockers_updated",
-          entityType: "issue",
-          entityId: issue.id,
-          details: {
-            identifier: issue.identifier,
-            blockedByIssueIds: req.body.blockedByIssueIds,
-            addedBlockedByIssueIds,
-            removedBlockedByIssueIds,
-            blockedByIssues: nextBlockedByRelations.map(summarizeIssueRelationForActivity),
-            addedBlockedByIssues: nextBlockedByRelations
-              .filter((relation) => addedBlockedByIssueIds.includes(relation.id))
-              .map(summarizeIssueRelationForActivity),
-            removedBlockedByIssues: previousBlockedByRelations
-              .filter((relation) => removedBlockedByIssueIds.includes(relation.id))
-              .map(summarizeIssueRelationForActivity),
-          },
-        });
-      }
-    }
+    await logBlockerReplacementActivity();
 
     const reviewerChanges = diffExecutionParticipants(previousExecutionPolicy, nextExecutionPolicy, "review");
     if (reviewerChanges.addedParticipants.length > 0 || reviewerChanges.removedParticipants.length > 0) {
