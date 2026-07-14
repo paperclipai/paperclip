@@ -3520,23 +3520,32 @@ export function issueRoutes(
       typeof actorAgentId === "string" &&
       isBlockerReplacementOnly &&
       issue.assigneeAgentId &&
-      issue.assigneeAgentId !== actorAgentId &&
-      await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, issue.assigneeAgentId)
+      issue.assigneeAgentId !== actorAgentId
     ) {
-      if (issue.status === "in_progress") {
-        res.status(409).json({
-          error: "Issue is checked out by another agent",
-          details: {
-            issueId: issue.id,
-            assigneeAgentId: issue.assigneeAgentId,
-            actorAgentId,
-          },
-        });
-        return false;
+      const ordinaryBoundaryDecision = await decideIssueAccess(req, issue, "issue:mutate");
+      if (
+        !ordinaryBoundaryDecision.allowed &&
+        await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, issue.assigneeAgentId)
+      ) {
+        if (issue.status === "in_progress") {
+          res.status(409).json({
+            error: "Issue is checked out by another agent",
+            details: {
+              issueId: issue.id,
+              assigneeAgentId: issue.assigneeAgentId,
+              actorAgentId,
+            },
+          });
+          return false;
+        }
+        // This grant authorizes relation replacement only. Keep it distinct from
+        // ordinary issue mutation so downstream reconciliation cannot widen the
+        // granted effect to status, assignment, execution state, or checkout data.
+        return "manager_blocker_replacement" as const;
       }
-      return true;
     }
-    return assertAgentIssueMutationAllowed(req, res, issue);
+    const standardMutationAllowed = await assertAgentIssueMutationAllowed(req, res, issue);
+    return standardMutationAllowed ? "standard" as const : false;
   }
 
   async function assertFreshTaskWatchdogSourceMutation(
@@ -7587,7 +7596,9 @@ export function issueRoutes(
     }
     assertCompanyAccess(req, existing.companyId);
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
-    if (!(await assertAgentIssuePatchMutationAllowed(req, res, existing, req.body))) return;
+    const patchAuthorization = await assertAgentIssuePatchMutationAllowed(req, res, existing, req.body);
+    if (!patchAuthorization) return;
+    const isManagerBlockerReplacement = patchAuthorization === "manager_blocker_replacement";
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
 
     const actor = getActorInfo(req);
@@ -7800,24 +7811,28 @@ export function issueRoutes(
       req.body.executionPolicy !== undefined && monitorChanged,
     );
 
-    const transition = applyIssueExecutionPolicyTransition({
-      issue: existing,
-      policy: nextExecutionPolicy,
-      previousPolicy: previousExecutionPolicy,
-      requestedStatus: typeof updateFields.status === "string" ? updateFields.status : undefined,
-      requestedAssigneePatch: {
-        assigneeAgentId: normalizedAssigneeAgentId,
-        assigneeUserId:
-          req.body.assigneeUserId === undefined ? undefined : (req.body.assigneeUserId as string | null),
-      },
-      actor: {
-        agentId: actor.agentId ?? null,
-        userId: actor.actorType === "user" ? actor.actorId : null,
-      },
-      commentBody,
-      reviewRequest: reviewRequest === undefined ? undefined : reviewRequest,
-      monitorExplicitlyUpdated: req.body.executionPolicy !== undefined && monitorChanged,
-    });
+    // Manager-only blocker authority is effect-limited: do not run execution
+    // policy reconciliation, which may repair drift by changing unrelated fields.
+    const transition = isManagerBlockerReplacement
+      ? { patch: {}, decision: undefined, workflowControlledAssignment: false }
+      : applyIssueExecutionPolicyTransition({
+          issue: existing,
+          policy: nextExecutionPolicy,
+          previousPolicy: previousExecutionPolicy,
+          requestedStatus: typeof updateFields.status === "string" ? updateFields.status : undefined,
+          requestedAssigneePatch: {
+            assigneeAgentId: normalizedAssigneeAgentId,
+            assigneeUserId:
+              req.body.assigneeUserId === undefined ? undefined : (req.body.assigneeUserId as string | null),
+          },
+          actor: {
+            agentId: actor.agentId ?? null,
+            userId: actor.actorType === "user" ? actor.actorId : null,
+          },
+          commentBody,
+          reviewRequest: reviewRequest === undefined ? undefined : reviewRequest,
+          monitorExplicitlyUpdated: req.body.executionPolicy !== undefined && monitorChanged,
+        });
     const decisionId = transition.decision ? randomUUID() : null;
     if (decisionId) {
       const nextExecutionState = transition.patch.executionState;
@@ -7919,6 +7934,15 @@ export function issueRoutes(
 
           return updated;
         });
+      } else if (isManagerBlockerReplacement) {
+        issue = await svc.replaceBlockers(
+          id,
+          req.body.blockedByIssueIds as string[],
+          {
+            agentId: actor.agentId ?? null,
+            userId: actor.actorType === "user" ? actor.actorId : null,
+          },
+        );
       } else {
         issue = await svc.update(id, {
           ...updateFields,

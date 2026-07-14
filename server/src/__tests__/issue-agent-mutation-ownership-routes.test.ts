@@ -28,6 +28,7 @@ const mockIssueService = vi.hoisted(() => ({
   listWakeableBlockedDependents: vi.fn(),
   remove: vi.fn(),
   removeAttachment: vi.fn(),
+  replaceBlockers: vi.fn(),
   update: vi.fn(),
   findMentionedAgents: vi.fn(),
 }));
@@ -497,6 +498,7 @@ describe("agent issue mutation checkout ownership", () => {
     mockIssueThreadInteractionService.listForIssue.mockResolvedValue([]);
     mockIssueService.remove.mockReset();
     mockIssueService.removeAttachment.mockReset();
+    mockIssueService.replaceBlockers.mockReset();
     mockIssueService.update.mockReset();
     mockIssueService.findMentionedAgents.mockReset();
     mockLogActivity.mockClear();
@@ -591,6 +593,7 @@ describe("agent issue mutation checkout ownership", () => {
       ...makeIssue(),
       ...patch,
     }));
+    mockIssueService.replaceBlockers.mockImplementation(async () => makeIssue());
     mockIssueService.addComment.mockResolvedValue({
       id: "77777777-7777-4777-8777-777777777777",
       issueId,
@@ -936,10 +939,7 @@ describe("agent issue mutation checkout ownership", () => {
         ? "Allowed for a report in the manager subtree."
         : "Outside the ordinary issue mutation boundary.",
     }));
-    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
-      ...makeIssue({ status: "blocked" }),
-      ...patch,
-    }));
+    mockIssueService.replaceBlockers.mockResolvedValue(makeIssue({ status: "blocked" }));
 
     const res = await request(await createApp(peerActor()))
       .patch(`/api/issues/${issueId}`)
@@ -952,13 +952,74 @@ describe("agent issue mutation checkout ownership", () => {
       action: "tasks:manage_active_checkouts",
       resource: expect.objectContaining({ assigneeAgentId: ownerAgentId, companyId }),
     }));
-    expect(mockIssueService.update).toHaveBeenCalledWith(
+    expect(mockIssueService.replaceBlockers).toHaveBeenCalledWith(
       issueId,
-      expect.objectContaining({
-        blockedByIssueIds: [liveBlockerId],
-        actorAgentId: peerAgentId,
-      }),
+      [liveBlockerId],
+      { agentId: peerAgentId, userId: null },
     );
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("effect-limits manager blocker replacement when execution policy state has drifted", async () => {
+    const liveBlockerId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const reviewerAgentId = "88888888-8888-4888-8888-888888888888";
+    const checkoutRunId = "99999999-9999-4999-8999-999999999999";
+    const driftedIssue = makeIssue({
+      status: "blocked",
+      checkoutRunId,
+      executionRunId: checkoutRunId,
+      executionAgentNameKey: "owner-agent",
+      executionLockedAt: new Date("2026-07-14T08:00:00.000Z"),
+      executionPolicy: {
+        stages: [{
+          id: "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa",
+          type: "review",
+          approvalsNeeded: 1,
+          participants: [{
+            id: "bbbbbbbb-1111-4111-8111-bbbbbbbbbbbb",
+            type: "agent",
+            agentId: reviewerAgentId,
+          }],
+        }],
+      },
+      executionState: null,
+    });
+    mockIssueService.getById.mockResolvedValue(driftedIssue);
+    mockIssueService.replaceBlockers.mockResolvedValue(driftedIssue);
+    mockIssueService.getRelationSummaries
+      .mockResolvedValueOnce({ blockedBy: [], blocks: [] })
+      .mockResolvedValueOnce({
+        blockedBy: [{ id: liveBlockerId, status: "in_review" }],
+        blocks: [],
+      });
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: input.action === "tasks:manage_active_checkouts",
+      action: input.action,
+      reason: input.action === "tasks:manage_active_checkouts" ? "allow_manager" : "deny_scope",
+      explanation: input.action === "tasks:manage_active_checkouts"
+        ? "Allowed for a report in the manager subtree."
+        : "Outside the ordinary issue mutation boundary.",
+    }));
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ blockedByIssueIds: [liveBlockerId] });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toEqual(expect.objectContaining({
+      status: "blocked",
+      assigneeAgentId: ownerAgentId,
+      executionState: null,
+      checkoutRunId,
+      executionRunId: checkoutRunId,
+      executionAgentNameKey: "owner-agent",
+    }));
+    expect(mockIssueService.replaceBlockers).toHaveBeenCalledWith(
+      issueId,
+      [liveBlockerId],
+      { agentId: peerAgentId, userId: null },
+    );
+    expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
   it("requires the active checkout owner even for manager-authorized blocker replacement", async () => {

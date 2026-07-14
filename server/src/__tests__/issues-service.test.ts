@@ -3397,10 +3397,10 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     ]);
     await svc.update(blockedId, { blockedByIssueIds: [terminalBlockerId] });
 
-    const updated = await svc.update(blockedId, {
-      status: "blocked",
-      blockedByIssueIds: [reviewBlockerAId, reviewBlockerBId],
-    });
+    const updated = await svc.replaceBlockers(
+      blockedId,
+      [reviewBlockerAId, reviewBlockerBId],
+    );
     const readback = await svc.getById(blockedId);
     const relations = await svc.getRelationSummaries(blockedId);
 
@@ -3451,6 +3451,57 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     const relations = await svc.getRelationSummaries(blockedId);
     expect(readback?.status).toBe("blocked");
     expect(readback?.title).toBe("Merge task");
+    expect(relations.blockedBy.map((relation) => relation.id)).toEqual([terminalBlockerId]);
+  });
+
+  it("rolls back effect-limited blocker replacement when a requested blocker belongs to another company", async () => {
+    const companyId = randomUUID();
+    const otherCompanyId = randomUUID();
+    await db.insert(companies).values([
+      {
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+      {
+        id: otherCompanyId,
+        name: "Other company",
+        issuePrefix: `T${otherCompanyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+    ]);
+
+    const terminalBlockerId = randomUUID();
+    const blockedId = randomUUID();
+    const foreignBlockerId = randomUUID();
+    await db.insert(issues).values([
+      { id: terminalBlockerId, companyId, title: "Old terminal blocker", status: "done", priority: "medium" },
+      {
+        id: blockedId,
+        companyId,
+        title: "Merge task",
+        status: "blocked",
+        priority: "high",
+      },
+      { id: foreignBlockerId, companyId: otherCompanyId, title: "Foreign blocker", status: "todo", priority: "high" },
+    ]);
+    await svc.update(blockedId, { blockedByIssueIds: [terminalBlockerId] });
+
+    await expect(svc.replaceBlockers(
+      blockedId,
+      [terminalBlockerId, foreignBlockerId],
+    )).rejects.toMatchObject({
+      status: 422,
+      message: "Blocked-by issues must belong to the same company",
+    });
+
+    const readback = await svc.getById(blockedId);
+    const relations = await svc.getRelationSummaries(blockedId);
+    expect(readback).toEqual(expect.objectContaining({
+      status: "blocked",
+      title: "Merge task",
+    }));
     expect(relations.blockedBy.map((relation) => relation.id)).toEqual([terminalBlockerId]);
   });
 
