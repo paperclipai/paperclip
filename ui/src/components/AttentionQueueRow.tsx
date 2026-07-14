@@ -503,13 +503,13 @@ function ThumbnailStack({ images }: { images: AttentionDetailImage[] }) {
   return (
     <div className="flex shrink-0 items-center">
       <div className="flex -space-x-3">
-        {visible.map((img, i) => (
+        {visible.map((img, index) => (
           <img
-            key={img.assetId}
+            key={`${img.assetId}-${index}`}
             src={attentionImageUrl(img.assetId)}
             alt={img.alt ?? ""}
             loading="lazy"
-            style={{ zIndex: visible.length - i }}
+            style={{ zIndex: visible.length - index }}
             className="h-11 w-11 rounded-md border border-border bg-muted object-cover shadow-sm"
           />
         ))}
@@ -533,8 +533,9 @@ function ExpandedImages({ images, issueHref }: { images: AttentionDetailImage[];
   const extra = images.length - visible.length;
   return (
     <div className="flex flex-wrap items-stretch gap-2" data-attention-expanded-images="true">
-      {visible.map((img) => {
+      {visible.map((img, index) => {
         const src = attentionImageUrl(img.assetId);
+        const key = `${img.assetId}-${index}`;
         const image = (
           <img
             src={src}
@@ -545,7 +546,7 @@ function ExpandedImages({ images, issueHref }: { images: AttentionDetailImage[];
         );
         return issueHref ? (
           <Link
-            key={img.assetId}
+            key={key}
             to={issueHref}
             className="block rounded-md focus-visible:ring-ring focus-visible:ring-(length:--rad-3) focus-visible:outline-none"
             onClick={(e) => e.stopPropagation()}
@@ -553,7 +554,7 @@ function ExpandedImages({ images, issueHref }: { images: AttentionDetailImage[];
             {image}
           </Link>
         ) : (
-          <span key={img.assetId} className="block">
+          <span key={key} className="block">
             {image}
           </span>
         );
