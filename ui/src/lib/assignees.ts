@@ -93,5 +93,10 @@ export function formatUserLabel(
     if (typeof label === "string" && label.trim()) return label;
   }
   if (userId === "local-board") return "Board";
+  // SYN-1926 item 4: keep in sync with LOCAL_IMPLICIT_ATTRIBUTION_USER_ID in
+  // server/src/routes/authz.ts. Deliberately NOT "Board" — this is the
+  // sentinel for a request with no Authorization header at all (could be an
+  // agent that forgot its key), so it must never look like Cole did it.
+  if (userId === "local-implicit") return "Unverified caller";
   return userId.slice(0, 5);
 }

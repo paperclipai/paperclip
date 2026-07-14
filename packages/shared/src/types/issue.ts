@@ -1001,6 +1001,8 @@ export interface AskUserQuestionsPayload {
   title?: string | null;
   submitLabel?: string | null;
   supersedeOnUserComment?: boolean;
+  /** SYN-1926 item 4: opt-in marker enforcing single-flight credential asks. */
+  credentialRequest?: boolean;
   questions: AskUserQuestionsQuestion[];
 }
 
@@ -1060,6 +1062,8 @@ export interface RequestConfirmationPayload {
   declineReasonPlaceholder?: string | null;
   detailsMarkdown?: string | null;
   supersedeOnUserComment?: boolean;
+  /** SYN-1926 item 4: see AskUserQuestionsPayload. */
+  credentialRequest?: boolean;
   target?: RequestConfirmationTarget | null;
 }
 
@@ -1084,6 +1088,8 @@ export interface RequestCheckboxConfirmationPayload {
   allowDeclineReason?: boolean;
   declineReasonPlaceholder?: string | null;
   supersedeOnUserComment?: boolean;
+  /** SYN-1926 item 4: see AskUserQuestionsPayload. */
+  credentialRequest?: boolean;
   target?: RequestConfirmationTarget | null;
 }
 
@@ -1108,6 +1114,8 @@ export interface RequestItemVerdictsPayload {
   reasonLabel?: string | null;
   allowBulkApprove?: boolean;
   supersedeOnUserComment?: boolean;
+  /** SYN-1926 item 4: see AskUserQuestionsPayload. */
+  credentialRequest?: boolean;
   target?: RequestConfirmationTarget | null;
 }
 

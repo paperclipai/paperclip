@@ -2487,6 +2487,14 @@ export function IssueThreadInteractionCard({
               <span className="text-current/60">/</span>
               {planStyles ? planStyles.label : statusLabel(interaction.status)}
             </span>
+            {"credentialRequest" in interaction.payload && interaction.payload.credentialRequest ? (
+              <span
+                className="inline-flex items-center gap-1 rounded-sm border border-amber-500/50 bg-amber-500/10 px-2.5 py-1 text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-amber-700 dark:text-amber-400"
+                title="This card is asking for a secret or credential — verify who authored it before acting."
+              >
+                Credential request — asked by {createdByLabel}
+              </span>
+            ) : null}
           </div>
 
           <div className="mt-3 text-lg font-bold text-foreground">

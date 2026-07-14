@@ -667,6 +667,11 @@ export const askUserQuestionsPayloadSchema = z.object({
   title: z.string().trim().max(240).nullable().optional(),
   submitLabel: z.string().trim().max(120).nullable().optional(),
   supersedeOnUserComment: z.boolean().optional(),
+  /** SYN-1926 item 4: opt-in marker for "this card is asking the human for
+   * a secret/credential." Enforced single-flight per issue at create time —
+   * see queryPendingCredentialRequest in
+   * server/src/services/issue-thread-interactions.ts. */
+  credentialRequest: z.boolean().optional().default(false),
   questions: z.array(askUserQuestionsQuestionSchema).min(1).max(10),
 }).superRefine((value, ctx) => {
   const seenQuestionIds = new Set<string>();
@@ -755,6 +760,8 @@ export const requestConfirmationPayloadSchema = z.object({
   declineReasonPlaceholder: z.string().trim().min(1).max(240).nullable().optional(),
   detailsMarkdown: z.string().max(20000).nullable().optional(),
   supersedeOnUserComment: z.boolean().optional(),
+  /** SYN-1926 item 4: see askUserQuestionsPayloadSchema. */
+  credentialRequest: z.boolean().optional().default(false),
   target: requestConfirmationTargetSchema.nullable().optional(),
 });
 
@@ -784,6 +791,8 @@ export const requestCheckboxConfirmationPayloadSchema = z.object({
   allowDeclineReason: z.boolean().optional().default(true),
   declineReasonPlaceholder: z.string().trim().min(1).max(240).nullable().optional(),
   supersedeOnUserComment: z.boolean().optional(),
+  /** SYN-1926 item 4: see askUserQuestionsPayloadSchema. */
+  credentialRequest: z.boolean().optional().default(false),
   target: requestConfirmationTargetSchema.nullable().optional(),
 }).superRefine((value, ctx) => {
   const optionIds = new Set<string>();
@@ -929,6 +938,8 @@ export const requestItemVerdictsPayloadSchema = z.object({
   reasonLabel: z.string().trim().min(1).max(160).nullable().optional(),
   allowBulkApprove: z.boolean().optional().default(true),
   supersedeOnUserComment: z.boolean().optional(),
+  /** SYN-1926 item 4: see askUserQuestionsPayloadSchema. */
+  credentialRequest: z.boolean().optional().default(false),
   target: requestConfirmationTargetSchema.nullable().optional(),
 }).superRefine((value, ctx) => {
   const itemIds = new Set<string>();

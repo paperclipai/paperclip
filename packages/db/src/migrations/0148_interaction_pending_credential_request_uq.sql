@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX IF NOT EXISTS "issue_thread_interactions_pending_credential_request_uq" ON "issue_thread_interactions" USING btree ("issue_id") WHERE "issue_thread_interactions"."status" = 'pending' AND ("issue_thread_interactions"."payload"->>'credentialRequest')::boolean IS TRUE;

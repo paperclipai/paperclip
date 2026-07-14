@@ -59,6 +59,11 @@ type InteractionActor = {
 const ISSUE_THREAD_INTERACTION_IDEMPOTENCY_CONSTRAINT =
   "issue_thread_interactions_company_issue_idempotency_uq";
 
+// SYN-1926 item 4: partial unique index backing single-flight credential
+// requests (migration 0148). See findPendingCredentialRequest below.
+const ISSUE_THREAD_INTERACTION_PENDING_CREDENTIAL_REQUEST_CONSTRAINT =
+  "issue_thread_interactions_pending_credential_request_uq";
+
 type IssueWakeTarget = {
   id: string;
   assigneeAgentId: string | null;
@@ -127,6 +132,34 @@ function isIssueThreadInteractionIdempotencyConflict(error: unknown): boolean {
   const err = error as { code?: string; constraint?: string; constraint_name?: string };
   const constraint = err.constraint ?? err.constraint_name;
   return err.code === "23505" && constraint === ISSUE_THREAD_INTERACTION_IDEMPOTENCY_CONSTRAINT;
+}
+
+function isPendingCredentialRequestConflict(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const err = error as { code?: string; constraint?: string; constraint_name?: string };
+  const constraint = err.constraint ?? err.constraint_name;
+  return err.code === "23505" && constraint === ISSUE_THREAD_INTERACTION_PENDING_CREDENTIAL_REQUEST_CONSTRAINT;
+}
+
+async function queryPendingCredentialRequest(
+  db: Db,
+  issueId: string,
+): Promise<IssueThreadInteraction | null> {
+  const rows = await db
+    .select()
+    .from(issueThreadInteractions)
+    .where(and(
+      eq(issueThreadInteractions.issueId, issueId),
+      eq(issueThreadInteractions.status, "pending"),
+    ));
+
+  for (const row of rows) {
+    const interaction = hydrateInteraction(row);
+    if ((interaction.payload as { credentialRequest?: boolean }).credentialRequest === true) {
+      return interaction;
+    }
+  }
+  return null;
 }
 
 function isEquivalentCreateRequest(
@@ -1108,6 +1141,18 @@ export function issueThreadInteractionService(db: Db) {
       return row ? hydrateInteraction(row) : null;
     },
 
+    /**
+     * SYN-1926 item 4: single-flight credential asks. Two pending cards
+     * asking the human for a secret must be unreachable BY CONSTRUCTION
+     * (not by trusting agents to check first) — this is what
+     * routes/issues.ts calls before creating a new `credentialRequest:
+     * true` interaction. Returns the existing pending one, if any, so the
+     * caller can report exactly what's blocking the create.
+     */
+    findPendingCredentialRequest: async (issueId: string) => {
+      return queryPendingCredentialRequest(db, issueId);
+    },
+
     create: async (
       issue: { id: string; companyId: string },
       input: CreateIssueThreadInteraction,
@@ -1170,6 +1215,20 @@ export function issueThreadInteractionService(db: Db) {
         });
       }
 
+      // SYN-1926 item 4: single-flight credential asks. This pre-check
+      // gives a clear 409 in the common (non-racing) case; the actual
+      // by-construction guarantee is the partial unique index
+      // (issue_thread_interactions_pending_credential_request_uq, migration
+      // 0148) enforced in the catch block below.
+      if ("credentialRequest" in data.payload && data.payload.credentialRequest === true) {
+        const existingCredentialRequest = await queryPendingCredentialRequest(db, issue.id);
+        if (existingCredentialRequest) {
+          throw conflict("A credential request is already pending on this issue", {
+            existingInteractionId: existingCredentialRequest.id,
+          });
+        }
+      }
+
       let created: IssueThreadInteractionRow;
       try {
         [created] = await db
@@ -1191,6 +1250,16 @@ export function issueThreadInteractionService(db: Db) {
           })
           .returning();
       } catch (error) {
+        // SYN-1926 item 4: a concurrent create raced the pre-check in
+        // routes/issues.ts and hit the partial unique index instead — this
+        // is the actual single-flight guarantee, the route's pre-check is
+        // just a friendlier error message for the common case.
+        if (isPendingCredentialRequestConflict(error)) {
+          const existing = await queryPendingCredentialRequest(db, issue.id);
+          throw conflict("A credential request is already pending on this issue", {
+            existingInteractionId: existing?.id ?? null,
+          });
+        }
         if (!data.idempotencyKey || !isIssueThreadInteractionIdempotencyConflict(error)) {
           throw error;
         }

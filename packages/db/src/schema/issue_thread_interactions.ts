@@ -50,5 +50,13 @@ export const issueThreadInteractions = pgTable(
       .on(table.companyId, table.issueId, table.idempotencyKey)
       .where(sql`${table.idempotencyKey} IS NOT NULL`),
     sourceCommentIdx: index("issue_thread_interactions_source_comment_idx").on(table.sourceCommentId),
+    // SYN-1926 item 4: at most one pending `payload.credentialRequest: true`
+    // card per issue, enforced by Postgres itself so it holds under
+    // concurrent creates — the application-level pre-check in
+    // routes/issues.ts (findPendingCredentialRequest) is a nicer error
+    // message, not the actual guarantee.
+    pendingCredentialRequestUq: uniqueIndex("issue_thread_interactions_pending_credential_request_uq")
+      .on(table.issueId)
+      .where(sql`${table.status} = 'pending' AND (${table.payload}->>'credentialRequest')::boolean IS TRUE`),
   }),
 );
