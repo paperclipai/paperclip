@@ -2208,13 +2208,19 @@ describeEmbeddedPostgres("tool access service", () => {
       .expect(403);
   });
 
-  it("returns 404 for cross-company profile reads, 403 for mutations, and 404 for missing profiles", async () => {
+  it("returns 404 for cross-company profile routes and missing profiles", async () => {
     const allowedCompany = await createCompany(db);
     const otherCompany = await createCompany(db);
-    const profile = await toolAccessService(db).createProfile(otherCompany.id, {
+    const service = toolAccessService(db);
+    const profile = await service.createProfile(otherCompany.id, {
       profileKey: `other-profile-${randomUUID()}`,
       name: "Other company profile",
       defaultAction: "deny",
+    });
+    const entry = await service.addProfileEntry(profile.id, {
+      selectorType: "tool_name",
+      effect: "include",
+      toolName: "read_notes",
     });
     const app = createRouteApp(db, {
       type: "board",
@@ -2233,33 +2239,123 @@ describeEmbeddedPostgres("tool access service", () => {
       source: "session",
     });
 
-    await request(app).get(`/api/tool-profiles/${profile.id}/new-tools`).expect(404);
-    await request(app)
-      .post(`/api/tool-profiles/${profile.id}/duplicate`)
-      .send({ name: "Forbidden copy", includeAssignments: false })
-      .expect(403);
-    await request(app)
-      .delete(`/api/tool-profiles/${profile.id}`)
-      .send({ force: false })
-      .expect(403);
-    await request(app)
-      .post(`/api/tool-profiles/${profile.id}/new-tools/review`)
-      .send({ decisions: [{ catalogEntryId: randomUUID(), decision: "keep_blocked" }] })
-      .expect(403);
+    const crossTenantResponses = [
+      await request(app).get(`/api/tool-profiles/${profile.id}/new-tools`),
+      await request(app)
+        .patch(`/api/tool-profiles/${profile.id}`)
+        .send({ name: "Cross-tenant edit" }),
+      await request(app)
+        .post(`/api/tool-profiles/${profile.id}/duplicate`)
+        .send({ name: "Copy" }),
+      await request(app)
+        .delete(`/api/tool-profiles/${profile.id}`)
+        .send({}),
+      await request(app)
+        .post(`/api/tool-profiles/${profile.id}/new-tools/review`)
+        .send({ decisions: [{ catalogEntryId: randomUUID(), decision: "keep_blocked" }] }),
+      await request(app)
+        .post(`/api/tool-profiles/${profile.id}/entries`)
+        .send({ selectorType: "tool_name", effect: "include", toolName: "write_notes" }),
+      await request(app)
+        .patch(`/api/tool-profile-entries/${entry.id}`)
+        .send({ effect: "exclude" }),
+      await request(app).delete(`/api/tool-profile-entries/${entry.id}`),
+    ];
+    const missingRes = await request(app).get(`/api/tool-profiles/${randomUUID()}/new-tools`);
 
-    await request(createRouteApp(db)).get(`/api/tool-profiles/${randomUUID()}/new-tools`).expect(404);
-    await request(createRouteApp(db))
-      .post(`/api/tool-profiles/${randomUUID()}/duplicate`)
-      .send({ name: "Missing copy", includeAssignments: false })
-      .expect(404);
-    await request(createRouteApp(db))
-      .delete(`/api/tool-profiles/${randomUUID()}`)
-      .send({ force: false })
-      .expect(404);
-    await request(createRouteApp(db))
-      .post(`/api/tool-profiles/${randomUUID()}/new-tools/review`)
-      .send({ decisions: [{ catalogEntryId: randomUUID(), decision: "keep_blocked" }] })
-      .expect(404);
+    expect(crossTenantResponses.map((response) => response.status)).toEqual(
+      crossTenantResponses.map(() => 404),
+    );
+    expect(missingRes.status).toBe(404);
+    expect(crossTenantResponses[0]!.body).toEqual(missingRes.body);
+  });
+
+  it("returns 404 for cross-company connection routes, including instance admins", async () => {
+    const allowedCompany = await createCompany(db);
+    const otherCompany = await createCompany(db);
+    const service = toolAccessService(db);
+    const connection = await service.createConnection(otherCompany.id, {
+      name: "Other company connection",
+      transport: "mcp_remote",
+      config: { url: "https://other-company.example/mcp" },
+    });
+    const oauthState = randomUUID();
+    await db.insert(toolOauthStates).values({
+      state: oauthState,
+      companyId: otherCompany.id,
+      connectionId: connection.id,
+      codeVerifier: "cross-tenant-code-verifier",
+      createdByActorType: "user",
+      createdByActorId: "other-user",
+      createdBySessionId: null,
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    const toolGateway = {} as ToolGatewayService;
+    const app = createRouteApp(db, {
+      type: "board",
+      userId: "member-user",
+      userName: "Member User",
+      userEmail: null,
+      companyIds: [allowedCompany.id],
+      memberships: [
+        {
+          companyId: allowedCompany.id,
+          membershipRole: "owner",
+          status: "active",
+        },
+      ],
+      isInstanceAdmin: true,
+      source: "session",
+    }, toolGateway);
+    const foreignOAuthRes = await request(app)
+      .get("/api/tools/oauth/callback")
+      .query({ state: oauthState, code: "oauth-code" });
+    const missingOAuthRes = await request(app)
+      .get("/api/tools/oauth/callback")
+      .query({ state: randomUUID(), code: "oauth-code" });
+
+    const crossTenantResponses = [
+      await request(app).post(`/api/tools/oauth/${connection.id}/start`),
+      await request(app).get(`/api/tool-connections/${connection.id}`),
+      await request(app).get(`/api/tool-connections/${connection.id}/grants`),
+      await request(app)
+        .post(`/api/tool-connections/${connection.id}/grants/installations`)
+        .send({}),
+      await request(app).delete(`/api/tool-connections/${connection.id}/grants/${randomUUID()}`),
+      await request(app).get(`/api/tool-connections/${connection.id}/usage`),
+      await request(app).get(`/api/tool-connections/${connection.id}/installs`),
+      await request(app)
+        .put(`/api/tool-connections/${connection.id}/installs`)
+        .send({ installs: [] }),
+      await request(app).get(`/api/tool-connections/${connection.id}/test-agents`),
+      await request(app)
+        .post(`/api/tool-connections/${connection.id}/test-calls`)
+        .send({ agentId: randomUUID(), toolName: "read_notes", parameters: {} }),
+      await request(app)
+        .get(`/api/tool-connections/${connection.id}/test-calls/${randomUUID()}`),
+      await request(app)
+        .patch(`/api/tool-connections/${connection.id}`)
+        .send({ name: "Cross-tenant edit" }),
+      await request(app).delete(`/api/tool-connections/${connection.id}`),
+      await request(app).post(`/api/tool-connections/${connection.id}/health-check`),
+      await request(app)
+        .post(`/api/tool-connections/${connection.id}/reconnect`)
+        .send({ credentialValues: {} }),
+      await request(app).post(`/api/tool-connections/${connection.id}/catalog/refresh`),
+      await request(app).get(`/api/tool-connections/${connection.id}/catalog`),
+      await request(app).get(`/api/tool-connections/${connection.id}/activity?limit=5`),
+    ];
+    expect(foreignOAuthRes.status).toBe(400);
+    expect(missingOAuthRes.status).toBe(400);
+    expect(foreignOAuthRes.body).toEqual(missingOAuthRes.body);
+    const missingRes = await request(app).get(`/api/tool-connections/${randomUUID()}`);
+
+    for (const response of crossTenantResponses) {
+      expect(response.status).toBe(404);
+    }
+    expect(missingRes.status).toBe(404);
+    expect(crossTenantResponses[1]!.body).toEqual(missingRes.body);
+    await expect(service.getConnection(connection.id)).resolves.toMatchObject({ id: connection.id });
   });
 
   it("installs the safe example fixture idempotently and smokes allow, deny, and audit paths", async () => {
@@ -4995,7 +5091,7 @@ describeEmbeddedPostgres("tool access service", () => {
     });
   });
 
-  it("returns 403 for cross-company application updates and 404 for missing applications", async () => {
+  it("returns 404 for cross-company application updates and missing applications", async () => {
     const allowedCompany = await createCompany(db);
     const otherCompany = await createCompany(db);
     const application = await toolAccessService(db).createApplication(otherCompany.id, {
@@ -5026,7 +5122,7 @@ describeEmbeddedPostgres("tool access service", () => {
       .patch(`/api/tool-applications/${randomUUID()}`)
       .send({ name: "Missing edit" });
 
-    expect(forbiddenRes.status).toBe(403);
+    expect(forbiddenRes.status).toBe(404);
     expect(missingRes.status).toBe(404);
   });
 
@@ -5381,7 +5477,7 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(remainingConnection).toHaveLength(0);
   });
 
-  it("returns 403 for cross-company application deletes and 404 for missing applications", async () => {
+  it("returns 404 for cross-company application deletes and missing applications", async () => {
     const allowedCompany = await createCompany(db);
     const otherCompany = await createCompany(db);
     const application = await toolAccessService(db).createApplication(otherCompany.id, {
@@ -5408,7 +5504,7 @@ describeEmbeddedPostgres("tool access service", () => {
     const forbiddenRes = await request(app).delete(`/api/tool-applications/${application.id}`);
     const missingRes = await request(createRouteApp(db)).delete(`/api/tool-applications/${randomUUID()}`);
 
-    expect(forbiddenRes.status).toBe(403);
+    expect(forbiddenRes.status).toBe(404);
     expect(missingRes.status).toBe(404);
     const stillThere = await db
       .select()
