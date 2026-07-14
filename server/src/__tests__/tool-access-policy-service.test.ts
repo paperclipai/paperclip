@@ -1015,6 +1015,19 @@ describeEmbeddedPostgres("tool access policy service", () => {
     })).rejects.toThrow("unsafe regular expression");
   });
 
+  it("rejects fieldMatches patterns with ambiguous alternation", async () => {
+    const company = await createCompany(db);
+    const svc = toolAccessPolicyService(db);
+
+    await expect(svc.createPolicy(company.id, {
+      name: "Unsafe alternation",
+      policyType: "allow",
+      conditions: {
+        arguments: { fieldMatches: { body: "^(a|aa)*b$" } },
+      },
+    })).rejects.toThrow("unsafe regular expression");
+  });
+
   it("allows a write policy only for a safe argument subset and blocks unsafe arguments", async () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);

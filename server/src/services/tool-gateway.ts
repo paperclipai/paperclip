@@ -3033,6 +3033,7 @@ export function createToolGatewayService(
     try {
       const response = await fetch(endpoint, {
         method: "POST",
+        redirect: "manual",
         // MCP Streamable HTTP requires the Accept header advertising both a JSON
         // body and an SSE stream; spec-compliant servers 406 without it.
         headers: mcpHttpRequestHeaders(headers),
