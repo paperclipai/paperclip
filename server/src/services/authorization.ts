@@ -474,6 +474,26 @@ function activeResponsibleUserCanAuthorizeIssueAction(
   );
 }
 
+function activeResponsibleUserCanAuthorizeAgentGrantedSkillChange(
+  action: AuthorizationAction,
+  membership: ResponsibleUserSnapshot["activeMembership"],
+  agentDecision: AuthorizationDecision,
+  actorAgentId: string | null | undefined,
+) {
+  return Boolean(
+    action === "skill_config:update" &&
+    membership &&
+    membership.status === "active" &&
+    membership.membershipRole !== "viewer" &&
+    agentDecision.allowed &&
+    (agentDecision.reason === "allow_direct_change" || agentDecision.reason === "allow_consented_change") &&
+    agentDecision.grant?.principalType === "agent" &&
+    agentDecision.grant.principalId === actorAgentId &&
+    (agentDecision.grant.permissionKey === "skills:create" ||
+      agentDecision.grant.permissionKey === "skills:suggest-changes"),
+  );
+}
+
 function scopeBoolean(scope: Record<string, unknown> | null | undefined, key: string) {
   return scope?.[key] === true;
 }
@@ -1521,6 +1541,21 @@ export function authorizationService(db: Db) {
           });
         }
       }
+      if (input.action === "agent_config:read") {
+        return decideWithAgentConfigReadGrant("user", input.actor.userId);
+      }
+      if (input.action === "agent_config:update") {
+        return decideWithProtectedChangeGrants("user", input.actor.userId, {
+          direct: "agents:configure",
+          suggest: "agents:suggest-changes",
+        });
+      }
+      if (input.action === "skill_config:update") {
+        return decideWithProtectedChangeGrants("user", input.actor.userId, {
+          direct: "skills:create",
+          suggest: "skills:suggest-changes",
+        });
+      }
       if (!permissionKey) {
         if (
           input.action === "agent:read" ||
@@ -1567,21 +1602,6 @@ export function authorizationService(db: Db) {
         const policyEffect = taskAssignmentPolicyEffect ?? await assignmentPolicyEffect(input.resource);
         if (policyEffect.kind === "restricted") return denyRestrictedAssignmentPolicy(policyEffect);
         return grantDecision;
-      }
-      if (input.action === "agent_config:read") {
-        return decideWithAgentConfigReadGrant("user", input.actor.userId);
-      }
-      if (input.action === "agent_config:update") {
-        return decideWithProtectedChangeGrants("user", input.actor.userId, {
-          direct: "agents:configure",
-          suggest: "agents:suggest-changes",
-        });
-      }
-      if (input.action === "skill_config:update") {
-        return decideWithProtectedChangeGrants("user", input.actor.userId, {
-          direct: "skills:create",
-          suggest: "skills:suggest-changes",
-        });
       }
       return decidePrincipalGrant({
         companyId,
@@ -1864,6 +1884,21 @@ export function authorizationService(db: Db) {
       snapshot.userExists && snapshot.activeMembership
         ? "RESPONSIBLE_USER_UNAUTHORIZED"
         : "RESPONSIBLE_USER_UNAVAILABLE";
+
+    if (
+      activeResponsibleUserCanAuthorizeAgentGrantedSkillChange(
+        input.action,
+        snapshot.activeMembership,
+        agentDecision,
+        input.actor.agentId,
+      )
+    ) {
+      // Skill mutations are governed by the agent's explicit skill-change
+      // grant. The responsible-user intersection still requires an active
+      // non-viewer user, but does not require duplicating that grant on the
+      // responsible user's board account for standard heartbeat JWTs.
+      return agentDecision;
+    }
 
     const userDecision = snapshot.userExists && snapshot.activeMembership
       ? await decideBase({
