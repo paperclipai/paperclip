@@ -916,6 +916,76 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
+  it("allows a manager-authorized agent to replace blockers across issue trees", async () => {
+    const liveBlockerId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "blocked" }));
+    mockIssueService.getRelationSummaries
+      .mockResolvedValueOnce({
+        blockedBy: [{ id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", status: "done" }],
+        blocks: [],
+      })
+      .mockResolvedValueOnce({
+        blockedBy: [{ id: liveBlockerId, status: "in_review" }],
+        blocks: [],
+      });
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: input.action === "tasks:manage_active_checkouts",
+      action: input.action,
+      reason: input.action === "tasks:manage_active_checkouts" ? "allow_manager" : "deny_scope",
+      explanation: input.action === "tasks:manage_active_checkouts"
+        ? "Allowed for a report in the manager subtree."
+        : "Outside the ordinary issue mutation boundary.",
+    }));
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "blocked", blockedByIssueIds: [liveBlockerId] });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.status).toBe("blocked");
+    expect(res.body.blockedBy).toEqual([expect.objectContaining({ id: liveBlockerId, status: "in_review" })]);
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
+      action: "tasks:manage_active_checkouts",
+      resource: expect.objectContaining({ assigneeAgentId: ownerAgentId, companyId }),
+    }));
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({
+        status: "blocked",
+        blockedByIssueIds: [liveBlockerId],
+        actorAgentId: peerAgentId,
+      }),
+    );
+  });
+
+  it("keeps blocker replacement denied for unrelated agents", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "blocked" }));
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: false,
+      action: input.action,
+      reason: "deny_scope",
+      explanation: "Actor is outside the assignee's management subtree.",
+    }));
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ blockedByIssueIds: ["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"] });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Issue is outside this actor's authorization boundary");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 instead of silently ignoring the read-model blockedBy mutation key", async () => {
+    const res = await request(await createApp(ownerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ blockedBy: ["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"] });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(400);
+    expect(res.body.error).toBe("Validation error");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
   it("denies cross-company agents before comment authorization is evaluated", async () => {
     const res = await request(await createApp(peerActor({ companyId: "99999999-9999-4999-8999-999999999999" })))
       .post(`/api/issues/${issueId}/comments`)
