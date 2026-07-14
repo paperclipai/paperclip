@@ -45,6 +45,7 @@ import {
   DEFAULT_GRACE_SEC,
   DEFAULT_MODEL,
   VALID_PROVIDERS,
+  isCanonicalHermesSessionId,
 } from "../shared/constants.js";
 
 import {
@@ -270,9 +271,13 @@ function parseHermesOutput(stdout: string, stderr: string): ParsedOutput {
   //
   //   session_id: <id>
   const sessionMatch = stdout.match(SESSION_ID_REGEX);
-  if (sessionMatch?.[1]) {
-    result.sessionId = sessionMatch?.[1] ?? null;
-    // The response is everything before the session_id line
+  const quietSessionId = sessionMatch?.[1] ?? null;
+  if (isCanonicalHermesSessionId(quietSessionId)) {
+    result.sessionId = quietSessionId;
+  }
+  if (sessionMatch) {
+    // The response is everything before the session_id line, even if a
+    // malformed ID was emitted. Never expose protocol output as agent prose.
     const sessionLineIdx = stdout.lastIndexOf("\nsession_id:");
     if (sessionLineIdx > 0) {
       result.response = cleanResponse(stdout.slice(0, sessionLineIdx));
@@ -280,8 +285,9 @@ function parseHermesOutput(stdout: string, stderr: string): ParsedOutput {
   } else {
     // Legacy format (non-quiet mode)
     const legacyMatch = combined.match(SESSION_ID_REGEX_LEGACY);
-    if (legacyMatch?.[1]) {
-      result.sessionId = legacyMatch?.[1] ?? null;
+    const legacySessionId = legacyMatch?.[1] ?? null;
+    if (isCanonicalHermesSessionId(legacySessionId)) {
+      result.sessionId = legacySessionId;
     }
     // In non-quiet mode, extract clean response from stdout by
     // filtering out tool lines, system messages, and noise
@@ -340,9 +346,13 @@ export async function execute(
   const persistSession = cfgBoolean(config.persistSession) !== false;
   const worktreeMode = cfgBoolean(config.worktreeMode) === true;
   const checkpoints = cfgBoolean(config.checkpoints) === true;
-  const prevSessionId = cfgString(
+  const storedSessionId = cfgString(
     (ctx.runtime?.sessionParams as Record<string, unknown> | null)?.sessionId,
   );
+  const prevSessionId =
+    persistSession && isCanonicalHermesSessionId(storedSessionId)
+      ? storedSessionId
+      : undefined;
 
   // ── Resolve provider (defense in depth) ────────────────────────────────
   // Priority chain:
@@ -447,7 +457,9 @@ export async function execute(
   // system is designed for human-attended interactive sessions.
   args.push("--yolo");
 
-  if (persistSession && prevSessionId) {
+  let resumeArgIndex: number | null = null;
+  if (prevSessionId) {
+    resumeArgIndex = args.length;
     args.push("--resume", prevSessionId);
   }
 
@@ -526,7 +538,7 @@ export async function execute(
     return ctx.onLog(stream, chunk);
   };
 
-  const result = await runChildProcess(ctx.runId, hermesCmd, args, {
+  let result = await runChildProcess(ctx.runId, hermesCmd, args, {
     cwd,
     env,
     timeoutSec,
@@ -535,15 +547,51 @@ export async function execute(
     onSpawn: ctx.onSpawn,
   });
 
+  let staleSessionDetected = false;
+  if (
+    prevSessionId &&
+    resumeArgIndex !== null &&
+    result.exitCode !== 0 &&
+    !result.timedOut &&
+    /Session not found:/i.test(`${result.stdout}\n${result.stderr}`)
+  ) {
+    staleSessionDetected = true;
+    await ctx.onLog(
+      "stdout",
+      `[hermes] Saved session "${prevSessionId}" no longer exists; retrying once with a fresh session.\n`,
+    );
+
+    const retryArgs = [
+      ...args.slice(0, resumeArgIndex),
+      ...args.slice(resumeArgIndex + 2),
+    ];
+    let freshPrompt = buildPrompt(ctx, config, { resumedSession: false });
+    if (agentInstructions) {
+      freshPrompt = agentInstructions + "\n\n---\n\n" + freshPrompt;
+    }
+    retryArgs[2] = freshPrompt;
+
+    result = await runChildProcess(ctx.runId, hermesCmd, retryArgs, {
+      cwd,
+      env,
+      timeoutSec,
+      graceSec,
+      onLog: wrappedOnLog,
+      onSpawn: ctx.onSpawn,
+    });
+  }
+
   // ── Parse output ───────────────────────────────────────────────────────
   const parsed = parseHermesOutput(result.stdout || "", result.stderr || "");
+  const runSucceeded = result.exitCode === 0 && !result.timedOut;
+  const sessionId = runSucceeded ? (parsed.sessionId ?? null) : null;
 
   await ctx.onLog(
     "stdout",
     `[hermes] Exit code: ${result.exitCode ?? "null"}, timed out: ${result.timedOut}\n`,
   );
-  if (parsed.sessionId) {
-    await ctx.onLog("stdout", `[hermes] Session: ${parsed.sessionId}\n`);
+  if (sessionId) {
+    await ctx.onLog("stdout", `[hermes] Session: ${sessionId}\n`);
   }
 
   // ── Build result ───────────────────────────────────────────────────────
@@ -575,15 +623,19 @@ export async function execute(
   // Set resultJson so Paperclip can persist run metadata (used for UI display + auto-comments)
   executionResult.resultJson = {
     result: parsed.response || "",
-    session_id: parsed.sessionId || null,
+    session_id: sessionId,
     usage: parsed.usage || null,
     cost_usd: parsed.costUsd ?? null,
   };
 
-  // Store session ID for next run
-  if (persistSession && parsed.sessionId) {
-    executionResult.sessionParams = { sessionId: parsed.sessionId };
-    executionResult.sessionDisplayId = parsed.sessionId.slice(0, 16);
+  // Store only canonical session IDs from successful Hermes exits.
+  if (persistSession && sessionId) {
+    executionResult.sessionParams = { sessionId };
+    executionResult.sessionDisplayId = sessionId;
+  } else if (staleSessionDetected) {
+    // The saved ID is known to be unusable. If the one fresh retry also
+    // failed to establish a session, prevent future heartbeats from looping.
+    executionResult.clearSession = true;
   }
 
   return executionResult;

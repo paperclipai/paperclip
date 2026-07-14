@@ -28,6 +28,19 @@ test("root package export exposes Paperclip external adapter entrypoint", () => 
   expect(typeof adapter.getConfigSchema).toBe("function");
 });
 
+test("Hermes session codec accepts only resumable full IDs", () => {
+  const codec = createServerAdapter().sessionCodec;
+
+  expect(codec?.deserialize({ sessionId: "from" })).toBeNull();
+  expect(codec?.serialize({ sessionId: "20260713_120000_" })).toBeNull();
+  expect(codec?.deserialize({ sessionId: "20260713_120000_a1b2c3" })).toEqual({
+    sessionId: "20260713_120000_a1b2c3",
+  });
+  expect(codec?.getDisplayId?.({ sessionId: "20260713_120000_a1b2c3" })).toBe(
+    "20260713_120000_a1b2c3",
+  );
+});
+
 test("root package export keeps explicit local and gateway adapter factories", () => {
   const localAdapter = createHermesLocalServerAdapter();
   const gatewayAdapter = createHermesGatewayServerAdapter();
