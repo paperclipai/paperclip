@@ -3581,6 +3581,44 @@ export function issueRoutes(
     return true;
   }
 
+  /**
+   * SYN-1926 item 2 / SYN-1909 ruling R3: the authoring agent must be able to
+   * cancel (withdraw) its OWN pending card. This is narrower than the
+   * board-only resolution routes (accept/reject/respond/verdicts), which
+   * represent the human's actual answer and must stay board-only — cancel
+   * only means "I made a mistake, retract the ask," which the author itself
+   * is the right actor to decide.
+   *
+   * Returns true and sends a response iff the caller is NOT allowed to
+   * cancel; callers should `return` immediately when this returns true.
+   */
+  async function rejectNonAuthoringAgentInteractionCancel(
+    req: Request,
+    res: Response,
+    issue: {
+      id: string;
+      companyId: string;
+      projectId: string | null;
+      parentId: string | null;
+      status: string;
+      assigneeAgentId: string | null;
+      assigneeUserId: string | null;
+    },
+    interaction: { id: string; createdByAgentId?: string | null },
+  ) {
+    if (req.actor.type !== "agent") return false;
+    if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return true;
+    const actorAgentId = req.actor.agentId;
+    if (!actorAgentId || interaction.createdByAgentId !== actorAgentId) {
+      res.status(403).json({
+        error: "An agent may only cancel an interaction it authored",
+        details: { interactionId: interaction.id, createdByAgentId: interaction.createdByAgentId },
+      });
+      return true;
+    }
+    return false;
+  }
+
   async function assertTaskWatchdogCreateIssueAllowed(
     req: Request,
     res: Response,
@@ -9292,13 +9330,25 @@ export function issueRoutes(
         return;
       }
       assertCompanyAccess(req, issue.companyId);
-      if (await rejectAgentIssueThreadInteractionResolution(req, res, issue)) return;
-      assertBoard(req);
+
+      if (req.actor.type === "agent") {
+        const existing = await issueThreadInteractionService(db).getById(interactionId);
+        if (!existing || existing.companyId !== issue.companyId || existing.issueId !== issue.id) {
+          res.status(404).json({ error: "Interaction not found" });
+          return;
+        }
+        if (await rejectNonAuthoringAgentInteractionCancel(req, res, issue, existing)) return;
+      } else {
+        assertBoard(req);
+      }
 
       const actor = getActorInfo(req);
       const interaction = await issueThreadInteractionService(db).cancelQuestions(issue, interactionId, req.body, {
         agentId: actor.agentId,
-        userId: actor.actorType === "user" ? actor.actorId : null,
+        // attributedUserId(req) is a no-op here — this branch only runs for
+        // req.actor.type === "board", and an agent-author cancel records
+        // resolvedByAgentId instead (see actor.agentId above).
+        userId: actor.actorType === "user" ? attributedUserId(req) : null,
       });
 
       await logActivity(db, {

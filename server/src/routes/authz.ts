@@ -137,8 +137,8 @@ export function assertCompanyAccess(req: Request, companyId: string) {
 export const LOCAL_IMPLICIT_ATTRIBUTION_USER_ID = "local-implicit";
 
 /**
- * The user id to persist onto a createdBy*/resolvedBy*-style attribution
- * column for the current request. Deliberately separate from
+ * The user id to persist onto a createdBy-user / resolvedBy-user style
+ * attribution column for the current request. Deliberately separate from
  * `getActorInfo().actorId` (which stays "local-board" / session-derived) so
  * that authorization checks (`assertBoard`, `isInstanceAdmin`, the
  * local-trusted bootstrap principal FK in `ensureLocalTrustedBoardPrincipal`)
