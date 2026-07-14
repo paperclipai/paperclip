@@ -16,8 +16,6 @@ import { useToast } from "@/context/ToastContext";
 import { queryKeys } from "@/lib/queryKeys";
 import { ErrorState, LoadingState, RelativeTime, ToolsPageHeader } from "./shared";
 
-const gatewayQueryKey = (companyId: string) => ["tools", "gateways", companyId] as const;
-
 type CreateGatewayDraft = {
   name: string;
   description: string;
@@ -128,7 +126,7 @@ export function GatewaysTab({ companyId }: { companyId: string }) {
   const [confirmingRevokeTokenId, setConfirmingRevokeTokenId] = useState<string | null>(null);
 
   const gatewaysQuery = useQuery({
-    queryKey: gatewayQueryKey(companyId),
+    queryKey: queryKeys.tools.gateways(companyId),
     queryFn: () => toolsApi.listGateways(companyId),
   });
   const profilesQuery = useQuery({
@@ -158,7 +156,7 @@ export function GatewaysTab({ companyId }: { companyId: string }) {
     [projectsQuery.data],
   );
 
-  const invalidateGateways = () => queryClient.invalidateQueries({ queryKey: gatewayQueryKey(companyId) });
+  const invalidateGateways = () => queryClient.invalidateQueries({ queryKey: queryKeys.tools.gateways(companyId) });
 
   const createGatewayMutation = useMutation({
     mutationFn: () =>

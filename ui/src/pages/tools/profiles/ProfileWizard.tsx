@@ -186,7 +186,6 @@ export function ProfileWizard({
       if (!draftId) throw new Error("No draft to finish");
       const entries = buildEntries(appGroups, selections, advancedRules);
       const profile = await toolsApi.updateProfile(draftId, {
-        status: "active",
         defaultAction: newToolsAction,
         entries,
         metadata: withWizardMeta(existing?.metadata ?? null, { lastCompletedStep: 3, template }),
@@ -197,7 +196,7 @@ export function ProfileWizard({
         routineIds: [...selectedRoutineIds],
         companyDefault,
       });
-      return profile;
+      return toolsApi.updateProfile(draftId, { status: "active" });
     },
     onSuccess: (profile) => {
       pushToast({ title: "Profile saved", tone: "success" });
@@ -366,14 +365,37 @@ async function reconcileBindings(
   const managed = new Set(["company", "agent", "project", "routine"]);
   const have = new Set(profile.bindings.map((b) => `${b.targetType}:${b.targetId}`));
 
-  await Promise.all([
+  const operations = [
     ...[...want.entries()]
-      .filter(([k]) => !have.has(k))
-      .map(([, input]) => toolsApi.bindProfile(companyId, profile.id, input)),
+      .filter(([key]) => !have.has(key))
+      .map(([key, input]) => ({
+        key,
+        apply: () => toolsApi.bindProfile(companyId, profile.id, input),
+        rollback: () => toolsApi.unbindProfile(companyId, profile.id, input),
+      })),
     ...profile.bindings
-      .filter((b) => managed.has(b.targetType) && !want.has(`${b.targetType}:${b.targetId}`))
-      .map((b) => toolsApi.unbindProfile(companyId, profile.id, { targetType: b.targetType, targetId: b.targetId })),
-  ]);
+      .filter((binding) => managed.has(binding.targetType) && !want.has(`${binding.targetType}:${binding.targetId}`))
+      .map((binding) => {
+        const input = { targetType: binding.targetType, targetId: binding.targetId } as ToolProfileBindingInput;
+        return {
+          key: `${binding.targetType}:${binding.targetId}`,
+          apply: () => toolsApi.unbindProfile(companyId, profile.id, input),
+          rollback: () => toolsApi.bindProfile(companyId, profile.id, input),
+        };
+      }),
+  ];
+  const completed: typeof operations = [];
+  for (const operation of operations) {
+    try {
+      await operation.apply();
+      completed.push(operation);
+    } catch (error) {
+      const rollbacks = await Promise.allSettled(completed.reverse().map((done) => done.rollback()));
+      const rollbackFailures = rollbacks.filter((result) => result.status === "rejected").length;
+      const suffix = rollbackFailures > 0 ? `; ${rollbackFailures} rollback operation(s) also failed` : "";
+      throw new Error(`Could not update assignment ${operation.key}${suffix}`, { cause: error });
+    }
+  }
 }
 
 function Stepper({ current }: { current: WizardStep }) {
