@@ -29,6 +29,7 @@ const mockInstanceSettingsApi = vi.hoisted(() => ({
 
 const mockSecretsApi = vi.hoisted(() => ({
   list: vi.fn(),
+  create: vi.fn(),
 }));
 
 vi.mock("../api/agents", () => ({
@@ -73,6 +74,20 @@ vi.mock("../adapters", () => ({
       model: values.model || undefined,
     }),
     parseStdoutLine: () => [],
+    credentialSetup:
+      type === "claude_local"
+        ? {
+            options: [
+              {
+                envKey: "ANTHROPIC_API_KEY",
+                kind: "api_key" as const,
+                label: "Anthropic API key",
+                hint: "Create a key in the Anthropic Console.",
+                placeholder: "sk-ant-…",
+              },
+            ],
+          }
+        : undefined,
   }),
 }));
 
@@ -601,5 +616,158 @@ describe("AgentConfigForm environment selector", () => {
 
     expect(mockAgentsApi.testEnvironment).toHaveBeenCalledTimes(1);
     expect(result.container.textContent).toContain("Network unavailable");
+  });
+});
+
+describe("AgentConfigForm guided credential connect", () => {
+  let roots: Root[] = [];
+
+  beforeEach(() => {
+    mockAgentsApi.adapterModelProfiles.mockResolvedValue([]);
+    mockAgentsApi.adapterModels.mockResolvedValue([]);
+    mockAgentsApi.detectModel.mockResolvedValue(null);
+    mockAgentsApi.list.mockResolvedValue([]);
+    mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: null });
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableEnvironments: true });
+    mockInstanceSettingsApi.getGeneral.mockResolvedValue({ executionMode: "any" });
+    mockSecretsApi.list.mockResolvedValue([]);
+  });
+
+  afterEach(async () => {
+    for (const root of roots) {
+      await act(async () => {
+        root.unmount();
+      });
+    }
+    roots = [];
+    document.body.innerHTML = "";
+    vi.clearAllMocks();
+  });
+
+  it("shows the guided credential connect card for an adapter with a descriptor and empty env", async () => {
+    const result = await renderForm(
+      [makeEnvironment({ id: "local-1", name: "Local", driver: "local" })],
+      { adapterType: "claude_local", adapterConfig: {} },
+    );
+    roots.push(result.root);
+
+    expect(result.container.textContent).toContain("Anthropic API key");
+    expect(
+      result.container.querySelector('input[aria-label="Anthropic API key value"]'),
+    ).toBeTruthy();
+    expect(result.container.textContent).not.toContain("Connected");
+  });
+
+  it("shows a connected summary when the env has a secret_ref binding for the descriptor's env key", async () => {
+    const result = await renderForm(
+      [makeEnvironment({ id: "local-1", name: "Local", driver: "local" })],
+      {
+        adapterType: "claude_local",
+        adapterConfig: {
+          env: {
+            ANTHROPIC_API_KEY: { type: "secret_ref", secretId: "11111111-1111-4111-8111-111111111111" },
+          },
+        },
+      },
+    );
+    roots.push(result.root);
+
+    expect(result.container.textContent).toContain("Connected");
+    expect(result.container.textContent).toContain("ANTHROPIC_API_KEY");
+    expect(
+      result.container.querySelector('input[aria-label="Anthropic API key value"]'),
+    ).toBeNull();
+  });
+
+  it("shows a connected summary when the env has a non-empty plain value for the descriptor's env key", async () => {
+    const result = await renderForm(
+      [makeEnvironment({ id: "local-1", name: "Local", driver: "local" })],
+      {
+        adapterType: "claude_local",
+        adapterConfig: {
+          env: { ANTHROPIC_API_KEY: { type: "plain", value: "sk-ant-existing" } },
+        },
+      },
+    );
+    roots.push(result.root);
+
+    expect(result.container.textContent).toContain("Connected");
+    expect(
+      result.container.querySelector('input[aria-label="Anthropic API key value"]'),
+    ).toBeNull();
+  });
+
+  it("does not show the credential connect card for an adapter type without a credential descriptor", async () => {
+    const result = await renderForm(
+      [makeEnvironment({ id: "local-1", name: "Local", driver: "local" })],
+      { adapterType: "codex_local" },
+    );
+    roots.push(result.root);
+
+    expect(result.container.textContent).not.toContain("Anthropic API key");
+    expect(
+      result.container.querySelector('input[aria-label="Anthropic API key value"]'),
+    ).toBeNull();
+  });
+
+  it("binds a new credential into the environment-variables editor state", async () => {
+    mockSecretsApi.create.mockResolvedValueOnce({
+      id: "secret-42",
+      companyId: "company-1",
+      scope: "company",
+      ownerUserId: null,
+      userSecretDefinitionId: null,
+      key: "claude-local-anthropic-api-key",
+      name: "claude-local-anthropic-api-key",
+      provider: "local_encrypted",
+      status: "active",
+      managedMode: "paperclip_managed",
+      externalRef: null,
+      providerConfigId: null,
+      providerMetadata: null,
+      latestVersion: 1,
+      description: null,
+      lastResolvedAt: null,
+      lastRotatedAt: null,
+      deletedAt: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      createdAt: new Date(0),
+      updatedAt: new Date(0),
+    });
+
+    const result = await renderForm(
+      [makeEnvironment({ id: "local-1", name: "Local", driver: "local" })],
+      { adapterType: "claude_local", adapterConfig: {} },
+    );
+    roots.push(result.root);
+
+    const valueInput = result.container.querySelector<HTMLInputElement>(
+      'input[aria-label="Anthropic API key value"]',
+    );
+    expect(valueInput).toBeTruthy();
+
+    await act(async () => {
+      setInputValue(valueInput!, "sk-ant-test");
+    });
+    await flushReact();
+
+    const connectButton = Array.from(result.container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("Connect"),
+    );
+    expect(connectButton).toBeTruthy();
+
+    await act(async () => {
+      connectButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(mockSecretsApi.create).toHaveBeenCalledTimes(1);
+    expect(result.container.textContent).toContain("Connected");
+
+    const nameInputs = Array.from(
+      result.container.querySelectorAll<HTMLInputElement>('input[aria-label="Variable name"]'),
+    );
+    expect(nameInputs.some((input) => input.value === "ANTHROPIC_API_KEY")).toBe(true);
   });
 });
