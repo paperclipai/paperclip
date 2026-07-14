@@ -14846,22 +14846,28 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
 
         if (!activeExecutionRun) {
-          const legacyRun = await tx
-            .select()
-            .from(heartbeatRuns)
-            .where(
-              and(
-                eq(heartbeatRuns.companyId, issue.companyId),
-                inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
-                sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
-              ),
-            )
-            .orderBy(
-              sql`case when ${heartbeatRuns.status} = 'running' then 0 else 1 end`,
-              asc(heartbeatRuns.createdAt),
-            )
-            .limit(1)
-            .then((rows) => rows[0] ?? null);
+          // Only recover an unstamped legacy run for the agent being woken.
+          // After an operator releases a stale pointer or reassigns an issue,
+          // a still-live run from the former owner must not reclaim the issue.
+          const legacyRun = issue.assigneeAgentId === agentId
+            ? await tx
+              .select()
+              .from(heartbeatRuns)
+              .where(
+                and(
+                  eq(heartbeatRuns.companyId, issue.companyId),
+                  eq(heartbeatRuns.agentId, issue.assigneeAgentId),
+                  inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
+                  sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
+                ),
+              )
+              .orderBy(
+                sql`case when ${heartbeatRuns.status} = 'running' then 0 else 1 end`,
+                asc(heartbeatRuns.createdAt),
+              )
+              .limit(1)
+              .then((rows) => rows[0] ?? null)
+            : null;
 
           if (legacyRun) {
             if (await cancelStaleScheduledRetry(legacyRun)) {
