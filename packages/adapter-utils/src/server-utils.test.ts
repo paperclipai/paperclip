@@ -727,7 +727,7 @@ describe("renderPaperclipWakePrompt", () => {
     );
   });
 
-  it("adds the execution contract to scoped wake prompts", () => {
+  it("leaves the execution contract to the heartbeat template on fresh scoped wake prompts", () => {
     const prompt = renderPaperclipWakePrompt({
       reason: "issue_assigned",
       issue: {
@@ -746,11 +746,101 @@ describe("renderPaperclipWakePrompt", () => {
     });
 
     expect(prompt).toContain("## Paperclip Wake Payload");
-    expect(prompt).toContain("Execution contract: take concrete action in this heartbeat");
-    expect(prompt).toContain("clear final disposition");
-    expect(prompt).toContain("evidence, not valid liveness paths by themselves");
-    expect(prompt).toContain("Use child issues for long or parallel delegated work instead of polling");
-    expect(prompt).toContain("named unblock owner/action");
+    expect(prompt).not.toContain("Execution contract:");
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Execution contract:");
+  });
+
+  it("adds the execution contract to resume delta prompts and opted-in fresh prompts", () => {
+    const payload = {
+      reason: "issue_assigned",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-1580",
+        title: "Update prompts",
+        status: "in_progress",
+      },
+      commentWindow: {
+        requestedCount: 0,
+        includedCount: 0,
+        missingCount: 0,
+      },
+      comments: [],
+      fallbackFetchNeeded: false,
+    };
+
+    for (const prompt of [
+      renderPaperclipWakePrompt(payload, { resumedSession: true }),
+      renderPaperclipWakePrompt(payload, { includeExecutionContract: true }),
+    ]) {
+      expect(prompt).toContain("Execution contract: take concrete action in this heartbeat");
+      expect(prompt).toContain("clear final disposition");
+      expect(prompt).toContain("evidence, not valid liveness paths by themselves");
+      expect(prompt).toContain("Use child issues for long or parallel delegated work instead of polling");
+      expect(prompt).toContain("named unblock owner/action");
+    }
+  });
+
+  it("keeps exactly one execution contract in a composed fresh heartbeat prompt", () => {
+    const wakePrompt = renderPaperclipWakePrompt({
+      reason: "issue_assigned",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-1580",
+        title: "Update prompts",
+        status: "in_progress",
+      },
+      commentWindow: {
+        requestedCount: 0,
+        includedCount: 0,
+        missingCount: 0,
+      },
+      comments: [],
+      fallbackFetchNeeded: false,
+    });
+    const composed = [wakePrompt, DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE].join("\n\n");
+    expect(composed.match(/Execution contract/g)).toHaveLength(1);
+  });
+
+  it("trims comment-batch boilerplate on fresh wakes with zero pending comments", () => {
+    const base = {
+      reason: "issue_assigned",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-1580",
+        title: "Update prompts",
+        status: "in_progress",
+      },
+      commentWindow: {
+        requestedCount: 0,
+        includedCount: 0,
+        missingCount: 0,
+      },
+      comments: [],
+      fallbackFetchNeeded: false,
+    };
+
+    const zeroCommentPrompt = renderPaperclipWakePrompt(base);
+    expect(zeroCommentPrompt).not.toContain("acknowledge the latest comment");
+    expect(zeroCommentPrompt).not.toContain("Only fetch the API thread");
+    expect(zeroCommentPrompt).not.toContain("- pending comments:");
+    expect(zeroCommentPrompt).not.toContain("- latest comment id:");
+    expect(zeroCommentPrompt).toContain("- fallback fetch needed: no");
+
+    const commentPrompt = renderPaperclipWakePrompt({
+      ...base,
+      reason: "issue_commented",
+      commentWindow: { requestedCount: 1, includedCount: 1, missingCount: 0 },
+      comments: [{ id: "comment-1", body: "Please fix", authorType: "user" }],
+      latestCommentId: "comment-1",
+    });
+    expect(commentPrompt).toContain("acknowledge the latest comment");
+    expect(commentPrompt).toContain("Only fetch the API thread");
+    expect(commentPrompt).toContain("- pending comments: 1/1");
+    expect(commentPrompt).toContain("- latest comment id: comment-1");
+
+    const fallbackPrompt = renderPaperclipWakePrompt({ ...base, fallbackFetchNeeded: true });
+    expect(fallbackPrompt).toContain("Only fetch the API thread");
+    expect(fallbackPrompt).toContain("- fallback fetch needed: yes");
   });
 
   it("renders the execution workspace branch guard only on non-resumed sessions", () => {

@@ -2,12 +2,14 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
+  AdapterBillingType,
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestContext,
   AdapterEnvironmentTestResult,
   AdapterExecutionContext,
   AdapterExecutionResult,
 } from "@paperclipai/adapter-utils";
+import { inferOpenAiCompatibleBiller } from "@paperclipai/adapter-utils";
 import {
   ensureAdapterExecutionTargetCommandResolvable,
   readAdapterExecutionTarget,
@@ -113,11 +115,46 @@ export function buildCodexAcpConfig(config: Record<string, unknown>): Record<str
 
 function withCodexAcpDefaults(options: CodexAcpExecutorOptions): AcpxEngineExecutorOptions {
   return {
+    resolveBillingIdentity: resolveCodexAcpBillingIdentity,
     ...options,
     adapterType: "codex_local",
     moduleDir,
     packageRootDir,
   };
+}
+
+/**
+ * Classify billing the same way the Codex CLI lane does so ACP runs land in
+ * the cost ledger with a real provider/billingType instead of acpx/unknown.
+ * Host env only counts for local execution targets; remote targets see just
+ * the adapter-config env.
+ */
+export function resolveCodexAcpBillingIdentity(
+  ctx: Pick<AdapterExecutionContext, "config"> &
+    Partial<Pick<AdapterExecutionContext, "executionTarget" | "executionTransport">>,
+): { provider: string; biller: string; billingType: AdapterBillingType } {
+  const envConfig = parseObject(parseObject(ctx.config).env);
+  const target = readAdapterExecutionTarget({
+    executionTarget: ctx.executionTarget,
+    legacyRemoteExecution: ctx.executionTransport?.remoteExecution,
+  });
+  const considerHostEnv = target?.kind !== "remote";
+  const mergedEnv: NodeJS.ProcessEnv = {
+    ...(considerHostEnv ? process.env : {}),
+    ...Object.fromEntries(
+      Object.entries(envConfig).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+    ),
+  };
+  const apiKey = typeof mergedEnv.OPENAI_API_KEY === "string" && mergedEnv.OPENAI_API_KEY.trim().length > 0;
+  const billingType: AdapterBillingType = apiKey ? "api" : "subscription";
+  const openAiCompatibleBiller = inferOpenAiCompatibleBiller(mergedEnv, "openai");
+  const biller =
+    openAiCompatibleBiller === "openrouter"
+      ? "openrouter"
+      : billingType === "subscription"
+      ? "chatgpt"
+      : openAiCompatibleBiller ?? "openai";
+  return { provider: "openai", biller, billingType };
 }
 
 export function createCodexAcpExecutor(options: CodexAcpExecutorOptions = {}): CodexAcpExecutor {

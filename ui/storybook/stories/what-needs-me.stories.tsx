@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { ArrowUpDown, CheckCircle2, Inbox, Layers, ListFilter } from "lucide-react";
 import type { AttentionItem, AttentionSourceKind, AttentionSeverity, InboxDismissalKind } from "@paperclipai/shared";
@@ -503,4 +503,55 @@ export const DismissUndoToast: StoryObj = {
 
 export const ZeroState: Story = {
   args: { items: [] },
+};
+
+/**
+ * A 390×844 phone frame. Rows use container queries, so the stacked mobile
+ * layout renders here at any Storybook viewport — the row reflows off its own
+ * column width, not the browser width.
+ */
+function PhoneFrame({ children }: { children: ReactNode }) {
+  return (
+    <div className="flex justify-center bg-background p-4">
+      <div className="w-[390px] overflow-hidden rounded-xl border border-border bg-background shadow-sm">
+        {children}
+      </div>
+    </div>
+  );
+}
+
+/** Mobile: the populated queue at phone width — full-width headlines + actions. */
+export const MobilePopulated: StoryObj = {
+  name: "Mobile · Populated",
+  render: () => (
+    <PhoneFrame>
+      <Queue items={POPULATED_DATED} groupBy="date" />
+    </PhoneFrame>
+  ),
+};
+
+/** Mobile: the type-color + detail + thumbnail showcase at phone width. */
+export const MobileShowcase: StoryObj = {
+  name: "Mobile · Type colors & detail",
+  render: () => (
+    <PhoneFrame>
+      <Queue items={SHOWCASE} groupBy="type" />
+    </PhoneFrame>
+  ),
+};
+
+/** Mobile: snoozed / dismissed curtains and the restore affordance at phone width. */
+export const MobileCurtains: StoryObj = {
+  name: "Mobile · Curtains",
+  render: () => (
+    <PhoneFrame>
+      <Queue
+        items={POPULATED_DATED.slice(0, 2)}
+        groupBy="date"
+        snoozed={SNOOZED}
+        dismissed={DISMISSED}
+        openCurtains
+      />
+    </PhoneFrame>
+  ),
 };

@@ -2,7 +2,7 @@
 
 import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
-import type { AnchorHTMLAttributes, ReactElement } from "react";
+import { useState, type AnchorHTMLAttributes, type ReactElement } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AttentionItem, AttentionSourceKind } from "@paperclipai/shared";
@@ -32,6 +32,13 @@ vi.mock("../api/issues", () => ({
     rejectInteraction: vi.fn(),
   },
 }));
+
+// Spy on `relativeTime` (called exactly once per active-row render) so the
+// memoization test below can count row renders without a profiling build.
+vi.mock("../lib/utils", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../lib/utils")>();
+  return { ...original, relativeTime: vi.fn(original.relativeTime) };
+});
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -196,6 +203,25 @@ describe("AttentionQueueRow", () => {
     expect(onToggleExpand).toHaveBeenCalledTimes(1);
   });
 
+  it("exposes the visible expand chevron as an accessible button", () => {
+    const onToggleExpand = vi.fn();
+    render(
+      <AttentionQueueRow
+        item={buildItem()}
+        companyId="c1"
+        expanded={false}
+        onToggleExpand={onToggleExpand}
+        onDismiss={noop}
+      />,
+    );
+
+    const chevronButton = container?.querySelector('button[aria-label="Expand decision"]');
+    expect(chevronButton).toBeTruthy();
+    expect(chevronButton?.getAttribute("aria-expanded")).toBe("false");
+    act(() => chevronButton?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(onToggleExpand).toHaveBeenCalledWith(expect.objectContaining({ id: "a1" }));
+  });
+
   it("does not navigate on title click — the title is plain text, not a link", () => {
     render(
       <AttentionQueueRow
@@ -267,7 +293,7 @@ describe("AttentionQueueRow", () => {
     expect(row?.getAttribute("class")).toContain("ring-ring");
   });
 
-  it("renders collapsed inline decision verbs in the right-side action area with semantic variants", () => {
+  it("renders collapsed inline decision verbs in a dedicated action bar with semantic variants", () => {
     render(
       <AttentionQueueRow
         item={buildItem({
@@ -291,12 +317,11 @@ describe("AttentionQueueRow", () => {
     expect(decisionActions?.textContent).toContain("Approve");
     expect(decisionActions?.textContent).toContain("Reject");
 
+    // The action bar is its own full-width band (mobile-first) that collapses to
+    // a right-aligned pill row once the row's container is wide (container query)
+    // — no longer a stretched right column.
     const actionArea = decisionActions?.closest('[data-attention-actions="true"]');
-    expect(actionArea?.getAttribute("class")).toContain("mt-auto");
-
-    const controls = decisionActions?.closest('[data-attention-controls="true"]');
-    expect(controls?.getAttribute("class")).toContain("self-stretch");
-    expect(controls?.getAttribute("class")).toContain("justify-between");
+    expect(actionArea?.getAttribute("class")).toContain("@xl:justify-end");
 
     const rowMenu = container?.querySelector('[aria-label="Row actions"]');
     expect(rowMenu?.closest('[data-attention-menu="true"]')).toBeTruthy();
@@ -416,7 +441,7 @@ describe("AttentionQueueRow", () => {
     expect(issuesApi.rejectInteraction).not.toHaveBeenCalled();
   });
 
-  it("centers thumbnails beside the full card text stack", () => {
+  it("renders evidence thumbnails in a centered context row below the text stack", () => {
     render(
       <AttentionQueueRow
         item={buildItem({
@@ -439,6 +464,30 @@ describe("AttentionQueueRow", () => {
     const thumbnailStack = image?.parentElement?.parentElement;
     expect(thumbnailStack?.getAttribute("class")).toContain("items-center");
     expect(thumbnailStack?.parentElement?.getAttribute("class")).toContain("items-center");
+  });
+
+  it("is memoized — a parent re-render with identical props does not re-render the row", async () => {
+    const { relativeTime } = await import("../lib/utils");
+    const item = buildItem();
+    let bump: () => void = () => {};
+    function Harness() {
+      const [, setTick] = useState(0);
+      bump = () => setTick((n) => n + 1);
+      return (
+        <AttentionQueueRow
+          item={item}
+          companyId="c1"
+          expanded={false}
+          onToggleExpand={noop}
+          onDismiss={noop}
+        />
+      );
+    }
+    render(<Harness />);
+    const rendersAfterMount = vi.mocked(relativeTime).mock.calls.length;
+    expect(rendersAfterMount).toBeGreaterThan(0);
+    act(() => bump());
+    expect(vi.mocked(relativeTime).mock.calls.length).toBe(rendersAfterMount);
   });
 
   it("does not expose a toggle button for non-inline rows", () => {

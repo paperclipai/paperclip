@@ -373,6 +373,7 @@ export {
   type SecretScope,
   type StorageProvider,
   type BillingType,
+  type CostStatus,
   type FinanceEventKind,
   type FinanceDirection,
   type FinanceUnit,

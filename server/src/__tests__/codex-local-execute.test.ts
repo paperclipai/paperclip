@@ -178,6 +178,9 @@ describe("codex execute", () => {
 
       expect(result.exitCode).toBe(0);
       expect(result.errorMessage).toBeNull();
+      expect(result.usage).toEqual({ inputTokens: 1, cachedInputTokens: 0, outputTokens: 1 });
+      expect(result.usageBasis).toBe("per_run");
+      expect(result.costUsd).toBeNull();
 
       const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
       expect(capture.codexHome).toBe(managedCodexHome);
@@ -959,7 +962,9 @@ describe("codex execute", () => {
       expect(capture.prompt).toContain("## Paperclip Wake Payload");
       expect(capture.prompt).toContain("Do not switch to another issue until you have handled this wake.");
       expect(capture.prompt).toContain("- issue: PAP-1201 Fix gallery opening for inline images");
-      expect(capture.prompt).toContain("- pending comments: 0/0");
+      expect(capture.prompt).not.toContain("- pending comments:");
+      expect(capture.prompt).not.toContain("acknowledge the latest comment");
+      expect(capture.prompt).not.toContain("Execution contract:");
       expect(capture.prompt).toContain("- issue status: in_progress");
       expect(capture.prompt).toContain("- checkout: already claimed by the harness for this run");
       expect(capture.prompt).toContain("The harness already checked out this issue for the current run.");

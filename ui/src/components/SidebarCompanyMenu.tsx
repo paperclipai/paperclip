@@ -169,6 +169,7 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
       setOpen(false);
       if (isMobile) setSidebarOpen(false);
       await queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.health });
     },
   });
 

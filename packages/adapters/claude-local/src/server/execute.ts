@@ -45,6 +45,7 @@ import {
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
 } from "@paperclipai/adapter-utils/server-utils";
 import {
+  claudeModelUsageTotals,
   parseClaudeStreamJson,
   describeClaudeFailure,
   detectClaudeLoginRequired,
@@ -927,8 +928,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       };
     }
 
+    const fallbackModelUsageTotals = parsedStream.usage ? null : claudeModelUsageTotals(parsed.modelUsage);
     const usage =
       parsedStream.usage ??
+      fallbackModelUsageTotals ??
       (() => {
         const usageObj = parseObject(parsed.usage);
         return {
@@ -937,6 +940,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           outputTokens: asNumber(usageObj.output_tokens, 0),
         };
       })();
+    const usageBasis = parsedStream.usage
+      ? parsedStream.usageBasis
+      : fallbackModelUsageTotals
+      ? ("per_run" as const)
+      : null;
 
     const rawResolvedSessionId =
       parsedStream.sessionId ??
@@ -1051,6 +1059,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       retryNotBefore: transientRetryNotBefore ? transientRetryNotBefore.toISOString() : null,
       errorMeta,
       usage,
+      ...(usageBasis ? { usageBasis } : {}),
       sessionId: resolvedSessionId,
       sessionParams: resolvedSessionParams,
       sessionDisplayId: resolvedSessionId,
@@ -1058,7 +1067,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       biller: isBedrockAuth(effectiveEnv) ? "aws_bedrock" : "anthropic",
       model: parsedStream.model || asString(parsed.model, model),
       billingType,
-      costUsd: parsedStream.costUsd ?? asNumber(parsed.total_cost_usd, 0),
+      costUsd: parsedStream.costUsd,
       resultJson: mergedResultJson,
       summary: parsedStream.summary || asString(parsed.result, ""),
       clearSession:

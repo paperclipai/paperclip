@@ -32,6 +32,18 @@ function defaultGitStatusCommand() {
   );
 }
 
+function defaultGitBranchCommand() {
+  return execFileSync(
+    "git",
+    ["symbolic-ref", "--quiet", "--short", "HEAD"],
+    {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 1500,
+    },
+  );
+}
+
 function parseGitLocalChanges(output: string): ServerGitLocalChanges {
   let stagedFileCount = 0;
   let unstagedFileCount = 0;
@@ -67,7 +79,11 @@ function getGitLocalChanges(gitStatusCommand: GitCommand): ServerGitLocalChanges
   }
 }
 
-function parseGitInfo(output: string, localChanges: ServerGitLocalChanges): ServerGitInfo {
+function parseGitInfo(
+  output: string,
+  branchName: string | null,
+  localChanges: ServerGitLocalChanges,
+): ServerGitInfo {
   const [fullSha = "", shortSha = "", subject = "", committedAt = ""] = output
     .trimEnd()
     .split("\n");
@@ -81,6 +97,7 @@ function parseGitInfo(output: string, localChanges: ServerGitLocalChanges): Serv
     available: true,
     fullSha,
     shortSha,
+    branchName,
     subject: subject.trim() || "No commit subject",
     committedAt: Number.isNaN(committedAtTime) ? null : new Date(committedAtTime).toISOString(),
     localChanges,
@@ -90,22 +107,29 @@ function parseGitInfo(output: string, localChanges: ServerGitLocalChanges): Serv
 function readGitInfo(
   gitCommand: GitCommand = defaultGitCommand,
   gitStatusCommand: GitCommand = defaultGitStatusCommand,
+  gitBranchCommand: GitCommand = defaultGitBranchCommand,
 ): ServerGitInfo {
   try {
     const output = gitCommand();
     const localChanges = getGitLocalChanges(gitStatusCommand);
-    return parseGitInfo(output, localChanges);
+    let branchName: string | null = null;
+    try {
+      branchName = gitBranchCommand().trim() || null;
+    } catch {
+      branchName = null;
+    }
+    return parseGitInfo(output, branchName, localChanges);
   } catch {
     return { available: false, unavailableReason: "git_unavailable" };
   }
 }
 
 export function createServerInfoSnapshot(
-  opts: { now?: Date; gitCommand?: GitCommand; gitStatusCommand?: GitCommand } = {},
+  opts: { now?: Date; gitCommand?: GitCommand; gitStatusCommand?: GitCommand; gitBranchCommand?: GitCommand } = {},
 ): ServerInfoSnapshot {
   return {
     processStartedAt: (opts.now ?? new Date()).toISOString(),
-    git: readGitInfo(opts.gitCommand, opts.gitStatusCommand),
+    git: readGitInfo(opts.gitCommand, opts.gitStatusCommand, opts.gitBranchCommand),
   };
 }
 
@@ -119,12 +143,12 @@ const processStartedAt = new Date().toISOString();
 let gitInfoCache: { value: ServerGitInfo; expiresAt: number } | null = null;
 
 export function getServerInfoSnapshot(
-  opts: { now?: number; gitCommand?: GitCommand; gitStatusCommand?: GitCommand } = {},
+  opts: { now?: number; gitCommand?: GitCommand; gitStatusCommand?: GitCommand; gitBranchCommand?: GitCommand } = {},
 ): ServerInfoSnapshot {
   const now = opts.now ?? Date.now();
   if (!gitInfoCache || now >= gitInfoCache.expiresAt) {
     gitInfoCache = {
-      value: readGitInfo(opts.gitCommand, opts.gitStatusCommand),
+      value: readGitInfo(opts.gitCommand, opts.gitStatusCommand, opts.gitBranchCommand),
       expiresAt: now + GIT_INFO_CACHE_TTL_MS,
     };
   }
