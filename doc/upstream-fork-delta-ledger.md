@@ -8,6 +8,21 @@ Process: `git fetch upstream` → diff `upstream/master` vs merge-base → triag
 onto `sync/upstream-YYYYMMDD` → resolve schema→types→server→ui → NEW fork migrations in the
 reserved **10000+** range → drop `pnpm-lock.yaml` for CI → `tsc -b` + targeted tests + fresh-DB apply.
 
+## Testing discipline (standing rule for this routine)
+
+Every run must leave the tree green, and any *new behavior we author* must ship with a test:
+
+1. **Run, don't just merge.** Each run runs `tsc -b`, the test suites covering every file the delta
+   touches, migration numbering, and a fresh-DB apply. No red tests may remain in the tree.
+2. **Upstream features arrive with their own tests** — we adopt and run them; we do not re-author them.
+3. **Net-new fork production code → net-new tests, same change.** If a run introduces fork logic
+   (not just conflict resolution), it must add/extend tests for that behavior. Integration weeks that
+   author no new production behavior need no new production tests — but say so explicitly.
+4. **Fork ↔ upstream interaction bugs get a regression test.** When our fork deltas break an upstream
+   test (or vice-versa), fix it with a durable test-level guard, not a one-off (e.g. NEO-430).
+5. **Conflict-resolution of data/config** (drizzle journal, lockfiles) is covered by the existing
+   migration-safety / numbering / fresh-DB guards — no bespoke test required, but those guards must run.
+
 ---
 
 ## Integrated points
