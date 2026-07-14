@@ -5,6 +5,7 @@ import {
   type CurrentUserProfile,
   type UpdateCurrentUserProfile,
 } from "@paperclipai/shared";
+import { redactUrlSecrets } from "@/lib/redact-url-secrets";
 
 type AuthErrorBody =
   | {
@@ -79,7 +80,7 @@ function logAuthNetworkFailure(method: string, path: string, error: unknown) {
     method,
     requestUrl: resolveAuthUrl(path),
     pageOrigin: typeof window !== "undefined" ? window.location.origin : "(no window)",
-    pageHref: typeof window !== "undefined" ? window.location.href : "(no window)",
+    pageHref: typeof window !== "undefined" ? redactUrlSecrets(window.location.href) : "(no window)",
     credentials: "include",
     online: typeof navigator !== "undefined" ? navigator.onLine : "(no navigator)",
     errorName: error instanceof Error ? error.name : typeof error,

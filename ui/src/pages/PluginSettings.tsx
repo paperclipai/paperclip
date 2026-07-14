@@ -957,10 +957,7 @@ function PluginConfigForm({ pluginId, companyId, schema, initialValues, isLoadin
   const hasHydratedRef = useRef(false);
   useEffect(() => {
     hasHydratedRef.current = false;
-    setValues({
-      ...getDefaultValues(schema),
-      ...(initialValues ?? {}),
-    });
+    setValues(getDefaultValues(schema));
   }, [companyId, pluginId, schema]);
 
   useEffect(() => {
