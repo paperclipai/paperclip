@@ -26,6 +26,7 @@ import {
 import { trackSkillImported } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
 import { accessService, companySkillService, heartbeatService, issueService, logActivity } from "../services/index.js";
+import { parseSkillImportSourceInput } from "../services/company-skills.js";
 import {
   getCatalogSkillOrThrow,
   listCatalogSkillsOrEmpty,
@@ -126,6 +127,46 @@ export function companySkillRoutes(db: Db) {
       ...(asString(input.sourceLocator) || stored?.sourceLocator ? {
         sourceLocator: asString(input.sourceLocator) ?? stored?.sourceLocator ?? undefined,
       } : {}),
+    };
+  }
+
+  function isGitRepoImportSource(source: string) {
+    try {
+      const url = new URL(source);
+      if (url.protocol !== "https:") return false;
+      const hostname = url.hostname.toLowerCase();
+      if (hostname.endsWith(".githubusercontent.com") || hostname === "gist.github.com") return false;
+      const segments = url.pathname.split("/").filter(Boolean);
+      return segments.length >= 2 && !url.pathname.toLowerCase().endsWith(".md");
+    } catch {
+      return false;
+    }
+  }
+
+  function normalizeGitHubPolicyLocator(source: string) {
+    try {
+      const url = new URL(source);
+      const hostname = url.hostname.toLowerCase() === "www.github.com" ? "github.com" : url.hostname.toLowerCase();
+      if (hostname !== "github.com") return source;
+      const segments = url.pathname.split("/").filter(Boolean);
+      if (segments.length < 2) return source;
+      const owner = segments[0]!.toLowerCase();
+      const repo = segments[1]!.replace(/\.git$/i, "").toLowerCase();
+      const suffix = segments.slice(2).join("/");
+      return `https://github.com/${owner}/${repo}${suffix ? `/${suffix}` : ""}`;
+    } catch {
+      return source;
+    }
+  }
+
+  function skillImportPolicyResource(source: string): SkillPolicyEvaluationResource {
+    const parsed = parseSkillImportSourceInput(source);
+    const resolvedSource = parsed.resolvedSource;
+    return {
+      sourceType: normalizeSkillPolicySourceType(
+        isGitRepoImportSource(resolvedSource) ? "git" : /^https?:\/\//i.test(resolvedSource) ? "external_package" : "workspace",
+      ),
+      sourceLocator: normalizeGitHubPolicyLocator(resolvedSource),
     };
   }
 
@@ -952,12 +993,7 @@ export function companySkillRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const source = String(req.body.source ?? "");
-      await assertCanMutateCompanySkills(req, companyId, "skills.import", {
-        sourceType: normalizeSkillPolicySourceType(
-          /^https?:\/\/github\.com\//i.test(source) ? "git" : /^https?:\/\//i.test(source) ? "external_package" : "workspace",
-        ),
-        sourceLocator: source,
-      });
+      await assertCanMutateCompanySkills(req, companyId, "skills.import", skillImportPolicyResource(source));
       const result = await svc.importFromSource(companyId, source);
 
       const actor = getActorInfo(req);

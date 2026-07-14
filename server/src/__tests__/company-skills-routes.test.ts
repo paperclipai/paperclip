@@ -108,6 +108,17 @@ function denySkillChangeDecision(reason = "deny_no_grant", explanation = "Missin
   };
 }
 
+function denySkillPolicy(action = "skills.import") {
+  return {
+    allowed: false,
+    action,
+    reason: "explicit_rule",
+    policyRevision: 1,
+    matchedRuleId: "deny-skill-mutation",
+    remediation: "Contact a company administrator to change the skill policy.",
+  };
+}
+
 function registerModuleMocks() {
   vi.doMock("../routes/authz.js", async () => vi.importActual("../routes/authz.js"));
 
@@ -132,9 +143,15 @@ function registerModuleMocks() {
     agentService: () => mockAgentService,
   }));
 
-  vi.doMock("../services/company-skills.js", () => ({
-    companySkillService: () => mockCompanySkillService,
-  }));
+  vi.doMock("../services/company-skills.js", async () => {
+    const actual = await vi.importActual<typeof import("../services/company-skills.js")>(
+      "../services/company-skills.js",
+    );
+    return {
+      ...actual,
+      companySkillService: () => mockCompanySkillService,
+    };
+  });
 
   vi.doMock("../services/company-skill-policy.js", async () => {
     const actual = await vi.importActual<typeof import("../services/company-skill-policy.js")>(
@@ -807,6 +824,84 @@ describe("company skill mutation permissions", () => {
       details: { reason: "platform_invariant" },
     });
     expect(mockCompanySkillPolicyService.evaluate).not.toHaveBeenCalled();
+  });
+
+  it("blocks shorthand GitHub imports when policy denies the canonical git source locator", async () => {
+    mockAccessService.decide.mockResolvedValue(denySkillChangeDecision());
+    mockCompanySkillPolicyService.evaluate.mockImplementation(async (input: { resource?: { sourceType?: string; sourceLocator?: string } }) => {
+      const resource = input.resource ?? {};
+      return resource.sourceType === "git" && resource.sourceLocator === "https://github.com/vercel-labs/agent-browser"
+        ? denySkillPolicy("skills.import")
+        : {
+          allowed: true,
+          action: "skills.import",
+          reason: "policy_default",
+          policyRevision: 1,
+          matchedRuleId: null,
+          remediation: null,
+        };
+    });
+
+    const res = await request(await createApp({
+      type: "board",
+      userId: "board-user",
+      companyIds: ["company-1"],
+      source: "session",
+      isInstanceAdmin: false,
+    }))
+      .post("/api/companies/company-1/skills/import")
+      .send({ source: "vercel-labs/agent-browser" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Skill action denied by company policy");
+    expect(mockCompanySkillPolicyService.evaluate).toHaveBeenCalledWith(expect.objectContaining({
+      companyId: "company-1",
+      action: "skills.import",
+      resource: expect.objectContaining({
+        sourceType: "git",
+        sourceLocator: "https://github.com/vercel-labs/agent-browser",
+      }),
+    }));
+    expect(mockCompanySkillService.importFromSource).not.toHaveBeenCalled();
+  });
+
+  it("blocks npx skills add imports when policy denies the canonical git source locator", async () => {
+    mockAccessService.decide.mockResolvedValue(denySkillChangeDecision());
+    mockCompanySkillPolicyService.evaluate.mockImplementation(async (input: { resource?: { sourceType?: string; sourceLocator?: string } }) => {
+      const resource = input.resource ?? {};
+      return resource.sourceType === "git" && resource.sourceLocator === "https://github.com/vercel-labs/agent-browser"
+        ? denySkillPolicy("skills.import")
+        : {
+          allowed: true,
+          action: "skills.import",
+          reason: "policy_default",
+          policyRevision: 1,
+          matchedRuleId: null,
+          remediation: null,
+        };
+    });
+
+    const res = await request(await createApp({
+      type: "board",
+      userId: "board-user",
+      companyIds: ["company-1"],
+      source: "session",
+      isInstanceAdmin: false,
+    }))
+      .post("/api/companies/company-1/skills/import")
+      .send({ source: "npx skills add Vercel-Labs/Agent-Browser --skill agent-browser -g" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Skill action denied by company policy");
+    expect(mockCompanySkillPolicyService.evaluate).toHaveBeenCalledWith(expect.objectContaining({
+      companyId: "company-1",
+      action: "skills.import",
+      resource: expect.objectContaining({
+        sourceType: "git",
+        sourceLocator: "https://github.com/vercel-labs/agent-browser",
+      }),
+    }));
+    expect(mockCompanySkillService.importFromSource).not.toHaveBeenCalled();
   });
 
   it("serves catalog listing without mutating company skills", async () => {
