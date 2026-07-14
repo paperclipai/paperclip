@@ -14846,7 +14846,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
 
         if (!activeExecutionRun) {
-          // Only recover an unstamped legacy run for the agent being woken.
+          // Only recover an unstamped lock-owning run for the agent being woken.
+          // Lazy queued runs do not own the issue lock until claimQueuedRun()
+          // transitions them to running, so repeated wakes must not stamp them.
           // After an operator releases a stale pointer or reassigns an issue,
           // a still-live run from the former owner must not reclaim the issue.
           const legacyRun = issue.assigneeAgentId === agentId
@@ -14857,7 +14859,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 and(
                   eq(heartbeatRuns.companyId, issue.companyId),
                   eq(heartbeatRuns.agentId, issue.assigneeAgentId),
-                  inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
+                  inArray(heartbeatRuns.status, ["running", "scheduled_retry"]),
                   sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
                 ),
               )

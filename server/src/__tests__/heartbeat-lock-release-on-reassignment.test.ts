@@ -297,6 +297,64 @@ describeEmbeddedPostgres("heartbeat lock release on cross-agent reassignment", (
     expect(holder?.status).toBe("running");
   });
 
+  it("keeps a repeated same-owner queued wake lock-free until claim", async () => {
+    const { companyId, reviewerAgentId, issueId } =
+      await seedCrossAgentScenario({ holderStatus: "running" });
+
+    await db
+      .update(issues)
+      .set({
+        executionRunId: null,
+        executionAgentNameKey: null,
+        executionLockedAt: null,
+        updatedAt: new Date(),
+      })
+      .where(eq(issues.id, issueId));
+
+    // Saturate the current assignee so both wakes observe the issue run while
+    // it is still queued and therefore must not own the execution lock.
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId: reviewerAgentId,
+      invocationSource: "automation",
+      triggerDetail: "system",
+      status: "running",
+      responsibleUserId: "local-board",
+      contextSnapshot: { wakeReason: "test_concurrency_holder" },
+    });
+
+    const heartbeat = heartbeatService(db);
+    const wakeOptions = {
+      source: "assignment" as const,
+      triggerDetail: "system" as const,
+      reason: "issue_assigned",
+      payload: { issueId },
+      contextSnapshot: { issueId, taskId: issueId, wakeReason: "issue_assigned" },
+      requestedByActorType: "user" as const,
+      requestedByActorId: "local-board",
+    };
+
+    const queuedRun = await heartbeat.wakeup(reviewerAgentId, wakeOptions);
+    expect(queuedRun?.status).toBe("queued");
+
+    await heartbeat.wakeup(reviewerAgentId, wakeOptions);
+
+    const issue = await db
+      .select({ executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.executionRunId).toBeNull();
+
+    const stillQueued = await db
+      .select({ status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, queuedRun!.id))
+      .then((rows) => rows[0] ?? null);
+    expect(stillQueued?.status).toBe("queued");
+  });
+
   // Race-guard regression: the cancel UPDATE for the queued holder is pinned
   // to the exact non-running status that was read just above it. If a worker
   // races in and flips the holder from `queued` → `running` between that
