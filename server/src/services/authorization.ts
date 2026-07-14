@@ -31,6 +31,7 @@ export type AuthorizationActor =
   {
     type: "board" | "agent" | "none";
     userId?: string | null;
+    sessionId?: string | null;
     companyIds?: string[];
     memberships?: Array<{ companyId: string; membershipRole?: string | null; status?: string }>;
     onBehalfOfMemberships?: Array<{ companyId: string; membershipRole?: string | null; status?: string }>;

@@ -28,8 +28,10 @@ describe("instance settings service", () => {
       enableEnvironments: true,
       enableIsolatedWorkspaces: true,
       enableStreamlinedLeftNavigation: true,
+      enableApps: false,
       enableConferenceRoomChat: false,
       enableExternalObjects: false,
+      enableSmokeLab: false,
       enablePipelines: false,
       enableCases: false,
       enableIssuePlanDecompositions: true,
@@ -51,6 +53,12 @@ describe("instance settings service", () => {
     });
   });
 
+  it("defaults enableApps to false for empty and legacy stored settings", () => {
+    expect(normalizeExperimentalSettings(undefined).enableApps).toBe(false);
+    expect(normalizeExperimentalSettings({}).enableApps).toBe(false);
+    expect(normalizeExperimentalSettings({ enablePipelines: true }).enableApps).toBe(false);
+  });
+
   it("defaults enableConferenceRoomChat to false for empty and legacy stored settings", () => {
     expect(normalizeExperimentalSettings(undefined).enableConferenceRoomChat).toBe(false);
     expect(normalizeExperimentalSettings({}).enableConferenceRoomChat).toBe(false);
@@ -65,6 +73,14 @@ describe("instance settings service", () => {
     expect(normalizeExperimentalSettings({}).enableTaskWatchdogs).toBe(false);
     expect(
       normalizeExperimentalSettings({ enableExperimentalFileViewer: true }).enableTaskWatchdogs,
+    ).toBe(false);
+  });
+
+  it("defaults enableSmokeLab to false for empty and legacy stored settings", () => {
+    expect(normalizeExperimentalSettings(undefined).enableSmokeLab).toBe(false);
+    expect(normalizeExperimentalSettings({}).enableSmokeLab).toBe(false);
+    expect(
+      normalizeExperimentalSettings({ enableExternalObjects: true }).enableSmokeLab,
     ).toBe(false);
   });
 

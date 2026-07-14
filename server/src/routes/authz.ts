@@ -130,6 +130,7 @@ export function getActorInfo(req: Request): (
   | {
     actorType: "user";
     actorId: string;
+    sessionId: string | null;
     agentId: null;
     runId: string | null;
     actorSource: "local_implicit" | "session" | "board_key" | "cloud_tenant";
@@ -157,6 +158,7 @@ export function getActorInfo(req: Request): (
   return {
     actorType: "user" as const,
     actorId: req.actor.userId ?? "board",
+    sessionId: req.actor.sessionId ?? null,
     agentId: null,
     runId: req.actor.runId ?? null,
     actorSource,
