@@ -21,10 +21,6 @@ type AppDetailSidebarProps =
   | { kind: "connection"; connectionId: string }
   | { kind: "application"; applicationId: string };
 
-export function AppConnectionSidebar({ connectionId }: { connectionId: string }) {
-  return <AppDetailSidebar kind="connection" connectionId={connectionId} />;
-}
-
 export function AppDetailSidebar(props: AppDetailSidebarProps) {
   const { selectedCompanyId } = useCompany();
   const { isMobile, setSidebarOpen } = useSidebar();

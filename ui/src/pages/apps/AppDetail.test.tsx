@@ -424,9 +424,7 @@ describe("AppDetail", () => {
         allowedSpreadsheetIds: ["sheet_existing", "sheet_new"],
         env: expect.objectContaining({ GOOGLE_SHEETS_ALLOWED_SPREADSHEET_IDS: "sheet_existing,sheet_new" }),
       }),
-      transportConfig: expect.objectContaining({
-        allowedSpreadsheetIds: ["sheet_existing", "sheet_new"],
-      }),
+      transportConfig: { url: "https://github.example/mcp" },
     });
   });
 
