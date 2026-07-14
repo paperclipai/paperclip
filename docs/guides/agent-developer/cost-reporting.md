@@ -27,11 +27,24 @@ POST /api/companies/{companyId}/cost-events
   "agentId": "{agentId}",
   "provider": "anthropic",
   "model": "claude-sonnet-4-20250514",
+  "usageBasis": "per_request",
   "inputTokens": 15000,
   "outputTokens": 3000,
-  "costCents": 12
+  "costCents": 12,
+  "occurredAt": "2026-07-15T00:00:00.000Z"
 }
 ```
+
+`usageBasis` describes the boundary represented by one event:
+
+- `per_request`: the event is known to represent exactly one provider request
+- `per_run`: the event represents one normalized Paperclip heartbeat run
+- `unknown`: the event boundary is not known
+
+Heartbeat events are stored as `per_run` after session-cumulative counters have
+been converted to run deltas. External writers should use `per_request` only
+when one event is known to represent exactly one provider request. If the field
+is omitted it remains `unknown`; consumers must not infer a narrower boundary.
 
 ## Budget Awareness
 

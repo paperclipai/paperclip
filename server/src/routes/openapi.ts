@@ -66,6 +66,9 @@ import {
   resubmitApprovalSchema,
   addApprovalCommentSchema,
   // Cost / budget
+  BILLING_TYPES,
+  COST_STATUSES,
+  COST_USAGE_BASES,
   createCostEventSchema,
   createFinanceEventSchema,
   updateBudgetSchema,
@@ -2757,6 +2760,45 @@ registry.registerPath({
 
 // ─── Costs ───────────────────────────────────────────────────────────────────
 
+const costEventReadQuerySchema = z.object({
+  from: z.string().optional(),
+  to: z.string().optional(),
+  limit: z.string().optional(),
+  cursor: z.string().optional(),
+  billingType: z.union([
+    z.enum(BILLING_TYPES),
+    z.array(z.enum(BILLING_TYPES)),
+  ]).optional(),
+}).strict();
+
+const costEventResponseSchema = z.object({
+  id: z.string().uuid(),
+  companyId: z.string().uuid(),
+  agentId: z.string().uuid(),
+  issueId: z.string().uuid().nullable(),
+  projectId: z.string().uuid().nullable(),
+  goalId: z.string().uuid().nullable(),
+  heartbeatRunId: z.string().uuid().nullable(),
+  billingCode: z.string().nullable(),
+  provider: z.string(),
+  biller: z.string(),
+  billingType: z.enum(BILLING_TYPES),
+  costStatus: z.enum(COST_STATUSES),
+  usageBasis: z.enum(COST_USAGE_BASES),
+  model: z.string(),
+  inputTokens: z.number().int().nonnegative(),
+  cachedInputTokens: z.number().int().nonnegative(),
+  outputTokens: z.number().int().nonnegative(),
+  costCents: z.number().int().nonnegative(),
+  occurredAt: z.string().datetime(),
+  createdAt: z.string().datetime(),
+}).strict();
+
+const costEventPageResponseSchema = z.object({
+  items: z.array(costEventResponseSchema),
+  nextCursor: z.string().nullable(),
+}).strict();
+
 const costSummaryPaths = [
   "summary", "by-agent", "by-agent-model", "by-provider",
   "by-biller", "by-project", "finance-summary", "finance-by-biller",
@@ -2773,6 +2815,23 @@ for (const segment of costSummaryPaths) {
     responses: { 200: r.ok(), 401: r.unauthorized },
   });
 }
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/cost-events",
+  tags: ["costs"],
+  summary: "List normalized cost events",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: costEventReadQuerySchema,
+  },
+  responses: {
+    200: r.ok(costEventPageResponseSchema),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+  },
+});
 
 registry.registerPath({
   method: "post",

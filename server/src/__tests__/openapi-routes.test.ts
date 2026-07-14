@@ -214,4 +214,28 @@ describe("openapi routes", () => {
     expect(spec.paths["/api/board-api-keys"].post.responses["201"]).toBeDefined();
     expect(spec.paths["/api/companies/import"].post.responses["202"]).toBeDefined();
   });
+
+  it("documents the paginated cost event read and usage basis contracts", () => {
+    const { spec } = loadSpecRoutes();
+    const costEventPath = spec.paths["/api/companies/{companyId}/cost-events"] as any;
+    const readOperation = costEventPath.get;
+
+    expect(readOperation).toBeDefined();
+    expect(readOperation.responses["200"]).toBeDefined();
+    expect(readOperation.responses["400"]).toBeDefined();
+    expect(readOperation.responses["403"]).toBeDefined();
+    expect(readOperation.parameters.map((parameter: { name: string }) => parameter.name))
+      .toEqual(expect.arrayContaining(["companyId", "from", "to", "limit", "cursor", "billingType"]));
+    expect(
+      readOperation.responses["200"].content["application/json"].schema
+        .properties.items.items.properties.usageBasis,
+    ).toEqual({ type: "string", enum: ["per_request", "per_run", "unknown"] });
+
+    expect(
+      costEventPath.post.requestBody.content["application/json"].schema.properties.usageBasis,
+    ).toEqual({
+      type: "string",
+      enum: ["per_request", "per_run", "unknown"],
+    });
+  });
 });
