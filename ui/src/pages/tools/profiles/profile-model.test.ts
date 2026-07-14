@@ -158,6 +158,28 @@ describe("buildEntries", () => {
     ]);
   });
 
+  it("maps bounded allow-default selections to catalog excludes", () => {
+    const g = gmail();
+    expect(
+      buildEntries([g], { [g.appKey]: { kind: "some", included: ["g-list"] } }, [], "allow"),
+    ).toEqual([
+      { selectorType: "catalog_entry", effect: "exclude", catalogEntryId: "g-delete" },
+      { selectorType: "catalog_entry", effect: "exclude", catalogEntryId: "g-read" },
+      { selectorType: "catalog_entry", effect: "exclude", catalogEntryId: "g-send" },
+    ]);
+  });
+
+  it("maps none under allow-default to exclusions for every catalog tool", () => {
+    const g = gmail();
+    expect(buildEntries([g], { [g.appKey]: { kind: "none" } }, [], "allow")).toEqual(
+      g.tools.map((tool) => ({
+        selectorType: "catalog_entry",
+        effect: "exclude",
+        catalogEntryId: tool.id,
+      })),
+    );
+  });
+
   it("appends advanced rules", () => {
     const g = gmail();
     const out = buildEntries([g], { [g.appKey]: { kind: "none" } }, [

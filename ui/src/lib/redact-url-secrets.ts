@@ -1,7 +1,7 @@
 const REDACTED_URL_VALUE = "REDACTED";
 
 const SENSITIVE_URL_FIELD_PATTERN =
-  String.raw`(?:key|[A-Za-z0-9_-]*(?:api[-_]?key|access[-_]?token|auth(?:[-_]?token)?|token|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)[A-Za-z0-9_-]*)`;
+  String.raw`(?:code|state|nonce|key|[A-Za-z0-9_-]*(?:api[-_]?key|access[-_]?token|auth(?:[-_]?token)?|token|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)[A-Za-z0-9_-]*)`;
 const SENSITIVE_URL_FIELD_RE = new RegExp(`^${SENSITIVE_URL_FIELD_PATTERN}$`, "i");
 
 function redactSearchParams(params: URLSearchParams): boolean {

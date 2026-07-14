@@ -17,7 +17,13 @@ describe("redactUrlSecrets", () => {
   it("redacts URL user info and credential-like hash parameters", () => {
     expect(
       redactUrlSecrets("mcp+https://user:password@example.test/connect#access_token=secret&state=safe"),
-    ).toBe("mcp+https://REDACTED@example.test/connect#access_token=REDACTED&state=safe");
+    ).toBe("mcp+https://REDACTED@example.test/connect#access_token=REDACTED&state=REDACTED");
+  });
+
+  it("redacts OAuth callback parameters", () => {
+    expect(
+      redactUrlSecrets("https://example.test/oauth/callback?code=secret&state=opaque&nonce=once"),
+    ).toBe("https://example.test/oauth/callback?code=REDACTED&state=REDACTED&nonce=REDACTED");
   });
 
   it("falls back to masking secret assignments in non-standard URL text", () => {

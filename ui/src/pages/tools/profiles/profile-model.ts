@@ -204,11 +204,22 @@ export function buildEntries(
   groups: AppGroup[],
   selections: WizardSelections,
   advancedRules: AdvancedRule[] = [],
+  defaultAction: ToolProfileDefaultAction = "deny",
 ): ToolProfileEntryInput[] {
   const entries: ToolProfileEntryInput[] = [];
   for (const group of groups) {
     const selection = selections[group.appKey];
-    if (!selection || selection.kind === "none") continue;
+    if (!selection) continue;
+    if (defaultAction === "allow") {
+      const selectedIds = selectedToolIds(group, selection);
+      for (const tool of group.tools) {
+        if (!selectedIds.has(tool.id)) {
+          entries.push({ selectorType: "catalog_entry", effect: "exclude", catalogEntryId: tool.id });
+        }
+      }
+      continue;
+    }
+    if (selection.kind === "none") continue;
     if (selection.kind === "all" || selection.kind === "all_except") {
       if (group.applicationId) {
         entries.push({ selectorType: "application", effect: "include", applicationId: group.applicationId });

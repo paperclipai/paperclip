@@ -144,7 +144,7 @@ export function ProfileWizard({
       seed?: WizardSelections;
     }) => {
       const effSelections = input.seed ?? selections;
-      const entries = buildEntries(appGroups, effSelections, advancedRules);
+      const entries = buildEntries(appGroups, effSelections, advancedRules, newToolsAction);
       const metadata = withWizardMeta(existing?.metadata ?? null, {
         lastCompletedStep: input.completedStep,
         template,
@@ -184,7 +184,7 @@ export function ProfileWizard({
   const finish = useMutation({
     mutationFn: async () => {
       if (!draftId) throw new Error("No draft to finish");
-      const entries = buildEntries(appGroups, selections, advancedRules);
+      const entries = buildEntries(appGroups, selections, advancedRules, newToolsAction);
       const profile = await toolsApi.updateProfile(draftId, {
         defaultAction: newToolsAction,
         entries,
