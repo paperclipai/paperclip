@@ -1627,6 +1627,43 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     expect(rows[0]?.status).toBe("pending");
   });
 
+  it("does not supersede request confirmations for run-originated comments even under user auth", async () => {
+    // Local-CLI agents post under user auth, so authorUserId is set nondeterministically.
+    // A comment carrying createdByRunId is machine-originated and must never expire a
+    // pending decision card.
+    const { companyId, issueId } = await seedConfirmationIssue("Run-originated comment supersede exclusion");
+
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      payload: {
+        version: 1,
+        prompt: "Proceed with the current draft?",
+      },
+    }, {
+      userId: "local-board",
+    });
+
+    const expired = await interactionsSvc.expireRequestConfirmationsSupersededByComment({
+      id: issueId,
+      companyId,
+    }, {
+      id: randomUUID(),
+      createdAt: new Date(new Date(created.createdAt).getTime() + 1_000),
+      authorUserId: "local-board",
+      createdByRunId: randomUUID(),
+    }, {
+      userId: "local-board",
+    });
+
+    expect(expired).toHaveLength(0);
+    const rows = await db.select().from(issueThreadInteractions);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe("pending");
+  });
+
   it("repairs historical request confirmations superseded by later user comments idempotently", async () => {
     const { companyId, issueId } = await seedConfirmationIssue("Historical comment supersede");
     const commentId = randomUUID();
@@ -1691,6 +1728,69 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       id: issueId,
       companyId,
     })).resolves.toEqual([]);
+  });
+
+  it("does not repair historical confirmations from run-originated comments", async () => {
+    // The repair sweep must ignore machine-originated comments (createdByRunId set) even
+    // when authorUserId is present under user auth.
+    const { companyId, issueId } = await seedConfirmationIssue("Historical run-originated exclusion");
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const createdAt = new Date("2026-05-18T12:00:00.000Z");
+
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      payload: {
+        version: 1,
+        prompt: "Proceed with the current draft?",
+      },
+    }, {
+      userId: "local-board",
+    });
+    await db
+      .update(issueThreadInteractions)
+      .set({ createdAt, updatedAt: createdAt })
+      .where(eq(issueThreadInteractions.id, created.id));
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "GiskardCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "claude_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+    });
+    await db.insert(issueComments).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      authorUserId: "local-board",
+      authorType: "user",
+      createdByRunId: runId,
+      body: "SLA escalation relay posted from a heartbeat run.",
+      createdAt: new Date("2026-05-18T12:01:00.000Z"),
+      updatedAt: new Date("2026-05-18T12:01:00.000Z"),
+    });
+
+    await expect(interactionsSvc.expireRequestConfirmationsSupersededByHistoricalComments({
+      id: issueId,
+      companyId,
+    })).resolves.toEqual([]);
+    const rows = await db.select().from(issueThreadInteractions);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe("pending");
   });
 
   it("expires request confirmations when the watched issue document revision changes", async () => {
