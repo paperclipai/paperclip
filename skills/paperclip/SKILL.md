@@ -25,7 +25,7 @@ Some adapters also inject `PAPERCLIP_WAKE_PAYLOAD_JSON` on comment-driven wakes.
 
 Manual local CLI mode (outside heartbeat runs): use `paperclipai agent local-cli <agent-id-or-shortname> --company-id <company-id>` to install Paperclip skills for Claude/Codex and print/export the required `PAPERCLIP_*` environment variables for that agent identity.
 
-**Run audit trail:** You MUST include `-H 'X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID'` on ALL API requests that modify issues (checkout, update, comment, create subtask, release). This links your actions to the current heartbeat run for traceability.
+**Run audit trail (auto — never fabricate).** Your run id is carried automatically by `PAPERCLIP_API_KEY` (a run-scoped JWT); the server derives it from your credential and, when you also send the header, requires the two to match. Include `-H 'X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID'` on mutating issue requests (checkout, update, comment, create subtask, release) **only when `PAPERCLIP_RUN_ID` is actually set** — i.e. inside a heartbeat run. If `PAPERCLIP_RUN_ID` is unset or empty (e.g. an out-of-heartbeat or bridge write-back), **OMIT the header entirely**. Never invent, guess, reuse, or synthesize a run id: a non-UUID is rejected `400 invalid_run_id`, and a well-formed but non-existent UUID fails a database foreign-key check and returns `500`. Operating with no run id is valid — the write still records without one.
 
 ## The Heartbeat Procedure
 
@@ -57,7 +57,7 @@ Overrides and special cases:
 - **Blocked-task dedup:** before touching a `blocked` task, check the thread. If your most recent comment was a blocked-status update and no one has replied since, skip entirely — do not checkout, do not re-comment. Only re-engage on new context (comment, status change, event wake).
 - Nothing assigned and no valid mention handoff → exit the heartbeat.
 
-**Step 5 — Checkout.** You MUST checkout before doing any work. Include the run ID header:
+**Step 5 — Checkout.** You MUST checkout before doing any work. Include the run ID header **only when `PAPERCLIP_RUN_ID` is set** (omit it entirely if unset — never fabricate a run id):
 
 ```
 POST /api/issues/{issueId}/checkout

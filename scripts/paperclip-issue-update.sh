@@ -97,14 +97,23 @@ if [[ "$dry_run" == "1" ]]; then
   exit 0
 fi
 
-if [[ -z "${PAPERCLIP_API_URL:-}" || -z "${PAPERCLIP_API_KEY:-}" || -z "${PAPERCLIP_RUN_ID:-}" ]]; then
-  printf 'Missing PAPERCLIP_API_URL, PAPERCLIP_API_KEY, or PAPERCLIP_RUN_ID.\n' >&2
+if [[ -z "${PAPERCLIP_API_URL:-}" || -z "${PAPERCLIP_API_KEY:-}" ]]; then
+  printf 'Missing PAPERCLIP_API_URL or PAPERCLIP_API_KEY.\n' >&2
   exit 1
 fi
 
-curl -sS -X PATCH \
-  "$PAPERCLIP_API_URL/api/issues/$issue_id" \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-  -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
-  -H 'Content-Type: application/json' \
-  --data-binary "$payload"
+# The run id is auto-carried by the run JWT. Only send X-Paperclip-Run-Id when a
+# real heartbeat run id is present; if it is unset (e.g. an out-of-heartbeat or
+# bridge write-back) omit the header. Never fabricate a run id: a bogus value
+# fails the server's foreign-key check and returns HTTP 500.
+curl_args=(
+  -sS -X PATCH
+  "$PAPERCLIP_API_URL/api/issues/$issue_id"
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY"
+  -H 'Content-Type: application/json'
+)
+if [[ -n "${PAPERCLIP_RUN_ID:-}" ]]; then
+  curl_args+=(-H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID")
+fi
+
+curl "${curl_args[@]}" --data-binary "$payload"

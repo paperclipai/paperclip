@@ -11,7 +11,8 @@ Uploads a generated file from the current workspace to the current Paperclip
 issue, then creates an attachment-backed artifact work product by default.
 
 Required environment for live uploads:
-  PAPERCLIP_API_URL, PAPERCLIP_API_KEY, PAPERCLIP_COMPANY_ID, PAPERCLIP_TASK_ID, PAPERCLIP_RUN_ID
+  PAPERCLIP_API_URL, PAPERCLIP_API_KEY, PAPERCLIP_COMPANY_ID, PAPERCLIP_TASK_ID
+  (PAPERCLIP_RUN_ID optional — sent only inside a heartbeat run; never fabricate one)
 
 Options:
   --issue-id ID          Issue id to attach to (default: PAPERCLIP_TASK_ID)
@@ -96,7 +97,7 @@ request_json() {
       curl -sS -X "$method" -w '%{http_code}' -o "$response_file" \
         "$url" \
         -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-        -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
+        "${run_id_header[@]+"${run_id_header[@]}"}" \
         -H 'Content-Type: application/json' \
         --data-binary "$body"
     )"
@@ -105,7 +106,7 @@ request_json() {
       curl -sS -X "$method" -w '%{http_code}' -o "$response_file" \
         "$url" \
         -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-        -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID"
+        "${run_id_header[@]+"${run_id_header[@]}"}"
     )"
   fi
 
@@ -136,7 +137,7 @@ upload_file() {
     curl -sS -X POST -w '%{http_code}' -o "$response_file" \
       "$url" \
       -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-      -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
+      "${run_id_header[@]+"${run_id_header[@]}"}" \
       -F "file=@\"${escaped_path}\";type=${content_type}"
   )"
 
@@ -271,9 +272,17 @@ if [[ "$dry_run" == "1" ]]; then
   exit 0
 fi
 
-if [[ -z "${PAPERCLIP_API_URL:-}" || -z "${PAPERCLIP_API_KEY:-}" || -z "${PAPERCLIP_RUN_ID:-}" ]]; then
-  printf 'Missing PAPERCLIP_API_URL, PAPERCLIP_API_KEY, or PAPERCLIP_RUN_ID.\n' >&2
+if [[ -z "${PAPERCLIP_API_URL:-}" || -z "${PAPERCLIP_API_KEY:-}" ]]; then
+  printf 'Missing PAPERCLIP_API_URL or PAPERCLIP_API_KEY.\n' >&2
   exit 1
+fi
+
+# Run id auto-flows from the run JWT. Only attach X-Paperclip-Run-Id when a real
+# heartbeat run id is present; never fabricate one (a bogus id fails the server
+# foreign-key check with HTTP 500). Absent run id is valid.
+run_id_header=()
+if [[ -n "${PAPERCLIP_RUN_ID:-}" ]]; then
+  run_id_header=(-H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID")
 fi
 
 if [[ -z "$issue_id" || -z "$company_id" ]]; then
@@ -310,7 +319,7 @@ if [[ "$create_work_product" == "1" ]]; then
       --arg title "$title" \
       --arg summary "$summary" \
       --arg status "$status" \
-      --arg runId "$PAPERCLIP_RUN_ID" \
+      --arg runId "${PAPERCLIP_RUN_ID:-}" \
       --arg attachmentId "$attachment_id" \
       --arg contentType "$content_type" \
       --argjson byteSize "$byte_size" \
@@ -328,7 +337,7 @@ if [[ "$create_work_product" == "1" ]]; then
         isPrimary: $isPrimary,
         healthStatus: "unknown",
         summary: (if $summary == "" then null else $summary end),
-        createdByRunId: $runId,
+        createdByRunId: (if $runId == "" then null else $runId end),
         metadata: {
           attachmentId: $attachmentId,
           contentType: $contentType,
