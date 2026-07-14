@@ -1,5 +1,18 @@
 export type { Company } from "./company.js";
 export type {
+  GenerateSummarySlotRequest,
+  GenerateSummarySlotResponse,
+  GetSummarySlotResponse,
+  ListSummarySlotRevisionsResponse,
+  SummarySlot,
+  SummarySlotDocument,
+  SummarySlotIssueRef,
+  SummarySlotRevision,
+  SummarySlotScopeSelector,
+  WriteSummarySlotRequest,
+  WriteSummarySlotResponse,
+} from "./summary-slot.js";
+export type {
   AttentionDecisionVerb,
   AttentionDetailImage,
   AttentionFeed,
