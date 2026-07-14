@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { and, asc, desc, eq, inArray, ne, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -1040,39 +1040,60 @@ export function toolAccessPolicyService(db: Db) {
     const kind = windowKind(rule.windowSeconds);
     const resetAt = new Date(start.getTime() + rule.windowSeconds * 1000);
     const bucketKey = `${policy.id}:${rateBucket(rule, ctx)}`;
-    const [existing] = await db.select().from(toolRateLimitCounters).where(and(
+    const counterWhere = and(
       eq(toolRateLimitCounters.companyId, ctx.companyId),
       eq(toolRateLimitCounters.policyId, policy.id),
       eq(toolRateLimitCounters.counterKey, bucketKey),
       eq(toolRateLimitCounters.windowKind, kind),
       eq(toolRateLimitCounters.windowStartAt, start),
-    ));
-    const count = existing ? Math.max(0, existing.limit - existing.remaining) : 0;
-    if (count >= rule.limit) {
-      return { limited: true, count, limit: rule.limit, windowSeconds: rule.windowSeconds, bucketKey };
+    );
+    if (!consume) {
+      const [existing] = await db.select().from(toolRateLimitCounters).where(counterWhere);
+      const count = existing ? Math.max(0, existing.limit - existing.remaining) : 0;
+      return { limited: count >= rule.limit, count, limit: rule.limit, windowSeconds: rule.windowSeconds, bucketKey };
     }
-    if (consume) {
-      if (existing) {
-        await db.update(toolRateLimitCounters).set({
-          remaining: Math.max(0, existing.remaining - 1),
-          updatedAt: now,
-        }).where(eq(toolRateLimitCounters.id, existing.id));
-      } else {
-        await db.insert(toolRateLimitCounters).values({
-          companyId: ctx.companyId,
-          policyId: policy.id,
-          counterKey: bucketKey,
-          scopeType: "policy",
-          scopeId: policy.id,
-          windowKind: kind,
-          windowStartAt: start,
+
+    const [counter] = await db
+      .insert(toolRateLimitCounters)
+      .values({
+        companyId: ctx.companyId,
+        policyId: policy.id,
+        counterKey: bucketKey,
+        scopeType: "policy",
+        scopeId: policy.id,
+        windowKind: kind,
+        windowStartAt: start,
+        limit: rule.limit,
+        remaining: Math.max(0, rule.limit - 1),
+        resetAt,
+      })
+      .onConflictDoUpdate({
+        target: [
+          toolRateLimitCounters.companyId,
+          toolRateLimitCounters.policyId,
+          toolRateLimitCounters.counterKey,
+          toolRateLimitCounters.windowKind,
+          toolRateLimitCounters.windowStartAt,
+        ],
+        set: {
           limit: rule.limit,
-          remaining: Math.max(0, rule.limit - 1),
+          remaining: sql`greatest(0, least(${toolRateLimitCounters.remaining}, ${rule.limit}) - 1)`,
           resetAt,
-        });
-      }
+          updatedAt: now,
+        },
+        setWhere: gt(toolRateLimitCounters.remaining, 0),
+      })
+      .returning({ remaining: toolRateLimitCounters.remaining });
+    if (!counter) {
+      return { limited: true, count: rule.limit, limit: rule.limit, windowSeconds: rule.windowSeconds, bucketKey };
     }
-    return { limited: false, count: consume ? count + 1 : count, limit: rule.limit, windowSeconds: rule.windowSeconds, bucketKey };
+    return {
+      limited: false,
+      count: Math.max(0, rule.limit - counter.remaining),
+      limit: rule.limit,
+      windowSeconds: rule.windowSeconds,
+      bucketKey,
+    };
   }
 
   async function recordTrustRuleHit(policy: typeof toolPolicies.$inferSelect, ctx: ToolAccessContext, redaction: RedactionResult) {
