@@ -60,6 +60,8 @@ const explicitOpenApiCoverageExclusions = new Set([
   "pipelines.ts",
   // Case routes are experimental (enableCases flag) and not yet in the public OpenAPI document.
   "cases.ts",
+  // Smoke lab routes are experimental and not yet represented in the public OpenAPI document.
+  "smoke-lab.ts",
 ]);
 
 function createApp() {
