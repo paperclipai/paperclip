@@ -1,5 +1,5 @@
 import { execFile as execFileCallback } from "node:child_process";
-import { constants as fsConstants, promises as fs } from "node:fs";
+import { constants as fsConstants, promises as fs, readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -110,80 +110,10 @@ function shellQuote(value: string) {
   return `'${value.replace(/'/g, `'\"'\"'`)}'`;
 }
 
-// Co-change notice: parseAuth below mirrors hasUsableAuthPayload in
-// packages/adapters/codex-local/src/server/codex-home.ts. If the auth format
-// changes (new shape, renamed field), update both sites together.
-function buildCodexAuthMergeDecisionScript(): string {
-  return String.raw`const fs = require("fs");
-
-function parseAuth(filePath) {
-  let parsed;
-  try {
-    parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
-  } catch {
-    return { kind: "unusable" };
-  }
-
-  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-    return { kind: "unusable" };
-  }
-
-  if (typeof parsed.OPENAI_API_KEY === "string" && parsed.OPENAI_API_KEY.trim().length > 0) {
-    return { kind: "apikey" };
-  }
-
-  const tokens = parsed.tokens;
-  if (tokens === null || typeof tokens !== "object" || Array.isArray(tokens)) {
-    return { kind: "unusable" };
-  }
-
-  const accountId = typeof tokens.account_id === "string" ? tokens.account_id.trim() : "";
-  const hasTokenMaterial = ["id_token", "access_token", "refresh_token"].some((key) => {
-    const value = tokens[key];
-    return typeof value === "string" && value.trim().length > 0;
-  });
-  if (!accountId || !hasTokenMaterial) {
-    return { kind: "unusable" };
-  }
-
-  const lastRefresh = typeof parsed.last_refresh === "string" ? Date.parse(parsed.last_refresh) : NaN;
-  return {
-    kind: "subscription",
-    accountId,
-    lastRefresh: Number.isFinite(lastRefresh) ? lastRefresh : null,
-  };
-}
-
-const [sandboxAuthPath, hostAuthPath] = process.argv.slice(2);
-const sandboxAuth = parseAuth(sandboxAuthPath);
-const hostAuth = parseAuth(hostAuthPath);
-
-if (
-  hostAuth.kind === "unusable" ||
-  sandboxAuth.kind === "unusable" ||
-  sandboxAuth.kind !== hostAuth.kind
-) {
-  process.exit(20);
-}
-
-if (hostAuth.kind === "apikey") {
-  process.exit(20);
-}
-
-if (sandboxAuth.accountId !== hostAuth.accountId) {
-  process.exit(20);
-}
-
-if (
-  hostAuth.lastRefresh !== null &&
-  sandboxAuth.lastRefresh !== null &&
-  hostAuth.lastRefresh > sandboxAuth.lastRefresh
-) {
-  process.exit(20);
-}
-
-process.exit(10);`;
-}
+const CODEX_AUTH_MERGE_DECISION_SCRIPT = readFileSync(
+  new URL("./codex-auth-merge-decision.cjs", import.meta.url),
+  "utf8",
+).trimEnd();
 
 function buildExtractRuntimeAssetCommand(input: {
   adapterKey: string;
@@ -219,7 +149,7 @@ keep_sandbox=0
 if [ -f "$sandbox_auth" ]; then
   if command -v node >/dev/null 2>&1; then
     node - "$sandbox_auth" "$host_auth" <<'NODE'
-${buildCodexAuthMergeDecisionScript()}
+${CODEX_AUTH_MERGE_DECISION_SCRIPT}
 NODE
     decision_rc=$?
     if [ "$decision_rc" -eq 10 ]; then
@@ -228,7 +158,7 @@ NODE
       keep_sandbox=0
     fi
   else
-    echo "[paperclip] node not found in PATH; cannot evaluate auth-merge decision — aborting sandbox restore" >&2
+    echo "[paperclip] node not found in PATH; cannot evaluate auth-merge decision - aborting sandbox restore" >&2
     exit 1
   fi
 fi
