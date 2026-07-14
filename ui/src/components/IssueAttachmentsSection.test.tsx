@@ -33,6 +33,10 @@ vi.mock("@/components/ui/button", () => ({
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+if (!globalThis.PointerEvent) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (globalThis as any).PointerEvent = MouseEvent;
+}
 
 async function act(callback: () => void | Promise<void>) {
   let result: void | Promise<void> = undefined;
@@ -140,6 +144,116 @@ describe("IssueAttachmentsSection", () => {
     expect(downloadAll?.getAttribute("title")).toBe("Download all attachments");
     expect(downloadAll?.getAttribute("target")).toBeNull();
     expect(container.querySelector('button[aria-label="Upload attachment"]')).toBeTruthy();
+  });
+
+  it("offers individual downloads for images, markdown, videos, and generic files", async () => {
+    const attachments = [
+      makeAttachment({
+        id: "image-attachment",
+        originalFilename: "diagram.png",
+        contentType: "image/png",
+        contentPath: "/api/attachments/image-attachment/content",
+      }),
+      makeAttachment({
+        id: "markdown-attachment",
+        originalFilename: "notes.md",
+        contentType: "text/markdown",
+        contentPath: "/api/attachments/markdown-attachment/content",
+      }),
+      makeAttachment({
+        id: "video-attachment",
+        originalFilename: "demo.mp4",
+        contentType: "video/mp4",
+        contentPath: "/api/attachments/video-attachment/content",
+      }),
+      makeAttachment({
+        id: "generic-attachment",
+        originalFilename: "report.pdf",
+        contentType: "application/pdf",
+        contentPath: "/api/attachments/generic-attachment/content",
+      }),
+    ];
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueAttachmentsSection
+            attachments={attachments}
+            onDelete={vi.fn()}
+            onImageClick={vi.fn()}
+          />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    for (const attachment of attachments) {
+      const filename = attachment.originalFilename!;
+      expect(container.querySelector(`a[aria-label="Download ${filename}"]`)?.getAttribute("href")).toBe(
+        `${attachment.contentPath}?download=1`,
+      );
+    }
+  });
+
+  it("downloads images from the hover action and keeps confirmed deletion in the kebab menu", async () => {
+    const attachment = makeAttachment({
+      id: "image-attachment",
+      originalFilename: "diagram.png",
+      contentType: "image/png",
+      contentPath: "/api/attachments/image-attachment/content",
+    });
+    const onDelete = vi.fn();
+    const onImageClick = vi.fn();
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueAttachmentsSection
+            attachments={[attachment]}
+            onDelete={onDelete}
+            onImageClick={onImageClick}
+          />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    const download = container.querySelector<HTMLAnchorElement>('a[aria-label="Download diagram.png"]');
+    expect(download?.getAttribute("href")).toBe("/api/attachments/image-attachment/content?download=1");
+
+    await act(async () => {
+      download?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(onImageClick).not.toHaveBeenCalled();
+
+    const menuTrigger = container.querySelector<HTMLButtonElement>('button[aria-label="More actions for diagram.png"]');
+    expect(menuTrigger).toBeTruthy();
+    expect(container.querySelector('button[title="Delete attachment"]')).toBeNull();
+
+    await act(async () => {
+      menuTrigger?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
+    });
+    await flushReact();
+
+    const deleteItem = Array.from(document.body.querySelectorAll<HTMLElement>('[data-slot="dropdown-menu-item"]'))
+      .find((item) => item.textContent?.trim() === "Delete");
+    expect(deleteItem).toBeTruthy();
+
+    await act(async () => {
+      deleteItem?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(container.textContent).toContain("Delete?");
+    expect(onDelete).not.toHaveBeenCalled();
+
+    const confirmButton = Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
+      .find((button) => button.textContent === "Yes");
+    await act(async () => {
+      confirmButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onDelete).toHaveBeenCalledWith("image-attachment");
   });
 
   it("renders markdown attachments with the document markdown presentation", async () => {
@@ -374,7 +488,7 @@ describe("IssueAttachmentsSection", () => {
     expect(container.textContent).toContain("stored-report.pdf");
     expect(container.querySelector('a[aria-label="Open stored-report.pdf"]')).toBeTruthy();
     expect(container.querySelector('a[aria-label="Download stored-report.pdf"]')).toBeTruthy();
-    expect(container.querySelector('button[title="Delete attachment"]')).toBeNull();
+    expect(container.querySelector('button[aria-label="More actions for stored-report.pdf"]')).toBeNull();
     expect(container.textContent).not.toContain("Delete this attachment?");
   });
 });

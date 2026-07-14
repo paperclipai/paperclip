@@ -1,8 +1,14 @@
 import { useMemo, useState, type DragEvent, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { IssueAttachment } from "@paperclipai/shared";
-import { Download, ExternalLink, FileText, Maximize2, Paperclip, Trash2 } from "lucide-react";
+import { Download, ExternalLink, FileText, Maximize2, MoreHorizontal, Paperclip, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { FoldCurtain } from "./FoldCurtain";
 import { MarkdownBody } from "./MarkdownBody";
 import { OutputFileTile } from "./issue-output/OutputFileTile";
@@ -81,16 +87,25 @@ function AttachmentActions({
         </a>
       </Button>
       {onDelete ? (
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          title="Delete attachment"
-          className="text-muted-foreground hover:text-destructive"
-          onClick={() => onDelete(attachment.id)}
-          disabled={deletePending}
-        >
-          <Trash2 className="h-4 w-4" />
-        </Button>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              title="Attachment actions"
+              aria-label={`More actions for ${filename}`}
+              disabled={deletePending}
+            >
+              <MoreHorizontal className="h-4 w-4" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem variant="destructive" onSelect={() => onDelete(attachment.id)}>
+              <Trash2 className="h-4 w-4" />
+              Delete
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       ) : null}
     </div>
   );
@@ -337,19 +352,45 @@ export function IssueAttachmentsSection({
                     </button>
                   </div>
                 </div>
-              ) : onDelete ? (
-                <button
-                  type="button"
-                  className="absolute right-1.5 top-1.5 rounded-md bg-black/50 p-1 text-white opacity-0 transition-opacity hover:bg-destructive group-hover:opacity-100"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    requestDelete(attachment.id);
-                  }}
-                  title="Delete attachment"
+              ) : (
+                <div
+                  className="absolute right-1.5 top-1.5 flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100"
+                  onClick={(event) => event.stopPropagation()}
                 >
-                  <Trash2 className="h-3.5 w-3.5" />
-                </button>
-              ) : null}
+                  <a
+                    href={attachmentDownloadPath(attachment)}
+                    className="rounded-md bg-black/50 p-1 text-white hover:bg-black/70"
+                    aria-label={`Download ${attachmentFilename(attachment)}`}
+                    title="Download"
+                  >
+                    <Download className="h-3.5 w-3.5" />
+                  </a>
+                  {onDelete ? (
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <button
+                          type="button"
+                          className="rounded-md bg-black/50 p-1 text-white hover:bg-black/70"
+                          aria-label={`More actions for ${attachmentFilename(attachment)}`}
+                          title="Attachment actions"
+                          disabled={deletePending}
+                        >
+                          <MoreHorizontal className="h-3.5 w-3.5" />
+                        </button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuItem
+                          variant="destructive"
+                          onSelect={() => requestDelete(attachment.id)}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                          Delete
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  ) : null}
+                </div>
+              )}
             </div>
           ))}
         </div>
