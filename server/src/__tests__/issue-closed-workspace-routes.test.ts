@@ -139,7 +139,28 @@ function registerServiceMocks() {
   }));
 }
 
-async function createApp() {
+function boardActor() {
+  return {
+    type: "board",
+    userId: "local-board",
+    companyIds: ["company-1"],
+    source: "local_implicit",
+    isInstanceAdmin: false,
+  };
+}
+
+function agentActor() {
+  return {
+    type: "agent",
+    agentId,
+    companyId: "company-1",
+    companyIds: ["company-1"],
+    source: "api_key",
+    runId: "run-1",
+  };
+}
+
+async function createApp(actor = boardActor()) {
   const [{ issueRoutes }, { errorHandler }] = await Promise.all([
     import("../routes/issues.js"),
     import("../middleware/index.js"),
@@ -147,13 +168,7 @@ async function createApp() {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    (req as any).actor = {
-      type: "board",
-      userId: "local-board",
-      companyIds: ["company-1"],
-      source: "local_implicit",
-      isInstanceAdmin: false,
-    };
+    (req as any).actor = actor;
     next();
   });
   app.use("/api", issueRoutes({} as any, {} as any));
@@ -256,5 +271,41 @@ describe.sequential("closed isolated workspace issue routes", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.executionWorkspaceId).toBe(nextWorkspaceId);
+  });
+
+  it("allows assigned agent metadata cleanup that clears the closed execution workspace link", async () => {
+    mockIssueService.update.mockResolvedValue({
+      ...makeIssue(),
+      executionWorkspaceId: null,
+      executionWorkspacePreference: "isolated_workspace",
+    });
+
+    const res = await request(await createApp(agentActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        executionWorkspaceId: null,
+        executionWorkspacePreference: "isolated_workspace",
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.executionWorkspaceId).toBeNull();
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({
+        executionWorkspaceId: null,
+        executionWorkspacePreference: "isolated_workspace",
+        actorAgentId: agentId,
+      }),
+    );
+  });
+
+  it("still rejects assigned agent status updates when the linked isolated workspace is closed", async () => {
+    const res = await request(await createApp(agentActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "in_progress" });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toContain("closed workspace");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 });

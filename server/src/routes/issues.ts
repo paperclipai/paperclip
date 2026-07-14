@@ -533,6 +533,22 @@ function hasIssueWorkspaceAuditChange(previous: Record<string, unknown>) {
   return Object.keys(previous).some((key) => ISSUE_WORKSPACE_AUDIT_FIELDS.has(key));
 }
 
+function isClosedExecutionWorkspaceMetadataCleanupUpdate(
+  updateFields: Record<string, unknown>,
+  issue: { executionWorkspaceId?: string | null },
+) {
+  if (!issue.executionWorkspaceId) return false;
+  const updateKeys = Object.keys(updateFields);
+  if (updateKeys.length === 0) return false;
+  if (updateKeys.some((key) => !ISSUE_WORKSPACE_AUDIT_FIELDS.has(key))) return false;
+
+  const nextExecutionWorkspaceId =
+    updateFields.executionWorkspaceId === undefined
+      ? issue.executionWorkspaceId
+      : updateFields.executionWorkspaceId;
+  return nextExecutionWorkspaceId === null;
+}
+
 function labelIssueWorkspaceMode(mode: string | null) {
   switch (mode) {
     case "shared_workspace":
@@ -7745,8 +7761,14 @@ export function issueRoutes(
     }
     let interruptedRunId: string | null = null;
     const closedExecutionWorkspace = await getClosedIssueExecutionWorkspace(existing);
+    const isClosedWorkspaceMetadataCleanupUpdate = isClosedExecutionWorkspaceMetadataCleanupUpdate(
+      updateFields,
+      existing,
+    );
     const isAgentWorkUpdate =
-      req.actor.type === "agent" && (Object.keys(updateFields).length > 0 || reviewRequest !== undefined);
+      req.actor.type === "agent" &&
+      ((Object.keys(updateFields).length > 0 && !isClosedWorkspaceMetadataCleanupUpdate) ||
+        reviewRequest !== undefined);
 
     if (closedExecutionWorkspace && (commentBody || isAgentWorkUpdate)) {
       respondClosedIssueExecutionWorkspace(res, closedExecutionWorkspace);
