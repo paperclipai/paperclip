@@ -83,6 +83,9 @@ export const queryKeys = {
     testRunDetail: (companyId: string, skillId: string, runId: string) =>
       ["company-skills", companyId, skillId, "test-run", runId] as const,
   },
+  skillPolicy: {
+    effective: (companyId: string) => ["skill-policy", companyId] as const,
+  },
   teamCatalog: {
     catalog: (filters: { kind?: string; category?: string; q?: string } = {}) =>
       ["team-catalog", "catalog", filters.kind ?? "__all-kinds__", filters.category ?? "__all-categories__", filters.q ?? ""] as const,

@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState, type SVGProps } from "react";
-import { Link, useNavigate, useParams, useSearchParams } from "@/lib/router";
+import { useEffect, useMemo, useRef, useState, type ReactNode, type SVGProps } from "react";
+import { Link, useActiveCompanyPrefix, useNavigate, useParams, useSearchParams } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   AgentDesiredSkillEntry,
@@ -36,6 +36,13 @@ import { Identity } from "../components/Identity";
 import { AgentIcon } from "../components/AgentIconPicker";
 import { AgentMultiSelect } from "../components/AgentMultiSelect";
 import { useAdapterCapabilities } from "../adapters/use-adapter-capabilities";
+import {
+  PaperclipEeAffordance,
+  SkillPolicyDenialNotice,
+  SkillPolicyPeek,
+  useEeSkillPolicyAvailability,
+  useSkillPolicyDenial,
+} from "@/components/skill-studio/SkillPolicySurfaces";
 import {
   Dialog,
   DialogContent,
@@ -880,6 +887,7 @@ export function DiscoveryGrid({
   onScan,
   scanPending,
   scanStatus,
+  policyFooter,
 }: {
   tab: DiscoveryTab;
   tabCounts: Record<DiscoveryTab, number>;
@@ -903,6 +911,8 @@ export function DiscoveryGrid({
   onScan: () => void;
   scanPending: boolean;
   scanStatus: string | null;
+  /** Read-only effective-policy peek + Paperclip EE discovery affordance (§9.10). */
+  policyFooter?: ReactNode;
 }) {
   // Source filter (github / skills.sh / local / …) lives in the grid so it
   // narrows whatever the parent already filtered by tab/category/search (PAP-10907 E).
@@ -946,6 +956,9 @@ export function DiscoveryGrid({
             onSelect={onCategoryChange}
           />
         </div>
+        {policyFooter ? (
+          <div className="border-t border-border px-4 py-3">{policyFooter}</div>
+        ) : null}
       </aside>
 
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
@@ -3491,6 +3504,21 @@ export function CompanySkills() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToastActions();
   const adapterCaps = useAdapterCapabilities();
+  const companyPrefix = useActiveCompanyPrefix();
+  const ee = useEeSkillPolicyAvailability(companyPrefix);
+  const policyDenial = useSkillPolicyDenial();
+  // Route a failed skill mutation to the persistent policy banner when it is an
+  // explicit-policy (State B) or platform-safety (State C) denial; otherwise keep
+  // the existing transient error toast. This is the core "actionable denial only
+  // for real restrictions" behavior from §9.10 (PAP-13865).
+  const reportSkillError = (error: unknown, title: string, fallbackBody: string, actionLabel?: string) => {
+    if (policyDenial.capture(error, actionLabel)) return;
+    pushToast({
+      tone: "error",
+      title,
+      body: error instanceof Error && error.message ? error.message : fallbackBody,
+    });
+  };
   const [skillFilter, setSkillFilter] = useState("");
   const [source, setSource] = useState("");
   const [emptySourceHelpOpen, setEmptySourceHelpOpen] = useState(false);
@@ -3782,11 +3810,7 @@ export function CompanySkills() {
       setSource("");
     },
     onError: (error) => {
-      pushToast({
-        tone: "error",
-        title: "Skill import failed",
-        body: error instanceof Error ? error.message : "Failed to import skill source.",
-      });
+      reportSkillError(error, "Skill import failed", "Failed to import skill source.", "Importing skills");
     },
   });
 
@@ -3821,11 +3845,7 @@ export function CompanySkills() {
     },
     onError: (error) => {
       setScanStatusMessage(null);
-      pushToast({
-        tone: "error",
-        title: "Project skill scan failed",
-        body: error instanceof Error ? error.message : "Failed to scan project workspaces.",
-      });
+      reportSkillError(error, "Project skill scan failed", "Failed to scan project workspaces.", "Scanning projects for skills");
     },
   });
 
@@ -3845,11 +3865,7 @@ export function CompanySkills() {
     onError: (error) => {
       const message = error instanceof Error ? error.message : "Failed to create skill.";
       setCreateError(message);
-      pushToast({
-        tone: "error",
-        title: "Skill creation failed",
-        body: message,
-      });
+      reportSkillError(error, "Skill creation failed", "Failed to create skill.", "Creating a skill");
     },
   });
 
@@ -3950,11 +3966,7 @@ export function CompanySkills() {
       });
     },
     onError: (error) => {
-      pushToast({
-        tone: "error",
-        title: "Update failed",
-        body: error instanceof Error ? error.message : "Failed to install skill update.",
-      });
+      reportSkillError(error, "Update failed", "Failed to install skill update.", "Updating this skill");
     },
   });
 
@@ -4090,6 +4102,9 @@ export function CompanySkills() {
     onError: (error) => {
       const message = error instanceof Error ? error.message : "Failed to install catalog skill.";
       setInstallDialogState((current) => ({ ...current, error: message }));
+      // Also surface explicit-policy / platform denials in the persistent banner
+      // so the reason (and any EE remediation) stays visible after the dialog closes.
+      policyDenial.capture(error, "Installing this skill");
     },
   });
 
@@ -4212,11 +4227,7 @@ export function CompanySkills() {
       });
     },
     onError: (error) => {
-      pushToast({
-        tone: "error",
-        title: "Remove failed",
-        body: error instanceof Error ? error.message : "Failed to remove skill.",
-      });
+      reportSkillError(error, "Remove failed", "Failed to remove skill.", "Removing this skill");
     },
   });
 
@@ -4264,8 +4275,27 @@ export function CompanySkills() {
     ? "Review the fork metadata and create an editable company copy."
     : "Create an editable company skill in the Paperclip workspace.";
 
+  // Read-only effective-policy peek plus the non-blocking Paperclip EE discovery
+  // line. Neither ever gates a core skill action — they only explain policy and
+  // point at EE for detailed administration (§9.10, PAP-13865).
+  const policyFooter = (
+    <div className="space-y-2">
+      <SkillPolicyPeek companyId={selectedCompanyId} />
+      <PaperclipEeAffordance
+        availability={ee.availability}
+        pageLink={ee.pageLink}
+        settingsLink={ee.settingsLink}
+      />
+    </div>
+  );
+
   return (
     <>
+      {policyDenial.denial ? (
+        <div className="px-4 pt-4">
+          <SkillPolicyDenialNotice denial={policyDenial.denial} ee={ee} onDismiss={policyDenial.reset} />
+        </div>
+      ) : null}
       <Dialog open={deleteOpen} onOpenChange={closeDeleteDialog}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
@@ -4481,6 +4511,7 @@ export function CompanySkills() {
           onScan={() => scanProjects.mutate()}
           scanPending={scanProjects.isPending}
           scanStatus={scanStatusMessage}
+          policyFooter={policyFooter}
         />
       ) : activeView === "installed" && selectedSkillId ? (
         <SkillDetailPage
