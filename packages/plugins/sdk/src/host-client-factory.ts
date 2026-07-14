@@ -562,6 +562,9 @@ export function createHostClientHandlers(
     if (requested.kind === "none") return;
 
     if (context?.invalidInvocationScope) {
+      if (method === "localFolders.status" && requested.kind === "single" && requested.companyId) {
+        return;
+      }
       throw new InvocationScopeDeniedError(
         pluginId,
         method,
