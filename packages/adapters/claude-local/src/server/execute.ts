@@ -68,6 +68,7 @@ import {
   isClaudePoisonedPreviousMessageIdError,
   isClaudeImageProcessingError,
   isClaudeModelNotFoundError,
+  stripClaudeStreamEventLines,
 } from "./parse.js";
 import {
   materializeRemoteClaudeConfig,
@@ -937,38 +938,47 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     opts: { fallbackSessionId: string | null; clearSessionOnMissingSession?: boolean },
   ): AdapterExecutionResult => {
     const { proc, parsedStream, parsed } = attempt;
-    const loginMeta = detectClaudeLoginRequired({
-      parsed,
-      stdout: proc.stdout,
-      stderr: proc.stderr,
-    });
-    const errorMeta =
-      loginMeta.loginUrl != null
-        ? {
-            loginUrl: loginMeta.loginUrl,
-          }
-        : undefined;
 
-    if (proc.timedOut) {
-      return {
-        exitCode: proc.exitCode,
-        signal: proc.signal,
-        timedOut: true,
-        errorMessage: `Timed out after ${timeoutSec}s`,
-        errorCode: "timeout",
-        errorMeta,
-        clearSession: Boolean(opts.clearSessionOnMissingSession),
-      };
-    }
+    if (proc.timedOut || !parsed) {
+      // Keyword classifiers (auth/quota/transient) must never scan the agent
+      // conversation: assistant text routinely discusses rate limits, auth, and
+      // retries, and matching it mis-coded runs as claude_transient_upstream /
+      // claude_auth_required, chaining full-cost retries. Without a
+      // structured result, only plain-text CLI output (non-stream-json lines)
+      // is eligible. Computed here so the common structured-result path skips
+      // this full stdout re-parse.
+      const stdoutForClassification = stripClaudeStreamEventLines(proc.stdout);
+      const loginMeta = detectClaudeLoginRequired({
+        parsed,
+        stdout: stdoutForClassification,
+        stderr: proc.stderr,
+      });
+      const errorMeta =
+        loginMeta.loginUrl != null
+          ? {
+              loginUrl: loginMeta.loginUrl,
+            }
+          : undefined;
 
-    if (!parsed) {
+      if (proc.timedOut) {
+        return {
+          exitCode: proc.exitCode,
+          signal: proc.signal,
+          timedOut: true,
+          errorMessage: `Timed out after ${timeoutSec}s`,
+          errorCode: "timeout",
+          errorMeta,
+          clearSession: Boolean(opts.clearSessionOnMissingSession),
+        };
+      }
+
       const fallbackErrorMessage = parseFallbackErrorMessage(proc);
       const providerQuota =
         !loginMeta.requiresLogin &&
         (proc.exitCode ?? 0) !== 0 &&
         isClaudeProviderQuotaError({
           parsed: null,
-          stdout: proc.stdout,
+          stdout: stdoutForClassification,
           stderr: proc.stderr,
           errorMessage: fallbackErrorMessage,
         });
@@ -978,14 +988,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         (proc.exitCode ?? 0) !== 0 &&
         isClaudeTransientUpstreamError({
           parsed: null,
-          stdout: proc.stdout,
+          stdout: stdoutForClassification,
           stderr: proc.stderr,
           errorMessage: fallbackErrorMessage,
         });
       const transientRetryNotBefore = providerQuota || transientUpstream
         ? extractClaudeRetryNotBefore({
             parsed: null,
-            stdout: proc.stdout,
+            stdout: stdoutForClassification,
             stderr: proc.stderr,
             errorMessage: fallbackErrorMessage,
           })
@@ -1092,6 +1102,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const errorMessage = failed
       ? describeClaudeFailure(parsed) ?? `Claude exited with code ${proc.exitCode ?? -1}`
       : null;
+    // With a structured result available, classify failures only from that
+    // result (error text, structured errors) plus stderr — never from the
+    // stream stdout — and only when the run actually failed. Successful runs
+    // whose final message merely mentioned auth or rate limits were previously
+    // mis-coded claude_auth_required / claude_transient_upstream.
+    const loginMeta = failed
+      ? detectClaudeLoginRequired({ parsed, stdout: "", stderr: proc.stderr })
+      : { requiresLogin: false, loginUrl: null };
+    const errorMeta =
+      loginMeta.loginUrl != null ? { loginUrl: loginMeta.loginUrl } : undefined;
     const providerQuota =
       failed &&
       !loginMeta.requiresLogin &&
@@ -1099,7 +1119,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       !poisonedPreviousMessageId &&
       isClaudeProviderQuotaError({
         parsed,
-        stdout: proc.stdout,
+        stdout: "",
         stderr: proc.stderr,
         errorMessage,
       });
@@ -1111,14 +1131,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       !providerQuota &&
       isClaudeTransientUpstreamError({
         parsed,
-        stdout: proc.stdout,
+        stdout: "",
         stderr: proc.stderr,
         errorMessage,
       });
     const transientRetryNotBefore = providerQuota || transientUpstream
       ? extractClaudeRetryNotBefore({
           parsed,
-          stdout: proc.stdout,
+          stdout: "",
           stderr: proc.stderr,
           errorMessage,
         })
@@ -1166,6 +1186,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       exitCode: proc.exitCode,
       signal: proc.signal,
       timedOut: false,
+      // Explicit success signal: a structured subtype=success / is_error=false
+      // result is authoritative even when the process exit code is nonzero
+      // (terminal-result cleanup SIGTERMs the CLI after a successful result).
+      succeeded: parsedSucceeded,
       errorMessage,
       errorCode: resolvedErrorCode,
       errorFamily,

@@ -501,6 +501,22 @@ function isRetryableInteractionContinuationInfrastructureFailure(
   );
 }
 
+// A run whose structured adapter result reported success must never be
+// retried as a transient failure, regardless of how its error code/family was
+// labelled. Guards against classifier regressions that mis-coded successful
+// heartbeats claude_transient_upstream and chained full-cost retries.
+// Prefers the adapter-agnostic `adapterSucceeded` flag persisted at
+// finalization; falls back to the raw Claude result-event fields for rows
+// written before that flag existed.
+function isAdapterReportedSuccessRun(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "resultJson">,
+) {
+  const resultJson = parseObject(run.resultJson);
+  if (resultJson.adapterSucceeded === true) return true;
+  const subtype = readNonEmptyString(resultJson.subtype)?.trim().toLowerCase();
+  return subtype === "success" && resultJson.is_error !== true && resultJson.is_error !== "true";
+}
+
 function mergeAdapterRecoveryMetadata(input: {
   resultJson: Record<string, unknown> | null | undefined;
   errorFamily?: string | null;
@@ -9515,6 +9531,26 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const now = opts?.now ?? new Date();
     const retryReason = opts?.retryReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON;
     const wakeReason = opts?.wakeReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON;
+    if (retryReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON && isAdapterReportedSuccessRun(run)) {
+      const reason =
+        "Transient retry suppressed because the adapter reported a successful structured result";
+      await appendRunEvent(run, await nextRunEventSeq(run.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: reason,
+        payload: {
+          retryReason,
+          errorCode: run.errorCode,
+        },
+      });
+      return {
+        outcome: "not_scheduled" as const,
+        reason,
+        errorCode: "adapter_reported_success" as const,
+        issueId: readNonEmptyString(parseObject(run.contextSnapshot).issueId),
+      };
+    }
     const maxAttempts = Math.max(0, Math.floor(opts?.maxAttempts ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS));
     const nextAttempt = (run.scheduledRetryAttempt ?? 0) + 1;
     const computedBaseSchedule = opts?.delayMs != null
@@ -13683,7 +13719,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         outcome = latestRun.status;
       } else if (adapterResult.timedOut) {
         outcome = "timed_out";
-      } else if ((adapterResult.exitCode ?? 0) === 0 && !adapterResult.errorMessage) {
+      } else if (
+        !adapterResult.errorMessage &&
+        // Adapters that emit a structured result report success explicitly;
+        // trust it over the raw exit code so runs SIGTERMed by terminal-result
+        // cleanup after a successful result are not marked failed.
+        (adapterResult.succeeded === true || (adapterResult.exitCode ?? 0) === 0)
+      ) {
         outcome = "succeeded";
       } else {
         outcome = "failed";
@@ -13790,6 +13832,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               resultJson: {
                 ...parseObject(adapterResult.resultJson),
                 configFreshness: configFreshnessResultMetadata,
+                ...(adapterResult.succeeded === true ? { adapterSucceeded: true } : {}),
               },
               errorFamily: adapterResult.errorFamily ?? null,
               retryNotBefore: adapterResult.retryNotBefore ?? null,

@@ -13,12 +13,20 @@ import {
 
 async function writeFailingClaudeCommand(
   commandPath: string,
-  options: { resultEvent: Record<string, unknown>; exitCode?: number },
+  options: {
+    resultEvent: Record<string, unknown>;
+    exitCode?: number;
+    streamEvents?: Array<Record<string, unknown>>;
+  },
 ): Promise<void> {
-  const payload = JSON.stringify(options.resultEvent);
+  const lines = [...(options.streamEvents ?? []), options.resultEvent].map((event) =>
+    JSON.stringify(event),
+  );
   const exit = options.exitCode ?? 1;
   const script = `#!/usr/bin/env node
-console.log(${JSON.stringify(payload)});
+for (const line of ${JSON.stringify(lines)}) {
+  console.log(line);
+}
 process.exit(${exit});
 `;
   await fs.writeFile(commandPath, script, "utf8");
@@ -41,6 +49,54 @@ process.exit(${exit});
 `;
   await fs.writeFile(commandPath, script, "utf8");
   await fs.chmod(commandPath, 0o755);
+}
+
+// Shared driver for the misclassification regression tests below: provisions a
+// temp workspace + fake claude command, runs execute() with the standard
+// fixture agent/config, and cleans up.
+async function executeWithClaudeCommand(
+  runId: string,
+  tmpPrefix: string,
+  commandWriter: (commandPath: string) => Promise<void>,
+) {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), tmpPrefix));
+  const workspace = path.join(root, "workspace");
+  const commandPath = path.join(root, "claude");
+  await fs.mkdir(workspace, { recursive: true });
+  await commandWriter(commandPath);
+  const previousHome = process.env.HOME;
+  process.env.HOME = root;
+  try {
+    return await execute({
+      runId,
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Claude Coder",
+        adapterType: "claude_local",
+        adapterConfig: { engine: "cli" },
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        engine: "cli",
+        command: commandPath,
+        cwd: workspace,
+        promptTemplate: "Follow the paperclip heartbeat.",
+      },
+      context: {},
+      authToken: "run-jwt-token",
+      onLog: async () => {},
+    });
+  } finally {
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    await fs.rm(root, { recursive: true, force: true });
+  }
 }
 
 async function writeFakeClaudeCommand(commandPath: string): Promise<void> {
@@ -1464,6 +1520,7 @@ describe("claude execute", () => {
       });
 
       expect(result.exitCode).toBe(1);
+      expect(result.succeeded).toBe(true);
       expect(result.errorMessage).toBeNull();
       expect(result.errorCode).toBeNull();
       expect(result.summary).toBe("Implemented the requested change.");
@@ -1472,6 +1529,160 @@ describe("claude execute", () => {
       else process.env.HOME = previousHome;
       await fs.rm(root, { recursive: true, force: true });
     }
+  });
+
+  it("does not mis-code a successful run whose conversation mentions rate limits or auth", async () => {
+    const sessionId = "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa";
+    const result = await executeWithClaudeCommand(
+      "run-claude-success-keywords",
+      "paperclip-claude-execute-success-keywords-",
+      (commandPath) =>
+        writeFailingClaudeCommand(commandPath, {
+          // Simulates the terminal-result-cleanup SIGTERM: successful structured
+          // result but a nonzero process exit (observed as exit 143 in prod).
+          exitCode: 143,
+          streamEvents: [
+            { type: "system", subtype: "init", session_id: sessionId, model: "claude-fable-5" },
+            {
+              type: "assistant",
+              session_id: sessionId,
+              message: {
+                content: [
+                  {
+                    type: "text",
+                    text: "The API returned 429 rate limit errors earlier; when unauthorized, users must run /login. If the service is overloaded, try again later.",
+                  },
+                ],
+              },
+            },
+          ],
+          resultEvent: {
+            type: "result",
+            subtype: "success",
+            session_id: sessionId,
+            is_error: false,
+            result: "Deployed the monitoring fix and verified the dashboard.",
+            usage: { input_tokens: 1, cache_read_input_tokens: 0, output_tokens: 1 },
+          },
+        }),
+    );
+
+    expect(result.succeeded).toBe(true);
+    expect(result.errorMessage).toBeNull();
+    expect(result.errorCode).toBeNull();
+    expect(result.errorFamily ?? null).toBeNull();
+  });
+
+  it("does not classify a failed run as transient from conversation keywords alone", async () => {
+    const sessionId = "bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb";
+    const result = await executeWithClaudeCommand(
+      "run-claude-failed-keywords",
+      "paperclip-claude-execute-failed-keywords-",
+      (commandPath) =>
+        writeFailingClaudeCommand(commandPath, {
+          exitCode: 1,
+          streamEvents: [
+            { type: "system", subtype: "init", session_id: sessionId, model: "claude-fable-5" },
+            {
+              type: "assistant",
+              session_id: sessionId,
+              message: {
+                content: [
+                  {
+                    type: "text",
+                    text: "Investigating the 429 rate limit storm: the upstream was overloaded and clients should try again later.",
+                  },
+                ],
+              },
+            },
+          ],
+          resultEvent: {
+            type: "result",
+            subtype: "error_during_execution",
+            session_id: sessionId,
+            is_error: true,
+            result: "Something unrelated broke while writing the report.",
+          },
+        }),
+    );
+
+    expect(result.succeeded ?? false).toBe(false);
+    expect(result.errorCode).not.toBe("claude_transient_upstream");
+    expect(result.errorCode).not.toBe("provider_quota");
+    expect(result.errorCode).not.toBe("claude_auth_required");
+    expect(result.errorFamily ?? null).toBeNull();
+  });
+
+  it("classifies the Fable usage-credits limit message as provider quota", async () => {
+    const result = await executeWithClaudeCommand(
+      "run-claude-fable-limit",
+      "paperclip-claude-execute-fable-limit-",
+      (commandPath) =>
+        writeFailingClaudeCommand(commandPath, {
+          resultEvent: {
+            type: "result",
+            subtype: "success",
+            session_id: "cccccccc-3333-4333-8333-cccccccccccc",
+            is_error: true,
+            result: "You've reached your Fable 5 limit. Run /usage-credits to continue or switch models with /model.",
+          },
+        }),
+    );
+
+    expect(result.succeeded ?? false).toBe(false);
+    expect(result.errorCode).toBe("provider_quota");
+    expect(result.errorFamily).toBe("provider_quota");
+  });
+
+  it("classifies 'API Error: Connection closed mid-response' as transient", async () => {
+    const result = await executeWithClaudeCommand(
+      "run-claude-conn-closed",
+      "paperclip-claude-execute-conn-closed-",
+      (commandPath) =>
+        writeFailingClaudeCommand(commandPath, {
+          resultEvent: {
+            type: "result",
+            subtype: "success",
+            session_id: "dddddddd-4444-4444-8444-dddddddddddd",
+            is_error: true,
+            result: "API Error: Connection closed mid-response. The response above may be incomplete.",
+          },
+        }),
+    );
+
+    expect(result.succeeded ?? false).toBe(false);
+    expect(result.errorCode).toBe("claude_transient_upstream");
+    expect(result.errorFamily).toBe("transient_upstream");
+  });
+
+  it("does not classify a crashed stream (no result event) as transient from assistant text", async () => {
+    const sessionId = "eeeeeeee-5555-4555-8555-eeeeeeeeeeee";
+    const streamLines = [
+      JSON.stringify({ type: "system", subtype: "init", session_id: sessionId, model: "claude-fable-5" }),
+      JSON.stringify({
+        type: "assistant",
+        session_id: sessionId,
+        message: {
+          content: [
+            { type: "text", text: "Users hit 429 rate limit responses; the upstream is overloaded, try again later." },
+          ],
+        },
+      }),
+    ].join("\n");
+    const result = await executeWithClaudeCommand(
+      "run-claude-crash-keywords",
+      "paperclip-claude-execute-crash-keywords-",
+      (commandPath) =>
+        writeTextFailingClaudeCommand(commandPath, {
+          stdout: `${streamLines}\n`,
+          stderr: "claude: fatal: unexpected internal error\n",
+          exitCode: 1,
+        }),
+    );
+
+    expect(result.succeeded ?? false).toBe(false);
+    expect(result.errorCode).not.toBe("claude_transient_upstream");
+    expect(result.errorCode).not.toBe("provider_quota");
   });
 
   it("classifies rate-limit / overloaded failures without reset metadata as transient", async () => {
