@@ -39,7 +39,7 @@ interface BrowserTileProps {
 const BrowserTile = memo(function BrowserTile({ run, now, compact, onExpand }: BrowserTileProps) {
   const { status, frame } = useBrowserStream(run.id);
   const isActive = run.status === "queued" || run.status === "running";
-  const presentation = !isActive && !frame
+  const presentation = !isActive
     ? { label: "Session ended", icon: null, className: "bg-white/10 text-slate-300" }
     : statusPresentation(status);
   const StatusIcon = presentation.icon;
@@ -95,7 +95,7 @@ function ExpandedBrowser({ run }: { run: LiveRunForIssue }) {
         <span className={cn("rounded-full px-2.5 py-1 text-xs", presentation.className)}>{presentation.label}</span>
       </div>
       <div className="flex aspect-video max-h-[75vh] items-center justify-center bg-black">
-        {frame ? <img src={frame} alt={`${run.agentName} expanded browser viewport`} className="h-full w-full object-contain" /> : <p className="text-sm text-slate-400">Waiting for this agent to open agent-browser…</p>}
+        {frame ? <img src={frame} alt={`${run.agentName} expanded browser viewport`} className="h-full w-full object-contain" /> : <p className="text-sm text-slate-400">Waiting for this agent to open Camoufox…</p>}
       </div>
     </div>
   );

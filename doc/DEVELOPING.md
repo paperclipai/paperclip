@@ -196,6 +196,12 @@ then bind them to an agent or project environment. Assign a project-specific
 profile in Browsers → Profiles when projects must not share login state.
 Project env overrides agent defaults during issue runs.
 
+Multi-step Camoufox scripts must run through `paperclip-camoufox-python`. It
+instruments Playwright navigation, locator, keyboard, mouse, and form actions
+and publishes fresh viewport frames to the issue live-browser stream. Local
+agent runs also inject the instrumentation path as a fail-safe, but agents must
+still use the managed launcher rather than bypassing it with the raw venv path.
+
 `PAPERCLIP_HOME` and `PAPERCLIP_INSTANCE_ID` override the home root and instance id respectively. `paperclipai onboard` echoes the resolved values in its banner (`Local home: <home> | instance: <id> | config: <path>`) so you can confirm where state will land before continuing.
 
 ## Database in Dev (Auto-Handled)

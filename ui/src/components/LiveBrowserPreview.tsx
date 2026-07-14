@@ -8,7 +8,7 @@ export type BrowserStreamProvider = "agent-browser" | "camoufox";
 export function useBrowserStream(runId: string) {
   const [status, setStatus] = useState<BrowserStreamStatus>("waiting");
   const [frame, setFrame] = useState<string | null>(null);
-  const [provider, setProvider] = useState<BrowserStreamProvider>("agent-browser");
+  const [provider, setProvider] = useState<BrowserStreamProvider>("camoufox");
 
   useEffect(() => {
     setStatus("waiting");
@@ -94,7 +94,7 @@ export function LiveBrowserPreview({ runId, agentName }: LiveBrowserPreviewProps
 
       {!collapsed ? (
         <div className="relative aspect-video min-h-48 w-full bg-[radial-gradient(circle_at_center,rgba(14,165,233,0.08),transparent_55%)]">
-          <img src={frame} alt="Live agent browser viewport" className="h-full w-full object-contain" />
+          <img src={frame} alt="Live Camoufox browser viewport" className="h-full w-full object-contain" />
         </div>
       ) : null}
     </section>

@@ -80,6 +80,7 @@ export const MAX_CAPTURE_BYTES = 4 * 1024 * 1024;
 export const MAX_EXCERPT_BYTES = 32 * 1024;
 const TERMINAL_RESULT_SCAN_OVERLAP_CHARS = 64 * 1024;
 const DEFAULT_PAPERCLIP_INSTANCE_ID = "default";
+const PAPERCLIP_CAMOUFOX_LIVE_RUNTIME = "/app/scripts/browser/camoufox-live";
 const PATH_SEGMENT_RE = /^[a-zA-Z0-9_-]+$/;
 const SENSITIVE_ENV_KEY = /(key|token|secret|password|passwd|authorization|cookie)/i;
 const REDACTED_LOG_VALUE = "***REDACTED***";
@@ -172,7 +173,8 @@ export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = [
   "- When the board explicitly requests the live, native, or managed browser, use Paperclip's managed browser commands. A custom Playwright/Puppeteer script, direct headless browser, reusable launch helper, or screenshots are not a substitute for the live browser stream.",
   "- Browser profile state belongs to the selected company/project profile, not a heartbeat run. Do not open a browser merely because an earlier comment used one; only run browser commands when the current work needs navigation.",
   "- Camoufox is the only enabled managed browser provider. Start with `paperclip-browser-open <url>` or `paperclip-camoufox <url>` and never invoke `agent-browser`; managed Paperclip runs reject direct agent-browser commands.",
-  "- Run managed Camoufox actions sequentially and wait for each to finish. Reuse the selected Camoufox profile state and never create a private browser profile or override Paperclip's profile/scope environment.",
+  "- Run managed Camoufox actions sequentially and wait for each to finish. Multi-step Python workflows must run through `paperclip-camoufox-python <script>` so navigation, locator, keyboard, mouse, and form actions automatically publish frames to the issue live-browser card; never call `/opt/camoufox/bin/python` directly.",
+  "- Reuse the selected Camoufox profile state and never create a private browser profile or override Paperclip's profile/scope environment.",
   "- For email OTP, OAuth, or approval flows, preserve the original page and open the secondary service in another page within the same Camoufox context. Do not navigate the original login page away and rely on Back.",
 ].join("\n");
 
@@ -882,7 +884,8 @@ export function renderPaperclipWakePrompt(
       "- Do not use ordinary Chromium, agent-browser, direct Puppeteer, `headless: true`, an opaque batch browser script, or uploaded screenshots as a substitute.",
       "- Existing scripts may inform selectors or workflow logic, but the requested interaction itself must run through virtual-headful Camoufox and publish observable frames to the issue.",
       "- Never override Paperclip's browser profile, scope, artifact, or runtime-home environment. Managed runs reject direct agent-browser commands even when a provider override is supplied.",
-      "- Run Camoufox actions sequentially and wait for each command to finish. Reuse Camoufox's saved storage state; do not create a private browser profile.",
+      "- Run Camoufox actions sequentially and wait for each command to finish. Multi-step scripts must use `paperclip-camoufox-python <script>`; this launcher publishes frames after meaningful Playwright actions. Do not bypass the observable launcher with direct `/opt/camoufox/bin/python` execution.",
+      "- Reuse Camoufox's saved storage state; do not create a private browser profile.",
       "- If authentication requires email OTP or another site, keep the original login page open and create a second page in the same Camoufox context, then return to the original page. Do not destroy pending login state by reusing one page.",
       "- Before claiming visible progress, verify that managed browser commands have executed in this heartbeat. If the managed browser cannot run, report that blocker instead of silently switching to an invisible browser.",
     );
@@ -1442,6 +1445,14 @@ export function refreshPaperclipWorkspaceEnvForExecution(input: {
     input.env[key] = value;
   }
   Object.assign(input.env, managedBrowserEnv);
+  if (!input.executionTargetIsRemote && input.env.PAPERCLIP_BROWSER_SCOPE_ID) {
+    input.env.PAPERCLIP_CAMOUFOX_LIVE_RUNTIME = PAPERCLIP_CAMOUFOX_LIVE_RUNTIME;
+    const existingPythonPath = input.env.PYTHONPATH?.trim();
+    const pythonPathEntries = existingPythonPath?.split(path.delimiter).filter(Boolean) ?? [];
+    input.env.PYTHONPATH = pythonPathEntries.includes(PAPERCLIP_CAMOUFOX_LIVE_RUNTIME)
+      ? pythonPathEntries.join(path.delimiter)
+      : [PAPERCLIP_CAMOUFOX_LIVE_RUNTIME, ...pythonPathEntries].join(path.delimiter);
+  }
   if (typeof input.env.AGENT_BROWSER_SESSION_NAME === "string" && input.env.AGENT_BROWSER_SESSION_NAME.trim()) {
     input.env.AGENT_BROWSER_RESTORE = input.env.AGENT_BROWSER_SESSION_NAME;
   }

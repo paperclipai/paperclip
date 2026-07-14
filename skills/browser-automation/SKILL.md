@@ -28,7 +28,7 @@ For simple navigation:
 paperclip-browser-open https://example.com
 ```
 
-For a continued workflow, use Camoufox's Playwright-compatible Python API with `headless="virtual"`. Run meaningful actions sequentially, wait for navigation/state changes, and publish a fresh viewport frame after each meaningful step so the board can follow progress. Do not conceal an entire journey inside one opaque batch command.
+For a continued workflow, use Camoufox's Playwright-compatible Python API with `headless="virtual"`, and run the script through `paperclip-camoufox-python`. This managed Python launcher automatically publishes a fresh viewport frame after navigation, locator, keyboard, mouse, and form actions so the board can follow progress. Run meaningful actions sequentially and do not conceal an entire journey inside one opaque batch command.
 
 Existing automation scripts may be read for selectors and workflow knowledge, but the requested interaction itself must run through Camoufox. If managed Camoufox cannot complete the workflow, report the blocker instead of silently switching providers.
 
@@ -53,6 +53,12 @@ with Camoufox(headless="virtual", humanize=True) as browser:
 ```
 
 Both pages must use the same context so they retain the selected profile and pending authentication flow. Close only the temporary page when it is no longer needed.
+
+Run the saved script with the observable launcher:
+
+```sh
+paperclip-camoufox-python ./auth-flow.py
+```
 
 ## Scope and persistent login state
 
@@ -80,7 +86,7 @@ The managed navigation command uses Camoufox's virtual display and saves cookies
 paperclip-camoufox https://example.com
 ```
 
-For multi-step work, run Camoufox scripts with `/opt/camoufox/bin/python` and keep reusable scripts under the persistent agent or project workspace, never `/tmp`:
+For multi-step work, run Camoufox scripts with `paperclip-camoufox-python` and keep reusable scripts under the persistent agent or project workspace, never `/tmp`:
 
 ```python
 from camoufox.sync_api import Camoufox
@@ -91,7 +97,7 @@ with Camoufox(headless="virtual", humanize=True) as browser:
     print(page.title())
 ```
 
-Prefer `paperclip-browser-open` or `paperclip-camoufox` for simple navigation. A multi-step script must load and save the selected profile's exact `camoufox-state.json` and publish viewport screenshots to `/paperclip/browser-artifacts` using the current `PAPERCLIP_BROWSER_SCOPE_ID`. Never invoke agent-browser during the workflow.
+Prefer `paperclip-browser-open` or `paperclip-camoufox` for simple navigation. A multi-step script must load and save the selected profile's exact `camoufox-state.json`, and it must run through `paperclip-camoufox-python` so every meaningful action updates the issue live-browser card automatically. Do not call `/opt/camoufox/bin/python` directly and never invoke agent-browser during the workflow.
 
 ## Safety
 

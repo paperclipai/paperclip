@@ -83,6 +83,7 @@ RUN python3 -m venv /opt/camoufox \
   && chmod 1777 /opt/runtime-cache \
   && ln -s /opt/camoufox/bin/camoufox /usr/local/bin/camoufox
 RUN install -m 0755 /app/scripts/browser/paperclip-camoufox /usr/local/bin/paperclip-camoufox \
+  && install -m 0755 /app/scripts/browser/paperclip-camoufox-python /usr/local/bin/paperclip-camoufox-python \
   && install -m 0755 /app/scripts/browser/paperclip-browser-open /usr/local/bin/paperclip-browser-open \
   && ln -sf /usr/local/lib/node_modules/agent-browser/bin/agent-browser-linux-x64 /usr/local/bin/agent-browser-real \
   && rm -f /usr/local/bin/agent-browser \

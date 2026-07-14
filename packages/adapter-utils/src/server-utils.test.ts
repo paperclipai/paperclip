@@ -532,6 +532,7 @@ describe("renderPaperclipWakePrompt", () => {
     );
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("never invoke `agent-browser`");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Run managed Camoufox actions sequentially");
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("paperclip-camoufox-python <script>");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("another page within the same Camoufox context");
   });
 
@@ -557,6 +558,8 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt).toContain("uploaded screenshots as a substitute");
     expect(prompt).toContain("Managed runs reject direct agent-browser commands");
     expect(prompt).toContain("Run Camoufox actions sequentially");
+    expect(prompt).toContain("paperclip-camoufox-python <script>");
+    expect(prompt).toContain("Do not bypass the observable launcher with direct `/opt/camoufox/bin/python` execution");
     expect(prompt).toContain("create a second page in the same Camoufox context");
   });
 
@@ -1193,6 +1196,7 @@ describe("refreshPaperclipWorkspaceEnvForExecution", () => {
       PAPERCLIP_BROWSER_IDLE_TIMEOUT_SECONDS: "3600",
       AGENT_BROWSER_SESSION_NAME: "paperclip-company-1-default",
       AGENT_BROWSER_RESTORE: "paperclip-company-1-default",
+      PYTHONPATH: "/workspace/python",
     };
 
     refreshPaperclipWorkspaceEnvForExecution({
@@ -1225,6 +1229,8 @@ describe("refreshPaperclipWorkspaceEnvForExecution", () => {
       PAPERCLIP_BROWSER_IDLE_TIMEOUT_SECONDS: "3600",
       AGENT_BROWSER_SESSION_NAME: "paperclip-company-1-project-finance",
       AGENT_BROWSER_RESTORE: "paperclip-company-1-project-finance",
+      PAPERCLIP_CAMOUFOX_LIVE_RUNTIME: "/app/scripts/browser/camoufox-live",
+      PYTHONPATH: `/app/scripts/browser/camoufox-live${path.delimiter}/workspace/python`,
     });
   });
 });

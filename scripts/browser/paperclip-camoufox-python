@@ -1,0 +1,13 @@
+#!/bin/sh
+set -eu
+
+CAMOUFOX_PYTHON="${PAPERCLIP_CAMOUFOX_PYTHON:-/opt/camoufox/bin/python}"
+LIVE_RUNTIME="${PAPERCLIP_CAMOUFOX_LIVE_RUNTIME:-/app/scripts/browser/camoufox-live}"
+
+if [ -n "${PYTHONPATH:-}" ]; then
+  export PYTHONPATH="$LIVE_RUNTIME:$PYTHONPATH"
+else
+  export PYTHONPATH="$LIVE_RUNTIME"
+fi
+
+exec "$CAMOUFOX_PYTHON" "$@"

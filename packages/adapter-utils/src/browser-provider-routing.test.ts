@@ -13,6 +13,10 @@ const managedAgentBrowser = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "../../../scripts/browser/agent-browser-managed",
 );
+const camoufoxPythonLauncher = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "../../../scripts/browser/paperclip-camoufox-python",
+);
 
 async function fakeBrowserPath() {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-provider-routing-"));
@@ -81,5 +85,25 @@ describe("managed browser provider routing", () => {
       code: 69,
       stderr: expect.stringContaining("agent-browser is disabled"),
     });
+  });
+
+  it("injects live-frame instrumentation into multi-step Camoufox scripts", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-camoufox-python-"));
+    tempRoots.push(root);
+    const fakePython = path.join(root, "python");
+    await fs.writeFile(fakePython, "#!/bin/sh\nprintf 'pythonpath=%s\\nscript=%s\\n' \"$PYTHONPATH\" \"$1\"\n");
+    await fs.chmod(fakePython, 0o755);
+
+    const result = await execFileAsync("/bin/sh", [camoufoxPythonLauncher, "./flow.py"], {
+      env: {
+        ...process.env,
+        PYTHONPATH: "existing-pythonpath",
+        PAPERCLIP_CAMOUFOX_PYTHON: fakePython,
+        PAPERCLIP_CAMOUFOX_LIVE_RUNTIME: "/managed/camoufox-live",
+      },
+    });
+
+    expect(result.stdout).toContain("pythonpath=/managed/camoufox-live:existing-pythonpath");
+    expect(result.stdout).toContain("script=./flow.py");
   });
 });

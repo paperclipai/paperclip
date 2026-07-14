@@ -295,7 +295,7 @@ function browserCommandLabel(input: unknown): string | null {
   const command = commandText(input);
   if (!command) return null;
   if (/(?:^|[\s/])agent-browser(?:\s|$)/i.test(command)) return "Browser · agent-browser";
-  if (/(?:^|[\s/])(?:python(?:3)?\s+-m\s+)?camoufox(?:\s|$)/i.test(command)) return "Browser · Camoufox";
+  if (/(?:^|[\s/])(?:paperclip-browser-open|paperclip-camoufox(?:-python)?|(?:python(?:3)?\s+-m\s+)?camoufox)(?:\s|$)/i.test(command)) return "Browser · Camoufox";
   return null;
 }
 
