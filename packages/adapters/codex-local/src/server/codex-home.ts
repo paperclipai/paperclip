@@ -7,7 +7,6 @@ import { resolvePaperclipInstanceRootForAdapter } from "@paperclipai/adapter-uti
 const TRUTHY_ENV_RE = /^(1|true|yes|on)$/i;
 const COPIED_SHARED_FILES = ["config.json", "config.toml", "instructions.md"] as const;
 const SYMLINKED_SHARED_FILES = ["auth.json"] as const;
-const AUTH_CREDENTIAL_KEYS = /(?:openai[_-]?key|api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|session|auth)/i;
 const MANAGED_MCP_BLOCK_START = "# BEGIN PAPERCLIP MANAGED MCP";
 const MANAGED_MCP_BLOCK_END = "# END PAPERCLIP MANAGED MCP";
 
@@ -39,15 +38,30 @@ export async function pathExists(candidate: string): Promise<boolean> {
   return fs.access(candidate).then(() => true).catch(() => false);
 }
 
+// Co-change notice: this function's logic is mirrored by parseAuth in
+// packages/adapter-utils/src/sandbox-managed-runtime.ts (buildCodexAuthMergeDecisionScript).
+// If the auth format changes (new shape, renamed field), update both sites together.
 function hasUsableAuthPayload(authPayload: unknown): boolean {
   if (authPayload === null || typeof authPayload !== "object" || Array.isArray(authPayload)) {
     return false;
   }
 
-  for (const [key, value] of Object.entries(authPayload as Record<string, unknown>)) {
-    if (!AUTH_CREDENTIAL_KEYS.test(key)) continue;
-    if (key.toLowerCase() === "token_type") continue;
-    if (typeof value === "string" && value.trim().length > 0) return true;
+  const parsedPayload = authPayload as Record<string, unknown>;
+  const apiKey = parsedPayload.OPENAI_API_KEY;
+  if (typeof apiKey === "string" && apiKey.trim().length > 0) {
+    return true;
+  }
+
+  const tokens = parsedPayload.tokens;
+  if (tokens !== null && typeof tokens === "object" && !Array.isArray(tokens)) {
+    const parsedTokens = tokens as Record<string, unknown>;
+    const accountId = parsedTokens.account_id;
+    const hasAccountId = typeof accountId === "string" && accountId.trim().length > 0;
+    const hasTokenMaterial = ["id_token", "access_token", "refresh_token"].some((key) => {
+      const value = parsedTokens[key];
+      return typeof value === "string" && value.trim().length > 0;
+    });
+    if (hasAccountId && hasTokenMaterial) return true;
   }
 
   return false;

@@ -110,6 +110,152 @@ function shellQuote(value: string) {
   return `'${value.replace(/'/g, `'\"'\"'`)}'`;
 }
 
+// Co-change notice: parseAuth below mirrors hasUsableAuthPayload in
+// packages/adapters/codex-local/src/server/codex-home.ts. If the auth format
+// changes (new shape, renamed field), update both sites together.
+function buildCodexAuthMergeDecisionScript(): string {
+  return String.raw`const fs = require("fs");
+
+function parseAuth(filePath) {
+  let parsed;
+  try {
+    parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
+  } catch {
+    return { kind: "unusable" };
+  }
+
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return { kind: "unusable" };
+  }
+
+  if (typeof parsed.OPENAI_API_KEY === "string" && parsed.OPENAI_API_KEY.trim().length > 0) {
+    return { kind: "apikey" };
+  }
+
+  const tokens = parsed.tokens;
+  if (tokens === null || typeof tokens !== "object" || Array.isArray(tokens)) {
+    return { kind: "unusable" };
+  }
+
+  const accountId = typeof tokens.account_id === "string" ? tokens.account_id.trim() : "";
+  const hasTokenMaterial = ["id_token", "access_token", "refresh_token"].some((key) => {
+    const value = tokens[key];
+    return typeof value === "string" && value.trim().length > 0;
+  });
+  if (!accountId || !hasTokenMaterial) {
+    return { kind: "unusable" };
+  }
+
+  const lastRefresh = typeof parsed.last_refresh === "string" ? Date.parse(parsed.last_refresh) : NaN;
+  return {
+    kind: "subscription",
+    accountId,
+    lastRefresh: Number.isFinite(lastRefresh) ? lastRefresh : null,
+  };
+}
+
+const [sandboxAuthPath, hostAuthPath] = process.argv.slice(2);
+const sandboxAuth = parseAuth(sandboxAuthPath);
+const hostAuth = parseAuth(hostAuthPath);
+
+if (
+  hostAuth.kind === "unusable" ||
+  sandboxAuth.kind === "unusable" ||
+  sandboxAuth.kind !== hostAuth.kind
+) {
+  process.exit(20);
+}
+
+if (hostAuth.kind === "apikey") {
+  process.exit(20);
+}
+
+if (sandboxAuth.accountId !== hostAuth.accountId) {
+  process.exit(20);
+}
+
+if (
+  hostAuth.lastRefresh !== null &&
+  sandboxAuth.lastRefresh !== null &&
+  hostAuth.lastRefresh > sandboxAuth.lastRefresh
+) {
+  process.exit(20);
+}
+
+process.exit(10);`;
+}
+
+function buildExtractRuntimeAssetCommand(input: {
+  adapterKey: string;
+  assetKey: string;
+  remoteAssetDir: string;
+  remoteAssetTar: string;
+}): string {
+  if (input.adapterKey !== "codex" || input.assetKey !== "home") {
+    return `rm -rf ${shellQuote(input.remoteAssetDir)} && ` +
+      `mkdir -p ${shellQuote(input.remoteAssetDir)} && ` +
+      `tar -xf ${shellQuote(input.remoteAssetTar)} -C ${shellQuote(input.remoteAssetDir)} && ` +
+      `rm -f ${shellQuote(input.remoteAssetTar)}`;
+  }
+
+  return `asset_dir=${shellQuote(input.remoteAssetDir)}
+asset_tar=${shellQuote(input.remoteAssetTar)}
+auth_name=auth.json
+stage_root="$asset_dir.paperclip-extract.$$"
+stage_dir="$stage_root/stage"
+preserve_dir="$stage_root/preserve"
+sandbox_auth="$asset_dir/$auth_name"
+host_auth="$stage_dir/$auth_name"
+preserve_auth="$preserve_dir/$auth_name"
+cleanup() {
+  rm -rf "$stage_root" "$asset_tar"
+}
+trap cleanup EXIT HUP INT TERM
+rm -rf "$stage_root" &&
+mkdir -p "$stage_dir" "$preserve_dir" &&
+tar -xf "$asset_tar" -C "$stage_dir" || exit 1
+
+keep_sandbox=0
+if [ -f "$sandbox_auth" ]; then
+  if command -v node >/dev/null 2>&1; then
+    node - "$sandbox_auth" "$host_auth" <<'NODE'
+${buildCodexAuthMergeDecisionScript()}
+NODE
+    decision_rc=$?
+    if [ "$decision_rc" -eq 10 ]; then
+      keep_sandbox=1
+    else
+      keep_sandbox=0
+    fi
+  else
+    echo "[paperclip] node not found in PATH; cannot evaluate auth-merge decision — aborting sandbox restore" >&2
+    exit 1
+  fi
+fi
+
+if [ "$keep_sandbox" -eq 1 ]; then
+  if ! ( umask 077 && rm -f "$preserve_auth" && cat "$sandbox_auth" > "$preserve_auth" ); then
+    keep_sandbox=0
+  fi
+fi
+
+rm -rf "$asset_dir" || exit 1
+mkdir -p "$asset_dir" || exit 1
+find "$stage_dir" -mindepth 1 -maxdepth 1 ! -name "$auth_name" -exec mv -f -- {} "$asset_dir/" \\; || exit 1
+
+source_auth="$host_auth"
+if [ "$keep_sandbox" -eq 1 ] && [ -f "$preserve_auth" ]; then
+  source_auth="$preserve_auth"
+fi
+
+if [ -f "$source_auth" ]; then
+  target_auth="$asset_dir/$auth_name"
+  target_tmp="$asset_dir/.auth.json.paperclip.$$"
+  ( umask 077 && rm -f "$target_tmp" && cat "$source_auth" > "$target_tmp" ) || exit 1
+  mv -f "$target_tmp" "$target_auth" || exit 1
+fi`;
+}
+
 export function parseSandboxRemoteExecutionSpec(value: unknown): SandboxRemoteExecutionSpec | null {
   const parsed = asObject(value);
   const transport = asString(parsed.transport).trim();
@@ -575,10 +721,12 @@ export async function prepareSandboxManagedRuntime(input: {
       await assetUpload.finish(assetTarBytes.byteLength, assetTarBytes.byteLength);
       await input.client.run(
         `sh -c ${shellQuote(
-          `rm -rf ${shellQuote(remoteAssetDir)} && ` +
-            `mkdir -p ${shellQuote(remoteAssetDir)} && ` +
-            `tar -xf ${shellQuote(remoteAssetTar)} -C ${shellQuote(remoteAssetDir)} && ` +
-            `rm -f ${shellQuote(remoteAssetTar)}`,
+          buildExtractRuntimeAssetCommand({
+            adapterKey: input.adapterKey,
+            assetKey: asset.key,
+            remoteAssetDir,
+            remoteAssetTar,
+          }),
         )}`,
         { timeoutMs: input.spec.timeoutMs },
       );
