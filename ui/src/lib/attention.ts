@@ -483,6 +483,10 @@ export function sortAttentionItems(items: AttentionItem[], order: AttentionSortO
   });
 }
 
+export function defaultExpandedAttentionId(items: AttentionItem[], order: AttentionSortOrder): string | null {
+  return sortAttentionItems(items, order).find((item) => isInlineResolvable(item))?.id ?? null;
+}
+
 export function attentionItemMatchesFilters(item: AttentionItem, filters: AttentionFilterState): boolean {
   if (filters.sourceKinds.length > 0 && !filters.sourceKinds.includes(item.sourceKind)) return false;
   if (filters.severities.length > 0 && !filters.severities.includes(item.severity)) return false;

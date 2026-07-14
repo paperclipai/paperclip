@@ -16,6 +16,7 @@ import {
   ATTENTION_SORT_OPTIONS,
   buildAttentionFilterOptions,
   countActiveAttentionFilters,
+  defaultExpandedAttentionId,
   defaultAttentionFilterState,
   filterAttentionItems,
   groupAttentionItems,
@@ -279,9 +280,8 @@ export function WhatNeedsMe() {
   // Auto-expand the topmost inline-capable decision, once.
   useEffect(() => {
     if (autoExpandDone || activeItems.length === 0) return;
-    const sorted = sortAttentionItems(activeItems, sortOrder);
-    const topInline = sorted.find((item) => isInlineResolvable(item));
-    if (topInline) setExpandedId(topInline.id);
+    const topInlineId = defaultExpandedAttentionId(activeItems, sortOrder);
+    if (topInlineId) setExpandedId(topInlineId);
     setAutoExpandDone(true);
   }, [activeItems, autoExpandDone, sortOrder]);
 
