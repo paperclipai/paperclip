@@ -115,6 +115,16 @@ function resolveWorktreeRuntimeContext(
   const configPath = resolvePaperclipConfigPath(overrideConfigPath);
   const envPath = resolvePaperclipEnvPath(configPath);
   const persistedEnv = readEnvEntries(envPath);
+
+  // PAPERCLIP_IN_WORKTREE can leak in from a parent process or a sourced env
+  // file while config resolution still points at a non-worktree target (for
+  // example the default instance under <home>/instances/default). Only adopt
+  // a target as a worktree when its config sits in a `<root>/.paperclip/`
+  // layout and its own persisted env already declares it a worktree;
+  // otherwise the repair would rewrite main-instance config and env files.
+  if (path.basename(path.dirname(configPath)) !== ".paperclip") return null;
+  if (persistedEnv.PAPERCLIP_IN_WORKTREE !== "true") return null;
+
   const persistedConfigPath = nonEmpty(persistedEnv.PAPERCLIP_CONFIG);
   const persistedConfigLooksStale =
     persistedConfigPath !== null &&
