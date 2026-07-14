@@ -1506,6 +1506,13 @@
       "when": 1786467952000,
       "tag": "0216_issue_completion_requirement",
       "breakpoints": true
+    },
+    {
+      "idx": 217,
+      "version": "7",
+      "when": 1786467953000,
+      "tag": "0217_delivery_attestations",
+      "breakpoints": true
     }
   ]
 }

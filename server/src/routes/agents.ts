@@ -55,6 +55,7 @@ import {
   logActivity,
   syncInstructionsBundleConfigFromFilePath,
   workspaceOperationService,
+  deliveryAttestationService,
 } from "../services/index.js";
 import { badRequest, conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
@@ -387,6 +388,7 @@ export function agentRoutes(
   const instructions = agentInstructionsService();
   const companySkills = companySkillService(db);
   const workspaceOperations = workspaceOperationService(db);
+  const deliveryAttestations = deliveryAttestationService(db);
   const instanceSettings = instanceSettingsService(db);
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
 
@@ -4590,6 +4592,19 @@ export function agentRoutes(
     const executionWorkspaceId = asNonEmptyString(context?.executionWorkspaceId);
     const operations = await workspaceOperations.listForRun(runId, executionWorkspaceId);
     res.json(redactCurrentUserValue(operations, await getCurrentUserRedactionOptions()));
+  });
+
+  router.get("/heartbeat-runs/:runId/delivery-attestations", async (req, res) => {
+    const runId = req.params.runId as string;
+    const run = await heartbeat.getRun(runId);
+    if (!run) {
+      res.status(404).json({ error: "Heartbeat run not found" });
+      return;
+    }
+    assertCompanyAccess(req, run.companyId);
+
+    const attestations = await deliveryAttestations.listForRun(runId, run.companyId);
+    res.json(attestations);
   });
 
   router.get("/workspace-operations/:operationId/log", async (req, res) => {

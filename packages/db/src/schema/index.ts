@@ -34,6 +34,7 @@ export { environmentCustomImageTemplates } from "./environment_custom_image_temp
 export { environmentCustomImageSetupSessions } from "./environment_custom_image_setup_sessions.js";
 export { adapterAuthSessions } from "./adapter_auth_sessions.js";
 export { workspaceOperations } from "./workspace_operations.js";
+export { deliveryAttestations } from "./delivery_attestations.js";
 export { workspaceRuntimeServices } from "./workspace_runtime_services.js";
 export { projectGoals } from "./project_goals.js";
 export { goals } from "./goals.js";

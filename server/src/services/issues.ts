@@ -129,6 +129,7 @@ import {
   type ActivityPublication,
 } from "./activity-log.js";
 import { buildIssueChanges } from "./issue-change-receipt.js";
+import { deliveryAttestationService } from "./delivery-attestations.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
@@ -3136,6 +3137,8 @@ const issueListSelect = {
   unblockDescriptor: issues.unblockDescriptor,
   blockedTransitionAt: issues.blockedTransitionAt,
   blockedOwnerNotifiedAt: issues.blockedOwnerNotifiedAt,
+  completionRequirement: issues.completionRequirement,
+  completionRequirementRevision: issues.completionRequirementRevision,
   startedAt: issues.startedAt,
   completedAt: issues.completedAt,
   cancelledAt: issues.cancelledAt,
@@ -4345,6 +4348,7 @@ async function countBlockedInboxIssues(dbOrTx: any, companyId: string, filters?:
 export function issueService(db: Db) {
   const instanceSettings = instanceSettingsService(db);
   const treeControlSvc = issueTreeControlService(db);
+  const deliveryAttestations = deliveryAttestationService(db);
 
   function normalizeCreateIssueTitle(title: string) {
     return title.trim().replace(/\s+/g, " ").toLowerCase();
@@ -5395,6 +5399,53 @@ export function issueService(db: Db) {
       })
       .returning();
     return row;
+  /**
+   * Terminal `done`-transition gate for `workspace_delivery` issues
+   * (doc/execution-semantics.md, "Terminal transition contract"). Requires a
+   * `succeeded` delivery attestation scoped to this exact company + issue +
+   * completion-requirement revision. Scoping by issueId (rather than, say,
+   * just companyId or providerKey) is what prevents an unrelated sibling
+   * run's attestation from satisfying this issue's completion.
+   */
+  async function assertDeliveryAttestationSatisfied(input: {
+    companyId: string;
+    issueId: string;
+    completionRequirement: string | null;
+    completionRequirementRevision: number;
+    deliveryAttestationId?: string;
+  }) {
+    if (input.completionRequirement !== "workspace_delivery") return;
+
+    if (input.deliveryAttestationId) {
+      const attestation = await deliveryAttestations.getById(input.deliveryAttestationId, {
+        companyId: input.companyId,
+        issueId: input.issueId,
+      });
+      if (
+        attestation &&
+        attestation.outcome === "succeeded" &&
+        attestation.declarationRevision === input.completionRequirementRevision
+      ) {
+        return;
+      }
+      throw unprocessable("Delivery attestation is required to complete this issue", {
+        code: "delivery_attestation_required",
+        completionRequirementRevision: input.completionRequirementRevision,
+      });
+    }
+
+    const candidates = await deliveryAttestations.findSucceededForIssue({
+      companyId: input.companyId,
+      issueId: input.issueId,
+      declarationRevision: input.completionRequirementRevision,
+    });
+    if (candidates.length === 1) return;
+
+    throw unprocessable("Delivery attestation is required to complete this issue", {
+      code: "delivery_attestation_required",
+      completionRequirementRevision: input.completionRequirementRevision,
+      matchingAttestationCount: candidates.length,
+    });
   }
 
   return {
@@ -7472,6 +7523,7 @@ export function issueService(db: Db) {
         blockedByIssueIds?: string[];
         actorAgentId?: string | null;
         actorUserId?: string | null;
+        deliveryAttestationId?: string;
       },
       dbOrTx: any = db,
       postCommitActivityPublications?: ActivityPublication[],
@@ -7490,6 +7542,7 @@ export function issueService(db: Db) {
         blockedByIssueIds,
         actorAgentId,
         actorUserId,
+        deliveryAttestationId,
         ...issueData
       } = data;
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
@@ -7608,6 +7661,16 @@ export function issueService(db: Db) {
           executionWorkspaceId: nextExecutionWorkspaceId ?? null,
           executionWorkspacePreference: nextExecutionWorkspacePreference ?? null,
           executionWorkspaceSettings: issueData.executionWorkspaceSettings,
+        });
+      }
+
+      if (patch.status === "done" && existing.status !== "done") {
+        await assertDeliveryAttestationSatisfied({
+          companyId: existing.companyId,
+          issueId: existing.id,
+          completionRequirement: existing.completionRequirement,
+          completionRequirementRevision: existing.completionRequirementRevision,
+          deliveryAttestationId,
         });
       }
 
