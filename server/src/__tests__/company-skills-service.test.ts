@@ -28,6 +28,15 @@ describeEmbeddedPostgres("companySkillService.list", () => {
   let paperclipHome: string | null = null;
   const cleanupDirs = new Set<string>();
 
+  async function createManagedSkillDir(companyId: string, prefix: string) {
+    if (!paperclipHome) throw new Error("Expected Paperclip test home");
+    const managedRoot = path.join(paperclipHome, "instances", "default", "skills", companyId);
+    await fs.mkdir(managedRoot, { recursive: true });
+    const skillDir = await fs.mkdtemp(path.join(managedRoot, prefix));
+    cleanupDirs.add(skillDir);
+    return skillDir;
+  }
+
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-company-skills-service-");
     oldPaperclipHome = process.env.PAPERCLIP_HOME;
@@ -344,8 +353,7 @@ describeEmbeddedPostgres("companySkillService.list", () => {
 
   it("does not retouch unchanged local-path imports", async () => {
     const companyId = randomUUID();
-    const skillDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-idempotent-import-skill-"));
-    cleanupDirs.add(skillDir);
+    const skillDir = await createManagedSkillDir(companyId, "idempotent-import-skill-");
     await fs.writeFile(
       path.join(skillDir, "SKILL.md"),
       "---\nname: Idempotent Import Skill\n---\n\n# Idempotent Import Skill\n",
@@ -377,8 +385,7 @@ describeEmbeddedPostgres("companySkillService.list", () => {
 
   it("refreshes local-path imports with legacy null metadata fields", async () => {
     const companyId = randomUUID();
-    const skillDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-null-metadata-import-skill-"));
-    cleanupDirs.add(skillDir);
+    const skillDir = await createManagedSkillDir(companyId, "null-metadata-import-skill-");
     await fs.writeFile(
       path.join(skillDir, "SKILL.md"),
       "---\nname: Null Metadata Import Skill\n---\n\n# Null Metadata Import Skill\n",
@@ -1330,8 +1337,7 @@ describeEmbeddedPostgres("companySkillService.list", () => {
 
   it("imports sibling reference files when the source is a direct SKILL.md path", async () => {
     const companyId = randomUUID();
-    const skillDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-file-import-skill-"));
-    cleanupDirs.add(skillDir);
+    const skillDir = await createManagedSkillDir(companyId, "file-import-skill-");
     await fs.mkdir(path.join(skillDir, "references"), { recursive: true });
     await fs.writeFile(
       path.join(skillDir, "SKILL.md"),
@@ -1358,8 +1364,7 @@ describeEmbeddedPostgres("companySkillService.list", () => {
 
   it("bounds direct root SKILL.md imports to known support directories", async () => {
     const companyId = randomUUID();
-    const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-root-skill-"));
-    cleanupDirs.add(repoDir);
+    const repoDir = await createManagedSkillDir(companyId, "root-skill-");
     await fs.mkdir(path.join(repoDir, "references"), { recursive: true });
     await fs.mkdir(path.join(repoDir, "server", "src"), { recursive: true });
     await fs.writeFile(
