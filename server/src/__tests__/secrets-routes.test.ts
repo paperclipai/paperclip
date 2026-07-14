@@ -929,7 +929,9 @@ describe("secret routes", () => {
       const res = await request(createApp({ type: "none" }))
         .get("/api/companies/company-1/secrets/catalog");
 
-      expect(res.status).toBe(401);
+      // assertBoardOrAgent throws forbidden (403) for all non-agent/non-board actors;
+      // it does not call assertAuthenticated first, so type:"none" gets 403, not 401.
+      expect(res.status).toBe(403);
     });
 
     it("rejects agents from a different company", async () => {
