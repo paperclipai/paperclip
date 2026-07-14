@@ -382,6 +382,51 @@ describe("issue execution policy transitions", () => {
       // status should NOT be overridden — caller can set done
       expect(result.patch.status).toBeUndefined();
     });
+
+    it("agent approver approves → marks completed (allows done)", () => {
+      const agentPolicy = makePolicy([
+        { type: "review", participants: [{ type: "agent", agentId: qaAgentId }] },
+        { type: "approval", participants: [{ type: "agent", agentId: ctoAgentId }] },
+      ]);
+      const reviewStageId = agentPolicy.stages[0].id;
+      const approvalStageId = agentPolicy.stages[1].id;
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_review",
+          assigneeAgentId: ctoAgentId,
+          assigneeUserId: null,
+          executionPolicy: agentPolicy,
+          executionState: {
+            status: "pending",
+            currentStageId: approvalStageId,
+            currentStageIndex: 1,
+            currentStageType: "approval",
+            currentParticipant: { type: "agent", agentId: ctoAgentId },
+            returnAssignee: { type: "agent", agentId: coderAgentId },
+            completedStageIds: [reviewStageId],
+            lastDecisionId: null,
+            lastDecisionOutcome: null,
+          },
+        },
+        policy: agentPolicy,
+        requestedStatus: "done",
+        requestedAssigneePatch: {},
+        actor: { agentId: ctoAgentId },
+        commentBody: "Approved. Ship it.",
+      });
+
+      expect(result.patch.executionState).toMatchObject({
+        status: "completed",
+        completedStageIds: expect.arrayContaining([reviewStageId, approvalStageId]),
+        lastDecisionOutcome: "approved",
+      });
+      expect(result.decision).toMatchObject({
+        stageId: approvalStageId,
+        stageType: "approval",
+        outcome: "approved",
+      });
+      expect(result.patch.status).toBeUndefined();
+    });
   });
 
   describe("changes requested flow", () => {

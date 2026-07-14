@@ -125,6 +125,23 @@ describeEmbeddedPostgres("companyService", () => {
     expect(afterReconcileRows.filter((row) => readBuiltInAgentMarker(row.metadata)?.key === "reflection-coach")).toHaveLength(1);
   });
 
+  it("removes built-in routines before deleting their assignee agents", async () => {
+    const created = await companyService(db).create({
+      name: "Routine Cleanup Company",
+    });
+
+    const routineRows = await db.select().from(routines).where(eq(routines.companyId, created.id));
+    expect(routineRows).toHaveLength(1);
+    expect(routineRows[0]?.assigneeAgentId).toBeTruthy();
+
+    const removed = await companyService(db).remove(created.id);
+    expect(removed?.id).toBe(created.id);
+
+    await expect(db.select().from(companies).where(eq(companies.id, created.id))).resolves.toHaveLength(0);
+    await expect(db.select().from(routines).where(eq(routines.companyId, created.id))).resolves.toHaveLength(0);
+    await expect(db.select().from(agents).where(eq(agents.companyId, created.id))).resolves.toHaveLength(0);
+  });
+
   it("archives companies by pausing runnable agents and cancelling active runs", async () => {
     const companyId = randomUUID();
     const runningAgentId = randomUUID();

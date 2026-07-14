@@ -28,6 +28,7 @@ import {
   companyMemberships,
   companySkills,
   documents,
+  routines,
 } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
 import { environmentService } from "./environments.js";
@@ -457,6 +458,7 @@ export function companyService(db: Db) {
         await tx.delete(companyMemberships).where(eq(companyMemberships.companyId, id));
         await tx.delete(companySkills).where(eq(companySkills.companyId, id));
         await tx.delete(issueReadStates).where(eq(issueReadStates.companyId, id));
+        await tx.delete(routines).where(eq(routines.companyId, id));
         await tx.delete(documents).where(eq(documents.companyId, id));
         await tx.delete(issues).where(eq(issues.companyId, id));
         await tx.delete(companyLogos).where(eq(companyLogos.companyId, id));
