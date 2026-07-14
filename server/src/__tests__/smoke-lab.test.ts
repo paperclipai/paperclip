@@ -313,6 +313,26 @@ describeEmbeddedPostgres("smoke lab service pack and results API", () => {
       .expect(400);
   });
 
+  it("does not trust the Host header as the OAuth redirect origin", async () => {
+    const company = await createCompany(db);
+    await enableSmokeLab(db);
+    const app = createRouteApp(db);
+    vi.stubEnv("PAPERCLIP_PUBLIC_URL", "");
+    vi.stubEnv("PAPERCLIP_AUTH_PUBLIC_BASE_URL", "");
+    vi.stubEnv("BETTER_AUTH_URL", "");
+    vi.stubEnv("BETTER_AUTH_BASE_URL", "");
+
+    await request(app)
+      .get(`/api/companies/${company.id}/smoke-lab/oauth/authorize`)
+      .set("Host", "attacker.example")
+      .query({
+        client_id: "smoke-client",
+        redirect_uri: "http://attacker.example/callback",
+        response_type: "code",
+      })
+      .expect(403);
+  });
+
   it("installs smoke fixtures idempotently into tool access tables", async () => {
     const company = await createCompany(db);
     await enableSmokeLab(db);
