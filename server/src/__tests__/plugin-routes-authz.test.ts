@@ -322,13 +322,17 @@ describe.sequential("plugin install and upgrade authz", () => {
     const res = await request(app)
       .post(`/api/plugins/${pluginId}/config`)
       .send({
+        companyId: companyA,
         configJson: {
-          apiKeyRef: "77777777-7777-4777-8777-777777777777",
+          apiKeyRef: {
+            type: "secret_ref",
+            secretId: "77777777-7777-4777-8777-777777777777",
+          },
         },
       });
 
     expect(res.status).toBe(422);
-    expect(res.body.error).toMatch(/secret references are disabled/i);
+    expect(res.body.error).toMatch(/secret references require/i);
     expect(mockRegistry.upsertConfig).not.toHaveBeenCalled();
   }, 20_000);
 
