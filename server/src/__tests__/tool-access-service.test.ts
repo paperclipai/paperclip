@@ -1146,6 +1146,102 @@ describeEmbeddedPostgres("tool access service", () => {
     });
   });
 
+  it("returns identical 404s for cross-tenant and missing wrapper-gated connection lookups", async () => {
+    const ownerCompany = await createCompany(db);
+    const outsiderCompany = await createCompany(db);
+    const userId = `tool-outsider-${randomUUID()}`;
+    await grantBoardUser(db, outsiderCompany.id, userId, ["tools:use", "tools:manage_connections"]);
+    const actor = boardSessionActor(outsiderCompany.id, "operator", userId);
+    const agent = await createAgent(db, ownerCompany.id);
+    const { connection } = await createRemoteToolFixture(db, ownerCompany.id);
+    const app = createRouteApp(db, actor, createToolGatewayService(db, { toolActionSigningSecret: "test-secret" }));
+    const missingConnectionId = randomUUID();
+
+    const cases: Array<{
+      name: string;
+      request: (connectionId: string) => request.Test;
+    }> = [
+      {
+        name: "GET /tool-connections/:connectionId/test-agents",
+        request: (connectionId) => request(app).get(`/api/tool-connections/${connectionId}/test-agents`),
+      },
+      {
+        name: "POST /tool-connections/:connectionId/test-calls",
+        request: (connectionId) => request(app)
+          .post(`/api/tool-connections/${connectionId}/test-calls`)
+          .send({ agentId: agent.id, toolName: "send_email", parameters: { to: "a@example.com" } }),
+      },
+      {
+        name: "PUT /tool-connections/:connectionId/installs",
+        request: (connectionId) => request(app)
+          .put(`/api/tool-connections/${connectionId}/installs`)
+          .send({ installs: [] }),
+      },
+      {
+        name: "POST /tools/oauth/:connectionId/start",
+        request: (connectionId) => request(app).post(`/api/tools/oauth/${connectionId}/start`),
+      },
+    ];
+
+    for (const testCase of cases) {
+      const crossTenant = await testCase.request(connection.id);
+      const missing = await testCase.request(missingConnectionId);
+      expect(crossTenant.status, testCase.name).toBe(404);
+      expect(crossTenant.body, testCase.name).toEqual(missing.body);
+    }
+  });
+
+  it("returns identical 404s for cross-tenant and missing wrapper-gated application lookups", async () => {
+    const ownerCompany = await createCompany(db);
+    const outsiderCompany = await createCompany(db);
+    const userId = `app-outsider-${randomUUID()}`;
+    await grantBoardUser(db, outsiderCompany.id, userId, ["tools:admin"]);
+    const actor = boardSessionActor(outsiderCompany.id, "operator", userId);
+    const { application } = await createRemoteToolFixture(db, ownerCompany.id);
+    const app = createRouteApp(db, actor);
+    const missingApplicationId = randomUUID();
+
+    const cases: Array<{
+      name: string;
+      request: (applicationId: string) => request.Test;
+    }> = [
+      {
+        name: "PATCH /tool-applications/:applicationId",
+        request: (applicationId) => request(app)
+          .patch(`/api/tool-applications/${applicationId}`)
+          .send({ name: `Renamed ${randomUUID()}` }),
+      },
+      {
+        name: "DELETE /tool-applications/:applicationId",
+        request: (applicationId) => request(app).delete(`/api/tool-applications/${applicationId}`),
+      },
+    ];
+
+    for (const testCase of cases) {
+      const crossTenant = await testCase.request(application.id);
+      const missing = await testCase.request(missingApplicationId);
+      expect(crossTenant.status, testCase.name).toBe(404);
+      expect(crossTenant.body, testCase.name).toEqual(missing.body);
+    }
+  });
+
+  it("still returns 403 for same-company wrapper permission denials", async () => {
+    const company = await createCompany(db);
+    const userId = `tool-denied-${randomUUID()}`;
+    await grantBoardUser(db, company.id, userId, []);
+    const { connection } = await createRemoteToolFixture(db, company.id);
+    const app = createRouteApp(
+      db,
+      boardSessionActor(company.id, "operator", userId),
+      createToolGatewayService(db, { toolActionSigningSecret: "test-secret" }),
+    );
+
+    const res = await request(app).get(`/api/tool-connections/${connection.id}/test-agents`);
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("Missing one of permissions");
+  });
+
   it("surfaces a last-changed audit hint attributed to the agent that authored the governing policy", async () => {
     const company = await createCompany(db);
     const userId = `tool-tester-${randomUUID()}`;
@@ -2047,7 +2143,7 @@ describeEmbeddedPostgres("tool access service", () => {
       .expect(403);
   });
 
-  it("returns 404 for cross-company profile reads, 403 for mutations, and 404 for missing profiles", async () => {
+  it("returns 404 for cross-company and missing profile routes", async () => {
     const allowedCompany = await createCompany(db);
     const otherCompany = await createCompany(db);
     const profile = await toolAccessService(db).createProfile(otherCompany.id, {
@@ -2076,15 +2172,15 @@ describeEmbeddedPostgres("tool access service", () => {
     await request(app)
       .post(`/api/tool-profiles/${profile.id}/duplicate`)
       .send({ name: "Forbidden copy", includeAssignments: false })
-      .expect(403);
+      .expect(404);
     await request(app)
       .delete(`/api/tool-profiles/${profile.id}`)
       .send({ force: false })
-      .expect(403);
+      .expect(404);
     await request(app)
       .post(`/api/tool-profiles/${profile.id}/new-tools/review`)
       .send({ decisions: [{ catalogEntryId: randomUUID(), decision: "keep_blocked" }] })
-      .expect(403);
+      .expect(404);
 
     await request(createRouteApp(db)).get(`/api/tool-profiles/${randomUUID()}/new-tools`).expect(404);
     await request(createRouteApp(db))
@@ -4726,7 +4822,7 @@ describeEmbeddedPostgres("tool access service", () => {
     });
   });
 
-  it("returns 403 for cross-company application updates and 404 for missing applications", async () => {
+  it("returns 404 for cross-company and missing application updates", async () => {
     const allowedCompany = await createCompany(db);
     const otherCompany = await createCompany(db);
     const application = await toolAccessService(db).createApplication(otherCompany.id, {
@@ -4750,14 +4846,15 @@ describeEmbeddedPostgres("tool access service", () => {
       source: "session",
     });
 
-    const forbiddenRes = await request(app)
+    const crossTenantRes = await request(app)
       .patch(`/api/tool-applications/${application.id}`)
       .send({ name: "Forbidden edit" });
     const missingRes = await request(createRouteApp(db))
       .patch(`/api/tool-applications/${randomUUID()}`)
       .send({ name: "Missing edit" });
 
-    expect(forbiddenRes.status).toBe(403);
+    expect(crossTenantRes.status).toBe(404);
+    expect(crossTenantRes.body).toEqual(missingRes.body);
     expect(missingRes.status).toBe(404);
   });
 
@@ -5082,7 +5179,7 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(remainingConnection).toHaveLength(0);
   });
 
-  it("returns 403 for cross-company application deletes and 404 for missing applications", async () => {
+  it("returns 404 for cross-company and missing application deletes", async () => {
     const allowedCompany = await createCompany(db);
     const otherCompany = await createCompany(db);
     const application = await toolAccessService(db).createApplication(otherCompany.id, {
@@ -5106,10 +5203,11 @@ describeEmbeddedPostgres("tool access service", () => {
       source: "session",
     });
 
-    const forbiddenRes = await request(app).delete(`/api/tool-applications/${application.id}`);
+    const crossTenantRes = await request(app).delete(`/api/tool-applications/${application.id}`);
     const missingRes = await request(createRouteApp(db)).delete(`/api/tool-applications/${randomUUID()}`);
 
-    expect(forbiddenRes.status).toBe(403);
+    expect(crossTenantRes.status).toBe(404);
+    expect(crossTenantRes.body).toEqual(missingRes.body);
     expect(missingRes.status).toBe(404);
     const stillThere = await db
       .select()
