@@ -63,7 +63,7 @@ export interface TagFacet {
 
 /** Whether a folder's own actions (rename/recolor/subfolder/delete) are offered. */
 function folderIsEditable(folder: FolderListItem): boolean {
-  return !isBundledFolder(folder) && !isProjectsFolder(folder);
+  return !folder.systemKey && !isBundledFolder(folder) && !isProjectsFolder(folder);
 }
 
 function ancestorIds(model: SkillFolderTreeModel, folderId: string): string[] {
@@ -259,7 +259,17 @@ export function SkillFolderRail({
               onRenameCommit={commitRename}
               onRenameCancel={() => setRenamingId(null)}
             />
-          ) : null}
+          ) : (
+            <VirtualRow
+              active={false}
+              label="Projects"
+              count={0}
+              icon={<Boxes className="h-3.5 w-3.5" />}
+              muted
+              disabled
+              onSelect={() => undefined}
+            />
+          )}
 
           {/* Bundled — read-only */}
           {model.bundled ? (
@@ -359,6 +369,7 @@ function VirtualRow({
   count,
   icon,
   muted = false,
+  disabled = false,
   onSelect,
 }: {
   active: boolean;
@@ -366,6 +377,7 @@ function VirtualRow({
   count: number;
   icon: ReactNode;
   muted?: boolean;
+  disabled?: boolean;
   onSelect: () => void;
 }) {
   return (
@@ -376,6 +388,7 @@ function VirtualRow({
         active ? "bg-accent/60 text-foreground" : muted ? "text-muted-foreground/70" : "text-muted-foreground",
       )}
       aria-current={active ? "page" : undefined}
+      disabled={disabled}
       onClick={onSelect}
     >
       <span className="flex h-4 w-4 items-center justify-center">{icon}</span>
@@ -427,7 +440,7 @@ function TreeBranch({
   const isOpen = expanded.has(folder.id);
   const active = selection === folder.id;
   const editable = folderIsEditable(folder);
-  const canNest = !isBundledFolder(folder) && !isProjectsFolder(folder) && folder.depth < 4;
+  const canNest = folder.systemKey !== "my" && !isBundledFolder(folder) && !isProjectsFolder(folder) && folder.depth < 4;
   const label = rootLabel ?? folder.name;
 
   return (

@@ -4669,6 +4669,23 @@ export function CompanySkills() {
     },
   });
 
+  async function openNewSkill() {
+    const model = treeFromResult(skillFoldersQuery.data);
+    const selectedFolder = folderSelection === "all" || folderSelection === "unfiled"
+      ? null
+      : model.byId.get(folderSelection) ?? null;
+    if (selectedFolder?.systemKey === "my") {
+      try {
+        const personalFolder = await ensureMyFolder.mutateAsync();
+        navigate(skillStudioNewRoute(null, personalFolder.id));
+      } catch {
+        return;
+      }
+      return;
+    }
+    navigate(skillStudioNewRoute(null, defaultNewSkillFolderId));
+  }
+
   // Inline folder creation used by the move dialog's "New folder inside…" affordance.
   async function createFolderInline(parentId: string | null, name: string): Promise<string | null> {
     try {
@@ -5190,7 +5207,7 @@ export function CompanySkills() {
           loading={skillsQuery.isLoading || catalogListQuery.isLoading}
           error={skillsQuery.error?.message ?? catalogListQuery.error?.message ?? null}
           totalCount={discoveryCards.length}
-          onCreate={() => navigate(skillStudioNewRoute(null, defaultNewSkillFolderId))}
+          onCreate={() => void openNewSkill()}
           onImport={() => setImportDialogOpen(true)}
           onImportFromProject={() => setImportFromProjectOpen(true)}
           onBrowseCatalog={() => setDiscoveryTab("catalog")}
