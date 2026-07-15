@@ -873,6 +873,13 @@ export async function startServer(): Promise<StartedServer> {
       );
     } else {
       const startupHeartbeatRecovery = (async () => {
+        try {
+          const adoption = await heartbeat.adoptAwaitingRuns();
+          logger.info(adoption, "startup adoption of preserved heartbeat runs complete");
+        } catch (err) {
+          logger.error({ err }, "startup adoption of preserved heartbeat runs failed");
+        }
+
         for (let attempt = 1; attempt <= 2; attempt++) {
           try {
             const result = await heartbeat.reapOrphanedRuns();

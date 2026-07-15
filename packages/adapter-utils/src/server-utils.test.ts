@@ -581,6 +581,51 @@ describe("runChildProcess", () => {
     }
   });
 
+  it.skipIf(process.platform === "win32")("adopts an existing journal process and drains its exit sentinel", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-run-journal-adopt-"));
+    const stdoutPath = path.join(root, "stdout.log");
+    const stderrPath = path.join(root, "stderr.log");
+    await fs.writeFile(stdoutPath, "before-");
+    await fs.writeFile(stderrPath, "");
+    const child = spawn(process.execPath, [
+      "-e",
+      [
+        "const fs = require('node:fs');",
+        `fs.appendFileSync(${JSON.stringify(stdoutPath)}, 'after');`,
+        `fs.writeFileSync(${JSON.stringify(path.join(root, "exit.json"))}, JSON.stringify({ version: 1, code: 0, signal: null, startedAt: new Date().toISOString(), finishedAt: new Date().toISOString() }));`,
+      ].join(" "),
+    ], { detached: true, stdio: "ignore" });
+    if (!child.pid) throw new Error("Expected child pid");
+
+    try {
+      const chunks: string[] = [];
+      const result = await runChildProcess(randomUUID(), process.execPath, ["-e", "throw new Error('must not spawn')"], {
+        cwd: process.cwd(),
+        env: {},
+        timeoutSec: 5,
+        graceSec: 1,
+        onLog: async (_stream, chunk) => {
+          chunks.push(chunk);
+        },
+        journal: {
+          spoolDir: root,
+          stdoutOffset: Buffer.byteLength("before-"),
+          adoptExisting: {
+            pid: child.pid,
+            processGroupId: child.pid,
+            activeElapsedMs: 0,
+          },
+        },
+      });
+
+      expect(chunks.join("")).toBe("after");
+      expect(result).toMatchObject({ exitCode: 0, signal: null, timedOut: false, stdout: "after" });
+    } finally {
+      child.kill("SIGKILL");
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("produces the same captured transcript through pipe and journal paths", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-run-journal-parity-"));
     const args = [
