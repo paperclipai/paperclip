@@ -40,7 +40,7 @@ import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { issueTreeControlService } from "../issue-tree-control.js";
 import { TERMINAL_HEARTBEAT_RUN_STATUSES, issueService } from "../issues.js";
 import {
-  applyIssueExecutionPolicyTransition,
+  applyIssueMonitorPolicyTransition,
   normalizeIssueExecutionPolicy,
   parseIssueExecutionState,
 } from "../issue-execution-policy.js";
@@ -3404,7 +3404,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         recoveryPolicy: "wake_owner" as const,
       },
     };
-    const transition = applyIssueExecutionPolicyTransition({
+    const transition = applyIssueMonitorPolicyTransition({
       issue: input.issue,
       policy,
       previousPolicy,
