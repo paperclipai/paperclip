@@ -3160,8 +3160,6 @@ async function runJournaledChildProcess(
     try {
       while (true) {
         await drainAvailable();
-        const exitResult = await readExitSentinel();
-        if (exitResult) return exitResult;
         try {
           process.kill(adoption.pid, 0);
         } catch {
