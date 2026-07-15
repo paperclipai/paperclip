@@ -535,7 +535,17 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     const stageId = randomUUID();
     await db.update(issues).set({
       status: "in_review",
-      assigneeAgentId: managerId,
+      assigneeAgentId: coderId,
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: true,
+        stages: [{
+          id: stageId,
+          type: "review",
+          approvalsNeeded: 1,
+          participants: [{ id: randomUUID(), type: "agent", agentId: managerId, userId: null }],
+        }],
+      },
       executionState: {
         status: "pending",
         currentStageId: stageId,
