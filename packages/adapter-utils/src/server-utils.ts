@@ -3213,33 +3213,39 @@ async function runJournaledChildProcess(
       : null;
     timeout?.unref();
 
+    const readExitSentinel = async () => {
+      const exitRaw = await fs.readFile(exitPath, "utf8").catch(() => null);
+      if (!exitRaw) return null;
+      const exit = JSON.parse(exitRaw) as {
+        code?: number | null;
+        signal?: NodeJS.Signals | null;
+        startedAt?: string | null;
+        error?: string | null;
+      };
+      await drainAvailable();
+      if (exit.error) stderr = appendWithCap(stderr, `\n${exit.error}\n`);
+      return {
+        exitCode: typeof exit.code === "number" ? exit.code : null,
+        signal: typeof exit.signal === "string" ? exit.signal : null,
+        timedOut,
+        stdout,
+        stderr,
+        pid: adoption.pid,
+        startedAt: exit.startedAt ?? null,
+        terminalResultCleanup: null,
+      };
+    };
+
     try {
       while (true) {
         await drainAvailable();
-        const exitRaw = await fs.readFile(exitPath, "utf8").catch(() => null);
-        if (exitRaw) {
-          const exit = JSON.parse(exitRaw) as {
-            code?: number | null;
-            signal?: NodeJS.Signals | null;
-            startedAt?: string | null;
-            error?: string | null;
-          };
-          await drainAvailable();
-          if (exit.error) stderr = appendWithCap(stderr, `\n${exit.error}\n`);
-          return {
-            exitCode: typeof exit.code === "number" ? exit.code : null,
-            signal: typeof exit.signal === "string" ? exit.signal : null,
-            timedOut,
-            stdout,
-            stderr,
-            pid: adoption.pid,
-            startedAt: exit.startedAt ?? null,
-            terminalResultCleanup: null,
-          };
-        }
+        const exitResult = await readExitSentinel();
+        if (exitResult) return exitResult;
         try {
           process.kill(adoption.pid, 0);
         } catch {
+          const exitResultAfterDeath = await readExitSentinel();
+          if (exitResultAfterDeath) return exitResultAfterDeath;
           throw new Error(`Adopted process ${adoption.pid} exited without writing exit.json`);
         }
         await new Promise((resolve) => setTimeout(resolve, JOURNAL_ADOPTION_POLL_INTERVAL_MS));
