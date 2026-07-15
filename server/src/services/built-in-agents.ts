@@ -21,6 +21,7 @@ import {
 import { companySkillService } from "./company-skills.js";
 import { routineService } from "./routines.js";
 import { accessService } from "./access.js";
+import { listAdapterModels } from "../adapters/registry.js";
 
 export type BuiltInAgentStatus = "not_provisioned" | "pending_approval" | "needs_setup" | "ready" | "paused";
 
@@ -757,6 +758,27 @@ function definitionPatch(definition: BuiltInAgentDefinition, input: BuiltInAgent
     permissions: definition.defaultPermissions ?? {},
     budgetMonthlyCents: input.budgetMonthlyCents ?? definition.defaultBudgetMonthlyCents ?? 0,
   };
+}
+
+async function assertKnownBuiltInAgentModel(
+  definition: BuiltInAgentDefinition,
+  input: BuiltInAgentProvisionInput,
+) {
+  const adapterType = input.adapterType ?? defaultAdapterType(definition);
+  const adapterConfig = input.adapterConfig ?? definition.defaultAdapterConfig ?? {};
+  const model = typeof adapterConfig.model === "string" ? adapterConfig.model.trim() : "";
+  if (!model || !hasCompleteAdapterConfig(adapterType, adapterConfig)) return;
+
+  const models = await listAdapterModels(adapterType);
+  if (models.length === 0 || models.some((candidate) => candidate.id === model)) return;
+
+  throw unprocessable(`Model "${model}" is not available for adapter ${adapterType}.`, {
+    code: "built_in_agent_model_unknown",
+    key: definition.key,
+    adapterType,
+    model,
+    availableModelIds: models.map((candidate) => candidate.id),
+  });
 }
 
 function builtInAgentNotConfiguredError(state: BuiltInAgentState) {
@@ -1554,6 +1576,9 @@ export function builtInAgentService(db: Db) {
     const resolvedInput = existingPendingApproval || preserveExistingAdapter
       ? input
       : await defaultProvisionInput(companyId, definition, input);
+    if (!existingPendingApproval && !preserveExistingAdapter) {
+      await assertKnownBuiltInAgentModel(definition, resolvedInput);
+    }
     if (existing) {
       const patch: Partial<typeof agents.$inferInsert> = {
         metadata: builtInMetadata(definition, existing.metadata),
@@ -1636,6 +1661,7 @@ export function builtInAgentService(db: Db) {
   ): Promise<BuiltInAgentProvisionResult> {
     const definition = requireBuiltInAgentDefinition(key);
     const company = await ensureCompany(companyId);
+    await assertKnownBuiltInAgentModel(definition, input);
     if (!company.requireBoardApprovalForNewAgents) {
       return { state: await ensure(companyId, key, input), approval: null };
     }

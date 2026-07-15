@@ -104,9 +104,20 @@ export function ConfigureBuiltInAgentModal({
   const models = fetchedModels ?? [];
 
   const modelRequired = setupSupportedInModal;
+  const normalizedModel = model.trim();
+  const modelKnown =
+    !normalizedModel ||
+    models.length === 0 ||
+    models.some((candidate) => candidate.id === normalizedModel);
+  const modelError = modelKnown
+    ? null
+    : `Model “${normalizedModel}” is not available for ${adapterType}. Choose a known model.`;
   const budgetMonthlyCents = parseBudgetMonthlyCents(budgetDollars);
   const budgetValid = !budgetDollars.trim() || budgetMonthlyCents !== undefined;
-  const canSubmit = budgetValid && (setupSupportedInModal ? !modelRequired || model.trim().length > 0 : true);
+  const canSubmit =
+    budgetValid &&
+    modelKnown &&
+    (setupSupportedInModal ? !modelRequired || normalizedModel.length > 0 : true);
   const submitLabel = setupSupportedInModal
     ? `Configure & enable ${definition.displayName}`
     : `Provision ${definition.displayName}`;
@@ -175,6 +186,12 @@ export function ConfigureBuiltInAgentModal({
               groupByProvider={false}
               creatable
             />
+          )}
+
+          {modelError && (
+            <p className="text-sm text-destructive" role="alert">
+              {modelError}
+            </p>
           )}
 
           {!setupSupportedInModal && (

@@ -189,6 +189,27 @@ describe("ConfigureBuiltInAgentModal (PAP-12978)", () => {
     });
   });
 
+  it("shows a visible error and blocks provisioning for an unknown model", async () => {
+    adapterModelsMock.mockResolvedValue([
+      { id: "claude-haiku-4-5", label: "Claude Haiku 4.5" },
+    ]);
+    await renderModal(makeState({
+      definition: {
+        ...makeState().definition,
+        defaultAdapterType: "claude_local",
+        defaultAdapterConfig: { model: "claude-haiku-4-6" },
+      },
+    }));
+    await flushReact();
+
+    expect(document.body.querySelector('[role="alert"]')?.textContent)
+      .toContain("claude-haiku-4-6");
+    expect(document.body.querySelector('[role="alert"]')?.textContent)
+      .toContain("not available");
+    expect(findButton("Configure")?.disabled).toBe(true);
+    expect(provisionMock).not.toHaveBeenCalled();
+  });
+
   it("sends the budget with provisioning so approval-gated setup preserves it", async () => {
     provisionMock.mockResolvedValue({
       ...makeState(),
