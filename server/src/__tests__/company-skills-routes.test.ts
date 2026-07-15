@@ -956,6 +956,37 @@ describe("company skill mutation permissions", () => {
     expect(mockCompanySkillService.updateSkill).not.toHaveBeenCalled();
   });
 
+  it("evaluates skill version creation with the skills.create policy action", async () => {
+    mockAccessService.decide.mockResolvedValue(denySkillChangeDecision());
+    mockCompanySkillService.getById.mockResolvedValue({
+      id: "skill-1",
+      key: "company/company-1/review",
+      sourceType: "github",
+      sourceLocator: "https://github.com/acme/review",
+    });
+    mockCompanySkillPolicyService.evaluate.mockResolvedValue(denySkillPolicy("skills.create"));
+
+    const res = await request(await createApp({
+      type: "board",
+      userId: "board-user",
+      companyIds: ["company-1"],
+      source: "session",
+      isInstanceAdmin: false,
+    }))
+      .post("/api/companies/company-1/skills/skill-1/versions")
+      .send({ label: "v1" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(mockCompanySkillPolicyService.evaluate).toHaveBeenCalledWith(expect.objectContaining({
+      action: "skills.create",
+      companyId: "company-1",
+      resource: expect.objectContaining({
+        skillId: "skill-1",
+      }),
+    }));
+    expect(mockCompanySkillService.createVersion).not.toHaveBeenCalled();
+  });
+
   it("blocks npx skills add imports when policy denies the canonical git source locator", async () => {
     mockAccessService.decide.mockResolvedValue(denySkillChangeDecision());
     mockCompanySkillPolicyService.evaluate.mockImplementation(async (input: { resource?: { sourceType?: string; sourceLocator?: string } }) => {

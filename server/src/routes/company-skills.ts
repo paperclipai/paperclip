@@ -725,7 +725,7 @@ export function companySkillRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const skillId = req.params.skillId as string;
-      await assertCanMutateCompanySkills(req, companyId, "skills.edit", () => skillPolicyResource({ companyId, skillId }));
+      await assertCanMutateCompanySkills(req, companyId, "skills.create", () => skillPolicyResource({ companyId, skillId }));
       const result = await svc.createVersion(companyId, skillId, req.body, skillActor(req));
       const actor = getActorInfo(req);
       await logActivity(db, {
