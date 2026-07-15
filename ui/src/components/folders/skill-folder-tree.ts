@@ -171,6 +171,28 @@ export function skillFolderDisplayPath(
   return labels.join(" / ");
 }
 
+function humanizeFolderPathSegment(segment: string): string {
+  return segment
+    .replace(/[-_]+/g, " ")
+    .replace(/\b\w/g, (character) => character.toUpperCase());
+}
+
+export function skillFolderPathDisplayFallback(folderPath: string | null | undefined): string | null {
+  if (!folderPath) return null;
+  if (folderPath.includes(" / ")) return folderPath;
+
+  const segments = folderPath.split("/").filter(Boolean);
+  if (segments.length === 0) return null;
+
+  const root = segments[0]?.toLowerCase();
+  const labels = segments.map(humanizeFolderPathSegment);
+  if (root === "my") labels[0] = "My Skills";
+  else if (root === "projects") labels[0] = "Projects";
+  else if (root === "bundled") labels[0] = "Bundled";
+  else labels.unshift("Company");
+  return labels.join(" / ");
+}
+
 export function emptySkillFolderTree(): SkillFolderTreeModel {
   return buildSkillFolderTree([]);
 }

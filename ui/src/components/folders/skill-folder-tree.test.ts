@@ -7,6 +7,7 @@ import {
   isProjectsFolder,
   reservedRootLabel,
   skillFolderDisplayPath,
+  skillFolderPathDisplayFallback,
   subtreeFolderIds,
 } from "./skill-folder-tree";
 
@@ -104,5 +105,14 @@ describe("skillFolderDisplayPath", () => {
     expect(skillFolderDisplayPath(model, "mine")).toBe("My Skills / dotta");
     expect(skillFolderDisplayPath(model, "bundled-git")).toBe("Bundled / git");
     expect(skillFolderDisplayPath(model, null)).toBeNull();
+  });
+});
+
+describe("skillFolderPathDisplayFallback", () => {
+  it("humanizes cold detail paths before folder metadata loads", () => {
+    expect(skillFolderPathDisplayFallback("engineering/code-review")).toBe("Company / Engineering / Code Review");
+    expect(skillFolderPathDisplayFallback("my/local-board/drafts")).toBe("My Skills / Local Board / Drafts");
+    expect(skillFolderPathDisplayFallback("bundled/review-pr")).toBe("Bundled / Review Pr");
+    expect(skillFolderPathDisplayFallback(null)).toBeNull();
   });
 });

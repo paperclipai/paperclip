@@ -410,6 +410,16 @@ describe("SkillDetailPage versions tab", () => {
 });
 
 describe("SkillDetailPage settings", () => {
+  it("humanizes the server folder path on a cold detail render", async () => {
+    const v1 = makeVersion(1, "# Demo Skill");
+    const node = await renderSkillDetail([v1], {
+      activeTab: "overview",
+      detail: makeDetail(v1, { folderPath: "engineering/code-review" }),
+    });
+
+    expect(node.textContent).toContain("Company / Engineering / Code Review");
+  });
+
   it("shows a direct fork action for read-only skills", async () => {
     const v1 = makeVersion(1, "# Demo Skill");
     const onFork = vi.fn();
