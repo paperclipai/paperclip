@@ -105,6 +105,26 @@ pnpm dev:stop
 
 `pnpm dev:once` now tracks backend-relevant file changes and pending migrations. When the current boot is stale, the board UI shows a `Restart required` banner. You can also enable guarded auto-restart in `Instance Settings > Experimental`, which waits for queued/running local agent runs to finish before restarting the dev server.
 
+## Hot-Restart Deploys
+
+The experimental `hotRestart` setting preserves eligible journaled local agent runs across a server restart. The setting alone never changes stop behavior: every hot restart also requires a fresh, one-shot intent bound to the current server PID. Plain `systemctl stop`, plain `systemctl restart`, dev Ctrl-C, and stale or mismatched intents keep the normal drain-and-terminate behavior.
+
+For the live `paperclip.service` deploy flow, write the intent immediately before restarting:
+
+```sh
+main_pid="$(systemctl show paperclip.service -p MainPID --value)"
+pnpm --filter @paperclipai/server exec tsx ../scripts/request-hot-restart.ts --server-pid "$main_pid"
+systemctl restart paperclip.service
+```
+
+Pass `--drain-required` when a build has a run-critical schema or protocol change. That marker deliberately forces the normal drain path even when `hotRestart` is enabled.
+
+After boot, Paperclip writes the adoption result to `$PAPERCLIP_HOME/hot-restart-report.json` and logs the same payload. The report includes adopted, finalized-while-down, and lost run IDs plus the new server version. Deploy automation should wait for `/api/health`, read this report, and include it in its completion output.
+
+On Linux, journaled runs prefer a transient scope named `paperclip-run-<runId>` via `systemd-run --scope`. Paperclip probes scope creation once per server process and falls back to the existing detached process-group launch when systemd is absent or the service user lacks permission. Set `PAPERCLIP_DISABLE_SYSTEMD_SCOPES=true` to force that fallback. The fallback keeps hot restart working only when the service manager does not kill the entire service cgroup; `KillMode=mixed` is the recommended unit setting, but changing the live unit is an explicit operator-approved infrastructure step. `KillMode=control-group` can still terminate detached fallback runs during `systemctl restart`.
+
+Non-hot shutdowns still explicitly signal every tracked run process group, including scoped runs. The startup reaper remains the crash backstop for preserved processes that were not marked for adoption.
+
 Tailscale/private-auth dev mode:
 
 ```sh

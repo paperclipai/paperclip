@@ -68,6 +68,7 @@ import {
 } from "@paperclipai/db";
 import { conflict, HttpError, notFound } from "../errors.js";
 import { consumeHotRestartIntent } from "../hot-restart-intent.js";
+import { writeHotRestartPendingReport } from "../hot-restart-report.js";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
 import { normalizeResponsibleUserDenialCode } from "./responsible-user-denial-run-outcomes.js";
@@ -8636,7 +8637,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   async function drainRunningRunsForShutdown(signal: "SIGINT" | "SIGTERM", now = new Date()) {
     const intent = consumeHotRestartIntent(now);
     const experimental = await instanceSettings.getExperimental();
-    const preserveRequested = Boolean(intent && experimental.hotRestart);
+    const preserveRequested = Boolean(intent && experimental.hotRestart && !intent.drainRequired);
     const activeRuns = await db
       .select({
         run: heartbeatRuns,
@@ -8764,8 +8765,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       );
     }
 
+    if (preserveRequested && intent) {
+      try {
+        writeHotRestartPendingReport({
+          version: 1,
+          requestedAt: intent.requestedAt,
+          previousServerPid: intent.serverPid,
+          requestedByRunId: intent.requestedByRunId,
+          preservedRunIds,
+        });
+      } catch (err) {
+        logger.error({ err }, "failed to persist hot restart adoption report request");
+      }
+    }
+
     return {
       hotRestartRequested: preserveRequested,
+      drainRequired: intent?.drainRequired ?? false,
       preserved: preservedRunIds.length,
       preservedRunIds,
       interrupted: interruptedRunIds.length,
@@ -10982,6 +10998,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         eq(heartbeatRuns.lifecycleState, "awaiting_adoption"),
       ));
     const adoptedRunIds: string[] = [];
+    const finalizedWhileDownRunIds: string[] = [];
     const rejectedRunIds: string[] = [];
 
     for (const run of awaiting) {
@@ -11028,7 +11045,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           updatedAt: now,
         })
         .where(eq(heartbeatRuns.id, run.id));
-      adoptedRunIds.push(run.id);
+      if (hasExitSentinel) {
+        finalizedWhileDownRunIds.push(run.id);
+      } else {
+        adoptedRunIds.push(run.id);
+      }
       activeRunExecutions.add(run.id);
       void executeRun(run.id)
         .catch((err) => {
@@ -11040,6 +11061,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return {
       adopted: adoptedRunIds.length,
       adoptedRunIds,
+      finalizedWhileDown: finalizedWhileDownRunIds.length,
+      finalizedWhileDownRunIds,
       rejected: rejectedRunIds.length,
       rejectedRunIds,
     };

@@ -28,7 +28,7 @@ export type DevServerHealthStatus = {
 
 export type DevServerRestartRequest = {
   requestedAt: string;
-  reason: "manual_restart_now";
+  reason: "manual_restart_now" | "hot_restart_intent";
 };
 
 export function getDevServerRestartRequestFilePath(

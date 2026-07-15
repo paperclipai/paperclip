@@ -64,6 +64,8 @@ import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-
 import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
 import { initTelemetry, getTelemetryClient } from "./telemetry.js";
 import { conflict } from "./errors.js";
+import { completeHotRestartReport } from "./hot-restart-report.js";
+import { serverVersion } from "./version.js";
 import type {
   InstanceDatabaseBackupRunResult,
   InstanceDatabaseBackupTrigger,
@@ -873,11 +875,29 @@ export async function startServer(): Promise<StartedServer> {
       );
     } else {
       const startupHeartbeatRecovery = (async () => {
+        let adoption = {
+          adopted: 0,
+          adoptedRunIds: [] as string[],
+          finalizedWhileDown: 0,
+          finalizedWhileDownRunIds: [] as string[],
+          rejected: 0,
+          rejectedRunIds: [] as string[],
+        };
         try {
-          const adoption = await heartbeat.adoptAwaitingRuns();
+          adoption = await heartbeat.adoptAwaitingRuns();
           logger.info(adoption, "startup adoption of preserved heartbeat runs complete");
         } catch (err) {
           logger.error({ err }, "startup adoption of preserved heartbeat runs failed");
+        }
+
+        const hotRestartReport = completeHotRestartReport({
+          newServerVersion: serverVersion,
+          adoptedRunIds: adoption.adoptedRunIds,
+          finalizedWhileDownRunIds: adoption.finalizedWhileDownRunIds,
+          rejectedRunIds: adoption.rejectedRunIds,
+        });
+        if (hotRestartReport) {
+          logger.info(hotRestartReport, "hot restart adoption report complete");
         }
 
         for (let attempt = 1; attempt <= 2; attempt++) {
