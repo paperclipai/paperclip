@@ -33,6 +33,7 @@ import {
   ensureAbsoluteDirectory,
   ensurePathInEnv,
   ensurePaperclipSkillSymlink,
+  isPaperclipRuntimeEnvKey,
   joinPromptSections,
   materializePaperclipSkillCopy,
   parseObject,
@@ -1044,8 +1045,24 @@ async function buildRuntime(input: {
     executionCwd: shapedWorkspaceEnv.workspaceCwd,
     executionTargetIsRemote,
   });
+  // Resolved adapter env (plain + server-resolved secret_ref values) that we
+  // forward to the spawned agent process. Captured so a stable hash of it can be
+  // folded into the session fingerprint below — a change here must invalidate a
+  // warm/resumable session so the next launch picks up the latest env. Only
+  // user/adapter-configured env flows through this loop; per-wake PAPERCLIP_*
+  // runtime vars (PAPERCLIP_RUN_ID, wake/approval ids, ...) were assigned to
+  // `env` above and are never present in shapedEnvConfig, so they inherently
+  // stay out of the hash and don't reset the session every heartbeat.
+  const resolvedAdapterEnv: Record<string, string> = {};
   for (const [key, value] of Object.entries(shapedEnvConfig)) {
-    if (typeof value === "string") env[key] = value;
+    if (typeof value !== "string") continue;
+    // Runtime PAPERCLIP_* always wins over config: skip a PAPERCLIP_* key that
+    // Paperclip has already assigned this run. A PAPERCLIP_* key Paperclip did
+    // NOT set (e.g. an explicitly configured PAPERCLIP_API_KEY, applied here) is
+    // stable per-run config, so it applies and feeds the fingerprint hash below.
+    if (isPaperclipRuntimeEnvKey(key) && key in env) continue;
+    env[key] = value;
+    resolvedAdapterEnv[key] = value;
   }
   if (!hasExplicitApiKey && authToken) env.PAPERCLIP_API_KEY = authToken;
   // For the claude agent, set model via ANTHROPIC_MODEL at startup rather than
@@ -1217,6 +1234,14 @@ async function buildRuntime(input: {
       : null,
     mcpServers: mcpIdentity,
     secretManifestHash: shortHash(secretManifest),
+    // Fold the resolved adapter env (all applied user-configured values —
+    // plain, secret_ref, and stable PAPERCLIP_* config such as an explicit
+    // PAPERCLIP_API_KEY) into the fingerprint so a change to any forwarded value
+    // invalidates a warm handle / resumable session and forces a fresh launch
+    // that sources the latest env. secretManifestHash alone misses plain-value
+    // edits and same-version secret rotations. Per-wake runtime vars never enter
+    // resolvedAdapterEnv, so they don't churn the fingerprint every heartbeat.
+    adapterEnvHash: shortHash(resolvedAdapterEnv),
   });
   const taskKey = asString(input.ctx.runtime.taskKey, "") || wakeTaskId || workspaceId || "default";
   const sessionKey = `paperclip:${agent.companyId}:${agent.id}:${taskKey}:${fingerprint}`;
