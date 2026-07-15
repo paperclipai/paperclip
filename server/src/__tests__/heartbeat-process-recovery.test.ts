@@ -1377,6 +1377,32 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
   });
 
+  it("does not retry a lost monitor dispatch while another monitor wake remains scheduled", async () => {
+    const { companyId, runId, issueId } = await seedRunFixture({
+      adapterType: "openclaw_gateway",
+      agentStatus: "idle",
+      processPid: null,
+      processGroupId: null,
+      contextSnapshot: {
+        wakeReason: "issue_monitor_due",
+      },
+    });
+    await db
+      .update(issues)
+      .set({ monitorNextCheckAt: new Date("2026-03-19T00:00:00.000Z") })
+      .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)));
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reapOrphanedRuns();
+
+    expect(result).toEqual({ reaped: 1, runIds: [runId] });
+    const retries = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.retryOfRunId, runId)));
+    expect(retries).toHaveLength(0);
+  });
+
   it("interrupts running runs on graceful shutdown and queues restart recovery without recording a failure", async () => {
     const { agentId, runId, issueId, wakeupRequestId } = await seedRunFixture({
       agentStatus: "running",
