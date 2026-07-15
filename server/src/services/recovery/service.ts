@@ -3557,10 +3557,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             latestRun = await persistAdapterFailureRecoveryClassification(latestRun, adapterFailureClassification);
             result.providerQuotaMonitored += 1;
             result.issueIds.push(issue.id);
-          } else {
-            result.skipped += 1;
+            continue;
           }
-          continue;
+          if (issue.status !== "in_review") {
+            result.skipped += 1;
+            continue;
+          }
         } else {
           const classifiedRun = withAdapterFailureRecoveryClassification(latestRun, adapterFailureClassification);
           const updated = await escalateStrandedAssignedIssue({

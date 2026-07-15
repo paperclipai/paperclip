@@ -530,6 +530,62 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(enqueueWakeup).not.toHaveBeenCalled();
   });
 
+  it("requeues an active review participant when its failed run reports provider quota", async () => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    const stageId = randomUUID();
+    await db.update(issues).set({
+      status: "in_review",
+      executionState: {
+        status: "pending",
+        currentStageId: stageId,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: coderId, userId: null },
+        returnAssignee: { type: "agent", agentId: coderId, userId: null },
+        reviewRequest: null,
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    }).where(eq(issues.id, sourceIssueId));
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: coderId,
+      invocationSource: "automation",
+      status: "failed",
+      error: "Provider quota exceeded for this model.",
+      errorCode: "adapter_failed",
+      startedAt: new Date("2026-07-15T20:00:00.000Z"),
+      finishedAt: new Date("2026-07-15T20:01:00.000Z"),
+      contextSnapshot: { issueId: sourceIssueId },
+    });
+    const enqueueWakeup = vi.fn(async () => ({ id: randomUUID() } as never));
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    const result = await recovery.reconcileStrandedAssignedIssues();
+
+    expect(result).toMatchObject({ providerQuotaMonitored: 0, reviewParticipantRequeued: 1 });
+    const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(updatedIssue).toMatchObject({
+      status: "in_review",
+      assigneeAgentId: coderId,
+      monitorNextCheckAt: null,
+    });
+    const [updatedRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(updatedRun?.errorCode).toBe("adapter_failed");
+    expect(await db.select().from(issueRecoveryActions)).toHaveLength(0);
+    expect(enqueueWakeup).toHaveBeenCalledWith(coderId, expect.objectContaining({
+      reason: "execution_review_participant_recovery",
+      payload: expect.objectContaining({
+        issueId: sourceIssueId,
+        retryOfRunId: runId,
+        currentStageId: stageId,
+      }),
+    }));
+  });
+
   it("uses the default quota backoff when the provider does not state a reset time", async () => {
     const { companyId, coderId, sourceIssueId } = await seedCompany();
     await db.insert(heartbeatRuns).values({
