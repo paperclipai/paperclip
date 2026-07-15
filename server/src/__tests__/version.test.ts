@@ -97,7 +97,7 @@ describe("resolveServerVersion", () => {
         },
         debugLog: vi.fn(),
       }),
-    ).toBe("2026.706.0+0.git.012345678");
+    ).toBe("2026.706.0+0.git.0123456");
   });
 
   it("skips git metadata probing for packaged installs under node_modules", () => {

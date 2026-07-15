@@ -195,7 +195,7 @@ export function resolveServerVersion(
       ? readBuildCommit()
       : parseBuildCommit(opts.buildCommit);
   if (buildCommit) {
-    return `${packageVersion}+0.git.${buildCommit.slice(0, 9)}`;
+    return `${packageVersion}+0.git.${buildCommit.slice(0, 7)}`;
   }
 
   return packageVersion;
