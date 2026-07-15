@@ -35,6 +35,8 @@ export const SUMMARIZER_BUILT_IN_KEY = "summarizer";
 const TERMINAL_ISSUE_STATUSES = new Set<IssueStatus>(["done", "cancelled"]);
 
 const DEFAULT_SUMMARY_FORMAT = "markdown";
+const GENERATION_CLAIM_WAIT_ATTEMPTS = 40;
+const GENERATION_CLAIM_WAIT_MS = 25;
 
 export interface SummarySlotSelectorInput {
   companyId: string;
@@ -60,6 +62,27 @@ type ResolvedSelector = SummarySlotScopeSelector & {
 };
 
 type SummarySlotRow = typeof summarySlots.$inferSelect;
+
+function isSummarySlotUniqueConflict(error: unknown): boolean {
+  let current = error;
+  for (let depth = 0; depth < 5 && current && typeof current === "object"; depth += 1) {
+    const candidate = current as {
+      code?: unknown;
+      constraint?: unknown;
+      constraint_name?: unknown;
+      cause?: unknown;
+    };
+    if (
+      candidate.code === "23505" &&
+      (candidate.constraint === "summary_slots_company_scope_slot_uq" ||
+        candidate.constraint_name === "summary_slots_company_scope_slot_uq")
+    ) {
+      return true;
+    }
+    current = candidate.cause;
+  }
+  return false;
+}
 
 function mapSlot(row: SummarySlotRow): SummarySlot {
   return {
@@ -260,36 +283,6 @@ export function summarySlotService(db: Db) {
     return { slot: mapSlot(slotRow), revisions: revisions.map(mapRevision) };
   }
 
-  async function upsertSlot(
-    sel: ResolvedSelector,
-    patch: Partial<typeof summarySlots.$inferInsert>,
-  ): Promise<SummarySlotRow> {
-    const existing = await findSlotRow(sel);
-    const now = new Date();
-    if (existing) {
-      const [updated] = await db
-        .update(summarySlots)
-        .set({ ...patch, updatedAt: now })
-        .where(eq(summarySlots.id, existing.id))
-        .returning();
-      return updated ?? existing;
-    }
-    const [created] = await db
-      .insert(summarySlots)
-      .values({
-        companyId: sel.companyId,
-        scopeKind: sel.scopeKind,
-        scopeId: sel.scopeId,
-        slotKey: sel.slotKey,
-        status: "idle",
-        createdAt: now,
-        updatedAt: now,
-        ...patch,
-      })
-      .returning();
-    return created;
-  }
-
   async function resolveGenerationTargetProject(sel: ResolvedSelector): Promise<{
     projectId: string | null;
     projectWorkspaceId: string | null;
@@ -348,6 +341,93 @@ export function summarySlotService(db: Db) {
     return `Summarize ${scopeLabel(sel.scopeKind)} on ${timestamp}`;
   }
 
+  async function waitForConcurrentGeneration(sel: ResolvedSelector): Promise<GenerateSummarySlotResponse> {
+    for (let attempt = 0; attempt < GENERATION_CLAIM_WAIT_ATTEMPTS; attempt += 1) {
+      const slotRow = await findSlotRow(sel);
+      if (slotRow?.status === "generating" && slotRow.generatingIssueId) {
+        const active = await loadIssueRef(sel.companyId, slotRow.generatingIssueId);
+        if (isIssueActive(active.row)) {
+          return {
+            slot: mapSlot(slotRow),
+            generatingIssue: active.ref!,
+            alreadyGenerating: true,
+          };
+        }
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, GENERATION_CLAIM_WAIT_MS));
+    }
+    throw conflict("Summary generation is already being started; retry shortly");
+  }
+
+  async function claimGenerationSlot(
+    sel: ResolvedSelector,
+    existing: SummarySlotRow | null,
+  ): Promise<SummarySlotRow | null> {
+    const claimedAt = new Date();
+    if (existing) {
+      const generatingIssuePredicate = existing.generatingIssueId
+        ? eq(summarySlots.generatingIssueId, existing.generatingIssueId)
+        : isNull(summarySlots.generatingIssueId);
+      const [claimed] = await db
+        .update(summarySlots)
+        .set({ status: "generating", generatingIssueId: null, updatedAt: claimedAt })
+        .where(
+          and(
+            eq(summarySlots.id, existing.id),
+            eq(summarySlots.status, existing.status),
+            eq(summarySlots.updatedAt, existing.updatedAt),
+            generatingIssuePredicate,
+          ),
+        )
+        .returning();
+      return claimed ?? null;
+    }
+
+    try {
+      const [claimed] = await db
+        .insert(summarySlots)
+        .values({
+          companyId: sel.companyId,
+          scopeKind: sel.scopeKind,
+          scopeId: sel.scopeId,
+          slotKey: sel.slotKey,
+          status: "generating",
+          generatingIssueId: null,
+          createdAt: claimedAt,
+          updatedAt: claimedAt,
+        })
+        .returning();
+      return claimed;
+    } catch (error) {
+      if (isSummarySlotUniqueConflict(error)) return null;
+      throw error;
+    }
+  }
+
+  async function releaseGenerationClaim(
+    claimed: SummarySlotRow,
+    previous: SummarySlotRow | null,
+  ): Promise<void> {
+    const claimPredicate = and(
+      eq(summarySlots.id, claimed.id),
+      eq(summarySlots.status, "generating"),
+      isNull(summarySlots.generatingIssueId),
+      eq(summarySlots.updatedAt, claimed.updatedAt),
+    );
+    if (!previous) {
+      await db.delete(summarySlots).where(claimPredicate);
+      return;
+    }
+    await db
+      .update(summarySlots)
+      .set({
+        status: previous.status,
+        generatingIssueId: previous.generatingIssueId,
+        updatedAt: new Date(),
+      })
+      .where(claimPredicate);
+  }
+
   async function generate(
     input: SummarySlotSelectorInput,
     actor: SummaryGenerateActor,
@@ -376,31 +456,60 @@ export function summarySlotService(db: Db) {
         };
       }
     }
+    if (existing?.status === "generating" && !existing.generatingIssueId) {
+      return waitForConcurrentGeneration(sel);
+    }
+
+    const claimedSlot = await claimGenerationSlot(sel, existing);
+    if (!claimedSlot) return waitForConcurrentGeneration(sel);
 
     const { projectId, projectWorkspaceId } = await resolveGenerationTargetProject(sel);
     const createdAt = new Date();
-    const created = await issuesSvc.create(sel.companyId, {
-      projectId,
-      projectWorkspaceId,
-      title: generationIssueTitle(sel, createdAt),
-      description: generationIssueDescription(sel),
-      status: "todo",
-      priority: "medium",
-      assigneeAgentId: summarizerAgentId,
-      createdByAgentId: actor.agentId ?? null,
-      createdByUserId: actor.userId ?? null,
-      hiddenAt: createdAt,
-    });
-    const generationIssue = (
-      await issuesSvc.update(created.id, {
-        description: generationIssueDescription(sel, created.id),
-      })
-    ) ?? created;
+    let generationIssue: typeof issues.$inferSelect;
+    let createdIssueId: string | null = null;
+    try {
+      const created = await issuesSvc.create(sel.companyId, {
+        projectId,
+        projectWorkspaceId,
+        title: generationIssueTitle(sel, createdAt),
+        description: generationIssueDescription(sel),
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: summarizerAgentId,
+        createdByAgentId: actor.agentId ?? null,
+        createdByUserId: actor.userId ?? null,
+        hiddenAt: createdAt,
+      });
+      createdIssueId = created.id;
+      generationIssue = (
+        await issuesSvc.update(created.id, {
+          description: generationIssueDescription(sel, created.id),
+        })
+      ) ?? created;
+    } catch (error) {
+      if (createdIssueId) {
+        await issuesSvc.update(createdIssueId, { status: "cancelled" }).catch(() => null);
+      }
+      await releaseGenerationClaim(claimedSlot, existing);
+      throw error;
+    }
 
-    const slotRow = await upsertSlot(sel, {
-      status: "generating",
-      generatingIssueId: generationIssue.id,
-    });
+    const [slotRow] = await db
+      .update(summarySlots)
+      .set({ generatingIssueId: generationIssue.id, updatedAt: new Date() })
+      .where(
+        and(
+          eq(summarySlots.id, claimedSlot.id),
+          eq(summarySlots.status, "generating"),
+          isNull(summarySlots.generatingIssueId),
+          eq(summarySlots.updatedAt, claimedSlot.updatedAt),
+        ),
+      )
+      .returning();
+    if (!slotRow) {
+      await issuesSvc.update(generationIssue.id, { status: "cancelled" });
+      return waitForConcurrentGeneration(sel);
+    }
 
     return {
       slot: mapSlot(slotRow),
@@ -488,14 +597,19 @@ export function summarySlotService(db: Db) {
 
     const now = new Date();
     const result = await db.transaction(async (tx) => {
-      const currentSlot = slotRow
+      const [currentSlot] = slotRow
         ? await tx
-            .select()
-            .from(summarySlots)
-            .where(eq(summarySlots.id, slotRow.id))
-            .then((rows) => rows[0] ?? null)
-        : null;
-      if (!currentSlot || currentSlot.generatingIssueId !== input.generationIssueId) {
+            .update(summarySlots)
+            .set({ generatingIssueId: null, updatedAt: now })
+            .where(
+              and(
+                eq(summarySlots.id, slotRow.id),
+                eq(summarySlots.generatingIssueId, input.generationIssueId!),
+              ),
+            )
+            .returning()
+        : [];
+      if (!currentSlot) {
         throw conflict("Summary generation was superseded by a newer task");
       }
 
@@ -599,7 +713,7 @@ export function summarySlotService(db: Db) {
         .where(
           and(
             eq(summarySlots.id, currentSlot.id),
-            eq(summarySlots.generatingIssueId, input.generationIssueId!),
+            isNull(summarySlots.generatingIssueId),
           ),
         )
         .returning();

@@ -218,6 +218,23 @@ describeEmbeddedPostgres("summary slot service", () => {
       expect(issueRows).toHaveLength(1);
     });
 
+    it("atomically dedupes concurrent generate requests", async () => {
+      const companyId = await seedCompany();
+      const projectId = await seedProject(companyId);
+      await seedSummarizer(companyId);
+      const svc = summarySlotService(db);
+
+      const results = await Promise.all([
+        svc.generate(projectSelector(companyId, projectId), { userId: "board-user" }),
+        svc.generate(projectSelector(companyId, projectId), { userId: "board-user" }),
+      ]);
+
+      expect(new Set(results.map((result) => result.generatingIssue.id)).size).toBe(1);
+      expect(results.filter((result) => result.alreadyGenerating)).toHaveLength(1);
+      const issueRows = await db.select().from(issues).where(eq(issues.companyId, companyId));
+      expect(issueRows).toHaveLength(1);
+    });
+
     it("creates a fresh task once the previous generation task is terminal", async () => {
       const companyId = await seedCompany();
       const projectId = await seedProject(companyId);
@@ -338,6 +355,25 @@ describeEmbeddedPostgres("summary slot service", () => {
         { agentId: summarizerAgentId, runId: runId2 },
       );
       expect(ok.revision.revisionNumber).toBe(2);
+    });
+
+    it("allows only one concurrent write for an active generation", async () => {
+      const companyId = await seedCompany();
+      const projectId = await seedProject(companyId);
+      const summarizerAgentId = await seedSummarizer(companyId);
+      const { svc, generationIssueId, runId } = await startGeneration(companyId, projectId, summarizerAgentId);
+      const input = { ...projectSelector(companyId, projectId), markdown: "# Summary", generationIssueId };
+
+      const results = await Promise.allSettled([
+        svc.write(input, { agentId: summarizerAgentId, runId }),
+        svc.write(input, { agentId: summarizerAgentId, runId }),
+      ]);
+
+      expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+      const rejected = results.find((result) => result.status === "rejected");
+      expect(rejected).toMatchObject({ status: "rejected", reason: { status: 409 } });
+      expect(await db.select().from(documents).where(eq(documents.companyId, companyId))).toHaveLength(1);
+      expect(await db.select().from(documentRevisions).where(eq(documentRevisions.companyId, companyId))).toHaveLength(1);
     });
 
     it("rejects writes from a non-Summarizer agent", async () => {
