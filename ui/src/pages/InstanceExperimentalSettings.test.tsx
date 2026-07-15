@@ -58,7 +58,7 @@ const BUILT_IN_AGENTS_TOGGLE_SELECTOR =
 const APPS_TOGGLE_SELECTOR = 'button[aria-label="Toggle apps experimental setting"]';
 const AUTO_RECOVERY_TOGGLE_SELECTOR =
   'button[aria-label="Toggle task graph liveness auto-recovery"]';
-const HOT_RESTART_TOGGLE_SELECTOR = 'button[aria-label="Toggle hot restart run journaling"]';
+const HOT_RESTART_TOGGLE_SELECTOR = 'button[aria-label="Toggle hot restart"]';
 
 function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
   return {
@@ -91,7 +91,7 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
   };
 }
 
-describe("InstanceExperimentalSettings — hot restart journaling", () => {
+describe("InstanceExperimentalSettings — hot restart", () => {
   let container: HTMLDivElement;
   let root: Root | null = null;
 
@@ -117,7 +117,7 @@ describe("InstanceExperimentalSettings — hot restart journaling", () => {
     vi.clearAllMocks();
   });
 
-  it("persists the dark-launch toggle", async () => {
+  it("persists the hot restart toggle", async () => {
     await flushReact();
     const toggle = container.querySelector<HTMLButtonElement>(HOT_RESTART_TOGGLE_SELECTOR);
     expect(toggle).not.toBeNull();
