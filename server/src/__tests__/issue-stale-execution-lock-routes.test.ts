@@ -795,4 +795,191 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
       executionLockedAt: null,
     });
   }, 15_000);
+
+  it("does not stamp executionRunId when a mention-granted peer agent comments on a done issue", async () => {
+    const { companyId, agentId: assigneeAgentId, currentRunId: assigneeRunId } = await seedCompanyAgentAndRuns();
+    const mentionedAgentId = randomUUID();
+    const mentionedRunId = randomUUID();
+    const issueId = randomUUID();
+    const mentionCommentId = randomUUID();
+
+    await db.insert(agents).values({
+      id: mentionedAgentId,
+      companyId,
+      name: "CoCEOReporter",
+      role: "executive",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: mentionedRunId,
+      companyId,
+      agentId: mentionedAgentId,
+      status: "running",
+      invocationSource: "manual",
+      startedAt: new Date(),
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Done issue with mention follow-up",
+      status: "done",
+      priority: "high",
+      responsibleUserId: "local-board",
+      assigneeAgentId,
+      checkoutRunId: null,
+      executionRunId: null,
+      executionAgentNameKey: null,
+      executionLockedAt: null,
+      completedAt: new Date(),
+    });
+    await db.insert(issueComments).values({
+      id: mentionCommentId,
+      companyId,
+      issueId,
+      authorAgentId: assigneeAgentId,
+      authorUserId: null,
+      authorType: "agent",
+      createdByRunId: null,
+      body: `[@CoCEOReporter](agent://${mentionedAgentId}) please verify the closeout.`,
+    });
+
+    const res = await request(createApp(agentActor(companyId, mentionedAgentId, mentionedRunId)))
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Verified. No reopen needed." });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+
+    const row = await db
+      .select({
+        status: issues.status,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+        executionLockedAt: issues.executionLockedAt,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(row).toEqual({
+      status: "done",
+      checkoutRunId: null,
+      executionRunId: null,
+      executionLockedAt: null,
+    });
+
+    const issueRes = await request(createApp(agentActor(companyId, assigneeAgentId, assigneeRunId)))
+      .get(`/api/issues/${issueId}`);
+    expect(issueRes.status, JSON.stringify(issueRes.body)).toBe(200);
+    expect(issueRes.body).toMatchObject({
+      id: issueId,
+      status: "done",
+      checkoutRunId: null,
+      executionRunId: null,
+      executionLockedAt: null,
+    });
+
+    const contextRes = await request(createApp(agentActor(companyId, assigneeAgentId, assigneeRunId)))
+      .get(`/api/issues/${issueId}/heartbeat-context`);
+    expect(contextRes.status, JSON.stringify(contextRes.body)).toBe(200);
+    expect(contextRes.body.issue).toMatchObject({
+      id: issueId,
+      status: "done",
+    });
+  });
+
+  it("does not backfill executionRunId onto a done issue from a same-scope running wake", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Done issue should not claim execution",
+      status: "done",
+      priority: "high",
+      responsibleUserId: "local-board",
+      assigneeAgentId: agentId,
+      checkoutRunId: null,
+      executionRunId: null,
+      executionAgentNameKey: null,
+      executionLockedAt: null,
+      completedAt: new Date(),
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      startedAt: new Date(),
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "issue_assigned",
+        source: "assignment",
+      },
+    });
+
+    const run = await heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: {
+        issueId,
+        mutation: "comment",
+      },
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "issue_assigned",
+        source: "assignment",
+      },
+      requestedByActorType: "system",
+      requestedByActorId: null,
+    });
+
+    expect(run).not.toBeNull();
+
+    const row = await db
+      .select({
+        status: issues.status,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+        executionAgentNameKey: issues.executionAgentNameKey,
+        executionLockedAt: issues.executionLockedAt,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(row).toEqual({
+      status: "done",
+      checkoutRunId: null,
+      executionRunId: null,
+      executionAgentNameKey: null,
+      executionLockedAt: null,
+    });
+  });
 });

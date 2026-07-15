@@ -4086,15 +4086,7 @@ export function shouldAutoCheckoutIssueForWake(input: {
   const executionState = parseIssueExecutionState(input.issueExecutionState);
   if (executionState?.status === "pending") return false;
 
-  const issueStatus = readNonEmptyString(input.issueStatus);
-  if (
-    issueStatus !== "todo" &&
-    issueStatus !== "backlog" &&
-    issueStatus !== "blocked" &&
-    issueStatus !== "in_progress"
-  ) {
-    return false;
-  }
+  if (!issueStatusOwnsExecutionLock(input.issueStatus)) return false;
 
   const wakeReason = readNonEmptyString(input.contextSnapshot?.wakeReason);
   if (!wakeReason) return false;
@@ -4103,6 +4095,14 @@ export function shouldAutoCheckoutIssueForWake(input: {
   if (wakeReason.startsWith("execution_")) return false;
 
   return true;
+}
+
+function issueStatusOwnsExecutionLock(status: string | null | undefined) {
+  const issueStatus = readNonEmptyString(status);
+  return issueStatus === "todo" ||
+    issueStatus === "backlog" ||
+    issueStatus === "blocked" ||
+    issueStatus === "in_progress";
 }
 
 function shouldWakeOwnIssueExecutionLock(contextSnapshot: Record<string, unknown> | null | undefined) {
@@ -10397,6 +10397,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           and(
             eq(issues.id, claimedIssueId),
             eq(issues.companyId, claimed.companyId),
+            inArray(issues.status, ["todo", "backlog", "blocked", "in_progress"]),
             // Mention/context runs can touch an issue, but only the current assignee
             // owns the issue execution lock shown as the active run.
             eq(issues.assigneeAgentId, claimed.agentId),
@@ -15287,7 +15288,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           );
         }
 
-        if (!activeExecutionRun && issue.assigneeAgentId && !blockedInteractionWake) {
+        if (
+          !activeExecutionRun &&
+          issue.assigneeAgentId &&
+          !blockedInteractionWake &&
+          issueStatusOwnsExecutionLock(issue.status)
+        ) {
           // Legacy backfill must honor the same assignee-only ownership boundary as
           // claimQueuedRun(); otherwise a blocked interaction wake can re-stamp a
           // helper run as the active execution owner immediately after the helper
