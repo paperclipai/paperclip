@@ -269,6 +269,48 @@ describe("POST /health/dev-server/restart", () => {
     }
   });
 
+  it("does not write the intent marker when the restart supervisor is unavailable", async () => {
+    const previousFile = process.env.PAPERCLIP_DEV_SERVER_STATUS_FILE;
+    const previousHome = process.env.PAPERCLIP_HOME;
+    const homeDir = mkdtempSync(path.join(os.tmpdir(), "paperclip-hot-restart-home-"));
+    tempDirs.push(homeDir);
+    delete process.env.PAPERCLIP_DEV_SERVER_STATUS_FILE;
+    process.env.PAPERCLIP_HOME = homeDir;
+
+    const db = {
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({
+          where: vi.fn().mockResolvedValue([
+            { id: "settings-1", general: {}, experimental: { hotRestart: true }, createdAt: new Date(), updatedAt: new Date() },
+          ]),
+        })),
+      })),
+    } as unknown as Db;
+
+    try {
+      const app = express();
+      app.use(express.json());
+      app.use("/health", healthRoutes(db));
+
+      const res = await request(app).post("/health/dev-server/restart").send({ hot: true });
+
+      expect(res.status).toBe(404);
+      expect(res.body).toEqual({ error: "dev_server_supervisor_unavailable" });
+      expect(existsSync(path.join(homeDir, "hot-restart-intent.json"))).toBe(false);
+    } finally {
+      if (previousFile === undefined) {
+        delete process.env.PAPERCLIP_DEV_SERVER_STATUS_FILE;
+      } else {
+        process.env.PAPERCLIP_DEV_SERVER_STATUS_FILE = previousFile;
+      }
+      if (previousHome === undefined) {
+        delete process.env.PAPERCLIP_HOME;
+      } else {
+        process.env.PAPERCLIP_HOME = previousHome;
+      }
+    }
+  });
+
   it("rejects unauthenticated manual restarts in authenticated mode", async () => {
     const previousFile = process.env.PAPERCLIP_DEV_SERVER_STATUS_FILE;
     process.env.PAPERCLIP_DEV_SERVER_STATUS_FILE = createDevServerStatusFile({

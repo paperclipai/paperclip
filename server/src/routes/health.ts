@@ -113,9 +113,6 @@ export function healthRoutes(
         res.status(409).json({ error: "hot_restart_disabled" });
         return;
       }
-      // Written by this server process; consumed by the same process on shutdown
-      // (pid match), then deleted. It cannot leak into any later restart.
-      writeHotRestartIntent();
       hot = true;
     }
 
@@ -126,6 +123,12 @@ export function healthRoutes(
     if (!written) {
       res.status(404).json({ error: "dev_server_supervisor_unavailable" });
       return;
+    }
+
+    if (hot) {
+      // Write only after the supervisor accepts the restart so an unavailable
+      // supervisor cannot leave a stale intent for an unrelated shutdown.
+      writeHotRestartIntent();
     }
 
     res.status(202).json({ status: hot ? "hot_restart_requested" : "restart_requested" });
