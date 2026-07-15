@@ -55,6 +55,13 @@ export {
   type LinearEvidenceCompletionSnapshot,
   type LinearEvidencePayload,
 } from "./linear-evidence-bridge.js";
+export {
+  linearEvidenceConnector,
+  LinearEvidenceConnectorError,
+  type LinearEvidenceTransport,
+  type LinearEvidencePublishInput,
+  type LinearCommentReceipt,
+} from "./linear-evidence-connector.js";
 export { taskWatchdogService } from "./task-watchdogs.js";
 export {
   issueIsInTaskWatchdogSubtree,

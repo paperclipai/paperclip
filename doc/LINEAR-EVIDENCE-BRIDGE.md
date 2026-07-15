@@ -143,15 +143,20 @@ Error details expose conflict keys, not arbitrary external values. The connector
 must preserve both sides of every conflict in its protected state and require an
 explicit resolution; last-write-wins behavior is forbidden.
 
-## Remaining external dependency
+## Connector composition and remaining deployment dependency
 
-This repository intentionally does not contain Linear credentials or a network
-client. A separately deployed connector/plugin must:
+`linearEvidenceConnector(db, transport)` implements the persisted mapping,
+idempotency lease, marker reconciliation, read-after-write verification,
+receipt, and conflict-preservation behavior. Its transport is injected and is
+the only credential-bearing boundary; Paperclip core contains no Linear token,
+network client, or secret logging. `dryRun: true` persists a pending delivery
+without invoking the transport.
 
-- store the Paperclip-to-Linear mapping and snapshots;
-- publish/reconcile Linear comments with the algorithm above;
-- preserve conflict records; and
-- supply a production `LinearEvidenceBridgeReader` at server composition time.
+A separately configured deployment adapter/plugin must:
+
+- resolve a least-privilege Linear credential from SecretRef outside core;
+- implement `LinearEvidenceTransport` against Linear's comment API; and
+- inject the connector as `createApp(..., { linearEvidenceBridge })`.
 
 Until that adapter is installed, gated issues cannot be completed. That is the
 intended fail-closed behavior, not a degraded success path.
