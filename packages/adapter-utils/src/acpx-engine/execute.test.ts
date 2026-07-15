@@ -557,6 +557,69 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(env).not.toContain("old-key");
   });
 
+  it("forwards resolved adapter env (plain + secret) to the wrapper without overriding runtime vars", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+
+    await runExecutor(
+      {
+        agentCommand: "node ./fake-acp.js",
+        stateDir,
+        env: {
+          OOGA_BOOGA_123: "plain-value",
+          // Server-resolved secret_ref values arrive here as plain strings.
+          OPENROUTER_API_KEY: "resolved-secret-value",
+          // Reserved-namespace config keys must not clobber runtime identity/wake.
+          PAPERCLIP_TASK_ID: "attacker-issue",
+        },
+      },
+      {
+        authToken: "runtime-secret-token",
+        context: { taskId: "issue-real", wakeReason: "issue_assigned" },
+      },
+    );
+
+    const wrappers = await fs.readdir(path.join(stateDir, "wrappers"));
+    const envPath = path.join(stateDir, "wrappers", wrappers.find((name) => name.endsWith(".env"))!);
+    const env = await fs.readFile(envPath, "utf8");
+
+    expect(env).toContain("OOGA_BOOGA_123='plain-value'");
+    expect(env).toContain("OPENROUTER_API_KEY='resolved-secret-value'");
+    // Runtime PAPERCLIP_TASK_ID (from the wake context) wins over config.
+    expect(env).toContain("PAPERCLIP_TASK_ID='issue-real'");
+    expect(env).not.toContain("attacker-issue");
+  });
+
+  it("busts the session fingerprint when resolved adapter env changes but not across wakes", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const baseConfig = { agentCommand: "node ./fake-acp.js", stateDir };
+
+    const first = await runExecutor(
+      { ...baseConfig, env: { OPENROUTER_API_KEY: "value-1" } },
+      { context: { taskId: "issue-1", wakeReason: "issue_assigned" } },
+    );
+    const changedEnv = await runExecutor(
+      { ...baseConfig, env: { OPENROUTER_API_KEY: "value-2" } },
+      { context: { taskId: "issue-1", wakeReason: "issue_assigned" } },
+    );
+    const sameEnvNewWake = await runExecutor(
+      { ...baseConfig, env: { OPENROUTER_API_KEY: "value-1" } },
+      { context: { taskId: "issue-1", wakeReason: "comment", wakeCommentId: "c-9" } },
+    );
+
+    const fp = (r: { result: { sessionParams?: unknown } }) =>
+      (r.result.sessionParams as { configFingerprint?: string } | undefined)?.configFingerprint;
+
+    // A changed forwarded env value invalidates warm-handle / session reuse so
+    // the next launch sources the latest env.
+    expect(fp(first)).toBeDefined();
+    expect(fp(changedEnv)).not.toBe(fp(first));
+    // A new heartbeat with the same config env keeps the fingerprint stable, so
+    // per-wake PAPERCLIP_* churn does not needlessly reset the session.
+    expect(fp(sameEnvNewWake)).toBe(fp(first));
+  });
+
   it("shapes ACPX wrapper workspace env for remote execution identities", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");

@@ -1044,8 +1044,21 @@ async function buildRuntime(input: {
     executionCwd: shapedWorkspaceEnv.workspaceCwd,
     executionTargetIsRemote,
   });
+  // Resolved adapter env (plain + server-resolved secret_ref values) that we
+  // forward to the spawned agent process. Captured separately so we can fold a
+  // stable hash of just the user-configured env into the session fingerprint
+  // below — a change here must invalidate a warm/resumable session so the next
+  // launch picks up the latest per-run env, but per-wake PAPERCLIP_* vars must
+  // NOT (they change every heartbeat and would reset the session each time).
+  const resolvedAdapterEnv: Record<string, string> = {};
   for (const [key, value] of Object.entries(shapedEnvConfig)) {
-    if (typeof value === "string") env[key] = value;
+    if (typeof value !== "string") continue;
+    // Runtime PAPERCLIP_* always wins over config: only apply a PAPERCLIP_* key
+    // when Paperclip has not already assigned it (e.g. an explicitly configured
+    // PAPERCLIP_API_KEY, applied just below).
+    if (key.startsWith("PAPERCLIP_") && key in env) continue;
+    env[key] = value;
+    if (!key.startsWith("PAPERCLIP_")) resolvedAdapterEnv[key] = value;
   }
   if (!hasExplicitApiKey && authToken) env.PAPERCLIP_API_KEY = authToken;
   // For the claude agent, set model via ANTHROPIC_MODEL at startup rather than
@@ -1217,6 +1230,13 @@ async function buildRuntime(input: {
       : null,
     mcpServers: mcpIdentity,
     secretManifestHash: shortHash(secretManifest),
+    // Fold the resolved adapter env (user-configured plain + secret_ref values)
+    // into the fingerprint so a change to any forwarded env value invalidates a
+    // warm handle / resumable session and forces a fresh launch that sources the
+    // latest env. secretManifestHash alone misses plain-value edits and same
+    // -version secret rotations. Only the stable non-PAPERCLIP_* env is hashed,
+    // so per-wake runtime vars don't churn the fingerprint every heartbeat.
+    adapterEnvHash: shortHash(resolvedAdapterEnv),
   });
   const taskKey = asString(input.ctx.runtime.taskKey, "") || wakeTaskId || workspaceId || "default";
   const sessionKey = `paperclip:${agent.companyId}:${agent.id}:${taskKey}:${fingerprint}`;

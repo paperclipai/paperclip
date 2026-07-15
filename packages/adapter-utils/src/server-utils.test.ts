@@ -2053,6 +2053,50 @@ describe("refreshPaperclipWorkspaceEnvForExecution", () => {
       },
     ]);
   });
+
+  it("forwards resolved adapter env but never overrides Paperclip runtime env", () => {
+    const env: Record<string, string> = {
+      PAPERCLIP_RUN_ID: "run-1",
+      PAPERCLIP_TASK_ID: "issue-1",
+      PAPERCLIP_API_URL: "http://runtime:3100",
+    };
+
+    refreshPaperclipWorkspaceEnvForExecution({
+      env,
+      envConfig: {
+        // Plain non-PAPERCLIP key.
+        OOGA_BOOGA_123: "plain-value",
+        // Server-resolved secret_ref value arrives as a plain string here.
+        OPENROUTER_API_KEY: "resolved-secret-value",
+        // Reserved-namespace keys must not clobber runtime identity/wake vars.
+        PAPERCLIP_TASK_ID: "attacker-issue",
+        PAPERCLIP_API_URL: "http://evil:9999",
+      },
+      workspaceCwd: null,
+    });
+
+    expect(env.OOGA_BOOGA_123).toBe("plain-value");
+    expect(env.OPENROUTER_API_KEY).toBe("resolved-secret-value");
+    expect(env.PAPERCLIP_TASK_ID).toBe("issue-1");
+    expect(env.PAPERCLIP_API_URL).toBe("http://runtime:3100");
+  });
+
+  it("applies a configured PAPERCLIP_* key only when Paperclip has not set it", () => {
+    const env: Record<string, string> = {};
+
+    refreshPaperclipWorkspaceEnvForExecution({
+      env,
+      envConfig: {
+        PAPERCLIP_API_KEY: "explicit-key",
+      },
+      workspaceCwd: null,
+    });
+
+    // Paperclip did not assign PAPERCLIP_API_KEY before the merge, so an
+    // explicitly configured value is allowed through (adapters apply the run
+    // token here only when no explicit key was configured).
+    expect(env.PAPERCLIP_API_KEY).toBe("explicit-key");
+  });
 });
 
 describe("appendWithByteCap", () => {
