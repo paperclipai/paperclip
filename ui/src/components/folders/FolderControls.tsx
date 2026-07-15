@@ -51,13 +51,22 @@ import { cn } from "@/lib/utils";
 export type FolderSelection = "all" | "unfiled" | string;
 
 export const FOLDER_COLORS = [
-  "#6366f1",
-  "#8b5cf6",
-  "#10b981",
-  "#06b6d4",
-  "#f59e0b",
-  "#64748b",
+  "indigo",
+  "violet",
+  "emerald",
+  "cyan",
+  "amber",
+  "slate",
 ];
+
+const FOLDER_COLOR_VALUES: Record<string, string> = {
+  indigo: "var(--folder-color-indigo)",
+  violet: "var(--folder-color-violet)",
+  emerald: "var(--folder-color-emerald)",
+  cyan: "var(--folder-color-cyan)",
+  amber: "var(--folder-color-amber)",
+  slate: "var(--folder-color-slate)",
+};
 
 export function normalizeFolderSelection(value: string | null | undefined): FolderSelection {
   if (!value) return "all";
@@ -84,11 +93,14 @@ export function FolderSwatch({
   color: string | null | undefined;
   className?: string;
 }) {
+  const backgroundColor = color
+    ? (FOLDER_COLOR_VALUES[color] ?? color)
+    : "var(--folder-color-slate)";
   return (
     <span
       aria-hidden="true"
-      className={cn("h-2.5 w-2.5 shrink-0 rounded-[3px] border border-border/40", className)}
-      style={{ backgroundColor: color || "#64748b" }}
+      className={cn("h-2.5 w-2.5 shrink-0 rounded-sm border border-border/40", className)}
+      style={{ backgroundColor }}
     />
   );
 }
@@ -191,7 +203,7 @@ export function FolderRail({
       <button
         type="button"
         className={cn(
-          "grid w-full grid-cols-[1rem_minmax(0,1fr)_auto] items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent/40",
+          "grid w-full grid-cols-(--gtc-folder-row) items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent/40",
           active ? "bg-accent/60 text-foreground" : "text-muted-foreground",
         )}
         aria-current={active ? "page" : undefined}
@@ -205,9 +217,9 @@ export function FolderRail({
   }
 
   return (
-    <nav aria-label={`${itemLabelPlural} folders`} className="hidden w-[13.25rem] shrink-0 border-r border-border pr-3 md:block">
+    <nav aria-label={`${itemLabelPlural} folders`} className="hidden w-(--sz-folder-rail) shrink-0 border-r border-border pr-3 md:block">
       <div className="mb-2 flex items-center justify-between gap-2">
-        <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Folders</div>
+        <div className="text-(length:--text-micro) font-medium uppercase tracking-wide text-muted-foreground">Folders</div>
         <Button variant="ghost" size="icon-sm" title="New folder" onClick={onCreate}>
           <Plus className="h-3.5 w-3.5" />
         </Button>
@@ -237,7 +249,7 @@ export function FolderRail({
               onDelete={() => onDelete(folder)}
             />
           ))}
-          <div className="px-2 pb-1 pt-3 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+          <div className="px-2 pb-1 pt-3 text-(length:--text-micro) font-medium uppercase tracking-wide text-muted-foreground">
             System
           </div>
           {renderVirtualRow("unfiled", "Unfiled", result?.unfiledCount ?? 0, <FolderSwatch color={null} className="mt-0.5" />)}
@@ -280,7 +292,7 @@ export function FolderRailItem({
   return (
     <div
       className={cn(
-        "group grid grid-cols-[1rem_minmax(0,1fr)_auto_auto] items-center gap-2 rounded-md px-2 py-1 text-sm transition-colors hover:bg-accent/40",
+        "group grid grid-cols-(--gtc-folder-row-actions) items-center gap-2 rounded-md px-2 py-1 text-sm transition-colors hover:bg-accent/40",
         active ? "bg-accent/60 text-foreground" : "text-muted-foreground",
       )}
     >
@@ -417,7 +429,7 @@ export function MobileFolderSheet({
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent side="bottom" className="max-h-[80dvh] rounded-t-lg pb-4">
+      <SheetContent side="bottom" className="max-h-(--sz-folder-sheet-max) rounded-t-lg pb-4">
         <SheetHeader className="border-b border-border px-4 py-3">
           <SheetTitle>{itemLabelPlural} folders</SheetTitle>
         </SheetHeader>

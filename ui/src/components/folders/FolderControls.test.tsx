@@ -52,7 +52,7 @@ const folderResult: FolderListResult = {
       companyId: "company-1",
       kind: "routine",
       name: "Reporting",
-      color: "#6366f1",
+      color: "indigo",
       position: 0,
       itemCount: 3,
       createdAt: new Date("2026-07-01T00:00:00.000Z"),

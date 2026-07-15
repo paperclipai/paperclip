@@ -182,6 +182,17 @@
   --status-task-icon-blocked: var(--status-task-blocked);         /* #dc2626 both modes */
   --status-task-icon-cancelled: #52585d;
   --status-task-icon-in_queue: var(--status-task-in_progress);    /* blocked shape, blue */
+
+  --folder-color-indigo: #6366f1;
+  --folder-color-violet: #8b5cf6;
+  --folder-color-emerald: #10b981;
+  --folder-color-cyan: #06b6d4;
+  --folder-color-amber: #f59e0b;
+  --folder-color-slate: #64748b;
+  --gtc-folder-row: 1rem minmax(0, 1fr) auto;
+  --gtc-folder-row-actions: 1rem minmax(0, 1fr) auto auto;
+  --sz-folder-rail: 13.25rem;
+  --sz-folder-sheet-max: 80dvh;
 }
 
 .dark {
