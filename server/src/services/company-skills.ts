@@ -1116,6 +1116,14 @@ async function validateProjectSkillImportPath(
   }
 }
 
+function projectSkillImportFailureReason(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  if (message.includes("symbolic link")) return "Project skill candidate contains a symbolic link.";
+  if (message.includes("outside workspace root")) return "Project skill candidate resolves outside the workspace.";
+  if (message.includes("No SKILL.md file")) return "Project skill candidate does not contain a readable SKILL.md file.";
+  return "Project skill candidate could not be read.";
+}
+
 async function collectLocalSkillInventory(
   skillDir: string,
   mode: LocalSkillInventoryMode = "full",
@@ -4487,7 +4495,7 @@ export function companySkillService(db: Db) {
             workspaceRoot: target.workspaceCwd,
           });
         } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
+          const message = projectSkillImportFailureReason(error);
           candidates.push({
             slug: path.basename(directory.skillDir),
             name: path.basename(directory.skillDir),
@@ -4507,7 +4515,9 @@ export function companySkillService(db: Db) {
             workspaceId: target.workspaceId,
             workspaceName: target.workspaceName,
             path: directory.skillDir,
-            reason: trackWarning(`Skipped ${directory.skillDir}: ${message}`),
+            reason: trackWarning(
+              `Skipped ${target.projectName} / ${target.workspaceName} / ${directory.relativePath}: ${message}`,
+            ),
           });
           continue;
         }

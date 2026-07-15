@@ -2131,6 +2131,12 @@ describeEmbeddedPostgres("companySkillService.list", () => {
         reason: expect.stringContaining("symbolic link"),
       }),
     ]);
+    expect(result.candidates[0]?.reason).not.toContain(workspaceDir);
+    expect(result.candidates[0]?.reason).not.toContain(outsideDir);
+    expect(result.skipped[0]?.reason).not.toContain(workspaceDir);
+    expect(result.skipped[0]?.reason).not.toContain(outsideDir);
+    expect(result.warnings.join("\n")).not.toContain(workspaceDir);
+    expect(result.warnings.join("\n")).not.toContain(outsideDir);
     const persisted = await db.select().from(companySkills).where(eq(companySkills.companyId, companyId));
     expect(persisted.filter((skill) => skill.metadata?.sourceKind === "project_scan")).toEqual([]);
   });
