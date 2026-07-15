@@ -93,6 +93,40 @@ async function waitForCondition(fn: () => Promise<boolean>, timeoutMs = 3_000) {
   return fn();
 }
 
+async function waitForHeartbeatSideEffectsToSettle(db: ReturnType<typeof createDb>, timeoutMs = 10_000) {
+  let lastSnapshot: string | null = null;
+  let stableSince = 0;
+
+  return waitForCondition(async () => {
+    const [runRows, runEventRows, activityRows, commentRows] = await Promise.all([
+      db.select({ status: heartbeatRuns.status }).from(heartbeatRuns),
+      db.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents),
+      db.select({ id: activityLog.id }).from(activityLog),
+      db.select({ id: issueComments.id }).from(issueComments),
+    ]);
+    if (runRows.some((row) => row.status === "queued" || row.status === "running")) {
+      lastSnapshot = null;
+      stableSince = 0;
+      return false;
+    }
+
+    const snapshot = [
+      runRows.length,
+      runEventRows.length,
+      activityRows.length,
+      commentRows.length,
+    ].join(":");
+    const now = Date.now();
+    if (snapshot !== lastSnapshot) {
+      lastSnapshot = snapshot;
+      stableSince = now;
+      return false;
+    }
+
+    return stableSince > 0 && now - stableSince >= 150;
+  }, timeoutMs);
+}
+
 describeEmbeddedPostgres("blocked interaction wakes do not claim issue execution locks", () => {
   let db!: ReturnType<typeof createDb>;
   let heartbeat!: ReturnType<typeof heartbeatService>;
@@ -106,10 +140,7 @@ describeEmbeddedPostgres("blocked interaction wakes do not claim issue execution
 
   afterEach(async () => {
     adapterControl.release();
-    await waitForCondition(async () => {
-      const rows = await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns);
-      return rows.every((row) => row.status !== "queued" && row.status !== "running");
-    }, 10_000);
+    await waitForHeartbeatSideEffectsToSettle(db);
     adapterControl.reset();
     runningProcesses.clear();
     await db.delete(issueComments);
