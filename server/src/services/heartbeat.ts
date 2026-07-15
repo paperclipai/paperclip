@@ -6204,7 +6204,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return "timeout_exceeded";
     }
     const maxAttempts = input.monitor?.maxAttempts ?? null;
-    if (maxAttempts !== null && input.nextAttemptCount > maxAttempts) {
+    if (maxAttempts != null && input.nextAttemptCount > maxAttempts) {
       return "max_attempts_exhausted";
     }
     return null;
@@ -11100,6 +11100,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
   async function scanSilentActiveRuns(opts?: { now?: Date; companyId?: string }) {
     return recovery.scanSilentActiveRuns({ ...opts, issueCreatedAtGte: await getWorktreeExecutionCutoff() });
+  }
+
+  async function cleanupStaleWakeupClaims(opts?: { companyId?: string }) {
+    return recovery.cleanupStaleWakeupClaims(opts);
   }
 
   async function reconcileProductivityReviews(opts?: { now?: Date; companyId?: string }) {
@@ -16452,6 +16456,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     reconcileIssueGraphLiveness,
 
     scanSilentActiveRuns,
+    cleanupStaleWakeupClaims,
 
     reconcileProductivityReviews,
 

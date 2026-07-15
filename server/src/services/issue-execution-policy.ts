@@ -285,7 +285,7 @@ function exhaustedMonitorClearReason(input: {
     return "timeout_exceeded";
   }
   const maxAttempts = input.monitor.maxAttempts ?? null;
-  if (maxAttempts !== null && input.attemptCount >= maxAttempts) {
+  if (maxAttempts != null && input.attemptCount >= maxAttempts) {
     return "max_attempts_exhausted";
   }
   return null;
