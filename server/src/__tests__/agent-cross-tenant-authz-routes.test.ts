@@ -105,6 +105,10 @@ const mockCompanySkillService = vi.hoisted(() => ({
 }));
 
 const mockWorkspaceOperationService = vi.hoisted(() => ({}));
+const mockAgentMcpToolService = vi.hoisted(() => ({
+  listForAgent: vi.fn(async () => ({ servers: [], tools: [] })),
+  executeForRun: vi.fn(async () => ({ ok: true })),
+}));
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
 
@@ -179,6 +183,7 @@ vi.mock("../routes/authz.js", async () => {
 
 vi.mock("../services/index.js", () => ({
   agentService: () => mockAgentService,
+  agentMcpToolService: () => mockAgentMcpToolService,
   agentInstructionsService: () => mockAgentInstructionsService,
   accessService: () => mockAccessService,
   approvalService: () => mockApprovalService,
@@ -317,7 +322,9 @@ function resetMockDefaults() {
   mockLogActivity.mockImplementation(async () => undefined);
 }
 
-describe.sequential("agent cross-tenant route authorization", () => {
+// Each case spins up several real HTTP listeners via requestApp; the default 5s
+// per-test timeout is too tight for the multi-app loops (NEO-469).
+describe.sequential("agent cross-tenant route authorization", { timeout: 20000 }, () => {
   beforeEach(() => {
     resetMockDefaults();
   });

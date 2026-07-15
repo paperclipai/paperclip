@@ -32,6 +32,6 @@ export const executeAgentMcpToolSchema = z.object({
   serverName: z.string().trim().min(1).nullable().optional(),
   toolName: z.string().trim().min(1),
   arguments: z.record(z.string(), z.unknown()).optional().default({}),
-});
+}).strict();
 
 export type ExecuteAgentMcpTool = z.infer<typeof executeAgentMcpToolSchema>;
