@@ -2281,6 +2281,16 @@ function isIssueCommentPresentation(value: unknown): value is IssueCommentPresen
   return v.kind === "system_notice" || v.kind === "message";
 }
 
+function isPendingConfirmationInteraction(
+  interaction: IssueThreadInteraction,
+): interaction is RequestConfirmationInteraction | RequestCheckboxConfirmationInteraction {
+  return interaction.status === "pending"
+    && (
+      interaction.kind === "request_confirmation"
+      || interaction.kind === "request_checkbox_confirmation"
+    );
+}
+
 function isIssueCommentMetadata(value: unknown): value is IssueCommentMetadata {
   if (!value || typeof value !== "object") return false;
   const v = value as Record<string, unknown>;
@@ -4294,11 +4304,21 @@ export function IssueChatThread({
   });
   const resolvedTranscriptByRun = transcriptsByRunId ?? transcriptByRun;
   const resolvedHasOutputForRun = hasOutputForRunOverride ?? hasOutputForRun;
+  const pendingConfirmationInteractions = useMemo(
+    () => interactions.filter(isPendingConfirmationInteraction),
+    [interactions],
+  );
+  const timelineInteractions = useMemo(
+    () => showComposer
+      ? interactions.filter((interaction) => !isPendingConfirmationInteraction(interaction))
+      : interactions,
+    [interactions, showComposer],
+  );
   const rawMessages = useMemo(
     () =>
       buildIssueChatMessages({
         comments,
-        interactions,
+        interactions: timelineInteractions,
         timelineEvents,
         linkedRuns,
         liveRuns,
@@ -4314,7 +4334,7 @@ export function IssueChatThread({
       }),
     [
       comments,
-      interactions,
+      timelineInteractions,
       timelineEvents,
       linkedRuns,
       liveRuns,
@@ -4930,6 +4950,44 @@ export function IssueChatThread({
             data-testid="issue-chat-composer-dock"
             className="sticky bottom-[calc(env(safe-area-inset-bottom)+20px)] z-20 space-y-2 bg-gradient-to-t from-background via-background/95 to-background/0 pt-6"
           >
+            {pendingConfirmationInteractions.length > 0 ? (
+              <section
+                aria-label="Pending confirmation"
+                data-testid="issue-chat-pending-confirmations"
+                className="rounded-2xl border-2 border-violet-500/70 bg-background p-3 shadow-lg shadow-violet-500/10"
+              >
+                <div className="mb-2 flex items-center justify-between gap-3 px-1">
+                  <div className="flex items-center gap-2">
+                    <AlertTriangle className="h-4 w-4 text-violet-600 dark:text-violet-300" />
+                    <div>
+                      <p className="text-sm font-semibold text-foreground">Decision required</p>
+                      <p className="text-xs text-muted-foreground">
+                        Approve or request changes before this task can continue.
+                      </p>
+                    </div>
+                  </div>
+                  {pendingConfirmationInteractions.length > 1 ? (
+                    <span className="shrink-0 rounded-full bg-violet-500/10 px-2 py-0.5 text-xs font-medium text-violet-800 dark:text-violet-200">
+                      {pendingConfirmationInteractions.length} pending
+                    </span>
+                  ) : null}
+                </div>
+                <div className="max-h-[min(48vh,32rem)] space-y-2 overflow-y-auto overscroll-contain">
+                  {pendingConfirmationInteractions.map((interaction) => (
+                    <IssueThreadInteractionCard
+                      key={interaction.id}
+                      interaction={interaction}
+                      agentMap={agentMap}
+                      currentUserId={currentUserId}
+                      userLabelMap={userLabelMap}
+                      onAcceptInteraction={stableOnAcceptInteraction}
+                      onRejectInteraction={stableOnRejectInteraction}
+                      externalReferences={externalReferences}
+                    />
+                  ))}
+                </div>
+              </section>
+            ) : null}
             <IssueChatComposer
               ref={composerRef}
               onImageUpload={imageUploadHandler}
