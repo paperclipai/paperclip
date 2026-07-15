@@ -10923,6 +10923,29 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
       .where(eq(heartbeatRuns.status, "running"));
 
+    const monitorIssueIds = [...new Set(activeRuns.flatMap(({ run }) => {
+      const runContext = parseObject(run.contextSnapshot);
+      if (readNonEmptyString(runContext.wakeReason) !== "issue_monitor_due") return [];
+      const issueId = readNonEmptyString(runContext.issueId);
+      return issueId ? [issueId] : [];
+    }))];
+    const monitorIssues = monitorIssueIds.length > 0
+      ? await db
+        .select({
+          id: issues.id,
+          companyId: issues.companyId,
+          monitorNextCheckAt: issues.monitorNextCheckAt,
+        })
+        .from(issues)
+        .where(inArray(issues.id, monitorIssueIds))
+      : [];
+    const monitorNextCheckAtByIssue = new Map(
+      monitorIssues.map((issue) => [
+        `${issue.companyId}:${issue.id}`,
+        issue.monitorNextCheckAt,
+      ]),
+    );
+
     const reaped: string[] = [];
 
     for (const { run, adapterType, adapterConfig } of activeRuns) {
@@ -10973,17 +10996,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const monitorDispatchLostWithoutFutureWake =
         readNonEmptyString(runContext.wakeReason) === "issue_monitor_due" &&
         Boolean(monitorIssueId) &&
-        await db
-          .select({ monitorNextCheckAt: issues.monitorNextCheckAt })
-          .from(issues)
-          .where(and(eq(issues.id, monitorIssueId!), eq(issues.companyId, run.companyId)))
-          .limit(1)
-          .then((rows) => {
-            const issue = rows[0];
-            if (!issue) return false;
-            const nextCheckAt = issue.monitorNextCheckAt;
-            return !nextCheckAt || nextCheckAt.getTime() <= now.getTime();
-          });
+        monitorNextCheckAtByIssue.get(`${run.companyId}:${monitorIssueId}`) === null;
       const shouldRetry = (run.processLossRetryCount ?? 0) < 1 && (
         (tracksLocalChild && (!!run.processPid || !!run.processGroupId)) ||
         monitorDispatchLostWithoutFutureWake
