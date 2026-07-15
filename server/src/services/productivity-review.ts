@@ -260,7 +260,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       .then((rows) => rows[0] ?? null);
   }
 
-  async function findRecentResolvedProductivityReview(
+  async function findRecentTerminalProductivityReview(
     companyId: string,
     sourceIssueId: string,
     thresholds: ProductivityReviewThresholds,
@@ -275,7 +275,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
           eq(issues.companyId, companyId),
           eq(issues.originKind, PRODUCTIVITY_REVIEW_ORIGIN_KIND),
           eq(issues.originId, sourceIssueId),
-          eq(issues.status, "done"),
+          inArray(issues.status, ["done", "cancelled"]),
           gt(issues.updatedAt, cutoff),
         ),
       )
@@ -807,7 +807,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
         result.skipped += 1;
         continue;
       }
-      if (await findRecentResolvedProductivityReview(candidate.companyId, candidate.id, thresholds, now)) {
+      if (await findRecentTerminalProductivityReview(candidate.companyId, candidate.id, thresholds, now)) {
         result.snoozed += 1;
         continue;
       }
