@@ -1,5 +1,13 @@
 import type { ServerInfoSnapshot } from "@paperclipai/shared";
 
+export type DevServerAdoptionReport = {
+  completedAt: string;
+  newServerVersion: string | null;
+  adopted: number;
+  finalizedWhileDown: number;
+  lost: number;
+};
+
 export type DevServerHealthStatus = {
   enabled: true;
   restartRequired: boolean;
@@ -12,6 +20,9 @@ export type DevServerHealthStatus = {
   activeRunCount: number;
   waitingForIdle: boolean;
   lastRestartAt: string | null;
+  hotRestartEnabled: boolean;
+  eligibleLiveRunCount: number;
+  adoptionReport: DevServerAdoptionReport | null;
 };
 
 export type HealthStatus = {
@@ -41,11 +52,12 @@ export const healthApi = {
     }
     return res.json();
   },
-  requestDevServerRestart: async (): Promise<void> => {
+  requestDevServerRestart: async (opts?: { hot?: boolean }): Promise<void> => {
     const res = await fetch("/api/health/dev-server/restart", {
       method: "POST",
       credentials: "include",
-      headers: { Accept: "application/json" },
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      body: JSON.stringify({ hot: opts?.hot === true }),
     });
     if (!res.ok) {
       const payload = await res.json().catch(() => null) as { error?: string } | null;
