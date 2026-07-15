@@ -2,6 +2,7 @@ import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, 
 import os from "node:os";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
+import { promises as fs } from "node:fs";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { resetLocalGitIndexToHead } from "./git-workspace-sync.js";
@@ -263,6 +264,13 @@ describe("sandbox managed runtime", () => {
     await symlink(hostAuthSource, path.join(localCodexHome, "auth.json"));
 
     const client = createLocalSandboxClient();
+    const realChmod = fs.chmod.bind(fs);
+    const chmodSpy = vi.spyOn(fs, "chmod").mockImplementation(async (target, mode) => {
+      if (target === hostAuthSource) {
+        throw Object.assign(new Error("post-rename chmod should not run"), { code: "EACCES" });
+      }
+      await realChmod(target, mode);
+    });
     const lines: string[] = [];
     const runtimeStatuses: string[] = [];
     const prepared = await prepareSandboxManagedRuntime({
@@ -307,6 +315,7 @@ describe("sandbox managed runtime", () => {
     } finally {
       polling = false;
       await pollPromise;
+      chmodSpy.mockRestore();
     }
 
     expect(invalidReads).toEqual([]);
