@@ -312,17 +312,19 @@ export type AdapterFailureRecoveryClassification =
 
 function parseProviderQuotaClockReset(error: string, now: Date) {
   const match = error.match(
-    /try again at\s+(\d{1,2})(?::(\d{2}))?\s*([ap])\.?\s*m\.?(?:\s*\(([^)]+)\)|\s+([A-Z]{2,5}))?/i,
+    /try again at\s+(\d{1,2})(?::(\d{2}))?\s*(?:([ap])\.?\s*m\.?)?(?:\s*\(([^)]+)\)|\s+([A-Z]{2,5}))?/i,
   );
   if (!match) return null;
 
-  const hour12 = Number.parseInt(match[1] ?? "", 10);
+  const hourValue = Number.parseInt(match[1] ?? "", 10);
   const minute = Number.parseInt(match[2] ?? "0", 10);
-  if (!Number.isInteger(hour12) || hour12 < 1 || hour12 > 12) return null;
+  const meridiem = (match[3] ?? "").toLowerCase();
+  if (!Number.isInteger(hourValue)) return null;
+  if (meridiem ? hourValue < 1 || hourValue > 12 : hourValue < 0 || hourValue > 23) return null;
   if (!Number.isInteger(minute) || minute < 0 || minute > 59) return null;
 
-  let hour = hour12 % 12;
-  if ((match[3] ?? "").toLowerCase() === "p") hour += 12;
+  let hour = meridiem ? hourValue % 12 : hourValue;
+  if (meridiem === "p") hour += 12;
   const timeZone = (match[4] ?? match[5])?.trim();
   if (!timeZone) {
     const retryAt = new Date(now);

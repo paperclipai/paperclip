@@ -50,6 +50,21 @@ describe("classifyAdapterFailureForRecovery", () => {
     });
   });
 
+  it("parses provider reset clocks in 24-hour format", () => {
+    const now = new Date("2026-07-15T20:00:00.000Z");
+    const classification = classifyAdapterFailureForRecovery({
+      errorCode: "adapter_failed",
+      error: "You've hit your usage limit. Try again at 21:30 (UTC).",
+      resultJson: null,
+    }, now);
+
+    expect(classification).toEqual({
+      kind: "provider_quota",
+      retryAt: new Date("2026-07-15T21:30:00.000Z"),
+      parsedResetTime: true,
+    });
+  });
+
   it.each([
     "model_not_found: requested model does not exist",
     "No API credentials were found for this provider",
