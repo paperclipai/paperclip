@@ -45,6 +45,37 @@ describe("createInvalidationBatcher", () => {
     expect(client.invalidateQueries).toHaveBeenCalledTimes(3);
   });
 
+  it("never coalesces predicate-based invalidations", () => {
+    const { client } = fakeClient();
+    const batcher = createInvalidationBatcher(client, 300);
+
+    // Two distinct predicate filters must both run — they can't be proven equal.
+    batcher.schedule({ predicate: () => true });
+    batcher.schedule({ predicate: () => false });
+
+    vi.advanceTimersByTime(300);
+    expect(client.invalidateQueries).toHaveBeenCalledTimes(2);
+  });
+
+  it("schedule() resolves only after the flush has invalidated", async () => {
+    const { client } = fakeClient();
+    const batcher = createInvalidationBatcher(client, 300);
+
+    let resolved = false;
+    const p = batcher.schedule({ queryKey: ["a"] }).then(() => {
+      resolved = true;
+    });
+
+    await Promise.resolve();
+    expect(resolved).toBe(false); // not yet — window still open
+    expect(client.invalidateQueries).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(300);
+    await p;
+    expect(resolved).toBe(true);
+    expect(client.invalidateQueries).toHaveBeenCalledTimes(1);
+  });
+
   it("starts a fresh window after flushing", () => {
     const { client } = fakeClient();
     const batcher = createInvalidationBatcher(client, 300);

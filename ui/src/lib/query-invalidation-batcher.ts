@@ -17,13 +17,24 @@ import type { InvalidateQueryFilters, QueryClient } from "@tanstack/react-query"
  * `intervalMs`.
  */
 export interface InvalidationBatcher {
-  schedule: (filters: InvalidateQueryFilters) => void;
+  /** Schedule an invalidation; resolves once the batched flush has run. */
+  schedule: (filters: InvalidateQueryFilters) => Promise<void>;
   /** Flush any buffered invalidations immediately (e.g. before teardown). */
-  flush: () => void;
+  flush: () => Promise<void>;
   dispose: () => void;
 }
 
 export const DEFAULT_INVALIDATION_INTERVAL_MS = 300;
+
+type Deferred = { promise: Promise<void>; resolve: () => void };
+
+function createDeferred(): Deferred {
+  let resolve!: () => void;
+  const promise = new Promise<void>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+}
 
 export function createInvalidationBatcher(
   queryClient: Pick<QueryClient, "invalidateQueries">,
@@ -33,25 +44,39 @@ export function createInvalidationBatcher(
   // the same key (the common case) collapse to one entry.
   const pending = new Map<string, InvalidateQueryFilters>();
   let timer: ReturnType<typeof setTimeout> | null = null;
+  // Resolves when the currently-buffered window has been flushed. `schedule`
+  // hands this back so callers that await it observe the real invalidation.
+  let windowDeferred: Deferred | null = null;
 
-  const flush = () => {
+  const flush = async (): Promise<void> => {
     if (timer !== null) {
       clearTimeout(timer);
       timer = null;
     }
-    if (pending.size === 0) return;
+    const deferred = windowDeferred;
+    windowDeferred = null;
+    if (pending.size === 0) {
+      deferred?.resolve();
+      return;
+    }
     const filtersList = [...pending.values()];
     pending.clear();
-    for (const filters of filtersList) {
-      void queryClient.invalidateQueries(filters);
+    try {
+      await Promise.all(filtersList.map((filters) => queryClient.invalidateQueries(filters)));
+    } finally {
+      deferred?.resolve();
     }
   };
 
-  const schedule = (filters: InvalidateQueryFilters) => {
+  const schedule = (filters: InvalidateQueryFilters): Promise<void> => {
     pending.set(serializeFilters(filters), filters);
-    if (timer === null) {
-      timer = setTimeout(flush, intervalMs);
+    if (windowDeferred === null) {
+      windowDeferred = createDeferred();
     }
+    if (timer === null) {
+      timer = setTimeout(() => void flush(), intervalMs);
+    }
+    return windowDeferred.promise;
   };
 
   const dispose = () => {
@@ -60,20 +85,36 @@ export function createInvalidationBatcher(
       timer = null;
     }
     pending.clear();
+    // Release any awaiters so they don't hang forever after teardown.
+    windowDeferred?.resolve();
+    windowDeferred = null;
   };
 
   return { schedule, flush, dispose };
 }
 
+let uniqueFilterCounter = 0;
+
 function serializeFilters(filters: InvalidateQueryFilters): string {
-  // queryKey drives the identity; refetchType/exact change the behavior, so
+  // A predicate is an opaque function — two predicate-based filters can never be
+  // proven equal, so never coalesce them (that would silently drop one). Give
+  // each its own key.
+  if (typeof filters.predicate === "function") {
+    return `__predicate__:${(uniqueFilterCounter += 1)}`;
+  }
+  // queryKey drives the identity; refetchType/exact/type change the behavior, so
   // keep them distinct while still collapsing exact repeats.
   try {
-    return JSON.stringify([filters.queryKey ?? null, filters.refetchType ?? null, filters.exact ?? null]);
+    return JSON.stringify([
+      filters.queryKey ?? null,
+      filters.refetchType ?? null,
+      filters.exact ?? null,
+      filters.type ?? null,
+    ]);
   } catch {
     // Non-serializable filter (shouldn't happen for our query keys) — fall back
     // to a unique key so it is never dropped.
-    return `__nonserializable__:${Math.random()}`;
+    return `__nonserializable__:${(uniqueFilterCounter += 1)}`;
   }
 }
 
@@ -83,6 +124,9 @@ function serializeFilters(filters: InvalidateQueryFilters): string {
  * real client. Returned value is a `QueryClient` and can be used anywhere one
  * is expected. Private class fields keep working because methods are bound to
  * the real client via `Reflect.get(target, prop, target)`.
+ *
+ * The batched `invalidateQueries` returns a promise that resolves only after the
+ * flush actually runs, so callers that await it still observe completion.
  */
 export function createCoalescingQueryClient(
   queryClient: QueryClient,
@@ -91,10 +135,7 @@ export function createCoalescingQueryClient(
   return new Proxy(queryClient, {
     get(target, prop) {
       if (prop === "invalidateQueries") {
-        return (filters?: InvalidateQueryFilters) => {
-          batcher.schedule(filters ?? {});
-          return Promise.resolve();
-        };
+        return (filters?: InvalidateQueryFilters) => batcher.schedule(filters ?? {});
       }
       const value = Reflect.get(target, prop, target);
       return typeof value === "function" ? value.bind(target) : value;
