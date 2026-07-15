@@ -1585,6 +1585,38 @@ export async function resolvePaperclipSkillsDir(
   return null;
 }
 
+/**
+ * A bundled runtime skill may pin its canonical key in SKILL.md frontmatter
+ * (`key: paperclipai/paperclip/<slug>`). This is the back-compat mechanism for
+ * renaming a skill directory (NEO-441, Paperclip→Cortex): the directory / runtime
+ * name flips to the new `cortex*` name while the canonical key stays at its
+ * pre-rename value, so existing agent skill-sync configs (which key off
+ * `paperclipai/paperclip/paperclip`) keep resolving to the renamed skill. Only
+ * keys inside the reserved bundled namespace are honored, and only if the file
+ * is present — bare directories keep the directory-derived identity.
+ */
+const PINNED_BUNDLED_SKILL_KEY = /^paperclipai\/paperclip\/[a-z0-9][a-z0-9._-]*$/;
+
+function readPinnedBundledSkillKey(markdown: string): string | null {
+  const frontmatter = markdown.match(/^---\n([\s\S]*?)\n---/);
+  if (!frontmatter) return null;
+  const keyLine = frontmatter[1].match(/^key:\s*(\S+)\s*$/m);
+  if (!keyLine) return null;
+  const value = keyLine[1].trim();
+  return PINNED_BUNDLED_SKILL_KEY.test(value) ? value : null;
+}
+
+async function resolveBundledSkillKey(source: string, dirName: string): Promise<string> {
+  try {
+    const markdown = await fs.readFile(path.join(source, "SKILL.md"), "utf8");
+    const pinned = readPinnedBundledSkillKey(markdown);
+    if (pinned) return pinned;
+  } catch {
+    // No SKILL.md (or unreadable) — fall back to the directory-derived key.
+  }
+  return `paperclipai/paperclip/${dirName}`;
+}
+
 export async function listPaperclipSkillEntries(
   moduleDir: string,
   additionalCandidates: string[] = [],
@@ -1595,11 +1627,16 @@ export async function listPaperclipSkillEntries(
   try {
     const entries = await fs.readdir(root, { withFileTypes: true });
     const dirs = entries.filter((entry) => entry.isDirectory());
-    return dirs.map((entry) => ({
-      key: `paperclipai/paperclip/${entry.name}`,
-      runtimeName: entry.name,
-      source: path.join(root, entry.name),
-    }));
+    return await Promise.all(
+      dirs.map(async (entry) => {
+        const source = path.join(root, entry.name);
+        return {
+          key: await resolveBundledSkillKey(source, entry.name),
+          runtimeName: entry.name,
+          source,
+        };
+      }),
+    );
   } catch {
     return [];
   }
