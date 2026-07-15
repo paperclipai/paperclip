@@ -47,6 +47,12 @@ import {
   updateRoutineTriggerSchema,
   rotateRoutineTriggerSecretSchema,
   runRoutineSchema,
+  // Folders
+  createFolderSchema,
+  folderKindSchema,
+  moveFolderItemSchema,
+  moveFolderSchema,
+  updateFolderSchema,
   // Goal
   createGoalSchema,
   updateGoalSchema,
@@ -862,6 +868,7 @@ const CREATED_OPERATIONS = new Set([
   "POST /api/companies/{companyId}/projects",
   "POST /api/projects/{id}/workspaces",
   "POST /api/companies/{companyId}/routines",
+  "POST /api/companies/{companyId}/folders",
   "POST /api/routines/{id}/triggers",
   "POST /api/companies/{companyId}/secrets",
   "POST /api/companies/{companyId}/user-secret-definitions",
@@ -5167,6 +5174,53 @@ for (const route of [
     summary: route[2],
   });
 }
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/folders",
+  tags: ["folders"],
+  summary: "List folders for a company item kind",
+  query: z.object({ kind: folderKindSchema }),
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/folders",
+  tags: ["folders"],
+  summary: "Create a folder",
+  body: createFolderSchema,
+});
+
+registerCurrentRoute({
+  method: "patch",
+  path: "/api/companies/{companyId}/folders/{folderId}",
+  tags: ["folders"],
+  summary: "Update a folder",
+  body: updateFolderSchema,
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/folders/items/move",
+  tags: ["folders"],
+  summary: "Move an item into or out of a folder",
+  body: moveFolderItemSchema,
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/folders/{folderId}/move",
+  tags: ["folders"],
+  summary: "Reorder a folder",
+  body: moveFolderSchema,
+});
+
+registerCurrentRoute({
+  method: "delete",
+  path: "/api/companies/{companyId}/folders/{folderId}",
+  tags: ["folders"],
+  summary: "Delete a folder",
+});
 
 registerCurrentRoute({
   method: "get",

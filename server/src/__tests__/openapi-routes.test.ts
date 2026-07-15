@@ -30,6 +30,7 @@ const apiPrefixes: Record<string, string> = {
   "environments.ts": "/api",
   "execution-workspaces.ts": "/api",
   "file-resources.ts": "/api",
+  "folders.ts": "/api",
   "goals.ts": "/api",
   "health.ts": "/api/health",
   "inbox-dismissals.ts": "/api",
@@ -181,6 +182,10 @@ describe("openapi routes", () => {
         name: { type: "string" },
       },
     });
+    expect(res.body.paths["/api/companies/{companyId}/folders"].post.responses["201"]).toBeDefined();
+    expect(res.body.paths["/api/companies/{companyId}/folders/items/move"].post.summary).toBe(
+      "Move an item into or out of a folder",
+    );
     expect(JSON.stringify(res.body.paths["/api/tool-gateway/tools"].get)).not.toContain("sessionToken");
     expect(JSON.stringify(res.body.paths["/api/tool-gateway/tools/call"].post)).not.toContain("sessionToken");
   });
