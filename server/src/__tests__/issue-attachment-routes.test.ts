@@ -445,7 +445,8 @@ describe("issue attachment routes", () => {
     const res = await request(app)
       .get("/api/issues/11111111-1111-4111-8111-111111111111/attachments/archive");
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: "Issue not found" });
     expect(mockIssueService.listAttachments).not.toHaveBeenCalled();
     expect(storage.getObject).not.toHaveBeenCalled();
   });

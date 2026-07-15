@@ -10192,12 +10192,8 @@ export function issueRoutes(
 
   router.get("/issues/:id/attachments/archive", async (req, res, next) => {
     const issueId = req.params.id as string;
-    const issue = await svc.getById(issueId);
-    if (!issue) {
-      res.status(404).json({ error: "Issue not found" });
-      return;
-    }
-    assertCompanyAccess(req, issue.companyId);
+    const issue = await getAccessibleResource(req, res, svc.getById(issueId), "Issue not found");
+    if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
 
     const [attachments, issueDocuments] = await Promise.all([
