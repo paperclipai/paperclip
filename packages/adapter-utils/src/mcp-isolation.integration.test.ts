@@ -127,9 +127,12 @@ describe("same-machine MCP isolation", () => {
   it("keeps concurrent Claude CLI MCP configs strict and disjoint", async () => {
     const version = await commandVersion("claude");
     if (!version) return;
-    const claudeVersionMatch = version.match(/^2\.1\.(\d+) \(Claude Code\)$/);
-    expect(claudeVersionMatch).not.toBeNull();
-    expect(Number(claudeVersionMatch?.[1])).toBeGreaterThanOrEqual(207);
+    const versionMatch = /^(\d+)\.(\d+)\.(\d+) \(Claude Code\)$/.exec(version);
+    expect(versionMatch).not.toBeNull();
+    if (!versionMatch) return;
+    const versionOrdinal =
+      Number(versionMatch[1]) * 1_000_000 + Number(versionMatch[2]) * 1_000 + Number(versionMatch[3]);
+    expect(versionOrdinal).toBeGreaterThanOrEqual(2_001_207);
 
     const root = await createMcpIsolationRoot("paperclip-claude-mcp-isolation-");
     cleanupRoots.push(root);
