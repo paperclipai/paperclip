@@ -162,7 +162,12 @@ in public errors. The SecretRef must carry the explicit `type: "secret_ref"`
 discriminator; untyped references and direct token/API-key options fail closed.
 The connector checks the Paperclip issue version both before remote access and
 after read-after-write verification so a concurrent issue mutation preserves a
-stale-version conflict instead of producing a successful receipt.
+stale-version conflict instead of producing a successful receipt. Expired or
+previously ambiguous leases are reconciliation-only: they may adopt an exact
+existing marker receipt but may never create a comment. Remote mutation and
+terminal state transitions require a live matching lease and an affected-row
+ownership check, so stale or claimless workers cannot duplicate or inherit a
+different worker's publication.
 
 Deployment still requires an explicit approved composition step:
 

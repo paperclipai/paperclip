@@ -14,7 +14,9 @@ The companion:
   absent and rejects duplicate markers;
 - treats lost mutation responses as ambiguous so the connector reconciles by
   marker before retrying; and
-- drops resolver, network, HTTP, and GraphQL messages from its public errors.
+- drops resolver, network, HTTP, and GraphQL messages from its public errors;
+  remote request IDs and GraphQL extension codes are always represented only
+  as `[redacted]`.
 
 It does not create, persist, rotate, log, or return credentials. It also does
 not configure Paperclip automatically. Deployment composition must explicitly
@@ -36,5 +38,7 @@ credential that can read issues/comments and create comments only for the
 intended workspace. Until that explicit deployment wiring and independent live
 acceptance occur, the connector remains fail-closed and is not release-ready.
 
-Untyped secret identifiers and direct `authorization`, `apiKey`, or `token`
-options are rejected before secret resolution or network access.
+The transport applies a strict positive schema to its configuration and
+SecretRef. Untyped references, unknown fields, and every direct credential
+field or casing/punctuation variant are rejected before secret resolution or
+network access.

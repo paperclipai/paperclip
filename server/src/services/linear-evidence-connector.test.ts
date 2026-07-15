@@ -121,6 +121,100 @@ describePg("linearEvidenceConnector", () => {
     expect(await db.select().from(linearEvidenceDeliveries)).toHaveLength(1);
   });
 
+  it("makes an expired lease reconciliation-only and never duplicates when no marker is visible", async () => {
+    const input = await fixture();
+    let clockMs = Date.parse("2026-07-15T18:10:00.000Z");
+    let releaseFirstLookup!: () => void;
+    let firstLookupStarted!: () => void;
+    const firstLookupGate = new Promise<void>((resolve) => { releaseFirstLookup = resolve; });
+    const started = new Promise<void>((resolve) => { firstLookupStarted = resolve; });
+    let lookupCalls = 0;
+    const transport: LinearEvidenceTransport = {
+      findCommentByMarker: vi.fn(async () => {
+        lookupCalls += 1;
+        if (lookupCalls === 1) {
+          firstLookupStarted();
+          await firstLookupGate;
+        }
+        return null;
+      }),
+      createComment: vi.fn(),
+      getComment: vi.fn(),
+    };
+    const connector = linearEvidenceConnector(db, transport, {
+      now: () => new Date(clockMs),
+      leaseMs: 100,
+    });
+
+    const staleWorker = connector.publish(input);
+    await started;
+    clockMs += 200;
+    await expect(connector.publish(input)).rejects.toMatchObject({ code: "delivery_ambiguous" });
+    releaseFirstLookup();
+    await expect(staleWorker).rejects.toMatchObject({ code: "delivery_ambiguous" });
+
+    expect(transport.findCommentByMarker).toHaveBeenCalledTimes(2);
+    expect(transport.createComment).not.toHaveBeenCalled();
+    expect((await db.select().from(linearEvidenceDeliveries))[0]).toMatchObject({
+      state: "pending",
+      leaseToken: null,
+      leaseExpiresAt: null,
+      lastErrorCode: "delivery_ambiguous",
+    });
+  });
+
+  it("does not let a stale worker inherit a reconciler's success after forced lease expiry", async () => {
+    const input = await fixture();
+    let clockMs = Date.parse("2026-07-15T18:20:00.000Z");
+    const comments = new Map<string, LinearCommentReceipt>();
+    let releaseFirstCreate!: () => void;
+    let firstCreateStarted!: () => void;
+    const firstCreateGate = new Promise<void>((resolve) => { releaseFirstCreate = resolve; });
+    const started = new Promise<void>((resolve) => { firstCreateStarted = resolve; });
+    const transport: LinearEvidenceTransport = {
+      findCommentByMarker: vi.fn(async ({ marker }) => (
+        [...comments.values()].find((comment) => comment.body.includes(marker)) ?? null
+      )),
+      createComment: vi.fn(async ({ linearIssueId, body }) => {
+        comments.set("comment-expired-lease", {
+          id: "comment-expired-lease",
+          linearIssueId,
+          body,
+          createdAt: "2026-07-15T18:20:00.050Z",
+        });
+        clockMs += 200;
+        firstCreateStarted();
+        await firstCreateGate;
+        return { id: "comment-expired-lease" };
+      }),
+      getComment: vi.fn(async ({ commentId }) => comments.get(commentId) ?? null),
+    };
+    const connector = linearEvidenceConnector(db, transport, {
+      now: () => new Date(clockMs),
+      leaseMs: 100,
+    });
+
+    const staleWorker = connector.publish(input);
+    await started;
+    const reconciler = await connector.publish(input);
+    expect(reconciler.delivery).toMatchObject({
+      state: "published",
+      remoteCommentId: "comment-expired-lease",
+    });
+    releaseFirstCreate();
+    await expect(staleWorker).rejects.toMatchObject({ code: "delivery_ambiguous" });
+
+    expect(transport.createComment).toHaveBeenCalledTimes(1);
+    expect(transport.getComment).toHaveBeenCalledTimes(1);
+    expect((await db.select().from(linearEvidenceDeliveries))[0]).toMatchObject({
+      state: "published",
+      remoteCommentId: "comment-expired-lease",
+      leaseToken: null,
+      leaseExpiresAt: null,
+      lastErrorCode: null,
+    });
+  });
+
   it("dry-run persists one pending idempotency record without calling Linear", async () => {
     const input = await fixture();
     const transport: LinearEvidenceTransport = {

@@ -109,15 +109,19 @@ describe("createLinearEvidenceTransport", () => {
     expect(resolverError.code).toBe("secret_resolution_failed");
     expect(`${String(resolverError)}${JSON.stringify(resolverError)}`).not.toContain(token);
 
+    const credentialRequestId = "lin_api_remote-request-secret-value";
+    const credentialRemoteCode = "BearerToken_remote-extension-secret-value";
     const { transport } = harness(vi.fn<typeof fetch>(async () => jsonResponse({
-      errors: [{ message: `invalid ${token}`, extensions: { code: "AUTHENTICATION_ERROR" } }],
-    }, { headers: { "x-request-id": "request-safe-1" } })));
+      errors: [{ message: `invalid ${token}`, extensions: { code: credentialRemoteCode } }],
+    }, { headers: { "x-request-id": credentialRequestId } })));
     const remoteError = await transport.getComment({ linearIssueId: "ALL-387", commentId: "comment-1" }).catch((value) => value);
-    expect(remoteError).toMatchObject({
-      code: "remote_rejected",
-      metadata: { requestId: "request-safe-1", remoteCode: "AUTHENTICATION_ERROR" },
-    });
-    expect(`${String(remoteError)}${JSON.stringify(remoteError)}`).not.toContain(token);
+    expect(remoteError.code).toBe("remote_rejected");
+    expect(remoteError.metadata.requestId).toBe("[redacted]");
+    expect(remoteError.metadata.remoteCode).toBe("[redacted]");
+    const publicError = `${String(remoteError)}${JSON.stringify(remoteError)}`;
+    expect(publicError).not.toContain(token);
+    expect(publicError).not.toContain(credentialRequestId);
+    expect(publicError).not.toContain(credentialRemoteCode);
   });
 
   it("fails closed on duplicate markers, cross-issue receipts, and credential-like evidence", async () => {
@@ -159,12 +163,42 @@ describe("createLinearEvidenceTransport", () => {
       secretResolver,
       fetch: fetchImpl,
     })).toThrowError(expect.objectContaining({ code: "invalid_request" }));
+    for (const field of [
+      "accessToken",
+      "api_key",
+      "Authorization",
+      "bearerToken",
+      "ACCESS-TOKEN",
+      "api.key",
+      "auth_token",
+      "clientSecret",
+    ]) {
+      expect(() => createLinearEvidenceTransport({
+        authorizationSecretRef: secretRef,
+        secretResolver,
+        fetch: fetchImpl,
+        [field]: token,
+      } as never), field).toThrowError(expect.objectContaining({ code: "invalid_request" }));
+    }
     expect(() => createLinearEvidenceTransport({
+      authorizationSecretRef: { ...secretRef, access_token: token },
+      secretResolver,
+      fetch: fetchImpl,
+    } as never)).toThrowError(expect.objectContaining({ code: "invalid_request" }));
+    const inheritedCredentialConfig = Object.assign(
+      Object.create({ Authorization: token }) as Record<string, unknown>,
+      { authorizationSecretRef: secretRef, secretResolver, fetch: fetchImpl },
+    );
+    expect(() => createLinearEvidenceTransport(inheritedCredentialConfig as never))
+      .toThrowError(expect.objectContaining({ code: "invalid_request" }));
+    const symbolCredentialConfig = {
       authorizationSecretRef: secretRef,
       secretResolver,
       fetch: fetchImpl,
-      apiKey: token,
-    } as never)).toThrowError(expect.objectContaining({ code: "invalid_request" }));
+      [Symbol("accessToken")]: token,
+    };
+    expect(() => createLinearEvidenceTransport(symbolCredentialConfig as never))
+      .toThrowError(expect.objectContaining({ code: "invalid_request" }));
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(secretResolver.resolve).not.toHaveBeenCalled();
   });

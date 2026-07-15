@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { and, desc, eq, isNull, lt, or } from "drizzle-orm";
+import { and, desc, eq, gt, isNull, lt, or } from "drizzle-orm";
 import {
   linearEvidenceConflicts,
   linearEvidenceDeliveries,
@@ -98,6 +98,23 @@ export function linearEvidenceConnector(
       eq(issues.companyId, input.companyId),
     )).limit(1);
     return issue?.updatedAt.toISOString() ?? null;
+  }
+
+  async function ownsLiveLease(deliveryId: string, leaseToken: string) {
+    const [row] = await db.select({
+      state: linearEvidenceDeliveries.state,
+      leaseToken: linearEvidenceDeliveries.leaseToken,
+      leaseExpiresAt: linearEvidenceDeliveries.leaseExpiresAt,
+    }).from(linearEvidenceDeliveries)
+      .where(eq(linearEvidenceDeliveries.id, deliveryId))
+      .limit(1);
+    const checkedAt = now();
+    return Boolean(
+      row?.state === "pending" &&
+      row.leaseToken === leaseToken &&
+      row.leaseExpiresAt &&
+      row.leaseExpiresAt.getTime() > checkedAt.getTime()
+    );
   }
 
   async function recordConflict(mappingId: string, key: string, paperclipValue: unknown, linearValue: unknown) {
@@ -204,66 +221,123 @@ export function linearEvidenceConnector(
       throw new LinearEvidenceConnectorError("remote_conflict");
     }
     if (delivery.state !== "published" && !input.dryRun) {
+      const reconciliationOnly = delivery.leaseToken !== null || delivery.lastErrorCode === "delivery_ambiguous";
       const leaseToken = randomUUID();
+      const claimAt = now();
+      const observedLeaseGuard = delivery.leaseToken === null
+        ? and(
+            isNull(linearEvidenceDeliveries.leaseToken),
+            or(isNull(linearEvidenceDeliveries.leaseExpiresAt), lt(linearEvidenceDeliveries.leaseExpiresAt, claimAt)),
+          )
+        : and(
+            eq(linearEvidenceDeliveries.leaseToken, delivery.leaseToken),
+            lt(linearEvidenceDeliveries.leaseExpiresAt, claimAt),
+          );
       const [claimed] = await db.update(linearEvidenceDeliveries).set({
         leaseToken,
-        leaseExpiresAt: new Date(now().getTime() + leaseMs),
-        updatedAt: now(),
+        leaseExpiresAt: new Date(claimAt.getTime() + leaseMs),
+        updatedAt: claimAt,
       }).where(and(
         eq(linearEvidenceDeliveries.id, delivery.id),
         eq(linearEvidenceDeliveries.state, "pending"),
-        or(isNull(linearEvidenceDeliveries.leaseExpiresAt), lt(linearEvidenceDeliveries.leaseExpiresAt, now())),
+        observedLeaseGuard,
       )).returning();
-      if (claimed) {
-        const marker = `<!-- paperclip-evidence:${idempotencyKey} -->`;
-        try {
-          let remote = await transport.findCommentByMarker({ linearIssueId: input.linearIssueId, marker });
-          if (!remote) {
-            const created = await transport.createComment({ linearIssueId: input.linearIssueId, body });
-            remote = await transport.getComment({ linearIssueId: input.linearIssueId, commentId: created.id });
+      if (!claimed) {
+        // A caller that never acquired this attempt cannot inherit another
+        // worker's eventual publication result.
+        throw new LinearEvidenceConnectorError("delivery_ambiguous");
+      }
+      const marker = `<!-- paperclip-evidence:${idempotencyKey} -->`;
+      try {
+        if (!await ownsLiveLease(delivery.id, leaseToken)) {
+          throw new LinearEvidenceConnectorError("delivery_ambiguous");
+        }
+        let remote = await transport.findCommentByMarker({ linearIssueId: input.linearIssueId, marker });
+        if (!remote) {
+          // An expired or previously ambiguous attempt may have reached
+          // Linear. It is reconciliation-only forever unless a marker appears.
+          if (reconciliationOnly || !await ownsLiveLease(delivery.id, leaseToken)) {
+            throw new LinearEvidenceConnectorError("delivery_ambiguous");
           }
-          if (!remote) throw new LinearEvidenceConnectorError("delivery_ambiguous");
-          if (remote.linearIssueId !== input.linearIssueId || remote.body !== body || !validIso(remote.createdAt)) {
-            // Preserve the exact mismatch as digests, not potentially
-            // credential-bearing remote comment text.
-            await recordConflict(mapping.id, "remote_comment", bodySha, textSha256(remote.body));
-            await db.update(linearEvidenceDeliveries).set({ state: "conflict", leaseToken: null, leaseExpiresAt: null, lastErrorCode: "remote_conflict", updatedAt: now() })
-              .where(eq(linearEvidenceDeliveries.id, delivery.id));
-            throw new LinearEvidenceConnectorError("remote_conflict");
-          }
-          const observedIssueVersion = await currentIssueVersion(input);
-          if (observedIssueVersion !== input.evidence.paperclipIssueUpdatedAt) {
-            // A Paperclip mutation raced the credentialed write. Preserve the
-            // remote publication as a stale-version conflict and never mint a
-            // successful completion receipt for it.
-            await recordConflict(
-              mapping.id,
-              "paperclip_issue_version",
-              input.evidence.paperclipIssueUpdatedAt,
-              observedIssueVersion,
-            );
-            await db.update(linearEvidenceDeliveries).set({ state: "conflict", leaseToken: null, leaseExpiresAt: null, lastErrorCode: "stale_version", updatedAt: now() })
-              .where(eq(linearEvidenceDeliveries.id, delivery.id));
-            throw new LinearEvidenceConnectorError("stale_version");
-          }
-          await db.update(linearEvidenceDeliveries).set({
-            state: "published",
-            remoteCommentId: remote.id,
-            publishedAt: new Date(remote.createdAt),
+          const created = await transport.createComment({ linearIssueId: input.linearIssueId, body });
+          remote = await transport.getComment({ linearIssueId: input.linearIssueId, commentId: created.id });
+        }
+        if (!remote) throw new LinearEvidenceConnectorError("delivery_ambiguous");
+        if (remote.linearIssueId !== input.linearIssueId || remote.body !== body || !validIso(remote.createdAt)) {
+          const transitionAt = now();
+          const [conflicted] = await db.update(linearEvidenceDeliveries).set({
+            state: "conflict",
             leaseToken: null,
             leaseExpiresAt: null,
-            lastErrorCode: null,
-            updatedAt: now(),
-          }).where(and(eq(linearEvidenceDeliveries.id, delivery.id), eq(linearEvidenceDeliveries.leaseToken, leaseToken)));
-        } catch (error) {
-          if (!(error instanceof LinearEvidenceConnectorError && (error.code === "remote_conflict" || error.code === "stale_version"))) {
-            await db.update(linearEvidenceDeliveries).set({ leaseToken: null, leaseExpiresAt: null, lastErrorCode: "delivery_ambiguous", updatedAt: now() })
-              .where(and(eq(linearEvidenceDeliveries.id, delivery.id), eq(linearEvidenceDeliveries.leaseToken, leaseToken)));
-          }
-          throw error instanceof LinearEvidenceConnectorError ? error : new LinearEvidenceConnectorError("delivery_ambiguous");
+            lastErrorCode: "remote_conflict",
+            updatedAt: transitionAt,
+          }).where(and(
+            eq(linearEvidenceDeliveries.id, delivery.id),
+            eq(linearEvidenceDeliveries.state, "pending"),
+            eq(linearEvidenceDeliveries.leaseToken, leaseToken),
+            gt(linearEvidenceDeliveries.leaseExpiresAt, transitionAt),
+          )).returning();
+          if (!conflicted) throw new LinearEvidenceConnectorError("delivery_ambiguous");
+          // Preserve the exact mismatch as digests, not potentially
+          // credential-bearing remote comment text.
+          await recordConflict(mapping.id, "remote_comment", bodySha, textSha256(remote.body));
+          throw new LinearEvidenceConnectorError("remote_conflict");
         }
+        const observedIssueVersion = await currentIssueVersion(input);
+        if (observedIssueVersion !== input.evidence.paperclipIssueUpdatedAt) {
+          const transitionAt = now();
+          const [conflicted] = await db.update(linearEvidenceDeliveries).set({
+            state: "conflict",
+            leaseToken: null,
+            leaseExpiresAt: null,
+            lastErrorCode: "stale_version",
+            updatedAt: transitionAt,
+          }).where(and(
+            eq(linearEvidenceDeliveries.id, delivery.id),
+            eq(linearEvidenceDeliveries.state, "pending"),
+            eq(linearEvidenceDeliveries.leaseToken, leaseToken),
+            gt(linearEvidenceDeliveries.leaseExpiresAt, transitionAt),
+          )).returning();
+          if (!conflicted) throw new LinearEvidenceConnectorError("delivery_ambiguous");
+          // A Paperclip mutation raced the credentialed write. Preserve the
+          // remote publication as a stale-version conflict and never mint a
+          // successful completion receipt for it.
+          await recordConflict(
+            mapping.id,
+            "paperclip_issue_version",
+            input.evidence.paperclipIssueUpdatedAt,
+            observedIssueVersion,
+          );
+          throw new LinearEvidenceConnectorError("stale_version");
+        }
+        const transitionAt = now();
+        const [published] = await db.update(linearEvidenceDeliveries).set({
+          state: "published",
+          remoteCommentId: remote.id,
+          publishedAt: new Date(remote.createdAt),
+          leaseToken: null,
+          leaseExpiresAt: null,
+          lastErrorCode: null,
+          updatedAt: transitionAt,
+        }).where(and(
+          eq(linearEvidenceDeliveries.id, delivery.id),
+          eq(linearEvidenceDeliveries.state, "pending"),
+          eq(linearEvidenceDeliveries.leaseToken, leaseToken),
+          gt(linearEvidenceDeliveries.leaseExpiresAt, transitionAt),
+        )).returning();
+        if (!published) throw new LinearEvidenceConnectorError("delivery_ambiguous");
+        delivery = published;
+      } catch (error) {
+        if (!(error instanceof LinearEvidenceConnectorError && (error.code === "remote_conflict" || error.code === "stale_version"))) {
+          await db.update(linearEvidenceDeliveries).set({ leaseToken: null, leaseExpiresAt: null, lastErrorCode: "delivery_ambiguous", updatedAt: now() })
+            .where(and(
+              eq(linearEvidenceDeliveries.id, delivery.id),
+              eq(linearEvidenceDeliveries.state, "pending"),
+              eq(linearEvidenceDeliveries.leaseToken, leaseToken),
+            ));
+        }
+        throw error instanceof LinearEvidenceConnectorError ? error : new LinearEvidenceConnectorError("delivery_ambiguous");
       }
-      [delivery] = await db.select().from(linearEvidenceDeliveries).where(eq(linearEvidenceDeliveries.id, delivery.id)).limit(1);
     }
     if (!input.dryRun && delivery?.state !== "published") {
       // Concurrent callers may observe another worker's active lease. A

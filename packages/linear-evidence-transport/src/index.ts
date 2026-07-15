@@ -90,9 +90,11 @@ function boundedOpaque(value: unknown, max = 256): string | null {
   return trimmed;
 }
 
-function safeRemoteMetadata(value: unknown): string | undefined {
-  if (typeof value !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(value)) return undefined;
-  return value;
+function redactedRemoteMetadata(value: unknown): string | undefined {
+  if (typeof value !== "string" || !value || value.length > 4_096) return undefined;
+  // Remote-controlled metadata is never copied into a public error, even if
+  // it resembles a request id or GraphQL code.
+  return "[redacted]";
 }
 
 function validIso(value: unknown): value is string {
@@ -146,10 +148,10 @@ async function parseEnvelope<T>(response: Response): Promise<GraphqlEnvelope<T>>
   } catch {
     throw new LinearEvidenceTransportError("remote_protocol_error", {
       status: response.status,
-      requestId: safeRemoteMetadata(response.headers.get("x-request-id") ?? response.headers.get("linear-request-id")),
+      requestId: redactedRemoteMetadata(response.headers.get("x-request-id") ?? response.headers.get("linear-request-id")),
     });
   }
-  const requestId = safeRemoteMetadata(response.headers.get("x-request-id") ?? response.headers.get("linear-request-id"));
+  const requestId = redactedRemoteMetadata(response.headers.get("x-request-id") ?? response.headers.get("linear-request-id"));
   if (raw.length > MAX_RESPONSE_BYTES) {
     throw new LinearEvidenceTransportError("remote_protocol_error", { status: response.status, requestId });
   }
@@ -166,18 +168,36 @@ async function parseEnvelope<T>(response: Response): Promise<GraphqlEnvelope<T>>
 }
 
 function firstRemoteCode(errors: GraphqlEnvelope<unknown>["errors"]): string | undefined {
-  return safeRemoteMetadata(errors?.[0]?.extensions?.code);
+  return redactedRemoteMetadata(errors?.[0]?.extensions?.code);
+}
+
+const TRANSPORT_OPTION_KEYS = new Set(["authorizationSecretRef", "secretResolver", "fetch", "timeoutMs"]);
+const SECRET_REF_KEYS = new Set(["type", "secretId", "version"]);
+
+function hasOnlyAllowedKeys(value: unknown, allowed: ReadonlySet<string>): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  try {
+    const keys = new Set<PropertyKey>(Reflect.ownKeys(value));
+    for (const key in value as Record<string, unknown>) keys.add(key);
+    return [...keys].every((key) => typeof key === "string" && allowed.has(key));
+  } catch {
+    return false;
+  }
 }
 
 export function createLinearEvidenceTransport(options: CreateLinearEvidenceTransportOptions): LinearEvidenceTransport {
+  if (!hasOnlyAllowedKeys(options, TRANSPORT_OPTION_KEYS)) {
+    // Strict positive schema: accessToken, api_key, Authorization,
+    // bearerToken, casing/punctuation variants, symbols, and all other direct
+    // credential/config fields are rejected without inspecting their values.
+    throw new LinearEvidenceTransportError("invalid_request");
+  }
   const fetchImpl = options.fetch ?? globalThis.fetch;
   const timeoutMs = options.timeoutMs ?? 10_000;
   if (
     !options.authorizationSecretRef ||
     options.authorizationSecretRef.type !== "secret_ref" ||
-    "authorization" in options ||
-    "apiKey" in options ||
-    "token" in options
+    !hasOnlyAllowedKeys(options.authorizationSecretRef, SECRET_REF_KEYS)
   ) {
     // This boundary accepts references only. Direct credential-shaped options
     // are rejected even if supplied by an untyped JavaScript caller.
@@ -238,7 +258,7 @@ export function createLinearEvidenceTransport(options: CreateLinearEvidenceTrans
     if (envelope.errors?.length) {
       throw new LinearEvidenceTransportError("remote_rejected", {
         status: response.status,
-        requestId: safeRemoteMetadata(response.headers.get("x-request-id") ?? response.headers.get("linear-request-id")),
+        requestId: redactedRemoteMetadata(response.headers.get("x-request-id") ?? response.headers.get("linear-request-id")),
         remoteCode: firstRemoteCode(envelope.errors),
       });
     }
