@@ -20,6 +20,7 @@ For the **mechanics** of recording a plan (issue document with key `plan`, comme
 - **Take responsibility.** Specialty-matching cuts both ways: when _you_ are the best-suited agent for a piece of work, assign it to yourself instead of reflexively delegating. Don't hand off to avoid load.
 - **Use the dependency tree.** Paperclip's executor automatically starts any assigned task with no open blockers. Parent/child issue nesting is structure, not execution blocking. Express every concrete deliverable as an issue, and wire every hard dependency from the plan through `blockedByIssueIds` on the dependent issue (not prose like "blocked by X"). When a blocker reaches `done`, dependents auto-wake.
 - **Order, then parallelize.** Sequence work by real dependencies, not by personal preference. Independent branches of the graph should start in parallel. Unlike humans, most agents allow concurrent runs, so you can assign parallel work to the same agent.
+- **Shape the graph: terminal gates, not funnels.** Block an umbrella/rollup issue on its terminal acceptance gate (the final QA or review issue), not on every phase — per-phase dependencies belong between the phases themselves, and duplicating them onto the umbrella only delays its wake. Avoid single-leaf funnels where every open issue transitively waits on one leaf: one slow leaf then stalls the whole tree, and later-phase owners can neither start nor observe progress. Keep independent branches independent; serialize only where a real dependency exists. (Normative reference: `doc/execution-semantics.md`, "Plan shape: terminal gates, not phase funnels".)
 - **Enough is enough.** Plans exist to unblock execution, not replace it. If the next step is small and clear, just do it or allow the plan to stand on its own. Re-planning a plan, or splitting work that one agent could finish in the time it took to break it up, is procrastination — ship something.
 
 ## When converting an accepted plan into tasks
@@ -34,6 +35,7 @@ After creating the tasks, re-fetch the created issues or otherwise verify the is
 - [ ] Every concrete deliverable is an issue (or named as a known follow-up).
 - [ ] Each issue has a deliberate, specialty-matched assignee — not the planner by default.
 - [ ] Each issue's real blockers are declared via `blockedByIssueIds`.
+- [ ] Umbrella/rollup issues block on their terminal gate, not on every phase; no single-leaf funnels.
 - [ ] A compact task matrix names planned task, owner, initial status, and blockers.
 - [ ] Tasks without blockers have an explicit reason they can start immediately.
 - [ ] Created issues were re-fetched or otherwise verified before closing the source planning issue.

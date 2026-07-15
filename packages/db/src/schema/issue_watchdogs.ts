@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { index, integer, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { check, index, integer, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import { agents } from "./agents.js";
 import { companies } from "./companies.js";
 import { heartbeatRuns } from "./heartbeat_runs.js";
@@ -17,6 +17,9 @@ export const issueWatchdogs = pgTable(
     watchdogIssueId: uuid("watchdog_issue_id").references(() => issues.id, { onDelete: "set null" }),
     lastObservedFingerprint: text("last_observed_fingerprint"),
     lastReviewedFingerprint: text("last_reviewed_fingerprint"),
+    reviewAcceptanceKind: text("review_acceptance_kind"),
+    reviewExpiresAt: timestamp("review_expires_at", { withTimezone: true }),
+    sameFingerprintReviewCount: integer("same_fingerprint_review_count").notNull().default(0),
     lastTriggeredAt: timestamp("last_triggered_at", { withTimezone: true }),
     lastCompletedAt: timestamp("last_completed_at", { withTimezone: true }),
     triggerCount: integer("trigger_count").notNull().default(0),
@@ -36,5 +39,9 @@ export const issueWatchdogs = pgTable(
     companyWatchdogIssueIdx: uniqueIndex("issue_watchdogs_company_watchdog_issue_uq")
       .on(table.companyId, table.watchdogIssueId)
       .where(sql`${table.watchdogIssueId} is not null`),
+    reviewAcceptanceKindCheck: check(
+      "issue_watchdogs_review_acceptance_kind_check",
+      sql`${table.reviewAcceptanceKind} is null or ${table.reviewAcceptanceKind} in ('terminal', 'conditional')`,
+    ),
   }),
 );
