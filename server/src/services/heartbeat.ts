@@ -15644,10 +15644,37 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             .where(eq(issues.id, issue.id));
         }
 
-        if (!activeExecutionRun && issue.assigneeAgentId) {
+        const dependencyReadiness = await issuesSvc.listDependencyReadiness(
+          issue.companyId,
+          [issue.id],
+          tx,
+        ).then((rows) => rows.get(issue.id) ?? null);
+
+        // Blocked descendants should stay idle until the final blocker resolves.
+        // Human comment/mention wakes are the exception: they may run in a
+        // bounded interaction mode so the assignee can answer or triage.
+        const blockedInteractionWake =
+          dependencyReadiness &&
+          !dependencyReadiness.isDependencyReady &&
+          allowsIssueInteractionWake(enrichedContextSnapshot);
+
+        if (blockedInteractionWake) {
+          enrichedContextSnapshot.dependencyBlockedInteraction = true;
+          enrichedContextSnapshot.unresolvedBlockerIssueIds = dependencyReadiness.unresolvedBlockerIssueIds;
+          enrichedContextSnapshot.unresolvedBlockerCount = dependencyReadiness.unresolvedBlockerCount;
+          enrichedContextSnapshot.unresolvedBlockerSummaries = await listUnresolvedBlockerSummaries(
+            tx,
+            issue.companyId,
+            issue.id,
+            dependencyReadiness.unresolvedBlockerIssueIds,
+          );
+        }
+
+        if (!activeExecutionRun && issue.assigneeAgentId && !blockedInteractionWake) {
           // Legacy backfill must honor the same assignee-only ownership boundary as
-          // claimQueuedRun(); otherwise a foreign mention/comment wake can re-stamp
-          // executionRunId on blocked issues during follow-up wakes.
+          // claimQueuedRun(); otherwise a blocked interaction wake can re-stamp a
+          // helper run as the active execution owner immediately after the helper
+          // has already returned the issue to blocked/unlocked state.
           const legacyRun = await tx
             .select()
             .from(heartbeatRuns)
@@ -15687,32 +15714,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 .where(eq(issues.id, issue.id));
             }
           }
-        }
-
-        const dependencyReadiness = await issuesSvc.listDependencyReadiness(
-          issue.companyId,
-          [issue.id],
-          tx,
-        ).then((rows) => rows.get(issue.id) ?? null);
-
-        // Blocked descendants should stay idle until the final blocker resolves.
-        // Human comment/mention wakes are the exception: they may run in a
-        // bounded interaction mode so the assignee can answer or triage.
-        const blockedInteractionWake =
-          dependencyReadiness &&
-          !dependencyReadiness.isDependencyReady &&
-          allowsIssueInteractionWake(enrichedContextSnapshot);
-
-        if (blockedInteractionWake) {
-          enrichedContextSnapshot.dependencyBlockedInteraction = true;
-          enrichedContextSnapshot.unresolvedBlockerIssueIds = dependencyReadiness.unresolvedBlockerIssueIds;
-          enrichedContextSnapshot.unresolvedBlockerCount = dependencyReadiness.unresolvedBlockerCount;
-          enrichedContextSnapshot.unresolvedBlockerSummaries = await listUnresolvedBlockerSummaries(
-            tx,
-            issue.companyId,
-            issue.id,
-            dependencyReadiness.unresolvedBlockerIssueIds,
-          );
         }
 
         if (!activeExecutionRun && dependencyReadiness && !dependencyReadiness.isDependencyReady && !blockedInteractionWake) {
