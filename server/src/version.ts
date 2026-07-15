@@ -2,6 +2,7 @@ import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
+import { parseBuildCommit, readBuildCommit } from "./build-commit.js";
 
 type PackageJson = {
   version?: string;
@@ -147,6 +148,7 @@ export function parseGitDescribeVersion(output: string): string | null {
 
 export function resolveServerVersion(
   opts: {
+    buildCommit?: string | null;
     gitDescribeCommand?: GitDescribeCommand;
     packageVersion?: string;
     debugLog?: DebugLog;
@@ -186,6 +188,14 @@ export function resolveServerVersion(
       { err: summarizeError(err), reason: "git_describe_unavailable" },
       "falling back to package version for server version",
     );
+  }
+
+  const buildCommit =
+    opts.buildCommit === undefined
+      ? readBuildCommit()
+      : parseBuildCommit(opts.buildCommit);
+  if (buildCommit) {
+    return `${packageVersion}+0.git.${buildCommit.slice(0, 9)}`;
   }
 
   return packageVersion;
