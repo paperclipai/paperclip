@@ -1937,7 +1937,10 @@ export function IssueDetail() {
     () => mergeIssueComments(comments ?? [], optimisticComments),
     [comments, optimisticComments],
   );
-  const breadcrumbTitle = issue?.title ?? issueId ?? "Task";
+  // Fall back to a neutral placeholder (not issueId) while the issue loads: the
+  // route param is the identifier (e.g. COR-1), and using it here made the task
+  // ID flash in the breadcrumb before the title resolved (NEO-449 review).
+  const breadcrumbTitle = issue?.title ?? "Task";
   const breadcrumbStatus = issue?.status;
   const breadcrumbBlockerAttention = issue?.blockerAttention;
   // Stable identity for the breadcrumb status glyph. The glyph's shape/colour

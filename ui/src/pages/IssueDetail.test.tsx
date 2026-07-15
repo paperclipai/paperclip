@@ -1601,6 +1601,37 @@ describe("IssueDetail", () => {
     expect(titleIndex).toBe(crumbs.length - 1);
   });
 
+  it("does not flash the task identifier in the breadcrumb while the issue is still loading", async () => {
+    mockSetBreadcrumbs.mockClear();
+    // useParams resolves issueId to the identifier "PAP-1"; hold the fetch open
+    // so the component renders its loading state.
+    const deferred = createDeferred<ReturnType<typeof createIssue>>();
+    mockIssuesApi.get.mockReturnValue(deferred.promise);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    // While loading, the title crumb must fall back to a neutral placeholder,
+    // never the route identifier — otherwise the task ID flashes in the breadcrumb.
+    const loadingCrumbs = mockSetBreadcrumbs.mock.calls.at(-1)?.[0] as Array<{ label: string }>;
+    expect(loadingCrumbs).toBeTruthy();
+    expect(loadingCrumbs.some((crumb) => crumb.label === "PAP-1")).toBe(false);
+
+    await act(async () => {
+      deferred.resolve(createIssue({ identifier: "PAP-1", title: "Loaded title" }));
+    });
+    await flushReact();
+
+    const loadedCrumbs = mockSetBreadcrumbs.mock.calls.at(-1)?.[0] as Array<{ label: string }>;
+    expect(loadedCrumbs.some((crumb) => crumb.label === "Loaded title")).toBe(true);
+  });
+
   it("refreshes subtree pause state after resuming a hold", async () => {
     const childIssue = createIssue({
       id: "child-1",
