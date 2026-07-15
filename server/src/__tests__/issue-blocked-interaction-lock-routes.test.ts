@@ -141,16 +141,17 @@ describeEmbeddedPostgres("blocked interaction wakes do not claim issue execution
     return app;
   }
 
-  function agentActor(companyId: string, agentId: string): Express.Request["actor"] {
+  function agentActor(companyId: string, agentId: string, runId?: string): Express.Request["actor"] {
     return {
       type: "agent",
       agentId,
       companyId,
+      ...(runId ? { runId } : {}),
       source: "agent_jwt",
     };
   }
 
-  async function seedScenario() {
+  async function seedScenario(issueStatus: "blocked" | "cancelled" = "blocked") {
     const companyId = randomUUID();
     const assigneeAgentId = randomUUID();
     const foreignAgentId = randomUUID();
@@ -203,7 +204,7 @@ describeEmbeddedPostgres("blocked interaction wakes do not claim issue execution
         id: issueId,
         companyId,
         title: "Blocked QA issue",
-        status: "blocked",
+        status: issueStatus,
         priority: "high",
         assigneeAgentId,
         responsibleUserId: "local-board",
@@ -318,6 +319,74 @@ describeEmbeddedPostgres("blocked interaction wakes do not claim issue execution
       executionLockedAt: null,
     });
     expect(issueRes.body).not.toHaveProperty("activeRun");
+
+    adapterControl.release();
+    await waitForCondition(async () =>
+      db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, run.id))
+        .then((rows) => rows[0]?.status === "succeeded")
+    );
+  });
+
+  it("keeps cancelled dependency-blocked mention wakes comment-only and unlocked", async () => {
+    const { companyId, assigneeAgentId, foreignAgentId, issueId } = await seedScenario("cancelled");
+    await db.insert(issueComments).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      body: `For visibility: [@CEO](agent://${foreignAgentId})`,
+      authorAgentId: assigneeAgentId,
+    });
+    const run = await startBlockedInteractionWake(foreignAgentId, issueId);
+
+    const checkoutRes = await request(createApp(agentActor(companyId, foreignAgentId, run.id)))
+      .post(`/api/issues/${issueId}/checkout`)
+      .send({
+        agentId: foreignAgentId,
+        expectedStatuses: ["todo", "backlog", "blocked", "in_review", "cancelled"],
+      });
+    expect(checkoutRes.status, JSON.stringify(checkoutRes.body)).toBe(422);
+    expect(checkoutRes.body).toMatchObject({
+      error: "Issue is blocked by unresolved blockers",
+    });
+
+    const commentRes = await request(createApp(agentActor(companyId, foreignAgentId, run.id)))
+      .post(`/api/issues/${issueId}/comments`)
+      .send({
+        body: "Acknowledged. The dependency is still unresolved, so I am leaving this cancelled.",
+      });
+    expect(commentRes.status, JSON.stringify(commentRes.body)).toBe(201);
+
+    const issueRes = await request(createApp(agentActor(companyId, foreignAgentId, run.id)))
+      .get(`/api/issues/${issueId}`);
+    expect(issueRes.status, JSON.stringify(issueRes.body)).toBe(200);
+    expect(issueRes.body).toMatchObject({
+      id: issueId,
+      status: "cancelled",
+      checkoutRunId: null,
+      executionRunId: null,
+      executionLockedAt: null,
+    });
+    expect(issueRes.body).not.toHaveProperty("activeRun");
+
+    const row = await db
+      .select({
+        status: issues.status,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+        executionLockedAt: issues.executionLockedAt,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(row).toEqual({
+      status: "cancelled",
+      checkoutRunId: null,
+      executionRunId: null,
+      executionLockedAt: null,
+    });
 
     adapterControl.release();
     await waitForCondition(async () =>
