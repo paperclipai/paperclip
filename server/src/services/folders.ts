@@ -13,7 +13,8 @@ import type {
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 
 const MAX_FOLDER_DEPTH = 4;
-const RESERVED_CONTAINER_SLUGS = new Set(["my", "projects"]);
+const RESERVED_ROOT_SLUGS = new Set(["bundled", "my", "projects"]);
+const RESERVED_CHILD_ROOT_SYSTEM_KEYS = new Set(["my", "projects"]);
 
 type FolderRow = typeof folders.$inferSelect;
 
@@ -162,8 +163,8 @@ export function folderService(db: Db) {
     };
   }
 
-  function isReservedContainer(folder: Folder) {
-    return folder.kind === "skill" && folder.parentId === null && RESERVED_CONTAINER_SLUGS.has(folder.slug);
+  function isReservedRootSlug(kind: FolderKind, parentId: string | null, slug: string) {
+    return kind === "skill" && parentId === null && RESERVED_ROOT_SLUGS.has(slug);
   }
 
   async function isBundledFolder(companyId: string, folderId: string) {
@@ -179,7 +180,7 @@ export function folderService(db: Db) {
   }
 
   async function assertMutableFolder(companyId: string, folder: Folder) {
-    if (folder.systemKey || isReservedContainer(folder) || await isBundledFolder(companyId, folder.id)) {
+    if (folder.systemKey || await isBundledFolder(companyId, folder.id)) {
       throw forbidden("System-managed folders cannot be changed");
     }
   }
@@ -189,6 +190,13 @@ export function folderService(db: Db) {
     const parent = await getFolder(companyId, parentId);
     if (!parent || parent.kind !== kind) throw notFound("Parent folder not found");
     if (await isBundledFolder(companyId, parent.id)) throw forbidden("Bundled folders are read-only");
+    if (
+      parent.kind === "skill"
+      && parent.parentId === null
+      && (RESERVED_CHILD_ROOT_SYSTEM_KEYS.has(parent.systemKey ?? "") || RESERVED_CHILD_ROOT_SYSTEM_KEYS.has(parent.slug))
+    ) {
+      throw forbidden("Reserved skill folders are system-managed");
+    }
     return parent;
   }
 
@@ -200,6 +208,9 @@ export function folderService(db: Db) {
     }
     const name = normalizeName(input.name);
     const slug = input.slug ?? normalizeFolderSlug(name);
+    if (isReservedRootSlug(input.kind, parentId, slug)) {
+      throw forbidden("Reserved skill folders are system-managed");
+    }
     await assertNoSlugConflict(companyId, input.kind, parentId, slug);
     const position = input.position ?? await nextPosition(companyId, input.kind, parentId);
     const row = await db
@@ -216,6 +227,9 @@ export function folderService(db: Db) {
     await assertMutableFolder(companyId, existing);
     const name = patch.name === undefined ? existing.name : normalizeName(patch.name);
     const slug = patch.slug ?? (patch.name === undefined ? existing.slug : normalizeFolderSlug(name));
+    if (isReservedRootSlug(existing.kind, existing.parentId, slug)) {
+      throw forbidden("Reserved skill folders are system-managed");
+    }
     await assertNoSlugConflict(companyId, existing.kind, existing.parentId, slug, existing.id);
     await db
       .update(folders)
@@ -265,6 +279,9 @@ export function folderService(db: Db) {
     const relativeDepth = Math.max(...Array.from(descendants).map((id) => views.get(id)!.depth - existing.depth + 1));
     if ((parent?.depth ?? 0) + relativeDepth > MAX_FOLDER_DEPTH) {
       throw unprocessable(`Folder depth cannot exceed ${MAX_FOLDER_DEPTH}`);
+    }
+    if (isReservedRootSlug(existing.kind, parentId, existing.slug)) {
+      throw forbidden("Reserved skill folders are system-managed");
     }
     await assertNoSlugConflict(companyId, existing.kind, parentId, existing.slug, existing.id);
     await db
@@ -332,9 +349,40 @@ export function folderService(db: Db) {
     return { kind: input.kind, itemId: row.id, folderId: row.folderId ?? null };
   }
 
+  async function uniqueSiblingSlug(companyId: string, parentId: string | null, baseSlug: string, stableSuffix: string) {
+    const siblingSlugs = new Set(await db
+      .select({ slug: folders.slug })
+      .from(folders)
+      .where(and(
+        eq(folders.companyId, companyId),
+        eq(folders.kind, "skill"),
+        parentId === null ? sql`${folders.parentId} is null` : eq(folders.parentId, parentId),
+      ))
+      .then((rows) => rows.map((row) => row.slug)));
+    if (!siblingSlugs.has(baseSlug)) return baseSlug;
+    const suffix = normalizeFolderSlug(stableSuffix).slice(0, 24);
+    let candidate = `${baseSlug}-${suffix}`;
+    let duplicateNumber = 2;
+    while (siblingSlugs.has(candidate)) {
+      candidate = `${baseSlug}-${suffix}-${duplicateNumber}`;
+      duplicateNumber += 1;
+    }
+    return candidate;
+  }
+
   async function ensureContainer(companyId: string, slug: "my" | "projects", name: string) {
-    const existing = await db
+    const existingSystem = await db
       .select()
+      .from(folders)
+      .where(and(
+        eq(folders.companyId, companyId),
+        eq(folders.kind, "skill"),
+        eq(folders.systemKey, slug),
+      ))
+      .then((rows) => rows[0] ?? null);
+    if (existingSystem) return (await getFolder(companyId, existingSystem.id))!;
+    const squatted = await db
+      .select({ id: folders.id })
       .from(folders)
       .where(and(
         eq(folders.companyId, companyId),
@@ -343,28 +391,37 @@ export function folderService(db: Db) {
         eq(folders.slug, slug),
       ))
       .then((rows) => rows[0] ?? null);
-    if (existing) return (await getFolder(companyId, existing.id))!;
+    if (squatted) {
+      await db
+        .update(folders)
+        .set({ slug: await uniqueSiblingSlug(companyId, null, slug, squatted.id.slice(0, 8)), updatedAt: new Date() })
+        .where(and(eq(folders.companyId, companyId), eq(folders.id, squatted.id)));
+    }
     const row = await db
       .insert(folders)
-      .values({ companyId, kind: "skill", parentId: null, name, slug, position: await nextPosition(companyId, "skill", null) })
+      .values({ companyId, kind: "skill", parentId: null, name, slug, systemKey: slug, position: await nextPosition(companyId, "skill", null) })
       .returning({ id: folders.id })
       .then((rows) => rows[0]!);
     return (await getFolder(companyId, row.id))!;
   }
 
-  async function uniqueSystemSlug(companyId: string, parentId: string, baseSlug: string, systemKey: string) {
+  async function uniqueSystemSlug(
+    companyId: string,
+    parentId: string,
+    baseSlug: string,
+    systemKey: string,
+    stableSuffix = systemKey.split(":").at(-1) ?? systemKey,
+  ) {
     const existingSystem = await db
       .select({ id: folders.id })
       .from(folders)
       .where(and(eq(folders.companyId, companyId), eq(folders.kind, "skill"), eq(folders.systemKey, systemKey)))
       .then((rows) => rows[0] ?? null);
     if (existingSystem) return { id: existingSystem.id, slug: null };
-    const conflictRow = await db
-      .select({ id: folders.id })
-      .from(folders)
-      .where(and(eq(folders.companyId, companyId), eq(folders.kind, "skill"), eq(folders.parentId, parentId), eq(folders.slug, baseSlug)))
-      .then((rows) => rows[0] ?? null);
-    return { id: null, slug: conflictRow ? `${baseSlug}-${systemKey.split(":").at(-1)!.slice(0, 8).toLowerCase()}` : baseSlug };
+    return {
+      id: null,
+      slug: await uniqueSiblingSlug(companyId, parentId, baseSlug, stableSuffix),
+    };
   }
 
   async function ensureMyFolder(companyId: string, userId: string, userName: string | null, requestedSlug?: string | null) {
@@ -416,6 +473,22 @@ export function folderService(db: Db) {
       .where(and(eq(folders.companyId, companyId), eq(folders.kind, "skill"), eq(folders.systemKey, "bundled")))
       .then((rows) => rows[0] ?? null);
     if (!root) {
+      const squatted = await db
+        .select({ id: folders.id })
+        .from(folders)
+        .where(and(
+          eq(folders.companyId, companyId),
+          eq(folders.kind, "skill"),
+          sql`${folders.parentId} is null`,
+          eq(folders.slug, "bundled"),
+        ))
+        .then((rows) => rows[0] ?? null);
+      if (squatted) {
+        await db
+          .update(folders)
+          .set({ slug: await uniqueSiblingSlug(companyId, null, "bundled", squatted.id.slice(0, 8)), updatedAt: new Date() })
+          .where(and(eq(folders.companyId, companyId), eq(folders.id, squatted.id)));
+      }
       root = await db
         .insert(folders)
         .values({ companyId, kind: "skill", parentId: null, name: "Bundled", slug: "bundled", systemKey: "bundled", position: await nextPosition(companyId, "skill", null) })
@@ -423,15 +496,12 @@ export function folderService(db: Db) {
         .then((rows) => rows[0]!);
     }
     const slug = normalizeFolderSlug(category);
-    const existing = await db
-      .select({ id: folders.id })
-      .from(folders)
-      .where(and(eq(folders.companyId, companyId), eq(folders.kind, "skill"), eq(folders.parentId, root.id), eq(folders.slug, slug)))
-      .then((rows) => rows[0] ?? null);
-    if (existing) return (await getFolder(companyId, existing.id))!;
+    const systemKey = `bundled:${slug}`;
+    const resolved = await uniqueSystemSlug(companyId, root.id, slug, systemKey, "bundled");
+    if (resolved.id) return (await getFolder(companyId, resolved.id))!;
     const row = await db
       .insert(folders)
-      .values({ companyId, kind: "skill", parentId: root.id, name: category, slug, position: await nextPosition(companyId, "skill", root.id) })
+      .values({ companyId, kind: "skill", parentId: root.id, name: category, slug: resolved.slug!, systemKey, position: await nextPosition(companyId, "skill", root.id) })
       .returning({ id: folders.id })
       .then((rows) => rows[0]!);
     return (await getFolder(companyId, row.id))!;

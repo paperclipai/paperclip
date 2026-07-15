@@ -59,7 +59,7 @@ CREATE INDEX IF NOT EXISTS "folders_company_kind_parent_position_idx"
   ON "folders" USING btree ("company_id", "kind", "parent_id", "position", "name");
 --> statement-breakpoint
 UPDATE "folders" AS folder
-SET "system_key" = 'bundled', "updated_at" = now()
+SET "slug" = 'bundled-' || LEFT(REPLACE(folder."id"::text, '-', ''), 8), "updated_at" = now()
 WHERE folder."kind" = 'skill'
   AND folder."parent_id" IS NULL
   AND folder."slug" = 'bundled'
@@ -103,8 +103,8 @@ WITH bundled_categories AS (
     AND (skill."key" LIKE 'paperclipai/bundled/%' OR skill."metadata"->>'sourceKind' = 'paperclip_bundled')
   ORDER BY skill."company_id", category.slug, category.name
 )
-INSERT INTO "folders" ("company_id", "kind", "parent_id", "name", "slug", "position")
-SELECT category."company_id", 'skill', root."id", category."name", category."slug", 0
+INSERT INTO "folders" ("company_id", "kind", "parent_id", "name", "slug", "system_key", "position")
+SELECT category."company_id", 'skill', root."id", category."name", category."slug", 'bundled:' || category."slug", 0
 FROM bundled_categories AS category
 JOIN "folders" AS root
   ON root."company_id" = category."company_id"
@@ -124,13 +124,28 @@ WHERE skill."company_id" = root."company_id"
   AND root."system_key" = 'bundled'
   AND skill."folder_id" IS NULL
   AND (skill."key" LIKE 'paperclipai/bundled/%' OR skill."metadata"->>'sourceKind' = 'paperclip_bundled')
-  AND category_folder."slug" = COALESCE(
+  AND category_folder."system_key" = 'bundled:' || COALESCE(
     NULLIF(TRIM(BOTH '-' FROM REGEXP_REPLACE(LOWER(COALESCE(NULLIF(SPLIT_PART(skill."key", '/', 3), ''), 'other')), '[^a-z0-9]+', '-', 'g')), ''),
     'other'
   );
 --> statement-breakpoint
-INSERT INTO "folders" ("company_id", "kind", "parent_id", "name", "slug", "position")
-SELECT DISTINCT skill."company_id", 'skill', NULL::uuid, 'Projects', 'projects', 1
+UPDATE "folders" AS folder
+SET "slug" = 'projects-' || LEFT(REPLACE(folder."id"::text, '-', ''), 8), "updated_at" = now()
+WHERE folder."kind" = 'skill'
+  AND folder."parent_id" IS NULL
+  AND folder."slug" = 'projects'
+  AND folder."system_key" IS NULL
+  AND EXISTS (
+    SELECT 1
+    FROM "company_skills" AS skill
+    WHERE skill."company_id" = folder."company_id"
+      AND skill."folder_id" IS NULL
+      AND skill."metadata"->>'sourceKind' = 'project_scan'
+      AND skill."metadata"->>'projectId' IS NOT NULL
+  );
+--> statement-breakpoint
+INSERT INTO "folders" ("company_id", "kind", "parent_id", "name", "slug", "system_key", "position")
+SELECT DISTINCT skill."company_id", 'skill', NULL::uuid, 'Projects', 'projects', 'projects', 1
 FROM "company_skills" AS skill
 WHERE skill."folder_id" IS NULL
   AND skill."metadata"->>'sourceKind' = 'project_scan'
@@ -139,8 +154,7 @@ WHERE skill."folder_id" IS NULL
     SELECT 1 FROM "folders" AS folder
     WHERE folder."company_id" = skill."company_id"
       AND folder."kind" = 'skill'
-      AND folder."parent_id" IS NULL
-      AND folder."slug" = 'projects'
+      AND folder."system_key" = 'projects'
   )
 ON CONFLICT DO NOTHING;
 --> statement-breakpoint
@@ -171,8 +185,7 @@ WITH project_sources AS (
   JOIN "folders" AS container
     ON container."company_id" = source."company_id"
     AND container."kind" = 'skill'
-    AND container."parent_id" IS NULL
-    AND container."slug" = 'projects'
+    AND container."system_key" = 'projects'
 ), ranked_project_folders AS (
   SELECT
     source.*,

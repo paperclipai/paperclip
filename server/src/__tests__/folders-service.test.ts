@@ -235,4 +235,117 @@ describeEmbeddedPostgres("folder service", () => {
     })).rejects.toMatchObject({ status: 403, message: "Bundled folders are read-only" });
     await expect(svc.update(companyId, bundled.id, { name: "Changed" })).rejects.toMatchObject({ status: 403 });
   });
+
+  it("reserves system skill roots from manual create, update, and move", async () => {
+    const companyId = await seedCompany();
+    const svc = folderService(db);
+
+    for (const slug of ["bundled", "my", "projects"]) {
+      await expect(svc.create(companyId, {
+        kind: "skill",
+        name: slug,
+        slug,
+      })).rejects.toMatchObject({ status: 403, message: "Reserved skill folders are system-managed" });
+    }
+
+    const editable = await svc.create(companyId, { kind: "skill", name: "Editable" });
+    await expect(svc.update(companyId, editable.id, { slug: "bundled" })).rejects.toMatchObject({ status: 403 });
+
+    const parent = await svc.create(companyId, { kind: "skill", name: "Parent" });
+    const nestedReserved = await svc.create(companyId, { kind: "skill", parentId: parent.id, name: "Projects" });
+    await expect(svc.moveFolder(companyId, nestedReserved.id, { parentId: null, position: 0 })).rejects.toMatchObject({
+      status: 403,
+      message: "Reserved skill folders are system-managed",
+    });
+  });
+
+  it("allows only system helpers to create children under personal and project roots", async () => {
+    const companyId = await seedCompany();
+    const svc = folderService(db);
+    const personal = await svc.ensureMyFolder(companyId, "user-1", "Ada Lovelace");
+    const project = await svc.ensureProjectFolder(companyId, "project-1", "Core App");
+    const myRoot = await svc.getFolder(companyId, personal.parentId!);
+    const projectsRoot = await svc.getFolder(companyId, project.parentId!);
+    const movable = await svc.create(companyId, { kind: "skill", name: "Movable" });
+
+    expect(myRoot?.systemKey).toBe("my");
+    expect(projectsRoot?.systemKey).toBe("projects");
+    await expect(svc.create(companyId, {
+      kind: "skill",
+      parentId: myRoot!.id,
+      name: "Spoofed User",
+    })).rejects.toMatchObject({ status: 403 });
+    await expect(svc.moveFolder(companyId, movable.id, {
+      parentId: projectsRoot!.id,
+      position: 0,
+    })).rejects.toMatchObject({ status: 403 });
+  });
+
+  it("moves squatted roots aside instead of adopting them as system containers", async () => {
+    const companyId = await seedCompany();
+    const svc = folderService(db);
+    const [squattedMy, squattedProjects] = await db.insert(folders).values([
+      { companyId, kind: "skill", parentId: null, name: "Attacker My", slug: "my", position: 0 },
+      { companyId, kind: "skill", parentId: null, name: "Attacker Projects", slug: "projects", position: 1 },
+    ]).returning();
+
+    const personal = await svc.ensureMyFolder(companyId, "user-1", "Ada Lovelace");
+    const project = await svc.ensureProjectFolder(companyId, "project-1", "Core App");
+    const myRoot = await svc.getFolder(companyId, personal.parentId!);
+    const projectsRoot = await svc.getFolder(companyId, project.parentId!);
+    const repairedMy = await svc.getFolder(companyId, squattedMy!.id);
+    const repairedProjects = await svc.getFolder(companyId, squattedProjects!.id);
+
+    expect(myRoot).toMatchObject({ slug: "my", systemKey: "my" });
+    expect(projectsRoot).toMatchObject({ slug: "projects", systemKey: "projects" });
+    expect(repairedMy).toMatchObject({ name: "Attacker My", systemKey: null });
+    expect(repairedMy?.slug).toMatch(/^my-[a-f0-9]{8}$/);
+    expect(repairedProjects).toMatchObject({ name: "Attacker Projects", systemKey: null });
+    expect(repairedProjects?.slug).toMatch(/^projects-[a-f0-9]{8}$/);
+  });
+
+  it("suffixes system children when legacy rows squat personal and project slugs", async () => {
+    const companyId = await seedCompany();
+    const svc = folderService(db);
+    const initialPersonal = await svc.ensureMyFolder(companyId, "seed-user", "Seed User");
+    const initialProject = await svc.ensureProjectFolder(companyId, "seed-project", "Seed Project");
+    const myRootId = initialPersonal.parentId!;
+    const projectsRootId = initialProject.parentId!;
+    await db.insert(folders).values([
+      { companyId, kind: "skill", parentId: myRootId, name: "Ada Squat", slug: "ada-lovelace", position: 1 },
+      { companyId, kind: "skill", parentId: projectsRootId, name: "Core Squat", slug: "core-app", position: 1 },
+    ]);
+
+    const personal = await svc.ensureMyFolder(companyId, "user-12345678", "Ada Lovelace");
+    const project = await svc.ensureProjectFolder(companyId, "project-12345678", "Core App");
+
+    expect(personal).toMatchObject({ path: "my/ada-lovelace-user-12345678", systemKey: "my:user-12345678" });
+    expect(project).toMatchObject({ path: "projects/core-app-project-12345678", systemKey: "project:project-12345678" });
+  });
+
+  it("does not adopt a legacy category row under the bundled root", async () => {
+    const companyId = await seedCompany();
+    const svc = folderService(db);
+    const initialCategory = await svc.ensureBundledCategory(companyId, "initial");
+    const bundledRootId = initialCategory.parentId!;
+    const [squatted] = await db.insert(folders).values({
+      companyId,
+      kind: "skill",
+      parentId: bundledRootId,
+      name: "User Software Development",
+      slug: "software-development",
+      position: 1,
+    }).returning();
+
+    const category = await svc.ensureBundledCategory(companyId, "software-development");
+
+    expect(category).toMatchObject({
+      path: "bundled/software-development-bundled",
+      systemKey: "bundled:software-development",
+    });
+    expect(await svc.getFolder(companyId, squatted!.id)).toMatchObject({
+      path: "bundled/software-development",
+      systemKey: null,
+    });
+  });
 });

@@ -42,6 +42,8 @@ describeEmbeddedPostgres("nested skill folders migration", () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
     const existingFolderId = randomUUID();
+    const squattedBundledId = randomUUID();
+    const squattedProjectsId = randomUUID();
     const bundledSkillId = randomUUID();
     const projectSkillId = randomUUID();
     const unfiledSkillId = randomUUID();
@@ -55,7 +57,10 @@ describeEmbeddedPostgres("nested skill folders migration", () => {
     `;
     await sql`
       INSERT INTO "folders" ("id", "company_id", "kind", "name", "position")
-      VALUES (${existingFolderId}, ${companyId}, 'skill', 'Team Notes', 0)
+      VALUES
+        (${existingFolderId}, ${companyId}, 'skill', 'Team Notes', 0),
+        (${squattedBundledId}, ${companyId}, 'skill', 'Bundled', 1),
+        (${squattedProjectsId}, ${companyId}, 'skill', 'Projects', 2)
     `;
     await sql`
       INSERT INTO "company_skills" ("id", "company_id", "key", "slug", "name", "markdown", "metadata")
@@ -80,9 +85,11 @@ describeEmbeddedPostgres("nested skill folders migration", () => {
     `;
     expect(folderRows).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: existingFolderId, slug: "team-notes", parent_id: null }),
+      expect.objectContaining({ id: squattedBundledId, slug: `bundled-${squattedBundledId.replace(/-/g, "").slice(0, 8)}`, system_key: null }),
+      expect.objectContaining({ id: squattedProjectsId, slug: `projects-${squattedProjectsId.replace(/-/g, "").slice(0, 8)}`, system_key: null }),
       expect.objectContaining({ slug: "bundled", system_key: "bundled", parent_id: null }),
-      expect.objectContaining({ slug: "software-development" }),
-      expect.objectContaining({ slug: "projects", parent_id: null }),
+      expect.objectContaining({ slug: "software-development", system_key: "bundled:software-development" }),
+      expect.objectContaining({ slug: "projects", system_key: "projects", parent_id: null }),
       expect.objectContaining({ slug: "agent-platform", system_key: `project:${projectId}` }),
     ]));
 

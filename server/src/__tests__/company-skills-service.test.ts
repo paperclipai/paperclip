@@ -326,6 +326,34 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     expect(refreshedSkill?.updatedAt.toISOString()).toBe(preservedUpdatedAt.toISOString());
   });
 
+  it("repairs a squatted bundled root during bundled-skill list refresh", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    const [squatted] = await db.insert(folders).values({
+      companyId,
+      kind: "skill",
+      parentId: null,
+      name: "User Bundled",
+      slug: "bundled",
+      position: 0,
+    }).returning();
+
+    const listed = await svc.list(companyId);
+    const folderRows = await db.select().from(folders).where(eq(folders.companyId, companyId));
+    const bundledRoot = folderRows.find((folder) => folder.systemKey === "bundled");
+    const repairedSquat = folderRows.find((folder) => folder.id === squatted!.id);
+
+    expect(listed.some((skill) => skill.key.startsWith("paperclipai/paperclip/"))).toBe(true);
+    expect(bundledRoot).toMatchObject({ slug: "bundled", parentId: null, systemKey: "bundled" });
+    expect(repairedSquat).toMatchObject({ name: "User Bundled", systemKey: null });
+    expect(repairedSquat?.slug).toMatch(/^bundled-[a-f0-9]{8}$/);
+  });
+
   it("does not retouch bundled skills with stale missing-source metadata during list refresh", async () => {
     const companyId = randomUUID();
     await db.insert(companies).values({
