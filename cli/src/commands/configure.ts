@@ -50,6 +50,8 @@ function defaultConfig(): PaperclipConfig {
     logging: {
       mode: "file",
       logDir: resolveDefaultLogsDir(instanceId),
+      maxSizeMb: 200,
+      maxFiles: 10,
     },
     server: {
       deploymentMode: "local_trusted",
