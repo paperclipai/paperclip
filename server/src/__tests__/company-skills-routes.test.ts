@@ -1117,11 +1117,32 @@ describe("company skill mutation permissions", () => {
       type: "user",
       userId: "user-1",
     });
+    expect(mockCompanySkillService.detail).toHaveBeenCalledWith("company-1", "skill-1", {
+      type: "user",
+      userId: "user-1",
+    });
     expect(mockTrackSkillVersionSaved).toHaveBeenCalledWith(expect.anything(), {
       skill_id: "skill-1",
       revision_number: 7,
       file_type: "skill",
     });
+  });
+
+  it("does not load skill detail for file saves when telemetry is disabled", async () => {
+    mockGetTelemetryClient.mockReturnValue(null);
+    const app = await createApp({ type: "board", source: "local_implicit", userId: "user-1" });
+
+    await request(app)
+      .patch("/api/companies/company-1/skills/skill-1/files")
+      .send({ path: "SKILL.md", content: "# Updated" })
+      .expect(200);
+
+    expect(mockCompanySkillService.updateFile).toHaveBeenCalledWith("company-1", "skill-1", "SKILL.md", "# Updated", {
+      type: "user",
+      userId: "user-1",
+    });
+    expect(mockCompanySkillService.detail).not.toHaveBeenCalled();
+    expect(mockTrackSkillVersionSaved).not.toHaveBeenCalled();
   });
 
   it("deletes skill files and logs the mutation", async () => {

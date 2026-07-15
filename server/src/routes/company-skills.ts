@@ -980,14 +980,17 @@ export function companySkillRoutes(db: Db) {
           markdown: result.markdown,
         },
       });
-      const updatedSkill = await svc.detail(companyId, skillId, skillActor(req));
-      const currentVersion = updatedSkill?.currentVersion ?? null;
-      if (currentVersion) {
-        emitSkillTelemetry((client) => trackSkillVersionSaved(client, {
-          skill_id: skillId,
-          revision_number: currentVersion.revisionNumber,
-          file_type: result.kind,
-        }));
+      const telemetryClient = getTelemetryClient();
+      if (telemetryClient) {
+        const updatedSkill = await svc.detail(companyId, skillId, skillActor(req));
+        const currentVersion = updatedSkill?.currentVersion ?? null;
+        if (currentVersion) {
+          trackSkillVersionSaved(telemetryClient, {
+            skill_id: skillId,
+            revision_number: currentVersion.revisionNumber,
+            file_type: result.kind,
+          });
+        }
       }
 
       res.json(result);
