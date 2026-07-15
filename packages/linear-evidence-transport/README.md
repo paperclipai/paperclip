@@ -26,7 +26,7 @@ provide a resolver and inject the resulting transport into
 
 ```ts
 const transport = createLinearEvidenceTransport({
-  authorizationSecretRef: { type: "secret_ref", secretId: configuredSecretId, version: "latest" },
+  authorizationSecretRef: { type: "secret_ref", secretId: configuredCompanySecretUuid, version: "latest" },
   secretResolver: deploymentSecretResolver,
 });
 const bridge = linearEvidenceConnector(db, transport);
@@ -39,6 +39,11 @@ intended workspace. Until that explicit deployment wiring and independent live
 acceptance occur, the connector remains fail-closed and is not release-ready.
 
 The transport applies a strict positive schema to its configuration and
-SecretRef. Untyped references, unknown fields, and every direct credential
-field or casing/punctuation variant are rejected before secret resolution or
-network access.
+SecretRef. `secretId` must be a canonical company-secret UUID accepted by the
+Paperclip shared UUID/reference schema; opaque strings and credential-shaped
+values are rejected. Options, the resolver port, and the nested SecretRef must
+be plain own-data objects. Proxies, accessors, symbols, non-enumerable or
+inherited fields, exotic prototypes, unknown fields, and every direct
+credential field or casing/punctuation variant are rejected before secret
+resolution or network access. Valid input is copied into fresh null-prototype,
+frozen DTOs before the transport closure retains it.

@@ -1,3 +1,6 @@
+import { types as nodeTypes } from "node:util";
+import { isUuidLike } from "@paperclipai/shared/agent-url-key";
+
 const LINEAR_GRAPHQL_ENDPOINT = "https://api.linear.app/graphql";
 const MAX_RESPONSE_BYTES = 1_000_000;
 const MAX_COMMENT_PAGES = 20;
@@ -173,48 +176,108 @@ function firstRemoteCode(errors: GraphqlEnvelope<unknown>["errors"]): string | u
 
 const TRANSPORT_OPTION_KEYS = new Set(["authorizationSecretRef", "secretResolver", "fetch", "timeoutMs"]);
 const SECRET_REF_KEYS = new Set(["type", "secretId", "version"]);
+const SECRET_RESOLVER_KEYS = new Set(["resolve"]);
 
-function hasOnlyAllowedKeys(value: unknown, allowed: ReadonlySet<string>): boolean {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+function cloneOwnDataDto(
+  value: unknown,
+  allowed: ReadonlySet<string>,
+  required: ReadonlySet<string>,
+): Readonly<Record<string, unknown>> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value) || nodeTypes.isProxy(value)) return null;
   try {
-    const keys = new Set<PropertyKey>(Reflect.ownKeys(value));
-    for (const key in value as Record<string, unknown>) keys.add(key);
-    return [...keys].every((key) => typeof key === "string" && allowed.has(key));
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) return null;
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const keys = Reflect.ownKeys(descriptors);
+    if (keys.some((key) => typeof key !== "string" || !allowed.has(key))) return null;
+    if ([...required].some((key) => !Object.hasOwn(descriptors, key))) return null;
+    const clone = Object.create(null) as Record<string, unknown>;
+    for (const key of keys as string[]) {
+      const descriptor = descriptors[key];
+      if (!descriptor || !descriptor.enumerable || !("value" in descriptor)) return null;
+      clone[key] = descriptor.value;
+    }
+    return Object.freeze(clone);
   } catch {
-    return false;
+    return null;
   }
 }
 
 export function createLinearEvidenceTransport(options: CreateLinearEvidenceTransportOptions): LinearEvidenceTransport {
-  if (!hasOnlyAllowedKeys(options, TRANSPORT_OPTION_KEYS)) {
+  const optionDto = cloneOwnDataDto(
+    options,
+    TRANSPORT_OPTION_KEYS,
+    new Set(["authorizationSecretRef", "secretResolver"]),
+  );
+  if (!optionDto) {
     // Strict positive schema: accessToken, api_key, Authorization,
-    // bearerToken, casing/punctuation variants, symbols, and all other direct
-    // credential/config fields are rejected without inspecting their values.
+    // bearerToken, casing/punctuation variants, inherited/non-enumerable
+    // fields, accessors, proxies, symbols, exotic prototypes, and all other
+    // direct configuration are rejected without inspecting their values.
     throw new LinearEvidenceTransportError("invalid_request");
   }
-  const fetchImpl = options.fetch ?? globalThis.fetch;
-  const timeoutMs = options.timeoutMs ?? 10_000;
+  const refDto = cloneOwnDataDto(
+    optionDto.authorizationSecretRef,
+    SECRET_REF_KEYS,
+    new Set(["type", "secretId"]),
+  );
+  const resolverDto = cloneOwnDataDto(
+    optionDto.secretResolver,
+    SECRET_RESOLVER_KEYS,
+    new Set(["resolve"]),
+  );
   if (
-    !options.authorizationSecretRef ||
-    options.authorizationSecretRef.type !== "secret_ref" ||
-    !hasOnlyAllowedKeys(options.authorizationSecretRef, SECRET_REF_KEYS)
+    !refDto ||
+    !resolverDto ||
+    refDto.type !== "secret_ref" ||
+    typeof resolverDto.resolve !== "function" ||
+    nodeTypes.isProxy(resolverDto.resolve)
   ) {
     // This boundary accepts references only. Direct credential-shaped options
     // are rejected even if supplied by an untyped JavaScript caller.
     throw new LinearEvidenceTransportError("invalid_request");
   }
-  const secretId = boundedOpaque(options.authorizationSecretRef.secretId);
-  const version = options.authorizationSecretRef.version === undefined
+  const rawSecretId = refDto.secretId;
+  const secretId = typeof rawSecretId === "string" && rawSecretId === rawSecretId.trim() && isUuidLike(rawSecretId)
+    ? rawSecretId
+    : null;
+  const version = refDto.version === undefined
     ? undefined
-    : options.authorizationSecretRef.version === "latest"
+    : refDto.version === "latest"
       ? "latest"
-      : Number.isSafeInteger(options.authorizationSecretRef.version) && options.authorizationSecretRef.version > 0
-        ? options.authorizationSecretRef.version
+      : Number.isSafeInteger(refDto.version) && typeof refDto.version === "number" && refDto.version > 0
+        ? refDto.version
         : null;
-  if (!secretId || (options.authorizationSecretRef.version !== undefined && !version) || !Number.isFinite(timeoutMs) || timeoutMs < 1 || timeoutMs > 60_000) {
+  const timeoutMs = optionDto.timeoutMs === undefined ? 10_000 : optionDto.timeoutMs;
+  const fetchImpl = optionDto.fetch === undefined ? globalThis.fetch : optionDto.fetch;
+  if (
+    !secretId ||
+    (refDto.version !== undefined && !version) ||
+    typeof timeoutMs !== "number" ||
+    !Number.isFinite(timeoutMs) ||
+    timeoutMs < 1 ||
+    timeoutMs > 60_000 ||
+    typeof fetchImpl !== "function" ||
+    nodeTypes.isProxy(fetchImpl)
+  ) {
     throw new LinearEvidenceTransportError("invalid_request");
   }
-  const secretRef = Object.freeze({ type: "secret_ref" as const, secretId, ...(version ? { version } : {}) });
+  const secretRef = Object.freeze(Object.assign(Object.create(null) as LinearSecretRef, {
+    type: "secret_ref" as const,
+    secretId,
+    ...(version ? { version } : {}),
+  }));
+  const safeOptions = Object.freeze(Object.assign(Object.create(null) as {
+    secretResolver: LinearSecretResolver;
+    fetch: typeof globalThis.fetch;
+    timeoutMs: number;
+  }, {
+    secretResolver: Object.freeze(Object.assign(Object.create(null) as LinearSecretResolver, {
+      resolve: resolverDto.resolve as LinearSecretResolver["resolve"],
+    })),
+    fetch: fetchImpl as typeof globalThis.fetch,
+    timeoutMs,
+  }));
 
   async function request<T>(input: {
     operation: LinearSecretOperation;
@@ -224,7 +287,7 @@ export function createLinearEvidenceTransport(options: CreateLinearEvidenceTrans
   }): Promise<T> {
     let authorization: string;
     try {
-      authorization = await options.secretResolver.resolve({
+      authorization = await safeOptions.secretResolver.resolve({
         secretRef,
         purpose: "linear_evidence_comment_transport",
         operation: input.operation,
@@ -238,7 +301,7 @@ export function createLinearEvidenceTransport(options: CreateLinearEvidenceTrans
 
     let response: Response;
     try {
-      response = await fetchImpl(LINEAR_GRAPHQL_ENDPOINT, {
+      response = await safeOptions.fetch(LINEAR_GRAPHQL_ENDPOINT, {
         method: "POST",
         headers: {
           accept: "application/json",
@@ -246,7 +309,7 @@ export function createLinearEvidenceTransport(options: CreateLinearEvidenceTrans
           "content-type": "application/json",
         },
         body: JSON.stringify({ query: input.query, variables: input.variables }),
-        signal: AbortSignal.timeout(timeoutMs),
+        signal: AbortSignal.timeout(safeOptions.timeoutMs),
       });
     } catch {
       throw new LinearEvidenceTransportError(input.mutation ? "delivery_ambiguous" : "network_error");

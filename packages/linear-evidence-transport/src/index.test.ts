@@ -65,6 +65,10 @@ describe("createLinearEvidenceTransport", () => {
       purpose: "linear_evidence_comment_transport",
       operation: "find_comment",
     });
+    const resolvedSecretRef = secretResolver.resolve.mock.calls[0]?.[0].secretRef;
+    expect(resolvedSecretRef).not.toBe(secretRef);
+    expect(Object.getPrototypeOf(resolvedSecretRef)).toBeNull();
+    expect(Object.isFrozen(resolvedSecretRef)).toBe(true);
   });
 
   it("creates the exact body and performs a separate concrete comment read", async () => {
@@ -163,6 +167,19 @@ describe("createLinearEvidenceTransport", () => {
       secretResolver,
       fetch: fetchImpl,
     })).toThrowError(expect.objectContaining({ code: "invalid_request" }));
+    for (const secretId of [
+      token,
+      "plain-secret-reference",
+      `Bearer ${token}`,
+      ` ${secretRef.secretId}`,
+      `${secretRef.secretId} `,
+    ]) {
+      expect(() => createLinearEvidenceTransport({
+        authorizationSecretRef: { ...secretRef, secretId },
+        secretResolver,
+        fetch: fetchImpl,
+      }), secretId).toThrowError(expect.objectContaining({ code: "invalid_request" }));
+    }
     for (const field of [
       "accessToken",
       "api_key",
@@ -185,11 +202,18 @@ describe("createLinearEvidenceTransport", () => {
       secretResolver,
       fetch: fetchImpl,
     } as never)).toThrowError(expect.objectContaining({ code: "invalid_request" }));
-    const inheritedCredentialConfig = Object.assign(
-      Object.create({ Authorization: token }) as Record<string, unknown>,
-      { authorizationSecretRef: secretRef, secretResolver, fetch: fetchImpl },
-    );
+    const inheritedPrototype = {};
+    Object.defineProperty(inheritedPrototype, "Authorization", { value: token, enumerable: false });
+    const inheritedCredentialConfig = Object.assign(Object.create(inheritedPrototype) as Record<string, unknown>, {
+      authorizationSecretRef: secretRef,
+      secretResolver,
+      fetch: fetchImpl,
+    });
     expect(() => createLinearEvidenceTransport(inheritedCredentialConfig as never))
+      .toThrowError(expect.objectContaining({ code: "invalid_request" }));
+    const ownNonEnumerableConfig = { authorizationSecretRef: secretRef, secretResolver, fetch: fetchImpl };
+    Object.defineProperty(ownNonEnumerableConfig, "accessToken", { value: token, enumerable: false });
+    expect(() => createLinearEvidenceTransport(ownNonEnumerableConfig as never))
       .toThrowError(expect.objectContaining({ code: "invalid_request" }));
     const symbolCredentialConfig = {
       authorizationSecretRef: secretRef,
@@ -199,7 +223,99 @@ describe("createLinearEvidenceTransport", () => {
     };
     expect(() => createLinearEvidenceTransport(symbolCredentialConfig as never))
       .toThrowError(expect.objectContaining({ code: "invalid_request" }));
+    let getterInvoked = false;
+    const accessorConfig = { secretResolver, fetch: fetchImpl } as Record<string, unknown>;
+    Object.defineProperty(accessorConfig, "authorizationSecretRef", {
+      enumerable: true,
+      get: () => {
+        getterInvoked = true;
+        return secretRef;
+      },
+    });
+    expect(() => createLinearEvidenceTransport(accessorConfig as never))
+      .toThrowError(expect.objectContaining({ code: "invalid_request" }));
+    expect(getterInvoked).toBe(false);
+    let nestedGetterInvoked = false;
+    const accessorRef = { type: "secret_ref" } as Record<string, unknown>;
+    Object.defineProperty(accessorRef, "secretId", {
+      enumerable: true,
+      get: () => {
+        nestedGetterInvoked = true;
+        return secretRef.secretId;
+      },
+    });
+    expect(() => createLinearEvidenceTransport({
+      authorizationSecretRef: accessorRef as never,
+      secretResolver,
+      fetch: fetchImpl,
+    })).toThrowError(expect.objectContaining({ code: "invalid_request" }));
+    expect(nestedGetterInvoked).toBe(false);
+    let proxyRead = false;
+    const proxyConfig = new Proxy(
+      { authorizationSecretRef: secretRef, secretResolver, fetch: fetchImpl },
+      { get: (target, property, receiver) => {
+        proxyRead = true;
+        return Reflect.get(target, property, receiver);
+      } },
+    );
+    expect(() => createLinearEvidenceTransport(proxyConfig))
+      .toThrowError(expect.objectContaining({ code: "invalid_request" }));
+    expect(proxyRead).toBe(false);
+    let nestedProxyRead = false;
+    const proxyRef = new Proxy(secretRef, {
+      get: (target, property, receiver) => {
+        nestedProxyRead = true;
+        return Reflect.get(target, property, receiver);
+      },
+    });
+    expect(() => createLinearEvidenceTransport({
+      authorizationSecretRef: proxyRef,
+      secretResolver,
+      fetch: fetchImpl,
+    })).toThrowError(expect.objectContaining({ code: "invalid_request" }));
+    expect(nestedProxyRead).toBe(false);
+    const exoticRef = Object.assign(Object.create({ inherited: "value" }) as Record<string, unknown>, secretRef);
+    expect(() => createLinearEvidenceTransport({
+      authorizationSecretRef: exoticRef as never,
+      secretResolver,
+      fetch: fetchImpl,
+    })).toThrowError(expect.objectContaining({ code: "invalid_request" }));
+    const proxiedResolve = new Proxy(async () => token, {});
+    expect(() => createLinearEvidenceTransport({
+      authorizationSecretRef: secretRef,
+      secretResolver: { resolve: proxiedResolve },
+      fetch: fetchImpl,
+    })).toThrowError(expect.objectContaining({ code: "invalid_request" }));
     expect(fetchImpl).not.toHaveBeenCalled();
+    expect(secretResolver.resolve).not.toHaveBeenCalled();
+  });
+
+  it("snapshots options and nested SecretRefs before retaining the transport closure", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async () => jsonResponse({ data: { issue: {
+      id: "issue-uuid",
+      identifier: "ALL-387",
+      comments: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+    } } }));
+    const secretResolver = {
+      resolve: vi.fn(async (_input: Parameters<LinearSecretResolver["resolve"]>[0]) => token),
+    } satisfies LinearSecretResolver;
+    const originalResolve = secretResolver.resolve;
+    const mutableRef = { ...secretRef };
+    const mutableOptions = {
+      authorizationSecretRef: mutableRef,
+      secretResolver,
+      fetch: fetchImpl,
+    };
+    const transport = createLinearEvidenceTransport(mutableOptions);
+    mutableRef.secretId = token;
+    mutableOptions.authorizationSecretRef = { ...secretRef, secretId: token };
+    mutableOptions.fetch = vi.fn<typeof fetch>(() => { throw new Error("mutated fetch must not run"); });
+    secretResolver.resolve = vi.fn(async () => { throw new Error("mutated resolver must not run"); });
+
+    await expect(transport.findCommentByMarker({ linearIssueId: "ALL-387", marker })).resolves.toBeNull();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(originalResolve.mock.calls[0]?.[0].secretRef).toMatchObject(secretRef);
+    expect(originalResolve.mock.calls[0]?.[0].secretRef).not.toBe(mutableRef);
     expect(secretResolver.resolve).not.toHaveBeenCalled();
   });
 });
