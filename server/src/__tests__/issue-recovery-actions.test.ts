@@ -479,6 +479,8 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(updatedIssue?.monitorNextCheckAt).toBeInstanceOf(Date);
     expect(updatedIssue?.executionPolicy).toMatchObject({
       monitor: {
+        serviceName: "AI provider quota",
+        externalRef: runId,
         maxAttempts: 1,
         recoveryPolicy: "wake_owner",
       },
@@ -488,6 +490,10 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(updatedRun?.resultJson).toMatchObject({ errorFamily: "provider_quota" });
     expect(await db.select().from(issueRecoveryActions)).toHaveLength(0);
     expect(enqueueWakeup).not.toHaveBeenCalled();
+
+    const secondResult = await recovery.reconcileStrandedAssignedIssues();
+    expect(secondResult).toMatchObject({ providerQuotaMonitored: 0, skipped: 1 });
+    expect(await db.select().from(issueRecoveryActions)).toHaveLength(0);
   });
 
   it("does not create takeover recovery when a quota monitor cannot be scheduled", async () => {

@@ -298,6 +298,7 @@ const CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS = 3;
 const CONTINUATION_RECOVERY_DEFAULT_MAX_ATTEMPTS = 1;
 const CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS = 60_000;
 export const PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS = 60 * 60 * 1000;
+const PROVIDER_QUOTA_MONITOR_SERVICE_NAME = "AI provider quota";
 
 const PROVIDER_QUOTA_ERROR_RE =
   /(?:you(?:'|’)ve hit your usage limit|usage limit(?: reached| exceeded)?|provider quota|quota (?:limit )?exceeded|model (?:is )?at capacity|capacity limit)/i;
@@ -3371,7 +3372,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           : "Provider usage quota reached; retry the original assignee after the default recovery backoff.",
         scheduledBy: "assignee" as const,
         kind: "external_service" as const,
-        serviceName: "AI provider quota",
+        serviceName: PROVIDER_QUOTA_MONITOR_SERVICE_NAME,
         externalRef: input.latestRun.id,
         timeoutAt: null,
         maxAttempts: 1,
@@ -3414,6 +3415,17 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     });
 
     return updated;
+  }
+
+  function hasPendingProviderQuotaRecoveryMonitor(
+    issue: typeof issues.$inferSelect,
+    latestRun: LatestIssueRun,
+    now: Date,
+  ) {
+    if (!latestRun || !issue.monitorNextCheckAt || issue.monitorNextCheckAt.getTime() <= now.getTime()) return false;
+    const monitor = parseObject(parseObject(issue.executionPolicy).monitor);
+    return readNonEmptyString(monitor.serviceName) === PROVIDER_QUOTA_MONITOR_SERVICE_NAME &&
+      readNonEmptyString(monitor.externalRef) === latestRun.id;
   }
 
   async function reconcileStrandedAssignedIssues(opts?: { issueCreatedAtGte?: Date | null }) {
@@ -3499,6 +3511,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         result.skipped += 1;
         continue;
       }
+      const recoveryNow = new Date();
+      if (hasPendingProviderQuotaRecoveryMonitor(issue, latestRun, recoveryNow)) {
+        result.skipped += 1;
+        continue;
+      }
       if (isStrandedIssueRecoveryIssue(issue) && isUnsuccessfulTerminalIssueRun(latestRun)) {
         const updated = await escalateStrandedRecoveryIssueInPlace({
           issue,
@@ -3515,7 +3532,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
 
       const adapterFailureClassification = latestRun && isUnsuccessfulTerminalIssueRun(latestRun)
-        ? classifyAdapterFailureForRecovery(latestRun, new Date())
+        ? classifyAdapterFailureForRecovery(latestRun, recoveryNow)
         : null;
       if (latestRun && adapterFailureClassification) {
         if (adapterFailureClassification.kind === "provider_quota") {
