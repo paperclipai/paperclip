@@ -86,6 +86,41 @@ describePg("linearEvidenceConnector", () => {
     expect((await db.select().from(linearEvidenceDeliveries))).toHaveLength(1);
   });
 
+  it("fails closed for a concurrent replay while preserving exactly one remote publication", async () => {
+    const input = await fixture();
+    const comments = new Map<string, LinearCommentReceipt>();
+    let releaseLookup!: () => void;
+    let lookupStarted!: () => void;
+    const lookupGate = new Promise<void>((resolve) => { releaseLookup = resolve; });
+    const started = new Promise<void>((resolve) => { lookupStarted = resolve; });
+    const transport: LinearEvidenceTransport = {
+      findCommentByMarker: vi.fn(async () => {
+        lookupStarted();
+        await lookupGate;
+        return null;
+      }),
+      createComment: vi.fn(async ({ linearIssueId, body }) => {
+        comments.set("comment-concurrent", {
+          id: "comment-concurrent",
+          linearIssueId,
+          body,
+          createdAt: "2026-07-15T18:02:00.000Z",
+        });
+        return { id: "comment-concurrent" };
+      }),
+      getComment: vi.fn(async ({ commentId }) => comments.get(commentId) ?? null),
+    };
+    const connector = linearEvidenceConnector(db, transport);
+
+    const first = connector.publish(input);
+    await started;
+    await expect(connector.publish(input)).rejects.toMatchObject({ code: "delivery_ambiguous" });
+    releaseLookup();
+    await expect(first).resolves.toMatchObject({ delivery: { state: "published", remoteCommentId: "comment-concurrent" } });
+    expect(transport.createComment).toHaveBeenCalledTimes(1);
+    expect(await db.select().from(linearEvidenceDeliveries)).toHaveLength(1);
+  });
+
   it("dry-run persists one pending idempotency record without calling Linear", async () => {
     const input = await fixture();
     const transport: LinearEvidenceTransport = {
@@ -144,15 +179,76 @@ describePg("linearEvidenceConnector", () => {
     expect(await db.select().from(linearEvidenceDeliveries)).toHaveLength(0);
   });
 
+  it("preserves a stale-version conflict when the Paperclip issue changes during read-after-write", async () => {
+    const input = await fixture();
+    const body = buildLinearEvidenceComment(input.evidence);
+    const transport: LinearEvidenceTransport = {
+      findCommentByMarker: vi.fn(async () => null),
+      createComment: vi.fn(async () => ({ id: "comment-raced" })),
+      getComment: vi.fn(async ({ linearIssueId, commentId }) => {
+        await db.update(issues).set({ updatedAt: new Date("2026-07-15T18:06:00.000Z") })
+          .where(eq(issues.id, input.paperclipIssueId));
+        return {
+          id: commentId,
+          linearIssueId,
+          body,
+          createdAt: "2026-07-15T18:02:00.000Z",
+        };
+      }),
+    };
+    const connector = linearEvidenceConnector(db, transport);
+
+    await expect(connector.publish(input)).rejects.toMatchObject({ code: "stale_version" });
+    expect(await db.select().from(linearEvidenceConflicts)).toEqual([
+      expect.objectContaining({
+        conflictKey: "paperclip_issue_version",
+        paperclipValue: input.evidence.paperclipIssueUpdatedAt,
+        linearValue: "2026-07-15T18:06:00.000Z",
+        resolution: "unresolved",
+      }),
+    ]);
+    expect((await db.select().from(linearEvidenceDeliveries))[0]).toMatchObject({
+      state: "conflict",
+      remoteCommentId: null,
+      lastErrorCode: "stale_version",
+    });
+  });
+
+  it("preserves stable mapping conflicts instead of remapping an existing Paperclip issue", async () => {
+    const input = await fixture();
+    const transport: LinearEvidenceTransport = {
+      findCommentByMarker: vi.fn(),
+      createComment: vi.fn(),
+      getComment: vi.fn(),
+    };
+    const connector = linearEvidenceConnector(db, transport);
+    await connector.publish({ ...input, dryRun: true });
+    const conflictingLinearIssueId = "linear-all-999";
+
+    await expect(connector.publish({
+      ...input,
+      linearIssueId: conflictingLinearIssueId,
+      evidence: { ...input.evidence, linearIssueId: conflictingLinearIssueId },
+      dryRun: true,
+    })).rejects.toMatchObject({ code: "mapping_conflict" });
+    expect(await db.select().from(linearEvidenceMappings)).toEqual([
+      expect.objectContaining({ linearIssueId: input.linearIssueId }),
+    ]);
+    expect(await db.select().from(linearEvidenceConflicts)).toEqual([
+      expect.objectContaining({ conflictKey: "linear_issue_mapping", resolution: "unresolved" }),
+    ]);
+  });
+
   it("preserves exact remote body conflicts and refuses a successful receipt", async () => {
     const input = await fixture();
+    const untrustedRemoteBody = `${buildLinearEvidenceComment(input.evidence)}\nlin_api_not-a-real-secret-value`;
     const transport: LinearEvidenceTransport = {
       findCommentByMarker: vi.fn(async () => null),
       createComment: vi.fn(async () => ({ id: "comment-mutated" })),
       getComment: vi.fn(async ({ linearIssueId, commentId }) => ({
         id: commentId,
         linearIssueId,
-        body: `${buildLinearEvidenceComment(input.evidence)}\nmutated`,
+        body: untrustedRemoteBody,
         createdAt: "2026-07-15T18:02:00.000Z",
       })),
     };
@@ -165,5 +261,23 @@ describePg("linearEvidenceConnector", () => {
       remoteCommentId: null,
       lastErrorCode: "remote_conflict",
     });
+    expect(JSON.stringify(await db.select().from(linearEvidenceConflicts))).not.toContain(untrustedRemoteBody);
+  });
+
+  it("requires the caller's canonical mapping key when reading a completion snapshot", async () => {
+    const input = await fixture();
+    const connector = linearEvidenceConnector(db, {
+      findCommentByMarker: vi.fn(),
+      createComment: vi.fn(),
+      getComment: vi.fn(),
+    });
+    await connector.publish({ ...input, dryRun: true });
+
+    await expect(connector.getCompletionSnapshot({
+      companyId: input.companyId,
+      paperclipIssueId: input.paperclipIssueId,
+      paperclipIssueUpdatedAt: input.evidence.paperclipIssueUpdatedAt,
+      mappingKey: `${input.evidence.mappingKey}:tampered`,
+    })).resolves.toBeNull();
   });
 });

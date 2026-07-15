@@ -24,7 +24,7 @@ provide a resolver and inject the resulting transport into
 
 ```ts
 const transport = createLinearEvidenceTransport({
-  authorizationSecretRef: { secretId: configuredSecretId, version: "latest" },
+  authorizationSecretRef: { type: "secret_ref", secretId: configuredSecretId, version: "latest" },
   secretResolver: deploymentSecretResolver,
 });
 const bridge = linearEvidenceConnector(db, transport);
@@ -35,3 +35,6 @@ The deployment owner must approve and supply a least-privilege Linear
 credential that can read issues/comments and create comments only for the
 intended workspace. Until that explicit deployment wiring and independent live
 acceptance occur, the connector remains fail-closed and is not release-ready.
+
+Untyped secret identifiers and direct `authorization`, `apiKey`, or `token`
+options are rejected before secret resolution or network access.

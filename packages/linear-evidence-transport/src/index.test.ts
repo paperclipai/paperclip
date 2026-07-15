@@ -7,7 +7,7 @@ import {
 } from "./index.js";
 
 const token = "lin_api_super-secret-value";
-const secretRef = { secretId: "77777777-7777-4777-8777-777777777777", version: "latest" };
+const secretRef = { type: "secret_ref" as const, secretId: "77777777-7777-4777-8777-777777777777", version: "latest" as const };
 const marker = "<!-- paperclip-evidence:paperclip-evidence:v1:key:digest -->";
 
 function jsonResponse(data: unknown, init: ResponseInit = {}) {
@@ -19,9 +19,9 @@ function jsonResponse(data: unknown, init: ResponseInit = {}) {
 }
 
 function harness(fetchImpl: typeof fetch) {
-  const secretResolver: LinearSecretResolver = {
-    resolve: vi.fn(async () => token),
-  };
+  const secretResolver = {
+    resolve: vi.fn(async (_input: Parameters<LinearSecretResolver["resolve"]>[0]) => token),
+  } satisfies LinearSecretResolver;
   return {
     secretResolver,
     transport: createLinearEvidenceTransport({
@@ -57,6 +57,7 @@ describe("createLinearEvidenceTransport", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2);
     expect(fetchImpl.mock.calls[0]?.[0]).toBe(LINEAR_GRAPHQL_ENDPOINT);
     expect((fetchImpl.mock.calls[0]?.[1]?.headers as Record<string, string>).authorization).toBe(token);
+    expect(String(fetchImpl.mock.calls[0]?.[1]?.body)).not.toContain(token);
     expect(fetchImpl.mock.calls.map((call) => JSON.parse(String(call[1]?.body)).variables.after)).toEqual([null, "cursor-1"]);
     expect(secretResolver.resolve).toHaveBeenCalledTimes(2);
     expect(secretResolver.resolve).toHaveBeenCalledWith({
@@ -73,13 +74,16 @@ describe("createLinearEvidenceTransport", () => {
       .mockResolvedValueOnce(jsonResponse({ data: { comment: {
         id: "comment-2", body, createdAt: "2026-07-15T19:01:00.000Z", issue: { id: "issue-uuid", identifier: "ALL-387" },
       } } }));
-    const { transport } = harness(fetchImpl);
+    const { transport, secretResolver } = harness(fetchImpl);
 
     const created = await transport.createComment({ linearIssueId: "ALL-387", body });
     const receipt = await transport.getComment({ linearIssueId: "ALL-387", commentId: created.id });
     expect(receipt?.body).toBe(body);
     expect(JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body)).variables).toEqual({ linearIssueId: "ALL-387", body });
     expect(JSON.parse(String(fetchImpl.mock.calls[1]?.[1]?.body)).variables).toEqual({ commentId: "comment-2" });
+    expect(Object.keys(transport).sort()).toEqual(["createComment", "findCommentByMarker", "getComment"]);
+    expect(Object.isFrozen(transport)).toBe(true);
+    expect(secretResolver.resolve.mock.calls.map(([input]) => input.operation)).toEqual(["create_comment", "get_comment"]);
   });
 
   it("classifies a lost mutation response as ambiguous and redacts thrown credential text", async () => {
@@ -144,5 +148,24 @@ describe("createLinearEvidenceTransport", () => {
     })).rejects.toMatchObject({ code: "unsafe_comment_body" });
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(unsafeHarness.secretResolver.resolve).not.toHaveBeenCalled();
+  });
+
+  it("rejects non-SecretRef and direct credential configuration before resolution or network access", () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const secretResolver: LinearSecretResolver = { resolve: vi.fn(async () => token) };
+
+    expect(() => createLinearEvidenceTransport({
+      authorizationSecretRef: { secretId: secretRef.secretId } as never,
+      secretResolver,
+      fetch: fetchImpl,
+    })).toThrowError(expect.objectContaining({ code: "invalid_request" }));
+    expect(() => createLinearEvidenceTransport({
+      authorizationSecretRef: secretRef,
+      secretResolver,
+      fetch: fetchImpl,
+      apiKey: token,
+    } as never)).toThrowError(expect.objectContaining({ code: "invalid_request" }));
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(secretResolver.resolve).not.toHaveBeenCalled();
   });
 });

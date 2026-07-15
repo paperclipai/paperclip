@@ -3,8 +3,9 @@ const MAX_RESPONSE_BYTES = 1_000_000;
 const MAX_COMMENT_PAGES = 20;
 
 export interface LinearSecretRef {
+  type: "secret_ref";
   secretId: string;
-  version?: string;
+  version?: number | "latest";
 }
 
 export type LinearSecretOperation = "find_comment" | "create_comment" | "get_comment";
@@ -171,14 +172,29 @@ function firstRemoteCode(errors: GraphqlEnvelope<unknown>["errors"]): string | u
 export function createLinearEvidenceTransport(options: CreateLinearEvidenceTransportOptions): LinearEvidenceTransport {
   const fetchImpl = options.fetch ?? globalThis.fetch;
   const timeoutMs = options.timeoutMs ?? 10_000;
+  if (
+    !options.authorizationSecretRef ||
+    options.authorizationSecretRef.type !== "secret_ref" ||
+    "authorization" in options ||
+    "apiKey" in options ||
+    "token" in options
+  ) {
+    // This boundary accepts references only. Direct credential-shaped options
+    // are rejected even if supplied by an untyped JavaScript caller.
+    throw new LinearEvidenceTransportError("invalid_request");
+  }
   const secretId = boundedOpaque(options.authorizationSecretRef.secretId);
   const version = options.authorizationSecretRef.version === undefined
     ? undefined
-    : boundedOpaque(options.authorizationSecretRef.version);
+    : options.authorizationSecretRef.version === "latest"
+      ? "latest"
+      : Number.isSafeInteger(options.authorizationSecretRef.version) && options.authorizationSecretRef.version > 0
+        ? options.authorizationSecretRef.version
+        : null;
   if (!secretId || (options.authorizationSecretRef.version !== undefined && !version) || !Number.isFinite(timeoutMs) || timeoutMs < 1 || timeoutMs > 60_000) {
     throw new LinearEvidenceTransportError("invalid_request");
   }
-  const secretRef = Object.freeze({ secretId, ...(version ? { version } : {}) });
+  const secretRef = Object.freeze({ type: "secret_ref" as const, secretId, ...(version ? { version } : {}) });
 
   async function request<T>(input: {
     operation: LinearSecretOperation;

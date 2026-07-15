@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { and, desc, eq, isNull, lt, or } from "drizzle-orm";
 import {
   linearEvidenceConflicts,
@@ -84,6 +84,22 @@ export function linearEvidenceConnector(
   const now = options.now ?? (() => new Date());
   const leaseMs = options.leaseMs ?? 30_000;
 
+  function textSha256(value: string) {
+    return createHash("sha256").update(value).digest("hex");
+  }
+
+  async function currentIssueVersion(input: LinearEvidencePublishInput) {
+    const [issue] = await db.select({
+      id: issues.id,
+      companyId: issues.companyId,
+      updatedAt: issues.updatedAt,
+    }).from(issues).where(and(
+      eq(issues.id, input.paperclipIssueId),
+      eq(issues.companyId, input.companyId),
+    )).limit(1);
+    return issue?.updatedAt.toISOString() ?? null;
+  }
+
   async function recordConflict(mappingId: string, key: string, paperclipValue: unknown, linearValue: unknown) {
     const fingerprint = linearEvidencePayloadSha256({
       contractVersion: 1,
@@ -125,10 +141,12 @@ export function linearEvidenceConnector(
   }
 
   async function getCompletionSnapshot(input: Parameters<LinearEvidenceBridgeReader["getCompletionSnapshot"]>[0]) {
+    const expectedMappingKey = linearEvidenceMappingKey(input.companyId, input.paperclipIssueId);
+    if (input.mappingKey !== expectedMappingKey) return null;
     const [mapping] = await db.select().from(linearEvidenceMappings)
       .where(and(eq(linearEvidenceMappings.companyId, input.companyId), eq(linearEvidenceMappings.paperclipIssueId, input.paperclipIssueId)))
       .limit(1);
-    if (!mapping) return null;
+    if (!mapping || mapping.mappingKey !== input.mappingKey) return null;
     const version = input.paperclipIssueUpdatedAt ? new Date(input.paperclipIssueUpdatedAt) : null;
     if (!version || Number.isNaN(version.getTime())) return null;
     const [delivery] = await db.select().from(linearEvidenceDeliveries)
@@ -161,15 +179,7 @@ export function linearEvidenceConnector(
 
   async function publish(input: LinearEvidencePublishInput) {
     validateInput(input);
-    const [issue] = await db.select({
-      id: issues.id,
-      companyId: issues.companyId,
-      updatedAt: issues.updatedAt,
-    }).from(issues).where(and(
-      eq(issues.id, input.paperclipIssueId),
-      eq(issues.companyId, input.companyId),
-    )).limit(1);
-    if (!issue || issue.updatedAt.toISOString() !== input.evidence.paperclipIssueUpdatedAt) {
+    if (await currentIssueVersion(input) !== input.evidence.paperclipIssueUpdatedAt) {
       // Never publish evidence for a version that is already stale. This check
       // precedes mapping/delivery persistence and all credentialed transport.
       throw new LinearEvidenceConnectorError("stale_version");
@@ -214,10 +224,27 @@ export function linearEvidenceConnector(
           }
           if (!remote) throw new LinearEvidenceConnectorError("delivery_ambiguous");
           if (remote.linearIssueId !== input.linearIssueId || remote.body !== body || !validIso(remote.createdAt)) {
-            await recordConflict(mapping.id, "remote_comment", bodySha, remote.body);
+            // Preserve the exact mismatch as digests, not potentially
+            // credential-bearing remote comment text.
+            await recordConflict(mapping.id, "remote_comment", bodySha, textSha256(remote.body));
             await db.update(linearEvidenceDeliveries).set({ state: "conflict", leaseToken: null, leaseExpiresAt: null, lastErrorCode: "remote_conflict", updatedAt: now() })
               .where(eq(linearEvidenceDeliveries.id, delivery.id));
             throw new LinearEvidenceConnectorError("remote_conflict");
+          }
+          const observedIssueVersion = await currentIssueVersion(input);
+          if (observedIssueVersion !== input.evidence.paperclipIssueUpdatedAt) {
+            // A Paperclip mutation raced the credentialed write. Preserve the
+            // remote publication as a stale-version conflict and never mint a
+            // successful completion receipt for it.
+            await recordConflict(
+              mapping.id,
+              "paperclip_issue_version",
+              input.evidence.paperclipIssueUpdatedAt,
+              observedIssueVersion,
+            );
+            await db.update(linearEvidenceDeliveries).set({ state: "conflict", leaseToken: null, leaseExpiresAt: null, lastErrorCode: "stale_version", updatedAt: now() })
+              .where(eq(linearEvidenceDeliveries.id, delivery.id));
+            throw new LinearEvidenceConnectorError("stale_version");
           }
           await db.update(linearEvidenceDeliveries).set({
             state: "published",
@@ -229,7 +256,7 @@ export function linearEvidenceConnector(
             updatedAt: now(),
           }).where(and(eq(linearEvidenceDeliveries.id, delivery.id), eq(linearEvidenceDeliveries.leaseToken, leaseToken)));
         } catch (error) {
-          if (!(error instanceof LinearEvidenceConnectorError && error.code === "remote_conflict")) {
+          if (!(error instanceof LinearEvidenceConnectorError && (error.code === "remote_conflict" || error.code === "stale_version"))) {
             await db.update(linearEvidenceDeliveries).set({ leaseToken: null, leaseExpiresAt: null, lastErrorCode: "delivery_ambiguous", updatedAt: now() })
               .where(and(eq(linearEvidenceDeliveries.id, delivery.id), eq(linearEvidenceDeliveries.leaseToken, leaseToken)));
           }
@@ -237,6 +264,11 @@ export function linearEvidenceConnector(
         }
       }
       [delivery] = await db.select().from(linearEvidenceDeliveries).where(eq(linearEvidenceDeliveries.id, delivery.id)).limit(1);
+    }
+    if (!input.dryRun && delivery?.state !== "published") {
+      // Concurrent callers may observe another worker's active lease. A
+      // pending/conflict snapshot is not a publication receipt.
+      throw new LinearEvidenceConnectorError("delivery_ambiguous");
     }
     const snapshot = await getCompletionSnapshot({
       companyId: input.companyId,

@@ -158,7 +158,11 @@ against Linear's GraphQL comment API. It accepts only a SecretRef and injected
 resolver, uses a fixed Linear API origin, resolves the credential per request,
 performs bounded complete marker scans, rejects duplicate markers, reads a
 concrete comment after creation, and never retains remote or resolver messages
-in public errors.
+in public errors. The SecretRef must carry the explicit `type: "secret_ref"`
+discriminator; untyped references and direct token/API-key options fail closed.
+The connector checks the Paperclip issue version both before remote access and
+after read-after-write verification so a concurrent issue mutation preserves a
+stale-version conflict instead of producing a successful receipt.
 
 Deployment still requires an explicit approved composition step:
 
