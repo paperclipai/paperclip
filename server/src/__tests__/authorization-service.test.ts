@@ -386,6 +386,63 @@ describeEmbeddedPostgres("authorization service", () => {
     });
   });
 
+  it("enforces direct or consented suggest grants for board skill configuration changes", async () => {
+    const company = await createCompany(db, "BoardSkillChangeGrant");
+    const directUserId = `user-${randomUUID()}`;
+    const suggestUserId = `user-${randomUUID()}`;
+    const noGrantUserId = `user-${randomUUID()}`;
+    await grantUserPermission(db, company.id, directUserId, "skills:create");
+    await grantUserPermission(db, company.id, suggestUserId, "skills:suggest-changes");
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: noGrantUserId,
+      status: "active",
+      membershipRole: "operator",
+    });
+
+    const authz = authorizationService(db);
+    await expect(authz.decide({
+      actor: { type: "board", userId: directUserId, source: "session" },
+      action: "skill_config:update",
+      resource: { type: "company", companyId: company.id },
+    })).resolves.toMatchObject({
+      allowed: true,
+      reason: "allow_direct_change",
+      grant: { permissionKey: "skills:create" },
+    });
+
+    await expect(authz.decide({
+      actor: { type: "board", userId: suggestUserId, source: "session" },
+      action: "skill_config:update",
+      resource: { type: "company", companyId: company.id },
+    })).resolves.toMatchObject({
+      allowed: false,
+      reason: "deny_missing_consent",
+      grant: { permissionKey: "skills:suggest-changes" },
+    });
+
+    await expect(authz.decide({
+      actor: { type: "board", userId: suggestUserId, source: "session" },
+      action: "skill_config:update",
+      resource: { type: "company", companyId: company.id },
+      scope: { consentedChange: true },
+    })).resolves.toMatchObject({
+      allowed: true,
+      reason: "allow_consented_change",
+      grant: { permissionKey: "skills:suggest-changes" },
+    });
+
+    await expect(authz.decide({
+      actor: { type: "board", userId: noGrantUserId, source: "session" },
+      action: "skill_config:update",
+      resource: { type: "company", companyId: company.id },
+    })).resolves.toMatchObject({
+      allowed: false,
+      reason: "deny_no_grant",
+    });
+  });
+
   it("denies cross-company agent decisions before grant evaluation", async () => {
     const sourceCompany = await createCompany(db, "Source");
     const targetCompany = await createCompany(db, "Target");
