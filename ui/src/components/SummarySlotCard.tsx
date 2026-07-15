@@ -17,6 +17,7 @@ import { summarySlotsApi, type SummarySlotSelector } from "@/api/summarySlots";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import { ConfigureBuiltInAgentModal } from "@/components/ConfigureBuiltInAgentModal";
 import { InlineBanner } from "@/components/InlineBanner";
+import { useSummaryDraftStream } from "@/components/useSummaryDraftStream";
 import { useCompanyLiveEvent } from "@/context/LiveUpdatesProvider";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -232,6 +233,10 @@ export function SummarySlotCard({
   const latestSelectLabel = latestDocument ? latestRevisionOptionLabel(latestDocument, latestRevision) : "Latest";
   const generatingIssue = slotQuery.data?.generatingIssue ?? null;
   const liveStatusLine = resolveGenerationStatusLine(useGenerationStatus(generatingIssue?.id ?? null));
+  const draftStream = useSummaryDraftStream(companyId, generatingIssue);
+  // The token-streamed STATUS line is more responsive than the server-derived
+  // progress snippet; prefer it and fall back to the Phase 1 status line.
+  const generationStatusLine = draftStream.statusLine ?? liveStatusLine;
   const isGenerating = slotQuery.data?.slot?.status === "generating"
     && generatingIssue
     && !TERMINAL_ISSUE_STATUSES.has(generatingIssue.status);
@@ -424,15 +429,33 @@ export function SummarySlotCard({
           <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-muted-foreground" />
           <div className="min-w-0 space-y-1">
             <p className="font-medium text-foreground">Generating summary</p>
-            {liveStatusLine ? (
+            {generationStatusLine ? (
               <p
                 className="animate-pulse truncate text-muted-foreground"
                 aria-live="polite"
                 data-testid="summary-generation-status-line"
-                title={liveStatusLine}
+                title={generationStatusLine}
               >
-                {liveStatusLine}
+                {generationStatusLine}
               </p>
+            ) : null}
+            {draftStream.draft ? (
+              <div
+                className="mt-2 rounded-md border border-border bg-muted/20 p-3"
+                data-testid="summary-generation-draft"
+                aria-live="polite"
+              >
+                <MarkdownBody className="text-sm leading-7 text-foreground">
+                  {draftStream.draft}
+                </MarkdownBody>
+                {!draftStream.draftClosed ? (
+                  <span
+                    className="mt-1 inline-block h-4 w-px animate-pulse bg-foreground align-text-bottom"
+                    aria-hidden="true"
+                    data-testid="summary-generation-caret"
+                  />
+                ) : null}
+              </div>
             ) : null}
             <p className="text-muted-foreground">
               Summarizer is working in{" "}

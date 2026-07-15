@@ -231,6 +231,95 @@ function LiveStatusHarness({ seed, width, message }: { seed: SeedInput; width: n
   );
 }
 
+// Streams the summarize-status output protocol (STATUS lines + sentinel-wrapped
+// draft) over the shared live-event socket so the card renders its token-streamed
+// draft preview (PAP-13986). Learns the run id from a progress event first, then
+// pushes the assistant `acpx.text_delta` records that carry the draft.
+function StreamingDraftHarness({
+  seed,
+  width,
+  draftText,
+  sliceSize = 8,
+}: {
+  seed: SeedInput;
+  width: number;
+  draftText: string;
+  sliceSize?: number;
+}) {
+  const subscribersRef = useRef<Set<CompanyLiveEventHandler>>(new Set());
+  const subscription = useRef({
+    subscribe: (fn: CompanyLiveEventHandler) => {
+      subscribersRef.current.add(fn);
+      return () => {
+        subscribersRef.current.delete(fn);
+      };
+    },
+  });
+
+  useEffect(() => {
+    const runId = "run-summary-1";
+    dispatchLiveEventToSubscribers(subscribersRef.current, COMPANY_ID, {
+      id: 1,
+      companyId: COMPANY_ID,
+      type: "heartbeat.run.progress",
+      createdAt: "2026-07-15T00:00:00.000Z",
+      payload: { issueId: "issue-1", runId },
+    });
+    // Defer the token deltas one tick so the learned run id has committed before
+    // the log handler filters on it.
+    const timer = window.setTimeout(() => {
+      let seq = 1;
+      for (let i = 0; i < draftText.length; i += sliceSize) {
+        dispatchLiveEventToSubscribers(subscribersRef.current, COMPANY_ID, {
+          id: seq + 1,
+          companyId: COMPANY_ID,
+          type: "heartbeat.run.log",
+          createdAt: "2026-07-15T00:00:00.000Z",
+          payload: {
+            runId,
+            seq,
+            ts: "2026-07-15T00:00:00.000Z",
+            stream: "stdout",
+            chunk: JSON.stringify({
+              type: "acpx.text_delta",
+              text: draftText.slice(i, i + sliceSize),
+              channel: "output",
+            }),
+          },
+        });
+        seq += 1;
+      }
+    }, 30);
+    return () => window.clearTimeout(timer);
+  }, [draftText, sliceSize]);
+
+  return (
+    <LiveEventSubscriptionContext.Provider value={subscription.current}>
+      <CardHarness seed={seed} width={width} />
+    </LiveEventSubscriptionContext.Provider>
+  );
+}
+
+const STREAMING_DRAFT_PARTIAL = [
+  "STATUS: reviewing 14 open issues…",
+  "STATUS: writing the summary…",
+  "<<<SUMMARY-DRAFT>>>",
+  "### Needs you",
+  "",
+  "- Approve the pricing plan — it has been waiting since yesterday.",
+  "- Answer QA's question about the login flow.",
+  "",
+  "### Since you were last here",
+  "",
+  "The team finished the search filters and the mobile layout is now",
+].join("\n");
+
+const STREAMING_DRAFT_COMPLETE = [
+  STREAMING_DRAFT_PARTIAL,
+  " passing a first visual review. Nothing else is stuck.",
+  "<<<END-SUMMARY-DRAFT>>>",
+].join("");
+
 const DESKTOP = 640;
 const MOBILE = 375;
 
@@ -319,6 +408,19 @@ export const GeneratingWithStatusLine: StoryObj<typeof LiveStatusHarness> = {
     message: "Reviewing 14 open issues, drafting the “Needs you” section…",
   },
 };
+// PAP-13986 — token-streamed draft rendering.
+export const StreamingDraft: StoryObj<typeof StreamingDraftHarness> = {
+  render: (args) => <StreamingDraftHarness {...args} />,
+  args: { seed: generatingSeed, width: DESKTOP, draftText: STREAMING_DRAFT_PARTIAL },
+};
+export const StreamingDraftComplete: StoryObj<typeof StreamingDraftHarness> = {
+  render: (args) => <StreamingDraftHarness {...args} />,
+  args: { seed: generatingSeed, width: DESKTOP, draftText: STREAMING_DRAFT_COMPLETE },
+};
+// Finalize handoff: the authoritative revision has landed (Phase 1 invalidation)
+// and replaced the streamed preview.
+export const FinalizeHandoff: Story = { args: { seed: generatedSeed, width: DESKTOP } };
+
 export const Generated: Story = { args: { seed: generatedSeed, width: DESKTOP } };
 export const HistoryRevisions: Story = { args: { seed: historySeed, width: DESKTOP } };
 export const FailedRetry: Story = { args: { seed: failedSeed, width: DESKTOP } };
