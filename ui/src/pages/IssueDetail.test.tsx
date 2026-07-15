@@ -1578,6 +1578,30 @@ describe("IssueDetail", () => {
     expect(container.querySelector('[data-status-icon-state="covered"]')?.textContent).toBe("blocked");
   });
 
+  it("adds the task identifier as its own breadcrumb item between the source list and the title", async () => {
+    mockSetBreadcrumbs.mockClear();
+    mockIssuesApi.get.mockResolvedValue(createIssue({ identifier: "PAP-1", title: "Breadcrumb id task" }));
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    const crumbs = mockSetBreadcrumbs.mock.calls.at(-1)?.[0] as Array<{ label: string; href?: string }>;
+    expect(crumbs).toBeTruthy();
+    const idIndex = crumbs.findIndex((crumb) => crumb.label === "PAP-1");
+    const titleIndex = crumbs.findIndex((crumb) => crumb.label === "Breadcrumb id task");
+    // Identifier crumb sits after the source list ("Tasks") and before the title.
+    expect(idIndex).toBeGreaterThan(0);
+    expect(idIndex).toBeLessThan(titleIndex);
+    // No href -> renders as static breadcrumb text, not a self-link.
+    expect(crumbs[idIndex].href).toBeUndefined();
+  });
+
   it("refreshes subtree pause state after resuming a hold", async () => {
     const childIssue = createIssue({
       id: "child-1",
