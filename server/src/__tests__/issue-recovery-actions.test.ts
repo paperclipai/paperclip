@@ -429,6 +429,14 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       issueId: sourceIssue.id,
       recoveryCause: "provider_quota",
     });
+    const [updatedIssue] = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, sourceIssue.id));
+    expect(updatedIssue).toMatchObject({
+      status: "blocked",
+      assigneeAgentId: coderId,
+    });
   });
 
   it("reuses the same source-scoped action when latest run IDs change while the cause stays the same", async () => {

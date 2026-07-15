@@ -3047,14 +3047,16 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       recoveryOwnerAgentId: input.recoveryOwnerAgentId,
       successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
     });
-    if (recoveryCause === "provider_quota" && !recoveryAction.ownerAgentId && recoveryAction.returnOwnerAgentId) {
+    const isProviderQuotaWait = recoveryCause === "provider_quota" &&
+      !recoveryAction.ownerAgentId &&
+      Boolean(recoveryAction.returnOwnerAgentId);
+    if (isProviderQuotaWait && recoveryAction.returnOwnerAgentId) {
       await ensureProviderQuotaWaitRecoveryMonitor({
         issue: input.issue,
         latestRun: input.latestRun,
         actionId: recoveryAction.id,
         agentId: recoveryAction.returnOwnerAgentId,
       });
-      return input.issue;
     }
     const blockerIds = await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id);
     const updated = await issuesSvc.update(input.issue.id, {
@@ -3063,6 +3065,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       assigneeAgentId: recoveryAction.ownerAgentId ?? input.issue.assigneeAgentId,
     });
     if (!updated) return null;
+    if (isProviderQuotaWait) return updated;
 
     const prefix = await getCompanyIssuePrefix(input.issue.companyId);
     const recoveryOwner = recoveryAction.ownerAgentId ? await getAgent(recoveryAction.ownerAgentId) : null;
