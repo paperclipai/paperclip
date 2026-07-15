@@ -326,6 +326,23 @@ describeEmbeddedPostgres("blocked interaction wakes do not claim issue execution
         .where(eq(heartbeatRuns.id, run.id))
         .then((rows) => rows[0]?.status === "succeeded")
     );
+
+    const rowAfterRun = await db
+      .select({
+        status: issues.status,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+        executionLockedAt: issues.executionLockedAt,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(rowAfterRun).toEqual({
+      status: "blocked",
+      checkoutRunId: null,
+      executionRunId: null,
+      executionLockedAt: null,
+    });
   });
 
   it("keeps the issue unlocked for foreign mention wakes on blocked issues", async () => {
@@ -356,6 +373,80 @@ describeEmbeddedPostgres("blocked interaction wakes do not claim issue execution
       executionLockedAt: null,
     });
     expect(issueRes.body).not.toHaveProperty("activeRun");
+
+    adapterControl.release();
+    await waitForCondition(async () =>
+      db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, run.id))
+        .then((rows) => rows[0]?.status === "succeeded")
+    );
+
+    const rowAfterRun = await db
+      .select({
+        status: issues.status,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+        executionLockedAt: issues.executionLockedAt,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(rowAfterRun).toEqual({
+      status: "blocked",
+      checkoutRunId: null,
+      executionRunId: null,
+      executionLockedAt: null,
+    });
+  });
+
+  it("keeps the issue unlocked after a foreign blocked mention wake posts a comment-only triage", async () => {
+    const { companyId, assigneeAgentId, foreignAgentId, issueId } = await seedScenario();
+    await db.insert(issueComments).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      body: `For visibility: [@CEO](agent://${foreignAgentId})`,
+      authorAgentId: assigneeAgentId,
+    });
+    const run = await startBlockedInteractionWake(foreignAgentId, issueId);
+
+    const commentRes = await request(createApp(agentActor(companyId, foreignAgentId, run.id)))
+      .post(`/api/issues/${issueId}/comments`)
+      .send({
+        body: "Triage only: the blocker is still unresolved, so I am not checking this issue out.",
+      });
+    expect(commentRes.status, JSON.stringify(commentRes.body)).toBe(201);
+
+    const issueRes = await request(createApp(agentActor(companyId, foreignAgentId, run.id)))
+      .get(`/api/issues/${issueId}`);
+    expect(issueRes.status, JSON.stringify(issueRes.body)).toBe(200);
+    expect(issueRes.body).toMatchObject({
+      id: issueId,
+      status: "blocked",
+      checkoutRunId: null,
+      executionRunId: null,
+      executionLockedAt: null,
+    });
+    expect(issueRes.body).not.toHaveProperty("activeRun");
+
+    const row = await db
+      .select({
+        status: issues.status,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+        executionLockedAt: issues.executionLockedAt,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(row).toEqual({
+      status: "blocked",
+      checkoutRunId: null,
+      executionRunId: null,
+      executionLockedAt: null,
+    });
 
     adapterControl.release();
     await waitForCondition(async () =>
