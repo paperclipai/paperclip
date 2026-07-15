@@ -40,6 +40,17 @@ describe("resolveServerVersion", () => {
     ).toBe("2026.626.0+58.git.518fc71ce");
   });
 
+  it("keeps the package version when git describe output is unparseable", () => {
+    expect(
+      resolveServerVersion({
+        buildCommit: "0123456789abcdef0123456789abcdef01234567",
+        packageVersion: "2026.706.0",
+        gitDescribeCommand: () => "canary/v2026.706.0-canary.1",
+        debugLog: vi.fn(),
+      }),
+    ).toBe("2026.706.0");
+  });
+
   it("keeps the formal version for an exact release tag even when build metadata exists", () => {
     expect(
       resolveServerVersion({

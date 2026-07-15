@@ -183,6 +183,7 @@ export function resolveServerVersion(
       { reason: "invalid_git_describe" },
       "falling back to package version for server version",
     );
+    return packageVersion;
   } catch (err) {
     debugLog(
       { err: summarizeError(err), reason: "git_describe_unavailable" },

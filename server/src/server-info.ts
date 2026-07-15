@@ -7,7 +7,6 @@ export type { ServerGitInfo, ServerInfoSnapshot };
 type GitCommand = () => string;
 type BuildCommitCommand = () => string | null;
 
-const FULL_SHA_RE = /^[0-9a-f]{40}$/i;
 const SHORT_SHA_RE = /^[0-9a-f]{7,40}$/i;
 
 function defaultGitCommand() {
@@ -89,15 +88,16 @@ function parseGitInfo(
   const [fullSha = "", shortSha = "", subject = "", committedAt = ""] = output
     .trimEnd()
     .split("\n");
+  const parsedFullSha = parseBuildCommit(fullSha);
   const committedAtTime = Date.parse(committedAt);
 
-  if (!FULL_SHA_RE.test(fullSha) || !SHORT_SHA_RE.test(shortSha)) {
+  if (!parsedFullSha || !SHORT_SHA_RE.test(shortSha)) {
     return { available: false, unavailableReason: "invalid_git_metadata" };
   }
 
   return {
     available: true,
-    fullSha,
+    fullSha: parsedFullSha,
     shortSha,
     branchName,
     subject: subject.trim() || "No commit subject",
