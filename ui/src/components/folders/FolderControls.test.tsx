@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FolderListResult } from "@paperclipai/shared";
 import {
   AllUnfiledBanner,
+  BulkBar,
   DeleteFolderDialog,
   FolderFormDialog,
   FolderRail,

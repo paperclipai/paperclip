@@ -4371,6 +4371,13 @@ export function CompanySkills() {
       setFolderDialogTarget(null);
       await queryClient.invalidateQueries({ queryKey: queryKeys.folders.list(selectedCompanyId!, "skill") });
     },
+    onError: (error) => {
+      pushToast({
+        tone: "error",
+        title: "Folder save failed",
+        body: error instanceof Error ? error.message : "Failed to update folder.",
+      });
+    },
   });
   const deleteFolder = useMutation({
     mutationFn: (folderId: string) => foldersApi.delete(selectedCompanyId!, folderId),
@@ -4382,6 +4389,13 @@ export function CompanySkills() {
         queryClient.invalidateQueries({ queryKey: queryKeys.folders.list(selectedCompanyId!, "skill") }),
       ]);
       pushToast({ tone: "success", title: "Folder deleted", body: "Skills moved to Unfiled." });
+    },
+    onError: (error) => {
+      pushToast({
+        tone: "error",
+        title: "Folder delete failed",
+        body: error instanceof Error ? error.message : "Failed to delete folder.",
+      });
     },
   });
   const moveSkillToFolder = useMutation({
