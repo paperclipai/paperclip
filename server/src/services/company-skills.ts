@@ -4591,6 +4591,15 @@ export function companySkillService(db: Db) {
             existingSkillId: existingBySource.id,
             reason: "This skill is already installed from the same path.",
           });
+          if (mode === "preview" || !selected) continue;
+          const persisted = (await upsertImportedSkills(companyId, [{
+            ...nextSkill,
+            key: existingBySource.key,
+            slug: existingBySource.slug,
+          }]))[0];
+          if (!persisted) continue;
+          updated.push(persisted);
+          upsertAcceptedSkill(persisted);
           continue;
         }
 
