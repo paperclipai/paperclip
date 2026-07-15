@@ -57,6 +57,7 @@ import type {
   CompanySkillLastEditor,
   CompanySkillOriginalSummary,
   CompanySkillProjectScanConflict,
+  CompanySkillProjectScanCandidate,
   CompanySkillProjectScanRequest,
   CompanySkillProjectScanResult,
   CompanySkillProjectScanSkipped,
@@ -415,13 +416,16 @@ const PROJECT_SCAN_DIRECTORY_ROOTS = [
   ".agent/skills",
   ".augment/skills",
   ".claude/skills",
+  ".codex/skills",
   ".codebuddy/skills",
   ".commandcode/skills",
   ".continue/skills",
+  ".cursor/skills",
   ".cortex/skills",
   ".crush/skills",
   ".factory/skills",
   ".goose/skills",
+  ".gemini/skills",
   ".junie/skills",
   ".iflow/skills",
   ".kilocode/skills",
@@ -431,6 +435,7 @@ const PROJECT_SCAN_DIRECTORY_ROOTS = [
   ".vibe/skills",
   ".mux/skills",
   ".openhands/skills",
+  ".opencode/skills",
   ".pi/skills",
   ".qoder/skills",
   ".qwen/skills",
@@ -1231,12 +1236,22 @@ export async function readLocalSkillImportFromDirectory(
 
 export async function discoverProjectWorkspaceSkillDirectories(target: ProjectSkillScanTarget): Promise<Array<{
   skillDir: string;
+  directoryRoot: string;
+  relativePath: string;
   inventoryMode: LocalSkillInventoryMode;
 }>> {
-  const discovered = new Map<string, LocalSkillInventoryMode>();
+  const discovered = new Map<string, {
+    directoryRoot: string;
+    relativePath: string;
+    inventoryMode: LocalSkillInventoryMode;
+  }>();
   const rootSkillPath = path.join(target.workspaceCwd, "SKILL.md");
   if ((await statPath(rootSkillPath))?.isFile()) {
-    discovered.set(path.resolve(target.workspaceCwd), "project_root");
+    discovered.set(path.resolve(target.workspaceCwd), {
+      directoryRoot: ".",
+      relativePath: ".",
+      inventoryMode: "project_root",
+    });
   }
 
   for (const relativeRoot of PROJECT_SCAN_DIRECTORY_ROOTS) {
@@ -1249,13 +1264,30 @@ export async function discoverProjectWorkspaceSkillDirectories(target: ProjectSk
       if (!entry.isDirectory()) continue;
       const absoluteSkillDir = path.resolve(absoluteRoot, entry.name);
       if (!(await statPath(path.join(absoluteSkillDir, "SKILL.md")))?.isFile()) continue;
-      discovered.set(absoluteSkillDir, "full");
+      discovered.set(absoluteSkillDir, {
+        directoryRoot: relativeRoot,
+        relativePath: normalizePortablePath(path.relative(target.workspaceCwd, absoluteSkillDir)),
+        inventoryMode: "full",
+      });
     }
   }
 
   return Array.from(discovered.entries())
-    .map(([skillDir, inventoryMode]) => ({ skillDir, inventoryMode }))
+    .map(([skillDir, details]) => ({ skillDir, ...details }))
     .sort((left, right) => left.skillDir.localeCompare(right.skillDir));
+}
+
+function normalizeProjectScanSelectionPath(value: string): string | null {
+  const trimmed = value.trim().replace(/\\/g, "/");
+  if (trimmed === ".") return ".";
+  if (!trimmed || trimmed.startsWith("/") || /^[A-Za-z]:\//.test(trimmed)) return null;
+  const segments = trimmed.split("/").filter(Boolean);
+  if (segments.length === 0 || segments.some((segment) => segment === "." || segment === "..")) return null;
+  return segments.join("/");
+}
+
+function projectScanSelectionKey(workspaceId: string, relativePath: string) {
+  return `${workspaceId}\u0000${relativePath}`;
 }
 
 async function readLocalSkillImports(companyId: string, sourcePath: string): Promise<ImportedSkill[]> {
@@ -4251,12 +4283,15 @@ export function companySkillService(db: Db) {
     input: CompanySkillProjectScanRequest = {},
   ): Promise<CompanySkillProjectScanResult> {
     await ensureSkillInventoryCurrent(companyId);
+    const mode = input.mode ?? "import";
+    const selectiveImport = mode === "import" && input.selection !== undefined;
     const projectRows = input.projectIds?.length
       ? await projects.listByIds(companyId, input.projectIds)
       : await projects.list(companyId);
     const workspaceFilter = new Set(input.workspaceIds ?? []);
     const skipped: CompanySkillProjectScanSkipped[] = [];
     const conflicts: CompanySkillProjectScanConflict[] = [];
+    const candidates: CompanySkillProjectScanCandidate[] = [];
     const warnings: string[] = [];
     const imported: CompanySkill[] = [];
     const updated: CompanySkill[] = [];
@@ -4264,8 +4299,29 @@ export function companySkillService(db: Db) {
     const acceptedSkills = [...availableSkills];
     const acceptedByKey = new Map(acceptedSkills.map((skill) => [skill.key, skill]));
     const scanTargets: ProjectSkillScanTarget[] = [];
+    const workspaceContexts = new Map<string, {
+      projectId: string;
+      projectName: string;
+      workspaceId: string;
+      workspaceName: string;
+    }>();
+    const selectedPaths = new Map<string, { workspaceId: string; path: string }>();
+    const invalidSelections: Array<{ workspaceId: string; path: string }> = [];
+    const rediscoveredSelections = new Set<string>();
     const scannedProjectIds = new Set<string>();
     let discovered = 0;
+
+    for (const selection of input.selection ?? []) {
+      const normalizedPath = normalizeProjectScanSelectionPath(selection.path);
+      if (!normalizedPath) {
+        invalidSelections.push(selection);
+        continue;
+      }
+      selectedPaths.set(projectScanSelectionKey(selection.workspaceId, normalizedPath), {
+        workspaceId: selection.workspaceId,
+        path: normalizedPath,
+      });
+    }
 
     const trackWarning = (message: string) => {
       warnings.push(message);
@@ -4280,6 +4336,12 @@ export function companySkillService(db: Db) {
 
     for (const project of projectRows) {
       for (const workspace of project.workspaces) {
+        workspaceContexts.set(workspace.id, {
+          projectId: project.id,
+          projectName: project.name,
+          workspaceId: workspace.id,
+          workspaceName: workspace.name,
+        });
         if (workspaceFilter.size > 0 && !workspaceFilter.has(workspace.id)) continue;
         const workspaceCwd = asString(workspace.cwd);
         if (!workspaceCwd) {
@@ -4323,6 +4385,9 @@ export function companySkillService(db: Db) {
 
       for (const directory of directories) {
         discovered += 1;
+        const selectionKey = projectScanSelectionKey(target.workspaceId, directory.relativePath);
+        const selected = !selectiveImport || selectedPaths.has(selectionKey);
+        if (selectedPaths.has(selectionKey)) rediscoveredSelections.add(selectionKey);
 
         let nextSkill: ImportedSkill;
         try {
@@ -4339,6 +4404,19 @@ export function companySkillService(db: Db) {
           });
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
+          candidates.push({
+            slug: path.basename(directory.skillDir),
+            name: path.basename(directory.skillDir),
+            description: null,
+            workspaceId: target.workspaceId,
+            workspaceName: target.workspaceName,
+            projectId: target.projectId,
+            projectName: target.projectName,
+            directoryRoot: directory.directoryRoot,
+            relativePath: directory.relativePath,
+            status: "skipped",
+            reason: message,
+          });
           skipped.push({
             projectId: target.projectId,
             projectName: target.projectName,
@@ -4360,6 +4438,7 @@ export function companySkillService(db: Db) {
             || !normalizedSourceDir
             || existingSourceDir !== normalizedSourceDir
           ) {
+            const reason = `Skill key ${nextSkill.key} already points at ${existingByKey.sourceLocator ?? "another source"}.`;
             conflicts.push({
               slug: nextSkill.slug,
               key: nextSkill.key,
@@ -4371,11 +4450,40 @@ export function companySkillService(db: Db) {
               existingSkillId: existingByKey.id,
               existingSkillKey: existingByKey.key,
               existingSourceLocator: existingByKey.sourceLocator,
-              reason: `Skill key ${nextSkill.key} already points at ${existingByKey.sourceLocator ?? "another source"}.`,
+              reason,
+            });
+            candidates.push({
+              slug: nextSkill.slug,
+              name: nextSkill.name,
+              description: nextSkill.description,
+              workspaceId: target.workspaceId,
+              workspaceName: target.workspaceName,
+              projectId: target.projectId,
+              projectName: target.projectName,
+              directoryRoot: directory.directoryRoot,
+              relativePath: directory.relativePath,
+              status: "conflict",
+              existingSkillId: existingByKey.id,
+              reason,
             });
             continue;
           }
 
+          candidates.push({
+            slug: nextSkill.slug,
+            name: nextSkill.name,
+            description: nextSkill.description,
+            workspaceId: target.workspaceId,
+            workspaceName: target.workspaceName,
+            projectId: target.projectId,
+            projectName: target.projectName,
+            directoryRoot: directory.directoryRoot,
+            relativePath: directory.relativePath,
+            status: "already_imported",
+            existingSkillId: existingByKey.id,
+            ...(selectiveImport && !selected ? { reason: "Not selected for import." } : {}),
+          });
+          if (mode === "preview" || !selected) continue;
           const persisted = (await upsertImportedSkills(companyId, [nextSkill]))[0];
           if (!persisted) continue;
           updated.push(persisted);
@@ -4388,6 +4496,7 @@ export function companySkillService(db: Db) {
           return normalizeSkillDirectory(skill) !== normalizedSourceDir;
         });
         if (slugConflict) {
+          const reason = `Slug ${nextSkill.slug} is already in use by ${slugConflict.sourceLocator ?? slugConflict.key}.`;
           conflicts.push({
             slug: nextSkill.slug,
             key: nextSkill.key,
@@ -4399,15 +4508,65 @@ export function companySkillService(db: Db) {
             existingSkillId: slugConflict.id,
             existingSkillKey: slugConflict.key,
             existingSourceLocator: slugConflict.sourceLocator,
-            reason: `Slug ${nextSkill.slug} is already in use by ${slugConflict.sourceLocator ?? slugConflict.key}.`,
+            reason,
+          });
+          candidates.push({
+            slug: nextSkill.slug,
+            name: nextSkill.name,
+            description: nextSkill.description,
+            workspaceId: target.workspaceId,
+            workspaceName: target.workspaceName,
+            projectId: target.projectId,
+            projectName: target.projectName,
+            directoryRoot: directory.directoryRoot,
+            relativePath: directory.relativePath,
+            status: "conflict",
+            existingSkillId: slugConflict.id,
+            reason,
           });
           continue;
         }
 
+        candidates.push({
+          slug: nextSkill.slug,
+          name: nextSkill.name,
+          description: nextSkill.description,
+          workspaceId: target.workspaceId,
+          workspaceName: target.workspaceName,
+          projectId: target.projectId,
+          projectName: target.projectName,
+          directoryRoot: directory.directoryRoot,
+          relativePath: directory.relativePath,
+          status: selected ? "new" : "skipped",
+          ...(!selected ? { reason: "Not selected for import." } : {}),
+        });
+        if (mode === "preview" || !selected) continue;
         const persisted = (await upsertImportedSkills(companyId, [nextSkill]))[0];
         if (!persisted) continue;
         imported.push(persisted);
         upsertAcceptedSkill(persisted);
+      }
+    }
+
+    if (selectiveImport) {
+      const unmatchedSelections = [
+        ...invalidSelections,
+        ...Array.from(selectedPaths.entries())
+          .filter(([key]) => !rediscoveredSelections.has(key))
+          .map(([, selection]) => selection),
+      ];
+      for (const selection of unmatchedSelections) {
+        const context = workspaceContexts.get(selection.workspaceId) ?? null;
+        skipped.push({
+          projectId: context?.projectId ?? null,
+          projectName: context?.projectName ?? null,
+          workspaceId: selection.workspaceId,
+          workspaceName: context?.workspaceName ?? null,
+          path: selection.path,
+          reason: trackWarning(
+            `Skipped selection ${selection.workspaceId}:${selection.path}: the path was not rediscovered in the project workspace scan.`,
+          ),
+        });
       }
     }
 
@@ -4419,6 +4578,7 @@ export function companySkillService(db: Db) {
       updated,
       skipped,
       conflicts,
+      candidates,
       warnings,
     };
   }

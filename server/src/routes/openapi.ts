@@ -95,6 +95,7 @@ import {
   companySkillFileUpdateSchema,
   companySkillImportSchema,
   companySkillProjectScanRequestSchema,
+  companySkillProjectScanResultSchema,
   companySkillTestInputCreateSchema,
   companySkillTestInputUpdateSchema,
   companySkillTestRunCreateSchema,
@@ -1092,7 +1093,7 @@ registry.registerPath({
   tags: ["companies"],
   summary: "Create a company",
   request: { body: jsonBody(createCompanySchema) },
-  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+  responses: { 200: r.ok(companySkillProjectScanResultSchema), 400: r.badRequest, 401: r.unauthorized },
 });
 
 registry.registerPath({

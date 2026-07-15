@@ -1145,9 +1145,11 @@ export function companySkillRoutes(db: Db) {
         entityType: "company",
         entityId: companyId,
         details: {
+          mode: req.body.mode ?? "import",
           scannedProjects: result.scannedProjects,
           scannedWorkspaces: result.scannedWorkspaces,
           discovered: result.discovered,
+          candidateCount: result.candidates.length,
           importedCount: result.imported.length,
           updatedCount: result.updated.length,
           conflictCount: result.conflicts.length,

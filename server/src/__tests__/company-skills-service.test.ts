@@ -4,7 +4,16 @@ import path from "node:path";
 import { promises as fs } from "node:fs";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
-import { agents, authUsers, companies, companySkillVersions, companySkills, createDb } from "@paperclipai/db";
+import {
+  agents,
+  authUsers,
+  companies,
+  companySkillVersions,
+  companySkills,
+  createDb,
+  projects,
+  projectWorkspaces,
+} from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -52,6 +61,8 @@ describeEmbeddedPostgres("companySkillService.list", () => {
   afterEach(async () => {
     await db.delete(agents);
     await db.delete(companySkills);
+    await db.delete(projectWorkspaces);
+    await db.delete(projects);
     await db.delete(companies);
     await db.delete(authUsers);
     await Promise.all(Array.from(cleanupDirs, (dir) => fs.rm(dir, { recursive: true, force: true })));
@@ -1848,5 +1859,129 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     await svc.updateFile(companyId, skill.id, "SKILL.md", editedMarkdown, { type: "user", userId: "board" });
     versions = await svc.listVersions(companyId, skill.id);
     expect(versions).toHaveLength(2);
+  });
+
+  it("previews project workspace skill candidates without importing them", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const workspaceId = randomUUID();
+    const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-skill-preview-"));
+    cleanupDirs.add(workspaceDir);
+    const codexSkillDir = path.join(workspaceDir, ".codex", "skills", "preview-codex");
+    const cursorSkillDir = path.join(workspaceDir, ".cursor", "skills", "preview-cursor");
+    await fs.mkdir(codexSkillDir, { recursive: true });
+    await fs.mkdir(cursorSkillDir, { recursive: true });
+    await fs.writeFile(path.join(codexSkillDir, "SKILL.md"), "---\nname: Preview Codex\ndescription: Codex candidate\n---\n", "utf8");
+    await fs.writeFile(path.join(cursorSkillDir, "SKILL.md"), "---\nname: Preview Cursor\n---\n", "utf8");
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({ id: projectId, companyId, name: "Skills Project" });
+    await db.insert(projectWorkspaces).values({
+      id: workspaceId,
+      companyId,
+      projectId,
+      name: "Primary",
+      cwd: workspaceDir,
+      isPrimary: true,
+    });
+
+    const result = await svc.scanProjectWorkspaces(companyId, { mode: "preview", workspaceIds: [workspaceId] });
+
+    expect(result).toMatchObject({
+      scannedProjects: 1,
+      scannedWorkspaces: 1,
+      discovered: 2,
+      imported: [],
+      updated: [],
+      conflicts: [],
+    });
+    expect(result.candidates).toEqual([
+      expect.objectContaining({
+        name: "Preview Codex",
+        description: "Codex candidate",
+        workspaceId,
+        directoryRoot: ".codex/skills",
+        relativePath: ".codex/skills/preview-codex",
+        status: "new",
+      }),
+      expect.objectContaining({
+        name: "Preview Cursor",
+        workspaceId,
+        directoryRoot: ".cursor/skills",
+        relativePath: ".cursor/skills/preview-cursor",
+        status: "new",
+      }),
+    ]);
+    const persisted = await db.select().from(companySkills).where(eq(companySkills.companyId, companyId));
+    expect(persisted.filter((skill) => skill.metadata?.sourceKind === "project_scan")).toEqual([]);
+  });
+
+  it("imports only selections rediscovered inside project workspaces", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const workspaceId = randomUUID();
+    const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-skill-selective-"));
+    cleanupDirs.add(workspaceDir);
+    const selectedSkillDir = path.join(workspaceDir, ".gemini", "skills", "selected-skill");
+    const ignoredSkillDir = path.join(workspaceDir, ".opencode", "skills", "ignored-skill");
+    await fs.mkdir(selectedSkillDir, { recursive: true });
+    await fs.mkdir(ignoredSkillDir, { recursive: true });
+    await fs.writeFile(path.join(selectedSkillDir, "SKILL.md"), "---\nname: Selected Skill\n---\n", "utf8");
+    await fs.writeFile(path.join(ignoredSkillDir, "SKILL.md"), "---\nname: Ignored Skill\n---\n", "utf8");
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({ id: projectId, companyId, name: "Skills Project" });
+    await db.insert(projectWorkspaces).values({
+      id: workspaceId,
+      companyId,
+      projectId,
+      name: "Primary",
+      cwd: workspaceDir,
+      isPrimary: true,
+    });
+
+    const result = await svc.scanProjectWorkspaces(companyId, {
+      mode: "import",
+      workspaceIds: [workspaceId],
+      selection: [
+        { workspaceId, path: ".gemini/skills/selected-skill" },
+        { workspaceId, path: "../../outside-workspace" },
+      ],
+    });
+
+    expect(result.imported).toHaveLength(1);
+    expect(result.imported[0]).toMatchObject({
+      name: "Selected Skill",
+      sourceType: "local_path",
+      sourceLocator: selectedSkillDir,
+      metadata: expect.objectContaining({ sourceKind: "project_scan", workspaceId, projectId }),
+    });
+    expect(result.candidates).toEqual(expect.arrayContaining([
+      expect.objectContaining({ relativePath: ".gemini/skills/selected-skill", status: "new" }),
+      expect.objectContaining({
+        relativePath: ".opencode/skills/ignored-skill",
+        status: "skipped",
+        reason: "Not selected for import.",
+      }),
+    ]));
+    expect(result.skipped).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        workspaceId,
+        path: "../../outside-workspace",
+        reason: expect.stringContaining("was not rediscovered"),
+      }),
+    ]));
+    const persisted = await db.select().from(companySkills).where(eq(companySkills.companyId, companyId));
+    const projectScanSkills = persisted.filter((skill) => skill.metadata?.sourceKind === "project_scan");
+    expect(projectScanSkills).toHaveLength(1);
+    expect(projectScanSkills[0]?.sourceLocator).toBe(selectedSkillDir);
   });
 });

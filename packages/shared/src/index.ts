@@ -563,6 +563,8 @@ export type {
   CompanySkillImportRequest,
   CompanySkillImportResult,
   CompanySkillProjectScanRequest,
+  CompanySkillProjectScanCandidateStatus,
+  CompanySkillProjectScanCandidate,
   CompanySkillProjectScanSkipped,
   CompanySkillProjectScanConflict,
   CompanySkillProjectScanResult,
