@@ -1,4 +1,4 @@
-import { lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
@@ -26,6 +26,52 @@ async function listTarMembers(rootDir: string, name: string, bytes: Buffer): Pro
   await writeFile(tarPath, bytes);
   const { stdout } = await execFile("tar", ["-tf", tarPath], { maxBuffer: 32 * 1024 * 1024 });
   return stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+}
+
+function createLocalSandboxClient(): SandboxManagedRuntimeClient {
+  return {
+    makeDir: async (remotePath) => {
+      await mkdir(remotePath, { recursive: true });
+    },
+    writeFile: async (remotePath, bytes) => {
+      await mkdir(path.dirname(remotePath), { recursive: true });
+      await writeFile(remotePath, Buffer.from(bytes));
+    },
+    readFile: async (remotePath) => await readFile(remotePath),
+    listFiles: async (remotePath) => {
+      const entries = await readdir(remotePath, { withFileTypes: true }).catch(() => []);
+      return entries
+        .filter((entry) => entry.isFile())
+        .map((entry) => entry.name)
+        .sort((left, right) => left.localeCompare(right));
+    },
+    remove: async (remotePath) => {
+      await rm(remotePath, { recursive: true, force: true });
+    },
+    run: async (command) => {
+      await execFile("sh", ["-c", command], { maxBuffer: 32 * 1024 * 1024 });
+    },
+  };
+}
+
+function codexSubscriptionAuth(input: {
+  accountId?: string;
+  lastRefresh: string;
+  refreshToken: string;
+  accessToken?: string;
+  idToken?: string;
+  padding?: string;
+}): string {
+  return `${JSON.stringify({
+    tokens: {
+      account_id: input.accountId ?? "acct-1",
+      id_token: input.idToken ?? "id-token",
+      access_token: input.accessToken ?? "access-token",
+      refresh_token: input.refreshToken,
+    },
+    last_refresh: input.lastRefresh,
+    ...(input.padding ? { padding: input.padding } : {}),
+  })}\n`;
 }
 
 describe("sandbox managed runtime", () => {
@@ -160,6 +206,261 @@ describe("sandbox managed runtime", () => {
       expect.stringMatching(/^restore:Restoring workspace from sandbox: 100% \(\d+\.\d\/\d+\.\d MB\)$/),
     ]));
     expect(runtimeStatuses.at(-1)).toBe("finalize:Finalizing sandbox workspace");
+  });
+
+  it("syncs newer sandbox Codex auth.json back to the host symlink source and seeds the next run", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-codex-auth-"));
+    cleanupDirs.push(rootDir);
+    const localWorkspaceDir = path.join(rootDir, "local-workspace");
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+    const nextRemoteWorkspaceDir = path.join(rootDir, "remote-workspace-next");
+    const localCodexHome = path.join(rootDir, "local-codex-home");
+    const hostCodexHome = path.join(rootDir, "host-codex-home");
+    const hostAuthSource = path.join(hostCodexHome, "auth.json");
+    await mkdir(localWorkspaceDir, { recursive: true });
+    await mkdir(localCodexHome, { recursive: true });
+    await mkdir(hostCodexHome, { recursive: true });
+
+    const oldAuth = codexSubscriptionAuth({
+      lastRefresh: "2026-01-01T00:00:00.000Z",
+      refreshToken: "refresh-old",
+      accessToken: "access-old",
+      idToken: "id-old",
+    });
+    const newAuth = codexSubscriptionAuth({
+      lastRefresh: "2026-01-01T00:01:00.000Z",
+      refreshToken: "refresh-new-secret",
+      accessToken: "access-new-secret",
+      idToken: "id-new-secret",
+      padding: "x".repeat(1024 * 1024),
+    });
+    await writeFile(hostAuthSource, oldAuth, { mode: 0o600 });
+    await symlink(hostAuthSource, path.join(localCodexHome, "auth.json"));
+
+    const client = createLocalSandboxClient();
+    const lines: string[] = [];
+    const runtimeStatuses: string[] = [];
+    const prepared = await prepareSandboxManagedRuntime({
+      spec: {
+        transport: "sandbox",
+        provider: "test",
+        sandboxId: "sandbox-1",
+        remoteCwd: remoteWorkspaceDir,
+        timeoutMs: 30_000,
+        apiKey: null,
+      },
+      adapterKey: "codex",
+      client,
+      workspaceLocalDir: localWorkspaceDir,
+      assets: [{ key: "home", localDir: localCodexHome, followSymlinks: true }],
+      onProgress: (line) => {
+        lines.push(line);
+      },
+      onRuntimeProgress: (status) => {
+        runtimeStatuses.push(`${status.phase}:${status.message}`);
+      },
+    });
+
+    await writeFile(path.join(prepared.assetDirs.home, "auth.json"), newAuth, "utf8");
+
+    const invalidReads: string[] = [];
+    let polling = true;
+    const pollPromise = (async () => {
+      while (polling) {
+        const raw = await readFile(hostAuthSource, "utf8");
+        try {
+          JSON.parse(raw);
+        } catch {
+          invalidReads.push(raw.slice(0, 64));
+        }
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+    })();
+
+    try {
+      await prepared.restoreWorkspace();
+    } finally {
+      polling = false;
+      await pollPromise;
+    }
+
+    expect(invalidReads).toEqual([]);
+    await expect(readFile(hostAuthSource, "utf8")).resolves.toBe(newAuth);
+    expect((await lstat(path.join(localCodexHome, "auth.json"))).isSymbolicLink()).toBe(true);
+    expect(await realpath(path.join(localCodexHome, "auth.json"))).toBe(await realpath(hostAuthSource));
+    expect((await lstat(hostAuthSource)).mode & 0o777).toBe(0o600);
+    expect((await readdir(hostCodexHome)).filter((name) => name.includes(".auth.json.paperclip"))).toEqual([]);
+
+    const combinedTelemetry = `${lines.join("")}\n${runtimeStatuses.join("\n")}`;
+    expect(combinedTelemetry).toContain("updated host auth source");
+    expect(combinedTelemetry).not.toContain("refresh-new-secret");
+    expect(combinedTelemetry).not.toContain("access-new-secret");
+    expect(combinedTelemetry).not.toContain("id-new-secret");
+
+    const nextPrepared = await prepareSandboxManagedRuntime({
+      spec: {
+        transport: "sandbox",
+        provider: "test",
+        sandboxId: "sandbox-2",
+        remoteCwd: nextRemoteWorkspaceDir,
+        timeoutMs: 30_000,
+        apiKey: null,
+      },
+      adapterKey: "codex",
+      client,
+      workspaceLocalDir: localWorkspaceDir,
+      assets: [{ key: "home", localDir: localCodexHome, followSymlinks: true }],
+    });
+    await expect(readFile(path.join(nextPrepared.assetDirs.home, "auth.json"), "utf8")).resolves.toBe(newAuth);
+  });
+
+  it("does not replace newer host Codex auth.json with older sandbox auth", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-codex-auth-older-"));
+    cleanupDirs.push(rootDir);
+    const localWorkspaceDir = path.join(rootDir, "local-workspace");
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+    const localCodexHome = path.join(rootDir, "local-codex-home");
+    const hostCodexHome = path.join(rootDir, "host-codex-home");
+    const hostAuthSource = path.join(hostCodexHome, "auth.json");
+    await mkdir(localWorkspaceDir, { recursive: true });
+    await mkdir(localCodexHome, { recursive: true });
+    await mkdir(hostCodexHome, { recursive: true });
+
+    const hostAuth = codexSubscriptionAuth({
+      lastRefresh: "2026-01-01T00:10:00.000Z",
+      refreshToken: "refresh-host-newer",
+    });
+    const sandboxAuth = codexSubscriptionAuth({
+      lastRefresh: "2026-01-01T00:05:00.000Z",
+      refreshToken: "refresh-sandbox-older",
+    });
+    await writeFile(hostAuthSource, hostAuth, { mode: 0o600 });
+    await symlink(hostAuthSource, path.join(localCodexHome, "auth.json"));
+
+    const lines: string[] = [];
+    const prepared = await prepareSandboxManagedRuntime({
+      spec: {
+        transport: "sandbox",
+        provider: "test",
+        sandboxId: "sandbox-1",
+        remoteCwd: remoteWorkspaceDir,
+        timeoutMs: 30_000,
+        apiKey: null,
+      },
+      adapterKey: "codex",
+      client: createLocalSandboxClient(),
+      workspaceLocalDir: localWorkspaceDir,
+      assets: [{ key: "home", localDir: localCodexHome, followSymlinks: true }],
+      onProgress: (line) => {
+        lines.push(line);
+      },
+    });
+    await writeFile(path.join(prepared.assetDirs.home, "auth.json"), sandboxAuth, "utf8");
+
+    await prepared.restoreWorkspace();
+
+    await expect(readFile(hostAuthSource, "utf8")).resolves.toBe(hostAuth);
+    expect(lines.join("")).toContain("sandbox auth is not newer");
+    expect(lines.join("")).not.toContain("refresh-sandbox-older");
+  });
+
+  it("does not sync sandbox Codex auth.json when account ids differ", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-codex-auth-mismatch-"));
+    cleanupDirs.push(rootDir);
+    const localWorkspaceDir = path.join(rootDir, "local-workspace");
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+    const localCodexHome = path.join(rootDir, "local-codex-home");
+    const hostCodexHome = path.join(rootDir, "host-codex-home");
+    const hostAuthSource = path.join(hostCodexHome, "auth.json");
+    await mkdir(localWorkspaceDir, { recursive: true });
+    await mkdir(localCodexHome, { recursive: true });
+    await mkdir(hostCodexHome, { recursive: true });
+
+    const hostAuth = codexSubscriptionAuth({
+      accountId: "acct-host",
+      lastRefresh: "2026-01-01T00:00:00.000Z",
+      refreshToken: "refresh-host",
+    });
+    const sandboxAuth = codexSubscriptionAuth({
+      accountId: "acct-sandbox",
+      lastRefresh: "2026-01-01T00:10:00.000Z",
+      refreshToken: "refresh-sandbox-mismatch",
+    });
+    await writeFile(hostAuthSource, hostAuth, { mode: 0o600 });
+    await symlink(hostAuthSource, path.join(localCodexHome, "auth.json"));
+
+    const lines: string[] = [];
+    const prepared = await prepareSandboxManagedRuntime({
+      spec: {
+        transport: "sandbox",
+        provider: "test",
+        sandboxId: "sandbox-1",
+        remoteCwd: remoteWorkspaceDir,
+        timeoutMs: 30_000,
+        apiKey: null,
+      },
+      adapterKey: "codex",
+      client: createLocalSandboxClient(),
+      workspaceLocalDir: localWorkspaceDir,
+      assets: [{ key: "home", localDir: localCodexHome, followSymlinks: true }],
+      onProgress: (line) => {
+        lines.push(line);
+      },
+    });
+    await writeFile(path.join(prepared.assetDirs.home, "auth.json"), sandboxAuth, "utf8");
+
+    await prepared.restoreWorkspace();
+
+    await expect(readFile(hostAuthSource, "utf8")).resolves.toBe(hostAuth);
+    expect(lines.join("")).toContain("account ids do not match");
+    expect(lines.join("")).not.toContain("refresh-sandbox-mismatch");
+    expect(lines.join("")).not.toContain("acct-sandbox");
+  });
+
+  it("does not sync Codex auth.json back through a regular host auth file", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-codex-auth-regular-"));
+    cleanupDirs.push(rootDir);
+    const localWorkspaceDir = path.join(rootDir, "local-workspace");
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+    const localCodexHome = path.join(rootDir, "local-codex-home");
+    await mkdir(localWorkspaceDir, { recursive: true });
+    await mkdir(localCodexHome, { recursive: true });
+
+    const hostAuth = codexSubscriptionAuth({
+      lastRefresh: "2026-01-01T00:00:00.000Z",
+      refreshToken: "refresh-regular-host",
+    });
+    const sandboxAuth = codexSubscriptionAuth({
+      lastRefresh: "2026-01-01T00:10:00.000Z",
+      refreshToken: "refresh-regular-sandbox",
+    });
+    await writeFile(path.join(localCodexHome, "auth.json"), hostAuth, { mode: 0o600 });
+
+    const lines: string[] = [];
+    const prepared = await prepareSandboxManagedRuntime({
+      spec: {
+        transport: "sandbox",
+        provider: "test",
+        sandboxId: "sandbox-1",
+        remoteCwd: remoteWorkspaceDir,
+        timeoutMs: 30_000,
+        apiKey: null,
+      },
+      adapterKey: "codex",
+      client: createLocalSandboxClient(),
+      workspaceLocalDir: localWorkspaceDir,
+      assets: [{ key: "home", localDir: localCodexHome, followSymlinks: true }],
+      onProgress: (line) => {
+        lines.push(line);
+      },
+    });
+    await writeFile(path.join(prepared.assetDirs.home, "auth.json"), sandboxAuth, "utf8");
+
+    await prepared.restoreWorkspace();
+
+    await expect(readFile(path.join(localCodexHome, "auth.json"), "utf8")).resolves.toBe(hostAuth);
+    expect(lines.join("")).toContain("host auth.json is not a symlink");
+    expect(lines.join("")).not.toContain("refresh-regular-sandbox");
   });
 
   it("syncs git-backed workspaces through a shallow standalone clone and keeps .git out of archives", async () => {

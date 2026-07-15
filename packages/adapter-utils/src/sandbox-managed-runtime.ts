@@ -52,6 +52,7 @@ const SANDBOX_WORKSPACE_HEAVY_DIR_EXCLUDES = SANDBOX_WORKSPACE_HEAVY_DIR_NAMES.f
   `*/${entry}`,
   `*/${entry}/*`,
 ]);
+const CODEX_AUTH_JSON_NAME = "auth.json";
 
 export interface SandboxRemoteExecutionSpec {
   transport: "sandbox";
@@ -99,6 +100,20 @@ export interface PreparedSandboxManagedRuntime {
   assetDirs: Record<string, string>;
   restoreWorkspace(onProgress?: RuntimeProgressSink): Promise<void>;
 }
+
+type ParsedCodexAuth =
+  | { kind: "unusable" }
+  | { kind: "apikey" }
+  | { kind: "subscription"; accountId: string; lastRefresh: number | null };
+
+type CodexAuthSyncBackOutcome =
+  | "updated"
+  | "skipped_no_host_symlink"
+  | "skipped_sandbox_auth_missing"
+  | "skipped_unusable_auth"
+  | "skipped_api_key_auth"
+  | "skipped_account_mismatch"
+  | "skipped_not_newer";
 
 function asObject(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -347,6 +362,209 @@ function toBuffer(bytes: Buffer | Uint8Array | ArrayBuffer): Buffer {
   if (Buffer.isBuffer(bytes)) return bytes;
   if (bytes instanceof ArrayBuffer) return Buffer.from(bytes);
   return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+}
+
+// Co-change notice: this parser mirrors hasUsableAuthPayload in
+// packages/adapters/codex-local/src/server/codex-home.ts and parseAuth in
+// packages/adapter-utils/src/codex-auth-merge-decision.cjs. If the auth format
+// changes (new shape, renamed field), update all sites together.
+function parseCodexAuthPayload(authPayload: unknown): ParsedCodexAuth {
+  if (authPayload === null || typeof authPayload !== "object" || Array.isArray(authPayload)) {
+    return { kind: "unusable" };
+  }
+
+  const parsedPayload = authPayload as Record<string, unknown>;
+  const apiKey = parsedPayload.OPENAI_API_KEY;
+  if (typeof apiKey === "string" && apiKey.trim().length > 0) {
+    return { kind: "apikey" };
+  }
+
+  const tokens = parsedPayload.tokens;
+  if (tokens === null || typeof tokens !== "object" || Array.isArray(tokens)) {
+    return { kind: "unusable" };
+  }
+
+  const parsedTokens = tokens as Record<string, unknown>;
+  const accountId = typeof parsedTokens.account_id === "string" ? parsedTokens.account_id.trim() : "";
+  const hasTokenMaterial = ["id_token", "access_token", "refresh_token"].some((key) => {
+    const value = parsedTokens[key];
+    return typeof value === "string" && value.trim().length > 0;
+  });
+  if (!accountId || !hasTokenMaterial) {
+    return { kind: "unusable" };
+  }
+
+  const lastRefresh = typeof parsedPayload.last_refresh === "string"
+    ? Date.parse(parsedPayload.last_refresh)
+    : NaN;
+  return {
+    kind: "subscription",
+    accountId,
+    lastRefresh: Number.isFinite(lastRefresh) ? lastRefresh : null,
+  };
+}
+
+function parseCodexAuthBytes(bytes: Buffer): ParsedCodexAuth {
+  try {
+    return parseCodexAuthPayload(JSON.parse(bytes.toString("utf8")));
+  } catch {
+    return { kind: "unusable" };
+  }
+}
+
+function isMissingFileError(error: unknown): boolean {
+  const code = typeof error === "object" && error !== null
+    ? (error as { code?: unknown }).code
+    : null;
+  return code === "ENOENT" || code === "ENOTDIR" || code === "NotFound";
+}
+
+function errorCodeSuffix(error: unknown): string {
+  const code = typeof error === "object" && error !== null
+    ? (error as { code?: unknown }).code
+    : null;
+  return typeof code === "string" && code.trim().length > 0 ? ` (${code.trim()})` : "";
+}
+
+function codexAuthSyncBackMessage(outcome: CodexAuthSyncBackOutcome): string {
+  switch (outcome) {
+    case "updated":
+      return "updated host auth source with newer sandbox refresh";
+    case "skipped_no_host_symlink":
+      return "skipped because host auth.json is not a symlink";
+    case "skipped_sandbox_auth_missing":
+      return "skipped because sandbox auth.json is missing";
+    case "skipped_unusable_auth":
+      return "skipped because sandbox or host auth.json is not usable subscription auth";
+    case "skipped_api_key_auth":
+      return "skipped because API-key auth is not synced back";
+    case "skipped_account_mismatch":
+      return "skipped because account ids do not match";
+    case "skipped_not_newer":
+      return "skipped because sandbox auth is not newer";
+  }
+}
+
+async function emitCodexAuthSyncBackOutcome(input: {
+  onProgress?: RuntimeProgressSink;
+  onRuntimeProgress?: RuntimeStatusSink;
+  outcome: CodexAuthSyncBackOutcome;
+}): Promise<void> {
+  const message = `Codex auth.json sync-back: ${codexAuthSyncBackMessage(input.outcome)}`;
+  await input.onProgress?.(`[paperclip] ${message}\n`);
+  await emitRuntimeStatus(input.onRuntimeProgress, "restore", message);
+}
+
+async function resolveHostCodexAuthSymlinkSource(localHomeDir: string): Promise<string | null> {
+  const localAuthPath = path.join(localHomeDir, CODEX_AUTH_JSON_NAME);
+  const stats = await fs.lstat(localAuthPath).catch(() => null);
+  if (!stats?.isSymbolicLink()) return null;
+
+  const linkTarget = await fs.readlink(localAuthPath);
+  const resolved = path.resolve(path.dirname(localAuthPath), linkTarget);
+  return await fs.realpath(resolved).catch(() => resolved);
+}
+
+function decideCodexAuthSyncBack(input: {
+  sandboxAuth: ParsedCodexAuth;
+  hostAuth: ParsedCodexAuth;
+}): CodexAuthSyncBackOutcome {
+  if (input.sandboxAuth.kind === "unusable" || input.hostAuth.kind === "unusable") {
+    return "skipped_unusable_auth";
+  }
+
+  if (input.sandboxAuth.kind === "apikey" || input.hostAuth.kind === "apikey") {
+    return "skipped_api_key_auth";
+  }
+
+  if (input.sandboxAuth.accountId !== input.hostAuth.accountId) {
+    return "skipped_account_mismatch";
+  }
+
+  if (
+    input.sandboxAuth.lastRefresh === null ||
+    input.hostAuth.lastRefresh === null ||
+    input.sandboxAuth.lastRefresh <= input.hostAuth.lastRefresh
+  ) {
+    return "skipped_not_newer";
+  }
+
+  return "updated";
+}
+
+async function writeFileAtomic0600(targetPath: string, bytes: Buffer): Promise<void> {
+  await fs.mkdir(path.dirname(targetPath), { recursive: true });
+  const tempPath = path.join(
+    path.dirname(targetPath),
+    `.${path.basename(targetPath)}.paperclip-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+  );
+
+  try {
+    await fs.writeFile(tempPath, bytes, { mode: 0o600 });
+    await fs.chmod(tempPath, 0o600);
+    await fs.rename(tempPath, targetPath);
+    await fs.chmod(targetPath, 0o600);
+  } catch (error) {
+    await fs.rm(tempPath, { force: true }).catch(() => undefined);
+    throw error;
+  }
+}
+
+async function syncCodexHomeAuthJsonBackToHost(input: {
+  adapterKey: string;
+  assets?: SandboxManagedRuntimeAsset[];
+  assetDirs: Record<string, string>;
+  client: SandboxManagedRuntimeClient;
+  onProgress?: RuntimeProgressSink;
+  onRuntimeProgress?: RuntimeStatusSink;
+}): Promise<void> {
+  const homeAsset = input.adapterKey === "codex"
+    ? input.assets?.find((asset) => asset.key === "home")
+    : undefined;
+  if (!homeAsset) return;
+
+  let outcome: CodexAuthSyncBackOutcome;
+  try {
+    const hostAuthSource = await resolveHostCodexAuthSymlinkSource(homeAsset.localDir);
+    if (!hostAuthSource) {
+      outcome = "skipped_no_host_symlink";
+    } else {
+      const remoteHomeDir = input.assetDirs[homeAsset.key];
+      const sandboxAuthBytes = remoteHomeDir
+        ? await input.client.readFile(path.posix.join(remoteHomeDir, CODEX_AUTH_JSON_NAME))
+          .then((bytes) => toBuffer(bytes))
+          .catch((error: unknown) => {
+            if (isMissingFileError(error)) return null;
+            throw error;
+          })
+        : null;
+
+      if (!sandboxAuthBytes) {
+        outcome = "skipped_sandbox_auth_missing";
+      } else {
+        const hostAuthBytes = await fs.readFile(hostAuthSource)
+          .catch((error: unknown) => {
+            if (isMissingFileError(error)) return null;
+            throw error;
+          });
+        outcome = decideCodexAuthSyncBack({
+          sandboxAuth: parseCodexAuthBytes(sandboxAuthBytes),
+          hostAuth: hostAuthBytes ? parseCodexAuthBytes(hostAuthBytes) : { kind: "unusable" },
+        });
+        if (outcome === "updated") {
+          await writeFileAtomic0600(hostAuthSource, sandboxAuthBytes);
+        }
+      }
+    }
+  } catch (error) {
+    throw new Error(`Failed to sync Codex auth.json from sandbox to host${errorCodeSuffix(error)}.`);
+  }
+
+  await emitCodexAuthSyncBackOutcome({
+    onProgress: input.onProgress,
+    onRuntimeProgress: input.onRuntimeProgress,
+    outcome,
+  });
 }
 
 function tarExcludeFlags(exclude: string[] | undefined): string {
@@ -647,6 +865,7 @@ export async function prepareSandboxManagedRuntime(input: {
         let importedRef: string | null = null;
         let importedHead: string | null = null;
         let remoteWorkspaceStatus = "dirty";
+        let restoreError: unknown = null;
         try {
           if (gitSnapshot) {
             await emitRuntimeStatus(input.onRuntimeProgress, "export", "Exporting git changes from sandbox");
@@ -741,10 +960,37 @@ export async function prepareSandboxManagedRuntime(input: {
                 }
               : undefined,
           });
+        } catch (error) {
+          restoreError = error;
+          throw error;
         } finally {
+          let syncBackError: unknown = null;
+          try {
+            await syncCodexHomeAuthJsonBackToHost({
+              adapterKey: input.adapterKey,
+              assets: input.assets,
+              assetDirs,
+              client: input.client,
+              onProgress: restoreSink,
+              onRuntimeProgress: input.onRuntimeProgress,
+            });
+          } catch (error) {
+            syncBackError = error;
+            if (restoreError) {
+              await emitRuntimeStatus(
+                input.onRuntimeProgress,
+                "restore",
+                "Codex auth.json sync-back skipped after workspace restore failure",
+              );
+            }
+          }
+
           await emitRuntimeStatus(input.onRuntimeProgress, "finalize", "Finalizing sandbox workspace");
           if (importedRef) {
             await deleteLocalGitRef({ localDir: input.workspaceLocalDir, ref: importedRef });
+          }
+          if (!restoreError && syncBackError) {
+            throw syncBackError;
           }
         }
       });
