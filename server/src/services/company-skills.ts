@@ -3058,7 +3058,7 @@ export function companySkillService(db: Db) {
       .from(companySkills)
       .where(and(eq(companySkills.companyId, companyId), eq(companySkills.id, id)))
       .then((rows) => rows[0] ?? null);
-    return row ? toCompanySkill(row) : null;
+    return row ? enrichFolderPath(companyId, toCompanySkill(row)) : null;
   }
 
   async function getByKey(companyId: string, key: string) {
@@ -3067,7 +3067,7 @@ export function companySkillService(db: Db) {
       .from(companySkills)
       .where(and(eq(companySkills.companyId, companyId), eq(companySkills.key, key)))
       .then((rows) => rows[0] ?? null);
-    return row ? toCompanySkill(row) : null;
+    return row ? enrichFolderPath(companyId, toCompanySkill(row)) : null;
   }
 
   async function getBySlugIfUnique(companyId: string, slug: string) {
@@ -3075,7 +3075,13 @@ export function companySkillService(db: Db) {
       .select(selectCompanySkillColumns())
       .from(companySkills)
       .where(and(eq(companySkills.companyId, companyId), eq(companySkills.slug, slug)));
-    return rows.length === 1 ? toCompanySkill(rows[0]!) : null;
+    return rows.length === 1 ? enrichFolderPath(companyId, toCompanySkill(rows[0]!)) : null;
+  }
+
+  async function enrichFolderPath(companyId: string, skill: CompanySkill): Promise<CompanySkill> {
+    if (!skill.folderId) return { ...skill, folderPath: null };
+    const folder = await folderSvc.getFolder(companyId, skill.folderId);
+    return { ...skill, folderPath: folder?.kind === "skill" ? folder.path : null };
   }
 
   async function getByRouteRef(companyId: string, ref: string) {

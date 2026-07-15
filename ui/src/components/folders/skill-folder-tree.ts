@@ -158,6 +158,19 @@ export function reservedRootLabel(folder: Pick<FolderListItem, "systemKey" | "na
   }
 }
 
+/** Human-readable canonical path used by detail surfaces and breadcrumbs. */
+export function skillFolderDisplayPath(
+  model: SkillFolderTreeModel,
+  folderId: string | null | undefined,
+): string | null {
+  if (!folderId) return null;
+  const trail = folderBreadcrumbTrail(model, folderId);
+  if (trail.length === 0) return null;
+  const labels = trail.map((folder) => reservedRootLabel(folder));
+  if (!trail[0]?.systemKey) labels.unshift("Company");
+  return labels.join(" / ");
+}
+
 export function emptySkillFolderTree(): SkillFolderTreeModel {
   return buildSkillFolderTree([]);
 }

@@ -6,6 +6,7 @@ import {
   isBundledFolder,
   isProjectsFolder,
   reservedRootLabel,
+  skillFolderDisplayPath,
   subtreeFolderIds,
 } from "./skill-folder-tree";
 
@@ -93,5 +94,15 @@ describe("reservedRootLabel", () => {
     expect(reservedRootLabel({ systemKey: "projects", name: "projects" })).toBe("Projects");
     expect(reservedRootLabel({ systemKey: "bundled", name: "bundled" })).toBe("Bundled");
     expect(reservedRootLabel({ systemKey: null, name: "Engineering" })).toBe("Engineering");
+  });
+});
+
+describe("skillFolderDisplayPath", () => {
+  it("prefixes company folders and preserves reserved-root labels", () => {
+    const model = buildSkillFolderTree(folders);
+    expect(skillFolderDisplayPath(model, "eng-review")).toBe("Company / Engineering / Review");
+    expect(skillFolderDisplayPath(model, "mine")).toBe("My Skills / dotta");
+    expect(skillFolderDisplayPath(model, "bundled-git")).toBe("Bundled / git");
+    expect(skillFolderDisplayPath(model, null)).toBeNull();
   });
 });

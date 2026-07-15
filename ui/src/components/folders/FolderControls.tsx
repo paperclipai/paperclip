@@ -47,6 +47,11 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
+import {
+  reservedRootLabel,
+  treeFromResult,
+  type FolderTreeNode,
+} from "./skill-folder-tree";
 
 export type FolderSelection = "all" | "unfiled" | string;
 
@@ -420,12 +425,27 @@ export function MobileFolderSheet({
     onOpenChange(false);
   }
 
-  const folders = result?.folders ?? [];
-  const rows = [
-    { id: "all" as FolderSelection, label: allLabel, count: result?.allCount ?? 0, color: null },
-    ...folders.map((folder) => ({ id: folder.id, label: folder.name, count: folder.itemCount, color: folder.color })),
-    { id: "unfiled" as FolderSelection, label: "Unfiled", count: result?.unfiledCount ?? 0, color: null },
-  ];
+  const model = useMemo(() => treeFromResult(result), [result]);
+
+  function renderBranch(node: FolderTreeNode, rootLabel?: string) {
+    return (
+      <div key={node.folder.id} data-folder-id={node.folder.id}>
+        <MobileFolderRow
+          id={node.folder.id}
+          label={rootLabel ?? node.folder.name}
+          count={node.folder.itemCount}
+          color={node.folder.color}
+          selected={selection === node.folder.id}
+          onSelect={select}
+        />
+        {node.children.length > 0 ? (
+          <div className="pl-3">
+            {node.children.map((child) => renderBranch(child))}
+          </div>
+        ) : null}
+      </div>
+    );
+  }
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
@@ -434,19 +454,34 @@ export function MobileFolderSheet({
           <SheetTitle>{itemLabelPlural} folders</SheetTitle>
         </SheetHeader>
         <div className="overflow-y-auto px-3">
-          {rows.map((row) => (
-            <button
-              key={row.id}
-              type="button"
-              className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm hover:bg-accent/50"
-              onClick={() => select(row.id)}
-            >
-              {row.id === "all" ? <FolderIcon className="h-3.5 w-3.5 text-muted-foreground" /> : <FolderSwatch color={row.color} />}
-              <span className="min-w-0 flex-1 truncate">{row.label}</span>
-              <span className="text-xs text-muted-foreground">{row.count}</span>
-              {selection === row.id ? <Check className="h-3.5 w-3.5" /> : null}
-            </button>
-          ))}
+          <MobileFolderRow
+            id="all"
+            label={allLabel}
+            count={result?.allCount ?? 0}
+            selected={selection === "all"}
+            onSelect={select}
+            all
+          />
+          {result?.kind === "skill" ? (
+            <>
+              {model.my ? renderBranch(model.my, "My Skills") : null}
+              <div className="px-2 pb-0.5 pt-2 text-(length:--text-micro) font-medium uppercase tracking-wide text-muted-foreground">
+                Company
+              </div>
+              {model.company.map((node) => renderBranch(node))}
+              {model.projects ? renderBranch(model.projects, "Projects") : null}
+              {model.bundled ? renderBranch(model.bundled, "Bundled") : null}
+            </>
+          ) : (
+            model.roots.map((node) => renderBranch(node, reservedRootLabel(node.folder)))
+          )}
+          <MobileFolderRow
+            id="unfiled"
+            label="Unfiled"
+            count={result?.unfiledCount ?? 0}
+            selected={selection === "unfiled"}
+            onSelect={select}
+          />
         </div>
         <div className="border-t border-border px-4 pt-3">
           <Button size="sm" variant="outline" className="w-full" onClick={onCreate}>
@@ -456,6 +491,37 @@ export function MobileFolderSheet({
         </div>
       </SheetContent>
     </Sheet>
+  );
+}
+
+function MobileFolderRow({
+  id,
+  label,
+  count,
+  color,
+  selected,
+  all = false,
+  onSelect,
+}: {
+  id: FolderSelection;
+  label: string;
+  count: number;
+  color?: string | null;
+  selected: boolean;
+  all?: boolean;
+  onSelect: (selection: FolderSelection) => void;
+}) {
+  return (
+    <button
+      type="button"
+      className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm hover:bg-accent/50"
+      onClick={() => onSelect(id)}
+    >
+      {all ? <FolderIcon className="h-3.5 w-3.5 text-muted-foreground" /> : <FolderSwatch color={color} />}
+      <span className="min-w-0 flex-1 truncate">{label}</span>
+      <span className="text-xs text-muted-foreground">{count}</span>
+      {selected ? <Check className="h-3.5 w-3.5" /> : null}
+    </button>
   );
 }
 

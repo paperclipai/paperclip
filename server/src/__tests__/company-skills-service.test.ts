@@ -770,6 +770,11 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     await expect(svc.list(companyId, { folderId: engineering.id, q: "deploy" })).resolves.toEqual([
       expect.objectContaining({ name: "Deploy", folderPath: "operations" }),
     ]);
+    const review = (await svc.list(companyId)).find((skill) => skill.name === "Review");
+    await expect(svc.getById(companyId, review!.id)).resolves.toMatchObject({
+      name: "Review",
+      folderPath: "engineering/reviews",
+    });
   });
 
   it("creates skills in same-company folders and rejects cross-company folder references", async () => {
