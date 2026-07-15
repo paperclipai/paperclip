@@ -71,13 +71,26 @@ export { approvalService } from "./approvals.js";
 export { budgetService } from "./budgets.js";
 export { secretService } from "./secrets.js";
 export { mcpServerService } from "./mcp-servers.js";
-export { agentMcpToolService } from "./agent-mcp-tools.js";
+export { agentMcpToolService, type OriginAuthzContext } from "./agent-mcp-tools.js";
 export {
   readRunRequester,
   resolveRequesterClearance,
   clearanceForMembershipRole,
   type RunRequesterSnapshot,
 } from "./requester-clearance.js";
+export {
+  MAX_DELEGATION_DEPTH,
+  autonomousOrigin,
+  effectiveOriginClearance,
+  originFromPriorRun,
+  propagateOrigin,
+  readRunOrigin,
+  seedOriginFromRequester,
+  unresolvedOrigin,
+  type OriginClearance,
+  type OriginKind,
+  type RunOriginSnapshot,
+} from "./delegation-origin.js";
 export { agentToolCatalogService, buildCompactMcpRunContext, mcpQualifiedToolName, parseMcpQualifiedToolName } from "./agent-tools.js";
 export { routineService } from "./routines.js";
 export { costService } from "./costs.js";

@@ -52,8 +52,11 @@ import {
   issueService,
   logActivity,
   agentMcpToolService,
+  effectiveOriginClearance,
+  readRunOrigin,
   readRunRequester,
   resolveRequesterClearance,
+  type OriginAuthzContext,
   syncInstructionsBundleConfigFromFilePath,
   workspaceOperationService,
 } from "../services/index.js";
@@ -2139,17 +2142,44 @@ export function agentRoutes(
       requestingUserId: string | null;
       requestingUserRole: string | null;
       invocationSource: "heartbeat" | "channel";
+      origin: OriginAuthzContext | null;
     }> => {
       const invocationSource = run.invocationSource === "channel" ? "channel" : "heartbeat";
+      // NEO-448 Phase 3: the transitive origin principal was stamped on the
+      // seed run and copied verbatim across hops by trusted dispatch code.
+      // Identity is read from the run row; AUTHORITY is re-derived fresh and
+      // MIN'd with the immutable seed stamp, so a revocation lands now and a
+      // post-seed promotion can never widen an in-flight chain.
+      const originSnapshot = readRunOrigin(run.contextSnapshot);
+      let origin: OriginAuthzContext | null = null;
+      if (originSnapshot) {
+        if (originSnapshot.kind === "user" && originSnapshot.userId) {
+          const fresh = await resolveRequesterClearance(db, run.companyId, originSnapshot.userId);
+          origin = {
+            kind: "user",
+            userId: originSnapshot.userId,
+            role: effectiveOriginClearance(originSnapshot.clearance, fresh),
+            depth: originSnapshot.depth,
+          };
+        } else {
+          origin = {
+            kind: originSnapshot.kind,
+            userId: null,
+            role: null,
+            depth: originSnapshot.depth,
+          };
+        }
+      }
       const requester = readRunRequester(run.contextSnapshot);
       if (!requester?.userId) {
-        return { requestingUserId: null, requestingUserRole: null, invocationSource };
+        return { requestingUserId: null, requestingUserRole: null, invocationSource, origin };
       }
       const role = await resolveRequesterClearance(db, run.companyId, requester.userId);
       return {
         requestingUserId: requester.userId,
         requestingUserRole: role,
         invocationSource,
+        origin,
       };
     };
 
@@ -2163,7 +2193,7 @@ export function agentRoutes(
       // to the requester's clearance so a preferred-mode agent can't volunteer
       // or enumerate tools the asker isn't cleared for (re-verified at execute).
       let requester:
-        | { role: string | null; invocationSource: "heartbeat" | "channel" }
+        | { role: string | null; invocationSource: "heartbeat" | "channel"; origin?: OriginAuthzContext | null }
         | undefined;
       if (req.actor.runId) {
         const run = await heartbeat.getRun(req.actor.runId);
@@ -2175,6 +2205,7 @@ export function agentRoutes(
         requester = {
           role: derived.requestingUserRole,
           invocationSource: derived.invocationSource,
+          origin: derived.origin,
         };
       }
 
@@ -2206,6 +2237,8 @@ export function agentRoutes(
           requestingUserId: requesterContext.requestingUserId,
           requestingUserRole: requesterContext.requestingUserRole,
           invocationSource: requesterContext.invocationSource,
+          origin: requesterContext.origin,
+          runId: req.actor.runId,
         },
         req.body,
       );
@@ -3571,6 +3604,10 @@ export function agentRoutes(
       reason: req.body.reason ?? null,
       payload: req.body.payload ?? null,
       idempotencyKey: req.body.idempotencyKey ?? null,
+      // NEO-448 Phase 3: carry the acting run so the origin principal
+      // propagates (self-wakes copy verbatim; agent wakes without a run
+      // context are stamped unresolved downstream — fail closed).
+      delegatedFromRunId: req.actor.type === "agent" ? req.actor.runId ?? null : null,
       requestedByActorType: req.actor.type === "agent" ? "agent" : "user",
       requestedByActorId: req.actor.type === "agent" ? req.actor.agentId ?? null : req.actor.userId ?? null,
       contextSnapshot: {
@@ -3658,6 +3695,8 @@ export function agentRoutes(
       triggerDetail: typeof body.triggerDetail === "string" ? body.triggerDetail as "manual" | "system" | "ping" | "callback" : "manual",
       requestedByActorType: req.actor.type === "agent" ? "agent" : "user",
       requestedByActorId: req.actor.type === "agent" ? req.actor.agentId ?? null : req.actor.userId ?? null,
+      // NEO-448 Phase 3: propagate the delegation-origin principal.
+      delegatedFromRunId: req.actor.type === "agent" ? req.actor.runId ?? null : null,
       contextSnapshot,
     };
     if (typeof body.reason === "string" && body.reason.length > 0) {

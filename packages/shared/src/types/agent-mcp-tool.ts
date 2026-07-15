@@ -40,4 +40,11 @@ export interface ExecuteAgentMcpToolResponse {
   content: string | null;
   data: unknown;
   error: string | null;
+  /**
+   * NEO-448 Phase 3: taint label — the clearance class of the tool that
+   * produced this result. Any surface that re-shows the result (session
+   * replay, memory retrieval, comment/room rendering) must re-check the
+   * reader's clearance against this ceiling.
+   */
+  clearanceCeiling?: "guest" | "member" | "board";
 }

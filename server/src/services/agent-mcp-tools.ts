@@ -9,6 +9,7 @@ import type {
   ExecuteAgentMcpToolResponse,
 } from "@paperclipai/shared";
 import { notFound, unprocessable } from "../errors.js";
+import { MAX_DELEGATION_DEPTH } from "./delegation-origin.js";
 import {
   createStderrMcpTelemetrySink,
   type McpToolTelemetrySink,
@@ -27,13 +28,35 @@ function clearanceRank(role: string | null | undefined): number {
   return CLEARANCE_RANK[role ?? ""] ?? -1;
 }
 
+/**
+ * NEO-448 Phase 3: the transitive origin principal of the delegation chain,
+ * derived by the route layer from the TRUSTED run row (never agent-supplied).
+ * `role` is already MIN(stamped-at-seed, fresh-from-membership).
+ */
+export interface OriginAuthzContext {
+  kind: "user" | "autonomous" | "unresolved";
+  userId: string | null;
+  role: string | null;
+  depth: number;
+}
+
 function effectiveClearance(
   bindingAuthority: string,
   requestingUserRole: string | null | undefined,
   autonomousAllowed: boolean,
   invocationSource: string | null | undefined,
+  origin?: OriginAuthzContext | null,
 ): string {
-  const isAutonomous = requestingUserRole == null;
+  // NEO-448 Phase 3: delegation-origin clamps come first, fail-closed.
+  // An agent-caused run whose origin could not be established must never
+  // pass as autonomous, and a chain deeper than the cap is refused wholesale
+  // (defeats depth-laundering through long wake chains).
+  if (origin) {
+    if (origin.kind === "unresolved") return "guest";
+    if (origin.depth > MAX_DELEGATION_DEPTH) return "guest";
+  }
+  const originIsUser = origin?.kind === "user";
+  const isAutonomous = requestingUserRole == null && !originIsUser;
   if (isAutonomous) {
     // NEO-447 Phase 2: a channel run is BY DEFINITION on behalf of someone —
     // an unresolved/unmapped requester must never inherit the binding's
@@ -42,10 +65,13 @@ function effectiveClearance(
     // Autonomous (heartbeat/no user): grant full binding authority if autonomousAllowed, else guest floor
     return autonomousAllowed ? bindingAuthority : "guest";
   }
-  // MIN(agentAuthority, requesterClearance)
-  const agentRank = clearanceRank(bindingAuthority);
-  const requesterRank = clearanceRank(requestingUserRole);
-  const minRank = Math.min(agentRank, requesterRank);
+  // MIN(agentAuthority, requesterClearance, originClearance) — the origin
+  // dimension defeats MAX-over-chain laundering: no hop can ever widen the
+  // chain past the human who seeded it.
+  const ranks = [clearanceRank(bindingAuthority)];
+  if (requestingUserRole != null) ranks.push(clearanceRank(requestingUserRole));
+  if (originIsUser) ranks.push(clearanceRank(origin!.role));
+  const minRank = Math.min(...ranks);
   if (minRank <= 0) return "guest";
   if (minRank === 1) return "member";
   return "board";
@@ -109,6 +135,8 @@ export function agentMcpToolService(
       requester?: {
         role: string | null;
         invocationSource: "heartbeat" | "channel" | null;
+        /** NEO-448 Phase 3: origin principal of the delegation chain. */
+        origin?: OriginAuthzContext | null;
       };
     },
   ): Promise<AgentMcpToolListResponse> {
@@ -148,6 +176,7 @@ export function agentMcpToolService(
                 requester.role,
                 binding.autonomousAllowed,
                 requester.invocationSource,
+                requester.origin ?? null,
               ),
             )
           : null;
@@ -199,6 +228,10 @@ export function agentMcpToolService(
       requestingUserId?: string | null;
       requestingUserRole?: string | null;
       invocationSource?: "heartbeat" | "channel" | null;
+      /** NEO-448 Phase 3: origin principal of the delegation chain (trusted, route-derived). */
+      origin?: OriginAuthzContext | null;
+      /** Run id for audit correlation (taint-label replay checks join on this). */
+      runId?: string | null;
     },
     request: ExecuteAgentMcpToolRequest,
   ): Promise<ExecuteAgentMcpToolResponse> {
@@ -237,11 +270,13 @@ export function agentMcpToolService(
     }
 
     // Clearance gate (NEO-446 Phase 1): MIN(agentBindingAuthority, requestingUserClearance)
+    // extended with the delegation-origin dimension (NEO-448 Phase 3).
     const effective = effectiveClearance(
       selectedBinding.bindingAuthority,
       runContext.requestingUserRole ?? null,
       selectedBinding.autonomousAllowed,
       runContext.invocationSource ?? null,
+      runContext.origin ?? null,
     );
     const toolClearanceRequired =
       selectedBinding.toolClearances[selected.toolName] ??
@@ -260,7 +295,7 @@ export function agentMcpToolService(
       toolName: selected.toolName,
       actorType: "agent",
       actorId: runContext.agentId,
-      onBehalfOfUserId: runContext.requestingUserId ?? null,
+      onBehalfOfUserId: runContext.requestingUserId ?? runContext.origin?.userId ?? null,
       onBehalfOfRole: runContext.requestingUserRole ?? null,
       decision: allowed ? "allow" : "deny",
       details: {
@@ -269,6 +304,12 @@ export function agentMcpToolService(
         bindingAuthority: selectedBinding.bindingAuthority,
         autonomousAllowed: selectedBinding.autonomousAllowed,
         invocationSource: runContext.invocationSource ?? null,
+        // NEO-448 Phase 3: delegation-chain attribution + taint correlation.
+        runId: runContext.runId ?? null,
+        originKind: runContext.origin?.kind ?? null,
+        originUserId: runContext.origin?.userId ?? null,
+        originRole: runContext.origin?.role ?? null,
+        delegationDepth: runContext.origin?.depth ?? null,
       },
     });
 
@@ -327,6 +368,15 @@ export function agentMcpToolService(
       content: result.content ?? null,
       data: result.data ?? null,
       error: result.error ?? null,
+      // NEO-448 Phase 3: taint label. The result may contain data as
+      // sensitive as the tool's clearance class; every re-surface (session
+      // replay, memory retrieval, room rendering) must re-check the reader's
+      // clearance against this ceiling before showing it. An unmapped
+      // required-clearance value labels as board (fail closed).
+      clearanceCeiling:
+        toolClearanceRequired === "guest" || toolClearanceRequired === "member"
+          ? toolClearanceRequired
+          : "board",
     };
   }
 

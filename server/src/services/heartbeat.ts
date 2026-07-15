@@ -92,6 +92,13 @@ import {
   mergeHeartbeatRunResultJson,
 } from "./heartbeat-run-summary.js";
 import { agentMcpToolService } from "./agent-mcp-tools.js";
+import {
+  originFromPriorRun,
+  propagateOrigin,
+  seedOriginFromRequester,
+  unresolvedOrigin,
+} from "./delegation-origin.js";
+import { resolveRequesterClearance } from "./requester-clearance.js";
 import { buildCompactMcpRunContext } from "./agent-tools.js";
 import { isMcpClientEnabled } from "../mcp-client-flag.js";
 import {
@@ -2011,6 +2018,15 @@ interface WakeupOptions {
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
   contextSnapshot?: Record<string, unknown>;
+  /**
+   * NEO-448 Phase 3: the run that CAUSED this wake (agent delegation,
+   * continuation, handoff, retry). The origin principal is copied verbatim
+   * from that run — incrementing delegationDepth only on cross-agent hops —
+   * so a delegation chain can never launder past its human seed. Agent-caused
+   * wakes without a resolvable source run are stamped `unresolved` (the MCP
+   * PEP floors those to guest).
+   */
+  delegatedFromRunId?: string | null;
 }
 
 type UsageTotals = {
@@ -5549,6 +5565,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (!agent || agent.companyId !== input.companyId) {
       throw new Error("Agent not found in company");
     }
+    // NEO-448 Phase 3: a channel run is the SEED of a delegation chain — stamp
+    // the immutable origin principal here. The clearance stamp is advisory
+    // (the PEP re-derives fresh and takes MIN); identity + depth are what
+    // downstream hops copy verbatim.
+    const originClearance = input.requester?.userId
+      ? await resolveRequesterClearance(db, agent.companyId, input.requester.userId)
+      : null;
+    const origin = seedOriginFromRequester({
+      userId: input.requester?.userId ?? null,
+      clearance: originClearance,
+    });
     const now = new Date();
     const run = await db
       .insert(heartbeatRuns)
@@ -5572,6 +5599,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 source: input.requester.source ?? null,
               }
             : null,
+          origin,
         },
         issueCommentStatus: "not_applicable",
         updatedAt: now,
@@ -7499,6 +7527,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       idempotencyKey: decision.idempotencyKey,
       requestedByActorType: "system",
       requestedByActorId: "heartbeat",
+      // NEO-448 Phase 3: a continuation is the same chain — copy origin verbatim.
+      delegatedFromRunId: run.id,
     });
 
     if (continuationRun) {
@@ -7807,6 +7837,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       idempotencyKey: decision.idempotencyKey,
       requestedByActorType: "system",
       requestedByActorId: "heartbeat",
+      // NEO-448 Phase 3: a handoff continues the same chain — copy origin verbatim.
+      delegatedFromRunId: run.id,
     });
     if (!handoffRun) return;
 
@@ -14428,6 +14460,36 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const agent = await getAgent(agentId);
     if (!agent) throw notFound("Agent not found");
+
+    // NEO-448 Phase 3: transitive origin principal. Trusted internal callers
+    // may have already copied `origin` into the context snapshot; otherwise
+    // derive it from the causing run (verbatim copy, depth+1 only on a
+    // cross-agent hop). An agent-caused wake with no resolvable source run is
+    // stamped `unresolved` — the MCP PEP floors that to guest, so a delegation
+    // hop that loses its origin fails closed instead of passing as autonomous.
+    if (enrichedContextSnapshot.origin == null) {
+      const delegatedFromRunId = readNonEmptyString(opts.delegatedFromRunId);
+      if (delegatedFromRunId) {
+        const priorRun = await db
+          .select({
+            agentId: heartbeatRuns.agentId,
+            companyId: heartbeatRuns.companyId,
+            contextSnapshot: heartbeatRuns.contextSnapshot,
+          })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, delegatedFromRunId))
+          .then((rows) => rows[0] ?? null);
+        if (priorRun && priorRun.companyId === agent.companyId) {
+          enrichedContextSnapshot.origin = propagateOrigin(originFromPriorRun(priorRun), {
+            hop: priorRun.agentId !== agentId,
+          });
+        } else {
+          enrichedContextSnapshot.origin = unresolvedOrigin(1);
+        }
+      } else if (opts.requestedByActorType === "agent") {
+        enrichedContextSnapshot.origin = unresolvedOrigin(1);
+      }
+    }
 
     const writeSkippedRequest = async (
       skipReason: string,

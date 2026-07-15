@@ -915,6 +915,236 @@ describe("NEO-447 Phase 2: channel requester floor + clearance-aware surfacing",
   });
 });
 
+describe("NEO-448 Phase 3: delegation-origin clamps + taint labels", () => {
+  const boardBinding = () =>
+    binding({
+      companyId: COMPANY_A,
+      serverId: SERVER_X,
+      slug: "github",
+      bindingAuthority: "board",
+      defaultMinUserRole: "member",
+      autonomousAllowed: true,
+    });
+
+  it("A→B→T laundering fails closed: guest origin clamps a board binding even when the hop looks autonomous", async () => {
+    // Guest user asks agent A (channel seed); A wakes B; B's run has NO
+    // direct requester — without the origin dimension it would pass as
+    // autonomous and inherit the binding's board authority.
+    const auditLog = vi.fn(async () => {});
+    const { svc, executeTool } = serviceWithBindings([boardBinding()], { writeAuditLog: auditLog });
+
+    await expect(
+      svc.executeForRun(
+        {
+          agentId: AGENT_1,
+          companyId: COMPANY_A,
+          requestingUserId: null,
+          requestingUserRole: null,
+          invocationSource: "heartbeat",
+          origin: { kind: "user", userId: "guest-user", role: "guest", depth: 1 },
+        },
+        { toolName: "create_issue" },
+      ),
+    ).rejects.toMatchObject({ statusCode: 403, code: "mcp_tool_denied_by_clearance" });
+    expect(executeTool).not.toHaveBeenCalled();
+    expect(auditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        decision: "deny",
+        onBehalfOfUserId: "guest-user",
+        details: expect.objectContaining({
+          originKind: "user",
+          originUserId: "guest-user",
+          originRole: "guest",
+          delegationDepth: 1,
+        }),
+      }),
+    );
+  });
+
+  it("MIN(origin, requester, binding): a board requester cannot widen a member origin", async () => {
+    const { svc } = serviceWithBindings([
+      binding({
+        companyId: COMPANY_A,
+        serverId: SERVER_X,
+        slug: "github",
+        bindingAuthority: "board",
+        defaultMinUserRole: "board",
+      }),
+    ]);
+
+    await expect(
+      svc.executeForRun(
+        {
+          agentId: AGENT_1,
+          companyId: COMPANY_A,
+          requestingUserId: "board-user",
+          requestingUserRole: "board",
+          invocationSource: "heartbeat",
+          origin: { kind: "user", userId: "member-user", role: "member", depth: 2 },
+        },
+        { toolName: "create_issue" },
+      ),
+    ).rejects.toMatchObject({ statusCode: 403, code: "mcp_tool_denied_by_clearance" });
+  });
+
+  it("allows when the whole chain is cleared: member origin + member tool", async () => {
+    const { svc, executeTool } = serviceWithBindings([boardBinding()]);
+
+    const result = await svc.executeForRun(
+      {
+        agentId: AGENT_1,
+        companyId: COMPANY_A,
+        requestingUserId: null,
+        requestingUserRole: null,
+        invocationSource: "heartbeat",
+        origin: { kind: "user", userId: "member-user", role: "member", depth: 1 },
+      },
+      { toolName: "create_issue" },
+    );
+    expect(result.ok).toBe(true);
+    expect(executeTool).toHaveBeenCalledTimes(1);
+  });
+
+  it("unresolved origin floors to guest even with autonomousAllowed=true (missing origin ⇒ deny sensitive)", async () => {
+    const { svc, executeTool } = serviceWithBindings([boardBinding()]);
+
+    await expect(
+      svc.executeForRun(
+        {
+          agentId: AGENT_1,
+          companyId: COMPANY_A,
+          requestingUserId: null,
+          requestingUserRole: null,
+          invocationSource: "heartbeat",
+          origin: { kind: "unresolved", userId: null, role: null, depth: 1 },
+        },
+        { toolName: "create_issue" },
+      ),
+    ).rejects.toMatchObject({ statusCode: 403, code: "mcp_tool_denied_by_clearance" });
+    expect(executeTool).not.toHaveBeenCalled();
+  });
+
+  it("over-depth chain floors to guest even when every principal is board", async () => {
+    const { svc } = serviceWithBindings([boardBinding()]);
+
+    await expect(
+      svc.executeForRun(
+        {
+          agentId: AGENT_1,
+          companyId: COMPANY_A,
+          requestingUserId: "board-user",
+          requestingUserRole: "board",
+          invocationSource: "heartbeat",
+          origin: { kind: "user", userId: "board-user", role: "board", depth: 9 },
+        },
+        { toolName: "create_issue" },
+      ),
+    ).rejects.toMatchObject({ statusCode: 403, code: "mcp_tool_denied_by_clearance" });
+  });
+
+  it("a revoked origin membership (role null) floors to guest", async () => {
+    const { svc } = serviceWithBindings([boardBinding()]);
+
+    await expect(
+      svc.executeForRun(
+        {
+          agentId: AGENT_1,
+          companyId: COMPANY_A,
+          requestingUserId: null,
+          requestingUserRole: null,
+          invocationSource: "heartbeat",
+          origin: { kind: "user", userId: "revoked-user", role: null, depth: 1 },
+        },
+        { toolName: "create_issue" },
+      ),
+    ).rejects.toMatchObject({ statusCode: 403, code: "mcp_tool_denied_by_clearance" });
+  });
+
+  it("an autonomous origin preserves Phase 1 autonomous semantics", async () => {
+    const { svc, executeTool } = serviceWithBindings([
+      binding({
+        companyId: COMPANY_A,
+        serverId: SERVER_X,
+        slug: "github",
+        bindingAuthority: "board",
+        defaultMinUserRole: "board",
+        autonomousAllowed: true,
+      }),
+    ]);
+
+    const result = await svc.executeForRun(
+      {
+        agentId: AGENT_1,
+        companyId: COMPANY_A,
+        requestingUserId: null,
+        requestingUserRole: null,
+        invocationSource: "heartbeat",
+        origin: { kind: "autonomous", userId: null, role: null, depth: 3 },
+      },
+      { toolName: "create_issue" },
+    );
+    expect(result.ok).toBe(true);
+    expect(executeTool).toHaveBeenCalledTimes(1);
+  });
+
+  it("clamps listForAgent surfacing by the origin dimension (parity with execute)", async () => {
+    const { svc } = serviceWithBindings([boardBinding()]);
+
+    const clamped = await svc.listForAgent(AGENT_1, {
+      companyId: COMPANY_A,
+      requester: {
+        role: null,
+        invocationSource: "heartbeat",
+        origin: { kind: "user", userId: "guest-user", role: "guest", depth: 1 },
+      },
+    });
+    expect(clamped.tools).toEqual([]);
+
+    const cleared = await svc.listForAgent(AGENT_1, {
+      companyId: COMPANY_A,
+      requester: {
+        role: null,
+        invocationSource: "heartbeat",
+        origin: { kind: "user", userId: "member-user", role: "member", depth: 1 },
+      },
+    });
+    expect(cleared.tools.map((t) => t.toolName)).toEqual(["create_issue"]);
+  });
+
+  it("labels results with the tool's clearance ceiling (taint label) and audits runId", async () => {
+    const auditLog = vi.fn(async () => {});
+    const { svc } = serviceWithBindings(
+      [
+        binding({
+          companyId: COMPANY_A,
+          serverId: SERVER_X,
+          slug: "github",
+          bindingAuthority: "board",
+          toolClearances: { create_issue: "member" },
+          defaultMinUserRole: "board",
+        }),
+      ],
+      { writeAuditLog: auditLog },
+    );
+
+    const result = await svc.executeForRun(
+      {
+        agentId: AGENT_1,
+        companyId: COMPANY_A,
+        requestingUserId: "user-1",
+        requestingUserRole: "member",
+        invocationSource: "heartbeat",
+        runId: "run-42",
+      },
+      { toolName: "create_issue" },
+    );
+    expect(result.clearanceCeiling).toBe("member");
+    expect(auditLog).toHaveBeenCalledWith(
+      expect.objectContaining({ details: expect.objectContaining({ runId: "run-42" }) }),
+    );
+  });
+});
+
 describe("buildCompactMcpRunContext", () => {
   it("drops schemas and per-server tool arrays", () => {
     const compact = buildCompactMcpRunContext(mcpCatalog([mcpTool()]));

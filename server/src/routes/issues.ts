@@ -8438,6 +8438,12 @@ export function issueRoutes(
       const dependencyReadinessSvc = svc as DependencyReadinessProvider;
       const wakeups = new Map<string, { agentId: string; wakeup: WakeupRequest }>();
       const addWakeup = (agentId: string, wakeup: WakeupRequest) => {
+        // NEO-448 Phase 3: an agent-caused wake is a delegation hop — carry
+        // the acting run so the origin principal propagates verbatim (an
+        // agent actor without a run context fails closed downstream).
+        if (wakeup.delegatedFromRunId === undefined && actor.actorType === "agent" && actor.runId) {
+          wakeup.delegatedFromRunId = actor.runId;
+        }
         const wakeIssueId =
           wakeup.payload && typeof wakeup.payload === "object" && typeof wakeup.payload.issueId === "string"
             ? wakeup.payload.issueId
@@ -10020,6 +10026,12 @@ export function issueRoutes(
       type WakeupRequest = NonNullable<Parameters<typeof heartbeat.wakeup>[1]>;
       const wakeups = new Map<string, { agentId: string; wakeup: WakeupRequest }>();
       const addWakeup = (agentId: string, wakeup: WakeupRequest) => {
+        // NEO-448 Phase 3: an agent-caused wake is a delegation hop — carry
+        // the acting run so the origin principal propagates verbatim (an
+        // agent actor without a run context fails closed downstream).
+        if (wakeup.delegatedFromRunId === undefined && actor.actorType === "agent" && actor.runId) {
+          wakeup.delegatedFromRunId = actor.runId;
+        }
         const wakeIssueId =
           wakeup.payload && typeof wakeup.payload === "object" && typeof wakeup.payload.issueId === "string"
             ? wakeup.payload.issueId
