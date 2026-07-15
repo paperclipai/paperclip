@@ -1,6 +1,10 @@
-import { type ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import type { Meta, StoryObj } from "@storybook/react-vite";
+import {
+  __liveUpdatesTestUtils,
+  type CompanyLiveEventHandler,
+} from "@/context/LiveUpdatesProvider";
 import type {
   GetSummarySlotResponse,
   ListSummarySlotRevisionsResponse,
@@ -194,6 +198,39 @@ function CardHarness({ seed, width }: { seed: SeedInput; width: number }) {
   );
 }
 
+const { LiveEventSubscriptionContext, dispatchLiveEventToSubscribers } = __liveUpdatesTestUtils;
+
+// Wraps the card in the shared live-event subscription and pushes a single
+// heartbeat.run.progress event once the card has mounted, so the generating
+// state renders its live status line (PAP-13984).
+function LiveStatusHarness({ seed, width, message }: { seed: SeedInput; width: number; message: string }) {
+  const subscribersRef = useRef<Set<CompanyLiveEventHandler>>(new Set());
+  const subscription = useRef({
+    subscribe: (fn: CompanyLiveEventHandler) => {
+      subscribersRef.current.add(fn);
+      return () => {
+        subscribersRef.current.delete(fn);
+      };
+    },
+  });
+
+  useEffect(() => {
+    dispatchLiveEventToSubscribers(subscribersRef.current, COMPANY_ID, {
+      id: 1,
+      companyId: COMPANY_ID,
+      type: "heartbeat.run.progress",
+      createdAt: "2026-07-15T00:00:00.000Z",
+      payload: { issueId: "issue-1", message },
+    });
+  }, [message]);
+
+  return (
+    <LiveEventSubscriptionContext.Provider value={subscription.current}>
+      <CardHarness seed={seed} width={width} />
+    </LiveEventSubscriptionContext.Provider>
+  );
+}
+
 const DESKTOP = 640;
 const MOBILE = 375;
 
@@ -274,6 +311,14 @@ export const Disabled: Story = {
 export const SetupCta: Story = { args: { seed: setupSeed, width: DESKTOP } };
 export const Empty: Story = { args: { seed: emptySeed, width: DESKTOP } };
 export const Generating: Story = { args: { seed: generatingSeed, width: DESKTOP } };
+export const GeneratingWithStatusLine: StoryObj<typeof LiveStatusHarness> = {
+  render: (args) => <LiveStatusHarness {...args} />,
+  args: {
+    seed: generatingSeed,
+    width: DESKTOP,
+    message: "Reviewing 14 open issues, drafting the “Needs you” section…",
+  },
+};
 export const Generated: Story = { args: { seed: generatedSeed, width: DESKTOP } };
 export const HistoryRevisions: Story = { args: { seed: historySeed, width: DESKTOP } };
 export const FailedRetry: Story = { args: { seed: failedSeed, width: DESKTOP } };
