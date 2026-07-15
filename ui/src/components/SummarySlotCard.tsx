@@ -19,7 +19,6 @@ import { ConfigureBuiltInAgentModal } from "@/components/ConfigureBuiltInAgentMo
 import { InlineBanner } from "@/components/InlineBanner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectSeparator, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { queryKeys } from "@/lib/queryKeys";
 import { cn, formatDateTime, relativeTime } from "@/lib/utils";
@@ -196,7 +195,7 @@ export function SummarySlotCard({
   };
 
   return (
-    <Card className={cn("block gap-4 p-5", className)}>
+    <section className={cn("space-y-4", className)}>
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0 space-y-1">
           <div className="flex flex-wrap items-center gap-2">
@@ -426,6 +425,6 @@ export function SummarySlotCard({
           </div>
         </div>
       ) : null}
-    </Card>
+    </section>
   );
 }

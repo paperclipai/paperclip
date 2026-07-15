@@ -360,6 +360,9 @@ describe("SummarySlotCard", () => {
     root = renderCard(container);
     await flushQueries();
 
+    expect(container.firstElementChild?.tagName).toBe("SECTION");
+    expect(container.firstElementChild?.className).toContain("space-y-4");
+    expect(container.querySelector('[data-slot="card"]')).toBeNull();
     expect(container.textContent).toContain("Generating summary");
     expect(container.textContent).toContain("PAP-14000: Summarize project");
     expect(container.querySelector('a[href="/issues/PAP-14000"]')).not.toBeNull();
