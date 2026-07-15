@@ -3374,7 +3374,18 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     latestRun: NonNullable<LatestIssueRun>;
     classification: Extract<NonNullable<AdapterFailureRecoveryClassification>, { kind: "provider_quota" }>;
   }) {
-    if (input.issue.status !== "in_progress" || !input.issue.assigneeAgentId) return null;
+    const pendingExecutionState = input.issue.status === "in_review"
+      ? parseIssueExecutionState(input.issue.executionState)
+      : null;
+    const participant = pendingExecutionState?.status === "pending"
+      ? pendingExecutionState.currentParticipant
+      : null;
+    const targetAgentId = input.issue.status === "in_progress"
+      ? input.issue.assigneeAgentId
+      : participant?.type === "agent" && participant.agentId === input.issue.assigneeAgentId
+        ? participant.agentId
+        : null;
+    if (!targetAgentId || input.latestRun.agentId !== targetAgentId) return null;
 
     const previousPolicy = normalizeIssueExecutionPolicy(input.issue.executionPolicy ?? null);
     const policy = {
@@ -3424,7 +3435,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         errorCode: "provider_quota",
         nextCheckAt: input.classification.retryAt.toISOString(),
         parsedResetTime: input.classification.parsedResetTime,
-        assigneeAgentId: input.issue.assigneeAgentId,
+        targetAgentId,
       },
     });
 

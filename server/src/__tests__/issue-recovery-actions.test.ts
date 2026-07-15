@@ -530,17 +530,18 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(enqueueWakeup).not.toHaveBeenCalled();
   });
 
-  it("requeues an active review participant when its failed run reports provider quota", async () => {
-    const { companyId, coderId, sourceIssueId } = await seedCompany();
+  it("schedules a quota monitor for the active review participant", async () => {
+    const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
     const stageId = randomUUID();
     await db.update(issues).set({
       status: "in_review",
+      assigneeAgentId: managerId,
       executionState: {
         status: "pending",
         currentStageId: stageId,
         currentStageIndex: 0,
         currentStageType: "review",
-        currentParticipant: { type: "agent", agentId: coderId, userId: null },
+        currentParticipant: { type: "agent", agentId: managerId, userId: null },
         returnAssignee: { type: "agent", agentId: coderId, userId: null },
         reviewRequest: null,
         completedStageIds: [],
@@ -552,7 +553,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     await db.insert(heartbeatRuns).values({
       id: runId,
       companyId,
-      agentId: coderId,
+      agentId: managerId,
       invocationSource: "automation",
       status: "failed",
       error: "Provider quota exceeded for this model.",
@@ -561,29 +562,22 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       finishedAt: new Date("2026-07-15T20:01:00.000Z"),
       contextSnapshot: { issueId: sourceIssueId },
     });
-    const enqueueWakeup = vi.fn(async () => ({ id: randomUUID() } as never));
+    const enqueueWakeup = vi.fn(async () => null);
     const recovery = recoveryService(db, { enqueueWakeup });
 
     const result = await recovery.reconcileStrandedAssignedIssues();
 
-    expect(result).toMatchObject({ providerQuotaMonitored: 0, reviewParticipantRequeued: 1 });
+    expect(result).toMatchObject({ providerQuotaMonitored: 1, reviewParticipantRequeued: 0 });
     const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
     expect(updatedIssue).toMatchObject({
       status: "in_review",
-      assigneeAgentId: coderId,
-      monitorNextCheckAt: null,
+      assigneeAgentId: managerId,
+      monitorNextCheckAt: expect.any(Date),
     });
     const [updatedRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
-    expect(updatedRun?.errorCode).toBe("adapter_failed");
+    expect(updatedRun?.errorCode).toBe("provider_quota");
     expect(await db.select().from(issueRecoveryActions)).toHaveLength(0);
-    expect(enqueueWakeup).toHaveBeenCalledWith(coderId, expect.objectContaining({
-      reason: "execution_review_participant_recovery",
-      payload: expect.objectContaining({
-        issueId: sourceIssueId,
-        retryOfRunId: runId,
-        currentStageId: stageId,
-      }),
-    }));
+    expect(enqueueWakeup).not.toHaveBeenCalled();
   });
 
   it("uses the default quota backoff when the provider does not state a reset time", async () => {
