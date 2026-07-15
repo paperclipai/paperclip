@@ -1034,7 +1034,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                 const logLine =
                   `[paperclip] adapter.invoke ${message}; ` +
                   `timeoutMs=${monitorResolution.timeoutMs} elapsedSinceLastEventMs=${monitorElapsedMs} ` +
-                  `outputChunks=${state.outputChunkCount} outputBytes=${state.outputBytes} ` +
+                  `outputChunkCount=${state.outputChunkCount} outputBytes=${state.outputBytes} ` +
                   `parsedEvents=${state.parsedEventCount} (timeout=${timeoutSecLabel}s elapsed=${elapsedSec}s); ` +
                   `terminating codex child via SIGTERM (5s grace, then SIGKILL).\n`;
                 // Issue the log without awaiting on the kill hot path, but capture
