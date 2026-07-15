@@ -530,7 +530,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(enqueueWakeup).not.toHaveBeenCalled();
   });
 
-  it("schedules a quota monitor for the active review participant", async () => {
+  it("schedules a quota monitor for a cross-agent active review participant", async () => {
     const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
     const stageId = randomUUID();
     await db.update(issues).set({
@@ -559,6 +559,14 @@ describeEmbeddedPostgres("issue recovery actions", () => {
         lastDecisionOutcome: null,
       },
     }).where(eq(issues.id, sourceIssueId));
+    const [reviewIssueBeforeRecovery] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(reviewIssueBeforeRecovery).toMatchObject({
+      assigneeAgentId: coderId,
+      executionState: {
+        currentParticipant: { type: "agent", agentId: managerId },
+        returnAssignee: { type: "agent", agentId: coderId },
+      },
+    });
     const runId = randomUUID();
     await db.insert(heartbeatRuns).values({
       id: runId,
