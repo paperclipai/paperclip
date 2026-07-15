@@ -169,7 +169,7 @@ function awsSecretsManagerCheck(): CheckResult {
       message: `AWS Secrets Manager provider is missing non-secret config: ${missingConfig.join(", ")}`,
       canRepair: false,
       repairHint:
-        `Set ${missingConfig.join(", ")} in the Paperclip server runtime. ${AWS_CREDENTIAL_SOURCE_HINT}. Do not store AWS root credentials or long-lived IAM user keys in Paperclip secrets.`,
+        `Set ${missingConfig.join(", ")} in the Cortex server runtime. ${AWS_CREDENTIAL_SOURCE_HINT}. Do not store AWS root credentials or long-lived IAM user keys in Cortex secrets.`,
     };
   }
 
@@ -187,7 +187,7 @@ function awsSecretsManagerCheck(): CheckResult {
       message,
       canRepair: false,
       repairHint:
-        "AWS static environment credentials are visible. Use only short-lived shell credentials locally; prefer IAM role/workload identity for hosted deployments and never store AWS access keys in Paperclip company secrets.",
+        "AWS static environment credentials are visible. Use only short-lived shell credentials locally; prefer IAM role/workload identity for hosted deployments and never store AWS access keys in Cortex company secrets.",
     };
   }
 

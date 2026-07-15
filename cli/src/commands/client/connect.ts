@@ -64,7 +64,7 @@ async function connectWizard(opts: ConnectOptions) {
   const resolvedProfile = resolveProfile(context, opts.profile);
   const initialApiBase = resolveApiBase(opts, resolvedProfile.profile);
   const apiBaseInput = await p.text({
-    message: "Paperclip API base",
+    message: "Cortex API base",
     initialValue: initialApiBase,
     placeholder: "http://localhost:3100",
   });

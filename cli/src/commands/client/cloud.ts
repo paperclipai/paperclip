@@ -101,13 +101,13 @@ class CloudAuthRequestError extends Error {
 }
 
 export function registerCloudCommands(program: Command): void {
-  const cloud = program.command("cloud").description("Paperclip Cloud upstream sync commands");
+  const cloud = program.command("cloud").description("Cortex Cloud upstream sync commands");
 
   addCommonClientOptions(
     cloud
       .command("connect")
-      .description("Authorize this local instance to push into a Paperclip Cloud stack")
-      .argument("<remote-url>", "Paperclip Cloud stack URL")
+      .description("Authorize this local instance to push into a Cortex Cloud stack")
+      .argument("<remote-url>", "Cortex Cloud stack URL")
       .option("--no-browser", "Use the device-code flow instead of opening a browser", false)
       .action(async (remoteUrl: string, opts: CloudConnectOptions) => {
         try {
@@ -121,7 +121,7 @@ export function registerCloudCommands(program: Command): void {
   addCommonClientOptions(
     cloud
       .command("push")
-      .description("Preview or apply a local company push into the connected Paperclip Cloud stack")
+      .description("Preview or apply a local company push into the connected Cortex Cloud stack")
       .requiredOption("--company <local-company-id>", "Local company ID to export")
       .option("--remote-url <remote-url>", "Use a specific stored cloud connection")
       .option("--dry-run", "Preview without applying", false)
@@ -175,7 +175,7 @@ export async function connectCloud(remoteUrl: string, opts: CloudConnectOptions 
   if (ctx.json) {
     printOutput(redactConnection(connection), { json: true });
   } else {
-    console.log(pc.bold("Connected to Paperclip Cloud"));
+    console.log(pc.bold("Connected to Cortex Cloud"));
     console.log(`stack=${connection.stackDisplayName ?? connection.stackSlug ?? connection.stackId}`);
     console.log(`origin=${connection.targetOrigin}`);
     console.log(`company=${connection.targetCompanyId}`);
@@ -243,7 +243,7 @@ export async function discoverUpstream(remoteUrl: string): Promise<UpstreamDisco
 
 export function assertDiscoveryCompatible(discovery: UpstreamDiscovery): void {
   if (discovery.schema !== "paperclip-upstream-discovery-v1") {
-    throw new Error("Remote URL is not a Paperclip Cloud upstream target.");
+    throw new Error("Remote URL is not a Cortex Cloud upstream target.");
   }
   if (discovery.transfer.supportedSchemaMajor !== upstreamTransferSchema.major) {
     throw new Error(
@@ -251,7 +251,7 @@ export function assertDiscoveryCompatible(discovery: UpstreamDiscovery): void {
     );
   }
   if (!discovery.transfer.featureFlags?.includes("cloud_sync")) {
-    throw new Error("Remote Paperclip Cloud stack does not advertise the cloud_sync transfer flag.");
+    throw new Error("Remote Cortex Cloud stack does not advertise the cloud_sync transfer flag.");
   }
 }
 
@@ -339,7 +339,7 @@ async function authorizeConnection(
     }
   }
   if (!discovery.auth.deviceCode) {
-    throw new Error("Remote Paperclip Cloud stack does not support device-code authorization.");
+    throw new Error("Remote Cortex Cloud stack does not support device-code authorization.");
   }
   return authorizeWithDeviceCode(discovery, source, { openBrowser: !opts.noBrowser && canOpenBrowser() });
 }
@@ -573,12 +573,12 @@ async function startPkceCallbackServer(): Promise<{
     const state = url.searchParams.get("state");
     if (!code || state !== expectedState) {
       res.writeHead(400, { "Content-Type": "text/plain" });
-      res.end("Paperclip Cloud authorization failed. You can close this tab.");
+      res.end("Cortex Cloud authorization failed. You can close this tab.");
       rejectCode?.(new Error("Authorization callback was missing a valid code or state."));
       return;
     }
     res.writeHead(200, { "Content-Type": "text/plain" });
-    res.end("Paperclip Cloud authorization complete. You can close this tab.");
+    res.end("Cortex Cloud authorization complete. You can close this tab.");
     resolveCode?.(code);
   });
   await listenOnLoopback(server);
