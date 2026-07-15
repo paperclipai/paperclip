@@ -57,6 +57,7 @@ import type {
   CompanySkillLastEditor,
   CompanySkillOriginalSummary,
   CompanySkillProjectScanConflict,
+  CompanySkillProjectScanCandidate,
   CompanySkillProjectScanRequest,
   CompanySkillProjectScanResult,
   CompanySkillProjectScanSkipped,
@@ -415,13 +416,16 @@ const PROJECT_SCAN_DIRECTORY_ROOTS = [
   ".agent/skills",
   ".augment/skills",
   ".claude/skills",
+  ".codex/skills",
   ".codebuddy/skills",
   ".commandcode/skills",
   ".continue/skills",
+  ".cursor/skills",
   ".cortex/skills",
   ".crush/skills",
   ".factory/skills",
   ".goose/skills",
+  ".gemini/skills",
   ".junie/skills",
   ".iflow/skills",
   ".kilocode/skills",
@@ -431,6 +435,7 @@ const PROJECT_SCAN_DIRECTORY_ROOTS = [
   ".vibe/skills",
   ".mux/skills",
   ".openhands/skills",
+  ".opencode/skills",
   ".pi/skills",
   ".qoder/skills",
   ".qwen/skills",
@@ -1034,6 +1039,93 @@ async function statPath(targetPath: string) {
   return fs.stat(targetPath).catch(() => null);
 }
 
+function pathIsContained(rootPath: string, candidatePath: string) {
+  const relativePath = path.relative(rootPath, candidatePath);
+  return relativePath === ""
+    || (!path.isAbsolute(relativePath) && relativePath !== ".." && !relativePath.startsWith(`..${path.sep}`));
+}
+
+async function assertNoSymlinksInLocalTree(currentPath: string): Promise<void> {
+  const entries = await fs.readdir(currentPath, { withFileTypes: true });
+  for (const entry of entries) {
+    if (entry.name === ".git" || entry.name === "node_modules") continue;
+    const absolutePath = path.join(currentPath, entry.name);
+    if (entry.isSymbolicLink()) {
+      throw unprocessable(`Project skill candidate contains a symbolic link at ${absolutePath}.`);
+    }
+    if (entry.isDirectory()) {
+      await assertNoSymlinksInLocalTree(absolutePath);
+    }
+  }
+}
+
+async function validateProjectSkillImportPath(
+  skillDir: string,
+  workspaceRoot: string,
+  inventoryMode: LocalSkillInventoryMode,
+) {
+  const resolvedWorkspaceRoot = path.resolve(workspaceRoot);
+  const resolvedSkillDir = path.resolve(skillDir);
+  if (!pathIsContained(resolvedWorkspaceRoot, resolvedSkillDir)) {
+    throw unprocessable(`Project skill candidate ${resolvedSkillDir} is outside workspace root ${resolvedWorkspaceRoot}.`);
+  }
+
+  const canonicalWorkspaceRoot = await fs.realpath(resolvedWorkspaceRoot);
+  let currentPath = resolvedWorkspaceRoot;
+  const relativeSkillDir = path.relative(resolvedWorkspaceRoot, resolvedSkillDir);
+  for (const segment of relativeSkillDir.split(path.sep).filter(Boolean)) {
+    currentPath = path.join(currentPath, segment);
+    const segmentStat = await fs.lstat(currentPath);
+    if (segmentStat.isSymbolicLink()) {
+      throw unprocessable(`Project skill candidate contains a symbolic link at ${currentPath}.`);
+    }
+  }
+
+  const canonicalSkillDir = await fs.realpath(resolvedSkillDir);
+  if (!pathIsContained(canonicalWorkspaceRoot, canonicalSkillDir)) {
+    throw unprocessable(`Project skill candidate ${resolvedSkillDir} resolves outside workspace root ${resolvedWorkspaceRoot}.`);
+  }
+
+  const skillFilePath = path.join(resolvedSkillDir, "SKILL.md");
+  const skillFileStat = await fs.lstat(skillFilePath);
+  if (skillFileStat.isSymbolicLink()) {
+    throw unprocessable(`Project skill candidate contains a symbolic link at ${skillFilePath}.`);
+  }
+  if (!skillFileStat.isFile()) {
+    throw unprocessable(`No SKILL.md file was found in ${resolvedSkillDir}.`);
+  }
+  const canonicalSkillFilePath = await fs.realpath(skillFilePath);
+  if (!pathIsContained(canonicalWorkspaceRoot, canonicalSkillFilePath)) {
+    throw unprocessable(`Project skill file ${skillFilePath} resolves outside workspace root ${resolvedWorkspaceRoot}.`);
+  }
+
+  if (inventoryMode === "full") {
+    await assertNoSymlinksInLocalTree(resolvedSkillDir);
+    return;
+  }
+  for (const relativeDir of PROJECT_ROOT_SKILL_SUBDIRECTORIES) {
+    const absoluteDir = path.join(resolvedSkillDir, relativeDir);
+    const dirStat = await fs.lstat(absoluteDir).catch(() => null);
+    if (!dirStat) continue;
+    if (dirStat.isSymbolicLink()) {
+      throw unprocessable(`Project skill candidate contains a symbolic link at ${absoluteDir}.`);
+    }
+    if (dirStat.isDirectory()) {
+      await assertNoSymlinksInLocalTree(absoluteDir);
+    }
+  }
+}
+
+function projectSkillImportFailureReason(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  if (message.includes("symbolic link")) {
+    return "Skipped because symbolic links can point outside the project workspace. Replace the link with a real file or directory to import this skill.";
+  }
+  if (message.includes("outside workspace root")) return "Project skill candidate resolves outside the workspace.";
+  if (message.includes("No SKILL.md file")) return "Project skill candidate does not contain a readable SKILL.md file.";
+  return "Project skill candidate could not be read.";
+}
+
 async function collectLocalSkillInventory(
   skillDir: string,
   mode: LocalSkillInventoryMode = "full",
@@ -1190,9 +1282,14 @@ export async function readLocalSkillImportFromDirectory(
   options?: {
     inventoryMode?: LocalSkillInventoryMode;
     metadata?: Record<string, unknown> | null;
+    workspaceRoot?: string;
   },
 ): Promise<ImportedSkill> {
   const resolvedSkillDir = path.resolve(skillDir);
+  const inventoryMode = options?.inventoryMode ?? "full";
+  if (options?.workspaceRoot) {
+    await validateProjectSkillImportPath(resolvedSkillDir, options.workspaceRoot, inventoryMode);
+  }
   const skillFilePath = path.join(resolvedSkillDir, "SKILL.md");
   const markdown = await fs.readFile(skillFilePath, "utf8");
   const parsed = parseFrontmatterMarkdown(markdown);
@@ -1205,7 +1302,7 @@ export async function readLocalSkillImportFromDirectory(
     sourceKind: "local_path",
     ...(options?.metadata ?? {}),
   };
-  const inventory = await collectLocalSkillInventory(resolvedSkillDir, options?.inventoryMode ?? "full");
+  const inventory = await collectLocalSkillInventory(resolvedSkillDir, inventoryMode);
 
   return {
     key: deriveCanonicalSkillKey(companyId, {
@@ -1231,12 +1328,22 @@ export async function readLocalSkillImportFromDirectory(
 
 export async function discoverProjectWorkspaceSkillDirectories(target: ProjectSkillScanTarget): Promise<Array<{
   skillDir: string;
+  directoryRoot: string;
+  relativePath: string;
   inventoryMode: LocalSkillInventoryMode;
 }>> {
-  const discovered = new Map<string, LocalSkillInventoryMode>();
+  const discovered = new Map<string, {
+    directoryRoot: string;
+    relativePath: string;
+    inventoryMode: LocalSkillInventoryMode;
+  }>();
   const rootSkillPath = path.join(target.workspaceCwd, "SKILL.md");
   if ((await statPath(rootSkillPath))?.isFile()) {
-    discovered.set(path.resolve(target.workspaceCwd), "project_root");
+    discovered.set(path.resolve(target.workspaceCwd), {
+      directoryRoot: ".",
+      relativePath: ".",
+      inventoryMode: "project_root",
+    });
   }
 
   for (const relativeRoot of PROJECT_SCAN_DIRECTORY_ROOTS) {
@@ -1246,16 +1353,34 @@ export async function discoverProjectWorkspaceSkillDirectories(target: ProjectSk
 
     const entries = await fs.readdir(absoluteRoot, { withFileTypes: true }).catch(() => []);
     for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
       const absoluteSkillDir = path.resolve(absoluteRoot, entry.name);
+      const entryStat = entry.isSymbolicLink() ? await statPath(absoluteSkillDir) : null;
+      if (!entry.isDirectory() && !entryStat?.isDirectory()) continue;
       if (!(await statPath(path.join(absoluteSkillDir, "SKILL.md")))?.isFile()) continue;
-      discovered.set(absoluteSkillDir, "full");
+      discovered.set(absoluteSkillDir, {
+        directoryRoot: relativeRoot,
+        relativePath: normalizePortablePath(path.relative(target.workspaceCwd, absoluteSkillDir)),
+        inventoryMode: "full",
+      });
     }
   }
 
   return Array.from(discovered.entries())
-    .map(([skillDir, inventoryMode]) => ({ skillDir, inventoryMode }))
+    .map(([skillDir, details]) => ({ skillDir, ...details }))
     .sort((left, right) => left.skillDir.localeCompare(right.skillDir));
+}
+
+function normalizeProjectScanSelectionPath(value: string): string | null {
+  const trimmed = value.trim().replace(/\\/g, "/");
+  if (trimmed === ".") return ".";
+  if (!trimmed || trimmed.startsWith("/") || /^[A-Za-z]:\//.test(trimmed)) return null;
+  const segments = trimmed.split("/").filter(Boolean);
+  if (segments.length === 0 || segments.some((segment) => segment === "." || segment === "..")) return null;
+  return segments.join("/");
+}
+
+function projectScanSelectionKey(workspaceId: string, relativePath: string) {
+  return `${workspaceId}\u0000${relativePath}`;
 }
 
 async function readLocalSkillImports(companyId: string, sourcePath: string): Promise<ImportedSkill[]> {
@@ -4251,12 +4376,15 @@ export function companySkillService(db: Db) {
     input: CompanySkillProjectScanRequest = {},
   ): Promise<CompanySkillProjectScanResult> {
     await ensureSkillInventoryCurrent(companyId);
+    const mode = input.mode ?? "import";
+    const selectiveImport = mode === "import" && input.selection !== undefined;
     const projectRows = input.projectIds?.length
       ? await projects.listByIds(companyId, input.projectIds)
       : await projects.list(companyId);
     const workspaceFilter = new Set(input.workspaceIds ?? []);
     const skipped: CompanySkillProjectScanSkipped[] = [];
     const conflicts: CompanySkillProjectScanConflict[] = [];
+    const candidates: CompanySkillProjectScanCandidate[] = [];
     const warnings: string[] = [];
     const imported: CompanySkill[] = [];
     const updated: CompanySkill[] = [];
@@ -4264,8 +4392,40 @@ export function companySkillService(db: Db) {
     const acceptedSkills = [...availableSkills];
     const acceptedByKey = new Map(acceptedSkills.map((skill) => [skill.key, skill]));
     const scanTargets: ProjectSkillScanTarget[] = [];
+    const workspaceContexts = new Map<string, {
+      projectId: string;
+      projectName: string;
+      workspaceId: string;
+      workspaceName: string;
+    }>();
+    const selectedPaths = new Map<string, { workspaceId: string; path: string; slug?: string }>();
+    const invalidSelections: Array<{ workspaceId: string; path: string; slug?: string }> = [];
+    const rediscoveredSelections = new Set<string>();
     const scannedProjectIds = new Set<string>();
     let discovered = 0;
+
+    for (const selection of input.selection ?? []) {
+      const normalizedPath = normalizeProjectScanSelectionPath(selection.path);
+      if (!normalizedPath) {
+        invalidSelections.push(selection);
+        continue;
+      }
+      const renamedSlug = selection.slug === undefined
+        ? undefined
+        : normalizeSkillSlug(selection.slug);
+      if (selection.slug !== undefined && !renamedSlug) {
+        invalidSelections.push(selection);
+        continue;
+      }
+      selectedPaths.set(projectScanSelectionKey(selection.workspaceId, normalizedPath), {
+        workspaceId: selection.workspaceId,
+        path: normalizedPath,
+        ...(renamedSlug ? { slug: renamedSlug } : {}),
+      });
+    }
+    const selectedWorkspaceIds = new Set(
+      Array.from(selectedPaths.values()).map((selection) => selection.workspaceId),
+    );
 
     const trackWarning = (message: string) => {
       warnings.push(message);
@@ -4280,7 +4440,14 @@ export function companySkillService(db: Db) {
 
     for (const project of projectRows) {
       for (const workspace of project.workspaces) {
+        workspaceContexts.set(workspace.id, {
+          projectId: project.id,
+          projectName: project.name,
+          workspaceId: workspace.id,
+          workspaceName: workspace.name,
+        });
         if (workspaceFilter.size > 0 && !workspaceFilter.has(workspace.id)) continue;
+        if (selectiveImport && !selectedWorkspaceIds.has(workspace.id)) continue;
         const workspaceCwd = asString(workspace.cwd);
         if (!workspaceCwd) {
           skipped.push({
@@ -4323,6 +4490,11 @@ export function companySkillService(db: Db) {
 
       for (const directory of directories) {
         discovered += 1;
+        const selectionKey = projectScanSelectionKey(target.workspaceId, directory.relativePath);
+        const selected = !selectiveImport || selectedPaths.has(selectionKey);
+        const selectedRename = selectedPaths.get(selectionKey)?.slug;
+        if (selectedPaths.has(selectionKey)) rediscoveredSelections.add(selectionKey);
+        if (selectiveImport && !selected) continue;
 
         let nextSkill: ImportedSkill;
         try {
@@ -4336,21 +4508,93 @@ export function companySkillService(db: Db) {
               workspaceName: target.workspaceName,
               workspaceCwd: target.workspaceCwd,
             },
+            workspaceRoot: target.workspaceCwd,
           });
         } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
+          const message = projectSkillImportFailureReason(error);
+          candidates.push({
+            slug: path.basename(directory.skillDir),
+            name: path.basename(directory.skillDir),
+            description: null,
+            workspaceId: target.workspaceId,
+            workspaceName: target.workspaceName,
+            projectId: target.projectId,
+            projectName: target.projectName,
+            directoryRoot: directory.directoryRoot,
+            relativePath: directory.relativePath,
+            status: "skipped",
+            reason: message,
+          });
           skipped.push({
             projectId: target.projectId,
             projectName: target.projectName,
             workspaceId: target.workspaceId,
             workspaceName: target.workspaceName,
             path: directory.skillDir,
-            reason: trackWarning(`Skipped ${directory.skillDir}: ${message}`),
+            reason: trackWarning(
+              `Skipped ${target.projectName} / ${target.workspaceName} / ${directory.relativePath}: ${message}`,
+            ),
           });
           continue;
         }
 
         const normalizedSourceDir = normalizeSourceLocatorDirectory(nextSkill.sourceLocator);
+        const existingBySource = normalizedSourceDir
+          ? acceptedSkills.find((skill) => normalizeSkillDirectory(skill) === normalizedSourceDir) ?? null
+          : null;
+        if (existingBySource) {
+          candidates.push({
+            slug: nextSkill.slug,
+            name: nextSkill.name,
+            description: nextSkill.description,
+            workspaceId: target.workspaceId,
+            workspaceName: target.workspaceName,
+            projectId: target.projectId,
+            projectName: target.projectName,
+            directoryRoot: directory.directoryRoot,
+            relativePath: directory.relativePath,
+            status: "already_imported",
+            existingSkillId: existingBySource.id,
+            reason: "This skill is already installed from the same path.",
+          });
+          continue;
+        }
+
+        const existingBundledBySlug = acceptedSkills.find((skill) => (
+          skill.slug === nextSkill.slug
+          && (isPaperclipBundledSkillKey(skill.key) || asString(skill.metadata?.sourceKind) === "paperclip_bundled")
+        )) ?? null;
+        if (existingBundledBySlug) {
+          candidates.push({
+            slug: nextSkill.slug,
+            name: nextSkill.name,
+            description: nextSkill.description,
+            workspaceId: target.workspaceId,
+            workspaceName: target.workspaceName,
+            projectId: target.projectId,
+            projectName: target.projectName,
+            directoryRoot: directory.directoryRoot,
+            relativePath: directory.relativePath,
+            status: "already_imported",
+            existingSkillId: existingBundledBySlug.id,
+            reason: "This skill is already available as a built-in.",
+          });
+          continue;
+        }
+
+        if (selectedRename) {
+          const renamedKey = `local/${hashSkillValue(path.resolve(nextSkill.sourceLocator ?? directory.skillDir))}/${selectedRename}`;
+          nextSkill = {
+            ...nextSkill,
+            key: renamedKey,
+            slug: selectedRename,
+            metadata: {
+              ...(isPlainRecord(nextSkill.metadata) ? nextSkill.metadata : {}),
+              skillKey: renamedKey,
+            },
+          };
+        }
+
         const existingByKey = acceptedByKey.get(nextSkill.key) ?? null;
         if (existingByKey) {
           const existingSourceDir = normalizeSkillDirectory(existingByKey);
@@ -4360,6 +4604,7 @@ export function companySkillService(db: Db) {
             || !normalizedSourceDir
             || existingSourceDir !== normalizedSourceDir
           ) {
+            const reason = `Skill key ${nextSkill.key} already points at ${existingByKey.sourceLocator ?? "another source"}.`;
             conflicts.push({
               slug: nextSkill.slug,
               key: nextSkill.key,
@@ -4371,11 +4616,40 @@ export function companySkillService(db: Db) {
               existingSkillId: existingByKey.id,
               existingSkillKey: existingByKey.key,
               existingSourceLocator: existingByKey.sourceLocator,
-              reason: `Skill key ${nextSkill.key} already points at ${existingByKey.sourceLocator ?? "another source"}.`,
+              reason,
+            });
+            candidates.push({
+              slug: nextSkill.slug,
+              name: nextSkill.name,
+              description: nextSkill.description,
+              workspaceId: target.workspaceId,
+              workspaceName: target.workspaceName,
+              projectId: target.projectId,
+              projectName: target.projectName,
+              directoryRoot: directory.directoryRoot,
+              relativePath: directory.relativePath,
+              status: "conflict",
+              existingSkillId: existingByKey.id,
+              reason,
             });
             continue;
           }
 
+          candidates.push({
+            slug: nextSkill.slug,
+            name: nextSkill.name,
+            description: nextSkill.description,
+            workspaceId: target.workspaceId,
+            workspaceName: target.workspaceName,
+            projectId: target.projectId,
+            projectName: target.projectName,
+            directoryRoot: directory.directoryRoot,
+            relativePath: directory.relativePath,
+            status: "already_imported",
+            existingSkillId: existingByKey.id,
+            ...(selectiveImport && !selected ? { reason: "Not selected for import." } : {}),
+          });
+          if (mode === "preview" || !selected) continue;
           const persisted = (await upsertImportedSkills(companyId, [nextSkill]))[0];
           if (!persisted) continue;
           updated.push(persisted);
@@ -4388,6 +4662,7 @@ export function companySkillService(db: Db) {
           return normalizeSkillDirectory(skill) !== normalizedSourceDir;
         });
         if (slugConflict) {
+          const reason = `Slug ${nextSkill.slug} is already in use by ${slugConflict.sourceLocator ?? slugConflict.key}.`;
           conflicts.push({
             slug: nextSkill.slug,
             key: nextSkill.key,
@@ -4399,15 +4674,65 @@ export function companySkillService(db: Db) {
             existingSkillId: slugConflict.id,
             existingSkillKey: slugConflict.key,
             existingSourceLocator: slugConflict.sourceLocator,
-            reason: `Slug ${nextSkill.slug} is already in use by ${slugConflict.sourceLocator ?? slugConflict.key}.`,
+            reason,
+          });
+          candidates.push({
+            slug: nextSkill.slug,
+            name: nextSkill.name,
+            description: nextSkill.description,
+            workspaceId: target.workspaceId,
+            workspaceName: target.workspaceName,
+            projectId: target.projectId,
+            projectName: target.projectName,
+            directoryRoot: directory.directoryRoot,
+            relativePath: directory.relativePath,
+            status: "conflict",
+            existingSkillId: slugConflict.id,
+            reason,
           });
           continue;
         }
 
+        candidates.push({
+          slug: nextSkill.slug,
+          name: nextSkill.name,
+          description: nextSkill.description,
+          workspaceId: target.workspaceId,
+          workspaceName: target.workspaceName,
+          projectId: target.projectId,
+          projectName: target.projectName,
+          directoryRoot: directory.directoryRoot,
+          relativePath: directory.relativePath,
+          status: selected ? "new" : "skipped",
+          ...(!selected ? { reason: "Not selected for import." } : {}),
+        });
+        if (mode === "preview" || !selected) continue;
         const persisted = (await upsertImportedSkills(companyId, [nextSkill]))[0];
         if (!persisted) continue;
         imported.push(persisted);
         upsertAcceptedSkill(persisted);
+      }
+    }
+
+    if (selectiveImport) {
+      const unmatchedSelections = [
+        ...invalidSelections,
+        ...Array.from(selectedPaths.entries())
+          .filter(([key]) => !rediscoveredSelections.has(key))
+          .map(([, selection]) => selection),
+      ];
+      for (const selection of unmatchedSelections) {
+        const context = workspaceContexts.get(selection.workspaceId) ?? null;
+        skipped.push({
+          projectId: context?.projectId ?? null,
+          projectName: context?.projectName ?? null,
+          workspaceId: selection.workspaceId,
+          workspaceName: context?.workspaceName ?? null,
+          path: selection.path,
+          reason: trackWarning(
+            `Skipped selection ${selection.workspaceId}:${selection.path}: the path was not rediscovered in the project workspace scan.`,
+          ),
+        });
       }
     }
 
@@ -4419,6 +4744,7 @@ export function companySkillService(db: Db) {
       updated,
       skipped,
       conflicts,
+      candidates,
       warnings,
     };
   }

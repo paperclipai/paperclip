@@ -299,7 +299,7 @@ describeEmbeddedPostgres("plugin install auto-build route", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
-  });
+  }, 30_000);
 
   it("auto-builds bundled local plugins during POST /api/plugins/install when dist is missing", async () => {
     const fixture = await createBundledPluginFixture("success");

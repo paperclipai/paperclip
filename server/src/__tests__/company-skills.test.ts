@@ -141,10 +141,25 @@ describe("project workspace skill discovery", () => {
     });
 
     expect(discovered).toEqual([
-      { skillDir: path.resolve(workspace), inventoryMode: "project_root" },
-      { skillDir: path.resolve(workspace, ".agents", "skills", "release"), inventoryMode: "full" },
-      { skillDir: path.resolve(workspace, "skills", ".system", "paperclip"), inventoryMode: "full" },
-      { skillDir: path.resolve(workspace, "skills", "find-skills"), inventoryMode: "full" },
+      { skillDir: path.resolve(workspace), directoryRoot: ".", relativePath: ".", inventoryMode: "project_root" },
+      {
+        skillDir: path.resolve(workspace, ".agents", "skills", "release"),
+        directoryRoot: ".agents/skills",
+        relativePath: ".agents/skills/release",
+        inventoryMode: "full",
+      },
+      {
+        skillDir: path.resolve(workspace, "skills", ".system", "paperclip"),
+        directoryRoot: "skills/.system",
+        relativePath: "skills/.system/paperclip",
+        inventoryMode: "full",
+      },
+      {
+        skillDir: path.resolve(workspace, "skills", "find-skills"),
+        directoryRoot: "skills",
+        relativePath: "skills/find-skills",
+        inventoryMode: "full",
+      },
     ]);
   });
 
@@ -175,6 +190,22 @@ describe("project workspace skill discovery", () => {
     ]));
     expect(imported.fileInventory.map((entry) => entry.kind)).toContain("script");
     expect(imported.metadata?.sourceKind).toBe("project_scan");
+  });
+
+  it("rejects symlinks reachable from a project-scanned skill", async () => {
+    const workspace = await makeTempDir("paperclip-linked-skill-file-");
+    const skillDir = path.join(workspace, ".codex", "skills", "linked-file");
+    const outsideFile = path.join(await makeTempDir("paperclip-linked-skill-outside-"), "outside.md");
+    await writeSkillDir(skillDir, "Linked File");
+    await fs.mkdir(path.join(skillDir, "references"), { recursive: true });
+    await fs.writeFile(outsideFile, "outside workspace\n", "utf8");
+    await fs.symlink(outsideFile, path.join(skillDir, "references", "outside.md"));
+
+    await expect(readLocalSkillImportFromDirectory(
+      "33333333-3333-4333-8333-333333333333",
+      skillDir,
+      { inventoryMode: "full", workspaceRoot: workspace },
+    )).rejects.toThrow(/symbolic link/);
   });
 
   it("parses inline object array items in skill frontmatter metadata", async () => {

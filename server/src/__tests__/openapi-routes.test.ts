@@ -165,6 +165,16 @@ describe("openapi routes", () => {
       },
       required: ["name"],
     });
+    expect(JSON.stringify(res.body.paths["/api/companies"].post.responses)).not.toContain("candidates");
+    expect(res.body.paths["/api/companies/{companyId}/skills/scan-projects"].post.responses["200"].content[
+      "application/json"
+    ].schema).toMatchObject({
+      type: "object",
+      properties: {
+        candidates: { type: "array" },
+      },
+      required: expect.arrayContaining(["candidates"]),
+    });
     expect(res.body.paths["/api/agents/{id}/keys"].post.requestBody.content["application/json"].schema).toMatchObject({
       type: "object",
       properties: {
