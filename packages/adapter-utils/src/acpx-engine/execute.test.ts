@@ -593,7 +593,7 @@ describe("shared ACPX engine runtime behavior", () => {
   it("busts the session fingerprint when resolved adapter env changes but not across wakes", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
-    const baseConfig = { agentCommand: "node ./fake-acp.js", stateDir };
+    const baseConfig = { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir };
 
     const first = await runExecutor(
       { ...baseConfig, env: { OPENROUTER_API_KEY: "value-1" } },
@@ -623,7 +623,7 @@ describe("shared ACPX engine runtime behavior", () => {
   it("busts the session fingerprint when a stable configured PAPERCLIP_* value rotates", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
-    const baseConfig = { agentCommand: "node ./fake-acp.js", stateDir };
+    const baseConfig = { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir };
 
     // An explicitly configured PAPERCLIP_API_KEY is stable per-run config (not a
     // per-wake runtime var): rotating it must invalidate a warm/resumable session
