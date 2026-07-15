@@ -40,6 +40,16 @@ export function parseCostDateRange(query: Record<string, unknown>) {
 export function parseCostLimit(query: Record<string, unknown>) {
   const raw = Array.isArray(query.limit) ? query.limit[0] : query.limit;
   if (raw == null || raw === "") return 100;
+  const limit = typeof raw === "number" ? raw : Number.parseInt(String(raw), 10);
+  if (!Number.isFinite(limit) || limit <= 0 || limit > 500) {
+    throw badRequest("invalid 'limit' value");
+  }
+  return limit;
+}
+
+function parseCostEventLimit(query: Record<string, unknown>) {
+  const raw = Array.isArray(query.limit) ? query.limit[0] : query.limit;
+  if (raw == null || raw === "") return 100;
   const limit = typeof raw === "number" ? raw : Number(String(raw));
   if (!Number.isInteger(limit) || limit <= 0 || limit > 500) {
     throw badRequest("invalid 'limit' value");
@@ -61,7 +71,7 @@ export function parseCostEventListQuery(query: Record<string, unknown>) {
     throw badRequest("'from' must not be later than 'to'");
   }
 
-  const limit = parseCostLimit(query);
+  const limit = parseCostEventLimit(query);
   const cursor = parseSingleQueryValue(query.cursor, "cursor");
   const rawBillingTypes = query.billingType == null
     ? []

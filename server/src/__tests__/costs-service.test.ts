@@ -280,6 +280,8 @@ describe("cost routes", () => {
   it("accepts valid finance event list limits", async () => {
     const { parseCostLimit } = await loadCostParsers();
     expect(parseCostLimit({ limit: "25" })).toBe(25);
+    expect(parseCostLimit({ limit: "1.5" })).toBe(1);
+    expect(parseCostLimit({ limit: "10x" })).toBe(10);
   });
 
   it("lists cost events with default pagination options", async () => {
