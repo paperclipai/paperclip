@@ -3,6 +3,15 @@ import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createInviteRateLimiter } from "../services/invite-rate-limit.js";
 
+vi.mock("../services/index.js", () => ({
+  accessService: vi.fn(() => ({})),
+  agentService: vi.fn(() => ({})),
+  boardAuthService: vi.fn(() => ({})),
+  deduplicateAgentName: vi.fn((name: string) => name),
+  logActivity: vi.fn().mockResolvedValue(undefined),
+  notifyHireApproved: vi.fn().mockResolvedValue(undefined),
+}));
+
 function createSelectChain(rows: unknown[]) {
   const query = {
     then(resolve: (value: unknown[]) => unknown) {
