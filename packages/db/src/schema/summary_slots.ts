@@ -15,6 +15,7 @@ export const summarySlots = pgTable(
     slotKey: text("slot_key").$type<SummarySlotKey>().notNull(),
     documentId: uuid("document_id").references(() => documents.id, { onDelete: "set null" }),
     status: text("status").$type<SummarySlotStatus>().notNull().default("idle"),
+    failureReason: text("failure_reason"),
     generatingIssueId: uuid("generating_issue_id").references(() => issues.id, { onDelete: "set null" }),
     lastGeneratedAt: timestamp("last_generated_at", { withTimezone: true }),
     lastGeneratedByAgentId: uuid("last_generated_by_agent_id").references(() => agents.id, {

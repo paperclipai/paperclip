@@ -240,10 +240,7 @@ export function SummarySlotCard({
   const isGenerating = slotQuery.data?.slot?.status === "generating"
     && generatingIssue
     && !TERMINAL_ISSUE_STATUSES.has(generatingIssue.status);
-  const generationStopped = slotQuery.data?.slot?.status === "generating"
-    && generatingIssue
-    && TERMINAL_ISSUE_STATUSES.has(generatingIssue.status)
-    && !latestDocument;
+  const generationFailed = slotQuery.data?.slot?.status === "failed";
   const canGenerateFirstSummary = summarizerState?.status === "ready";
 
   if (experimentalQuery.isLoading || !summariesEnabled) return null;
@@ -312,7 +309,7 @@ export function SummarySlotCard({
               ) : null}
             </>
           ) : null}
-          {latestDocument ? (
+          {latestDocument && !generationFailed ? (
             <Button
               type="button"
               size="sm"
@@ -405,10 +402,10 @@ export function SummarySlotCard({
         </InlineBanner>
       ) : null}
 
-      {!slotQuery.isError && generationStopped && generatingIssue ? (
+      {!slotQuery.isError && generationFailed ? (
         <InlineBanner
-          tone="warning"
-          title="Summary generation stopped"
+          tone="danger"
+          title="Summary generation failed"
           actions={
             <Button
               type="button"
@@ -420,7 +417,7 @@ export function SummarySlotCard({
             </Button>
           }
         >
-          The linked generation task finished without writing a summary: {issueLabel(generatingIssue)}.
+          {slotQuery.data?.slot?.failureReason ?? "The generation task ended before writing a summary."}
         </InlineBanner>
       ) : null}
 
@@ -468,7 +465,7 @@ export function SummarySlotCard({
         </div>
       ) : null}
 
-      {!slotQuery.isError && !latestDocument && !isGenerating && !generationStopped && canGenerateFirstSummary ? (
+      {!slotQuery.isError && !latestDocument && !isGenerating && !generationFailed && canGenerateFirstSummary ? (
         <div className="flex flex-col items-start gap-3 rounded-lg border border-border bg-muted/30 p-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="space-y-1 text-sm">
             <p className="font-medium text-foreground">No summary yet</p>

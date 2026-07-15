@@ -146,6 +146,7 @@ function slot(overrides: Partial<SummarySlot> = {}): SummarySlot {
     slotKey: "header",
     documentId: null,
     status: "idle",
+    failureReason: null,
     generatingIssueId: null,
     lastGeneratedAt: null,
     lastGeneratedByAgentId: null,
@@ -446,7 +447,11 @@ describe("SummarySlotCard", () => {
 
   it("shows stopped generation as a failed retryable state", async () => {
     mockSummarySlotsApi.get.mockResolvedValue({
-      slot: slot({ status: "generating", generatingIssueId: "issue-1" }),
+      slot: slot({
+        status: "failed",
+        failureReason: "Summary generation task PAP-14000 finished without writing a summary.",
+        generatingIssueId: "issue-1",
+      }),
       document: null,
       generatingIssue: issue({ status: "done" }),
     } satisfies GetSummarySlotResponse);
@@ -454,7 +459,9 @@ describe("SummarySlotCard", () => {
     root = renderCard(container);
     await flushQueries();
 
-    expect(container.textContent).toContain("Summary generation stopped");
+    expect(container.textContent).toContain("Summary generation failed");
+    expect(container.textContent).toContain("PAP-14000 finished without writing a summary");
+    expect(container.querySelector('[role="note"]')?.className).toContain("text-destructive");
     const retryButton = [...container.querySelectorAll<HTMLButtonElement>("button")].find(
       (button) => button.textContent === "Retry",
     );

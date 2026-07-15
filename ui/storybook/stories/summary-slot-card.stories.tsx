@@ -94,6 +94,7 @@ function slot(overrides: Partial<SummarySlot> = {}): SummarySlot {
     slotKey: SLOT_KEY,
     documentId: null,
     status: "idle",
+    failureReason: null,
     generatingIssueId: null,
     lastGeneratedAt: null,
     lastGeneratedByAgentId: null,
@@ -387,7 +388,11 @@ const historySeed: SeedInput = {
 const failedSeed: SeedInput = {
   agent: readySummarizer(),
   slotResponse: {
-    slot: slot({ status: "generating", generatingIssueId: "issue-1" }),
+    slot: slot({
+      status: "failed",
+      failureReason: "Summary generation task PAP-14000: Summarize project finished without writing a summary.",
+      generatingIssueId: "issue-1",
+    }),
     document: null,
     generatingIssue: issue({ status: "done" }),
   },

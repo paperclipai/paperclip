@@ -20,6 +20,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { summarySlotService } from "../services/summary-slots.ts";
 import { withBuiltInAgentMarker } from "../services/built-in-agent-metadata.ts";
+import { issueService } from "../services/issues.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -273,14 +274,43 @@ describeEmbeddedPostgres("summary slot service", () => {
       const svc = summarySlotService(db);
 
       const first = await svc.generate(projectSelector(companyId, projectId), { userId: "board-user" });
-      await db.update(issues).set({ status: "done" }).where(eq(issues.id, first.generatingIssue.id));
+      await issueService(db).update(first.generatingIssue.id, { status: "done" });
+
+      const failed = await svc.getSlot(projectSelector(companyId, projectId));
+      expect(failed.slot).toMatchObject({
+        status: "failed",
+        generatingIssueId: first.generatingIssue.id,
+        failureReason: expect.stringContaining("finished without writing a summary"),
+      });
 
       const second = await svc.generate(projectSelector(companyId, projectId), { userId: "board-user" });
       expect(second.alreadyGenerating).toBe(false);
       expect(second.generatingIssue.id).not.toBe(first.generatingIssue.id);
+      expect(second.slot).toMatchObject({
+        status: "generating",
+        failureReason: null,
+        generatingIssueId: second.generatingIssue.id,
+      });
 
       const issueRows = await db.select().from(issues).where(eq(issues.companyId, companyId));
       expect(issueRows).toHaveLength(2);
+    });
+
+    it("marks the slot failed when its generation task is cancelled without a write", async () => {
+      const companyId = await seedCompany();
+      const projectId = await seedProject(companyId);
+      await seedSummarizer(companyId);
+      const svc = summarySlotService(db);
+
+      const generated = await svc.generate(projectSelector(companyId, projectId), { userId: "board-user" });
+      await issueService(db).update(generated.generatingIssue.id, { status: "cancelled" });
+
+      const result = await svc.getSlot(projectSelector(companyId, projectId));
+      expect(result.slot).toMatchObject({
+        status: "failed",
+        generatingIssueId: generated.generatingIssue.id,
+        failureReason: expect.stringContaining("was cancelled before writing a summary"),
+      });
     });
   });
 

@@ -14,6 +14,7 @@ export interface SummarySlot {
   slotKey: SummarySlotKey;
   documentId: string | null;
   status: SummarySlotStatus;
+  failureReason: string | null;
   generatingIssueId: string | null;
   lastGeneratedAt: Date | string | null;
   lastGeneratedByAgentId: string | null;

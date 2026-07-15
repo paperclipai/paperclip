@@ -37,6 +37,7 @@ function slot(overrides: Record<string, unknown> = {}) {
     slotKey: "header",
     documentId: null,
     status: "idle",
+    failureReason: null,
     generatingIssueId: null,
     lastGeneratedAt: null,
     lastGeneratedByAgentId: null,

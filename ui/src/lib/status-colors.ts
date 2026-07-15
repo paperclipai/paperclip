@@ -199,17 +199,18 @@ export const liveBlueBadge = "bg-blue-500/10 border-blue-500/30 text-blue-600 da
 // Inline banner tones (built-in agents provenance / paused notices)
 //
 // Softer, full-width banner surface derived from the same brand hue anchors as
-// `brandChipBadge`. `info` (blue) carries provenance/informational context;
-// `warning` (amber) carries paused/attention context. Consumed by
+// `brandChipBadge`. `info` carries provenance/informational context, `warning`
+// carries paused/attention context, and `danger` carries failed actions. Consumed by
 // `<InlineBanner>` so feature banners stay token-backed instead of hand-rolling
 // per-instance `bg-yellow-*`/`bg-blue-*` recipes.
 // ---------------------------------------------------------------------------
 
-export type BannerTone = "info" | "warning";
+export type BannerTone = "info" | "warning" | "danger";
 
 export const brandBanner: Record<BannerTone, string> = {
   info: "border-[#2563EB]/40 bg-[#DBEAFE]/50 text-[#1D4ED8] dark:border-[#2563eb59] dark:bg-[#2563eb14] dark:text-[#93C5FD]",
   warning: "border-[#F59E0B]/50 bg-[#FEF3C7]/60 text-[#B45309] dark:border-[#f59e0b59] dark:bg-[#f59e0b12] dark:text-[#F59E0B]",
+  danger: "border-destructive/40 bg-destructive/10 text-destructive",
 };
 
 export const issueStatusColor: Record<string, BrandChipColor> = {

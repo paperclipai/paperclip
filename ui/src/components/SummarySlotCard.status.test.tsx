@@ -92,6 +92,7 @@ function slot(overrides: Partial<SummarySlot> = {}): SummarySlot {
     slotKey: "header",
     documentId: null,
     status: "generating",
+    failureReason: null,
     generatingIssueId: "issue-1",
     lastGeneratedAt: null,
     lastGeneratedByAgentId: null,

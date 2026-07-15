@@ -72,6 +72,7 @@ function mapSlot(row: SummarySlotRow): SummarySlot {
     slotKey: row.slotKey,
     documentId: row.documentId ?? null,
     status: row.status,
+    failureReason: row.failureReason ?? null,
     generatingIssueId: row.generatingIssueId ?? null,
     lastGeneratedAt: row.lastGeneratedAt ?? null,
     lastGeneratedByAgentId: row.lastGeneratedByAgentId ?? null,
@@ -481,6 +482,7 @@ export function summarySlotService(db: Db) {
 
     const slotRow = await upsertSlot(sel, {
       status: "generating",
+      failureReason: null,
       generatingIssueId: generationIssue.id,
     });
 
@@ -669,6 +671,7 @@ export function summarySlotService(db: Db) {
       const slotPatch = {
         documentId: documentRow.id,
         status: "idle" as const,
+        failureReason: null,
         generatingIssueId: null,
         lastGeneratedAt: now,
         lastGeneratedByAgentId: actor.agentId ?? null,

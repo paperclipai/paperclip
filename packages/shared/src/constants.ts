@@ -223,7 +223,7 @@ export const SUMMARY_SLOT_SCOPE_KINDS = ["project", "workspaces_overview", "proj
 export type SummarySlotScopeKind = (typeof SUMMARY_SLOT_SCOPE_KINDS)[number];
 export const SUMMARY_SLOT_KEYS = ["header"] as const;
 export type SummarySlotKey = (typeof SUMMARY_SLOT_KEYS)[number];
-export const SUMMARY_SLOT_STATUSES = ["idle", "generating"] as const;
+export const SUMMARY_SLOT_STATUSES = ["idle", "generating", "failed"] as const;
 export type SummarySlotStatus = (typeof SUMMARY_SLOT_STATUSES)[number];
 
 export const ISSUE_COMMENT_AUTHOR_TYPES = ["user", "agent", "system"] as const;
