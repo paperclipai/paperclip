@@ -35,6 +35,21 @@ describe("classifyAdapterFailureForRecovery", () => {
     });
   });
 
+  it("treats timezone-less provider reset clocks as UTC", () => {
+    const now = new Date("2026-07-15T20:00:00.000Z");
+    const classification = classifyAdapterFailureForRecovery({
+      errorCode: "adapter_failed",
+      error: "You've hit your usage limit. Try again at 4:30 PM.",
+      resultJson: null,
+    }, now);
+
+    expect(classification).toEqual({
+      kind: "provider_quota",
+      retryAt: new Date("2026-07-16T16:30:00.000Z"),
+      parsedResetTime: true,
+    });
+  });
+
   it.each([
     "model_not_found: requested model does not exist",
     "No API credentials were found for this provider",

@@ -297,7 +297,7 @@ const CONTINUATION_WAITING_ON_REVIEW_ERROR_CODE = "issue_continuation_waiting_on
 const CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS = 3;
 const CONTINUATION_RECOVERY_DEFAULT_MAX_ATTEMPTS = 1;
 const CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS = 60_000;
-export const PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS = 15 * 60 * 1000;
+export const PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS = 60 * 60 * 1000;
 
 const PROVIDER_QUOTA_ERROR_RE =
   /(?:you(?:'|’)ve hit your usage limit|usage limit(?: reached| exceeded)?|provider quota|quota (?:limit )?exceeded|model (?:is )?at capacity|capacity limit)/i;
@@ -325,8 +325,8 @@ function parseProviderQuotaClockReset(error: string, now: Date) {
   const timeZone = (match[4] ?? match[5])?.trim();
   if (!timeZone) {
     const retryAt = new Date(now);
-    retryAt.setHours(hour, minute, 0, 0);
-    if (retryAt.getTime() <= now.getTime()) retryAt.setDate(retryAt.getDate() + 1);
+    retryAt.setUTCHours(hour, minute, 0, 0);
+    if (retryAt.getTime() <= now.getTime()) retryAt.setUTCDate(retryAt.getUTCDate() + 1);
     return retryAt;
   }
 
@@ -3532,8 +3532,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           if (monitored) {
             result.providerQuotaMonitored += 1;
             result.issueIds.push(issue.id);
-            continue;
+          } else {
+            result.skipped += 1;
           }
+          continue;
         } else {
           const updated = await escalateStrandedAssignedIssue({
             issue,
