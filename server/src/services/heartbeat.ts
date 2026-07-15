@@ -12851,6 +12851,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         });
       };
 
+      // Defensive pre-registration: ensure the heartbeat_runs row exists before
+      // handing out the JWT. Under normal operation the row was created by
+      // enqueueWakeup and transitioned to "running" by claimQueuedRun, so this
+      // is a no-op. It protects against the rare case where an embedded-Postgres
+      // crash between enqueueWakeup and now lost the committed row, causing FK
+      // violations in activity_log / issue_comments when the agent writes back.
+      // (TRA-227)
+      await db
+        .insert(heartbeatRuns)
+        .values({
+          id: run.id,
+          companyId: run.companyId,
+          agentId: run.agentId,
+          invocationSource: run.invocationSource,
+          status: "running",
+        })
+        .onConflictDoNothing();
+
       const adapter = getServerAdapter(agent.adapterType);
       const localAgentJwtScope =
         issueRef?.workMode === "skill_test"
