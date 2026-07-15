@@ -248,6 +248,9 @@ describeEmbeddedPostgres("summary slot service", () => {
         "what the reader can approve on a skim vs what needs their eyes",
       );
       expect(issueRow.description).toContain(
+        "End the summary with a `**Recent work:**` block",
+      );
+      expect(issueRow.description).toContain(
         "at most three or four issues inline; never a trailing list of issue links",
       );
       expect(issueRow.description).toContain("Not a task list");

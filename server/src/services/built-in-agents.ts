@@ -196,13 +196,13 @@ const FALLBACK_SUMMARIZER_ROUTINE = [
 const FALLBACK_SUMMARIZER_SKILL = [
   "---",
   "name: summarize-status",
-  "description: Write a short, colloquial summary for a Paperclip summary slot that opens with the one or two decisions the reader must make — or, when nothing needs deciding, what to review split into easy approves and needs-your-eyes — each with a committed recommendation, streaming status updates as it works.",
+  "description: Write a short, colloquial summary for a Paperclip summary slot: open with the one or two decisions the reader must make — or, when nothing needs deciding, what to review — each with a recommendation, close with one or two recent pieces of work and where they stand, streaming status as it works.",
   "key: paperclipai/bundled/paperclip-operations/summarize-status",
   "---",
   "",
   "# Summarize status",
   "",
-  "Turn a Paperclip scope's current state into a short, colloquial Markdown summary — opening with a `**Decide:**` block of at most two bullets (each with the decision's context, a link, and an `**I suggest:**` recommendation), followed by plain prose on the one or two things that matter most, with at most three or four inline issue links and never a trailing link list — then write it back to the scope's summary slot. When nothing needs a decision, open with `**Nothing to decide right now.**` plus a `**Review:**` block (at most two bullets) triaging what is waiting on review — easy approves vs what needs the reader's eyes — each with a link and an `**I suggest:**` recommendation. Post the first `STATUS:` line immediately from the first task in context and keep streaming `STATUS:` lines while working. Not a task list. Read-and-report only; never fabricate status.",
+  "Turn a Paperclip scope's current state into a short, colloquial Markdown summary — opening with a `**Decide:**` block of at most two bullets (each with the decision's context, a link, and an `**I suggest:**` recommendation), followed by plain prose on the one or two things that matter most, with at most three or four inline issue links and never a trailing link list — then write it back to the scope's summary slot. When nothing needs a decision, open with `**Nothing to decide right now.**` plus a `**Review:**` block (at most two bullets) triaging what is waiting on review — easy approves vs what needs the reader's eyes — each with a link and an `**I suggest:**` recommendation. End every summary with a `**Recent work:**` block: at most two bullets, one line each, naming a recent piece of work and where it stands. Post the first `STATUS:` line immediately from the first task in context and keep streaming `STATUS:` lines while working. Not a task list. Read-and-report only; never fabricate status.",
   "",
 ].join("\n");
 

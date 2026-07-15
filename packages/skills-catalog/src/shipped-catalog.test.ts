@@ -85,6 +85,8 @@ describe("shipped skills catalog", () => {
     expect(skill).toContain("UI gracefully falls back to its spinner");
     expect(skill).toContain("**Review:**");
     expect(skill).toContain("approve on a skim");
+    expect(skill).toContain("**Recent work:**");
+    expect(skill).toContain("Not a changelog");
   });
 
   it("keeps repo and catalog skill descriptions within the prompt budget cap", () => {
