@@ -2025,13 +2025,22 @@ export function IssueDetail() {
     for (const ref of issueCacheRefs) {
       queryClient.setQueryData<InfiniteData<IssueComment[], string | null> | undefined>(
         queryKeys.issues.comments(ref),
-        (current) => current ? {
-          ...current,
-          pages: upsertIssueCommentInPages(current.pages, comment),
-        } : current,
+        (current) => {
+          if (current) {
+            return {
+              ...current,
+              pages: upsertIssueCommentInPages(current.pages, comment),
+            };
+          }
+          if (ref !== issueId) return current;
+          return {
+            pageParams: [null],
+            pages: upsertIssueCommentInPages(undefined, comment),
+          };
+        },
       );
     }
-  }, [issueCacheRefs, queryClient]);
+  }, [issueCacheRefs, issueId, queryClient]);
 
   const restoreQueuedCommentDraft = useCallback((body: string) => {
     commentComposerRef.current?.restoreDraft(body);
@@ -2102,13 +2111,14 @@ export function IssueDetail() {
   });
 
   const handleIssueUpdateSuccess = useCallback((response: IssueUpdateResponse) => {
-    const { comment: _comment, ...nextIssue } = response;
+    const { comment, ...nextIssue } = response;
     const issueRefs = new Set<string>([issueId!, nextIssue.id]);
     if (nextIssue.identifier) issueRefs.add(nextIssue.identifier);
     mergeIssueResponseIntoCaches(issueRefs, nextIssue);
+    if (comment) upsertCommentInCache(comment);
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(issueId!) });
     invalidateIssueCollections();
-  }, [invalidateIssueCollections, issueId, mergeIssueResponseIntoCaches, queryClient]);
+  }, [invalidateIssueCollections, issueId, mergeIssueResponseIntoCaches, queryClient, upsertCommentInCache]);
 
   const updateIssue = useMutation({
     mutationFn: (data: Record<string, unknown>) => issuesApi.update(issueId!, data),

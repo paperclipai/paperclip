@@ -399,11 +399,7 @@ function createExecutionState(overrides: Partial<IssueExecutionState> = {}): Iss
   };
 }
 
-type IssuePropertiesTestProps = Omit<ComponentProps<typeof IssueProperties>, "onSubmitExecutionDecision"> & {
-  onSubmitExecutionDecision?: ComponentProps<typeof IssueProperties>["onSubmitExecutionDecision"];
-};
-
-function renderPropertiesWithQueryClient(container: HTMLDivElement, props: IssuePropertiesTestProps) {
+function renderPropertiesWithQueryClient(container: HTMLDivElement, props: ComponentProps<typeof IssueProperties>) {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
@@ -413,17 +409,14 @@ function renderPropertiesWithQueryClient(container: HTMLDivElement, props: Issue
   act(() => {
     root.render(
       <QueryClientProvider client={queryClient}>
-        <IssueProperties
-          {...props}
-          onSubmitExecutionDecision={props.onSubmitExecutionDecision ?? vi.fn()}
-        />
+        <IssueProperties {...props} />
       </QueryClientProvider>,
     );
   });
   return { root, queryClient };
 }
 
-function renderProperties(container: HTMLDivElement, props: IssuePropertiesTestProps) {
+function renderProperties(container: HTMLDivElement, props: ComponentProps<typeof IssueProperties>) {
   const { root } = renderPropertiesWithQueryClient(container, props);
   return root;
 }
@@ -1198,7 +1191,6 @@ describe("IssueProperties", () => {
             issue={createIssue({ id: "issue-a", blockedBy })}
             childIssues={[]}
             onUpdate={vi.fn()}
-            onSubmitExecutionDecision={vi.fn()}
             inline
           />
         </QueryClientProvider>,
@@ -1223,7 +1215,6 @@ describe("IssueProperties", () => {
             issue={createIssue({ id: "issue-b", blockedBy })}
             childIssues={[]}
             onUpdate={vi.fn()}
-            onSubmitExecutionDecision={vi.fn()}
             inline
           />
         </QueryClientProvider>,
