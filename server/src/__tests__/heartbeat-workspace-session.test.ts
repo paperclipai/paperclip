@@ -1369,7 +1369,7 @@ describe("effective run execution workspace config freshness", () => {
   it.each([
     { name: "missing", status: null },
     { name: "archived", status: "archived" },
-  ])("fails loudly when the inherited workspace row is $name", async ({ status }) => {
+  ])("realizes a fresh workspace when the inherited workspace row is $name", async ({ status }) => {
     const reuseRequest = resolveExecutionWorkspaceReuseRequestForIssue({
       issueExecutionWorkspaceId: "workspace-old",
       issueExecutionWorkspacePreference: "reuse_existing",
@@ -1390,19 +1390,29 @@ describe("effective run execution workspace config freshness", () => {
       nextMetadata: metadata,
     });
     const realizeWorkspace = vi.fn(async () => ({ id: "fallback-workspace", warnings: [] }));
+    const restoreExistingWorkspace = vi.fn(async () => ({ id: "workspace-old", warnings: [] }));
 
     await expect(provisionExecutionWorkspaceForFreshnessDecision({
       requestedShouldReuseExisting: reuseRequest.requestedShouldReuseExisting,
       existingExecutionWorkspaceId: reuseRequest.requestedExecutionWorkspaceId,
+      existingExecutionWorkspaceAvailable: reuseRequest.existingExecutionWorkspaceAvailable,
       issueRef: { id: "issue-1", identifier: "PAP-42" },
       runId: "run-1",
       workspaceConfigFreshness: decision,
-      restoreExistingWorkspace: reuseRequest.existingExecutionWorkspaceAvailable
-        ? async () => ({ id: "workspace-old", warnings: [] })
-        : null,
+      restoreExistingWorkspace,
       realizeWorkspace,
-    })).rejects.toThrow(/could not be restored/);
-    expect(realizeWorkspace).not.toHaveBeenCalled();
+    })).resolves.toEqual({
+      executionWorkspace: { id: "fallback-workspace", warnings: [] },
+      reusedExecutionWorkspace: null,
+      policy: {
+        shouldRestoreExistingWorkspace: false,
+        shouldRefreshWorkspaceConfigSnapshot: false,
+        shouldPersistLatestWorkspaceConfigMetadata: true,
+      },
+      recoveredFromStaleBinder: true,
+    });
+    expect(realizeWorkspace).toHaveBeenCalledOnce();
+    expect(restoreExistingWorkspace).not.toHaveBeenCalled();
   });
 
   it("fails loudly when explicit reuse restore returns no workspace", async () => {

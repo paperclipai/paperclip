@@ -1,7 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import { Router, type Request, type Response } from "express";
 import type { Db } from "@paperclipai/db";
-import { issues, projects, projectWorkspaces } from "@paperclipai/db";
+import { projects, projectWorkspaces } from "@paperclipai/db";
 import {
   findWorkspaceCommandDefinition,
   matchWorkspaceRuntimeServiceToCommand,
@@ -641,20 +641,10 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
         failureReason: "execution_workspace_closed",
       });
 
-      if (existing.mode === "shared_workspace") {
-        await db
-          .update(issues)
-          .set({
-            executionWorkspaceId: null,
-            updatedAt: new Date(),
-          })
-          .where(
-            and(
-              eq(issues.companyId, existing.companyId),
-              eq(issues.executionWorkspaceId, existing.id),
-            ),
-          );
-      }
+      // Complete mediation: every mode (including isolated_workspace) must drop
+      // issue binders on archive. Leaving reuse_existing → dead id parks agents
+      // with workspace_validation_failed / 409 until an assignee-only PATCH.
+      await svc.clearIssueBinders(existing.companyId, existing.id);
 
       try {
         await stopRuntimeServicesForExecutionWorkspace({

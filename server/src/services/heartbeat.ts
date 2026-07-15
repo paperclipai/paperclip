@@ -3277,6 +3277,7 @@ function formatInheritedExecutionWorkspaceReuseFailure(input: {
 export async function provisionExecutionWorkspaceForFreshnessDecision<T extends { warnings?: string[] }>(input: {
   requestedShouldReuseExisting: boolean;
   existingExecutionWorkspaceId?: string | null;
+  existingExecutionWorkspaceAvailable?: boolean;
   issueRef: WorkspaceReuseIssueRef;
   runId: string;
   workspaceConfigFreshness: ExecutionWorkspaceConfigFreshnessDecision;
@@ -3286,6 +3287,7 @@ export async function provisionExecutionWorkspaceForFreshnessDecision<T extends 
   executionWorkspace: T;
   reusedExecutionWorkspace: T | null;
   policy: ExecutionWorkspaceReuseProvisioningPolicy;
+  recoveredFromStaleBinder: boolean;
 }> {
   const policy = resolveExecutionWorkspaceReuseProvisioningPolicy({
     requestedShouldReuseExisting: input.requestedShouldReuseExisting,
@@ -3298,6 +3300,23 @@ export async function provisionExecutionWorkspaceForFreshnessDecision<T extends 
       executionWorkspace,
       reusedExecutionWorkspace: null,
       policy,
+      recoveredFromStaleBinder: false,
+    };
+  }
+
+  // Fail securely + recover: reuse_existing against an archived/missing row must
+  // not park the run. Realize a fresh workspace; callers clear the stale binder.
+  if (input.existingExecutionWorkspaceAvailable === false) {
+    const executionWorkspace = await input.realizeWorkspace();
+    return {
+      executionWorkspace,
+      reusedExecutionWorkspace: null,
+      policy: {
+        ...policy,
+        shouldRestoreExistingWorkspace: false,
+        shouldRefreshWorkspaceConfigSnapshot: false,
+      },
+      recoveredFromStaleBinder: true,
     };
   }
 
@@ -3338,6 +3357,7 @@ export async function provisionExecutionWorkspaceForFreshnessDecision<T extends 
     executionWorkspace: restored,
     reusedExecutionWorkspace: restored,
     policy,
+    recoveredFromStaleBinder: false,
   };
 }
 
@@ -11634,10 +11654,36 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       issueExecutionWorkspacePreference: issueRef?.executionWorkspacePreference ?? null,
       existingExecutionWorkspaceStatus: existingExecutionWorkspace?.status ?? null,
     });
-    const requestedShouldReuseExisting = workspaceReuseRequest.requestedShouldReuseExisting;
-    const reusableExistingExecutionWorkspace = workspaceReuseRequest.existingExecutionWorkspaceAvailable
+    let requestedShouldReuseExisting = workspaceReuseRequest.requestedShouldReuseExisting;
+    let reusableExistingExecutionWorkspace = workspaceReuseRequest.existingExecutionWorkspaceAvailable
       ? existingExecutionWorkspace
       : null;
+    // Recoverable path for legacy stale binders (archive used to skip isolated_workspace).
+    if (
+      requestedShouldReuseExisting &&
+      !workspaceReuseRequest.existingExecutionWorkspaceAvailable &&
+      requestedExecutionWorkspaceId
+    ) {
+      await executionWorkspacesSvc.clearIssueBinders(agent.companyId, requestedExecutionWorkspaceId);
+      if (issueRef) {
+        issueRef.executionWorkspaceId = null;
+        if (issueRef.executionWorkspacePreference === "reuse_existing") {
+          issueRef.executionWorkspacePreference = null;
+        }
+      }
+      requestedShouldReuseExisting = false;
+      reusableExistingExecutionWorkspace = null;
+      logger.info(
+        {
+          runId: run.id,
+          issueId,
+          companyId: agent.companyId,
+          executionWorkspaceId: requestedExecutionWorkspaceId,
+          existingStatus: existingExecutionWorkspace?.status ?? null,
+        },
+        "Cleared stale reuse_existing binder to archived/missing execution workspace; provisioning fresh",
+      );
+    }
     const requestedReusableExecutionWorkspaceConfig = reusableExistingExecutionWorkspace?.config ?? null;
     const localEnvironment = await environmentsSvc.ensureLocalEnvironment(agent.companyId);
     const resolvedInstanceSettings = await instanceSettings.get();
@@ -12039,6 +12085,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       await provisionExecutionWorkspaceForFreshnessDecision<RealizedExecutionWorkspace>({
         requestedShouldReuseExisting,
         existingExecutionWorkspaceId: workspaceReuseRequest.requestedExecutionWorkspaceId,
+        existingExecutionWorkspaceAvailable: workspaceReuseRequest.existingExecutionWorkspaceAvailable,
         issueRef,
         runId: run.id,
         workspaceConfigFreshness,

@@ -2526,4 +2526,94 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       "git_branch_delete",
     ]));
   }, 20_000);
+
+  it("clears isolated-workspace issue binders and reuse_existing preference", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+    const boundIssueId = randomUUID();
+    const otherIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Workspaces",
+      status: "in_progress",
+      executionWorkspacePolicy: {
+        enabled: true,
+      },
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Isolated binder fixture",
+      status: "archived",
+      providerType: "git_worktree",
+      cwd: "/tmp/isolated-binder",
+      providerRef: "/tmp/isolated-binder",
+      branchName: "PAP-612-clear-binders",
+      baseRef: "main",
+      closedAt: new Date(),
+    });
+    await db.insert(issues).values([
+      {
+        id: boundIssueId,
+        companyId,
+        projectId,
+        title: "Bound to archived isolated workspace",
+        status: "done",
+        priority: "medium",
+        executionWorkspaceId,
+        executionWorkspacePreference: "reuse_existing",
+      },
+      {
+        id: otherIssueId,
+        companyId,
+        projectId,
+        title: "Unrelated issue",
+        status: "todo",
+        priority: "medium",
+        executionWorkspaceId: null,
+        executionWorkspacePreference: "isolated_workspace",
+      },
+    ]);
+
+    const cleared = await svc.clearIssueBinders(companyId, executionWorkspaceId);
+    expect(cleared).toBe(1);
+
+    const bound = await db
+      .select({
+        executionWorkspaceId: issues.executionWorkspaceId,
+        executionWorkspacePreference: issues.executionWorkspacePreference,
+      })
+      .from(issues)
+      .where(eq(issues.id, boundIssueId))
+      .then((rows) => rows[0]);
+    const other = await db
+      .select({
+        executionWorkspaceId: issues.executionWorkspaceId,
+        executionWorkspacePreference: issues.executionWorkspacePreference,
+      })
+      .from(issues)
+      .where(eq(issues.id, otherIssueId))
+      .then((rows) => rows[0]);
+
+    expect(bound).toEqual({
+      executionWorkspaceId: null,
+      executionWorkspacePreference: null,
+    });
+    expect(other).toEqual({
+      executionWorkspaceId: null,
+      executionWorkspacePreference: "isolated_workspace",
+    });
+  });
 });
