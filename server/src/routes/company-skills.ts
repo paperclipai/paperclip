@@ -199,6 +199,9 @@ export function companySkillRoutes(db: Db) {
       action: "skill_config:update",
       resource: { type: "company", companyId },
     });
+    // Legacy missing-grant and suggest-change-consent denials are not platform
+    // invariants for skills. The company skill policy is the governance layer;
+    // authentication, company boundaries, and safety checks still fail closed.
     if (
       !platformDecision.allowed
       && !["deny_no_grant", "deny_missing_consent", "deny_missing_grant"].includes(platformDecision.reason)

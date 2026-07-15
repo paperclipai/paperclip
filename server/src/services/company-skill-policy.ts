@@ -136,7 +136,7 @@ export function companySkillPolicyService(db: Db) {
     return { type: "agent", id: agent.id, role: agent.role };
   }
 
-  async function hasLegacyCompatibilityGrant(companyId: string, principal: SkillPolicyPrincipal) {
+  async function hasLegacyBroadMutationGrant(companyId: string, principal: SkillPolicyPrincipal) {
     const principalType = principal.type === "agent" ? "agent" : "user";
     const row = await db
       .select({ permissionKey: principalPermissionGrants.permissionKey })
@@ -177,7 +177,10 @@ export function companySkillPolicyService(db: Db) {
         matchingRule.id,
       );
     }
-    if (policy.defaultEffect === "deny" && await hasLegacyCompatibilityGrant(input.companyId, input.principal)) {
+    // These grants historically authorized the full company-skill mutation surface.
+    // Preserve that broad scope only as a default-deny compatibility fallback;
+    // explicit policy rules and platform invariants still take precedence.
+    if (policy.defaultEffect === "deny" && await hasLegacyBroadMutationGrant(input.companyId, input.principal)) {
       return decision(true, input.action, "legacy_compatibility", policy.revision);
     }
     return decision(policy.defaultEffect === "allow", input.action, "policy_default", policy.revision);
