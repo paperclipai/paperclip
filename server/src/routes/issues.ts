@@ -2563,6 +2563,24 @@ export function issueRoutes(
   const heartbeat = heartbeatService(db, {
     pluginWorkerManager: opts.pluginWorkerManager,
   });
+  // A comment authored by the assignee's OWN active run must not comment-wake
+  // that same assignee. The existing `actorType === "agent"` self-check misses
+  // the local-board mirror path: when an agent posts through the board actor
+  // (`local-board`, deployment_mode `local_trusted`) the actor becomes
+  // `type: "user"` yet still carries its run id in the `x-paperclip-run-id`
+  // header. Without this guard the orchestrator's own closing comment echoes
+  // back as an `issue_commented` wake to itself — a no-op self-wake loop
+  // (ENGA-1803 / ENGA-1623 / ENGA-1818 / ENGA-1828 F2(B)). A human board
+  // comment carries no run id, so this never suppresses a genuine wake.
+  const commentWakeIsAssigneeSelfAuthored = async (
+    assigneeId: string | null | undefined,
+    actorRunId: string | null | undefined,
+  ): Promise<boolean> => {
+    const runId = actorRunId?.trim();
+    if (!runId || !assigneeId) return false;
+    const assigneeActiveRun = await heartbeat.getActiveRunForAgent(assigneeId);
+    return assigneeActiveRun?.id === runId;
+  };
   const feedback = feedbackService(db);
   const companiesSvc = companyService(db);
   let searchSvc = opts.searchService ?? null;
@@ -8406,7 +8424,9 @@ export function issueRoutes(
       if (commentBody && comment) {
         const assigneeId = issue.assigneeAgentId;
         const actorIsAgent = actor.actorType === "agent";
-        const selfComment = actorIsAgent && actor.actorId === assigneeId;
+        const selfComment =
+          (actorIsAgent && actor.actorId === assigneeId) ||
+          (await commentWakeIsAssigneeSelfAuthored(assigneeId, actor.runId));
         const skipAssigneeCommentWake = selfComment || isClosed;
 
         if (assigneeId && !assigneeChanged && (reopened || !skipAssigneeCommentWake)) {
@@ -9907,7 +9927,9 @@ export function issueRoutes(
 
       const assigneeId = currentIssue.assigneeAgentId;
       const actorIsAgent = actor.actorType === "agent";
-      const selfComment = actorIsAgent && actor.actorId === assigneeId;
+      const selfComment =
+        (actorIsAgent && actor.actorId === assigneeId) ||
+        (await commentWakeIsAssigneeSelfAuthored(assigneeId, actor.runId));
       // Re-derive closed-ness from the post-mutation issue so the auto-approval
       // transition (in_review -> done) suppresses a stale `issue_commented` wake
       // to the returnAssignee for an already-completed issue.
