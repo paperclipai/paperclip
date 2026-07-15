@@ -427,8 +427,17 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     });
     expect(scheduled[0]?.contextSnapshot).toMatchObject({
       issueId: sourceIssue.id,
-      recoveryCause: "provider_quota",
+      wakeReason: "provider_quota_recovery",
     });
+    expect(scheduled[0]?.contextSnapshot).not.toHaveProperty("recoveryActionId");
+    expect(scheduled[0]?.contextSnapshot).not.toHaveProperty("recoveryCause");
+    const wakePayload = await buildPaperclipWakePayload({
+      db,
+      companyId,
+      contextSnapshot: scheduled[0]?.contextSnapshot as Record<string, unknown>,
+    });
+    expect(wakePayload?.reason).toBe("provider_quota_recovery");
+    expect(wakePayload?.recovery).toBeNull();
     const [updatedIssue] = await db
       .select()
       .from(issues)
