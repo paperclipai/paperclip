@@ -8063,6 +8063,74 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (reaped.length > 0) {
       logger.warn({ reapedCount: reaped.length, runIds: reaped }, "reaped orphaned heartbeat runs");
     }
+
+    // Sweep `scheduled_retry` rows with a NULL scheduledRetryAt.
+    //
+    // `promoteDueScheduledRetries` uses `lte(scheduledRetryAt, now)` which
+    // silently skips NULLs in SQL.  `reapOrphanedRuns` (above) only queries
+    // `status = 'running'`.  A `scheduled_retry` row that was written without a
+    // due-time is therefore permanently invisible to every periodic sweep and
+    // will never advance to a terminal state on its own.
+    //
+    // The application code always supplies a value on insert, but the column is
+    // nullable in the schema, so a direct DB write, a future code path, or data
+    // migration could produce such a row.  Failing them here is the correct
+    // recovery: the run never had a valid schedule, so treating it as failed is
+    // safe and matches what would happen to a process-lost run.
+    const stuckScheduledRetries = await db
+      .select({
+        run: heartbeatRuns,
+      })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.status, "scheduled_retry"),
+          isNull(heartbeatRuns.scheduledRetryAt),
+        ),
+      );
+
+    for (const { run } of stuckScheduledRetries) {
+      const message = "scheduled_retry run had no due-time (scheduledRetryAt IS NULL); failing as permanently stuck";
+      logger.warn(
+        { runId: run.id, agentId: run.agentId, scheduledRetryReason: run.scheduledRetryReason },
+        message,
+      );
+
+      const finalizedRun = await setRunStatus(run.id, "failed", {
+        error: message,
+        errorCode: "stuck_scheduled_retry",
+        finishedAt: now,
+      });
+
+      await setWakeupStatus(run.wakeupRequestId, "failed", {
+        finishedAt: now,
+        error: message,
+      });
+
+      if (finalizedRun) {
+        await appendRunEvent(finalizedRun, await nextRunEventSeq(finalizedRun.id), {
+          eventType: "lifecycle",
+          stream: "system",
+          level: "error",
+          message,
+          payload: {
+            scheduledRetryAttempt: run.scheduledRetryAttempt,
+            scheduledRetryReason: run.scheduledRetryReason ?? null,
+          },
+        });
+        await releaseIssueExecutionAndPromote(finalizedRun);
+      }
+
+      reaped.push(run.id);
+    }
+
+    if (stuckScheduledRetries.length > 0) {
+      logger.warn(
+        { count: stuckScheduledRetries.length, runIds: stuckScheduledRetries.map((r) => r.run.id) },
+        "reaped stuck scheduled_retry runs with no due-time",
+      );
+    }
+
     return { reaped: reaped.length, runIds: reaped };
   }
 

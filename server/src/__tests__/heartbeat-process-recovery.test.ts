@@ -3824,4 +3824,100 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     expect(runs).toHaveLength(1);
   });
+
+  // -----------------------------------------------------------------------
+  // Stuck scheduled_retry reaper
+  // -----------------------------------------------------------------------
+
+  it("reaps a scheduled_retry run whose scheduledRetryAt is NULL (permanently stuck)", async () => {
+    // Arrange: create a run directly in scheduled_retry with no due-time.
+    // This simulates a row that would be silently skipped by both
+    // promoteDueScheduledRetries (lte NULL fails) and the existing
+    // running-only reapOrphanedRuns sweep.
+    const { companyId, agentId, runId, wakeupRequestId, issueId } = await seedRunFixture({
+      runStatus: "running", // seed helper only supports running; we'll override below
+      includeIssue: true,
+    });
+
+    // Override to scheduled_retry with NULL scheduledRetryAt
+    const now = new Date();
+    await db
+      .update(heartbeatRuns)
+      .set({
+        status: "scheduled_retry",
+        scheduledRetryAt: null,
+        scheduledRetryAttempt: 1,
+        scheduledRetryReason: "transient_failure",
+        updatedAt: now,
+      })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const heartbeat = heartbeatService(db);
+
+    // Act
+    const result = await heartbeat.reapOrphanedRuns();
+
+    // Assert: the stuck run was collected
+    expect(result.reaped).toBeGreaterThanOrEqual(1);
+    expect(result.runIds).toContain(runId);
+
+    // The row must now be terminal
+    const run = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    expect(run?.status).toBe("failed");
+    expect(run?.errorCode).toBe("stuck_scheduled_retry");
+    expect(run?.finishedAt).toBeTruthy();
+
+    // The associated wakeup request must also be terminal
+    const wakeup = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeupRequestId))
+      .then((rows) => rows[0] ?? null);
+    expect(wakeup?.status).toBe("failed");
+
+    // The issue execution lock must have been released
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.executionRunId).toBeNull();
+  });
+
+  it("does not reap a scheduled_retry run that has a valid future due-time", async () => {
+    const { runId } = await seedRunFixture({
+      runStatus: "running",
+      includeIssue: false,
+    });
+
+    // Override: scheduled_retry with a future due-time — should NOT be reaped
+    const future = new Date(Date.now() + 60 * 60 * 1000); // 1 hour from now
+    await db
+      .update(heartbeatRuns)
+      .set({
+        status: "scheduled_retry",
+        scheduledRetryAt: future,
+        scheduledRetryAttempt: 1,
+        scheduledRetryReason: "transient_failure",
+        updatedAt: new Date(),
+      })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reapOrphanedRuns();
+
+    expect(result.runIds).not.toContain(runId);
+
+    const run = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    // Must still be in scheduled_retry — promoteDueScheduledRetries will handle it when due
+    expect(run?.status).toBe("scheduled_retry");
+  });
 });
