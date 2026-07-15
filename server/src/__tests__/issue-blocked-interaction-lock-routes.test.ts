@@ -151,12 +151,16 @@ describeEmbeddedPostgres("blocked interaction wakes do not claim issue execution
     };
   }
 
-  async function seedScenario(issueStatus: "blocked" | "cancelled" = "blocked") {
+  async function seedScenario(
+    issueStatus: "blocked" | "cancelled" = "blocked",
+    options?: { includeBlockerRelation?: boolean },
+  ) {
     const companyId = randomUUID();
     const assigneeAgentId = randomUUID();
     const foreignAgentId = randomUUID();
     const blockerIssueId = randomUUID();
     const issueId = randomUUID();
+    const includeBlockerRelation = options?.includeBlockerRelation ?? true;
 
     await db.insert(companies).values({
       id: companyId,
@@ -211,12 +215,14 @@ describeEmbeddedPostgres("blocked interaction wakes do not claim issue execution
       },
     ]);
 
-    await db.insert(issueRelations).values({
-      companyId,
-      issueId: blockerIssueId,
-      relatedIssueId: issueId,
-      type: "blocks",
-    });
+    if (includeBlockerRelation) {
+      await db.insert(issueRelations).values({
+        companyId,
+        issueId: blockerIssueId,
+        relatedIssueId: issueId,
+        type: "blocks",
+      });
+    }
 
     return { companyId, assigneeAgentId, foreignAgentId, issueId };
   }
@@ -387,6 +393,49 @@ describeEmbeddedPostgres("blocked interaction wakes do not claim issue execution
       executionRunId: null,
       executionLockedAt: null,
     });
+
+    adapterControl.release();
+    await waitForCondition(async () =>
+      db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, run.id))
+        .then((rows) => rows[0]?.status === "succeeded")
+    );
+  });
+
+  it("keeps same-assignee comment-only mention wakes unlocked on blocked issues without first-class blockers", async () => {
+    const { companyId, assigneeAgentId, issueId } = await seedScenario("blocked", {
+      includeBlockerRelation: false,
+    });
+    const run = await startBlockedInteractionWake(assigneeAgentId, issueId);
+
+    const row = await db
+      .select({
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+        executionLockedAt: issues.executionLockedAt,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(row).toEqual({
+      checkoutRunId: null,
+      executionRunId: null,
+      executionLockedAt: null,
+    });
+
+    const issueRes = await request(createApp(agentActor(companyId, assigneeAgentId)))
+      .get(`/api/issues/${issueId}`);
+    expect(issueRes.status, JSON.stringify(issueRes.body)).toBe(200);
+    expect(issueRes.body).toMatchObject({
+      id: issueId,
+      status: "blocked",
+      checkoutRunId: null,
+      executionRunId: null,
+      executionLockedAt: null,
+    });
+    expect(issueRes.body).not.toHaveProperty("activeRun");
 
     adapterControl.release();
     await waitForCondition(async () =>

@@ -4105,6 +4105,14 @@ export function shouldAutoCheckoutIssueForWake(input: {
   return true;
 }
 
+function shouldWakeOwnIssueExecutionLock(contextSnapshot: Record<string, unknown> | null | undefined) {
+  if (contextSnapshot?.dependencyBlockedInteraction === true) return false;
+  const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
+  if (wakeReason === "issue_comment_mentioned") return false;
+  if (wakeReason === "source_scoped_recovery_action") return false;
+  return true;
+}
+
 function shouldQueueFollowupForRunningIssueWake(input: {
   contextSnapshot: Record<string, unknown> | null | undefined;
   wakeCommentId: string | null;
@@ -10374,9 +10382,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     // not at queue time. Guard is idempotent — safe if called more than once.
     const claimedContext = parseObject(claimed.contextSnapshot);
     const claimedIssueId = readNonEmptyString(claimedContext.issueId);
-    const claimedWakeReason = readNonEmptyString(claimedContext.wakeReason);
-    const dependencyBlockedInteraction = claimedContext.dependencyBlockedInteraction === true;
-    if (claimedIssueId && claimedWakeReason !== "source_scoped_recovery_action" && !dependencyBlockedInteraction) {
+    const wakeOwnsExecutionLock = shouldWakeOwnIssueExecutionLock(claimedContext);
+    if (claimedIssueId && wakeOwnsExecutionLock) {
       const claimedAgent = await getAgent(claimed.agentId);
       await db
         .update(issues)
@@ -10396,7 +10403,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             or(isNull(issues.executionRunId), eq(issues.executionRunId, claimed.id)),
           ),
         );
-    } else if (claimedIssueId && dependencyBlockedInteraction) {
+    } else if (claimedIssueId) {
       await db
         .update(issues)
         .set({
@@ -15300,8 +15307,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               sql`case when ${heartbeatRuns.status} = 'running' then 0 else 1 end`,
               asc(heartbeatRuns.createdAt),
             )
-            .limit(1)
-            .then((rows) => rows[0] ?? null);
+            .then((rows) =>
+              rows.find((row) => shouldWakeOwnIssueExecutionLock(parseObject(row.contextSnapshot))) ?? null
+            );
 
           if (legacyRun) {
             if (await cancelStaleScheduledRetry(legacyRun)) {
