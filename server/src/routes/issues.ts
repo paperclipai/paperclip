@@ -5593,7 +5593,9 @@ export function issueRoutes(
 
     if (
       sourceIssueStatus === "todo" &&
-      result.issue.assigneeAgentId
+      result.issue.assigneeAgentId &&
+      (existing.status !== result.issue.status ||
+        existing.assigneeAgentId !== result.issue.assigneeAgentId)
     ) {
       try {
         await enqueueRecoveryActionWakeup(result.issue.assigneeAgentId, {

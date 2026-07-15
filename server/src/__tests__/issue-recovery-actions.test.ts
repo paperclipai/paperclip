@@ -571,8 +571,9 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       }),
       nextAction: expect.stringContaining("git worktree branch incoherence"),
       wakePolicy: expect.objectContaining({
-        type: "manual_repair_required",
-        reason: "workspace_validation_failed",
+        type: "wake_owner",
+        reason: "source_scoped_recovery_action",
+        ownerAgentId: expect.any(String),
       }),
     });
 
@@ -876,6 +877,44 @@ describeEmbeddedPostgres("issue recovery actions", () => {
         payload: expect.objectContaining({ issueId: sourceIssueId, recoveryActionId: action.id }),
       }),
     );
+  });
+
+  it("does not enqueue a restored wake when todo status and assignee are unchanged", async () => {
+    const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
+    await db
+      .update(issues)
+      .set({ status: "todo", assigneeAgentId: coderId })
+      .where(eq(issues.id, sourceIssueId));
+    const recoveryActionSvc = issueRecoveryActionService(db);
+    const action = await recoveryActionSvc.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "workspace_validation",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      previousOwnerAgentId: coderId,
+      returnOwnerAgentId: coderId,
+      cause: "workspace_validation_failed",
+      fingerprint: "workspace:already-restored",
+      evidence: { latestRunId: "run-1" },
+      nextAction: "Confirm the workspace remains healthy.",
+      wakePolicy: { type: "wake_owner" },
+    });
+
+    const enqueueRecoveryActionWakeup = vi.fn(async () => null);
+    await request(createApp(undefined, {
+      recoveryActionEnqueueWakeup: enqueueRecoveryActionWakeup,
+    }))
+      .post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`)
+      .send({
+        actionId: action.id,
+        outcome: "restored",
+        sourceIssueStatus: "todo",
+        resolutionNote: "Workspace was already restored.",
+      })
+      .expect(200);
+
+    expect(enqueueRecoveryActionWakeup).not.toHaveBeenCalled();
   });
 
   it("resolves an active recovery action by returning the source issue to todo", async () => {

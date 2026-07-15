@@ -2688,7 +2688,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           type: "monitor_only",
           reason: recoveryCause,
         }
-        : recoveryCause === "workspace_validation_failed" || recoveryCause === "configuration_incomplete"
+        : recoveryCause === "configuration_incomplete"
         ? {
           type: "manual_repair_required",
           reason: recoveryCause,
