@@ -782,6 +782,25 @@ describe("company skill mutation permissions", () => {
     }));
   });
 
+  it("blocks unauthorized preview scan-projects requests before candidate data is returned", async () => {
+    const workspaceId = "11111111-1111-4111-8111-111111111111";
+    mockAccessService.decide.mockResolvedValue(denySkillChangeDecision());
+
+    const res = await request(await createApp({
+      type: "board",
+      userId: "board-user",
+      companyIds: ["company-1"],
+      source: "session",
+      isInstanceAdmin: false,
+    }))
+      .post("/api/companies/company-1/skills/scan-projects")
+      .send({ mode: "preview", workspaceIds: [workspaceId] });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Missing permission: skills:create or skills:suggest-changes.");
+    expect(mockCompanySkillService.scanProjectWorkspaces).not.toHaveBeenCalled();
+  });
+
   it("allows board users with skills:create to create, import, install, update, delete, audit, and reset company skills", async () => {
     const app = await createApp({
       type: "board",

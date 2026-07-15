@@ -1985,6 +1985,102 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     expect(projectScanSkills[0]?.sourceLocator).toBe(selectedSkillDir);
   });
 
+  it("treats out-of-scope workspace selections as unmatched without leaking workspace metadata", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const workspaceId = randomUUID();
+    const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-skill-scope-"));
+    const otherCompanyId = randomUUID();
+    const otherProjectId = randomUUID();
+    const otherWorkspaceId = randomUUID();
+    const otherWorkspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-skill-scope-other-"));
+    cleanupDirs.add(workspaceDir);
+    cleanupDirs.add(otherWorkspaceDir);
+
+    const selectedSkillDir = path.join(workspaceDir, ".gemini", "skills", "selected-skill");
+    const otherCompanySkillDir = path.join(otherWorkspaceDir, ".codex", "skills", "foreign-skill");
+    await fs.mkdir(selectedSkillDir, { recursive: true });
+    await fs.mkdir(otherCompanySkillDir, { recursive: true });
+    await fs.writeFile(path.join(selectedSkillDir, "SKILL.md"), "---\nname: Selected Skill\n---\n", "utf8");
+    await fs.writeFile(path.join(otherCompanySkillDir, "SKILL.md"), "---\nname: Foreign Skill\n---\n", "utf8");
+
+    await db.insert(companies).values([
+      {
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+      {
+        id: otherCompanyId,
+        name: "Other Company",
+        issuePrefix: `T${otherCompanyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+    ]);
+    await db.insert(projects).values([
+      { id: projectId, companyId, name: "Skills Project" },
+      { id: otherProjectId, companyId: otherCompanyId, name: "Other Project" },
+    ]);
+    await db.insert(projectWorkspaces).values([
+      {
+        id: workspaceId,
+        companyId,
+        projectId,
+        name: "Primary",
+        cwd: workspaceDir,
+        isPrimary: true,
+      },
+      {
+        id: otherWorkspaceId,
+        companyId: otherCompanyId,
+        projectId: otherProjectId,
+        name: "Other Primary",
+        cwd: otherWorkspaceDir,
+        isPrimary: true,
+      },
+    ]);
+
+    const result = await svc.scanProjectWorkspaces(companyId, {
+      mode: "import",
+      projectIds: [projectId],
+      workspaceIds: [workspaceId, otherWorkspaceId],
+      selection: [
+        { workspaceId, path: ".gemini/skills/selected-skill" },
+        { workspaceId: otherWorkspaceId, path: ".codex/skills/foreign-skill" },
+      ],
+    });
+
+    expect(result.scannedProjects).toBe(1);
+    expect(result.scannedWorkspaces).toBe(1);
+    expect(result.discovered).toBe(1);
+    expect(result.imported).toHaveLength(1);
+    expect(result.imported[0]).toMatchObject({
+      name: "Selected Skill",
+      sourceType: "local_path",
+      sourceLocator: selectedSkillDir,
+      metadata: expect.objectContaining({ sourceKind: "project_scan", workspaceId, projectId }),
+    });
+    expect(result.candidates).toEqual([
+      expect.objectContaining({
+        workspaceId,
+        projectId,
+        relativePath: ".gemini/skills/selected-skill",
+        status: "new",
+      }),
+    ]);
+    expect(result.skipped).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        projectId: null,
+        projectName: null,
+        workspaceId: otherWorkspaceId,
+        workspaceName: null,
+        path: ".codex/skills/foreign-skill",
+        reason: expect.stringContaining("was not rediscovered"),
+      }),
+    ]));
+  });
+
   it("skips a selected project skill whose SKILL.md is a symlink outside the workspace", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
