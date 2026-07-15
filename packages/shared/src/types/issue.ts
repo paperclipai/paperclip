@@ -613,11 +613,22 @@ export interface IssueExecutionMonitorPolicy {
   recoveryPolicy?: IssueExecutionMonitorRecoveryPolicy | null;
 }
 
+/**
+ * Fail-closed completion policy for companies that keep delivery state in
+ * Linear. Mapping and delivery receipts intentionally remain connector-owned;
+ * core Paperclip stores only the requirement to enforce the gate.
+ */
+export interface IssueLinearEvidencePolicy {
+  required: true;
+  independentQaRequired: boolean;
+}
+
 export interface IssueExecutionPolicy {
   mode: IssueExecutionPolicyMode;
   commentRequired: boolean;
   stages: IssueExecutionStage[];
   monitor?: IssueExecutionMonitorPolicy | null;
+  linearEvidence?: IssueLinearEvidencePolicy;
   reviewPreset?: LowTrustReviewPresetPolicy;
   authorizationPolicy?: TrustAuthorizationPolicy;
 }

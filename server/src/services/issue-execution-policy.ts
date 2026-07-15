@@ -314,12 +314,21 @@ function nextAssigneeIds(input: {
 export function stripMonitorFromExecutionPolicy(policy: IssueExecutionPolicy | null): IssueExecutionPolicy | null {
   if (!policy) return null;
   if (!policy.monitor) return policy;
-  if (policy.stages.length === 0) return null;
-  return {
+  const stripped: IssueExecutionPolicy = {
     mode: policy.mode,
     commentRequired: policy.commentRequired,
     stages: policy.stages,
+    ...(policy.linearEvidence ? { linearEvidence: policy.linearEvidence } : {}),
+    ...(policy.reviewPreset ? { reviewPreset: policy.reviewPreset } : {}),
+    ...(policy.authorizationPolicy ? { authorizationPolicy: policy.authorizationPolicy } : {}),
   };
+  if (
+    stripped.stages.length === 0 &&
+    !stripped.linearEvidence &&
+    !stripped.reviewPreset &&
+    !stripped.authorizationPolicy
+  ) return null;
+  return stripped;
 }
 
 export function setIssueExecutionPolicyMonitorScheduledBy(
@@ -389,14 +398,16 @@ export function normalizeIssueExecutionPolicy(input: unknown): IssueExecutionPol
 
   const reviewPreset = parsed.data.reviewPreset;
   const authorizationPolicy = parsed.data.authorizationPolicy;
+  const linearEvidence = parsed.data.linearEvidence;
 
-  if (stages.length === 0 && !monitor && !reviewPreset && !authorizationPolicy) return null;
+  if (stages.length === 0 && !monitor && !linearEvidence && !reviewPreset && !authorizationPolicy) return null;
 
   return {
     mode: parsed.data.mode ?? "normal",
     commentRequired: true,
     stages,
     ...(monitor ? { monitor } : {}),
+    ...(linearEvidence ? { linearEvidence } : {}),
     ...(reviewPreset ? { reviewPreset } : {}),
     ...(authorizationPolicy ? { authorizationPolicy } : {}),
   };

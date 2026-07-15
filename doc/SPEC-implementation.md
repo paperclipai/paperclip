@@ -258,6 +258,7 @@ Invariants:
 - task must trace to company goal chain via `goal_id`, `parent_id`, or project-goal linkage
 - `in_progress` requires assignee
 - terminal states: `done | cancelled`
+- when `execution_policy.linearEvidence.required` is enabled, `done` additionally requires a matching published Linear evidence receipt, the configured independent QA result, and no unresolved connector conflict; see `doc/LINEAR-EVIDENCE-BRIDGE.md`
 
 ## 7.7 `issue_comments`
 

@@ -63,7 +63,7 @@ import {
   isUuidLike,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
 } from "@paperclipai/shared";
-import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
+import { conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { parseObject } from "../adapters/utils.js";
 import {
@@ -103,6 +103,10 @@ import {
 } from "./recovery/origins.js";
 import { classifyIssueGraphLiveness, type IssueLivenessFinding } from "./recovery/issue-graph-liveness.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
+import {
+  assertLinearEvidenceCompletion,
+  type LinearEvidenceBridgeReader,
+} from "./linear-evidence-bridge.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
@@ -3636,7 +3640,11 @@ async function countBlockedInboxIssues(dbOrTx: any, companyId: string, filters?:
   }, 0);
 }
 
-export function issueService(db: Db) {
+export interface IssueServiceOptions {
+  linearEvidenceBridge?: LinearEvidenceBridgeReader;
+}
+
+export function issueService(db: Db, options: IssueServiceOptions = {}) {
   const instanceSettings = instanceSettingsService(db);
   const treeControlSvc = issueTreeControlService(db);
 
@@ -6207,6 +6215,8 @@ export function issueService(db: Db) {
 
         const issueNumber = company.issueCounter;
         const identifier = `${company.issuePrefix}-${issueNumber}`;
+        const issueId = issueData.id ?? randomUUID();
+        const initialExecutionPolicy = normalizeIssueExecutionPolicy(issueData.executionPolicy ?? null);
         const responsibleUserId = await resolveResponsibleUserIdForIssueCreate(tx, companyId, {
           explicitResponsibleUserId: issueData.responsibleUserId ?? null,
           createdByUserId: issueData.createdByUserId ?? null,
@@ -6217,9 +6227,22 @@ export function issueService(db: Db) {
           actorResponsibleUserId: actorResponsibleUserId ?? null,
           trustExplicitResponsibleUserId: trustExplicitResponsibleUserId === true,
         });
-
+        if (issueData.status === "done" && initialExecutionPolicy?.linearEvidence?.required) {
+          await assertLinearEvidenceCompletion({
+            issue: {
+              id: issueId,
+              companyId,
+              identifier,
+              title: issueData.title,
+            },
+            policy: initialExecutionPolicy.linearEvidence,
+            bridge: options.linearEvidenceBridge,
+          });
+        }
         const values = {
           ...issueData,
+          id: issueId,
+          executionPolicy: initialExecutionPolicy as unknown as Record<string, unknown> | null,
           responsibleUserId,
           requestDepth: clampIssueRequestDepth(issueData.requestDepth),
           originKind: issueData.originKind ?? "manual",
@@ -6329,6 +6352,38 @@ export function issueService(db: Db) {
 
       if (issueData.status) {
         assertTransition(existing.status, issueData.status);
+      }
+
+      const previousPolicy = normalizeIssueExecutionPolicy(existing.executionPolicy ?? null);
+      const requestedPolicy = issueData.executionPolicy === undefined
+        ? previousPolicy
+        : normalizeIssueExecutionPolicy(issueData.executionPolicy);
+      const weakensLinearEvidenceGate = Boolean(
+        previousPolicy?.linearEvidence?.required &&
+        (
+          !requestedPolicy?.linearEvidence?.required ||
+          (
+            previousPolicy.linearEvidence.independentQaRequired &&
+            !requestedPolicy.linearEvidence.independentQaRequired
+          )
+        )
+      );
+      if (issueData.executionPolicy !== undefined && weakensLinearEvidenceGate && !actorUserId) {
+        throw forbidden("Only a board user can weaken or remove the Linear completion evidence gate");
+      }
+
+      if (issueData.status === "done" && existing.status !== "done") {
+        // A caller cannot remove the gate and complete in the same mutation.
+        // Board operators may deliberately remove it in a separate audited
+        // policy update when Linear is no longer canonical for this issue.
+        const linearEvidencePolicy = previousPolicy?.linearEvidence ?? requestedPolicy?.linearEvidence;
+        if (linearEvidencePolicy?.required) {
+          await assertLinearEvidenceCompletion({
+            issue: existing,
+            policy: linearEvidencePolicy,
+            bridge: options.linearEvidenceBridge,
+          });
+        }
       }
 
       const patch: Partial<typeof issues.$inferInsert> = {

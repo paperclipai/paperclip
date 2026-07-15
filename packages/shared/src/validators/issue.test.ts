@@ -66,6 +66,22 @@ describe("issue validators", () => {
     expect(updated).not.toHaveProperty("responsibleUserId");
   });
 
+  it("accepts the fail-closed Linear evidence completion policy", () => {
+    const parsed = updateIssueSchema.parse({
+      executionPolicy: {
+        linearEvidence: { required: true },
+      },
+    });
+
+    expect(parsed.executionPolicy?.linearEvidence).toEqual({
+      required: true,
+      independentQaRequired: true,
+    });
+    expect(updateIssueSchema.safeParse({
+      executionPolicy: { linearEvidence: { required: false } },
+    }).success).toBe(false);
+  });
+
   it("allows false-positive recovery resolutions to atomically restore the source issue status", () => {
     expect(
       resolveIssueRecoveryActionSchema.parse({

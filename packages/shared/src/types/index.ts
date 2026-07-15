@@ -532,6 +532,7 @@ export type {
   IssueRelation,
   IssueRelationIssueSummary,
   IssueExecutionMonitorPolicy,
+  IssueLinearEvidencePolicy,
   IssueExecutionMonitorState,
   IssueExecutionPolicy,
   IssueExecutionState,

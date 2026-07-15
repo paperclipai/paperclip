@@ -42,6 +42,19 @@ export { issueTreeControlService } from "./issue-tree-control.js";
 export { issueApprovalService } from "./issue-approvals.js";
 export { issueReferenceService } from "./issue-references.js";
 export { issueRecoveryActionService } from "./issue-recovery-actions.js";
+export {
+  LINEAR_EVIDENCE_CONTRACT_VERSION,
+  assertLinearEvidenceCompletion,
+  buildLinearEvidenceComment,
+  evaluateLinearEvidenceCompletion,
+  linearEvidenceCommentSha256,
+  linearEvidenceIdempotencyKey,
+  linearEvidenceMappingKey,
+  linearEvidencePayloadSha256,
+  type LinearEvidenceBridgeReader,
+  type LinearEvidenceCompletionSnapshot,
+  type LinearEvidencePayload,
+} from "./linear-evidence-bridge.js";
 export { taskWatchdogService } from "./task-watchdogs.js";
 export {
   issueIsInTaskWatchdogSubtree,
