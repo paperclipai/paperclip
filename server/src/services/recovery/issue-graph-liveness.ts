@@ -602,13 +602,14 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
       hasUnresolvedBlockerEdge
     );
 
+    let chainFinding: IssueLivenessFinding | null = null;
     if (shouldInspectBlockedChain) {
       if (unresolvedBlockers.has(issue.id)) continue;
-      const chainFinding = firstBlockedChainFinding(issue, issue, [issue], new Set());
+      chainFinding = firstBlockedChainFinding(issue, issue, [issue], new Set());
       if (chainFinding) findings.push(chainFinding);
     }
 
-    if (issue.status === "in_review" && !shouldInspectBlockedChain && !unresolvedBlockers.has(issue.id)) {
+    if (issue.status === "in_review" && !chainFinding && !unresolvedBlockers.has(issue.id)) {
       const review = reviewFinding(issue, issue, [issue]);
       if (review) findings.push(review);
     }
