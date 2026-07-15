@@ -310,10 +310,18 @@ export function summarySlotService(db: Db) {
 
   function generationIssueDescription(sel: ResolvedSelector, generationIssueId: string | null = null): string {
     const target = sel.scopeId ? `\`${sel.scopeId}\`` : "the workspaces overview";
+    const summarySlotPath = `/api/companies/${encodeURIComponent(sel.companyId)}/summary-slots/${encodeURIComponent(sel.scopeKind)}/${encodeURIComponent(sel.slotKey)}`;
+    const scopeQuery = sel.scopeId ? `?scopeId=${encodeURIComponent(sel.scopeId)}` : "";
     return [
       `Generate the ${scopeLabel(sel.scopeKind)} summary for ${target}.`,
       "",
-      "Call `/summarize-status` and write the Markdown summary through the summary-slot write API:",
+      "Call `/summarize-status`. Its API quick reference has the full request shapes; use these resolved routes for this generation:",
+      "",
+      `- Read current slot: \`GET ${summarySlotPath}${scopeQuery}\``,
+      `- Read revisions: \`GET ${summarySlotPath}/revisions${scopeQuery}\``,
+      `- Write revision: \`PUT ${summarySlotPath}\``,
+      "",
+      "Use this write payload:",
       "",
       "```json",
       JSON.stringify(
