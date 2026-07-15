@@ -33,6 +33,7 @@ import {
   ensureAbsoluteDirectory,
   ensurePathInEnv,
   ensurePaperclipSkillSymlink,
+  isPaperclipRuntimeEnvKey,
   joinPromptSections,
   materializePaperclipSkillCopy,
   parseObject,
@@ -1056,9 +1057,9 @@ async function buildRuntime(input: {
     // Runtime PAPERCLIP_* always wins over config: only apply a PAPERCLIP_* key
     // when Paperclip has not already assigned it (e.g. an explicitly configured
     // PAPERCLIP_API_KEY, applied just below).
-    if (key.startsWith("PAPERCLIP_") && key in env) continue;
+    if (isPaperclipRuntimeEnvKey(key) && key in env) continue;
     env[key] = value;
-    if (!key.startsWith("PAPERCLIP_")) resolvedAdapterEnv[key] = value;
+    if (!isPaperclipRuntimeEnvKey(key)) resolvedAdapterEnv[key] = value;
   }
   if (!hasExplicitApiKey && authToken) env.PAPERCLIP_API_KEY = authToken;
   // For the claude agent, set model via ANTHROPIC_MODEL at startup rather than
