@@ -6,6 +6,7 @@ import express from "express";
 import request from "supertest";
 import type { Db } from "@paperclipai/db";
 import { healthRoutes } from "../routes/health.js";
+import { defaultDatabaseBackupMaxAgeHours } from "../services/database-backup-health.js";
 import * as devServerStatus from "../dev-server-status.js";
 import { serverVersion } from "../version.js";
 
@@ -422,5 +423,19 @@ describe("GET /health", () => {
       },
       serverInfo: testServerInfo,
     });
+  });
+});
+
+describe("defaultDatabaseBackupMaxAgeHours", () => {
+  it("scales with the configured backup interval", () => {
+    expect(defaultDatabaseBackupMaxAgeHours(60)).toBe(2);
+    expect(defaultDatabaseBackupMaxAgeHours(90)).toBe(3);
+    expect(defaultDatabaseBackupMaxAgeHours(6 * 60)).toBe(7);
+    expect(defaultDatabaseBackupMaxAgeHours(24 * 60)).toBe(27);
+  });
+
+  it("keeps a floor of two hours for very short intervals", () => {
+    expect(defaultDatabaseBackupMaxAgeHours(5)).toBe(2);
+    expect(defaultDatabaseBackupMaxAgeHours(0)).toBe(2);
   });
 });
