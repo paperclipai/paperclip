@@ -11443,6 +11443,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             adoptionMarkedAt: null,
             processPid: null,
             processGroupId: null,
+            processStartTicks: null,
             updatedAt: now,
           })
           .where(eq(heartbeatRuns.id, run.id));
