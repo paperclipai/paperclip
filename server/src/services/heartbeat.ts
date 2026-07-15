@@ -90,7 +90,11 @@ import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
 import { secretService, type MissingRuntimeBinding } from "./secrets.js";
-import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
+import {
+  resolveDefaultAgentWorkspaceDir,
+  resolveManagedProjectWorkspaceDir,
+  resolvePaperclipHomeDir,
+} from "../home-paths.js";
 import {
   buildHeartbeatRunIssueComment,
   HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS,
@@ -8117,7 +8121,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
   async function persistRunProcessMetadata(
     runId: string,
-    meta: { pid: number; processGroupId: number | null; startedAt: string },
+    meta: {
+      pid: number;
+      processGroupId: number | null;
+      startedAt: string;
+      ioMode?: "pipe" | "journal";
+      processPreservable?: boolean;
+    },
   ) {
     const startedAt = new Date(meta.startedAt);
     return db
@@ -8126,6 +8136,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         processPid: meta.pid,
         processGroupId: meta.processGroupId,
         processStartedAt: Number.isNaN(startedAt.getTime()) ? new Date() : startedAt,
+        runIoMode: meta.ioMode ?? "pipe",
+        processPreservable: meta.processPreservable ?? false,
         updatedAt: new Date(),
       })
       .where(eq(heartbeatRuns.id, runId))
@@ -12570,6 +12582,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         bytes: number;
       } | null;
     } = { pending: null };
+    let journalStdoutOffset = Number(run.journalStdoutOffset ?? 0);
+    let journalStderrOffset = Number(run.journalStderrOffset ?? 0);
     let persistedLogBytes = Number(run.logBytes ?? 0);
     const flushOutputProgress = async (opts?: { force?: boolean }) => {
       const pendingOutputProgress = outputProgressState.pending;
@@ -12745,6 +12759,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             truncated: payloadChunk.length !== sanitizedChunk.length,
           },
         });
+      };
+      const onJournalOffset = async (
+        stream: "stdout" | "stderr",
+        endOffset: number,
+      ) => {
+        if (stream === "stdout") journalStdoutOffset = endOffset;
+        if (stream === "stderr") journalStderrOffset = endOffset;
+        await db
+          .update(heartbeatRuns)
+          .set({
+            journalStdoutOffset,
+            journalStderrOffset,
+            updatedAt: new Date(),
+          })
+          .where(eq(heartbeatRuns.id, run.id));
       };
       if (runScopedMentionedSkillKeys.length > 0) {
         await onLog(
@@ -13089,6 +13118,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         if (managedMcpConfig) {
           adapterContext.paperclipManagedMcp = managedMcpConfig;
         }
+        const processJournal =
+          resolvedInstanceSettings.experimental.hotRestart &&
+          (!executionTarget || executionTarget.kind === "local")
+            ? {
+                spoolDir: path.join(resolvePaperclipHomeDir(), "run-spool", run.id),
+                stdoutOffset: journalStdoutOffset,
+                stderrOffset: journalStderrOffset,
+                processPreservable: true,
+                onOffset: onJournalOffset,
+              }
+            : null;
         adapterResult = await adapter.execute({
           runId: run.id,
           agent,
@@ -13107,6 +13147,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           onRuntimeProgress: async (progress) => {
             await recordCurrentHeartbeatRunRuntimeProgress(run, progress, issueId);
           },
+          processJournal,
           onSpawn: async (meta) => {
             await persistRunProcessMetadata(run.id, {
               pid: meta.pid,
@@ -13115,6 +13156,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                   ? meta.processGroupId
                   : null,
               startedAt: meta.startedAt,
+              ioMode: meta.ioMode,
+              processPreservable: meta.processPreservable,
             });
           },
           authToken: authToken ?? undefined,

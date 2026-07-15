@@ -101,7 +101,8 @@ export interface AdapterExecutionTargetProcessOptions {
   graceSec: number;
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   onRuntimeProgress?: RuntimeStatusSink;
-  onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
+  onSpawn?: (meta: import("./server-utils.js").RunProcessSpawnMetadata) => Promise<void>;
+  processJournal?: import("./server-utils.js").RunProcessJournalOptions | null;
   terminalResultCleanup?: TerminalResultCleanupOptions;
   /**
    * Sandbox-only: factory from the Paperclip bridge handle that streams the
@@ -585,6 +586,7 @@ export async function runAdapterExecutionTargetProcess(
     onLog: options.onLog,
     onSpawn: options.onSpawn,
     terminalResultCleanup: options.terminalResultCleanup,
+    journal: target?.kind === "local" || !target ? options.processJournal : null,
     localProcessSandbox: target?.kind === "local" || !target ? options.localProcessSandbox : null,
     remoteExecution: adapterExecutionTargetToRemoteSpec(target),
   });

@@ -301,6 +301,7 @@ export function InstanceExperimentalSettings() {
   const enableCases = experimentalQuery.data?.enableCases === true;
   const enableServerInfoDebugView = experimentalQuery.data?.enableServerInfoDebugView === true;
   const enableSmokeLab = experimentalQuery.data?.enableSmokeLab === true;
+  const hotRestart = experimentalQuery.data?.hotRestart === true;
   const autoRestartDevServerWhenIdle = experimentalQuery.data?.autoRestartDevServerWhenIdle === true;
   const enableIssueGraphLivenessAutoRecovery =
     experimentalQuery.data?.enableIssueGraphLivenessAutoRecovery === true;
@@ -374,6 +375,27 @@ export function InstanceExperimentalSettings() {
           {actionError}
         </div>
       )}
+
+      <Card className="block p-5">
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-1.5">
+            <div className="flex items-center gap-2">
+              <h2 className="text-sm font-semibold">Hot Restart Run Journaling</h2>
+              <Badge variant="secondary">Dark launch</Badge>
+            </div>
+            <p className="max-w-2xl text-sm text-muted-foreground">
+              Capture new local run output in durable spool files. Restart adoption is not enabled yet; disabling
+              this returns subsequent runs to the existing pipe capture path.
+            </p>
+          </div>
+          <ToggleSwitch
+            checked={hotRestart}
+            onCheckedChange={() => toggleMutation.mutate({ hotRestart: !hotRestart })}
+            disabled={toggleMutation.isPending}
+            aria-label="Toggle hot restart run journaling"
+          />
+        </div>
+      </Card>
 
       {inWorktree ? (
         <Card className="block p-5">

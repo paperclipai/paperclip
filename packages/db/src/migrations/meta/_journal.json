@@ -1184,6 +1184,13 @@
       "when": 1784037600000,
       "tag": "0170_company_skill_policies",
       "breakpoints": true
+    },
+    {
+      "idx": 171,
+      "version": "7",
+      "when": 1784140800000,
+      "tag": "0171_heartbeat_run_journal_offsets",
+      "breakpoints": true
     }
   ]
 }

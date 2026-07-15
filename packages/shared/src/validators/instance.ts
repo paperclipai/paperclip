@@ -56,6 +56,7 @@ export const instanceExperimentalSettingsSchema = z.object({
   enableDecisions: z.boolean().default(false),
   enableGoalsSidebarLink: z.boolean().default(false),
   enableServerInfoDebugView: z.boolean().default(false),
+  hotRestart: z.boolean().default(false),
   autoRestartDevServerWhenIdle: z.boolean().default(false),
   enableIssueGraphLivenessAutoRecovery: z.boolean().default(false),
   enableWorkspaceBranchReconcileForward: z.boolean().default(true),
