@@ -1984,4 +1984,58 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     expect(projectScanSkills).toHaveLength(1);
     expect(projectScanSkills[0]?.sourceLocator).toBe(selectedSkillDir);
   });
+
+  it("skips a selected project skill whose SKILL.md is a symlink outside the workspace", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const workspaceId = randomUUID();
+    const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-skill-symlink-"));
+    const outsideDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-skill-outside-"));
+    cleanupDirs.add(workspaceDir);
+    cleanupDirs.add(outsideDir);
+    const linkedSkillDir = path.join(workspaceDir, ".codex", "skills", "linked-skill");
+    const outsideSkillFile = path.join(outsideDir, "outside-skill.md");
+    await fs.mkdir(linkedSkillDir, { recursive: true });
+    await fs.writeFile(outsideSkillFile, "---\nname: Outside Skill\n---\n", "utf8");
+    await fs.symlink(outsideSkillFile, path.join(linkedSkillDir, "SKILL.md"));
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({ id: projectId, companyId, name: "Skills Project" });
+    await db.insert(projectWorkspaces).values({
+      id: workspaceId,
+      companyId,
+      projectId,
+      name: "Primary",
+      cwd: workspaceDir,
+      isPrimary: true,
+    });
+
+    const result = await svc.scanProjectWorkspaces(companyId, {
+      mode: "import",
+      workspaceIds: [workspaceId],
+      selection: [{ workspaceId, path: ".codex/skills/linked-skill" }],
+    });
+
+    expect(result.imported).toEqual([]);
+    expect(result.candidates).toEqual([
+      expect.objectContaining({
+        relativePath: ".codex/skills/linked-skill",
+        status: "skipped",
+        reason: expect.stringContaining("symbolic link"),
+      }),
+    ]);
+    expect(result.skipped).toEqual([
+      expect.objectContaining({
+        workspaceId,
+        path: linkedSkillDir,
+        reason: expect.stringContaining("symbolic link"),
+      }),
+    ]);
+    const persisted = await db.select().from(companySkills).where(eq(companySkills.companyId, companyId));
+    expect(persisted.filter((skill) => skill.metadata?.sourceKind === "project_scan")).toEqual([]);
+  });
 });
