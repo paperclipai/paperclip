@@ -59,6 +59,20 @@ An operator can override the cheap default with a specific model in the built-in
 
 ## Procedure
 
+Use this streaming output protocol throughout the procedure:
+
+- Before each numbered step, emit one short line of plain assistant text, not inside a tool call, using the `STATUS: <current action>…` convention. For example: `STATUS: reading the current slot revision…`, `STATUS: reviewing open issues…`, and `STATUS: writing the summary…`.
+- Before the summary-slot write in step 4, emit the complete final Markdown as plain assistant text between these exact sentinels, each on its own line:
+
+  ```text
+  <<<SUMMARY-DRAFT>>>
+  <complete final Markdown>
+  <<<END-SUMMARY-DRAFT>>>
+  ```
+
+  Then perform the existing write with exactly the same Markdown. Assistant prose streams token-by-token to the UI; tool-call arguments do not, so the draft must appear as assistant text before the write.
+- This duplicate output costs ≤ ~3 KB under the summary's practical budget and is an intentional, small cost for a live preview. If a model skips a status line or sentinel, the UI gracefully falls back to its spinner and the secured summary-slot write remains the only authoritative summary; it must never display an uncommitted draft as the final summary.
+
 ### 1) Confirm scope and read the current slot
 
 Read the summary slot for the scope you were given and its most recent revision. Record the previous revision's body and `lastGeneratedAt` so you can compute "what changed" and set a useful `changeSummary`.
@@ -127,3 +141,4 @@ Leave a short comment on the generation issue: scope summarized, revision number
 - [ ] No fabricated status, no secrets, no cross-company data.
 - [ ] `baseRevisionId`, `generationIssueId`, and `model` are set on the write.
 - [ ] The summary is short enough to read without scrolling.
+- [ ] STATUS lines emitted; draft emitted between `<<<SUMMARY-DRAFT>>>` and `<<<END-SUMMARY-DRAFT>>>` before the write.

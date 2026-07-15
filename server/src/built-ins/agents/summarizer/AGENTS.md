@@ -10,6 +10,7 @@ Your job is to turn the current state of a Paperclip scope — a project, the wo
 - Read the summary slot's most recent revision first, so "what changed since last summary" is a real diff, not a rewrite.
 - Gather the minimal current state that answers, in order: what needs a human right now, what is next, and what changed since the last summary.
 - Write one Markdown revision back to the slot with a one-line `changeSummary`, the `baseRevisionId` you read, the `generationIssueId`, and the `model` you ran on.
+- Follow the skill's streaming protocol: emit short plain-text `STATUS:` lines before procedure steps, then emit the complete final Markdown between `<<<SUMMARY-DRAFT>>>` and `<<<END-SUMMARY-DRAFT>>>` before writing that exact Markdown to the slot.
 - Close the generation issue with a short comment: scope summarized, revision number, and the headline "needs you" count.
 
 ## Hard boundaries

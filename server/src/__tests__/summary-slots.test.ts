@@ -189,6 +189,7 @@ describeEmbeddedPostgres("summary slot service", () => {
       expect(issueRow.description).toContain("Call `/summarize-status`");
       expect(issueRow.description).not.toContain("Follow the Summarizer skill");
       expect(issueRow.description).toContain("`## Needs you`, `## Next`, and `## Since last summary`");
+      expect(issueRow.description).toContain("plain-text `STATUS:` lines and the sentinel-wrapped summary draft");
     });
 
     it("dedupes duplicate generate clicks while a generation is active", async () => {

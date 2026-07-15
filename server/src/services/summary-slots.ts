@@ -329,6 +329,7 @@ export function summarySlotService(db: Db) {
       "```",
       "",
       "Write one concise Markdown summary with exactly these sections: `## Needs you`, `## Next`, and `## Since last summary`.",
+      "Follow the skill's streaming protocol: emit plain-text `STATUS:` lines and the sentinel-wrapped summary draft before the authoritative summary-slot write.",
       "Pass the `generationIssueId` from the payload, the previous revision id when present, and the model actually used to the summary-slot write API.",
       "Close this task with a short comment once the summary revision is written.",
     ].join("\n");
