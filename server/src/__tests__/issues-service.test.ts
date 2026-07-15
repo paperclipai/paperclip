@@ -3796,6 +3796,61 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     ).resolves.toMatchObject({ id: dependentId, status: "in_progress" });
   });
 
+  it("applies unattributed workspace history to batched blockers at their own completion boundary", async () => {
+    const {
+      companyId,
+      executionWorkspaceId,
+      blockerId,
+      dependentId,
+    } = await seedSharedWorkspaceDependency();
+    const laterBlockerId = randomUUID();
+    await db.update(issues)
+      .set({ completedAt: new Date("2026-05-23T22:06:00.000Z") })
+      .where(eq(issues.id, blockerId));
+    await db.insert(issues).values({
+      id: laterBlockerId,
+      companyId,
+      title: "Later predecessor",
+      status: "done",
+      priority: "medium",
+      executionWorkspaceId,
+      completedAt: new Date("2026-05-23T22:12:00.000Z"),
+    });
+    await svc.update(dependentId, { blockedByIssueIds: [blockerId, laterBlockerId] });
+    await db.insert(workspaceOperations).values([
+      {
+        companyId,
+        executionWorkspaceId,
+        issueId: null,
+        phase: "worktree_prepare",
+        status: "succeeded",
+        startedAt: new Date("2026-05-23T22:00:00.000Z"),
+      },
+      {
+        companyId,
+        executionWorkspaceId,
+        issueId: null,
+        phase: "workspace_finalize",
+        status: "succeeded",
+        startedAt: new Date("2026-05-23T22:05:00.000Z"),
+      },
+      {
+        companyId,
+        executionWorkspaceId,
+        issueId: null,
+        phase: "worktree_prepare",
+        status: "failed",
+        startedAt: new Date("2026-05-23T22:10:00.000Z"),
+      },
+    ]);
+
+    await expect(svc.getDependencyReadiness(dependentId)).resolves.toMatchObject({
+      isDependencyReady: false,
+      pendingFinalizeBlockerIssueIds: [laterBlockerId],
+      unresolvedBlockerIssueIds: [laterBlockerId],
+    });
+  });
+
   it("fails checkout closed with pending-finalize blocker identity", async () => {
     const {
       companyId,
@@ -3825,6 +3880,52 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
         pendingFinalizeBlockerIssueIds: [blockerId],
       },
     });
+  });
+
+  it("enforces finalize readiness when replacing blockers and transitioning to in_progress", async () => {
+    const {
+      companyId,
+      executionWorkspaceId,
+      blockerId,
+      dependentId,
+    } = await seedSharedWorkspaceDependency();
+    await db.insert(workspaceOperations).values({
+      companyId,
+      executionWorkspaceId,
+      issueId: blockerId,
+      phase: "worktree_prepare",
+      status: "succeeded",
+      startedAt: new Date("2026-05-23T22:00:00.000Z"),
+    });
+
+    await expect(
+      svc.update(dependentId, {
+        status: "in_progress",
+        blockedByIssueIds: [blockerId],
+      }),
+    ).rejects.toMatchObject({
+      status: 422,
+      details: {
+        unresolvedBlockerIssueIds: [blockerId],
+        pendingFinalizeBlockerIssueIds: [blockerId],
+      },
+    });
+
+    await db.insert(workspaceOperations).values({
+      companyId,
+      executionWorkspaceId,
+      issueId: blockerId,
+      phase: "workspace_finalize",
+      status: "succeeded",
+      startedAt: new Date("2026-05-23T22:05:00.000Z"),
+    });
+
+    await expect(
+      svc.update(dependentId, {
+        status: "in_progress",
+        blockedByIssueIds: [blockerId],
+      }),
+    ).resolves.toMatchObject({ id: dependentId, status: "in_progress" });
   });
 
   it("treats blockers with no executionWorkspaceId as not subject to the workspace-finalize barrier", async () => {
