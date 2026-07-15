@@ -39,8 +39,8 @@ import {
   updateToolProfileWithEntriesSchema,
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
-import { getActorInfo, assertBoard, assertCompanyAccess } from "./authz.js";
-import { badRequest, forbidden, unprocessable } from "../errors.js";
+import { getActorInfo, assertBoard, assertCompanyAccess, hasCompanyAccess } from "./authz.js";
+import { badRequest, forbidden, notFound, unprocessable } from "../errors.js";
 import { accessService, googleSheetsRobotEmailFromEnv, logActivity, toolAccessPolicyService, toolAccessService } from "../services/index.js";
 import { ToolGatewayHttpError, type ToolGatewayService } from "../services/tool-gateway.js";
 
@@ -210,6 +210,13 @@ export function toolAccessRoutes(
     if (!membership.membershipRole || membership.membershipRole === "viewer") {
       throw forbidden("Viewer access is read-only");
     }
+  }
+
+  function assertLookedUpToolResourceAccess(req: Request, companyId: string, notFoundMessage: string) {
+    if (!hasCompanyAccess(req, companyId)) {
+      throw notFound(notFoundMessage);
+    }
+    assertCompanyAccess(req, companyId);
   }
 
   router.get("/companies/:companyId/tools/gallery", async (req, res) => {
@@ -516,14 +523,14 @@ export function toolAccessRoutes(
   router.get("/tool-connections/:connectionId", async (req, res) => {
     assertBoard(req);
     const connection = await svc.getConnection(req.params.connectionId as string);
-    assertCompanyAccess(req, connection.companyId);
+    assertLookedUpToolResourceAccess(req, connection.companyId, "Tool connection not found");
     res.json(connection);
   });
 
   router.get("/tool-connections/:connectionId/installs", async (req, res) => {
     assertBoard(req);
     const connection = await svc.getConnection(req.params.connectionId as string);
-    assertCompanyAccess(req, connection.companyId);
+    assertLookedUpToolResourceAccess(req, connection.companyId, "Tool connection not found");
     res.json({ connectionId: connection.id, installs: connection.installs ?? [] });
   });
 
@@ -743,14 +750,14 @@ export function toolAccessRoutes(
   router.get("/tool-connections/:connectionId/catalog", async (req, res) => {
     assertBoard(req);
     const existing = await svc.getConnection(req.params.connectionId as string);
-    assertCompanyAccess(req, existing.companyId);
+    assertLookedUpToolResourceAccess(req, existing.companyId, "Tool connection not found");
     res.json({ catalog: await svc.listCatalog(existing.id, existing.companyId) });
   });
 
   router.get("/tool-connections/:connectionId/activity", async (req, res) => {
     assertBoard(req);
     const existing = await svc.getConnection(req.params.connectionId as string);
-    assertCompanyAccess(req, existing.companyId);
+    assertLookedUpToolResourceAccess(req, existing.companyId, "Tool connection not found");
     const limitRaw = Number(req.query.limit ?? 20);
     const limit = Number.isFinite(limitRaw) ? limitRaw : 20;
     res.json(await svc.listConnectionActivity(existing.id, existing.companyId, limit));
@@ -766,7 +773,7 @@ export function toolAccessRoutes(
   router.get("/tool-profiles/:profileId/new-tools", async (req, res) => {
     assertBoard(req);
     const existing = await svc.getProfile(req.params.profileId as string);
-    assertCompanyAccess(req, existing.companyId);
+    assertLookedUpToolResourceAccess(req, existing.companyId, "Tool profile not found");
     res.json(await svc.listProfileNewTools(existing.id, existing.companyId));
   });
 
