@@ -2985,7 +2985,7 @@ async function listIssueBlockedInboxAttentionMap(
       .where(and(
         eq(issues.companyId, companyId),
         visibleIssueCondition(),
-        notInArray(issues.status, [...BLOCKED_INBOX_TERMINAL_STATUSES]),
+        ne(issues.status, "done"),
       )),
     dbOrTx
       .select({
