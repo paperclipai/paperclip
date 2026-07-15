@@ -89,7 +89,7 @@ import type {
 } from "@paperclipai/shared";
 import { isUuidLike, normalizeAgentUrlKey, parseFrontmatterMarkdown } from "@paperclipai/shared";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
-import { conflict, notFound, unprocessable } from "../errors.js";
+import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
 import { agentService } from "./agents.js";
 import { issueDocumentSelect, mapIssueDocumentRow } from "./documents.js";
@@ -686,9 +686,12 @@ async function resolveGitHubCommitSha(owner: string, repo: string, ref: string, 
 }
 
 function parseGitHubSourceUrl(rawUrl: string) {
-  const url = new URL(rawUrl);
+  const url = parseRemoteSkillImportUrl(rawUrl);
   if (url.protocol !== "https:") {
     throw unprocessable("GitHub source URL must use HTTPS");
+  }
+  if (url.username || url.password || url.search || url.hash) {
+    throw unprocessable("Remote skill source URLs cannot include credentials, query parameters, or fragments.");
   }
   const parts = url.pathname.split("/").filter(Boolean);
   if (parts.length < 2) {
@@ -711,6 +714,32 @@ function parseGitHubSourceUrl(rawUrl: string) {
     explicitRef = true;
   }
   return { hostname: url.hostname, owner, repo, ref, basePath, filePath, explicitRef };
+}
+
+function parseRemoteSkillImportUrl(rawUrl: string) {
+  try {
+    return new URL(rawUrl);
+  } catch {
+    throw unprocessable("Invalid remote skill source URL.");
+  }
+}
+
+function normalizeRemoteSkillImportSource(rawUrl: string) {
+  const url = parseRemoteSkillImportUrl(rawUrl);
+  if (url.username || url.password || url.search || url.hash) {
+    throw unprocessable("Remote skill source URLs cannot include credentials, query parameters, or fragments.");
+  }
+  if (isGitRepoSkillImportSource(rawUrl)) {
+    const hostname = url.hostname.toLowerCase() === "www.github.com" ? "github.com" : url.hostname.toLowerCase();
+    const segments = url.pathname.split("/").filter(Boolean);
+    if (segments.length >= 2) {
+      const owner = segments[0]!.toLowerCase();
+      const repo = segments[1]!.replace(/\.git$/i, "").toLowerCase();
+      const suffix = segments.slice(2).join("/");
+      return `https://${hostname}/${owner}/${repo}${suffix ? `/${suffix}` : ""}`;
+    }
+  }
+  return url.toString();
 }
 
 async function resolveGitHubPinnedRef(parsed: ReturnType<typeof parseGitHubSourceUrl>) {
@@ -773,10 +802,14 @@ export function parseSkillImportSourceInput(rawInput: string): ParsedSkillImport
   if (!normalizedSource) {
     throw unprocessable("Skill source is required.");
   }
+  const normalizedRemoteSource = /^https?:\/\//i.test(normalizedSource)
+    ? normalizeRemoteSkillImportSource(normalizedSource)
+    : null;
+  const canonicalSource = normalizedRemoteSource ?? normalizedSource;
 
   // Key-style imports (org/repo/skill) originate from the skills.sh registry
-  if (!/^https?:\/\//i.test(normalizedSource) && /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(normalizedSource)) {
-    const [owner, repo, skillSlugRaw] = normalizedSource.split("/");
+  if (!/^https?:\/\//i.test(canonicalSource) && /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(canonicalSource)) {
+    const [owner, repo, skillSlugRaw] = canonicalSource.split("/");
     return {
       resolvedSource: `https://github.com/${owner}/${repo}`,
       requestedSkillSlug: normalizeSkillSlug(skillSlugRaw),
@@ -785,9 +818,9 @@ export function parseSkillImportSourceInput(rawInput: string): ParsedSkillImport
     };
   }
 
-  if (!/^https?:\/\//i.test(normalizedSource) && /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(normalizedSource)) {
+  if (!/^https?:\/\//i.test(canonicalSource) && /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(canonicalSource)) {
     return {
-      resolvedSource: `https://github.com/${normalizedSource}`,
+      resolvedSource: `https://github.com/${canonicalSource}`,
       requestedSkillSlug,
       originalSkillsShUrl: null,
       warnings,
@@ -795,23 +828,42 @@ export function parseSkillImportSourceInput(rawInput: string): ParsedSkillImport
   }
 
   // Detect skills.sh URLs and resolve to GitHub: https://skills.sh/org/repo/skill → org/repo/skill key
-  const skillsShMatch = normalizedSource.match(/^https?:\/\/(?:www\.)?skills\.sh\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)(?:\/([A-Za-z0-9_.-]+))?(?:[?#].*)?$/i);
+  const skillsShMatch = canonicalSource.match(/^https?:\/\/(?:www\.)?skills\.sh\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)(?:\/([A-Za-z0-9_.-]+))?$/i);
   if (skillsShMatch) {
     const [, owner, repo, skillSlugRaw] = skillsShMatch;
     return {
       resolvedSource: `https://github.com/${owner}/${repo}`,
       requestedSkillSlug: skillSlugRaw ? normalizeSkillSlug(skillSlugRaw) : requestedSkillSlug,
-      originalSkillsShUrl: normalizedSource,
+      originalSkillsShUrl: canonicalSource,
       warnings,
     };
   }
 
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(canonicalSource) && !/^https:\/\//i.test(canonicalSource)) {
+    throw unprocessable("Remote skill sources must use HTTPS", {
+      code: "skill_source_validation_failed",
+    });
+  }
+
   return {
-    resolvedSource: normalizedSource,
+    resolvedSource: canonicalSource,
     requestedSkillSlug,
     originalSkillsShUrl: null,
     warnings,
   };
+}
+
+export function isGitRepoSkillImportSource(source: string) {
+  try {
+    const parsed = new URL(source.trim());
+    if (parsed.protocol !== "https:") return false;
+    const hostname = parsed.hostname.toLowerCase();
+    if (hostname.endsWith(".githubusercontent.com") || hostname === "gist.github.com") return false;
+    const segments = parsed.pathname.split("/").filter(Boolean);
+    return segments.length >= 2 && !parsed.pathname.endsWith(".md");
+  } catch {
+    return false;
+  }
 }
 
 function resolveBundledSkillsRoot() {
@@ -1285,14 +1337,7 @@ async function readUrlSkillImports(
 ): Promise<{ skills: ImportedSkill[]; warnings: string[] }> {
   const url = sourceUrl.trim();
   const warnings: string[] = [];
-  const looksLikeRepoUrl = (() => { try {
-    const parsed = new URL(url);
-    if (parsed.protocol !== "https:") return false;
-    const h = parsed.hostname.toLowerCase();
-    if (h.endsWith(".githubusercontent.com") || h === "gist.github.com") return false;
-    const segments = parsed.pathname.split("/").filter(Boolean);
-    return segments.length >= 2 && !parsed.pathname.endsWith(".md");
-  } catch { return false; } })();
+  const looksLikeRepoUrl = isGitRepoSkillImportSource(url);
   if (looksLikeRepoUrl) {
     const parsed = parseGitHubSourceUrl(url);
     const apiBase = gitHubApiBase(parsed.hostname);
@@ -2575,6 +2620,32 @@ async function listLastEditorsBySkillId(
 export function companySkillService(db: Db) {
   const agents = agentService(db);
   const projects = projectService(db);
+
+  async function assertLocalImportSourceAllowed(companyId: string, source: string) {
+    const sourceRealPath = await fs.realpath(path.resolve(source)).catch(() => null);
+    if (!sourceRealPath) {
+      throw unprocessable("Local skill source is not available", {
+        code: "skill_source_validation_failed",
+      });
+    }
+    const projectRows = await projects.list(companyId);
+    const configuredRoots = [
+      resolveManagedSkillsRoot(companyId),
+      ...projectRows.flatMap((project) => project.workspaces.map((workspace) => workspace.cwd)),
+    ].filter((root): root is string => typeof root === "string" && root.trim().length > 0);
+    const approvedRoots = (await Promise.all(
+      configuredRoots.map((root) => fs.realpath(path.resolve(root)).catch(() => null)),
+    )).filter((root): root is string => Boolean(root));
+    const allowed = approvedRoots.some(
+      (root) => sourceRealPath === root || sourceRealPath.startsWith(`${root}${path.sep}`),
+    );
+    if (!allowed) {
+      throw forbidden("Local skill source is outside approved company workspace roots", {
+        code: "skill_workspace_boundary_denied",
+        remediation: "Import from a configured Paperclip workspace or the company managed-skill directory.",
+      });
+    }
+  }
 
   async function ensureBundledSkills(companyId: string) {
     for (const skillsRoot of resolveBundledSkillsRoot()) {
@@ -5099,6 +5170,9 @@ export function companySkillService(db: Db) {
     await ensureSkillInventoryCurrent(companyId);
     const parsed = parseSkillImportSourceInput(source);
     const local = !/^https?:\/\//i.test(parsed.resolvedSource);
+    if (local) {
+      await assertLocalImportSourceAllowed(companyId, parsed.resolvedSource);
+    }
     const { skills, warnings } = local
       ? {
         skills: (await readLocalSkillImports(companyId, parsed.resolvedSource))

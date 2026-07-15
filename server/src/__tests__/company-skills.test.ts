@@ -84,6 +84,36 @@ describe("company skill import source parsing", () => {
     expect(parsed.resolvedSource).toBe("https://github.com/vercel-labs/skills");
     expect(parsed.originalSkillsShUrl).toBeNull();
   });
+
+  it("rejects secret-bearing remote URLs without echoing the secret", () => {
+    const source = "https://github.com/acme/private-skill?token=secret#token=secret";
+
+    expect(() => parseSkillImportSourceInput(source)).toThrow(
+      "Remote skill source URLs cannot include credentials, query parameters, or fragments.",
+    );
+    try {
+      parseSkillImportSourceInput(source);
+    } catch (error) {
+      expect((error as Error).message).not.toContain("secret");
+    }
+  });
+
+  it("rejects malformed remote URLs as validation errors", () => {
+    expect(() => parseSkillImportSourceInput("https://")).toThrow(
+      "Invalid remote skill source URL.",
+    );
+  });
+
+  it("canonicalizes clean GitHub URLs before persistence", () => {
+    const parsed = parseSkillImportSourceInput(
+      "https://www.github.com/Vercel-Labs/Agent-Browser/blob/main/skills/Upper/SKILL.MD",
+    );
+
+    expect(parsed.resolvedSource).toBe(
+      "https://github.com/vercel-labs/agent-browser/blob/main/skills/Upper/SKILL.MD",
+    );
+    expect(parsed.originalSkillsShUrl).toBeNull();
+  });
 });
 
 describe("project workspace skill discovery", () => {

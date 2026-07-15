@@ -21,6 +21,7 @@ beforeEach(() => {
       delete process.env[key];
     }
   }
+  process.env.PAPERCLIP_INSTANCE_ID = "default";
 });
 
 afterEach(() => {

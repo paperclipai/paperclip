@@ -101,6 +101,8 @@ import {
   companySkillTestRunListQuerySchema,
   companySkillTestRunTemplateCreateSchema,
   companySkillTestRunTemplateUpdateSchema,
+  evaluateSkillPolicySchema,
+  replaceSkillPolicySchema,
   // Issue tree
   createIssueTreeHoldSchema,
   previewIssueTreeControlSchema,
@@ -3975,6 +3977,48 @@ registry.registerPath({
   summary: "Delete a company skill",
   request: { params: z.object({ companyId: z.string(), skillId: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/skill-policy",
+  tags: ["skills"],
+  summary: "Get the effective company skill policy",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "put",
+  path: "/api/companies/{companyId}/skill-policy",
+  tags: ["skills"],
+  summary: "Replace the company skill policy",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(replaceSkillPolicySchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 409: r.conflict },
+});
+
+registry.registerPath({
+  method: "delete",
+  path: "/api/companies/{companyId}/skill-policy",
+  tags: ["skills"],
+  summary: "Reset the company skill policy to the open default",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/skill-policy/evaluate",
+  tags: ["skills"],
+  summary: "Evaluate a company skill policy decision",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(evaluateSkillPolicySchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
 });
 
 // ─── Execution workspaces ─────────────────────────────────────────────────────

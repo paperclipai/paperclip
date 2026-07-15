@@ -37,6 +37,10 @@ import { AgentIcon } from "../components/AgentIconPicker";
 import { AgentMultiSelect } from "../components/AgentMultiSelect";
 import { useAdapterCapabilities } from "../adapters/use-adapter-capabilities";
 import {
+  SkillPolicyDenialNotice,
+  useSkillPolicyDenial,
+} from "@/components/skill-studio/SkillPolicySurfaces";
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -3491,6 +3495,19 @@ export function CompanySkills() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToastActions();
   const adapterCaps = useAdapterCapabilities();
+  const policyDenial = useSkillPolicyDenial();
+  // Route a failed skill mutation to the persistent policy banner when it is an
+  // explicit-policy (State B) or platform-safety (State C) denial; otherwise keep
+  // the existing transient error toast. This is the core "actionable denial only
+  // for real restrictions" behavior from §9.10 (PAP-13865).
+  const reportSkillError = (error: unknown, title: string, fallbackBody: string, actionLabel?: string) => {
+    if (policyDenial.capture(error, actionLabel)) return;
+    pushToast({
+      tone: "error",
+      title,
+      body: error instanceof Error && error.message ? error.message : fallbackBody,
+    });
+  };
   const [skillFilter, setSkillFilter] = useState("");
   const [source, setSource] = useState("");
   const [emptySourceHelpOpen, setEmptySourceHelpOpen] = useState(false);
@@ -3782,11 +3799,7 @@ export function CompanySkills() {
       setSource("");
     },
     onError: (error) => {
-      pushToast({
-        tone: "error",
-        title: "Skill import failed",
-        body: error instanceof Error ? error.message : "Failed to import skill source.",
-      });
+      reportSkillError(error, "Skill import failed", "Failed to import skill source.", "Importing skills");
     },
   });
 
@@ -3821,11 +3834,7 @@ export function CompanySkills() {
     },
     onError: (error) => {
       setScanStatusMessage(null);
-      pushToast({
-        tone: "error",
-        title: "Project skill scan failed",
-        body: error instanceof Error ? error.message : "Failed to scan project workspaces.",
-      });
+      reportSkillError(error, "Project skill scan failed", "Failed to scan project workspaces.", "Scanning projects for skills");
     },
   });
 
@@ -3845,11 +3854,7 @@ export function CompanySkills() {
     onError: (error) => {
       const message = error instanceof Error ? error.message : "Failed to create skill.";
       setCreateError(message);
-      pushToast({
-        tone: "error",
-        title: "Skill creation failed",
-        body: message,
-      });
+      reportSkillError(error, "Skill creation failed", "Failed to create skill.", "Creating a skill");
     },
   });
 
@@ -3950,11 +3955,7 @@ export function CompanySkills() {
       });
     },
     onError: (error) => {
-      pushToast({
-        tone: "error",
-        title: "Update failed",
-        body: error instanceof Error ? error.message : "Failed to install skill update.",
-      });
+      reportSkillError(error, "Update failed", "Failed to install skill update.", "Updating this skill");
     },
   });
 
@@ -4090,6 +4091,9 @@ export function CompanySkills() {
     onError: (error) => {
       const message = error instanceof Error ? error.message : "Failed to install catalog skill.";
       setInstallDialogState((current) => ({ ...current, error: message }));
+      // Also surface explicit-policy / platform denials in the persistent banner
+      // so the reason stays visible after the dialog closes.
+      policyDenial.capture(error, "Installing this skill");
     },
   });
 
@@ -4212,11 +4216,7 @@ export function CompanySkills() {
       });
     },
     onError: (error) => {
-      pushToast({
-        tone: "error",
-        title: "Remove failed",
-        body: error instanceof Error ? error.message : "Failed to remove skill.",
-      });
+      reportSkillError(error, "Remove failed", "Failed to remove skill.", "Removing this skill");
     },
   });
 
@@ -4266,6 +4266,11 @@ export function CompanySkills() {
 
   return (
     <>
+      {policyDenial.denial ? (
+        <div className="px-4 pt-4">
+          <SkillPolicyDenialNotice denial={policyDenial.denial} onDismiss={policyDenial.reset} />
+        </div>
+      ) : null}
       <Dialog open={deleteOpen} onOpenChange={closeDeleteDialog}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>

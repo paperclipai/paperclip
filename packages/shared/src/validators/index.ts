@@ -833,3 +833,4 @@ export {
   type CreateToolTrustRuleFromActionRequest,
   type RevokeToolTrustRule,
 } from "./tool-access.js";
+export * from "./skill-policy.js";
