@@ -17,7 +17,7 @@ export function otelHttpMetrics(): RequestHandler {
     res.on("finish", () => {
       const durationSec = (performance.now() - startTime) / 1000;
       const method = req.method;
-      const route = (req as any).route?.path ?? req.baseUrl ?? "unknown";
+      const route = (req as any).route?.path ?? "unmatched";
       const status = String(res.statusCode);
 
       httpRequestsTotal.add(1, { method, route, status });
