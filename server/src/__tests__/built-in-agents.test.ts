@@ -377,6 +377,26 @@ describeEmbeddedPostgres("built-in agents", () => {
     });
   });
 
+  it("rejects unknown built-in adapter models before saving setup", async () => {
+    const companyId = await seedCompany();
+
+    await expect(builtInAgentService(db).ensure(companyId, "summarizer", {
+      adapterType: "claude_local",
+      adapterConfig: { model: "claude-haiku-4-6" },
+    })).rejects.toMatchObject({
+      status: 422,
+      details: {
+        code: "built_in_agent_model_unknown",
+        key: "summarizer",
+        adapterType: "claude_local",
+        model: "claude-haiku-4-6",
+      },
+    });
+
+    const rows = await db.select().from(agents).where(eq(agents.companyId, companyId));
+    expect(rows).toHaveLength(0);
+  });
+
   it("recovers an orphaned marked row instead of creating a duplicate", async () => {
     const companyId = await seedCompany();
     const orphanId = randomUUID();
@@ -413,7 +433,7 @@ describeEmbeddedPostgres("built-in agents", () => {
 
     const ready = await builtIns.ensure(companyId, "learning", {
       adapterType: "claude_local",
-      adapterConfig: { model: "claude-sonnet-4" },
+      adapterConfig: { model: "claude-sonnet-4-5" },
     });
     expect(ready.status).toBe("ready");
 
