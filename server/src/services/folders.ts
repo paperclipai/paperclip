@@ -244,8 +244,7 @@ export function folderService(db: Db) {
     return getFolder(companyId, folderId);
   }
 
-  async function descendantIds(companyId: string, kind: FolderKind, folderId: string) {
-    const rows = await getRows(companyId, kind);
+  function descendantIdsFromRows(rows: FolderRow[], folderId: string) {
     if (!rows.some((row) => row.id === folderId)) throw notFound("Folder not found");
     const children = new Map<string, string[]>();
     for (const row of rows) {
@@ -265,16 +264,20 @@ export function folderService(db: Db) {
     return result;
   }
 
+  async function descendantIds(companyId: string, kind: FolderKind, folderId: string) {
+    return descendantIdsFromRows(await getRows(companyId, kind), folderId);
+  }
+
   async function moveFolder(companyId: string, folderId: string, input: MoveFolder): Promise<Folder | null> {
     const existing = await getFolder(companyId, folderId);
     if (!existing) return null;
     await assertMutableFolder(companyId, existing);
     const parentId = input.parentId === undefined ? existing.parentId : input.parentId;
     if (parentId === existing.id) throw unprocessable("A folder cannot be its own parent");
-    const descendants = await descendantIds(companyId, existing.kind, existing.id);
+    const rows = await getRows(companyId, existing.kind);
+    const descendants = descendantIdsFromRows(rows, existing.id);
     if (parentId && descendants.has(parentId)) throw unprocessable("A folder cannot be moved into its own subtree");
     const parent = await validateParent(companyId, existing.kind, parentId);
-    const rows = await getRows(companyId, existing.kind);
     const views = buildFolderViews(rows);
     const relativeDepth = Math.max(...Array.from(descendants).map((id) => views.get(id)!.depth - existing.depth + 1));
     if ((parent?.depth ?? 0) + relativeDepth > MAX_FOLDER_DEPTH) {
