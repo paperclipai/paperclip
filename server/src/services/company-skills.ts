@@ -5477,9 +5477,14 @@ export function companySkillService(db: Db) {
       const bundledFolder = isPaperclipBundledSkillKey(skill.key) || incomingKind === "paperclip_bundled"
         ? await folderSvc.ensureBundledCategory(companyId, skill.key.split("/")[2] ?? "other")
         : null;
+      const projectId = asString(incomingMeta.projectId);
+      const projectName = asString(incomingMeta.projectName);
+      const projectFolder = !existing && incomingKind === "project_scan" && projectId && projectName
+        ? await folderSvc.ensureProjectFolder(companyId, projectId, projectName)
+        : null;
       const values: ImportedSkillPersistValues = {
         companyId,
-        folderId: bundledFolder?.id ?? existing?.folderId ?? null,
+        folderId: bundledFolder?.id ?? projectFolder?.id ?? existing?.folderId ?? null,
         key: skill.key,
         slug: skill.slug,
         name: skill.name,
