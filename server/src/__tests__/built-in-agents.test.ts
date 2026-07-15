@@ -1088,6 +1088,8 @@ describeEmbeddedPostgres("built-in agents", () => {
     });
     const resetFile = await instructions.readFile(reset.agent!, "AGENTS.md");
     expect(resetFile.content).toContain("Summarizer");
+    expect(resetFile.content).toContain("<<<SUMMARY-DRAFT>>>");
+    expect(resetFile.content).toContain("<<<END-SUMMARY-DRAFT>>>");
     expect(resetFile.content).not.toContain("Operator edit.");
   });
 
