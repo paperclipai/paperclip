@@ -301,7 +301,7 @@ export const PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS = 60 * 60 * 1000;
 const PROVIDER_QUOTA_MONITOR_SERVICE_NAME = "AI provider quota";
 
 const PROVIDER_QUOTA_ERROR_RE =
-  /(?:you(?:'|’)ve hit your usage limit|usage limit(?: reached| exceeded)?|provider quota|quota (?:limit )?exceeded|model (?:is )?at capacity|capacity limit)/i;
+  /(?:you(?:'|’)ve hit your usage limit|usage limit(?: reached| exceeded)?|provider quota|quota (?:limit )?exceeded|model (?:is )?at capacity)/i;
 const CONFIGURATION_INCOMPLETE_ERROR_RE =
   /(?:model_not_found|model [^\n]{0,120} not found|missing (?:api )?(?:key|credentials?)|credentials? (?:are |is )?missing|no (?:api )?(?:key|credentials?) (?:was |were )?(?:found|configured|provided)|api key (?:is )?(?:not set|unavailable))/i;
 
@@ -380,6 +380,13 @@ export function classifyAdapterFailureForRecovery(
   latestRun: Pick<NonNullable<LatestIssueRun>, "error" | "errorCode" | "resultJson">,
   now = new Date(),
 ): AdapterFailureRecoveryClassification {
+  if (
+    latestRun.errorCode !== "adapter_failed" &&
+    latestRun.errorCode !== "provider_quota" &&
+    latestRun.errorCode !== "configuration_incomplete"
+  ) {
+    return null;
+  }
   const resultJson = parseObject(latestRun.resultJson);
   const error = [latestRun.errorCode ?? "", latestRun.error ?? "", JSON.stringify(resultJson)].join("\n");
   if (latestRun.errorCode === "configuration_incomplete" || CONFIGURATION_INCOMPLETE_ERROR_RE.test(error)) {
@@ -3320,6 +3327,24 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     latestRun: NonNullable<LatestIssueRun>,
     classification: NonNullable<AdapterFailureRecoveryClassification>,
   ): Promise<NonNullable<LatestIssueRun>> {
+    const classifiedRun = withAdapterFailureRecoveryClassification(latestRun, classification);
+
+    await db
+      .update(heartbeatRuns)
+      .set({
+        errorCode: classifiedRun.errorCode,
+        resultJson: parseObject(classifiedRun.resultJson),
+        updatedAt: new Date(),
+      })
+      .where(eq(heartbeatRuns.id, latestRun.id));
+
+    return classifiedRun;
+  }
+
+  function withAdapterFailureRecoveryClassification(
+    latestRun: NonNullable<LatestIssueRun>,
+    classification: NonNullable<AdapterFailureRecoveryClassification>,
+  ): NonNullable<LatestIssueRun> {
     const resultJson = parseObject(latestRun.resultJson);
     const providerQuotaMetadata = classification.kind === "provider_quota"
       ? {
@@ -3330,19 +3355,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         }
       : { errorFamily: "configuration_incomplete" };
     const errorCode = classification.kind;
-
-    await db
-      .update(heartbeatRuns)
-      .set({
-        errorCode,
-        resultJson: {
-          ...resultJson,
-          ...providerQuotaMetadata,
-          recoveryClassification: errorCode,
-        },
-        updatedAt: new Date(),
-      })
-      .where(eq(heartbeatRuns.id, latestRun.id));
 
     return {
       ...latestRun,
@@ -3550,17 +3562,18 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           }
           continue;
         } else {
-          latestRun = await persistAdapterFailureRecoveryClassification(latestRun, adapterFailureClassification);
+          const classifiedRun = withAdapterFailureRecoveryClassification(latestRun, adapterFailureClassification);
           const updated = await escalateStrandedAssignedIssue({
             issue,
             previousStatus: issue.status as StrandedPreviousStatus,
-            latestRun,
+            latestRun: classifiedRun,
             recoveryCause: "configuration_incomplete",
             comment:
               "Paperclip classified the latest adapter failure as `configuration_incomplete`. " +
               "Moving the issue to `blocked` with the configuration fix recorded instead of creating a recovery takeover.",
           });
           if (updated) {
+            latestRun = await persistAdapterFailureRecoveryClassification(latestRun, adapterFailureClassification);
             result.escalated += 1;
             result.issueIds.push(issue.id);
           } else {

@@ -61,4 +61,20 @@ describe("classifyAdapterFailureForRecovery", () => {
       resultJson: null,
     })).toEqual({ kind: "configuration_incomplete" });
   });
+
+  it("ignores quota-like text from non-adapter failures", () => {
+    expect(classifyAdapterFailureForRecovery({
+      errorCode: "timeout",
+      error: "Provider quota exceeded while waiting for a downstream service.",
+      resultJson: null,
+    })).toBeNull();
+  });
+
+  it("does not treat a generic capacity limit as provider quota", () => {
+    expect(classifyAdapterFailureForRecovery({
+      errorCode: "adapter_failed",
+      error: "Workspace storage capacity limit reached.",
+      resultJson: null,
+    })).toBeNull();
+  });
 });
