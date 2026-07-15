@@ -961,16 +961,16 @@ export async function listUnfinalizedExecutionWorkspaceIds(
 async function listPendingFinalizeBlockerIssueIds(
   dbOrTx: Pick<Db, "select">,
   companyId: string,
-  blockerWorkspacePairs: Array<{ blockerIssueId: string; executionWorkspaceId: string }>,
+  blockerWorkspacePairs: Array<{
+    blockerIssueId: string;
+    executionWorkspaceId: string;
+    blockerCompletedAt: Date | null;
+  }>,
 ): Promise<Set<string>> {
   const pending = new Set<string>();
   const blockerIssueIds = [...new Set(blockerWorkspacePairs.map((pair) => pair.blockerIssueId))];
   const executionWorkspaceIds = [...new Set(blockerWorkspacePairs.map((pair) => pair.executionWorkspaceId))];
   if (blockerIssueIds.length === 0 || executionWorkspaceIds.length === 0) return pending;
-  const blockerWorkspaceKeys = new Set(
-    blockerWorkspacePairs.map((pair) => `${pair.blockerIssueId}:${pair.executionWorkspaceId}`),
-  );
-
   const rows = await dbOrTx
     .select({
       issueId: workspaceOperations.issueId,
@@ -988,37 +988,40 @@ async function listPendingFinalizeBlockerIssueIds(
       ),
     );
 
-  const latestAttributedByBlockerWorkspace = new Map<string, { phase: string; status: string; startedAt: Date }>();
-  const latestUnattributedByWorkspace = new Map<string, { phase: string; status: string; startedAt: Date }>();
-  for (const row of rows) {
-    if (!row.executionWorkspaceId) continue;
-    if (row.issueId) {
-      const key = `${row.issueId}:${row.executionWorkspaceId}`;
-      if (!blockerWorkspaceKeys.has(key)) continue;
-      const current = latestAttributedByBlockerWorkspace.get(key);
-      if (!current || row.startedAt > current.startedAt) {
-        latestAttributedByBlockerWorkspace.set(key, {
-          phase: row.phase,
-          status: row.status,
-          startedAt: row.startedAt,
-        });
-      }
-      continue;
-    }
-
-    const current = latestUnattributedByWorkspace.get(row.executionWorkspaceId);
-    if (!current || row.startedAt > current.startedAt) {
-      latestUnattributedByWorkspace.set(row.executionWorkspaceId, {
-        phase: row.phase,
-        status: row.status,
-        startedAt: row.startedAt,
-      });
-    }
-  }
-
   for (const pair of blockerWorkspacePairs) {
-    const latest = latestAttributedByBlockerWorkspace.get(`${pair.blockerIssueId}:${pair.executionWorkspaceId}`)
-      ?? latestUnattributedByWorkspace.get(pair.executionWorkspaceId);
+    const latestAttributed = rows.reduce<{ phase: string; status: string; startedAt: Date } | null>(
+      (current, row) => {
+        if (
+          row.issueId !== pair.blockerIssueId
+          || row.executionWorkspaceId !== pair.executionWorkspaceId
+        ) return current;
+        // A setup-only wake that starts after the issue completed cannot dirty the
+        // completed candidate and must not invalidate its earlier finalize barrier.
+        // Explicit finalize attempts remain authoritative at any time: recovery can
+        // close the barrier, while a later failed finalize must still fail closed.
+        const relevant = row.phase === "workspace_finalize"
+          || !pair.blockerCompletedAt
+          || row.startedAt <= pair.blockerCompletedAt;
+        if (!relevant || current && current.startedAt >= row.startedAt) return current;
+        return row;
+      },
+      null,
+    );
+
+    const latestUnattributed = rows.reduce<{ phase: string; status: string; startedAt: Date } | null>(
+      (current, row) => {
+        if (row.issueId || row.executionWorkspaceId !== pair.executionWorkspaceId) return current;
+        const relevant = row.phase === "workspace_finalize"
+          || !pair.blockerCompletedAt
+          || row.startedAt <= pair.blockerCompletedAt;
+        if (!relevant || current && current.startedAt >= row.startedAt) return current;
+        return row;
+      },
+      null,
+    );
+    // Prefer blocker-attributed history whenever it exists. Unattributed rows are
+    // the compatibility path for legacy operations that predate issue attribution.
+    const latest = latestAttributed ?? latestUnattributed;
     if (!latest) continue; // no ops recorded -> nothing to finalize for this blocker
     if (latest.phase === "workspace_finalize" && latest.status === "succeeded") continue;
     pending.add(pair.blockerIssueId);
@@ -1082,6 +1085,7 @@ async function listIssueDependencyReadinessMap(
       blockerIssueId: issueRelations.issueId,
       blockerStatus: issues.status,
       blockerExecutionWorkspaceId: issues.executionWorkspaceId,
+      blockerCompletedAt: issues.completedAt,
     })
     .from(issueRelations)
     .innerJoin(issues, eq(issueRelations.issueId, issues.id))
@@ -1096,12 +1100,17 @@ async function listIssueDependencyReadinessMap(
   // Collect issue/workspace pairs of "done" blockers — these are the only ones
   // subject to the workspace-finalize barrier. Blockers that aren't done already
   // mark the dependent as not-ready and don't need a finalize check.
-  const doneBlockerWorkspacePairs: Array<{ blockerIssueId: string; executionWorkspaceId: string }> = [];
+  const doneBlockerWorkspacePairs: Array<{
+    blockerIssueId: string;
+    executionWorkspaceId: string;
+    blockerCompletedAt: Date | null;
+  }> = [];
   for (const row of blockerRows) {
     if (row.blockerStatus === "done" && row.blockerExecutionWorkspaceId) {
       doneBlockerWorkspacePairs.push({
         blockerIssueId: row.blockerIssueId,
         executionWorkspaceId: row.blockerExecutionWorkspaceId,
+        blockerCompletedAt: row.blockerCompletedAt,
       });
     }
   }
@@ -6280,13 +6289,26 @@ export function issueService(db: Db) {
         throw unprocessable("in_progress issues require an assignee");
       }
       if (patch.status === "in_progress") {
-        const unresolvedBlockerIssueIds = blockedByIssueIds !== undefined
-          ? await listUnresolvedBlockerIssueIds(dbOrTx, existing.companyId, blockedByIssueIds)
-          : (
-              await listIssueDependencyReadinessMap(dbOrTx, existing.companyId, [id])
-            ).get(id)?.unresolvedBlockerIssueIds ?? [];
+        let pendingFinalizeBlockerIssueIds: string[] = [];
+        let unresolvedBlockerIssueIds: string[];
+        if (blockedByIssueIds !== undefined) {
+          unresolvedBlockerIssueIds = await listUnresolvedBlockerIssueIds(
+            dbOrTx,
+            existing.companyId,
+            blockedByIssueIds,
+          );
+        } else {
+          const readiness = (
+            await listIssueDependencyReadinessMap(dbOrTx, existing.companyId, [id])
+          ).get(id) ?? createIssueDependencyReadiness(id);
+          unresolvedBlockerIssueIds = readiness.unresolvedBlockerIssueIds;
+          pendingFinalizeBlockerIssueIds = readiness.pendingFinalizeBlockerIssueIds;
+        }
         if (unresolvedBlockerIssueIds.length > 0) {
-          throw unprocessable("Issue is blocked by unresolved blockers", { unresolvedBlockerIssueIds });
+          throw unprocessable("Issue is blocked by unresolved blockers", {
+            unresolvedBlockerIssueIds,
+            pendingFinalizeBlockerIssueIds,
+          });
         }
       }
       const shouldValidateNextAssignee =
@@ -6567,9 +6589,13 @@ export function issueService(db: Db) {
       await clearCheckoutRunIfTerminal(id);
 
       const dependencyReadiness = await listIssueDependencyReadinessMap(db, issueCompany.companyId, [id]);
-      const unresolvedBlockerIssueIds = dependencyReadiness.get(id)?.unresolvedBlockerIssueIds ?? [];
+      const issueDependencyReadiness = dependencyReadiness.get(id) ?? createIssueDependencyReadiness(id);
+      const unresolvedBlockerIssueIds = issueDependencyReadiness.unresolvedBlockerIssueIds;
       if (unresolvedBlockerIssueIds.length > 0) {
-        throw unprocessable("Issue is blocked by unresolved blockers", { unresolvedBlockerIssueIds });
+        throw unprocessable("Issue is blocked by unresolved blockers", {
+          unresolvedBlockerIssueIds,
+          pendingFinalizeBlockerIssueIds: issueDependencyReadiness.pendingFinalizeBlockerIssueIds,
+        });
       }
 
       const sameRunAssigneeCondition = checkoutRunId
