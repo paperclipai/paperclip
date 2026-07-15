@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
@@ -17,6 +17,7 @@ import { summarySlotsApi, type SummarySlotSelector } from "@/api/summarySlots";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import { ConfigureBuiltInAgentModal } from "@/components/ConfigureBuiltInAgentModal";
 import { InlineBanner } from "@/components/InlineBanner";
+import { useCompanyLiveEvent } from "@/context/LiveUpdatesProvider";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectSeparator, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -66,6 +67,58 @@ function latestRevisionOptionLabel(
   return `Latest (Rev ${document.latestRevisionNumber}) - ${
     formatRevisionTimestamp(revision?.createdAt ?? document.updatedAt)
   }`;
+}
+
+interface LiveGenerationStatus {
+  message: string | null;
+  currentToolName: string | null;
+  lastAssistantSnippet: string | null;
+}
+
+function readPayloadString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+/**
+ * Pick the single most useful line to show while a summary is generating.
+ * Prefers the server-derived status `message`, then the last streamed
+ * assistant snippet, then the active tool name. Returns null when nothing
+ * has streamed yet so the card falls back to its static generating text.
+ */
+export function resolveGenerationStatusLine(status: LiveGenerationStatus | null): string | null {
+  if (!status) return null;
+  if (status.message) return status.message;
+  if (status.lastAssistantSnippet) return status.lastAssistantSnippet;
+  if (status.currentToolName) return `Working with ${status.currentToolName}`;
+  return null;
+}
+
+/**
+ * Subscribe to the shared LiveUpdates socket and track the generation run's
+ * live status derived from `heartbeat.run.progress` events matching the slot's
+ * generating issue. Resets whenever the tracked generation changes, and stays
+ * null (static fallback) when no events arrive.
+ */
+function useGenerationStatus(generatingIssueId: string | null): LiveGenerationStatus | null {
+  const [status, setStatus] = useState<LiveGenerationStatus | null>(null);
+
+  useEffect(() => {
+    setStatus(null);
+  }, [generatingIssueId]);
+
+  useCompanyLiveEvent((event) => {
+    if (!generatingIssueId) return;
+    if (event.type !== "heartbeat.run.progress") return;
+    const payload = event.payload ?? {};
+    if (payload.issueId !== generatingIssueId) return;
+    setStatus({
+      message: readPayloadString(payload.message),
+      currentToolName: readPayloadString(payload.currentToolName),
+      lastAssistantSnippet: readPayloadString(payload.lastAssistantSnippet),
+    });
+  });
+
+  return generatingIssueId ? status : null;
 }
 
 function setupState(state: BuiltInAgentState | undefined) {
@@ -178,6 +231,7 @@ export function SummarySlotCard({
   const revisionSelectValue = historicalRevision?.id ?? LATEST_REVISION_SELECT_VALUE;
   const latestSelectLabel = latestDocument ? latestRevisionOptionLabel(latestDocument, latestRevision) : "Latest";
   const generatingIssue = slotQuery.data?.generatingIssue ?? null;
+  const liveStatusLine = resolveGenerationStatusLine(useGenerationStatus(generatingIssue?.id ?? null));
   const isGenerating = slotQuery.data?.slot?.status === "generating"
     && generatingIssue
     && !TERMINAL_ISSUE_STATUSES.has(generatingIssue.status);
@@ -368,8 +422,18 @@ export function SummarySlotCard({
       {!slotQuery.isError && isGenerating && generatingIssue ? (
         <div className="flex items-start gap-3 text-sm">
           <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-muted-foreground" />
-          <div className="space-y-1">
+          <div className="min-w-0 space-y-1">
             <p className="font-medium text-foreground">Generating summary</p>
+            {liveStatusLine ? (
+              <p
+                className="animate-pulse truncate text-muted-foreground"
+                aria-live="polite"
+                data-testid="summary-generation-status-line"
+                title={liveStatusLine}
+              >
+                {liveStatusLine}
+              </p>
+            ) : null}
             <p className="text-muted-foreground">
               Summarizer is working in{" "}
               <Link className="underline" to={`/issues/${generatingIssue.identifier ?? generatingIssue.id}`}>
