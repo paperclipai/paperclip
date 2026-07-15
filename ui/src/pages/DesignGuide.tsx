@@ -2005,6 +2005,13 @@ export function DesignGuide() {
           >
             Its built-in agent was paused 2 days ago, so new briefs aren't being generated.
           </InlineBanner>
+          <InlineBanner
+            tone="danger"
+            title="Summary generation failed."
+            actions={<Button size="sm">Retry</Button>}
+          >
+            The linked issue reached a terminal state before a summary was written.
+          </InlineBanner>
           <InlineBanner tone="info" compact>
             Compact variant for embedding inside dialogs and modals.
           </InlineBanner>
