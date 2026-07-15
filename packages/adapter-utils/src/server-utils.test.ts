@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import {
   applyPaperclipWorkspaceEnv,
   appendWithByteCap,
+  buildJournalLauncherSpawnTarget,
   buildPersistentSkillSnapshot,
   buildRuntimeMountedSkillSnapshot,
   buildInvocationEnvForLogs,
@@ -25,6 +26,38 @@ import {
   UNMANAGED_BACKGROUND_TASK_STOP_REASON,
   WATCHDOG_DEFAULT_MANDATE,
 } from "./server-utils.js";
+
+describe("buildJournalLauncherSpawnTarget", () => {
+  it("wraps journal launchers in a per-run systemd scope when supported", () => {
+    const target = buildJournalLauncherSpawnTarget({
+      runId: "run-123",
+      launcherConfig: "{}",
+      systemdScopeSupported: true,
+    });
+
+    expect(target.command).toBe("systemd-run");
+    expect(target.args.slice(0, 4)).toEqual([
+      "--scope",
+      "--quiet",
+      "--collect",
+      "--unit=paperclip-run-run-123",
+    ]);
+    expect(target.args[4]).toBe(process.execPath);
+    expect(target.systemdScopeUnit).toBe("paperclip-run-run-123");
+  });
+
+  it("keeps detached direct launch as the fallback", () => {
+    const target = buildJournalLauncherSpawnTarget({
+      runId: "run-123",
+      launcherConfig: "{}",
+      systemdScopeSupported: false,
+    });
+
+    expect(target.command).toBe(process.execPath);
+    expect(target.args[0]).toBe("-e");
+    expect(target.systemdScopeUnit).toBeNull();
+  });
+});
 
 function isPidAlive(pid: number) {
   try {

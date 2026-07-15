@@ -119,6 +119,10 @@ Use `--drain-required` only when the deploy intentionally requires the old termi
 
 A healthy guarded deploy must compare the report against `/api/health` (`version` or `serverVersion`) and treat any `lostRunIds` entry as a continuity failure that needs recovery before marking deployment complete.
 
+On Linux, journaled runs prefer a transient scope named `paperclip-run-<runId>` via `systemd-run --scope`. Paperclip probes scope creation once per server process and falls back to the existing detached process-group launch when systemd is absent or the service user lacks permission. Set `PAPERCLIP_DISABLE_SYSTEMD_SCOPES=true` to force that fallback. The fallback keeps hot restart working only when the service manager does not kill the entire service cgroup; `KillMode=mixed` is the recommended unit setting, but changing the live unit is an explicit operator-approved infrastructure step. `KillMode=control-group` can still terminate detached fallback runs during `systemctl restart`.
+
+Non-hot shutdowns still explicitly signal every tracked run process group, including scoped runs. The startup reaper remains the crash backstop for preserved processes that were not marked for adoption.
+
 Tailscale/private-auth dev mode:
 
 ```sh

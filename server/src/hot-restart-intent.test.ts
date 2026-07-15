@@ -21,11 +21,13 @@ describe("hot restart intent", () => {
   it("is consumed once and bound to the current server pid", async () => {
     process.env.PAPERCLIP_HOME = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-hot-restart-"));
     const now = new Date("2026-07-15T18:00:00.000Z");
-    writeHotRestartIntent(now, 1234);
+    writeHotRestartIntent(now, 1234, { requestedByRunId: "run-1", drainRequired: true });
 
     expect(consumeHotRestartIntent(new Date(now.getTime() + 1_000), 1234)).toMatchObject({
       version: 1,
       serverPid: 1234,
+      requestedByRunId: "run-1",
+      drainRequired: true,
     });
     expect(consumeHotRestartIntent(new Date(now.getTime() + 2_000), 1234)).toBeNull();
     await expect(fs.stat(getHotRestartIntentPath())).rejects.toThrow();

@@ -9,6 +9,8 @@ export type HotRestartIntent = {
   version: 1;
   requestedAt: string;
   serverPid: number;
+  requestedByRunId: string | null;
+  drainRequired: boolean;
 };
 
 export function getHotRestartIntentPath() {
@@ -18,11 +20,14 @@ export function getHotRestartIntentPath() {
 export function writeHotRestartIntent(
   now = new Date(),
   serverPid = process.pid,
+  options: { requestedByRunId?: string | null; drainRequired?: boolean } = {},
 ): HotRestartIntent {
   const intent: HotRestartIntent = {
     version: 1,
     requestedAt: now.toISOString(),
     serverPid,
+    requestedByRunId: options.requestedByRunId?.trim() || null,
+    drainRequired: options.drainRequired ?? false,
   };
   const filePath = getHotRestartIntentPath();
   mkdirSync(path.dirname(filePath), { recursive: true });
@@ -52,7 +57,13 @@ export function consumeHotRestartIntent(
     ) {
       return null;
     }
-    return parsed as HotRestartIntent;
+    return {
+      version: 1,
+      requestedAt: requestedAt.toISOString(),
+      serverPid: parsed.serverPid,
+      requestedByRunId: typeof parsed.requestedByRunId === "string" ? parsed.requestedByRunId : null,
+      drainRequired: parsed.drainRequired === true,
+    };
   } catch {
     return null;
   } finally {

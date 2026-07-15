@@ -37,7 +37,14 @@ const {
     resolveSchedulingSuppression: resolveHeartbeatSchedulingSuppressionMock,
     reconcileHotRestartAdoption: vi.fn(async () => ({ mode: "none" })),
     reapOrphanedRuns: vi.fn(async () => ({ reaped: 0, runIds: [] })),
-    adoptAwaitingRuns: vi.fn(async () => ({ adopted: 0, adoptedRunIds: [], rejected: 0, rejectedRunIds: [] })),
+    adoptAwaitingRuns: vi.fn(async () => ({
+      adopted: 0,
+      adoptedRunIds: [],
+      finalizedWhileDown: 0,
+      finalizedWhileDownRunIds: [],
+      rejected: 0,
+      rejectedRunIds: [],
+    })),
     promoteDueScheduledRetries: vi.fn(async () => ({ promoted: 0, runIds: [] })),
     resumeQueuedRuns: vi.fn(async () => undefined),
     reconcileStrandedAssignedIssues: vi.fn(async () => ({
