@@ -1,5 +1,6 @@
 import type {
   CreateFolderRequest,
+  EnsureMySkillFolderRequest,
   Folder,
   FolderKind,
   FolderListResult,
@@ -14,6 +15,8 @@ export const foldersApi = {
     api.get<FolderListResult>(`/companies/${encodeURIComponent(companyId)}/folders?kind=${kind}`),
   create: (companyId: string, payload: CreateFolderRequest) =>
     api.post<Folder>(`/companies/${encodeURIComponent(companyId)}/folders`, payload),
+  ensureMy: (companyId: string, payload: EnsureMySkillFolderRequest = {}) =>
+    api.post<Folder>(`/companies/${encodeURIComponent(companyId)}/folders/ensure-my`, payload),
   update: (companyId: string, folderId: string, payload: UpdateFolderRequest) =>
     api.patch<Folder>(
       `/companies/${encodeURIComponent(companyId)}/folders/${encodeURIComponent(folderId)}`,
