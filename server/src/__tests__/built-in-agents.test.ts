@@ -156,7 +156,14 @@ describeEmbeddedPostgres("built-in agents", () => {
   }
 
   it("validates the static registry and rejects invalid definitions", () => {
-    expect(listBuiltInAgentDefinitions().map((definition) => definition.key).sort()).toEqual(["briefs", "learning", "reflection-coach", "summarizer"]);
+    const definitions = listBuiltInAgentDefinitions();
+    expect(definitions.map((definition) => definition.key).sort()).toEqual(["briefs", "learning", "reflection-coach", "summarizer"]);
+    const summarizer = definitions.find((definition) => definition.key === "summarizer");
+    expect(summarizer).toMatchObject({
+      defaultAdapterType: "claude_local",
+      defaultAdapterConfig: { model: "claude-haiku-4-5" },
+    });
+    expect(summarizer?.defaultRuntimeConfig).toBeUndefined();
     expect(() => validateBuiltInAgentDefinitions([
       {
         key: "briefs",
@@ -185,6 +192,18 @@ describeEmbeddedPostgres("built-in agents", () => {
         defaultRole: "general",
       },
     ])).toThrow("Invalid built-in agent key");
+    expect(() => validateBuiltInAgentDefinitions([
+      {
+        key: "bad-default",
+        displayName: "Bad default",
+        featureKeys: ["bad-default"],
+        shortPurpose: "Bad default adapter",
+        defaultInstructions: "Do work",
+        defaultRole: "general",
+        allowedAdapterTypes: ["codex_local"],
+        defaultAdapterType: "claude_local",
+      },
+    ])).toThrow("defaultAdapterType must be allowed");
   });
 
   it("lazily provisions one agent per company/key and updates the same row on setup", async () => {
@@ -940,7 +959,7 @@ describeEmbeddedPostgres("built-in agents", () => {
     expect(grantKeys).not.toContain("skills:create");
   });
 
-  it("materializes the Summarizer bundle paused on the cheap model lane with a disabled routine", async () => {
+  it("materializes the Summarizer bundle paused on Claude Haiku with a disabled routine", async () => {
     const companyId = await seedCompany();
     const root = await agentService(db).create(companyId, {
       name: "CEO",
@@ -961,7 +980,8 @@ describeEmbeddedPostgres("built-in agents", () => {
       icon: "sparkles",
       role: "general",
       reportsTo: root.id,
-      adapterType: "codex_local",
+      adapterType: "claude_local",
+      adapterConfig: { model: "claude-haiku-4-5" },
       budgetMonthlyCents: 0,
     });
     expect(state.status).toBe("paused");
@@ -971,10 +991,7 @@ describeEmbeddedPostgres("built-in agents", () => {
       featureKeys: ["summarizer"],
     });
 
-    // Cheap-model default lane is declared and enabled so summary runs can request it.
-    expect(state.agent?.runtimeConfig).toMatchObject({
-      modelProfiles: { cheap: { enabled: true, label: "Low-cost summariser model", adapterConfig: {} } },
-    });
+    expect(state.agent?.runtimeConfig).not.toHaveProperty("modelProfiles.cheap");
 
     expect(state.resources.map((resource) => [resource.resourceKind, resource.stockStatus])).toEqual([
       ["instructions", "stock_current"],

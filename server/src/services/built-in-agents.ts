@@ -37,6 +37,8 @@ export interface BuiltInAgentDefinition {
   defaultStatus?: "idle" | "paused";
   defaultManager?: "single_root_agent" | null;
   allowedAdapterTypes?: string[];
+  defaultAdapterType?: string;
+  defaultAdapterConfig?: Record<string, unknown>;
   defaultBudgetMonthlyCents?: number;
   defaultRuntimeConfig?: Record<string, unknown>;
   bundle?: BuiltInAgentBundleDefinition;
@@ -409,16 +411,11 @@ const DEFINITIONS = validateBuiltInAgentDefinitions([
     defaultStatus: "paused",
     defaultManager: "single_root_agent",
     allowedAdapterTypes: ["claude_local", "codex_local", "gemini_local", "opencode_local", "process"],
-    defaultBudgetMonthlyCents: 0,
-    defaultRuntimeConfig: {
-      modelProfiles: {
-        cheap: {
-          enabled: true,
-          label: "Low-cost summariser model",
-          adapterConfig: {},
-        },
-      },
+    defaultAdapterType: "claude_local",
+    defaultAdapterConfig: {
+      model: "claude-haiku-4-5",
     },
+    defaultBudgetMonthlyCents: 0,
     bundle: {
       stockVersion: "2026-07-14",
       instructions: {
@@ -610,6 +607,13 @@ export function validateBuiltInAgentDefinitions(definitions: BuiltInAgentDefinit
       throw new Error(`Built-in agent ${definition.key} allowedAdapterTypes must be unique non-empty strings`);
     }
     if (
+      definition.defaultAdapterType
+      && definition.allowedAdapterTypes
+      && !definition.allowedAdapterTypes.includes(definition.defaultAdapterType)
+    ) {
+      throw new Error(`Built-in agent ${definition.key} defaultAdapterType must be allowed`);
+    }
+    if (
       definition.defaultBudgetMonthlyCents !== undefined
       && (!Number.isInteger(definition.defaultBudgetMonthlyCents) || definition.defaultBudgetMonthlyCents < 0)
     ) {
@@ -634,6 +638,7 @@ export function validateBuiltInAgentDefinitions(definitions: BuiltInAgentDefinit
     ...definition,
     featureKeys: [...definition.featureKeys],
     allowedAdapterTypes: definition.allowedAdapterTypes ? [...definition.allowedAdapterTypes] : undefined,
+    defaultAdapterConfig: definition.defaultAdapterConfig ? { ...definition.defaultAdapterConfig } : undefined,
     bundle: definition.bundle ? {
       ...definition.bundle,
       instructions: {
@@ -654,7 +659,12 @@ export function validateBuiltInAgentDefinitions(definitions: BuiltInAgentDefinit
 }
 
 export function listBuiltInAgentDefinitions() {
-  return DEFINITIONS.map((definition) => ({ ...definition, featureKeys: [...definition.featureKeys] }));
+  return DEFINITIONS.map((definition) => ({
+    ...definition,
+    featureKeys: [...definition.featureKeys],
+    allowedAdapterTypes: definition.allowedAdapterTypes ? [...definition.allowedAdapterTypes] : undefined,
+    defaultAdapterConfig: definition.defaultAdapterConfig ? { ...definition.defaultAdapterConfig } : undefined,
+  }));
 }
 
 export function getBuiltInAgentDefinition(key: string) {
@@ -668,7 +678,7 @@ export function requireBuiltInAgentDefinition(key: string) {
 }
 
 function defaultAdapterType(definition: BuiltInAgentDefinition) {
-  return definition.allowedAdapterTypes?.[0] ?? "process";
+  return definition.defaultAdapterType ?? definition.allowedAdapterTypes?.[0] ?? "process";
 }
 
 function normalizeAdapterType(value: unknown) {
@@ -743,7 +753,7 @@ function definitionPatch(definition: BuiltInAgentDefinition, input: BuiltInAgent
     icon: definition.defaultIcon ?? null,
     capabilities: definition.shortPurpose,
     adapterType,
-    adapterConfig: input.adapterConfig ?? {},
+    adapterConfig: input.adapterConfig ?? definition.defaultAdapterConfig ?? {},
     permissions: definition.defaultPermissions ?? {},
     budgetMonthlyCents: input.budgetMonthlyCents ?? definition.defaultBudgetMonthlyCents ?? 0,
   };
@@ -832,6 +842,13 @@ export function builtInAgentService(db: Db) {
 
   async function defaultProvisionInput(companyId: string, definition: BuiltInAgentDefinition, input: BuiltInAgentProvisionInput) {
     if (input.adapterType || input.adapterConfig) return input;
+    if (definition.defaultAdapterType || definition.defaultAdapterConfig) {
+      return {
+        ...input,
+        adapterType: definition.defaultAdapterType,
+        adapterConfig: definition.defaultAdapterConfig ? { ...definition.defaultAdapterConfig } : undefined,
+      };
+    }
     if (!definition.bundle) return input;
     const rows = await db
       .select({
