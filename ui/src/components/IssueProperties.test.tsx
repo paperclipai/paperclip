@@ -399,7 +399,11 @@ function createExecutionState(overrides: Partial<IssueExecutionState> = {}): Iss
   };
 }
 
-function renderPropertiesWithQueryClient(container: HTMLDivElement, props: ComponentProps<typeof IssueProperties>) {
+type IssuePropertiesTestProps = Omit<ComponentProps<typeof IssueProperties>, "onSubmitExecutionDecision"> & {
+  onSubmitExecutionDecision?: ComponentProps<typeof IssueProperties>["onSubmitExecutionDecision"];
+};
+
+function renderPropertiesWithQueryClient(container: HTMLDivElement, props: IssuePropertiesTestProps) {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
@@ -409,14 +413,17 @@ function renderPropertiesWithQueryClient(container: HTMLDivElement, props: Compo
   act(() => {
     root.render(
       <QueryClientProvider client={queryClient}>
-        <IssueProperties {...props} />
+        <IssueProperties
+          {...props}
+          onSubmitExecutionDecision={props.onSubmitExecutionDecision ?? vi.fn()}
+        />
       </QueryClientProvider>,
     );
   });
   return { root, queryClient };
 }
 
-function renderProperties(container: HTMLDivElement, props: ComponentProps<typeof IssueProperties>) {
+function renderProperties(container: HTMLDivElement, props: IssuePropertiesTestProps) {
   const { root } = renderPropertiesWithQueryClient(container, props);
   return root;
 }
@@ -1191,6 +1198,7 @@ describe("IssueProperties", () => {
             issue={createIssue({ id: "issue-a", blockedBy })}
             childIssues={[]}
             onUpdate={vi.fn()}
+            onSubmitExecutionDecision={vi.fn()}
             inline
           />
         </QueryClientProvider>,
@@ -1215,6 +1223,7 @@ describe("IssueProperties", () => {
             issue={createIssue({ id: "issue-b", blockedBy })}
             childIssues={[]}
             onUpdate={vi.fn()}
+            onSubmitExecutionDecision={vi.fn()}
             inline
           />
         </QueryClientProvider>,
@@ -1941,6 +1950,57 @@ describe("IssueProperties", () => {
 
     expect(container.textContent).not.toContain("Run review now");
     expect(container.textContent).not.toContain("Run approval now");
+
+    act(() => root.unmount());
+  });
+
+  it("lets the active board reviewer submit an explicit decision with a note", async () => {
+    const onSubmitExecutionDecision = vi.fn().mockResolvedValue(undefined);
+    const root = renderProperties(container, {
+      issue: createIssue({
+        status: "in_review",
+        executionPolicy: createExecutionPolicy({
+          stages: [
+            {
+              id: "review-stage",
+              type: "review",
+              approvalsNeeded: 1,
+              participants: [{ id: "participant-1", type: "user", agentId: null, userId: "user-1" }],
+            },
+          ],
+        }),
+        executionState: createExecutionState({
+          status: "pending",
+          currentStageType: "review",
+          currentParticipant: { type: "user", agentId: null, userId: "user-1" },
+          lastDecisionOutcome: null,
+        }),
+      }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      onSubmitExecutionDecision,
+    });
+    await flush();
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Review pending with you");
+    });
+    const note = container.querySelector('textarea[aria-label="Review note"]') as HTMLTextAreaElement;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!;
+      setter.call(note, "Ship it");
+      note.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const approve = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Approve"));
+    await act(async () => {
+      approve!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onSubmitExecutionDecision).toHaveBeenCalledWith({
+      status: "done",
+      comment: "Ship it",
+    });
 
     act(() => root.unmount());
   });

@@ -67,7 +67,7 @@ describe("assignee selection helpers", () => {
           { authorUserId: "board-user" },
           { authorAgentId: "agent-123" },
         ],
-        "board-user",
+        { currentUserId: "board-user" },
       ),
     ).toBe("agent:agent-123");
   });
@@ -77,7 +77,7 @@ describe("assignee selection helpers", () => {
       suggestedCommentAssigneeValue(
         { assigneeUserId: "board-user" },
         [{ authorUserId: "board-user" }],
-        "board-user",
+        { currentUserId: "board-user" },
       ),
     ).toBe("user:board-user");
   });
@@ -91,9 +91,18 @@ describe("assignee selection helpers", () => {
           { authorAgentId: "agent-self" },
           { authorAgentId: "agent-123" },
         ],
-        null,
-        "agent-self",
+        { currentAgentId: "agent-self" },
       ),
     ).toBe("agent:agent-123");
+  });
+
+  it("preserves the current assignee when a workflow owns the next transition", () => {
+    expect(
+      suggestedCommentAssigneeValue(
+        { assigneeUserId: "local-board" },
+        [{ authorUserId: "ceo-user" }],
+        { currentUserId: "local-board", preserveCurrentAssignee: true },
+      ),
+    ).toBe("user:local-board");
   });
 });

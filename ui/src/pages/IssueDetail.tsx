@@ -5,7 +5,7 @@ import { useInfiniteQuery, useQuery, useMutation, useQueryClient, type InfiniteD
 import { useVisibilityRefetchInterval } from "@/lib/polling";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "@/hooks/useSharedPolling";
 import { ApiError } from "../api/client";
-import { issuesApi } from "../api/issues";
+import { issuesApi, type IssueUpdateResponse } from "../api/issues";
 import { approvalsApi } from "../api/approvals";
 import { activityApi, type RunForIssue } from "../api/activity";
 import { heartbeatsApi, type ActiveRunForIssue, type LiveRunForIssue } from "../api/heartbeats";
@@ -26,6 +26,7 @@ import { useSidebar } from "../context/SidebarContext";
 import { useToastActions } from "../context/ToastContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { assigneeValueFromSelection, formatAssigneeUserLabel, formatUserLabel, suggestedCommentAssigneeValue } from "../lib/assignees";
+import { executionDecisionStageForViewer } from "../lib/issue-execution-state";
 import { buildCompanyUserInlineOptions, buildCompanyUserLabelMap, buildCompanyUserProfileMap, buildMarkdownMentionOptions, isAgentTaskTarget } from "../lib/company-members";
 import { extractIssueTimelineEvents } from "../lib/issue-timeline-events";
 import { queryKeys } from "../lib/queryKeys";
@@ -244,6 +245,7 @@ const FEEDBACK_TERMS_URL = import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() || "h
 const ISSUE_COMMENT_PAGE_SIZE = 50;
 const ISSUE_COMMENT_AUTOLOAD_LIMIT = ISSUE_COMMENT_PAGE_SIZE * 3;
 const JUMP_TO_LATEST_MAX_COMMENT_PAGES = 10;
+const EXECUTION_GATE_DISABLED_STATUSES = ["done", "in_progress"] as const;
 const TREE_CONTROL_MODE_LABEL: Record<IssueTreeControlMode, string> = {
   pause: "Pause subtree",
   resume: "Resume subtree",
@@ -1923,14 +1925,22 @@ export function IssueDetail() {
     [issue],
   );
 
+  const viewerIsActiveExecutionParticipant = Boolean(executionDecisionStageForViewer({
+    issueStatus: issue?.status ?? "",
+    executionState: issue?.executionState,
+    currentUserId,
+  }));
+
   const suggestedAssigneeValue = useMemo(
-    () =>
-      suggestedCommentAssigneeValue(
-        issue ?? {},
-        mergeIssueComments(comments ?? [], optimisticComments),
+    () => suggestedCommentAssigneeValue(
+      issue ?? {},
+      mergeIssueComments(comments ?? [], optimisticComments),
+      {
         currentUserId,
-      ),
-    [issue, comments, optimisticComments, currentUserId],
+        preserveCurrentAssignee: viewerIsActiveExecutionParticipant,
+      },
+    ),
+    [issue, comments, optimisticComments, currentUserId, viewerIsActiveExecutionParticipant],
   );
 
   const threadComments = useMemo(
@@ -2091,6 +2101,15 @@ export function IssueDetail() {
     },
   });
 
+  const handleIssueUpdateSuccess = useCallback((response: IssueUpdateResponse) => {
+    const { comment: _comment, ...nextIssue } = response;
+    const issueRefs = new Set<string>([issueId!, nextIssue.id]);
+    if (nextIssue.identifier) issueRefs.add(nextIssue.identifier);
+    mergeIssueResponseIntoCaches(issueRefs, nextIssue);
+    queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(issueId!) });
+    invalidateIssueCollections();
+  }, [invalidateIssueCollections, issueId, mergeIssueResponseIntoCaches, queryClient]);
+
   const updateIssue = useMutation({
     mutationFn: (data: Record<string, unknown>) => issuesApi.update(issueId!, data),
     onMutate: async (data) => {
@@ -2115,13 +2134,7 @@ export function IssueDetail() {
 
       return { previousDetailQueries, previousList, selectedCompanyId };
     },
-    onSuccess: ({ comment: _comment, ...nextIssue }) => {
-      const issueRefs = new Set<string>([issueId!, nextIssue.id]);
-      if (nextIssue.identifier) issueRefs.add(nextIssue.identifier);
-      mergeIssueResponseIntoCaches(issueRefs, nextIssue);
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(issueId!) });
-      invalidateIssueCollections();
-    },
+    onSuccess: handleIssueUpdateSuccess,
     onError: (err, _variables, context) => {
       for (const [queryKey, previousIssue] of context?.previousDetailQueries ?? []) {
         queryClient.setQueryData(queryKey, previousIssue);
@@ -2135,6 +2148,17 @@ export function IssueDetail() {
         tone: "error",
       });
     },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issueId!) });
+      if (selectedCompanyId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId) });
+      }
+    },
+  });
+  const submitExecutionDecision = useMutation({
+    mutationFn: (input: { status: "done" | "in_progress"; comment: string }) =>
+      issuesApi.update(issueId!, input),
+    onSuccess: handleIssueUpdateSuccess,
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issueId!) });
       if (selectedCompanyId) {
@@ -2332,7 +2356,6 @@ export function IssueDetail() {
   const handleIssuePropertiesUpdate = useCallback((data: Record<string, unknown>) => {
     updateIssue.mutate(data);
   }, [updateIssue.mutate]);
-
   const updateChildIssue = useMutation({
     mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) => issuesApi.update(id, data),
     onSuccess: () => {
@@ -3159,6 +3182,7 @@ export function IssueDetail() {
         childIssues={panelChildIssues}
         onAddSubIssue={openNewSubIssue}
         onUpdate={handleIssuePropertiesUpdate}
+        onSubmitExecutionDecision={submitExecutionDecision.mutateAsync}
         hasActiveRun={resolvedHasActiveRun}
         externalObjects={externalObjectsState.isEnabled ? externalObjectsState.groups : undefined}
         externalObjectsLoading={externalObjectsState.isEnabled ? externalObjectsState.isLoading : undefined}
@@ -3176,6 +3200,7 @@ export function IssueDetail() {
     panelChildIssues,
     panelIssue,
     resolvedHasActiveRun,
+    submitExecutionDecision.mutateAsync,
     externalObjectsState.isEnabled,
     externalObjectsState.groups,
     externalObjectsState.isLoading,
@@ -4151,6 +4176,8 @@ export function IssueDetail() {
             size="lg"
             blockerAttention={issue.blockerAttention}
             onChange={(status) => updateIssue.mutate({ status })}
+            disabledStatuses={viewerIsActiveExecutionParticipant ? EXECUTION_GATE_DISABLED_STATUSES : undefined}
+            disabledStatusReason="Use the execution decision form in properties."
           />
           <PriorityIcon
             priority={issue.priority}
@@ -5019,6 +5046,7 @@ export function IssueDetail() {
                 childIssues={childIssues}
                 onAddSubIssue={openNewSubIssue}
                 onUpdate={(data) => updateIssue.mutate(data)}
+                onSubmitExecutionDecision={submitExecutionDecision.mutateAsync}
                 inline
                 hasActiveRun={resolvedHasActiveRun}
                 externalObjects={externalObjectsState.isEnabled ? externalObjectsState.groups : undefined}

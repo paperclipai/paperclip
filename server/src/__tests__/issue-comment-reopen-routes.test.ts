@@ -1907,6 +1907,96 @@ describe.sequential("issue comment reopen routes", () => {
     );
   });
 
+  it("advances a board-user review stage from an approved comment", async () => {
+    const approvalAgentId = "33333333-3333-4333-8333-333333333333";
+    const policy = await normalizePolicy({
+      stages: [
+        {
+          id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          type: "review",
+          participants: [{ type: "user", userId: "local-board" }],
+        },
+        {
+          id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          type: "approval",
+          participants: [{ type: "agent", agentId: approvalAgentId }],
+        },
+      ],
+    })!;
+    const issue = {
+      ...makeIssue("todo"),
+      status: "in_review",
+      assigneeAgentId: null,
+      assigneeUserId: "local-board",
+      executionPolicy: policy,
+      executionState: {
+        status: "pending",
+        currentStageId: policy.stages[0].id,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "user", userId: "local-board" },
+        returnAssignee: { type: "agent", agentId: "22222222-2222-4222-8222-222222222222" },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    };
+    const reviewBody = "## Review: APPROVED\n\nReady for approval.";
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-board-review-1",
+      issueId: issue.id,
+      companyId: issue.companyId,
+      body: reviewBody,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      authorAgentId: null,
+      authorUserId: "local-board",
+    });
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>, tx?: unknown) => ({
+      ...issue,
+      ...patch,
+      executionState: patch.executionState,
+      updatedAt: new Date(),
+      _tx: tx,
+    }));
+
+    const res = await request(await installActor(createApp()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: reviewBody });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issue.id,
+      expect.objectContaining({
+        status: "in_review",
+        assigneeAgentId: approvalAgentId,
+        assigneeUserId: null,
+        actorAgentId: null,
+        actorUserId: "local-board",
+        executionState: expect.objectContaining({
+          status: "pending",
+          currentStageIndex: 1,
+          currentStageType: "approval",
+          currentParticipant: expect.objectContaining({ type: "agent", agentId: approvalAgentId }),
+          completedStageIds: [policy.stages[0].id],
+          lastDecisionOutcome: "approved",
+        }),
+      }),
+      mockTx,
+    );
+    expect(mockTxInsertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        issueId: issue.id,
+        stageId: policy.stages[0].id,
+        actorAgentId: null,
+        actorUserId: "local-board",
+        outcome: "approved",
+        body: reviewBody,
+      }),
+    );
+  });
+
   it("auto-approves a reviewer comment with structured review metadata", async () => {
     const reviewerAgentId = "33333333-3333-4333-8333-333333333333";
     const policy = await normalizePolicy({

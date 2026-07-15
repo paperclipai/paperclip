@@ -4,6 +4,7 @@ import { cn } from "../lib/utils";
 import { StatusGlyph, type StatusGlyphSize } from "./StatusGlyph";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 
 const allStatuses = ["backlog", "todo", "in_progress", "in_review", "done", "cancelled", "blocked"];
 
@@ -17,6 +18,10 @@ interface StatusIconProps {
   onChange?: (status: string) => void;
   className?: string;
   showLabel?: boolean;
+  /** Status transitions handled by a more specific workflow on the current surface. */
+  disabledStatuses?: readonly string[];
+  /** Explanation exposed on disabled status choices. */
+  disabledStatusReason?: string;
   /** Glyph size (PAP-243a). Default `md` (16px); lists/detail/mentions use `lg` (20px). */
   size?: StatusGlyphSize;
 }
@@ -75,7 +80,16 @@ function blockedAttentionLabel(blockerAttention: IssueBlockerAttention | null | 
  * glyph — the blocked shape recoloured blue — while the full blocked reason
  * still rides on the accessible label.
  */
-export function StatusIcon({ status, blockerAttention, onChange, className, showLabel, size = "md" }: StatusIconProps) {
+export function StatusIcon({
+  status,
+  blockerAttention,
+  onChange,
+  className,
+  showLabel,
+  size = "md",
+  disabledStatuses,
+  disabledStatusReason,
+}: StatusIconProps) {
   const [open, setOpen] = useState(false);
   const isCoveredBlocked = status === "blocked" && blockerAttention?.state === "covered";
   const ariaLabel = status === "blocked" ? blockedAttentionLabel(blockerAttention) : statusLabel(status);
@@ -114,21 +128,40 @@ export function StatusIcon({ status, blockerAttention, onChange, className, show
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>{trigger}</PopoverTrigger>
       <PopoverContent className="w-40 p-1" align="start">
-        {allStatuses.map((s) => (
-          <Button
-            key={s}
-            variant="ghost"
-            size="sm"
-            className={cn("w-full justify-start gap-2 text-xs", s === status && "bg-accent")}
-            onClick={() => {
-              onChange(s);
-              setOpen(false);
-            }}
-          >
-            <StatusIcon status={s} size="lg" />
-            {statusLabel(s)}
-          </Button>
-        ))}
+        <TooltipProvider>
+          {allStatuses.map((s) => {
+            const disabled = disabledStatuses?.includes(s) ?? false;
+            const option = (
+              <Button
+                variant="ghost"
+                size="sm"
+                aria-disabled={disabled || undefined}
+                title={disabled ? disabledStatusReason : undefined}
+                className={cn(
+                  "w-full justify-start gap-2 text-xs",
+                  s === status && "bg-accent",
+                  disabled && "cursor-not-allowed opacity-50",
+                )}
+                onClick={() => {
+                  if (disabled) return;
+                  onChange(s);
+                  setOpen(false);
+                }}
+              >
+                <StatusIcon status={s} size="lg" />
+                {statusLabel(s)}
+              </Button>
+            );
+            return disabled && disabledStatusReason ? (
+              <Tooltip key={s}>
+                <TooltipTrigger asChild>{option}</TooltipTrigger>
+                <TooltipContent side="left">{disabledStatusReason}</TooltipContent>
+              </Tooltip>
+            ) : (
+              <div key={s}>{option}</div>
+            );
+          })}
+        </TooltipProvider>
       </PopoverContent>
     </Popover>
   );
