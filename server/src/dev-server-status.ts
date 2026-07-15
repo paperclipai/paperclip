@@ -13,8 +13,8 @@ export type PersistedDevServerStatus = {
 };
 
 /**
- * Post-restart adoption summary surfaced in the Restart Required banner area
- * (PAP-14052). Mirrors the completed hot-restart report the deploy routine
+ * Post-restart adoption summary surfaced in the Restart Required banner area.
+ * Mirrors the completed hot-restart report the deploy routine
  * posts; counts are derived from the persisted report's run-id arrays.
  */
 export type DevServerAdoptionReport = {
@@ -37,7 +37,7 @@ export type DevServerHealthStatus = {
   activeRunCount: number;
   waitingForIdle: boolean;
   lastRestartAt: string | null;
-  // Hot restart (PAP-14044 §3.6): the separate "Hot restart (keeps N live
+  // Hot restart: the separate "Hot restart (keeps N live
   // runs)" action only surfaces when the experimental setting is on; N is the
   // count of running local runs eligible for preservation right now.
   hotRestartEnabled: boolean;

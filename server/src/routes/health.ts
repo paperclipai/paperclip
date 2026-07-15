@@ -98,7 +98,7 @@ export function healthRoutes(
       return;
     }
 
-    // Hot restart is a strictly separate, opt-in action (PAP-14044 Invariant 0):
+    // Hot restart is a strictly separate, opt-in action:
     // the default "Restart now" path is unchanged. Only when the caller asks for
     // a hot restart AND the experimental setting is on do we write the one-shot
     // intent marker that the shutdown handler consumes to preserve live runs.
