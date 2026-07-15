@@ -181,9 +181,13 @@ describeEmbeddedPostgres("summary slot service", () => {
         .then((rows) => rows[0]!);
       expect(issueRow.assigneeAgentId).toBe(summarizerAgentId);
       expect(issueRow.companyId).toBe(companyId);
+      expect(issueRow.title).toMatch(/^Summarize project on \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC$/);
+      expect(issueRow.hiddenAt).toBeInstanceOf(Date);
       expect(issueRow.description).toContain(
         '"generationIssueId": "' + result.generatingIssue.id + '"',
       );
+      expect(issueRow.description).toContain("Call `/summarize-status`");
+      expect(issueRow.description).not.toContain("Follow the Summarizer skill");
       expect(issueRow.description).toContain("`## Needs you`, `## Next`, and `## Since last summary`");
     });
 

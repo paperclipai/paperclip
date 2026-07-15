@@ -186,6 +186,7 @@ export function SummarySlotCard({
     && generatingIssue
     && TERMINAL_ISSUE_STATUSES.has(generatingIssue.status)
     && !latestDocument;
+  const canGenerateFirstSummary = summarizerState?.status === "ready";
 
   if (experimentalQuery.isLoading || !summariesEnabled) return null;
 
@@ -301,6 +302,7 @@ export function SummarySlotCard({
               state={needsSetup}
               open={configureOpen}
               onOpenChange={setConfigureOpen}
+              onConfigured={() => setActionError(null)}
             />
           ) : null}
         </>
@@ -365,7 +367,7 @@ export function SummarySlotCard({
       ) : null}
 
       {!slotQuery.isError && isGenerating && generatingIssue ? (
-        <div className="flex items-start gap-3 rounded-lg border border-border bg-muted/30 p-4 text-sm">
+        <div className="flex items-start gap-3 text-sm">
           <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-muted-foreground" />
           <div className="space-y-1">
             <p className="font-medium text-foreground">Generating summary</p>
@@ -380,7 +382,7 @@ export function SummarySlotCard({
         </div>
       ) : null}
 
-      {!slotQuery.isError && !latestDocument && !isGenerating && !generationStopped && !needsSetup ? (
+      {!slotQuery.isError && !latestDocument && !isGenerating && !generationStopped && canGenerateFirstSummary ? (
         <div className="flex flex-col items-start gap-3 rounded-lg border border-border bg-muted/30 p-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="space-y-1 text-sm">
             <p className="font-medium text-foreground">No summary yet</p>
@@ -400,11 +402,9 @@ export function SummarySlotCard({
 
       {latestDocument ? (
         <div className="space-y-4">
-          <div className="rounded-lg border border-border bg-background p-4">
-            <MarkdownBody className="text-sm leading-7 text-foreground">
-              {displayedBody}
-            </MarkdownBody>
-          </div>
+          <MarkdownBody className="text-sm leading-7 text-foreground">
+            {displayedBody}
+          </MarkdownBody>
 
           <div className="flex flex-col gap-3 text-xs text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
             <div className="flex flex-wrap items-center gap-2">

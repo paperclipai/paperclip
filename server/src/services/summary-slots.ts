@@ -313,7 +313,7 @@ export function summarySlotService(db: Db) {
     return [
       `Generate the ${scopeLabel(sel.scopeKind)} summary for ${target}.`,
       "",
-      "Follow the Summarizer skill and write the Markdown summary through the summary-slot write API:",
+      "Call `/summarize-status` and write the Markdown summary through the summary-slot write API:",
       "",
       "```json",
       JSON.stringify(
@@ -332,6 +332,11 @@ export function summarySlotService(db: Db) {
       "Pass the `generationIssueId` from the payload, the previous revision id when present, and the model actually used to the summary-slot write API.",
       "Close this task with a short comment once the summary revision is written.",
     ].join("\n");
+  }
+
+  function generationIssueTitle(sel: ResolvedSelector, createdAt = new Date()): string {
+    const timestamp = createdAt.toISOString().replace("T", " ").replace(/:\d{2}\.\d{3}Z$/, " UTC");
+    return `Summarize ${scopeLabel(sel.scopeKind)} on ${timestamp}`;
   }
 
   async function generate(
@@ -364,16 +369,18 @@ export function summarySlotService(db: Db) {
     }
 
     const { projectId, projectWorkspaceId } = await resolveGenerationTargetProject(sel);
+    const createdAt = new Date();
     const created = await issuesSvc.create(sel.companyId, {
       projectId,
       projectWorkspaceId,
-      title: `Summarize ${scopeLabel(sel.scopeKind)}`,
+      title: generationIssueTitle(sel, createdAt),
       description: generationIssueDescription(sel),
       status: "todo",
       priority: "medium",
       assigneeAgentId: summarizerAgentId,
       createdByAgentId: actor.agentId ?? null,
       createdByUserId: actor.userId ?? null,
+      hiddenAt: createdAt,
     });
     const generationIssue = (
       await issuesSvc.update(created.id, {

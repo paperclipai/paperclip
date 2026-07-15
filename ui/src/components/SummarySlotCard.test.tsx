@@ -48,7 +48,17 @@ vi.mock("@/components/MarkdownBody", () => ({
   MarkdownBody: ({ children }: { children: string }) => <div data-testid="markdown-body">{children}</div>,
 }));
 vi.mock("@/components/ConfigureBuiltInAgentModal", () => ({
-  ConfigureBuiltInAgentModal: ({ open }: { open: boolean }) => (open ? <div data-testid="configure-modal" /> : null),
+  ConfigureBuiltInAgentModal: ({
+    open,
+    onConfigured,
+  }: {
+    open: boolean;
+    onConfigured?: () => void;
+  }) => (open ? (
+    <div data-testid="configure-modal">
+      <button type="button" onClick={onConfigured}>Finish setup</button>
+    </div>
+  ) : null),
 }));
 
 async function act(callback: () => void | Promise<void>) {
@@ -116,6 +126,14 @@ function needsSetupSummarizer(): BuiltInAgentState {
     ...readySummarizer(),
     status: "needs_setup",
     agentId: "agent-summarizer",
+  };
+}
+
+function pausedSummarizer(): BuiltInAgentState {
+  return {
+    ...readySummarizer(),
+    status: "paused",
+    agent: { id: "agent-summarizer" } as BuiltInAgentState["agent"],
   };
 }
 
@@ -260,6 +278,42 @@ describe("SummarySlotCard", () => {
     expect(container.querySelector('[data-testid="configure-modal"]')).not.toBeNull();
   });
 
+  it("clears a stale generation failure after setup succeeds", async () => {
+    mockBuiltInAgentsApi.list.mockResolvedValue([needsSetupSummarizer()]);
+    mockSummarySlotsApi.get.mockResolvedValue({
+      slot: slot({ documentId: "doc-1" }),
+      document: summaryDocument(),
+      generatingIssue: null,
+    } satisfies GetSummarySlotResponse);
+    mockSummarySlotsApi.revisions.mockResolvedValue({
+      slot: slot({ documentId: "doc-1" }),
+      revisions: [revision({ id: "rev-2", revisionNumber: 2 })],
+    });
+    mockSummarySlotsApi.generate.mockRejectedValue(new Error("Summarizer built-in agent is not configured"));
+
+    root = renderCard(container);
+    await flushQueries();
+
+    const refreshButton = [...container.querySelectorAll<HTMLButtonElement>("button")].find(
+      (button) => button.textContent?.includes("Refresh"),
+    );
+    await act(() => refreshButton?.click());
+    await flushQueries();
+    expect(container.textContent).toContain("Summary request failed");
+
+    const setupButton = [...container.querySelectorAll<HTMLButtonElement>("button")].find(
+      (button) => button.textContent === "Set up Summarizer",
+    );
+    await act(() => setupButton?.click());
+    await flushQueries();
+    const finishSetupButton = [...container.querySelectorAll<HTMLButtonElement>("button")].find(
+      (button) => button.textContent === "Finish setup",
+    );
+    await act(() => finishSetupButton?.click());
+
+    expect(container.textContent).not.toContain("Summary request failed");
+  });
+
   it("shows the empty state and starts generation", async () => {
     root = renderCard(container);
     await flushQueries();
@@ -283,6 +337,19 @@ describe("SummarySlotCard", () => {
     });
   });
 
+  it("shows only the resume prerequisite when the Summarizer is paused", async () => {
+    mockBuiltInAgentsApi.list.mockResolvedValue([pausedSummarizer()]);
+
+    root = renderCard(container);
+    await flushQueries();
+
+    expect(container.textContent).toContain("Summarizer is paused");
+    expect(container.textContent).not.toContain("No summary yet");
+    expect(container.textContent).not.toContain("Generate summary");
+    expect([...container.querySelectorAll("button")].filter((button) => button.textContent === "Resume agent"))
+      .toHaveLength(1);
+  });
+
   it("shows an active generating state with the linked task", async () => {
     mockSummarySlotsApi.get.mockResolvedValue({
       slot: slot({ status: "generating", generatingIssueId: "issue-1" }),
@@ -296,6 +363,8 @@ describe("SummarySlotCard", () => {
     expect(container.textContent).toContain("Generating summary");
     expect(container.textContent).toContain("PAP-14000: Summarize project");
     expect(container.querySelector('a[href="/issues/PAP-14000"]')).not.toBeNull();
+    expect(container.querySelector('a[href="/issues/PAP-14000"]')?.closest("div")?.parentElement?.className)
+      .not.toContain("border");
   });
 
   it("renders the latest generated markdown", async () => {
@@ -314,6 +383,7 @@ describe("SummarySlotCard", () => {
 
     expect(container.textContent).toContain("Latest revision");
     expect(container.textContent).toContain("Review the launch notes.");
+    expect(container.querySelector('[data-testid="markdown-body"]')?.parentElement?.className).not.toContain("border");
   });
 
   it("switches to a historical revision from a dated dropdown", async () => {

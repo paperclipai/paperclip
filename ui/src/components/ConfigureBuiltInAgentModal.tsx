@@ -29,7 +29,7 @@ function isModelBasedAdapter(adapterType: string): boolean {
 }
 
 function defaultAdapterType(state: BuiltInAgentState): string {
-  return state.definition.allowedAdapterTypes?.[0] ?? "codex_local";
+  return state.definition.defaultAdapterType ?? state.definition.allowedAdapterTypes?.[0] ?? "codex_local";
 }
 
 function parseBudgetMonthlyCents(value: string): number | undefined {
@@ -68,9 +68,12 @@ export function ConfigureBuiltInAgentModal({
   );
   const [model, setModel] = useState<string>(() => {
     const config = state.agent?.adapterConfig;
-    return typeof config === "object" && config !== null && typeof (config as Record<string, unknown>).model === "string"
-      ? ((config as Record<string, unknown>).model as string)
-      : "";
+    const configuredModel = typeof config === "object" && config !== null
+      ? (config as Record<string, unknown>).model
+      : null;
+    if (typeof configuredModel === "string") return configuredModel;
+    const defaultModel = state.definition.defaultAdapterConfig?.model;
+    return typeof defaultModel === "string" ? defaultModel : "";
   });
   const [modelOpen, setModelOpen] = useState(false);
   const [budgetDollars, setBudgetDollars] = useState<string>(() => {
