@@ -767,6 +767,46 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
+  it("renders the task id as the bold first property row", async () => {
+    const root = renderProperties(container, {
+      issue: createIssue({ identifier: "PAP-42" }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+    });
+    await flush();
+
+    const rows = Array.from(container.querySelectorAll('[data-property-row="true"]'));
+    const taskIdRow = container
+      .querySelector('[data-property-label="Task ID"]')
+      ?.closest('[data-property-row="true"]');
+    expect(taskIdRow).toBeTruthy();
+    // Omnipresent + at the top: it must be the very first property row.
+    expect(rows[0]).toBe(taskIdRow);
+
+    const value = taskIdRow?.querySelector("span:not([data-property-label])") as HTMLElement | null;
+    expect(value?.textContent).toBe("PAP-42");
+    expect(value?.className).toContain("font-bold");
+
+    act(() => root.unmount());
+  });
+
+  it("falls back to the short issue id when the identifier is missing", async () => {
+    const root = renderProperties(container, {
+      issue: createIssue({ id: "abcdef1234567890", identifier: null }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+    });
+    await flush();
+
+    const value = container
+      .querySelector('[data-property-label="Task ID"]')
+      ?.closest('[data-property-row="true"]')
+      ?.querySelector("span:not([data-property-label])") as HTMLElement | null;
+    expect(value?.textContent).toBe("abcdef12");
+
+    act(() => root.unmount());
+  });
+
   it("passes blocker attention to the sidebar status icon", async () => {
     const root = renderProperties(container, {
       issue: createIssue({

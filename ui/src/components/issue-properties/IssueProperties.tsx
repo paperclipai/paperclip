@@ -1874,8 +1874,19 @@ export function IssueProperties({
     </button>
   );
 
+  const taskIdDisplay = issue.identifier ?? issue.id.slice(0, 8);
+
   return (
     <div>
+      <PropertyRow label="Task ID">
+        <span
+          className="font-mono text-sm font-bold text-foreground truncate"
+          title={taskIdDisplay}
+        >
+          {taskIdDisplay}
+        </span>
+      </PropertyRow>
+
       <PropertySection title="Triage" first>
         <PropertyRow label="Status">
           <StatusIcon
