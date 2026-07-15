@@ -14,6 +14,7 @@ const mockReleaseCandidateService = vi.hoisted(() => ({
   recordDeployEvent: vi.fn(),
   verifyRelayAuthorization: vi.fn(),
   stageRelayArtifact: vi.fn(),
+  recordDeployReceipt: vi.fn(),
 }));
 
 vi.mock("../services/release-candidates.js", async () => {
@@ -57,10 +58,11 @@ describe("release candidate routes", () => {
     mockReleaseCandidateService.recordDeployEvent.mockReset();
     mockReleaseCandidateService.verifyRelayAuthorization.mockReset();
     mockReleaseCandidateService.stageRelayArtifact.mockReset();
+    mockReleaseCandidateService.recordDeployReceipt.mockReset();
     mockAssetService.create.mockReset();
   });
 
-  it("returns staged artifact digest fields and approval interaction id for approved leases", async () => {
+  it("returns deploy-agent lease and candidate fields for approved leases", async () => {
     const authorizationId = "99999999-9999-4999-8999-999999999999";
     const approvalInteractionId = "ffffffff-ffff-4fff-8fff-ffffffffffff";
     const stagedArtifactSha256 = "4444444444444444444444444444444444444444444444444444444444444444";
@@ -83,10 +85,17 @@ describe("release candidate routes", () => {
         commitSha: "abc1234567890",
         imageDigest: "sha256:1111111111111111111111111111111111111111111111111111111111111111",
         signatureBundleRef: "oci://registry.example/scanner/signature",
+        signatureBundleSha256: "3333333333333333333333333333333333333333333333333333333333333333",
         provenanceRef: "https://github.example/workflows/1/provenance",
         sbomHash: "2222222222222222222222222222222222222222222222222222222222222222",
         workflowRunUrl: "https://github.example/workflows/1",
         stagedArtifactSha256,
+        stagedArtifactAssetId: "77777777-7777-4777-8777-777777777777",
+        stagedSignatureBundleAssetId: "88888888-8888-4888-8888-888888888888",
+        stagedSignatureBundleSha256: "3333333333333333333333333333333333333333333333333333333333333333",
+        environment: "production",
+        targetHost: "srv1749248",
+        sequence: 42,
       },
     });
 
@@ -100,7 +109,23 @@ describe("release candidate routes", () => {
       approvalInteractionId,
       stagedArtifactPath: "/api/assets/77777777-7777-4777-8777-777777777777/content",
       stagedArtifactSha256,
+      stagedSignatureBundlePath: "/api/assets/88888888-8888-4888-8888-888888888888/content",
+      stagedSignatureBundleSha256: "3333333333333333333333333333333333333333333333333333333333333333",
       tarballSha256: stagedArtifactSha256,
+      deployRecordReceiptPath: "/api/release-candidates/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/deploy-record-receipt",
+      lease: {
+        leaseId: authorizationId,
+        releaseCandidateId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        targetHost: "srv1749248",
+        deployRecordReceiptPath: "/api/release-candidates/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/deploy-record-receipt",
+        tokenScope: "scanner:deploy:production:srv1749248:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      },
+      candidate: {
+        candidateId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        stagedArtifactPath: "/api/assets/77777777-7777-4777-8777-777777777777/content",
+        stagedSignatureBundlePath: "/api/assets/88888888-8888-4888-8888-888888888888/content",
+        stagedSignatureBundleSha256: "3333333333333333333333333333333333333333333333333333333333333333",
+      },
     });
     expect(res.body).not.toHaveProperty("token");
     expect(mockReleaseCandidateService.getApprovedLease).toHaveBeenCalledWith(authorizationId, "pcdeploy_test-token");
@@ -174,7 +199,9 @@ describe("release candidate routes", () => {
   it("passes stage-relay artifact tokens only from the header", async () => {
     const authorizationId = "99999999-9999-4999-8999-999999999999";
     const tarball = Buffer.from("scanner relay artifact");
+    const signatureBundle = Buffer.from("{\"mediaType\":\"application/vnd.dev.sigstore.bundle+json\"}");
     const tarballSha256 = `sha256:${createHash("sha256").update(tarball).digest("hex")}`;
+    const signatureBundleSha256 = `sha256:${createHash("sha256").update(signatureBundle).digest("hex")}`;
     mockReleaseCandidateService.verifyRelayAuthorization.mockResolvedValue({
       authorization: { id: authorizationId },
       candidate: {
@@ -183,7 +210,9 @@ describe("release candidate routes", () => {
         sourceIssueId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
       },
     });
-    mockAssetService.create.mockResolvedValue({ id: "77777777-7777-4777-8777-777777777777" });
+    mockAssetService.create
+      .mockResolvedValueOnce({ id: "77777777-7777-4777-8777-777777777777" })
+      .mockResolvedValueOnce({ id: "88888888-8888-4888-8888-888888888888" });
     mockReleaseCandidateService.stageRelayArtifact.mockResolvedValue({
       id: authorizationId,
       candidateId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
@@ -195,14 +224,23 @@ describe("release candidate routes", () => {
       leaseIssuedAt: new Date("2026-07-14T14:00:00.000Z"),
     });
     const storage = {
-      putFile: vi.fn().mockResolvedValue({
+      putFile: vi.fn()
+        .mockResolvedValueOnce({
         provider: "local_disk",
         objectKey: "release-candidates/artifact.tar",
         contentType: "application/x-tar",
         byteSize: tarball.length,
         sha256: tarballSha256.replace(/^sha256:/, ""),
         originalFilename: "scanner-release-candidate.tar",
-      }),
+        })
+        .mockResolvedValueOnce({
+          provider: "local_disk",
+          objectKey: "release-candidates/signature.sigstore.json",
+          contentType: "application/vnd.dev.sigstore.bundle+json",
+          byteSize: signatureBundle.length,
+          sha256: signatureBundleSha256.replace(/^sha256:/, ""),
+          originalFilename: "scanner-edge-image.sigstore.json",
+        }),
     };
     const app = express();
     app.use(express.json());
@@ -229,19 +267,65 @@ describe("release candidate routes", () => {
         sbomVerified: true,
         tarballSha256,
         tarballBase64: tarball.toString("base64"),
+        signatureBundleSha256,
+        signatureBundleBase64: signatureBundle.toString("base64"),
       });
 
     expect(res.status).toBe(201);
     expect(mockReleaseCandidateService.verifyRelayAuthorization).toHaveBeenCalledWith(
       authorizationId,
       "pcdeploy_header-token",
-      expect.objectContaining({ tarballSha256: tarballSha256.replace(/^sha256:/, "") }),
+      expect.objectContaining({
+        tarballSha256: tarballSha256.replace(/^sha256:/, ""),
+        signatureBundleSha256: signatureBundleSha256.replace(/^sha256:/, ""),
+      }),
     );
     expect(mockReleaseCandidateService.stageRelayArtifact).toHaveBeenCalledWith(
       authorizationId,
       "pcdeploy_header-token",
       expect.any(Object),
       "77777777-7777-4777-8777-777777777777",
+      "88888888-8888-4888-8888-888888888888",
+      expect.any(Object),
+    );
+  });
+
+  it("posts idempotent deploy receipts without the one-time deploy token", async () => {
+    const candidateId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const authorizationId = "99999999-9999-4999-8999-999999999999";
+    mockReleaseCandidateService.recordDeployReceipt.mockResolvedValue({
+      alreadyRecorded: true,
+      eventType: "deploy_receipt_duplicate",
+      authorization: { id: authorizationId },
+      candidate: {
+        id: candidateId,
+        companyId,
+        sourceIssueId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      },
+    });
+
+    const res = await request(createApp())
+      .post(`/api/release-candidates/${candidateId}/deploy-record-receipt`)
+      .send({
+        schema_version: 1,
+        receipt_path: `/api/release-candidates/${candidateId}/deploy-record-receipt`,
+        lease_id: authorizationId,
+        candidate_id: candidateId,
+        record: {
+          lease_id: authorizationId,
+          candidate_id: candidateId,
+          status: "activated",
+        },
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockReleaseCandidateService.recordDeployReceipt).toHaveBeenCalledWith(
+      candidateId,
+      expect.objectContaining({
+        leaseId: authorizationId,
+        candidateId,
+        receiptPath: `/api/release-candidates/${candidateId}/deploy-record-receipt`,
+      }),
       expect.any(Object),
     );
   });

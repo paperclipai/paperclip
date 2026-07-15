@@ -39,5 +39,22 @@ X-Paperclip-Deploy-Token: pcdeploy_...
 Content-Type: application/json
 ```
 
+Idempotent deploy record receipt retry:
+
+```http
+POST /api/release-candidates/{candidateId}/deploy-record-receipt
+Authorization: Bearer {api-key}
+Content-Type: application/json
+```
+
 The secure JSON bodies do not include a `token` field. Query-string and body
 token transport are rejected.
+
+Deploy record receipt retries are bound server-side to the original
+authorization (`lease_id`) and release candidate (`candidate_id` / path
+candidate id). Reposting the same receipt is idempotent; reposting different
+evidence for the same authorization or trying to bind old evidence to a
+different candidate fails closed.
+
+See `release-candidates-approved-lease.fixture.json` for the deploy-agent
+approved-lease contract fixture.

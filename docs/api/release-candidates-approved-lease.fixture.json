@@ -1,0 +1,34 @@
+{
+  "lease": {
+    "leaseId": "99999999-9999-4999-8999-999999999999",
+    "deployAuthorizationId": "99999999-9999-4999-8999-999999999999",
+    "releaseCandidateId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    "candidateId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    "environment": "production",
+    "targetHost": "srv1749248",
+    "host": "srv1749248",
+    "sequence": 42,
+    "expiresAt": "2026-07-15T23:00:00.000Z",
+    "tokenScope": "scanner:deploy:production:srv1749248:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    "deployTokenScope": "scanner:deploy:production:srv1749248:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    "deployRecordReceiptPath": "/api/release-candidates/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/deploy-record-receipt"
+  },
+  "candidate": {
+    "candidateId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    "commitSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "imageDigest": "ghcr.io/backbond/scanner-edge@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "stagedArtifactPath": "/api/assets/77777777-7777-4777-8777-777777777777/content",
+    "stagedArtifactSha256": "2222222222222222222222222222222222222222222222222222222222222222",
+    "stagedTarballSha256": "2222222222222222222222222222222222222222222222222222222222222222",
+    "stagedSignatureBundlePath": "/api/assets/88888888-8888-4888-8888-888888888888/content",
+    "stagedSignatureBundleSha256": "3333333333333333333333333333333333333333333333333333333333333333",
+    "sequence": 42,
+    "expiresAt": "2026-07-15T23:00:00.000Z",
+    "environment": "production",
+    "targetHost": "srv1749248",
+    "signatureBundleRef": "https://github.example/workflows/1/artifacts/scanner-edge-image.sigstore.json",
+    "signatureBundleSha256": "3333333333333333333333333333333333333333333333333333333333333333",
+    "approvalInteractionId": "ffffffff-ffff-4fff-8fff-ffffffffffff",
+    "deployTokenScope": "scanner:deploy:production:srv1749248:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+  }
+}

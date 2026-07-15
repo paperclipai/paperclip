@@ -7,6 +7,7 @@ CREATE TABLE "release_candidates" (
 	"commit_sha" text NOT NULL,
 	"image_digest" text NOT NULL,
 	"signature_bundle_ref" text NOT NULL,
+	"signature_bundle_sha256" text NOT NULL,
 	"provenance_ref" text NOT NULL,
 	"sbom_hash" text NOT NULL,
 	"workflow_run_url" text NOT NULL,
@@ -20,6 +21,8 @@ CREATE TABLE "release_candidates" (
 	"approved_at" timestamp with time zone,
 	"staged_artifact_asset_id" uuid,
 	"staged_artifact_sha256" text,
+	"staged_signature_bundle_asset_id" uuid,
+	"staged_signature_bundle_sha256" text,
 	"staged_at" timestamp with time zone,
 	"metadata" jsonb DEFAULT '{}'::jsonb NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
@@ -41,6 +44,8 @@ CREATE TABLE "release_deploy_authorizations" (
 	"used_at" timestamp with time zone,
 	"lease_artifact_asset_id" uuid,
 	"lease_issued_at" timestamp with time zone,
+	"deploy_record_receipt_hash" text,
+	"deploy_record_receipt_received_at" timestamp with time zone,
 	"created_by_user_id" text,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
@@ -71,6 +76,8 @@ ALTER TABLE "release_candidates" ADD CONSTRAINT "release_candidates_created_by_r
 ALTER TABLE "release_candidates" ADD CONSTRAINT "release_candidates_approval_interaction_id_issue_thread_interactions_id_fk" FOREIGN KEY ("approval_interaction_id") REFERENCES "public"."issue_thread_interactions"("id") ON DELETE restrict ON UPDATE no action;
 --> statement-breakpoint
 ALTER TABLE "release_candidates" ADD CONSTRAINT "release_candidates_staged_artifact_asset_id_assets_id_fk" FOREIGN KEY ("staged_artifact_asset_id") REFERENCES "public"."assets"("id") ON DELETE set null ON UPDATE no action;
+--> statement-breakpoint
+ALTER TABLE "release_candidates" ADD CONSTRAINT "release_candidates_staged_signature_bundle_asset_id_assets_id_fk" FOREIGN KEY ("staged_signature_bundle_asset_id") REFERENCES "public"."assets"("id") ON DELETE set null ON UPDATE no action;
 --> statement-breakpoint
 ALTER TABLE "release_deploy_authorizations" ADD CONSTRAINT "release_deploy_authorizations_company_id_companies_id_fk" FOREIGN KEY ("company_id") REFERENCES "public"."companies"("id") ON DELETE no action ON UPDATE no action;
 --> statement-breakpoint

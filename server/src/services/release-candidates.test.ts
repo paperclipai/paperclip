@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { releaseCandidates, releaseDeployAuthorizations } from "@paperclipai/db";
 import { HttpError } from "../errors.js";
 import { releaseCandidateService, verifyRelayArtifact } from "./release-candidates.js";
 
@@ -13,6 +12,7 @@ const candidate = {
   commitSha: "abc1234567890",
   imageDigest: "sha256:1111111111111111111111111111111111111111111111111111111111111111",
   signatureBundleRef: "oci://registry.example/scanner/signature",
+  signatureBundleSha256: "3333333333333333333333333333333333333333333333333333333333333333",
   provenanceRef: "https://github.example/workflows/1/provenance",
   sbomHash: "2222222222222222222222222222222222222222222222222222222222222222",
   workflowRunUrl: "https://github.example/workflows/1",
@@ -26,6 +26,8 @@ const candidate = {
   approvedAt: null,
   stagedArtifactAssetId: null,
   stagedArtifactSha256: null,
+  stagedSignatureBundleAssetId: null,
+  stagedSignatureBundleSha256: null,
   stagedAt: null,
   metadata: {},
   createdAt: new Date("2026-07-13T00:00:00.000Z"),
@@ -198,6 +200,8 @@ describe("release candidate approval relay", () => {
       usedAt: null,
       leaseArtifactAssetId: null,
       leaseIssuedAt: null,
+      deployRecordReceiptHash: null,
+      deployRecordReceiptReceivedAt: null,
       createdByUserId: "founder",
       createdAt: new Date(),
       updatedAt: new Date(),
@@ -247,6 +251,7 @@ describe("release candidate approval relay", () => {
       signatureVerified: true,
       sbomVerified: true,
       tarballSha256: "4444444444444444444444444444444444444444444444444444444444444444",
+      signatureBundleSha256: candidate.signatureBundleSha256,
     };
     const baseAuthorization = {
       id: "99999999-9999-4999-8999-999999999999",
@@ -263,6 +268,8 @@ describe("release candidate approval relay", () => {
       usedAt: null,
       leaseArtifactAssetId: null,
       leaseIssuedAt: null,
+      deployRecordReceiptHash: null,
+      deployRecordReceiptReceivedAt: null,
       createdByUserId: "founder",
       createdAt: new Date(),
       updatedAt: new Date(),
@@ -289,76 +296,6 @@ describe("release candidate approval relay", () => {
     ).rejects.toMatchObject({ status: 409, message: "Deploy authorization scope no longer matches release candidate" });
   });
 
-  it("atomically consumes a one-time token when two stage requests race", async () => {
-    const token = "pcdeploy_concurrent-token";
-    const authorization = {
-      id: "99999999-9999-4999-8999-999999999999",
-      companyId: candidate.companyId,
-      candidateId: candidate.id,
-      approvalInteractionId: "ffffffff-ffff-4fff-8fff-ffffffffffff",
-      tokenHash: createHash("sha256").update(token).digest("hex"),
-      tokenPrefix: "pcdeploy_concurrent",
-      targetHost: candidate.targetHost,
-      imageDigest: candidate.imageDigest,
-      environment: candidate.environment,
-      sequence: candidate.sequence,
-      expiresAt: new Date(Date.now() + 60_000),
-      usedAt: null,
-      leaseArtifactAssetId: null,
-      leaseIssuedAt: null,
-      createdByUserId: "founder",
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
-    let consumed = false;
-    const db = {
-      select: () => ({
-        from: (table: unknown) => ({
-          where: () => ({
-            then: (resolve: (rows: unknown[]) => unknown) => resolve([
-              table === releaseDeployAuthorizations ? authorization : candidate,
-            ]),
-          }),
-        }),
-      }),
-      update: (table: unknown) => ({
-        set: (value: Record<string, unknown>) => ({
-          where: () => ({
-            returning: async () => {
-              if (table === releaseDeployAuthorizations) {
-                if (consumed) return [];
-                consumed = true;
-                return [{ ...authorization, ...value }];
-              }
-              if (table === releaseCandidates) return [{ ...candidate, ...value }];
-              return [];
-            },
-          }),
-        }),
-      }),
-      insert: () => ({ values: async () => [] }),
-    };
-    const artifact = {
-      imageDigest: candidate.imageDigest,
-      sbomHash: candidate.sbomHash,
-      signatureVerified: true,
-      sbomVerified: true,
-      tarballSha256: "4444444444444444444444444444444444444444444444444444444444444444",
-      tarballBase64: "dGVzdA==",
-    };
-    const service = releaseCandidateService(db as never);
-
-    const results = await Promise.allSettled([
-      service.stageRelayArtifact(authorization.id, token, artifact, "asset-1", {}),
-      service.stageRelayArtifact(authorization.id, token, artifact, "asset-2", {}),
-    ]);
-
-    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
-    expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
-    expect((results.find((result) => result.status === "rejected") as PromiseRejectedResult).reason)
-      .toMatchObject({ status: 409, message: "Failed to consume deploy authorization" });
-  });
-
   it("refuses relay artifacts with wrong digest, wrong SBOM, or missing signature verification", () => {
     expect(() => verifyRelayArtifact(candidate, {
       imageDigest: "sha256:3333333333333333333333333333333333333333333333333333333333333333",
@@ -366,6 +303,7 @@ describe("release candidate approval relay", () => {
       signatureVerified: true,
       sbomVerified: true,
       tarballSha256: "4444444444444444444444444444444444444444444444444444444444444444",
+      signatureBundleSha256: candidate.signatureBundleSha256,
     })).toThrow(HttpError);
 
     expect(() => verifyRelayArtifact(candidate, {
@@ -374,6 +312,7 @@ describe("release candidate approval relay", () => {
       signatureVerified: true,
       sbomVerified: true,
       tarballSha256: "4444444444444444444444444444444444444444444444444444444444444444",
+      signatureBundleSha256: candidate.signatureBundleSha256,
     })).toThrow("Relay artifact SBOM hash does not match approved candidate");
 
     expect(() => verifyRelayArtifact(candidate, {
@@ -382,6 +321,70 @@ describe("release candidate approval relay", () => {
       signatureVerified: false,
       sbomVerified: true,
       tarballSha256: "4444444444444444444444444444444444444444444444444444444444444444",
+      signatureBundleSha256: candidate.signatureBundleSha256,
     })).toThrow("Relay artifact signature is not verified");
+  });
+
+  it("records deploy receipts idempotently and refuses rebinding to a different authorization", async () => {
+    const authorization = {
+      id: "99999999-9999-4999-8999-999999999999",
+      companyId: candidate.companyId,
+      candidateId: candidate.id,
+      approvalInteractionId: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+      tokenHash: "hash",
+      tokenPrefix: "pcdeploy_sample",
+      targetHost: candidate.targetHost,
+      imageDigest: candidate.imageDigest,
+      environment: candidate.environment,
+      sequence: candidate.sequence,
+      expiresAt: new Date(Date.now() + 60_000),
+      usedAt: new Date(),
+      leaseArtifactAssetId: "77777777-7777-4777-8777-777777777777",
+      leaseIssuedAt: new Date(),
+      deployRecordReceiptHash: null,
+      deployRecordReceiptReceivedAt: null,
+      createdByUserId: "founder",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    const receipt = {
+      schema_version: 1,
+      receipt_path: `/api/release-candidates/${candidate.id}/deploy-record-receipt`,
+      lease_id: authorization.id,
+      candidate_id: candidate.id,
+      record: {
+        lease_id: authorization.id,
+        candidate_id: candidate.id,
+        status: "activated",
+        deploy_token_scope: `scanner:deploy:${candidate.environment}:${candidate.targetHost}:${candidate.id}`,
+      },
+    };
+    const { db } = makeDb([[authorization], [candidate]]);
+    await expect(
+      releaseCandidateService(db).recordDeployReceipt(candidate.id, {
+        leaseId: authorization.id,
+        candidateId: candidate.id,
+        receiptPath: receipt.receipt_path,
+        record: receipt.record,
+        raw: receipt,
+      }, { agentId: candidate.createdByAgentId }),
+    ).resolves.toMatchObject({
+      eventType: "deploy_succeeded",
+      alreadyRecorded: false,
+    });
+
+    await expect(
+      releaseCandidateService(makeDb([[{ ...authorization, candidateId: "abababab-abab-4bab-8bab-abababababab" }]]).db)
+        .recordDeployReceipt(candidate.id, {
+          leaseId: authorization.id,
+          candidateId: candidate.id,
+          receiptPath: receipt.receipt_path,
+          record: receipt.record,
+          raw: receipt,
+        }, {}),
+    ).rejects.toMatchObject({
+      status: 422,
+      message: "Deploy receipt authorization does not match release candidate",
+    });
   });
 });

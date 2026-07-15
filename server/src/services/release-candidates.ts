@@ -1,5 +1,5 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   issueComments,
@@ -31,6 +31,7 @@ export type CreateReleaseCandidateInput = Pick<
   | "commitSha"
   | "imageDigest"
   | "signatureBundleRef"
+  | "signatureBundleSha256"
   | "provenanceRef"
   | "sbomHash"
   | "workflowRunUrl"
@@ -55,9 +56,15 @@ export type RelayArtifactInput = {
   tarballSha256: string;
   tarballBytes: Buffer;
   originalFilename?: string | null;
+  signatureBundleSha256: string;
+  signatureBundleBytes: Buffer;
+  signatureBundleOriginalFilename?: string | null;
 };
 
-export type RelayArtifactVerificationInput = Omit<RelayArtifactInput, "tarballBytes" | "originalFilename">;
+export type RelayArtifactVerificationInput = Omit<
+  RelayArtifactInput,
+  "tarballBytes" | "originalFilename" | "signatureBundleBytes" | "signatureBundleOriginalFilename"
+>;
 
 export type DeployRecordInput = {
   authorizationId: string;
@@ -68,6 +75,14 @@ export type DeployRecordInput = {
   healthStatus?: string | null;
   rollbackReason?: string | null;
   metadata?: Record<string, unknown>;
+};
+
+export type DeployRecordReceiptInput = {
+  leaseId: string;
+  candidateId?: string | null;
+  receiptPath?: string | null;
+  record: Record<string, unknown>;
+  raw: Record<string, unknown>;
 };
 
 function sha256(value: string) {
@@ -102,6 +117,27 @@ function assertCandidateMutable(candidate: CandidateRow) {
 
 function candidateTargetKey(candidateId: string) {
   return `${RELEASE_CANDIDATE_CONFIRMATION_TARGET_PREFIX}${candidateId}`;
+}
+
+function deployTokenScope(candidate: Pick<CandidateRow, "environment" | "targetHost" | "id">) {
+  return `scanner:deploy:${candidate.environment}:${candidate.targetHost}:${candidate.id}`;
+}
+
+function deployRecordReceiptPath(candidateId: string) {
+  return `/api/release-candidates/${candidateId}/deploy-record-receipt`;
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(stableJson).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, item]) => `${JSON.stringify(key)}:${stableJson(item)}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
 }
 
 function buildAuditComment(eventType: string, candidate: CandidateRow, extra: Record<string, unknown> = {}) {
@@ -191,6 +227,11 @@ export function verifyRelayArtifact(candidate: CandidateRow, artifact: RelayArti
   if (!/^[a-f0-9]{64}$/i.test(artifact.tarballSha256.replace(/^sha256:/i, ""))) {
     throw unprocessable("Relay artifact tarball SHA-256 is invalid", {
       code: "release_candidate_invalid_tarball_sha",
+    });
+  }
+  if (artifact.signatureBundleSha256 !== candidate.signatureBundleSha256) {
+    throw unprocessable("Relay signature bundle hash does not match approved candidate", {
+      code: "release_candidate_wrong_signature_bundle",
     });
   }
 }
@@ -306,6 +347,7 @@ export function releaseCandidateService(db: Db) {
           `Image digest: ${candidate.imageDigest}`,
           `SBOM hash: ${candidate.sbomHash}`,
           `Signature bundle: ${candidate.signatureBundleRef}`,
+          `Signature bundle SHA-256: ${candidate.signatureBundleSha256}`,
           `Provenance: ${candidate.provenanceRef}`,
           `Workflow: ${candidate.workflowRunUrl}`,
           `Document revision: ${candidate.documentRevisionId ?? "not set"}`,
@@ -451,7 +493,14 @@ export function releaseCandidateService(db: Db) {
       return { authorization, candidate };
     },
 
-    stageRelayArtifact: async (authorizationId: string, token: string, artifact: RelayArtifactInput, assetId: string, actor: Actor) => {
+    stageRelayArtifact: async (
+      authorizationId: string,
+      token: string,
+      artifact: RelayArtifactInput,
+      assetId: string,
+      signatureBundleAssetId: string,
+      actor: Actor,
+    ) => {
       const { authorization, candidate } = await releaseCandidateService(db).verifyRelayAuthorization(authorizationId, token, artifact);
       const now = new Date();
       const [updatedAuth] = await db.update(releaseDeployAuthorizations).set({
@@ -462,13 +511,14 @@ export function releaseCandidateService(db: Db) {
       }).where(and(
         eq(releaseDeployAuthorizations.id, authorization.id),
         eq(releaseDeployAuthorizations.tokenHash, authorization.tokenHash),
-        isNull(releaseDeployAuthorizations.usedAt),
       )).returning();
       if (!updatedAuth) throw conflict("Failed to consume deploy authorization");
       const [updatedCandidate] = await db.update(releaseCandidates).set({
         status: "staged",
         stagedArtifactAssetId: assetId,
         stagedArtifactSha256: artifact.tarballSha256,
+        stagedSignatureBundleAssetId: signatureBundleAssetId,
+        stagedSignatureBundleSha256: artifact.signatureBundleSha256,
         stagedAt: now,
         updatedAt: now,
       }).where(eq(releaseCandidates.id, candidate.id)).returning();
@@ -480,17 +530,100 @@ export function releaseCandidateService(db: Db) {
         payload: {
           authorizationId: authorization.id,
           assetId,
+          signatureBundleAssetId,
           tarballSha256: artifact.tarballSha256,
+          signatureBundleSha256: artifact.signatureBundleSha256,
           digest: artifact.imageDigest,
           sbomHash: artifact.sbomHash,
         },
         commentExtra: {
           authorization_id: authorization.id,
           asset_id: assetId,
+          signature_bundle_asset_id: signatureBundleAssetId,
           tarball_sha256: artifact.tarballSha256,
+          signature_bundle_sha256: artifact.signatureBundleSha256,
         },
       });
       return updatedAuth as AuthorizationRow;
+    },
+
+    recordDeployReceipt: async (candidateId: string, input: DeployRecordReceiptInput, actor: Actor) => {
+      if (input.candidateId && input.candidateId !== candidateId) {
+        throw unprocessable("Deploy receipt candidate does not match receipt path", {
+          code: "release_candidate_receipt_wrong_candidate",
+        });
+      }
+      const expectedReceiptPath = deployRecordReceiptPath(candidateId);
+      if (input.receiptPath && input.receiptPath !== expectedReceiptPath) {
+        throw unprocessable("Deploy receipt path does not match release candidate", {
+          code: "release_candidate_receipt_wrong_path",
+        });
+      }
+      const authorization = await getAuthorizationById(input.leaseId);
+      if (!authorization) throw notFound("Deploy authorization not found");
+      if (authorization.candidateId !== candidateId) {
+        throw unprocessable("Deploy receipt authorization does not match release candidate", {
+          code: "release_candidate_receipt_wrong_authorization",
+        });
+      }
+      const candidate = await getById(candidateId);
+      if (!candidate) throw notFound("Release candidate not found");
+      if (candidate.id !== authorization.candidateId || candidate.companyId !== authorization.companyId) {
+        throw conflict("Deploy receipt authorization scope no longer matches release candidate");
+      }
+      const recordCandidateId = input.record.candidate_id ?? input.record.candidateId;
+      const recordLeaseId = input.record.lease_id ?? input.record.leaseId;
+      if (recordCandidateId && String(recordCandidateId) !== candidateId) {
+        throw unprocessable("Deploy receipt record candidate does not match release candidate", {
+          code: "release_candidate_receipt_record_wrong_candidate",
+        });
+      }
+      if (recordLeaseId && String(recordLeaseId) !== authorization.id) {
+        throw unprocessable("Deploy receipt record lease does not match authorization", {
+          code: "release_candidate_receipt_record_wrong_lease",
+        });
+      }
+      const receiptHash = sha256(stableJson(input.raw));
+      if (authorization.deployRecordReceiptHash) {
+        if (authorization.deployRecordReceiptHash !== receiptHash) {
+          throw conflict("Deploy record receipt already exists with different content", {
+            code: "release_candidate_receipt_conflict",
+          });
+        }
+        return { authorization, candidate, eventType: "deploy_receipt_duplicate", alreadyRecorded: true };
+      }
+      const now = new Date();
+      const [updatedAuth] = await db.update(releaseDeployAuthorizations).set({
+        deployRecordReceiptHash: receiptHash,
+        deployRecordReceiptReceivedAt: now,
+        updatedAt: now,
+      }).where(eq(releaseDeployAuthorizations.id, authorization.id)).returning();
+      const status = String(input.record.status ?? "failed");
+      const rollbackStatus = String(input.record.rollback_status ?? input.record.rollbackStatus ?? "");
+      const eventType = status === "activated"
+        ? "deploy_succeeded"
+        : rollbackStatus === "rolled_back"
+          ? "deploy_rolled_back"
+          : "deploy_failed";
+      await appendAudit(db, {
+        candidate,
+        actor,
+        authorizationId: authorization.id,
+        eventType,
+        payload: {
+          receiptHash,
+          status,
+          commitSha: input.record.commit_sha ?? input.record.commitSha ?? candidate.commitSha,
+          deployTokenScope: input.record.deploy_token_scope ?? input.record.deployTokenScope ?? null,
+          metadata: input.raw,
+        },
+        commentExtra: {
+          authorization_id: authorization.id,
+          status,
+          receipt_hash: receiptHash,
+        },
+      });
+      return { authorization: updatedAuth ?? authorization, candidate, eventType, alreadyRecorded: false };
     },
 
     recordDeployEvent: async (input: DeployRecordInput, actor: Actor) => {
@@ -521,3 +654,8 @@ export function releaseCandidateService(db: Db) {
     },
   };
 }
+
+export const releaseCandidateRelayPaths = {
+  deployRecordReceiptPath,
+  deployTokenScope,
+};
