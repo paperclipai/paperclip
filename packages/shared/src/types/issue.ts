@@ -922,9 +922,19 @@ export interface IssueCommentMetadataSection {
   rows: IssueCommentMetadataRow[];
 }
 
+export interface IssueCommentReplyToMetadata {
+  commentId: string;
+  authorType: IssueCommentAuthorType;
+  authorAgentId?: string | null;
+  authorUserId?: string | null;
+  excerpt: string;
+  excerptTruncated: boolean;
+}
+
 export interface IssueCommentMetadata {
   version: 1;
   sourceRunId?: string | null;
+  replyTo?: IssueCommentReplyToMetadata | null;
   sections: IssueCommentMetadataSection[];
 }
 

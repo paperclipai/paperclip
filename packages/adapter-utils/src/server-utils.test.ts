@@ -843,6 +843,73 @@ describe("renderPaperclipWakePrompt", () => {
     expect(fallbackPrompt).toContain("- fallback fetch needed: yes");
   });
 
+  it("renders replied-to comment context and a fetch path when truncated", () => {
+    const issueId = "11111111-1111-4111-8111-111111111111";
+    const replyTargetId = "22222222-2222-4222-8222-222222222222";
+    const prompt = renderPaperclipWakePrompt({
+      reason: "issue_commented",
+      issue: {
+        id: issueId,
+        identifier: "PAP-1581",
+        title: "Handle a direct reply",
+        status: "in_progress",
+      },
+      commentWindow: {
+        requestedCount: 1,
+        includedCount: 1,
+        missingCount: 0,
+      },
+      comments: [{
+        id: "33333333-3333-4333-8333-333333333333",
+        issueId,
+        body: "This is my reply.",
+        bodyTruncated: false,
+        createdAt: "2026-07-13T01:00:00.000Z",
+        author: { type: "user", id: "board-user" },
+        replyToComment: {
+          id: replyTargetId,
+          body: "Full original body prefix",
+          bodyTruncated: true,
+          createdAt: "2026-07-13T00:00:00.000Z",
+          author: { type: "agent", id: "agent-1" },
+        },
+      }],
+      fallbackFetchNeeded: false,
+    });
+
+    expect(prompt).toContain("This comment is a reply to an earlier comment by agent agent-1");
+    expect(prompt).toContain("Treat that earlier comment as the direct subject of this reply.");
+    expect(prompt).toContain("Full original body prefix");
+    expect(prompt).toContain(`GET /api/issues/${issueId}/comments/${replyTargetId}`);
+    expect(prompt).toContain("Replying comment:\nThis is my reply.");
+  });
+
+  it("keeps reply fetch guidance when the inline original body budget is exhausted", () => {
+    const issueId = "11111111-1111-4111-8111-111111111111";
+    const replyTargetId = "22222222-2222-4222-8222-222222222222";
+    const prompt = renderPaperclipWakePrompt({
+      reason: "issue_commented",
+      issue: { id: issueId, identifier: "PAP-1581", title: "Handle a direct reply" },
+      commentWindow: { requestedCount: 1, includedCount: 1, missingCount: 0 },
+      comments: [{
+        id: "33333333-3333-4333-8333-333333333333",
+        issueId,
+        body: "This is my reply.",
+        replyToComment: {
+          id: replyTargetId,
+          body: "",
+          bodyTruncated: true,
+          author: { type: "agent", id: "agent-1" },
+        },
+      }],
+      fallbackFetchNeeded: false,
+    });
+
+    expect(prompt).toContain("Treat that earlier comment as the direct subject of this reply.");
+    expect(prompt).toContain(`GET /api/issues/${issueId}/comments/${replyTargetId}`);
+    expect(prompt).toContain("Replying comment:\nThis is my reply.");
+  });
+
   it("renders the execution workspace branch guard only on non-resumed sessions", () => {
     const payload = {
       reason: "issue_assigned",

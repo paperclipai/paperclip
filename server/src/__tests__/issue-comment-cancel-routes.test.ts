@@ -9,6 +9,13 @@ const mockIssueService = vi.hoisted(() => ({
   removeComment: vi.fn(),
   tombstoneComment: vi.fn(),
 }));
+const mockTombstoneTransaction = vi.hoisted(() => ({
+  update: vi.fn(() => ({
+    set: vi.fn(() => ({
+      where: vi.fn(async () => undefined),
+    })),
+  })),
+}));
 
 const mockAccessService = vi.hoisted(() => ({
   canUser: vi.fn(),
@@ -231,7 +238,7 @@ describe.sequential("issue comment cancel routes", () => {
         deletedByUserId: "local-board",
         deletedByRunId: null,
       });
-      await options?.afterTombstone?.(deleted, "tx");
+      await options?.afterTombstone?.(deleted, mockTombstoneTransaction);
       return deleted;
     });
     mockAccessService.canUser.mockResolvedValue(false);
@@ -378,8 +385,8 @@ describe.sequential("issue comment cancel routes", () => {
       },
       expect.objectContaining({ afterTombstone: expect.any(Function) }),
     );
-    expect(mockIssueReferenceService.syncComment).toHaveBeenCalledWith("comment-1", "tx");
-    expect(mockExternalObjectService.syncCommentSafely).toHaveBeenCalledWith("comment-1", "tx");
+    expect(mockIssueReferenceService.syncComment).toHaveBeenCalledWith("comment-1", mockTombstoneTransaction);
+    expect(mockExternalObjectService.syncCommentSafely).toHaveBeenCalledWith("comment-1", mockTombstoneTransaction);
     expect(mockDocumentAnnotationService.cleanupForIssueCommentDeletion).toHaveBeenCalledWith(
       "11111111-1111-4111-8111-111111111111",
       "comment-1",
@@ -387,10 +394,10 @@ describe.sequential("issue comment cancel routes", () => {
         actorType: "user",
         userId: "local-board",
       }),
-      "tx",
+      mockTombstoneTransaction,
     );
-    expect(mockIssueReferenceService.deleteCommentSource).toHaveBeenCalledWith("annotation-comment-1", "tx");
-    expect(mockExternalObjectService.syncCommentSafely).toHaveBeenCalledWith("annotation-comment-1", "tx");
+    expect(mockIssueReferenceService.deleteCommentSource).toHaveBeenCalledWith("annotation-comment-1", mockTombstoneTransaction);
+    expect(mockExternalObjectService.syncCommentSafely).toHaveBeenCalledWith("annotation-comment-1", mockTombstoneTransaction);
     const deletedActivity = mockLogActivity.mock.calls.find((call) => call[1]?.action === "issue.comment_deleted")?.[1];
     expect(deletedActivity).toEqual(expect.objectContaining({
       action: "issue.comment_deleted",

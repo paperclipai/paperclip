@@ -462,6 +462,14 @@ type PaperclipWakeComment = {
   createdAt: string | null;
   authorType: string | null;
   authorId: string | null;
+  replyToComment: {
+    id: string | null;
+    body: string;
+    bodyTruncated: boolean;
+    createdAt: string | null;
+    authorType: string | null;
+    authorId: string | null;
+  } | null;
 };
 
 type PaperclipWakePlanReviewAuthor = {
@@ -680,6 +688,11 @@ function normalizePaperclipWakeIssue(value: unknown): PaperclipWakeIssue | null 
 function normalizePaperclipWakeComment(value: unknown): PaperclipWakeComment | null {
   const comment = parseObject(value);
   const author = parseObject(comment.author);
+  const replyToComment = parseObject(comment.replyToComment);
+  const replyToAuthor = parseObject(replyToComment.author);
+  const replyToBody = asString(replyToComment.body, "");
+  const replyToId = asString(replyToComment.id, "").trim() || null;
+  const replyToBodyTruncated = asBoolean(replyToComment.bodyTruncated, false);
   const body = asString(comment.body, "");
   if (!body.trim()) return null;
   return {
@@ -690,6 +703,16 @@ function normalizePaperclipWakeComment(value: unknown): PaperclipWakeComment | n
     createdAt: asString(comment.createdAt, "").trim() || null,
     authorType: asString(author.type, "").trim() || null,
     authorId: asString(author.id, "").trim() || null,
+    replyToComment: replyToId || replyToBody.trim() || replyToBodyTruncated
+      ? {
+          id: replyToId,
+          body: replyToBody,
+          bodyTruncated: replyToBodyTruncated,
+          createdAt: asString(replyToComment.createdAt, "").trim() || null,
+          authorType: asString(replyToAuthor.type, "").trim() || null,
+          authorId: asString(replyToAuthor.id, "").trim() || null,
+        }
+      : null,
   };
 }
 
@@ -1688,8 +1711,25 @@ export function renderPaperclipWakePrompt(
       : comment.authorType ?? "unknown";
     lines.push(
       `${index + 1}. comment ${comment.id ?? "unknown"} at ${comment.createdAt ?? "unknown"} by ${authorLabel}`,
-      comment.body,
     );
+    if (comment.replyToComment) {
+      const replyAuthorLabel = comment.replyToComment.authorId
+        ? `${comment.replyToComment.authorType ?? "unknown"} ${comment.replyToComment.authorId}`
+        : comment.replyToComment.authorType ?? "unknown";
+      lines.push(
+        `This comment is a reply to an earlier comment by ${replyAuthorLabel} (${comment.replyToComment.createdAt ?? "unknown"}).`,
+        "Treat that earlier comment as the direct subject of this reply.",
+        "Full original comment:",
+        comment.replyToComment.body,
+      );
+      if (comment.replyToComment.bodyTruncated) {
+        lines.push(
+          `[original comment body truncated; fetch the rest via GET /api/issues/${comment.issueId ?? "{issueId}"}/comments/${comment.replyToComment.id ?? "{commentId}"}]`,
+        );
+      }
+      lines.push("Replying comment:");
+    }
+    lines.push(comment.body);
     if (comment.bodyTruncated) {
       lines.push("[comment body truncated]");
     }

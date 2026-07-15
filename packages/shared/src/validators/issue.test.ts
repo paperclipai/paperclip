@@ -184,7 +184,38 @@ describe("issue validators", () => {
 
     expect(parsed.presentation?.detailsDefaultOpen).toBe(false);
     expect(parsed.metadata?.sourceRunId).toBe("11111111-1111-4111-8111-111111111111");
-    expect(parsed.metadata?.sections[0]?.rows).toHaveLength(3);
+    expect(parsed.metadata?.sections?.[0]?.rows).toHaveLength(3);
+  });
+
+  it("accepts only a reply target id from comment clients", () => {
+    const parsed = addIssueCommentSchema.parse({
+      body: "Following up on that point.",
+      metadata: {
+        replyTo: {
+          commentId: "11111111-1111-4111-8111-111111111111",
+        },
+      },
+    });
+
+    expect(parsed.metadata).toEqual({
+      replyTo: {
+        commentId: "11111111-1111-4111-8111-111111111111",
+      },
+    });
+  });
+
+  it("rejects client-supplied reply snapshots", () => {
+    const parsed = addIssueCommentSchema.safeParse({
+      body: "Forged quote attempt.",
+      metadata: {
+        replyTo: {
+          commentId: "11111111-1111-4111-8111-111111111111",
+          excerpt: "The target never said this.",
+        },
+      },
+    });
+
+    expect(parsed.success).toBe(false);
   });
 
   it("rejects arbitrary issue comment metadata", () => {

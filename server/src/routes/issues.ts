@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import { z } from "zod";
-import { and, asc, desc, eq, inArray, isNull, notInArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -63,6 +63,7 @@ import {
   isUuidLike,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
   type CompactIssue,
+  type AddIssueComment,
   type CompanySearchQuery,
   type CompanySearchResponse,
   type ExecutionWorkspace,
@@ -71,6 +72,7 @@ import {
   type IssueBlockerDiagnosticNode,
   type IssueBlockerDiagnosticsReadiness,
   type IssueBlockerDiagnosticsResponse,
+  type IssueCommentMetadata,
   type IssueSubtreeDiagnosticEdge,
   type IssueSubtreeDiagnosticNode,
   type IssueSubtreeDiagnosticsResponse,
@@ -282,6 +284,8 @@ type SuccessfulRunHandoffActivityRow = {
 };
 type TaskWatchdogService = ReturnType<typeof taskWatchdogService>;
 type TaskWatchdogServiceFactory = typeof taskWatchdogService;
+
+const ISSUE_COMMENT_REPLY_EXCERPT_CHARS = 200;
 
 function applyCreateIssueStatusDefault(req: Request, res: Response, next: () => void) {
   if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)) {
@@ -4063,6 +4067,49 @@ export function issueRoutes(
       },
     });
     return false;
+  }
+
+  async function resolveIssueCommentMetadata(
+    issueId: string,
+    requestedMetadata: AddIssueComment["metadata"],
+  ): Promise<IssueCommentMetadata | null> {
+    if (!requestedMetadata) return null;
+
+    const replyTargetId = requestedMetadata.replyTo?.commentId;
+    if (!replyTargetId) {
+      return {
+        version: requestedMetadata.version ?? 1,
+        ...(requestedMetadata.sourceRunId !== undefined
+          ? { sourceRunId: requestedMetadata.sourceRunId }
+          : {}),
+        sections: requestedMetadata.sections ?? [],
+      };
+    }
+
+    const replyTarget = await svc.getComment(replyTargetId);
+    if (!replyTarget || replyTarget.issueId !== issueId || replyTarget.deletedAt) {
+      throw unprocessable("Reply target comment is missing, belongs to another issue, or was deleted");
+    }
+
+    const canonicalReplyTarget = redactQuarantinedBodyForHigherTrust(replyTarget);
+    const excerpt = canonicalReplyTarget.body.slice(0, ISSUE_COMMENT_REPLY_EXCERPT_CHARS);
+    return {
+      version: requestedMetadata.version ?? 1,
+      ...(requestedMetadata.sourceRunId !== undefined
+        ? { sourceRunId: requestedMetadata.sourceRunId }
+        : {}),
+      sections: requestedMetadata.sections ?? [],
+      replyTo: {
+        commentId: replyTarget.id,
+        authorType:
+          replyTarget.authorType ??
+          (replyTarget.authorAgentId ? "agent" : replyTarget.authorUserId ? "user" : "system"),
+        authorAgentId: replyTarget.authorAgentId ?? null,
+        authorUserId: replyTarget.authorUserId ?? null,
+        excerpt,
+        excerptTruncated: excerpt.length < canonicalReplyTarget.body.length,
+      },
+    };
   }
 
   async function assertExplicitResumeIntentAllowed(
@@ -9331,6 +9378,16 @@ export function issueRoutes(
       },
       {
         afterTombstone: async (deletedComment, tx) => {
+          await tx
+            .update(issueComments)
+            .set({
+              metadata: sql`${issueComments.metadata} - 'replyTo'`,
+              updatedAt: new Date(),
+            })
+            .where(and(
+              eq(issueComments.issueId, issue.id),
+              sql`${issueComments.metadata} -> 'replyTo' ->> 'commentId' = ${deletedComment.id}`,
+            ));
           await issueReferencesSvc.syncComment(deletedComment.id, tx);
           await externalObjectsSvc.syncCommentSafely(deletedComment.id, tx);
           annotationCleanup = await documentAnnotationsSvc.cleanupForIssueCommentDeletion(issue.id, deletedComment.id, {
@@ -9465,6 +9522,7 @@ export function issueRoutes(
       presentation: req.body.presentation,
       metadata: req.body.metadata,
     })) return;
+    const commentMetadata = await resolveIssueCommentMetadata(id, req.body.metadata);
     const closedExecutionWorkspace = await getClosedIssueExecutionWorkspace(issue);
     if (closedExecutionWorkspace) {
       respondClosedIssueExecutionWorkspace(res, closedExecutionWorkspace);
@@ -9683,7 +9741,7 @@ export function issueRoutes(
       const commentOptions = {
         authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
         presentation: req.body.presentation ?? null,
-        metadata: req.body.metadata ?? null,
+        metadata: commentMetadata,
         sourceTrust,
       };
       let txResult: { comment: Awaited<ReturnType<typeof svc.addComment>>; issue: NonNullable<Awaited<ReturnType<typeof svc.update>>> };
@@ -9767,7 +9825,7 @@ export function issueRoutes(
       }, {
         authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
         presentation: req.body.presentation ?? null,
-        metadata: req.body.metadata ?? null,
+        metadata: commentMetadata,
         sourceTrust: await sourceTrustForActorWrite(currentIssue, actor),
       });
     }

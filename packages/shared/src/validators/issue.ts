@@ -554,19 +554,46 @@ export const issueCommentMetadataSectionSchema = z.object({
   rows: z.array(issueCommentMetadataRowSchema).min(1).max(50),
 }).strict();
 
+const issueCommentReplyToMetadataSchema = z.object({
+  commentId: z.string().uuid(),
+  authorType: issueCommentAuthorTypeSchema,
+  authorAgentId: z.string().uuid().nullable().optional(),
+  authorUserId: z.string().trim().min(1).nullable().optional(),
+  excerpt: z.string(),
+  excerptTruncated: z.boolean(),
+}).strict();
+
 export const issueCommentMetadataSchema = z.object({
   version: z.literal(1),
   sourceRunId: z.string().uuid().nullable().optional(),
-  sections: z.array(issueCommentMetadataSectionSchema).min(1).max(20),
+  replyTo: issueCommentReplyToMetadataSchema.nullable().optional(),
+  sections: z.array(issueCommentMetadataSectionSchema).max(20),
 }).strict();
 
 export type IssueCommentMetadata = z.infer<typeof issueCommentMetadataSchema>;
+
+const addIssueCommentMetadataSchema = z.object({
+  version: z.literal(1).optional(),
+  sourceRunId: z.string().uuid().nullable().optional(),
+  sections: z.array(issueCommentMetadataSectionSchema).min(1).max(20).optional(),
+  replyTo: z.object({
+    commentId: z.string().uuid(),
+  }).strict().optional(),
+}).strict().superRefine((value, ctx) => {
+  if (!value.replyTo && (!value.version || !value.sections)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Comment metadata requires structured sections or a reply target",
+      path: ["sections"],
+    });
+  }
+});
 
 export const addIssueCommentSchema = z.object({
   body: multilineTextSchema.pipe(z.string().min(1)),
   authorType: issueCommentAuthorTypeSchema.optional(),
   presentation: issueCommentPresentationSchema.nullable().optional(),
-  metadata: issueCommentMetadataSchema.nullable().optional(),
+  metadata: addIssueCommentMetadataSchema.nullable().optional(),
   reopen: z.boolean().optional(),
   resume: z.boolean().optional(),
   interrupt: z.boolean().optional(),
