@@ -53,6 +53,8 @@ const SANDBOX_WORKSPACE_HEAVY_DIR_EXCLUDES = SANDBOX_WORKSPACE_HEAVY_DIR_NAMES.f
   `*/${entry}/*`,
 ]);
 const CODEX_AUTH_JSON_NAME = "auth.json";
+const CODEX_AUTH_JSON_MAX_BYTES = 64 * 1024;
+export const SANDBOX_READ_FILE_TOO_LARGE_ERROR_CODE = "ERR_PAPERCLIP_SANDBOX_FILE_TOO_LARGE";
 
 export interface SandboxRemoteExecutionSpec {
   transport: "sandbox";
@@ -74,10 +76,13 @@ export interface SandboxManagedRuntimeAsset {
  * Per-call byte-level progress hook. `transferredBytes`/`totalBytes` are decoded
  * file bytes (not the base64 wire size). `totalBytes` is null when the size is
  * not known up front. The transport is the source of truth for byte counts; the
- * orchestrator owns the phase label and direction.
+ * orchestrator owns the phase label and direction. Read callers may set
+ * `maxBytes` to ask transports to reject oversized files before downloading the
+ * full payload when the remote size is knowable.
  */
 export interface SandboxTransferProgressOptions {
   onProgress?: (transferredBytes: number, totalBytes: number | null) => void | Promise<void>;
+  maxBytes?: number;
 }
 
 export interface SandboxManagedRuntimeClient {
@@ -103,8 +108,25 @@ export interface PreparedSandboxManagedRuntime {
 
 type ParsedCodexAuth =
   | { kind: "unusable" }
-  | { kind: "apikey" }
-  | { kind: "subscription"; accountId: string; lastRefresh: number | null };
+  | { kind: "apikey"; canonicalPayload: CanonicalCodexApiKeyAuth }
+  | {
+    kind: "subscription";
+    accountId: string;
+    lastRefresh: number | null;
+    canonicalPayload: CanonicalCodexSubscriptionAuth;
+  };
+
+type CodexAuthTokenField = "id_token" | "access_token" | "refresh_token";
+const CODEX_AUTH_TOKEN_FIELDS = ["id_token", "access_token", "refresh_token"] as const satisfies readonly CodexAuthTokenField[];
+
+interface CanonicalCodexSubscriptionAuth {
+  tokens: { account_id: string } & Partial<Record<CodexAuthTokenField, string>>;
+  last_refresh?: string;
+}
+
+interface CanonicalCodexApiKeyAuth {
+  OPENAI_API_KEY: string;
+}
 
 type CodexAuthSyncBackOutcome =
   | "updated"
@@ -364,6 +386,33 @@ function toBuffer(bytes: Buffer | Uint8Array | ArrayBuffer): Buffer {
   return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
 }
 
+type SandboxReadFileTooLargeError = Error & {
+  code: typeof SANDBOX_READ_FILE_TOO_LARGE_ERROR_CODE;
+  actualBytes: number;
+  maxBytes: number;
+};
+
+export function createSandboxReadFileTooLargeError(input: {
+  remotePath: string;
+  actualBytes: number;
+  maxBytes: number;
+}): SandboxReadFileTooLargeError {
+  const error = new Error(
+    `Remote file ${input.remotePath} is ${input.actualBytes} bytes, exceeding the ${input.maxBytes} byte limit`,
+  ) as SandboxReadFileTooLargeError;
+  error.code = SANDBOX_READ_FILE_TOO_LARGE_ERROR_CODE;
+  error.actualBytes = input.actualBytes;
+  error.maxBytes = input.maxBytes;
+  return error;
+}
+
+function isSandboxReadFileTooLargeError(error: unknown): boolean {
+  const code = typeof error === "object" && error !== null
+    ? (error as { code?: unknown }).code
+    : null;
+  return code === SANDBOX_READ_FILE_TOO_LARGE_ERROR_CODE;
+}
+
 // Co-change notice: this parser mirrors hasUsableAuthPayload in
 // packages/adapters/codex-local/src/server/codex-home.ts and parseAuth in
 // packages/adapter-utils/src/codex-auth-merge-decision.cjs. If the auth format
@@ -376,7 +425,7 @@ function parseCodexAuthPayload(authPayload: unknown): ParsedCodexAuth {
   const parsedPayload = authPayload as Record<string, unknown>;
   const apiKey = parsedPayload.OPENAI_API_KEY;
   if (typeof apiKey === "string" && apiKey.trim().length > 0) {
-    return { kind: "apikey" };
+    return { kind: "apikey", canonicalPayload: { OPENAI_API_KEY: apiKey } };
   }
 
   const tokens = parsedPayload.tokens;
@@ -386,12 +435,25 @@ function parseCodexAuthPayload(authPayload: unknown): ParsedCodexAuth {
 
   const parsedTokens = tokens as Record<string, unknown>;
   const accountId = typeof parsedTokens.account_id === "string" ? parsedTokens.account_id.trim() : "";
-  const hasTokenMaterial = ["id_token", "access_token", "refresh_token"].some((key) => {
+  const hasTokenMaterial = CODEX_AUTH_TOKEN_FIELDS.some((key) => {
     const value = parsedTokens[key];
     return typeof value === "string" && value.trim().length > 0;
   });
   if (!accountId || !hasTokenMaterial) {
     return { kind: "unusable" };
+  }
+
+  const canonicalTokens: CanonicalCodexSubscriptionAuth["tokens"] = { account_id: accountId };
+  for (const key of CODEX_AUTH_TOKEN_FIELDS) {
+    const value = parsedTokens[key];
+    if (typeof value === "string") {
+      canonicalTokens[key] = value;
+    }
+  }
+
+  const canonicalPayload: CanonicalCodexSubscriptionAuth = { tokens: canonicalTokens };
+  if (typeof parsedPayload.last_refresh === "string") {
+    canonicalPayload.last_refresh = parsedPayload.last_refresh;
   }
 
   const lastRefresh = typeof parsedPayload.last_refresh === "string"
@@ -401,6 +463,7 @@ function parseCodexAuthPayload(authPayload: unknown): ParsedCodexAuth {
     kind: "subscription",
     accountId,
     lastRefresh: Number.isFinite(lastRefresh) ? lastRefresh : null,
+    canonicalPayload,
   };
 }
 
@@ -409,6 +472,33 @@ function parseCodexAuthBytes(bytes: Buffer): ParsedCodexAuth {
     return parseCodexAuthPayload(JSON.parse(bytes.toString("utf8")));
   } catch {
     return { kind: "unusable" };
+  }
+}
+
+function canonicalCodexAuthBytes(auth: Extract<ParsedCodexAuth, { kind: "subscription" | "apikey" }>): Buffer {
+  return Buffer.from(`${JSON.stringify(auth.canonicalPayload)}\n`, "utf8");
+}
+
+type SandboxCodexAuthReadResult =
+  | { kind: "found"; bytes: Buffer }
+  | { kind: "missing" }
+  | { kind: "too_large" };
+
+async function readSandboxCodexAuthBytes(input: {
+  client: SandboxManagedRuntimeClient;
+  remoteHomeDir: string;
+}): Promise<SandboxCodexAuthReadResult> {
+  const remotePath = path.posix.join(input.remoteHomeDir, CODEX_AUTH_JSON_NAME);
+  try {
+    const bytes = toBuffer(await input.client.readFile(remotePath, { maxBytes: CODEX_AUTH_JSON_MAX_BYTES }));
+    if (bytes.byteLength > CODEX_AUTH_JSON_MAX_BYTES) {
+      return { kind: "too_large" };
+    }
+    return { kind: "found", bytes };
+  } catch (error) {
+    if (isMissingFileError(error)) return { kind: "missing" };
+    if (isSandboxReadFileTooLargeError(error)) return { kind: "too_large" };
+    throw error;
   }
 }
 
@@ -530,29 +620,27 @@ async function syncCodexHomeAuthJsonBackToHost(input: {
       outcome = "skipped_no_host_symlink";
     } else {
       const remoteHomeDir = input.assetDirs[homeAsset.key];
-      const sandboxAuthBytes = remoteHomeDir
-        ? await input.client.readFile(path.posix.join(remoteHomeDir, CODEX_AUTH_JSON_NAME))
-          .then((bytes) => toBuffer(bytes))
-          .catch((error: unknown) => {
-            if (isMissingFileError(error)) return null;
-            throw error;
-          })
-        : null;
+      const sandboxAuthRead = remoteHomeDir
+        ? await readSandboxCodexAuthBytes({ client: input.client, remoteHomeDir })
+        : { kind: "missing" as const };
 
-      if (!sandboxAuthBytes) {
+      if (sandboxAuthRead.kind === "missing") {
         outcome = "skipped_sandbox_auth_missing";
+      } else if (sandboxAuthRead.kind === "too_large") {
+        outcome = "skipped_unusable_auth";
       } else {
         const hostAuthBytes = await fs.readFile(hostAuthSource)
           .catch((error: unknown) => {
             if (isMissingFileError(error)) return null;
             throw error;
           });
+        const sandboxAuth = parseCodexAuthBytes(sandboxAuthRead.bytes);
         outcome = decideCodexAuthSyncBack({
-          sandboxAuth: parseCodexAuthBytes(sandboxAuthBytes),
+          sandboxAuth,
           hostAuth: hostAuthBytes ? parseCodexAuthBytes(hostAuthBytes) : { kind: "unusable" },
         });
-        if (outcome === "updated") {
-          await writeFileAtomic0600(hostAuthSource, sandboxAuthBytes);
+        if (outcome === "updated" && sandboxAuth.kind === "subscription") {
+          await writeFileAtomic0600(hostAuthSource, canonicalCodexAuthBytes(sandboxAuth));
         }
       }
     }
