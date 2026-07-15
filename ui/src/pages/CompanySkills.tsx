@@ -4352,13 +4352,22 @@ export function CompanySkills() {
       if (moveAfterCreateSkillIds.length > 0) {
         const ids = moveAfterCreateSkillIds;
         setMoveAfterCreateSkillIds([]);
-        await Promise.all(ids.map((itemId) =>
-          foldersApi.moveItem(selectedCompanyId!, { kind: "skill", itemId, folderId: folder.id })
-        ));
-        await Promise.all([
-          queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.list(selectedCompanyId!) }),
-          queryClient.invalidateQueries({ queryKey: queryKeys.folders.list(selectedCompanyId!, "skill") }),
-        ]);
+        try {
+          await Promise.all(ids.map((itemId) =>
+            foldersApi.moveItem(selectedCompanyId!, { kind: "skill", itemId, folderId: folder.id })
+          ));
+          await Promise.all([
+            queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.list(selectedCompanyId!) }),
+            queryClient.invalidateQueries({ queryKey: queryKeys.folders.list(selectedCompanyId!, "skill") }),
+          ]);
+        } catch (moveError) {
+          pushToast({
+            tone: "error",
+            title: "Folder created, move failed",
+            body: moveError instanceof Error ? moveError.message : "Failed to move the selected skills.",
+          });
+          return;
+        }
       } else {
         setFolderSelection(folder.id);
       }
@@ -4428,14 +4437,22 @@ export function CompanySkills() {
   async function moveSelectedSkills(folderId: string | null) {
     const ids = selectedSkillIds;
     if (ids.length === 0) return;
-    await Promise.all(ids.map((itemId) => foldersApi.moveItem(selectedCompanyId!, { kind: "skill", itemId, folderId })));
-    setSelectedSkillIds([]);
-    setSelectMode(false);
-    await Promise.all([
-      queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.list(selectedCompanyId!) }),
-      queryClient.invalidateQueries({ queryKey: queryKeys.folders.list(selectedCompanyId!, "skill") }),
-    ]);
-    pushToast({ tone: "success", title: "Skills moved", body: `${ids.length} skill${ids.length === 1 ? "" : "s"} filed.` });
+    try {
+      await Promise.all(ids.map((itemId) => foldersApi.moveItem(selectedCompanyId!, { kind: "skill", itemId, folderId })));
+      setSelectedSkillIds([]);
+      setSelectMode(false);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.list(selectedCompanyId!) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.folders.list(selectedCompanyId!, "skill") }),
+      ]);
+      pushToast({ tone: "success", title: "Skills moved", body: `${ids.length} skill${ids.length === 1 ? "" : "s"} filed.` });
+    } catch (moveError) {
+      pushToast({
+        tone: "error",
+        title: "Failed to move skills",
+        body: moveError instanceof Error ? moveError.message : "Failed to move the selected skills.",
+      });
+    }
   }
 
   const eligibleAgentsForAttach = useMemo(() => {

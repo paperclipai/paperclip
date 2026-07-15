@@ -439,13 +439,22 @@ export function Routines() {
       if (moveAfterCreateIds.length > 0) {
         const ids = moveAfterCreateIds;
         setMoveAfterCreateIds([]);
-        await Promise.all(ids.map((itemId) =>
-          foldersApi.moveItem(selectedCompanyId!, { kind: "routine", itemId, folderId: folder.id })
-        ));
-        await Promise.all([
-          queryClient.invalidateQueries({ queryKey: queryKeys.routines.list(selectedCompanyId!) }),
-          queryClient.invalidateQueries({ queryKey: queryKeys.folders.list(selectedCompanyId!, "routine") }),
-        ]);
+        try {
+          await Promise.all(ids.map((itemId) =>
+            foldersApi.moveItem(selectedCompanyId!, { kind: "routine", itemId, folderId: folder.id })
+          ));
+          await Promise.all([
+            queryClient.invalidateQueries({ queryKey: queryKeys.routines.list(selectedCompanyId!) }),
+            queryClient.invalidateQueries({ queryKey: queryKeys.folders.list(selectedCompanyId!, "routine") }),
+          ]);
+        } catch (moveError) {
+          pushToast({
+            title: "Folder created, move failed",
+            body: moveError instanceof Error ? moveError.message : "Paperclip could not move the selected routines.",
+            tone: "error",
+          });
+          return;
+        }
       } else {
         setFolderSelection(folder.id);
       }
@@ -704,14 +713,22 @@ export function Routines() {
   async function moveSelectedRoutines(folderId: string | null) {
     const ids = selectedRoutineIds;
     if (ids.length === 0) return;
-    await Promise.all(ids.map((itemId) => foldersApi.moveItem(selectedCompanyId!, { kind: "routine", itemId, folderId })));
-    setSelectedRoutineIds([]);
-    setSelectMode(false);
-    await Promise.all([
-      queryClient.invalidateQueries({ queryKey: queryKeys.routines.list(selectedCompanyId!) }),
-      queryClient.invalidateQueries({ queryKey: queryKeys.folders.list(selectedCompanyId!, "routine") }),
-    ]);
-    pushToast({ title: "Routines moved", body: `${ids.length} routine${ids.length === 1 ? "" : "s"} filed.`, tone: "success" });
+    try {
+      await Promise.all(ids.map((itemId) => foldersApi.moveItem(selectedCompanyId!, { kind: "routine", itemId, folderId })));
+      setSelectedRoutineIds([]);
+      setSelectMode(false);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.routines.list(selectedCompanyId!) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.folders.list(selectedCompanyId!, "routine") }),
+      ]);
+      pushToast({ title: "Routines moved", body: `${ids.length} routine${ids.length === 1 ? "" : "s"} filed.`, tone: "success" });
+    } catch (moveError) {
+      pushToast({
+        title: "Failed to move routines",
+        body: moveError instanceof Error ? moveError.message : "Paperclip could not move the selected routines.",
+        tone: "error",
+      });
+    }
   }
 
   function handleRunNow(routine: RoutineListItem) {
