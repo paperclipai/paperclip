@@ -8121,6 +8121,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         await releaseIssueExecutionAndPromote(finalizedRun);
       }
 
+      await finalizeAgentStatus(run.agentId, "failed", message);
+      await startNextQueuedRunForAgent(run.agentId);
       reaped.push(run.id);
     }
 

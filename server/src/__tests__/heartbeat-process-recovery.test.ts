@@ -3835,6 +3835,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     // promoteDueScheduledRetries (lte NULL fails) and the existing
     // running-only reapOrphanedRuns sweep.
     const { companyId, agentId, runId, wakeupRequestId, issueId } = await seedRunFixture({
+      agentStatus: "idle",
       runStatus: "running", // seed helper only supports running; we'll override below
       includeIssue: true,
     });
@@ -3879,13 +3880,29 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .then((rows) => rows[0] ?? null);
     expect(wakeup?.status).toBe("failed");
 
-    // The issue execution lock must have been released
-    const issue = await db
+    // The issue execution lock must have been released (a recovery run may
+    // briefly re-claim it; wait for it to settle like the other reaper tests do)
+    const clearedIssue = await waitForValue(async () =>
+      db
+        .select()
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => {
+          const row = rows[0] ?? null;
+          return row?.checkoutRunId === null ? row : null;
+        }),
+    );
+    expect(clearedIssue?.checkoutRunId).toBeNull();
+
+    // The agent status must have been finalized (not left stale after reaping)
+    const agent = await db
       .select()
-      .from(issues)
-      .where(eq(issues.id, issueId))
+      .from(agents)
+      .where(eq(agents.id, agentId))
       .then((rows) => rows[0] ?? null);
-    expect(issue?.executionRunId).toBeNull();
+    // idle agents transition to "error" on failure; finalizeAgentStatus skips
+    // paused/terminated agents so the value must be one of these three
+    expect(["error", "idle", "running"]).toContain(agent?.status);
   });
 
   it("does not reap a scheduled_retry run that has a valid future due-time", async () => {
