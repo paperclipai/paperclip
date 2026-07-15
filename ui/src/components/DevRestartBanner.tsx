@@ -35,7 +35,7 @@ function runLabel(count: number): string {
 }
 
 /**
- * Post-restart confirmation for a hot restart (PAP-14044 §3.6): how many live
+ * Post-restart confirmation for a hot restart: how many live
  * runs were adopted, finalized while the server was down, or lost, plus the
  * build now running. Surfaced here so the operator sees the same report the
  * deploy routine posts. Dismissible; the server only serves it briefly.
