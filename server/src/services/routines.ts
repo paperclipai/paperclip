@@ -978,12 +978,11 @@ export function routineService(
   async function assertRoutineFolder(companyId: string, folderId: string | null | undefined) {
     if (!folderId) return;
     const folder = await db
-      .select({ id: folders.id, companyId: folders.companyId, kind: folders.kind })
+      .select({ id: folders.id, kind: folders.kind })
       .from(folders)
-      .where(eq(folders.id, folderId))
+      .where(and(eq(folders.companyId, companyId), eq(folders.id, folderId)))
       .then((rows) => rows[0] ?? null);
     if (!folder) throw notFound("Folder not found");
-    if (folder.companyId !== companyId) throw unprocessable("Folder must belong to same company");
     if (folder.kind !== "routine") throw unprocessable("Folder kind must match routine");
   }
 

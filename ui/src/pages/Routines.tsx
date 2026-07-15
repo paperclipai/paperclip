@@ -467,6 +467,13 @@ export function Routines() {
       setFolderDialogTarget(null);
       await queryClient.invalidateQueries({ queryKey: queryKeys.folders.list(selectedCompanyId!, "routine") });
     },
+    onError: (mutationError) => {
+      pushToast({
+        title: "Folder save failed",
+        body: mutationError instanceof Error ? mutationError.message : "Paperclip could not update the folder.",
+        tone: "error",
+      });
+    },
   });
   const deleteFolder = useMutation({
     mutationFn: (folderId: string) => foldersApi.delete(selectedCompanyId!, folderId),
@@ -478,6 +485,13 @@ export function Routines() {
         queryClient.invalidateQueries({ queryKey: queryKeys.folders.list(selectedCompanyId!, "routine") }),
       ]);
       pushToast({ title: "Folder deleted", body: "Items moved to Unfiled.", tone: "success" });
+    },
+    onError: (mutationError) => {
+      pushToast({
+        title: "Folder delete failed",
+        body: mutationError instanceof Error ? mutationError.message : "Paperclip could not delete the folder.",
+        tone: "error",
+      });
     },
   });
   const moveRoutineToFolder = useMutation({

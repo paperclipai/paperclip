@@ -59,7 +59,7 @@ export const FOLDER_COLORS = [
   "slate",
 ];
 
-const FOLDER_COLOR_VALUES: Record<string, string> = {
+const FOLDER_COLOR_VALUES: Record<(typeof FOLDER_COLORS)[number], string> = {
   indigo: "var(--folder-color-indigo)",
   violet: "var(--folder-color-violet)",
   emerald: "var(--folder-color-emerald)",
@@ -470,6 +470,32 @@ export function MoveToMenu({
   onMove: (folderId: string | null) => void;
   onCreateAndMove: () => void;
 }) {
+  return (
+    <DropdownMenuSub>
+      <DropdownMenuSubTrigger>Move to...</DropdownMenuSubTrigger>
+      <DropdownMenuSubContent className="w-56">
+        <MoveToMenuItems
+          folders={folders}
+          currentFolderId={currentFolderId}
+          onMove={onMove}
+          onCreateAndMove={onCreateAndMove}
+        />
+      </DropdownMenuSubContent>
+    </DropdownMenuSub>
+  );
+}
+
+function MoveToMenuItems({
+  folders,
+  currentFolderId,
+  onMove,
+  onCreateAndMove,
+}: {
+  folders: FolderListItem[];
+  currentFolderId: string | null | undefined;
+  onMove: (folderId: string | null) => void;
+  onCreateAndMove: () => void;
+}) {
   const [query, setQuery] = useState("");
   const visibleFolders = useMemo(() => {
     const lowered = query.trim().toLowerCase();
@@ -478,9 +504,7 @@ export function MoveToMenu({
   }, [folders, query]);
 
   return (
-    <DropdownMenuSub>
-      <DropdownMenuSubTrigger>Move to...</DropdownMenuSubTrigger>
-      <DropdownMenuSubContent className="w-56">
+    <>
         <div className="flex items-center gap-2 px-2 py-1.5">
           <Search className="h-3.5 w-3.5 text-muted-foreground" />
           <input
@@ -512,8 +536,7 @@ export function MoveToMenu({
           <Plus className="h-3.5 w-3.5" />
           New folder...
         </DropdownMenuItem>
-      </DropdownMenuSubContent>
-    </DropdownMenuSub>
+    </>
   );
 }
 
@@ -576,7 +599,7 @@ export function FolderFormDialog({
                     "h-7 w-7 rounded-md border border-border",
                     color === swatch && "ring-2 ring-ring ring-offset-2 ring-offset-background",
                   )}
-                  style={{ backgroundColor: swatch }}
+                  style={{ backgroundColor: FOLDER_COLOR_VALUES[swatch] }}
                   onClick={() => setColor(swatch)}
                 />
               ))}
@@ -671,8 +694,8 @@ export function BulkBar({
         <DropdownMenuTrigger asChild>
           <Button size="sm" variant="outline">Move to...</Button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="end">
-          <MoveToMenu
+        <DropdownMenuContent align="end" className="w-56">
+          <MoveToMenuItems
             folders={folders}
             currentFolderId={undefined}
             onMove={onMove}
