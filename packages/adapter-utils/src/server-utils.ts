@@ -43,6 +43,11 @@ export interface RunProcessJournalOptions {
     stream: "stdout" | "stderr",
     endOffset: number,
   ) => Promise<void>;
+  adoptExisting?: {
+    pid: number;
+    processGroupId: number | null;
+    activeElapsedMs: number;
+  };
 }
 
 export interface TerminalResultCleanupOptions {
@@ -128,6 +133,7 @@ const SENSITIVE_ENV_KEY = /(key|token|secret|password|passwd|authorization|cooki
 const REDACTED_LOG_VALUE = "***REDACTED***";
 const JOURNAL_TAIL_INTERVAL_MS = 25;
 const JOURNAL_READ_BUFFER_BYTES = 64 * 1024;
+const JOURNAL_ADOPTION_POLL_INTERVAL_MS = 100;
 const JOURNAL_LAUNCHER_SCRIPT = String.raw`
 const fs = require("node:fs");
 const { spawn } = require("node:child_process");
@@ -3093,8 +3099,114 @@ async function runJournaledChildProcess(
   await Promise.all([
     fs.writeFile(stdoutPath, "", { flag: "a" }),
     fs.writeFile(stderrPath, "", { flag: "a" }),
-    fs.rm(exitPath, { force: true }),
+    ...(opts.journal.adoptExisting ? [] : [fs.rm(exitPath, { force: true })]),
   ]);
+
+  if (opts.journal.adoptExisting) {
+    const adoption = opts.journal.adoptExisting;
+    let stdout = "";
+    let stderr = "";
+    let stdoutOffset = Math.max(0, opts.journal.stdoutOffset ?? 0);
+    let stderrOffset = Math.max(0, opts.journal.stderrOffset ?? 0);
+    let timedOut = false;
+
+    const ingestStream = async (stream: "stdout" | "stderr", filePath: string) => {
+      let offset = stream === "stdout" ? stdoutOffset : stderrOffset;
+      const stat = await fs.stat(filePath).catch(() => null);
+      if (!stat || stat.size <= offset) return false;
+      const length = Math.min(JOURNAL_READ_BUFFER_BYTES, stat.size - offset);
+      const handle = await fs.open(filePath, "r");
+      try {
+        const buffer = Buffer.allocUnsafe(length);
+        const { bytesRead } = await handle.read(buffer, 0, length, offset);
+        if (bytesRead <= 0) return false;
+        offset += bytesRead;
+        const text = buffer.subarray(0, bytesRead).toString("utf8");
+        if (stream === "stdout") {
+          stdoutOffset = offset;
+          stdout = appendWithCap(stdout, text);
+        } else {
+          stderrOffset = offset;
+          stderr = appendWithCap(stderr, text);
+        }
+        await opts.onLog(stream, text);
+        await opts.journal.onOffset?.(stream, offset);
+        return true;
+      } finally {
+        await handle.close();
+      }
+    };
+    const drainAvailable = async () => {
+      let readAny = false;
+      do {
+        const readStdout = await ingestStream("stdout", stdoutPath);
+        const readStderr = await ingestStream("stderr", stderrPath);
+        readAny = readStdout || readStderr;
+      } while (readAny);
+    };
+    const signalAdopted = (signal: NodeJS.Signals) => {
+      if (process.platform !== "win32" && adoption.processGroupId && adoption.processGroupId > 0) {
+        try {
+          process.kill(-adoption.processGroupId, signal);
+          return;
+        } catch {
+          // Fall through to the persisted pid.
+        }
+      }
+      try {
+        process.kill(adoption.pid, signal);
+      } catch {
+        // The sentinel watcher will observe completion or process loss.
+      }
+    };
+    const remainingTimeoutMs = opts.timeoutSec > 0
+      ? Math.max(1, opts.timeoutSec * 1000 - Math.max(0, adoption.activeElapsedMs))
+      : null;
+    const timeout = remainingTimeoutMs
+      ? setTimeout(() => {
+          timedOut = true;
+          signalAdopted("SIGTERM");
+          setTimeout(() => signalAdopted("SIGKILL"), Math.max(1, opts.graceSec) * 1000).unref();
+        }, remainingTimeoutMs)
+      : null;
+    timeout?.unref();
+
+    try {
+      while (true) {
+        await drainAvailable();
+        const exitRaw = await fs.readFile(exitPath, "utf8").catch(() => null);
+        if (exitRaw) {
+          const exit = JSON.parse(exitRaw) as {
+            code?: number | null;
+            signal?: NodeJS.Signals | null;
+            startedAt?: string | null;
+            error?: string | null;
+          };
+          await drainAvailable();
+          if (exit.error) stderr = appendWithCap(stderr, `\n${exit.error}\n`);
+          return {
+            exitCode: typeof exit.code === "number" ? exit.code : null,
+            signal: typeof exit.signal === "string" ? exit.signal : null,
+            timedOut,
+            stdout,
+            stderr,
+            pid: adoption.pid,
+            startedAt: exit.startedAt ?? null,
+            terminalResultCleanup: null,
+          };
+        }
+        try {
+          process.kill(adoption.pid, 0);
+        } catch {
+          throw new Error(`Adopted process ${adoption.pid} exited without writing exit.json`);
+        }
+        await new Promise((resolve) => setTimeout(resolve, JOURNAL_ADOPTION_POLL_INTERVAL_MS));
+      }
+    } finally {
+      if (timeout) clearTimeout(timeout);
+      await target.cleanup?.();
+    }
+  }
 
   const childEnv = { ...mergedEnv, ...target.env };
   for (const [key, value] of Object.entries(childEnv)) {

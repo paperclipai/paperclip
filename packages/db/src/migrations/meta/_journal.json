@@ -1212,6 +1212,13 @@
       "when": 1784210754027,
       "tag": "0174_heartbeat_run_journal_offsets",
       "breakpoints": true
+    },
+    {
+      "idx": 173,
+      "version": "7",
+      "when": 1784141262868,
+      "tag": "0173_heartbeat_run_hot_restart_adoption",
+      "breakpoints": true
     }
   ]
 }
