@@ -36,6 +36,7 @@ import {
   joinPromptSections,
   renderPaperclipWakePrompt,
   stringifyPaperclipWakePayload,
+  isPaperclipRecoveryWakePayload,
 } from "@paperclipai/adapter-utils/server-utils";
 
 import {
@@ -191,7 +192,9 @@ export function buildPrompt(
     paperclipRunIdEnv: "PAPERCLIP_RUN_ID",
   };
 
-  const rendered = renderTemplate(renderConditionalSections(template, vars), vars);
+  const rendered = isPaperclipRecoveryWakePayload(context.paperclipWake)
+    ? ""
+    : renderTemplate(renderConditionalSections(template, vars), vars);
   return joinPromptSections([
     wakePrompt,
     sessionHandoffMarkdown,

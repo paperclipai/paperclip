@@ -23,6 +23,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
+import { buildPaperclipWakePayload } from "../services/heartbeat.js";
 import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
 import { recoveryService } from "../services/recovery/service.js";
 
@@ -217,14 +218,17 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     });
   }
 
-  function createApp(actor: any = { type: "board", source: "local_implicit" }) {
+  function createApp(
+    actor: any = { type: "board", source: "local_implicit" },
+    opts: Parameters<typeof issueRoutes>[2] = {},
+  ) {
     const app = express();
     app.use(express.json());
     app.use((req, _res, next) => {
       (req as any).actor = actor;
       next();
     });
-    app.use("/api", issueRoutes(db, {} as any));
+    app.use("/api", issueRoutes(db, {} as any, opts));
     app.use(errorHandler);
     return app;
   }
@@ -321,6 +325,109 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       issueId: sourceIssue.id,
       sourceIssueId: sourceIssue.id,
       recoveryCause: "stranded_assigned_issue",
+    });
+  });
+
+  it.each([
+    ["process_lost", undefined, "coder"],
+    ["adapter_failed", "successful_run_missing_state", "coder"],
+    ["codex_output_inactivity_monitor", undefined, "coder"],
+    ["workspace_validation_failed", "workspace_validation_failed", "manager"],
+    ["adapter_failed", undefined, "manager"],
+  ] as const)(
+    "routes %s recovery through the cause-keyed playbook",
+    async (errorCode, explicitCause, expectedOwner) => {
+      const { managerId, coderId, sourceIssue } = await seedCompany();
+      const enqueueWakeup = vi.fn(async () => null);
+      const recovery = recoveryService(db, { enqueueWakeup });
+      const latestRun = {
+        id: randomUUID(),
+        agentId: coderId,
+        status: errorCode === "adapter_failed" && explicitCause === "successful_run_missing_state"
+          ? "succeeded"
+          : "failed",
+        error: `${errorCode} failure`,
+        errorCode,
+        contextSnapshot: { retryReason: "issue_continuation_needed" },
+        livenessState: "needs_followup",
+        resultJson: errorCode === "workspace_validation_failed"
+          ? { workspaceValidation: { reason: "missing_workspace", fingerprint: "workspace:test" } }
+          : null,
+      } as const;
+
+      await recovery.escalateStrandedAssignedIssue({
+        issue: sourceIssue,
+        previousStatus: "in_progress",
+        latestRun,
+        ...(explicitCause ? { recoveryCause: explicitCause } : {}),
+      });
+
+      const expectedOwnerId = expectedOwner === "coder" ? coderId : managerId;
+      const [action] = await db
+        .select()
+        .from(issueRecoveryActions)
+        .where(eq(issueRecoveryActions.sourceIssueId, sourceIssue.id));
+      expect(action?.ownerAgentId).toBe(expectedOwnerId);
+      expect(enqueueWakeup).toHaveBeenCalledWith(
+        expectedOwnerId,
+        expect.objectContaining({
+          reason: "source_scoped_recovery_action",
+          payload: expect.objectContaining({
+            recoveryCause: explicitCause ?? (errorCode === "adapter_failed" ? "stranded_assigned_issue" : errorCode),
+          }),
+        }),
+      );
+    },
+  );
+
+  it("creates a quota wait-recovery monitor without enqueueing a takeover wake", async () => {
+    const { companyId, coderId, sourceIssue } = await seedCompany();
+    const runId = randomUUID();
+    await seedHeartbeatRun({ companyId, agentId: coderId, runId, issueId: sourceIssue.id, status: "failed" });
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+    const retryAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+
+    await recovery.escalateStrandedAssignedIssue({
+      issue: sourceIssue,
+      previousStatus: "in_progress",
+      latestRun: {
+        id: runId,
+        agentId: coderId,
+        status: "failed",
+        error: "provider usage limit exceeded",
+        errorCode: "adapter_failed",
+        contextSnapshot: { retryReason: "issue_continuation_needed" },
+        livenessState: "needs_followup",
+        resultJson: { errorFamily: "provider_quota", providerQuotaRetryNotBefore: retryAt },
+      },
+    });
+
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+    const [action] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, sourceIssue.id));
+    expect(action).toMatchObject({
+      cause: "provider_quota",
+      ownerType: "system",
+      ownerAgentId: null,
+      returnOwnerAgentId: coderId,
+      wakePolicy: expect.objectContaining({ type: "monitor_only" }),
+      monitorPolicy: expect.objectContaining({ type: "wait_recovery", retryAgentId: coderId }),
+    });
+    const scheduled = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.status, "scheduled_retry"));
+    expect(scheduled).toHaveLength(1);
+    expect(scheduled[0]).toMatchObject({
+      agentId: coderId,
+      scheduledRetryReason: "provider_quota_recovery",
+    });
+    expect(scheduled[0]?.contextSnapshot).toMatchObject({
+      issueId: sourceIssue.id,
+      recoveryCause: "provider_quota",
     });
   });
 
@@ -471,7 +578,14 @@ describeEmbeddedPostgres("issue recovery actions", () => {
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, sourceIssue.id));
     expect(comments.filter((comment) => comment.body.includes(`Recovery action: \`${actionRows[0]?.id}\``))).toHaveLength(1);
-    expect(enqueueWakeup).not.toHaveBeenCalled();
+    expect(enqueueWakeup).toHaveBeenCalledTimes(2);
+    expect(enqueueWakeup).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        reason: "source_scoped_recovery_action",
+        payload: expect.objectContaining({ recoveryCause: "workspace_validation_failed" }),
+      }),
+    );
   });
 
   it("keeps the source issue blocked when source-scoped wakeup is claimed synchronously", async () => {
@@ -613,6 +727,49 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(list.body.actions).toHaveLength(1);
   });
 
+  it("projects recovery action metadata into the structured wake payload", async () => {
+    const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
+    const action = await issueRecoveryActionService(db).upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "workspace_validation",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      previousOwnerAgentId: coderId,
+      returnOwnerAgentId: coderId,
+      cause: "workspace_validation_failed",
+      fingerprint: "workspace:wake-payload",
+      evidence: {
+        failureSummary: "Worktree branch does not match the pinned branch.",
+        routingFallbackReason: null,
+      },
+      nextAction: "Repair the worktree, then return the issue to the coder.",
+      wakePolicy: { type: "wake_owner" },
+      maxAttempts: 3,
+    });
+
+    const payload = await buildPaperclipWakePayload({
+      db,
+      companyId,
+      contextSnapshot: {
+        issueId: sourceIssueId,
+        wakeReason: "source_scoped_recovery_action",
+        recoveryActionId: action.id,
+        recoveryCause: action.cause,
+      },
+    });
+
+    expect(payload?.recovery).toEqual({
+      cause: "workspace_validation_failed",
+      failureSummary: "Worktree branch does not match the pinned branch.",
+      originalAssignee: { id: coderId, name: "Coder" },
+      attemptCount: 1,
+      maxAttempts: 3,
+      nextAction: "Repair the worktree, then return the issue to the coder.",
+      routingFallbackReason: null,
+    });
+  });
+
   it("resolves an active recovery action and removes it from active projections", async () => {
     const { companyId, managerId, sourceIssueId } = await seedCompany();
     const recoveryActionSvc = issueRecoveryActionService(db);
@@ -648,7 +805,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(resolved.body.recoveryAction).toMatchObject({
       id: action.id,
       status: "resolved",
-      outcome: "restored",
+      outcome: "owner_completed",
       resolutionNote: "Operator confirmed the source issue is complete.",
     });
     expect(resolved.body.recoveryAction.resolvedAt).toBeTruthy();
@@ -663,6 +820,61 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       .where(eq(activityLog.entityId, sourceIssueId));
     expect(activityRows.map((row) => row.action)).toEqual(
       expect.arrayContaining(["issue.updated", "issue.recovery_action_resolved"]),
+    );
+  });
+
+  it("hands restored work back to the recorded return owner and records the outcome", async () => {
+    const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
+    await db
+      .update(issues)
+      .set({ status: "blocked", assigneeAgentId: managerId })
+      .where(eq(issues.id, sourceIssueId));
+    const recoveryActionSvc = issueRecoveryActionService(db);
+    const action = await recoveryActionSvc.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "workspace_validation",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      previousOwnerAgentId: coderId,
+      returnOwnerAgentId: coderId,
+      cause: "workspace_validation_failed",
+      fingerprint: "workspace:fingerprint",
+      evidence: { latestRunId: "run-1" },
+      nextAction: "Repair the workspace and hand the issue back.",
+      wakePolicy: { type: "wake_owner" },
+    });
+
+    const enqueueRecoveryActionWakeup = vi.fn(async () => null);
+    const resolved = await request(createApp(undefined, {
+      recoveryActionEnqueueWakeup: enqueueRecoveryActionWakeup,
+    }))
+      .post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`)
+      .send({
+        actionId: action.id,
+        outcome: "restored",
+        sourceIssueStatus: "todo",
+        resolutionNote: "Workspace repaired.",
+      })
+      .expect(200);
+
+    expect(resolved.body.issue).toMatchObject({
+      id: sourceIssueId,
+      status: "todo",
+      assigneeAgentId: coderId,
+      activeRecoveryAction: null,
+    });
+    expect(resolved.body.recoveryAction).toMatchObject({
+      id: action.id,
+      status: "resolved",
+      outcome: "handed_back",
+    });
+    expect(enqueueRecoveryActionWakeup).toHaveBeenCalledWith(
+      coderId,
+      expect.objectContaining({
+        reason: "issue_recovery_action_restored",
+        payload: expect.objectContaining({ issueId: sourceIssueId, recoveryActionId: action.id }),
+      }),
     );
   });
 
@@ -1049,7 +1261,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(resolved.body.recoveryAction).toMatchObject({
       id: action.id,
       status: "resolved",
-      outcome: "restored",
+      outcome: "owner_completed",
     });
   });
 

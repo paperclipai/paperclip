@@ -4554,9 +4554,45 @@ export async function buildPaperclipWakePayload(input: {
     })
     : null;
   const payloadTruncated = truncated || planReviewContext?.truncated === true;
+  const recoveryActionId = readNonEmptyString(input.contextSnapshot.recoveryActionId);
+  const recoveryCause = readNonEmptyString(input.contextSnapshot.recoveryCause);
+  const recoveryAction = recoveryActionId
+    ? await input.db
+      .select()
+      .from(issueRecoveryActions)
+      .where(and(
+        eq(issueRecoveryActions.id, recoveryActionId),
+        eq(issueRecoveryActions.companyId, input.companyId),
+      ))
+      .then((rows) => rows[0] ?? null)
+    : null;
+  const recoveryEvidence = parseObject(recoveryAction?.evidence);
+  const originalAssigneeId = recoveryAction?.returnOwnerAgentId ?? recoveryAction?.previousOwnerAgentId ?? null;
+  const originalAssignee = originalAssigneeId
+    ? await input.db
+      .select({ id: agents.id, name: agents.name })
+      .from(agents)
+      .where(and(eq(agents.id, originalAssigneeId), eq(agents.companyId, input.companyId)))
+      .then((rows) => rows[0] ?? null)
+    : null;
 
   return {
     reason: readNonEmptyString(input.contextSnapshot.wakeReason),
+    recovery: recoveryAction || recoveryCause
+      ? {
+          cause: recoveryAction?.cause ?? recoveryCause,
+          failureSummary: readNonEmptyString(recoveryEvidence.failureSummary),
+          originalAssignee: originalAssignee
+            ? { id: originalAssignee.id, name: originalAssignee.name }
+            : originalAssigneeId
+              ? { id: originalAssigneeId, name: null }
+              : null,
+          attemptCount: recoveryAction?.attemptCount ?? null,
+          maxAttempts: recoveryAction?.maxAttempts ?? null,
+          nextAction: recoveryAction?.nextAction ?? null,
+          routingFallbackReason: readNonEmptyString(recoveryEvidence.routingFallbackReason),
+        }
+      : null,
     issue: issueSummary
       ? {
           id: issueSummary.id,
