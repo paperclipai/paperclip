@@ -41,8 +41,37 @@ function isSafeSourceLocator(value: string) {
   }
 }
 
+// Canonical form matching the server-side remote-import normalization: repo-style
+// https URLs get a lowercased host (www.github.com -> github.com), lowercased
+// owner/repo, and a stripped .git suffix. Evaluation resources are normalized the
+// same way, so rules must be too or deny rules silently never match.
+export function normalizeSkillPolicySourceLocator(value: string): string {
+  const trimmed = value.trim();
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    return trimmed;
+  }
+  if (url.protocol !== "https:" && url.protocol !== "http:") return trimmed;
+  const hostname = url.hostname.toLowerCase() === "www.github.com" ? "github.com" : url.hostname.toLowerCase();
+  const segments = url.pathname.split("/").filter(Boolean);
+  const isRepoStyle = url.protocol === "https:"
+    && !hostname.endsWith(".githubusercontent.com")
+    && hostname !== "gist.github.com"
+    && segments.length >= 2
+    && !url.pathname.endsWith(".md")
+    && !url.username && !url.password && !url.search && !url.hash;
+  if (!isRepoStyle) return url.toString();
+  const owner = segments[0]!.toLowerCase();
+  const repo = segments[1]!.replace(/\.git$/i, "").toLowerCase();
+  const suffix = segments.slice(2).join("/");
+  return `https://${hostname}/${owner}/${repo}${suffix ? `/${suffix}` : ""}`;
+}
+
 const skillPolicySourceLocatorSchema = z.string().trim().min(1).max(2_048)
-  .refine(isSafeSourceLocator, "Source locators must not contain credentials or secret query or fragment parameters");
+  .refine(isSafeSourceLocator, "Source locators must not contain credentials or secret query or fragment parameters")
+  .transform(normalizeSkillPolicySourceLocator);
 
 export const skillPolicySubjectSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("all_agents") }).strict(),

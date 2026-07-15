@@ -181,6 +181,75 @@ describeEmbeddedPostgres("companySkillPolicyService", () => {
     })).resolves.toMatchObject({ allowed: false, reason: "explicit_rule" });
   });
 
+  it("matches sourceLocator deny rules regardless of GitHub URL casing or .git suffix", async () => {
+    const seeded = await seedAgent();
+    const service = companySkillPolicyService(db);
+    await service.replace({
+      companyId: seeded.companyId,
+      expectedRevision: 0,
+      policy: {
+        schemaVersion: 1,
+        defaultEffect: "allow",
+        rules: [{
+          id: "deny-repo",
+          priority: 1,
+          effect: "deny",
+          subject: { type: "all_agents" },
+          actions: ["skills.import"],
+          resources: { sourceLocators: ["https://WWW.GitHub.com/Owner/Repo.git"] },
+        }],
+      },
+      activity: { actorType: "agent", actorId: seeded.agentId, agentId: seeded.agentId },
+    });
+
+    const stored = await service.get(seeded.companyId);
+    expect(stored.rules[0]!.resources!.sourceLocators).toEqual(["https://github.com/owner/repo"]);
+    await expect(service.evaluate({
+      companyId: seeded.companyId,
+      principal: seeded.principal,
+      action: "skills.import",
+      resource: { sourceType: "git", sourceLocator: "https://github.com/owner/repo" },
+    })).resolves.toMatchObject({ allowed: false, reason: "explicit_rule", matchedRuleId: "deny-repo" });
+    await expect(service.evaluate({
+      companyId: seeded.companyId,
+      principal: seeded.principal,
+      action: "skills.import",
+      resource: { sourceType: "git", sourceLocator: "https://github.com/Owner/Repo.git" },
+    })).resolves.toMatchObject({ allowed: false, reason: "explicit_rule", matchedRuleId: "deny-repo" });
+    await expect(service.evaluate({
+      companyId: seeded.companyId,
+      principal: seeded.principal,
+      action: "skills.import",
+      resource: { sourceType: "git", sourceLocator: "https://github.com/owner/other-repo" },
+    })).resolves.toMatchObject({ allowed: true, reason: "policy_default" });
+  });
+
+  it("matches deny rules persisted before locator normalization existed", async () => {
+    const seeded = await seedAgent();
+    const service = companySkillPolicyService(db);
+    await db.insert(companySkillPolicies).values({
+      companyId: seeded.companyId,
+      schemaVersion: 1,
+      revision: 2,
+      defaultEffect: "allow",
+      rules: [{
+        id: "legacy-deny-repo",
+        priority: 1,
+        effect: "deny",
+        subject: { type: "all_agents" },
+        actions: ["skills.import"],
+        resources: { sourceLocators: ["https://github.com/Owner/Repo.git"] },
+      }],
+    });
+
+    await expect(service.evaluate({
+      companyId: seeded.companyId,
+      principal: seeded.principal,
+      action: "skills.import",
+      resource: { sourceType: "git", sourceLocator: "https://github.com/owner/repo" },
+    })).resolves.toMatchObject({ allowed: false, reason: "explicit_rule", matchedRuleId: "legacy-deny-repo" });
+  });
+
   it("rejects cross-company simulation principals", async () => {
     const first = await seedAgent();
     const second = await seedAgent();

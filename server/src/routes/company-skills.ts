@@ -47,10 +47,11 @@ import {
   type SkillPolicyPrincipal,
 } from "../services/company-skill-policy.js";
 import { authorizationDeniedDetails } from "../services/authorization.js";
-import type {
-  SkillPolicyAction,
-  SkillPolicyDecision,
-  SkillPolicyEvaluationResource,
+import {
+  normalizeSkillPolicySourceLocator,
+  type SkillPolicyAction,
+  type SkillPolicyDecision,
+  type SkillPolicyEvaluationResource,
 } from "@paperclipai/shared";
 
 type SkillTelemetryInput = {
@@ -165,24 +166,8 @@ export function companySkillRoutes(db: Db) {
       ...((input.sourceType || stored?.sourceType) ? {
         sourceType: normalizeSkillPolicySourceType(input.sourceType ?? stored?.sourceType),
       } : {}),
-      ...(sourceLocator ? { sourceLocator: normalizeGitHubPolicyLocator(sourceLocator) } : {}),
+      ...(sourceLocator ? { sourceLocator: normalizeSkillPolicySourceLocator(sourceLocator) } : {}),
     };
-  }
-
-  function normalizeGitHubPolicyLocator(source: string) {
-    try {
-      const url = new URL(source);
-      const hostname = url.hostname.toLowerCase() === "www.github.com" ? "github.com" : url.hostname.toLowerCase();
-      if (hostname !== "github.com") return source;
-      const segments = url.pathname.split("/").filter(Boolean);
-      if (segments.length < 2) return source;
-      const owner = segments[0]!.toLowerCase();
-      const repo = segments[1]!.replace(/\.git$/i, "").toLowerCase();
-      const suffix = segments.slice(2).join("/");
-      return `https://github.com/${owner}/${repo}${suffix ? `/${suffix}` : ""}`;
-    } catch {
-      return source;
-    }
   }
 
   function skillImportPolicyResource(source: string): SkillPolicyEvaluationResource {
@@ -192,7 +177,7 @@ export function companySkillRoutes(db: Db) {
       sourceType: normalizeSkillPolicySourceType(
         isGitRepoSkillImportSource(resolvedSource) ? "git" : /^https?:\/\//i.test(resolvedSource) ? "external_package" : "workspace",
       ),
-      sourceLocator: normalizeGitHubPolicyLocator(resolvedSource),
+      sourceLocator: normalizeSkillPolicySourceLocator(resolvedSource),
     };
   }
 
