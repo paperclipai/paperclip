@@ -18,6 +18,7 @@ describe("instance settings service", () => {
       enableBuiltInAgents: true,
       enableGoalsSidebarLink: true,
       enableServerInfoDebugView: true,
+      hotRestart: true,
       autoRestartDevServerWhenIdle: true,
       enableIssueGraphLivenessAutoRecovery: true,
       enableWorkspaceBranchReconcileForward: true,
@@ -38,11 +39,11 @@ describe("instance settings service", () => {
       enableExperimentalFileViewer: true,
       enableTaskWatchdogs: true,
       enableCloudSync: true,
-      enableSmokeLab: false,
       enableBuiltInAgents: true,
       enableDecisions: false,
       enableGoalsSidebarLink: true,
       enableServerInfoDebugView: true,
+      hotRestart: true,
       autoRestartDevServerWhenIdle: true,
       enableIssueGraphLivenessAutoRecovery: true,
       enableWorkspaceBranchReconcileForward: true,
@@ -91,6 +92,11 @@ describe("instance settings service", () => {
     expect(
       normalizeExperimentalSettings({ autoRestartDevServerWhenIdle: true }).enableServerInfoDebugView,
     ).toBe(false);
+  });
+
+  it("defaults hotRestart to false and preserves explicit opt-in", () => {
+    expect(normalizeExperimentalSettings(undefined).hotRestart).toBe(false);
+    expect(normalizeExperimentalSettings({ hotRestart: true }).hotRestart).toBe(true);
   });
 
   it("defaults enableGoalsSidebarLink to false for empty and legacy stored settings", () => {

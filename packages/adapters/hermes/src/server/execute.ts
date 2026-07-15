@@ -531,6 +531,7 @@ export async function execute(
     graceSec,
     onLog: wrappedOnLog,
     onSpawn: ctx.onSpawn,
+    journal: ctx.processJournal,
   });
 
   // ── Parse output ───────────────────────────────────────────────────────
