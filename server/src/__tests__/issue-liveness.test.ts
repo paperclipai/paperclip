@@ -273,6 +273,30 @@ describe("issue graph liveness classifier", () => {
     expect(paused[0]?.state).toBe("blocked_by_uninvokable_assignee");
   });
 
+  it("detects a cancelled blocker on an assigned todo source", () => {
+    const findings = classifyIssueGraphLiveness({
+      issues: [
+        issue({ status: "todo" }),
+        issue({
+          id: blockerId,
+          identifier: "PAP-1704",
+          title: "Cancelled unblock work",
+          status: "cancelled",
+          assigneeAgentId: "blocker-agent",
+        }),
+      ],
+      relations: blocks,
+      agents: [agent(), manager, agent({ id: "blocker-agent", name: "Cancelled owner" })],
+    });
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      issueId: blockedId,
+      state: "blocked_by_cancelled_issue",
+      recoveryIssueId: blockerId,
+    });
+  });
+
   it("detects blocker assignees under terminated org ancestors as uninvokable", () => {
     const findings = classifyIssueGraphLiveness({
       issues: [

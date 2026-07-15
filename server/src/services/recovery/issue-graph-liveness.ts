@@ -590,7 +590,19 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
   }
 
   for (const issue of input.issues) {
-    if (issue.status === "blocked") {
+    const hasUnresolvedBlockerEdge = (blockersByBlockedIssueId.get(issue.id) ?? []).some((relation) => {
+      if (relation.companyId !== issue.companyId) return false;
+      const blocker = issuesById.get(relation.blockerIssueId);
+      return Boolean(blocker && blocker.companyId === issue.companyId && blocker.status !== "done");
+    });
+    const shouldInspectBlockedChain = issue.status === "blocked" || (
+      issue.status !== "done" &&
+      issue.status !== "cancelled" &&
+      Boolean(issue.assigneeAgentId) &&
+      hasUnresolvedBlockerEdge
+    );
+
+    if (shouldInspectBlockedChain) {
       if (unresolvedBlockers.has(issue.id)) continue;
       const chainFinding = firstBlockedChainFinding(issue, issue, [issue], new Set());
       if (chainFinding) findings.push(chainFinding);

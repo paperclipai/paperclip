@@ -8509,13 +8509,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const contextSnapshot = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(contextSnapshot.issueId);
+    const retryReason = readNonEmptyString(contextSnapshot.wakeReason) === "issue_monitor_due"
+      ? "issue_continuation_needed"
+      : "process_lost";
     const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
     const sessionBefore = await resolveSessionBeforeForWakeup(agent, taskKey);
     const retryContextSnapshot = withRecoveryModelProfileHint({
       ...contextSnapshot,
       retryOfRunId: run.id,
       wakeReason: "process_lost_retry",
-      retryReason: "process_lost",
+      retryReason,
     }, "normal_model");
     const responsibleUserId = await resolveResponsibleUserIdForRunContext(run, retryContextSnapshot);
 
@@ -10965,7 +10968,26 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         });
       }
 
-      const shouldRetry = tracksLocalChild && (!!run.processPid || !!run.processGroupId) && (run.processLossRetryCount ?? 0) < 1;
+      const runContext = parseObject(run.contextSnapshot);
+      const monitorIssueId = readNonEmptyString(runContext.issueId);
+      const monitorDispatchLostWithoutFutureWake =
+        readNonEmptyString(runContext.wakeReason) === "issue_monitor_due" &&
+        Boolean(monitorIssueId) &&
+        await db
+          .select({ monitorNextCheckAt: issues.monitorNextCheckAt })
+          .from(issues)
+          .where(and(eq(issues.id, monitorIssueId!), eq(issues.companyId, run.companyId)))
+          .limit(1)
+          .then((rows) => {
+            const issue = rows[0];
+            if (!issue) return false;
+            const nextCheckAt = issue.monitorNextCheckAt;
+            return !nextCheckAt || nextCheckAt.getTime() <= now.getTime();
+          });
+      const shouldRetry = (run.processLossRetryCount ?? 0) < 1 && (
+        (tracksLocalChild && (!!run.processPid || !!run.processGroupId)) ||
+        monitorDispatchLostWithoutFutureWake
+      );
       const baseMessage = buildProcessLossMessage(run, descendantOnlyCleanup ? { descendantOnly: true } : undefined);
       const unmanagedBackgroundTaskEvidence = descendantOnlyCleanup
         ? {

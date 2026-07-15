@@ -581,6 +581,37 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     await expect(svc.count(companyId, { attention: "blocked" })).resolves.toBe(1);
   });
 
+  it("surfaces cancelled-blocker attention on an assigned todo source", async () => {
+    const { companyId, agentId } = await createCompany("BICX");
+    const sourceId = await insertIssue({
+      companyId,
+      identifier: "BICX-1",
+      title: "Dispatch-suppressed source",
+      status: "todo",
+      assigneeAgentId: agentId,
+    });
+    const blockerId = await insertIssue({
+      companyId,
+      identifier: "BICX-2",
+      title: "Cancelled dependency",
+      status: "cancelled",
+      assigneeAgentId: agentId,
+    });
+    await block({ companyId, blockerIssueId: blockerId, blockedIssueId: sourceId });
+
+    const rows = await svc.list(companyId, { attention: "blocked" });
+    const source = rows.find((issue) => issue.id === sourceId);
+
+    expect(source?.blockedInboxAttention).toMatchObject({
+      kind: "blocked",
+      state: "needs_attention",
+      reason: "blocked_by_cancelled_issue",
+      owner: { type: "agent", agentId },
+      action: { label: "Replace blocker" },
+      leafIssue: { id: blockerId, identifier: "BICX-2" },
+    });
+  });
+
   it("redacts external wait details from blocked inbox payloads and search", async () => {
     const { companyId } = await createCompany("BIX");
     const owner = "Private Vendor Security Team";
