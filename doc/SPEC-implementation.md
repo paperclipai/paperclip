@@ -292,6 +292,7 @@ Invariants:
 - `billing_code` text null
 - `provider` text not null
 - `model` text not null
+- `cost_status` text not null default `reported`; `unpriced` when usage exists but no price was reported
 - `input_tokens` int not null default 0
 - `output_tokens` int not null default 0
 - `cost_cents` int not null

@@ -190,6 +190,15 @@ vi.mock("../realtime/live-events-ws.js", () => ({
 }));
 
 vi.mock("../services/index.js", () => ({
+  backfillLegacyToolOAuthTokens: vi.fn(async () => ({
+    scannedConnections: 0,
+    migratedConnections: 0,
+    sanitizedConnections: 0,
+    createdSecrets: 0,
+    rotatedSecrets: 0,
+    accessTokensBackfilled: 0,
+    refreshTokensBackfilled: 0,
+  })),
   backfillPrincipalAccessCompatibility: vi.fn(async () => ({
     agentMembershipsInserted: 0,
     humanGrantsInserted: 0,
@@ -227,6 +236,14 @@ vi.mock("../services/index.js", () => ({
   reconcilePersistedRuntimeServicesOnStartup: vi.fn(async () => ({ reconciled: 0 })),
   resolveHeartbeatSchedulingSuppression: resolveHeartbeatSchedulingSuppressionMock,
   routineService: routineServiceFactoryMock,
+  toolAccessService: vi.fn(() => ({
+    sweepConnectionHealth: vi.fn(async () => ({
+      checked: 0,
+      healthy: 0,
+      needsAttention: 0,
+      failed: 0,
+    })),
+  })),
 }));
 
 vi.mock("../storage/index.js", () => ({

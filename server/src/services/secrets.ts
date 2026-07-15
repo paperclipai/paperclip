@@ -26,6 +26,7 @@ import type {
   RemoteSecretImportRowResult,
   SecretProviderConfigDiscoveryPreviewResult,
   SecretBindingTargetType,
+  SecretProjectionClass,
   SecretProvider,
   SecretProviderConfigHealthResponse,
   SecretProviderConfigHealthStatus,
@@ -33,6 +34,7 @@ import type {
   SecretVersionSelector,
 } from "@paperclipai/shared";
 import {
+  CLASS3_STATIC_LEASE_ALLOWLIST,
   createSecretProviderConfigSchema,
   deriveProjectUrlKey,
   envBindingSchema,
@@ -377,7 +379,13 @@ async function cleanupPreparedProviderWrite(input: {
 
 type CanonicalEnvBinding =
   | { type: "plain"; value: string }
-  | { type: "secret_ref"; secretId: string; version: number | "latest" }
+  | {
+      type: "secret_ref";
+      secretId: string;
+      version: number | "latest";
+      projectionClass: SecretProjectionClass;
+      projectionAllowlistKey: string | null;
+    }
   | {
       type: "user_secret_ref";
       key: string;
@@ -386,8 +394,10 @@ type CanonicalEnvBinding =
       allowMissingOverride: boolean;
     };
 
+type SecretAccessConsumerType = SecretBindingTargetType | "plugin_worker";
+
 type SecretConsumerContext = {
-  consumerType: SecretBindingTargetType;
+  consumerType: SecretAccessConsumerType;
   consumerId: string;
   configPath?: string | null;
   responsibleUserId?: string | null;
@@ -400,8 +410,12 @@ type SecretConsumerContext = {
   allowedBindingIds?: string[] | null;
 };
 
+type SecretBindingContext = Omit<SecretConsumerContext, "consumerType"> & {
+  consumerType: SecretBindingTargetType;
+};
+
 type SecretResolutionOptions = {
-  bindingContext?: SecretConsumerContext;
+  bindingContext?: SecretBindingContext;
   accessContext?: SecretConsumerContext;
   allowUserSecretScope?: boolean;
 };
@@ -438,6 +452,10 @@ export type MissingRuntimeBinding = {
   responsibleUserId?: string | null;
   errorCode?: SecretResolutionErrorCode;
 };
+
+function missingRuntimeConsumerType(consumerType: SecretAccessConsumerType): SecretBindingTargetType {
+  return consumerType === "plugin_worker" ? "plugin" : consumerType;
+}
 
 type RuntimeSecretResolution = {
   value: string;
@@ -502,7 +520,39 @@ function canonicalizeBinding(binding: EnvBinding): CanonicalEnvBinding {
     type: "secret_ref",
     secretId: binding.secretId,
     version: binding.version ?? "latest",
+    projectionClass: binding.projectionClass ?? "unclassified",
+    projectionAllowlistKey: binding.projectionAllowlistKey ?? null,
   };
+}
+
+function assertClass3StaticLeaseAllowed(input: {
+  targetType: SecretBindingTargetType;
+  configPath: string;
+  projectionClass?: string | null;
+  projectionAllowlistKey?: string | null;
+}) {
+  const projectionClass = input.projectionClass ?? "unclassified";
+  if (projectionClass !== "class_3_static_lease") return;
+  if (!input.projectionAllowlistKey?.trim()) {
+    throw unprocessable("Class-3 static lease bindings require an allowlist key", {
+      code: "class_3_static_lease_allowlist_required",
+      targetType: input.targetType,
+      configPath: input.configPath,
+    });
+  }
+  const allowed = CLASS3_STATIC_LEASE_ALLOWLIST.some((entry) =>
+    entry.key === input.projectionAllowlistKey
+    && entry.targetType === input.targetType
+    && entry.configPath === input.configPath
+  );
+  if (!allowed) {
+    throw unprocessable("Class-3 static lease binding is outside the approved allowlist", {
+      code: "class_3_static_lease_not_allowed",
+      allowlistKey: input.projectionAllowlistKey,
+      targetType: input.targetType,
+      configPath: input.configPath,
+    });
+  }
 }
 
 function defaultProviderConfigStatus(provider: SecretProvider): SecretProviderConfigStatus {
@@ -556,7 +606,7 @@ function missingUserSecretDefinitionRuntimeBinding(
   errorCode: "user_secret_definition_missing" | "user_secret_definition_inactive",
 ): MissingRuntimeBinding {
   return {
-    consumerType: context.consumerType,
+    consumerType: missingRuntimeConsumerType(context.consumerType),
     consumerId: context.consumerId,
     configPath: entry.configPath,
     envKey: entry.key,
@@ -737,7 +787,7 @@ export function secretService(db: Db) {
   async function assertBindingContext(
     companyId: string,
     secretId: string,
-    context: SecretConsumerContext | undefined,
+    context: SecretBindingContext | undefined,
   ) {
     if (!context) return null;
     if (!context.configPath) {
@@ -765,6 +815,12 @@ export function secretService(db: Db) {
         { code: "binding_not_allowed" },
       );
     }
+    assertClass3StaticLeaseAllowed({
+      targetType: binding.targetType as SecretBindingTargetType,
+      configPath: binding.configPath,
+      projectionClass: binding.projectionClass,
+      projectionAllowlistKey: binding.projectionAllowlistKey,
+    });
     return binding;
   }
 
@@ -1053,16 +1109,22 @@ export function secretService(db: Db) {
     }
   }
 
+  function isSecretResolutionOptions(
+    value: SecretBindingContext | SecretResolutionOptions | undefined,
+  ): value is SecretResolutionOptions {
+    return Boolean(value && ("bindingContext" in value || "accessContext" in value));
+  }
+
   async function resolveSecretValue(
     companyId: string,
     secretId: string,
     version: number | "latest",
-    context?: SecretConsumerContext,
+    contextOrOptions?: SecretBindingContext | SecretResolutionOptions,
   ): Promise<string> {
-    return (await resolveSecretValueInternal(companyId, secretId, version, {
-      bindingContext: context,
-      accessContext: context,
-    })).value;
+    const options = isSecretResolutionOptions(contextOrOptions)
+      ? contextOrOptions
+      : { bindingContext: contextOrOptions, accessContext: contextOrOptions };
+    return (await resolveSecretValueInternal(companyId, secretId, version, options)).value;
   }
 
   async function resolveSecretValueForEphemeralAccess(
@@ -1112,6 +1174,31 @@ export function secretService(db: Db) {
     })).value;
   }
 
+  async function resolveSecretVersion(
+    companyId: string,
+    secretId: string,
+    version: number | "latest",
+    context?: SecretBindingContext,
+  ): Promise<number> {
+    const secret = await getById(secretId);
+    if (!secret) throw notFound("Secret not found");
+    if (secret.companyId !== companyId) throw unprocessable("Secret must belong to same company");
+    const resolvedVersion = version === "latest" ? secret.latestVersion : version;
+    if (secret.status === "deleted") {
+      throw new HttpError(404, "Secret not found", { code: "secret_deleted" });
+    }
+    if (secret.status !== "active") {
+      throw unprocessable("Secret is not active", { code: "secret_inactive" });
+    }
+    await assertBindingContext(companyId, secret.id, context);
+    const versionRow = await getSecretVersion(secret.id, resolvedVersion);
+    if (!versionRow) throw new HttpError(404, "Secret version not found", { code: "version_missing" });
+    if (versionRow.status === "disabled" || versionRow.status === "destroyed" || versionRow.revokedAt) {
+      throw unprocessable("Secret version is not active", { code: "version_inactive" });
+    }
+    return resolvedVersion;
+  }
+
   async function normalizeEnvConfig(
     companyId: string,
     envValue: unknown,
@@ -1154,6 +1241,8 @@ export function secretService(db: Db) {
         type: "secret_ref",
         secretId: binding.secretId,
         version: binding.version,
+        projectionClass: binding.projectionClass,
+        projectionAllowlistKey: binding.projectionAllowlistKey,
       };
     }
     return normalized;
@@ -1226,6 +1315,8 @@ export function secretService(db: Db) {
         type: "secret_ref",
         secretId: binding.secretId,
         version: binding.version,
+        projectionClass: binding.projectionClass,
+        projectionAllowlistKey: binding.projectionAllowlistKey,
       };
     }
     if (binding.type === "user_secret_ref") {
@@ -2928,6 +3019,7 @@ export function secretService(db: Db) {
     getById,
     getByName,
     resolveSecretValue,
+    resolveSecretVersion,
     resolveSecretValueForEphemeralAccess,
 
     create: async (
@@ -3402,8 +3494,16 @@ export function secretService(db: Db) {
       versionSelector?: SecretVersionSelector;
       required?: boolean;
       label?: string | null;
+      projectionClass?: SecretProjectionClass;
+      projectionAllowlistKey?: string | null;
     }) => {
       await assertSecretInCompany(input.companyId, input.secretId);
+      assertClass3StaticLeaseAllowed({
+        targetType: input.targetType,
+        configPath: input.configPath,
+        projectionClass: input.projectionClass,
+        projectionAllowlistKey: input.projectionAllowlistKey,
+      });
       const existing = await db
         .select()
         .from(companySecretBindings)
@@ -3428,6 +3528,8 @@ export function secretService(db: Db) {
           versionSelector: String(input.versionSelector ?? "latest"),
           required: input.required ?? true,
           label: input.label ?? null,
+          projectionClass: input.projectionClass ?? "unclassified",
+          projectionAllowlistKey: input.projectionAllowlistKey ?? null,
         })
         .returning()
         .then((rows) => rows[0]);
@@ -3442,6 +3544,8 @@ export function secretService(db: Db) {
         versionSelector?: SecretVersionSelector;
         required?: boolean;
         label?: string | null;
+        projectionClass?: SecretProjectionClass;
+        projectionAllowlistKey?: string | null;
       }>,
       options?: { replaceAll?: boolean },
     ) => {
@@ -3451,15 +3555,27 @@ export function secretService(db: Db) {
         versionSelector: SecretVersionSelector;
         required: boolean;
         label: string | null;
+        projectionClass: SecretProjectionClass;
+        projectionAllowlistKey: string | null;
       }> = [];
       for (const ref of refs) {
         await assertSecretInCompany(companyId, ref.secretId);
+        const projectionClass = ref.projectionClass ?? "unclassified";
+        const projectionAllowlistKey = ref.projectionAllowlistKey ?? null;
+        assertClass3StaticLeaseAllowed({
+          targetType: target.targetType,
+          configPath: ref.configPath,
+          projectionClass,
+          projectionAllowlistKey,
+        });
         normalizedRefs.push({
           secretId: ref.secretId,
           configPath: ref.configPath,
           versionSelector: ref.versionSelector ?? "latest",
           required: ref.required ?? true,
           label: ref.label ?? null,
+          projectionClass,
+          projectionAllowlistKey,
         });
       }
 
@@ -3514,6 +3630,8 @@ export function secretService(db: Db) {
             versionSelector: String(ref.versionSelector),
             required: ref.required,
             label: ref.label,
+            projectionClass: ref.projectionClass,
+            projectionAllowlistKey: ref.projectionAllowlistKey,
           })),
         );
       });
@@ -3545,6 +3663,8 @@ export function secretService(db: Db) {
         secretId: string;
         configPath: string;
         versionSelector: SecretVersionSelector;
+        projectionClass: SecretProjectionClass;
+        projectionAllowlistKey: string | null;
       }> = [];
       const userRefs: Array<{
         definitionKey: string;
@@ -3574,10 +3694,19 @@ export function secretService(db: Db) {
         }
         if (binding.type !== "secret_ref") continue;
         await assertSecretInCompany(companyId, binding.secretId, bindingDb);
+        const configPath = `${pathPrefix}.${key}`;
+        assertClass3StaticLeaseAllowed({
+          targetType: target.targetType,
+          configPath,
+          projectionClass: binding.projectionClass,
+          projectionAllowlistKey: binding.projectionAllowlistKey,
+        });
         refs.push({
           secretId: binding.secretId,
-          configPath: `${pathPrefix}.${key}`,
+          configPath,
           versionSelector: binding.version,
+          projectionClass: binding.projectionClass,
+          projectionAllowlistKey: binding.projectionAllowlistKey,
         });
       }
 
@@ -3602,6 +3731,8 @@ export function secretService(db: Db) {
             configPath: ref.configPath,
             versionSelector: String(ref.versionSelector),
             required: true,
+            projectionClass: ref.projectionClass,
+            projectionAllowlistKey: ref.projectionAllowlistKey,
           })),
           );
       };
@@ -3684,7 +3815,7 @@ export function secretService(db: Db) {
     resolveEnvBindings: async (
       companyId: string,
       envValue: unknown,
-      context?: Omit<SecretConsumerContext, "configPath">,
+      context?: Omit<SecretBindingContext, "configPath">,
     ): Promise<{ env: Record<string, string>; secretKeys: Set<string>; manifest: RuntimeSecretManifestEntry[] }> => {
       const record = asRecord(envValue);
       if (!record) return { env: {} as Record<string, string>, secretKeys: new Set<string>(), manifest: [] };
@@ -3752,7 +3883,7 @@ export function secretService(db: Db) {
     collectMissingRuntimeBindings: async (
       companyId: string,
       envValue: unknown,
-      context: Omit<SecretConsumerContext, "configPath">,
+      context: Omit<SecretBindingContext, "configPath">,
     ): Promise<MissingRuntimeBinding[]> => {
       const record = asRecord(envValue);
       if (!record) return [];
@@ -3912,7 +4043,7 @@ export function secretService(db: Db) {
       companyId: string,
       adapterConfig: Record<string, unknown>,
       adapterType: string | null | undefined,
-      context: Omit<SecretConsumerContext, "configPath">,
+      context: Omit<SecretBindingContext, "configPath">,
     ): Promise<MissingRuntimeBinding[]> => {
       const secretFieldKeys = await listAdapterSchemaSecretFieldKeys(adapterType);
       const secretRefs = secretFieldKeys.flatMap((key) => {
@@ -4068,7 +4199,7 @@ export function secretService(db: Db) {
     resolveAdapterConfigForRuntime: async (
       companyId: string,
       adapterConfig: Record<string, unknown>,
-      context?: Omit<SecretConsumerContext, "configPath">,
+      context?: Omit<SecretBindingContext, "configPath">,
       opts?: ResolveAdapterConfigForRuntimeOptions,
     ): Promise<{ config: Record<string, unknown>; secretKeys: Set<string>; manifest: RuntimeSecretManifestEntry[] }> => {
       const resolved = { ...adapterConfig };

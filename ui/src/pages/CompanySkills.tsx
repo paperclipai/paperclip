@@ -34,6 +34,7 @@ import { PageSkeleton } from "../components/PageSkeleton";
 import { CopyText } from "../components/CopyText";
 import { Identity } from "../components/Identity";
 import { AgentIcon } from "../components/AgentIconPicker";
+import { AgentMultiSelect } from "../components/AgentMultiSelect";
 import { useAdapterCapabilities } from "../adapters/use-adapter-capabilities";
 import {
   Dialog,
@@ -54,11 +55,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { buildLineDiff, type DiffRow } from "../lib/line-diff";
@@ -1897,140 +1893,61 @@ function AttachAgentsPopover({
   onSubmit: (nextIds: string[], versionId: string | null) => void;
   fullWidth?: boolean;
 }) {
-  // Each popover instance owns its open state. The detail page renders two of
-  // these (agents tab + sidebar); sharing a single controlled flag made both
-  // open at once and swallowed clicks, so "Add to agent" appeared dead (PAP-10907 H).
-  const [open, setOpen] = useState(false);
-  const [filter, setFilter] = useState("");
-  const [draft, setDraft] = useState<Set<string>>(new Set(attachedAgentIds));
   const [draftVersionId, setDraftVersionId] = useState<string | null>(selectedVersionId);
-
-  useEffect(() => {
-    if (open) {
-      setDraft(new Set(attachedAgentIds));
-      setDraftVersionId(selectedVersionId);
-      setFilter("");
-    }
-  }, [open, attachedAgentIds, selectedVersionId]);
-
-  // Checked agents float to the top of the list (PAP-10907); within each group
-  // we keep a stable alphabetical order.
-  const filtered = agents
-    .filter((agent) => agent.name.toLowerCase().includes(filter.toLowerCase()))
-    .sort((a, b) => {
-      const aChecked = draft.has(a.id);
-      const bChecked = draft.has(b.id);
-      if (aChecked !== bChecked) return aChecked ? -1 : 1;
-      return a.name.localeCompare(b.name);
-    });
+  const attachedIds = useMemo(() => new Set(attachedAgentIds), [attachedAgentIds]);
   const eligible = agents.filter((agent) => agent.supportsSkills);
   const sortedVersions = [...versions].sort((a, b) => b.revisionNumber - a.revisionNumber);
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <Button size="sm" className={cn(fullWidth && "w-full")}>
-          <Plus className="mr-1.5 h-3.5 w-3.5" />
-          Add to agent
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent className="w-80 p-0" align="end">
-        <div className="border-b border-border px-3 py-2">
-          <Input
-            value={filter}
-            onChange={(event) => setFilter(event.target.value)}
-            placeholder="Filter agents"
-            className="h-8"
-          />
-          {sortedVersions.length > 0 ? (
-            <div className="mt-2 flex items-center gap-2 text-xs">
-              <span className="shrink-0 text-muted-foreground">Version</span>
-              <select
-                value={draftVersionId ?? "__latest__"}
-                onChange={(event) => setDraftVersionId(event.target.value === "__latest__" ? null : event.target.value)}
-                className="h-8 min-w-0 flex-1 rounded-md border border-border bg-background px-2 text-xs text-foreground"
-              >
-                <option value="__latest__">Latest</option>
-                {sortedVersions.map((version) => (
-                  <option key={version.id} value={version.id}>
-                    v{version.revisionNumber}{version.label ? ` · ${version.label}` : ""}
-                  </option>
-                ))}
-              </select>
-            </div>
-          ) : null}
-        </div>
-        {eligible.length === 0 ? (
-          <div className="px-3 py-4 text-sm text-muted-foreground">
-            No agents in this company support skills yet.
-          </div>
-        ) : (
-          <div className="max-h-60 overflow-y-auto py-1">
-            {filtered.map((agent) => {
-              const disabled = agent.required || !agent.supportsSkills;
-              const checked = draft.has(agent.id);
-              return (
-                <label
-                  key={agent.id}
-                  className={cn(
-                    "flex items-start gap-2 px-3 py-1.5 text-sm hover:bg-accent/30",
-                    disabled && "opacity-60",
-                  )}
-                >
-                  <Checkbox
-                    checked={checked}
-                    disabled={disabled}
-                    onCheckedChange={(value) => {
-                      setDraft((current) => {
-                        const next = new Set(current);
-                        if (value) next.add(agent.id);
-                        else next.delete(agent.id);
-                        return next;
-                      });
-                    }}
-                  />
-                  <AgentIcon icon={agent.icon} className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
-                  <span className="flex min-w-0 flex-col">
-                    <span className="flex items-center gap-1.5">
-                      <span className="truncate">{agent.name}</span>
-                      {agent.paused ? (
-                        <Badge variant="outline" className="[&>svg]:size-2.5 border-amber-500/30 bg-amber-500/10 px-1.5 text-(length:--text-nano) uppercase tracking-wide text-amber-500">
-                          <Pause className="h-2.5 w-2.5" aria-hidden="true" />
-                          Paused
-                        </Badge>
-                      ) : null}
-                    </span>
-                    <span className="text-(length:--text-nano) uppercase tracking-wide text-muted-foreground">
-                      {agent.adapterType}
-                      {agent.required ? " · required" : ""}
-                      {!agent.supportsSkills ? " · skills not supported" : ""}
-                    </span>
-                  </span>
-                </label>
-              );
-            })}
-            {filtered.length === 0 ? (
-              <div className="px-3 py-4 text-sm text-muted-foreground">No matches.</div>
-            ) : null}
-          </div>
-        )}
-        <div className="flex items-center justify-end gap-2 border-t border-border px-3 py-2">
-          <Button variant="ghost" size="sm" onClick={() => setOpen(false)} disabled={pending}>
-            Cancel
-          </Button>
-          <Button
-            size="sm"
-            onClick={() => {
-              onSubmit(Array.from(draft), draftVersionId);
-              setOpen(false);
-            }}
-            disabled={pending}
+    <AgentMultiSelect
+      agents={agents}
+      selectedAgentIds={attachedIds}
+      onSave={(nextIds) => onSubmit(Array.from(nextIds), draftVersionId)}
+      pending={pending}
+      triggerLabel="Add to agent"
+      triggerIcon={<Plus className="mr-1.5 h-3.5 w-3.5" />}
+      triggerVariant="default"
+      triggerSize="sm"
+      triggerFullWidth={fullWidth}
+      triggerClassName={cn(fullWidth && "w-full")}
+      contentAlign="end"
+      showSelectionPreview={false}
+      onOpenChange={(open) => {
+        if (open) setDraftVersionId(selectedVersionId);
+      }}
+      headerContent={sortedVersions.length > 0 ? (
+        <div className="mt-2 flex items-center gap-2 text-xs">
+          <span className="shrink-0 text-muted-foreground">Version</span>
+          <select
+            value={draftVersionId ?? "__latest__"}
+            onChange={(event) => setDraftVersionId(event.target.value === "__latest__" ? null : event.target.value)}
+            className="h-8 min-w-0 flex-1 rounded-md border border-border bg-background px-2 text-xs text-foreground"
           >
-            {pending ? "Saving…" : "Save"}
-          </Button>
+            <option value="__latest__">Latest</option>
+            {sortedVersions.map((version) => (
+              <option key={version.id} value={version.id}>
+                v{version.revisionNumber}{version.label ? ` · ${version.label}` : ""}
+              </option>
+            ))}
+          </select>
         </div>
-      </PopoverContent>
-    </Popover>
+      ) : null}
+      emptyMessage={eligible.length === 0 ? "No agents in this company support skills yet." : "No agents yet."}
+      isAgentDisabled={(agent) => {
+        const option = agent as AttachAgentOption;
+        return option.required || !option.supportsSkills;
+      }}
+      getDescription={(agent) => {
+        const option = agent as AttachAgentOption;
+        return `${option.adapterType}${option.required ? " · required" : ""}${!option.supportsSkills ? " · skills not supported" : ""}`;
+      }}
+      renderNameSuffix={(agent) => (agent as AttachAgentOption).paused ? (
+        <Badge variant="outline" className="[&>svg]:size-2.5 border-amber-500/30 bg-amber-500/10 px-1.5 text-(length:--text-nano) uppercase tracking-wide text-amber-500">
+          <Pause className="h-2.5 w-2.5" aria-hidden="true" />
+          Paused
+        </Badge>
+      ) : null}
+    />
   );
 }
 

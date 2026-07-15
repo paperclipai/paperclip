@@ -30,6 +30,8 @@ import { goalRoutes } from "./routes/goals.js";
 import { boardChatRoutes } from "./routes/board-chat.js";
 import { approvalRoutes } from "./routes/approvals.js";
 import { secretRoutes } from "./routes/secrets.js";
+import { toolAccessRoutes } from "./routes/tool-access.js";
+import { smokeLabRoutes } from "./routes/smoke-lab.js";
 import { costRoutes } from "./routes/costs.js";
 import { activityRoutes } from "./routes/activity.js";
 import { dashboardRoutes } from "./routes/dashboard.js";
@@ -50,6 +52,7 @@ import { authRoutes } from "./routes/auth.js";
 import { assetRoutes } from "./routes/assets.js";
 import { accessRoutes } from "./routes/access.js";
 import { pluginRoutes } from "./routes/plugins.js";
+import { mcpGatewayProtocolRoutes, toolGatewayRoutes } from "./routes/tool-gateway.js";
 import { adapterRoutes } from "./routes/adapters.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
 import { readBrandedStaticIndexHtml } from "./static-index-html.js";
@@ -60,6 +63,7 @@ import { createPluginWorkerManager, type PluginWorkerManager } from "./services/
 import { createPluginJobScheduler } from "./services/plugin-job-scheduler.js";
 import { pluginJobStore } from "./services/plugin-job-store.js";
 import { createPluginToolDispatcher } from "./services/plugin-tool-dispatcher.js";
+import { createToolGatewayService } from "./services/tool-gateway.js";
 import { pluginLifecycleManager } from "./services/plugin-lifecycle.js";
 import { createPluginJobCoordinator } from "./services/plugin-job-coordinator.js";
 import { buildHostServices, flushPluginLogBuffer } from "./services/plugin-host-services.js";
@@ -236,10 +240,6 @@ export async function createApp(
   api.use(agentRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(assetRoutes(db, opts.storageService));
   api.use(projectRoutes(db));
-  api.use(issueRoutes(db, opts.storageService, {
-    feedbackExportService: opts.feedbackExportService,
-    pluginWorkerManager: workerManager,
-  }));
   api.use(caseRoutes(db, opts.storageService));
   api.use(issueTreeControlRoutes(db));
   api.use(fileResourceRoutes(db));
@@ -251,6 +251,10 @@ export async function createApp(
   api.use(boardChatRoutes(db, { deploymentMode: opts.deploymentMode }));
   api.use(approvalRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(secretRoutes(db));
+  const trustedLocalStdioRuntimeHost =
+    process.env.PAPERCLIP_TRUSTED_MCP_RUNTIME_HOST
+    ?? process.env.PAPERCLIP_TOOL_RUNTIME_TRUSTED_HOST
+    ?? null;
   api.use(costRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(activityRoutes(db));
   api.use(dashboardRoutes(db));
@@ -279,6 +283,31 @@ export async function createApp(
     lifecycleManager: lifecycle,
     db,
   });
+  const toolGateway = createToolGatewayService(db, {
+    pluginToolDispatcher: toolDispatcher,
+    deploymentMode: opts.deploymentMode,
+    deploymentExposure: opts.deploymentExposure,
+    trustedLocalStdioRuntimeHost,
+  });
+  // Issue routes are intentionally mounted after the gateway is constructed because
+  // issue approval endpoints delegate to it. The intervening routers use distinct
+  // route prefixes, so this dependency does not change issue-route precedence.
+  api.use(issueRoutes(db, opts.storageService, {
+    feedbackExportService: opts.feedbackExportService,
+    pluginWorkerManager: workerManager,
+    approveToolActionRequest: (input) => toolGateway.approveActionRequest(input),
+  }));
+  app.use(mcpGatewayProtocolRoutes(toolGateway));
+  api.use(toolAccessRoutes(db, {
+    deploymentMode: opts.deploymentMode,
+    deploymentExposure: opts.deploymentExposure,
+    trustedLocalStdioRuntimeHost,
+    toolGateway,
+  }));
+  api.use(smokeLabRoutes(db, {
+    deploymentMode: opts.deploymentMode,
+    deploymentExposure: opts.deploymentExposure,
+  }));
   const jobCoordinator = createPluginJobCoordinator({
     db,
     lifecycle,
@@ -325,6 +354,9 @@ export async function createApp(
     },
   );
   api.use(
+    toolGatewayRoutes(db, toolGateway),
+  );
+  api.use(
     pluginRoutes(
       db,
       loader,
@@ -332,6 +364,7 @@ export async function createApp(
       { workerManager },
       { toolDispatcher },
       { workerManager },
+      { toolGateway },
     ),
   );
   api.use(adapterRoutes());

@@ -259,6 +259,41 @@ describe("claude_local ACP lane", () => {
     ).resolves.toEqual({ engine: "acp", explicit: true });
   });
 
+  it("selects the confined CLI lane for local filesystem or network scope", async () => {
+    await expect(
+      resolveClaudeExecutionEngineForRun({
+        config: { filesystemScope: "workspace" },
+        executionTarget: null,
+      }),
+    ).resolves.toMatchObject({
+      engine: "cli",
+      explicit: false,
+      fallbackReason: expect.stringContaining("spawn-level confinement"),
+    });
+    await expect(
+      resolveClaudeExecutionEngineForRun({
+        config: { engine: "acp", filesystemScope: "workspace" },
+        executionTarget: null,
+      }),
+    ).rejects.toThrow("ACP confinement is not supported");
+    await expect(
+      resolveClaudeExecutionEngineForRun({
+        config: { networkScope: "deny" },
+        executionTarget: null,
+      }),
+    ).resolves.toMatchObject({
+      engine: "cli",
+      explicit: false,
+      fallbackReason: expect.stringContaining("network scope"),
+    });
+    await expect(
+      resolveClaudeExecutionEngineForRun({
+        config: { networkScope: "public" },
+        executionTarget: null,
+      }),
+    ).rejects.toThrow('networkScope must be "deny" or "allowlist"');
+  });
+
   it("uses ACP for bridged sandbox auto runs when the ACP command is configured as a shell command", async () => {
     setNodeVersion("v22.12.0");
     await expect(

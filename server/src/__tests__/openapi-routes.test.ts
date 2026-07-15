@@ -47,6 +47,8 @@ const apiPrefixes: Record<string, string> = {
   "sidebar-badges.ts": "/api",
   "sidebar-preferences.ts": "/api",
   "teams-catalog.ts": "/api",
+  "tool-access.ts": "/api",
+  "tool-gateway.ts": "/api",
   "user-profiles.ts": "/api",
 };
 
@@ -58,6 +60,8 @@ const explicitOpenApiCoverageExclusions = new Set([
   "pipelines.ts",
   // Case routes are experimental (enableCases flag) and not yet in the public OpenAPI document.
   "cases.ts",
+  // Smoke lab routes are experimental and not yet represented in the public OpenAPI document.
+  "smoke-lab.ts",
 ]);
 
 function createApp() {
@@ -75,6 +79,9 @@ function normalizeExpressPath(routePath: string) {
 }
 
 function resolveMountedPath(file: string, prefix: string, routePath: string) {
+  if (file === "tool-gateway.ts" && routePath.startsWith("/mcp/gateways/")) {
+    return routePath;
+  }
   if ((file === "companies.ts" || file === "health.ts") && routePath === "/") {
     return prefix;
   }
@@ -147,6 +154,8 @@ describe("openapi routes", () => {
       AgentBearerAuth: { type: "http", scheme: "bearer" },
     });
     expect(res.body.paths["/api/health"].get.security).toEqual([]);
+    expect(res.body.paths["/mcp/gateways/{gatewayPublicId}"].post.security).toEqual([]);
+    expect(res.body.paths["/api/mcp/gateways/{gatewayPublicId}"]).toBeUndefined();
     expect(res.body.paths["/api/companies"].post.responses["201"]).toBeDefined();
     expect(res.body.paths["/api/companies"].post.requestBody.content["application/json"].schema).toMatchObject({
       type: "object",
@@ -161,6 +170,8 @@ describe("openapi routes", () => {
         name: { type: "string" },
       },
     });
+    expect(JSON.stringify(res.body.paths["/api/tool-gateway/tools"].get)).not.toContain("sessionToken");
+    expect(JSON.stringify(res.body.paths["/api/tool-gateway/tools/call"].post)).not.toContain("sessionToken");
   });
 
   it("covers the mounted server routes exactly", () => {

@@ -921,7 +921,10 @@ describe("agent issue mutation checkout ownership", () => {
       .post(`/api/issues/${issueId}/comments`)
       .send({ body: "Wrong company." });
 
-    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    // Cross-tenant requests return 404 (not 403) so the response is
+    // indistinguishable from a nonexistent issue — no existence oracle.
+    expect(res.status, JSON.stringify(res.body)).toBe(404);
+    expect(res.body.error).toBe("Issue not found");
     expect(mockAccessService.decide).not.toHaveBeenCalledWith(expect.objectContaining({ action: "issue:comment" }));
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });

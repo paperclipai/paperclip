@@ -115,6 +115,16 @@ function resolveWorktreeRuntimeContext(
   const configPath = resolvePaperclipConfigPath(overrideConfigPath);
   const envPath = resolvePaperclipEnvPath(configPath);
   const persistedEnv = readEnvEntries(envPath);
+
+  // PAPERCLIP_IN_WORKTREE can leak in from a parent process or a sourced env
+  // file while config resolution still points at a non-worktree target (for
+  // example the default instance under <home>/instances/default). Only adopt
+  // a target as a worktree when its config sits in a `<root>/.paperclip/`
+  // layout and its own persisted env already declares it a worktree;
+  // otherwise the repair would rewrite main-instance config and env files.
+  if (path.basename(path.dirname(configPath)) !== ".paperclip") return null;
+  if (persistedEnv.PAPERCLIP_IN_WORKTREE !== "true") return null;
+
   const persistedConfigPath = nonEmpty(persistedEnv.PAPERCLIP_CONFIG);
   const persistedConfigLooksStale =
     persistedConfigPath !== null &&
@@ -392,6 +402,7 @@ export function maybeRepairLegacyWorktreeConfigAndEnvFiles(): {
   if (fs.existsSync(context.configPath)) {
     try {
       const parsed = JSON.parse(fs.readFileSync(context.configPath, "utf8")) as PaperclipConfig;
+      let runtimeConfig = parsed;
       const siblingPorts = collectSiblingWorktreePorts(context);
       const hasSiblingPortCollision =
         siblingPorts.serverPorts.has(parsed.server.port) ||
@@ -413,14 +424,20 @@ export function maybeRepairLegacyWorktreeConfigAndEnvFiles(): {
               )
             : undefined;
 
-        writeConfigFile(
-          context.configPath,
-          buildIsolatedWorktreeConfig(parsed, context, {
-            serverPort: selectedServerPort,
-            databasePort: selectedDatabasePort,
-          }),
-        );
+        runtimeConfig = buildIsolatedWorktreeConfig(parsed, context, {
+          serverPort: selectedServerPort,
+          databasePort: selectedDatabasePort,
+        });
+        writeConfigFile(context.configPath, runtimeConfig);
         repairedConfig = true;
+      }
+
+      if (
+        !nonEmpty(process.env.PORT)
+        && Number.isInteger(runtimeConfig.server.port)
+        && runtimeConfig.server.port > 0
+      ) {
+        process.env.PORT = String(runtimeConfig.server.port);
       }
     } catch {
       // Leave invalid configs to the normal startup validation path.

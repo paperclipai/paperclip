@@ -21,6 +21,7 @@ describe("server info snapshot", () => {
           "Add server info debug view",
           "2026-06-25T17:00:00-07:00",
         ].join("\n"),
+      gitBranchCommand: () => "feature/server-info\n",
       gitStatusCommand: () => "",
     });
 
@@ -30,6 +31,7 @@ describe("server info snapshot", () => {
         available: true,
         fullSha: "0123456789abcdef0123456789abcdef01234567",
         shortSha: "0123456",
+        branchName: "feature/server-info",
         subject: "Add server info debug view",
         committedAt: "2026-06-26T00:00:00.000Z",
         localChanges: {
@@ -95,6 +97,29 @@ describe("server info snapshot", () => {
         available: false,
         unavailableReason: "git_status_unavailable",
       },
+    });
+  });
+
+  it("keeps commit metadata available when HEAD is detached", () => {
+    const snapshot = createServerInfoSnapshot({
+      now: new Date("2026-06-26T00:00:00.000Z"),
+      gitCommand: () =>
+        [
+          "0123456789abcdef0123456789abcdef01234567",
+          "0123456",
+          "Add server info debug view",
+          "2026-06-25T17:00:00-07:00",
+        ].join("\n"),
+      gitBranchCommand: () => {
+        throw new Error("detached HEAD");
+      },
+      gitStatusCommand: () => "",
+    });
+
+    expect(snapshot.git).toMatchObject({
+      available: true,
+      branchName: null,
+      shortSha: "0123456",
     });
   });
 
