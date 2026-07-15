@@ -47,6 +47,60 @@ From the generation issue / run context:
 - `generationIssueId` — the issue that requested this summary; pass it back so the slot records what produced the revision.
 - The previous revision (if any) — read it so "what changed" is real, not a rewrite.
 
+## API quick reference
+
+Use these routes directly. Do not guess unscoped `/api/issues` or alternate summary paths:
+
+- Read the current slot: `GET /api/companies/{companyId}/summary-slots/{scopeKind}/{slotKey}?scopeId=...`
+- Read revision history: `GET /api/companies/{companyId}/summary-slots/{scopeKind}/{slotKey}/revisions?scopeId=...`
+- Gather project issues: `GET /api/companies/{companyId}/issues?projectId=...`
+- Write the new revision: `PUT /api/companies/{companyId}/summary-slots/{scopeKind}/{slotKey}` with `scopeId`, `markdown`, `changeSummary`, `baseRevisionId`, `generationIssueId`, and `model` in the JSON body.
+
+For `workspaces_overview`, omit `scopeId` from the read query and send it as `null` in the write body. All calls use the run-scoped Paperclip API URL and bearer token already present in the environment.
+
+Complete project-slot write example:
+
+```sh
+COMPANY_ID="<company-id>"
+PROJECT_ID="<project-id>"
+GENERATION_ISSUE_ID="<generation-issue-id>"
+BASE_REVISION_ID="<previous-revision-id-or-empty>"
+MODEL="<model-used>"
+
+SUMMARY_MARKDOWN=$(cat <<'MARKDOWN'
+## Needs you
+Nothing is waiting on you right now.
+
+## Next
+Nothing is next.
+
+## Since last summary
+First summary for this scope.
+MARKDOWN
+)
+
+jq -n \
+  --arg scopeId "$PROJECT_ID" \
+  --arg markdown "$SUMMARY_MARKDOWN" \
+  --arg changeSummary "First summary for this scope" \
+  --arg baseRevisionId "$BASE_REVISION_ID" \
+  --arg generationIssueId "$GENERATION_ISSUE_ID" \
+  --arg model "$MODEL" \
+  '{
+    scopeId: $scopeId,
+    markdown: $markdown,
+    changeSummary: $changeSummary,
+    baseRevisionId: (if $baseRevisionId == "" then null else $baseRevisionId end),
+    generationIssueId: $generationIssueId,
+    model: $model
+  }' |
+curl -sS -X PUT \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H "Content-Type: application/json" \
+  "$PAPERCLIP_API_URL/api/companies/$COMPANY_ID/summary-slots/project/header" \
+  --data-binary @-
+```
+
 ## Cost discipline
 
 You run on the **low-cost model profile lane** (`cheap`) by default. Keep the loop tight:
