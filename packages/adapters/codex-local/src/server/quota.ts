@@ -3,6 +3,10 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { ProviderQuotaResult, QuotaWindow } from "@paperclipai/adapter-utils";
+import {
+  classifyCodexAuthRefreshFailure,
+  type CodexAuthRefreshFailureClass,
+} from "./parse.js";
 
 const CODEX_USAGE_SOURCE_RPC = "codex-rpc";
 const CODEX_USAGE_SOURCE_WHAM = "codex-wham";
@@ -187,6 +191,16 @@ interface WhamUsageResponse {
   credits?: WhamCredits | null;
 }
 
+class CodexQuotaAuthError extends Error {
+  constructor(
+    message: string,
+    readonly errorFamily: CodexAuthRefreshFailureClass,
+  ) {
+    super(message);
+    this.name = "CodexQuotaAuthError";
+  }
+}
+
 /**
  * Map a window duration in seconds to a human-readable label.
  * Falls back to the provided fallback string when seconds is null/undefined.
@@ -233,7 +247,15 @@ export async function fetchCodexQuota(
   if (accountId) headers["ChatGPT-Account-Id"] = accountId;
 
   const resp = await fetchWithTimeout("https://chatgpt.com/backend-api/wham/usage", { headers });
-  if (!resp.ok) throw new Error(`chatgpt wham api returned ${resp.status}`);
+  if (!resp.ok) {
+    const message = `chatgpt wham api returned ${resp.status}`;
+    const responseText = await resp.text().catch(() => "");
+    const authFailure = classifyCodexAuthRefreshFailure({
+      errorMessage: [message, responseText.slice(0, 4_000)].filter(Boolean).join("\n"),
+    });
+    if (authFailure) throw new CodexQuotaAuthError(message, authFailure);
+    throw new Error(message);
+  }
   const body = (await resp.json()) as WhamUsageResponse;
   const windows: QuotaWindow[] = [];
 
@@ -530,6 +552,12 @@ function formatProviderError(source: string, error: unknown): string {
   return `${source}: ${message}`;
 }
 
+export function readCodexQuotaErrorFamily(error: unknown): CodexAuthRefreshFailureClass | null {
+  if (error instanceof CodexQuotaAuthError) return error.errorFamily;
+  const message = error instanceof Error ? error.message : String(error);
+  return classifyCodexAuthRefreshFailure({ errorMessage: message });
+}
+
 export async function getQuotaWindows(): Promise<ProviderQuotaResult> {
   const errors: string[] = [];
 
@@ -540,6 +568,17 @@ export async function getQuotaWindows(): Promise<ProviderQuotaResult> {
     }
   } catch (error) {
     errors.push(formatProviderError("Codex app-server", error));
+    const errorFamily = readCodexQuotaErrorFamily(error);
+    if (errorFamily) {
+      return {
+        provider: "openai",
+        source: CODEX_USAGE_SOURCE_RPC,
+        ok: false,
+        errorFamily,
+        error: errors.join("; "),
+        windows: [],
+      };
+    }
   }
 
   const auth = await readCodexToken();
@@ -549,6 +588,17 @@ export async function getQuotaWindows(): Promise<ProviderQuotaResult> {
       return { provider: "openai", source: CODEX_USAGE_SOURCE_WHAM, ok: true, windows };
     } catch (error) {
       errors.push(formatProviderError("ChatGPT WHAM usage", error));
+      const errorFamily = readCodexQuotaErrorFamily(error);
+      if (errorFamily) {
+        return {
+          provider: "openai",
+          source: CODEX_USAGE_SOURCE_WHAM,
+          ok: false,
+          errorFamily,
+          error: errors.join("; "),
+          windows: [],
+        };
+      }
     }
   } else {
     errors.push("no local codex auth token");

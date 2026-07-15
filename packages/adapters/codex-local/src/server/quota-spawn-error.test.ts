@@ -51,6 +51,7 @@ describe("CodexRpcClient spawn failures", () => {
   });
 
   afterEach(() => {
+    vi.unstubAllGlobals();
     if (isolatedCodexHome) {
       try {
         fs.rmSync(isolatedCodexHome, { recursive: true, force: true });
@@ -64,6 +65,71 @@ describe("CodexRpcClient spawn failures", () => {
     } else {
       process.env.CODEX_HOME = previousCodexHome;
     }
+  });
+
+  it("classifies app-server refresh-token failures as quota probe auth errors", async () => {
+    mockSpawn.mockImplementation(() => createChildThatErrorsOnMicrotask(new Error("OAuth failed: refresh token has expired")));
+
+    const result = await getQuotaWindows();
+
+    expect(result.ok).toBe(false);
+    expect(result.source).toBe("codex-rpc");
+    expect(result.errorFamily).toBe("refresh_token_expired");
+    expect(result.error).toContain("Codex app-server");
+  });
+
+  it("classifies WHAM refresh-token response bodies without returning the body text", async () => {
+    fs.writeFileSync(
+      path.join(isolatedCodexHome!, "auth.json"),
+      JSON.stringify({
+        tokens: {
+          access_token: "access-token-fixture-secret",
+          refresh_token: "refresh-token-fixture-secret",
+        },
+      }),
+      "utf8",
+    );
+    mockSpawn.mockImplementation(() => createChildThatErrorsOnMicrotask(new Error("spawn codex ENOENT")));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("OAuth failed: invalid_grant", { status: 401 })),
+    );
+
+    const result = await getQuotaWindows();
+
+    expect(result.ok).toBe(false);
+    expect(result.source).toBe("codex-wham");
+    expect(result.errorFamily).toBe("refresh_token_invalidated");
+    expect(result.error).toContain("chatgpt wham api returned 401");
+    expect(result.error).not.toContain("invalid_grant");
+    expect(JSON.stringify(result)).not.toContain("access-token-fixture-secret");
+    expect(JSON.stringify(result)).not.toContain("refresh-token-fixture-secret");
+  });
+
+  it("does not classify bare WHAM 401 quota probe failures or expose token material", async () => {
+    fs.writeFileSync(
+      path.join(isolatedCodexHome!, "auth.json"),
+      JSON.stringify({
+        tokens: {
+          access_token: "access-token-fixture-secret",
+          refresh_token: "refresh-token-fixture-secret",
+        },
+      }),
+      "utf8",
+    );
+    mockSpawn.mockImplementation(() => createChildThatErrorsOnMicrotask(new Error("spawn codex ENOENT")));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("unauthorized", { status: 401 })),
+    );
+
+    const result = await getQuotaWindows();
+
+    expect(result.ok).toBe(false);
+    expect(result.errorFamily).toBeUndefined();
+    expect(result.error).toContain("chatgpt wham api returned 401");
+    expect(JSON.stringify(result)).not.toContain("access-token-fixture-secret");
+    expect(JSON.stringify(result)).not.toContain("refresh-token-fixture-secret");
   });
 
   it("does not crash the process when codex is missing; getQuotaWindows returns ok: false", async () => {

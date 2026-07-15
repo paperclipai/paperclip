@@ -47,6 +47,7 @@ import {
 } from "@paperclipai/adapter-utils/local-process-sandbox";
 import {
   parseCodexJsonl,
+  classifyCodexAuthRefreshFailure,
   extractCodexRetryNotBefore,
   isCodexProviderQuotaError,
   isCodexTransientUpstreamError,
@@ -1116,8 +1117,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
               errorMessage: fallbackErrorMessage,
             })
           : null;
+      const authRefreshFailure =
+        (attempt.proc.exitCode ?? 0) !== 0
+          ? classifyCodexAuthRefreshFailure({
+              stdout: attempt.proc.stdout,
+              stderr: attempt.proc.stderr,
+              errorMessage: fallbackErrorMessage,
+            })
+          : null;
       const providerQuota =
         (attempt.proc.exitCode ?? 0) !== 0 &&
+        !authRefreshFailure &&
         isCodexProviderQuotaError({
           stdout: attempt.proc.stdout,
           stderr: attempt.proc.stderr,
@@ -1125,13 +1135,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         });
       const transientUpstream =
         (attempt.proc.exitCode ?? 0) !== 0 &&
+        !authRefreshFailure &&
         !providerQuota &&
         isCodexTransientUpstreamError({
           stdout: attempt.proc.stdout,
           stderr: attempt.proc.stderr,
           errorMessage: fallbackErrorMessage,
         });
-      const errorFamily = providerQuota ? "provider_quota" : transientUpstream ? "transient_upstream" : null;
+      const errorFamily = authRefreshFailure ?? (providerQuota ? "provider_quota" : transientUpstream ? "transient_upstream" : null);
 
       return {
         exitCode: attempt.proc.exitCode,
@@ -1142,7 +1153,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             ? null
             : fallbackErrorMessage,
         errorCode:
-          providerQuota
+          authRefreshFailure
+            ? authRefreshFailure
+            : providerQuota
             ? "provider_quota"
             : transientUpstream
             ? "codex_transient_upstream"

@@ -487,6 +487,28 @@ describe("codex_local ACP lane", () => {
     expect(meta[0]?.env?.CODEX_HOME).toBe(path.join(root, "codex-home"));
   });
 
+  it("classifies ACP refresh-token auth failures", async () => {
+    const root = await makeTempRoot("paperclip-codex-acp-refresh-token-");
+    const execute = createCodexAcpExecutor({
+      createRuntime: (options: FakeRuntimeOptions) => new FakeRuntime(
+        options,
+        [],
+        {
+          status: "failed",
+          error: { message: "OAuth failed: refresh_token_invalidated" },
+        } as unknown as FakeRuntimeTurnResult,
+      ) as never,
+    });
+
+    const result = await execute(buildContext(root));
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("refresh_token_invalidated");
+    expect(result.errorFamily).toBe("refresh_token_invalidated");
+    expect(result.resultJson?.errorFamily).toBe("refresh_token_invalidated");
+    expect(result.resultJson).not.toHaveProperty("codexCredentialTelemetry");
+  });
+
   it("resumes compatible ACP sessions on later Codex ACP runs", async () => {
     const root = await makeTempRoot("paperclip-codex-acp-resume-");
     const runtimes: FakeRuntime[] = [];
