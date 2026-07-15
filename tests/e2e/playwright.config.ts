@@ -23,6 +23,7 @@ process.env.PAPERCLIP_TOOL_ACTION_SIGNING_SECRET = PAPERCLIP_TOOL_ACTION_SIGNING
 export default defineConfig({
   testDir: ".",
   testMatch: "**/*.spec.ts",
+  forbidOnly: true,
   // These suites target dedicated multi-user configurations/ports and are
   // intentionally not part of the default local_trusted e2e run.
   testIgnore: ["multi-user.spec.ts", "multi-user-authenticated.spec.ts"],
@@ -37,7 +38,7 @@ export default defineConfig({
     baseURL: BASE_URL,
     headless: true,
     screenshot: "only-on-failure",
-    trace: "on-first-retry",
+    trace: "retain-on-failure",
   },
   projects: [
     {
