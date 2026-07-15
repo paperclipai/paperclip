@@ -461,7 +461,7 @@ describe("SummarySlotCard", () => {
 
     expect(container.textContent).toContain("Summary generation failed");
     expect(container.textContent).toContain("PAP-14000 finished without writing a summary");
-    expect(container.querySelector('[role="note"]')?.className).toContain("text-destructive");
+    expect(container.querySelector('[role="note"]')?.className).toContain("text-red-700");
     const retryButton = [...container.querySelectorAll<HTMLButtonElement>("button")].find(
       (button) => button.textContent === "Retry",
     );
