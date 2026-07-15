@@ -193,10 +193,10 @@ export function skillStudioRoute(skillId: string) {
 
 export function skillStudioNewRoute(forkFromSkillId?: string | null, folderId?: string | null) {
   const basePath = "/skills/studio/new";
-  const params = new URLSearchParams();
-  if (forkFromSkillId) params.set("forkFrom", forkFromSkillId);
-  if (folderId) params.set("folderId", folderId);
-  const query = params.toString();
+  const params: string[] = [];
+  if (forkFromSkillId) params.push(`forkFrom=${encodeURIComponent(forkFromSkillId)}`);
+  if (folderId) params.push(`folderId=${encodeURIComponent(folderId)}`);
+  const query = params.join("&");
   return query ? `${basePath}?${query}` : basePath;
 }
 

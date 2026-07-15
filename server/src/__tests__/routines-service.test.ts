@@ -287,6 +287,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       companyId: otherCompanyId,
       kind: "routine",
       name: "Private folder",
+      slug: "private-folder",
       position: 0,
     }).returning();
 
