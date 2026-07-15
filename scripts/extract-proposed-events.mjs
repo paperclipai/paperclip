@@ -75,11 +75,11 @@ export function extractProposedEvents(options = {}) {
   const sourceFile = ts.createSourceFile(eventsFile, sourceText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
   const proposals = new Map();
 
-  function recordProposal(wrapper, wrapperName, trackCall, eventNameNode, directive) {
+  function recordProposal(wrapper, wrapperName, eventNameNode, directive) {
     const name = eventNameNode.text;
     assertEventName(name, "event name");
     const position = sourceFile.getLineAndCharacterOfPosition(eventNameNode.getStart(sourceFile));
-    const dimensions = extractWrapperDimensions(wrapper, sourceFile, wrapperName, trackCall.arguments[1]);
+    const dimensions = extractWrapperDimensions(wrapper, sourceFile, wrapperName);
 
     let proposal = proposals.get(name);
     if (!proposal) {
@@ -118,7 +118,7 @@ export function extractProposedEvents(options = {}) {
         const eventNameNode = node.arguments[0];
         if (eventNameNode && ts.isStringLiteral(eventNameNode)) {
           const directive = findDirectiveForNode(sourceText, eventNameNode);
-          if (directive) recordProposal(wrapper, wrapperName, node, eventNameNode, directive);
+          if (directive) recordProposal(wrapper, wrapperName, eventNameNode, directive);
         }
       }
       ts.forEachChild(node, visit);
@@ -193,26 +193,11 @@ function normalizeComment(commentText) {
     .trim();
 }
 
-function extractWrapperDimensions(wrapper, sourceFile, wrapperName = wrapper.name?.text ?? "<anonymous>", payloadNode) {
+function extractWrapperDimensions(wrapper, sourceFile, wrapperName = wrapper.name?.text ?? "<anonymous>") {
   const dimsParam = wrapper.parameters.find(
     (parameter) => ts.isIdentifier(parameter.name) && parameter.name.text === "dims",
   );
-
-  if (!payloadNode) return [];
-
-  if (ts.isObjectLiteralExpression(payloadNode)) {
-    const dimsMembers = dimsParam ? extractDimsMembers(dimsParam, wrapperName) : new Map();
-    return extractPayloadDimensions(payloadNode, dimsMembers, sourceFile);
-  }
-
-  if (!dimsParam || !ts.isIdentifier(payloadNode) || payloadNode.text !== "dims") {
-    throw new Error(`wrapper ${wrapperName} proposed telemetry payload must be a dims identifier or object literal`);
-  }
-
-  return [...extractDimsMembers(dimsParam, wrapperName).values()].map((member) => extractDimension(member, sourceFile));
-}
-
-function extractDimsMembers(dimsParam, wrapperName) {
+  if (!dimsParam) return [];
   if (!dimsParam.type) {
     throw new Error(`wrapper ${wrapperName} has an untyped dims parameter`);
   }
@@ -221,77 +206,7 @@ function extractDimsMembers(dimsParam, wrapperName) {
     throw new Error(`wrapper ${wrapperName} dims parameter must be a type literal`);
   }
 
-  const members = new Map();
-  for (const member of typeNode.members) {
-    if (!ts.isPropertySignature(member) || !member.type) {
-      throw new Error("dims parameter type may contain only typed property signatures");
-    }
-    members.set(propertyNameText(member.name), member);
-  }
-  return members;
-}
-
-function extractPayloadDimensions(payloadNode, dimsMembers, sourceFile) {
-  const dimensions = [];
-  for (const property of payloadNode.properties) {
-    if (ts.isSpreadAssignment(property)) {
-      if (ts.isIdentifier(property.expression) && property.expression.text === "dims") {
-        for (const member of dimsMembers.values()) {
-          dimensions.push(extractDimension(member, sourceFile));
-        }
-        continue;
-      }
-      throw new Error(`unsupported proposed telemetry spread payload: ${property.getText(sourceFile)}`);
-    }
-
-    if (ts.isShorthandPropertyAssignment(property)) {
-      const name = propertyNameText(property.name);
-      assertEventName(name, "dimension name");
-      const member = dimsMembers.get(name);
-      if (!member) throw new Error(`unable to infer proposed telemetry dimension type for ${name}`);
-      dimensions.push({ name, type: classifyTypeNode(member.type, sourceFile) });
-      continue;
-    }
-
-    if (!ts.isPropertyAssignment(property)) {
-      throw new Error(`unsupported proposed telemetry payload property: ${property.getText(sourceFile)}`);
-    }
-
-    const name = propertyNameText(property.name);
-    assertEventName(name, "dimension name");
-    dimensions.push({ name, type: classifyPayloadExpression(property.initializer, dimsMembers, sourceFile) });
-  }
-  return dimensions;
-}
-
-function classifyPayloadExpression(expression, dimsMembers, sourceFile) {
-  const dimsProperty = unwrapEventDimensionExpression(expression);
-  if (dimsProperty) {
-    const member = dimsMembers.get(dimsProperty);
-    if (!member) throw new Error(`unable to infer proposed telemetry dimension type for dims.${dimsProperty}`);
-    return classifyTypeNode(member.type, sourceFile);
-  }
-
-  if (ts.isStringLiteral(expression) || expression.kind === ts.SyntaxKind.NoSubstitutionTemplateLiteral) return "string";
-  if (ts.isNumericLiteral(expression)) return "number";
-  if (expression.kind === ts.SyntaxKind.TrueKeyword || expression.kind === ts.SyntaxKind.FalseKeyword) return "boolean";
-
-  throw new Error(`unsupported proposed telemetry payload value: ${expression.getText(sourceFile)}`);
-}
-
-function unwrapEventDimensionExpression(expression) {
-  if (ts.isPropertyAccessExpression(expression) && ts.isIdentifier(expression.expression) && expression.expression.text === "dims") {
-    return expression.name.text;
-  }
-
-  if (ts.isCallExpression(expression)) {
-    const callee = expression.expression;
-    if (ts.isIdentifier(callee) && callee.text === "asEventDimension" && expression.arguments.length === 1) {
-      return unwrapEventDimensionExpression(expression.arguments[0]);
-    }
-  }
-
-  return null;
+  return typeNode.members.map((member) => extractDimension(member, sourceFile));
 }
 
 function extractDimension(member, sourceFile) {

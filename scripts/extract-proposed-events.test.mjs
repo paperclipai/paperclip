@@ -96,44 +96,6 @@ test("extractor emits deterministic proposed-telemetry-extractor.v2 records", ()
   assert.equal(typeof created.provenance[0].column, "number");
 });
 
-test("extractor infers proposed dimensions from snake_case payload mapped from camelCase wrapper dims", () => {
-  const output = withFixtureRepo(
-    `type TelemetryClient = { track(name: string, dims: unknown): void };
-type RawDimension<T extends string | undefined> = T | (string & {});
-function asEventDimension<T extends string>(value: T): T { return value; }
-
-export function trackSkillCreated(
-  client: TelemetryClient,
-  dims: {
-    skillId: string;
-    sharingScope: RawDimension<"private" | "company">;
-    categoryCount: number;
-    adHoc: boolean;
-  },
-): void {
-  client.track(
-    // @ts-expect-error -- proposed-telemetry(PAP-2411): measure skill creation
-    "skill.created",
-    {
-      skill_id: dims.skillId,
-      sharing_scope: asEventDimension(dims.sharingScope),
-      category_count: dims.categoryCount,
-      ad_hoc: dims.adHoc,
-    },
-  );
-}
-`,
-    ({ repoRoot, eventsFile }) => extractProposedEvents({ repoRoot, eventsFile, ref: "fixture-sha" }),
-  );
-
-  assert.deepEqual(output.proposals[0].dimensions, [
-    { name: "ad_hoc", type: "boolean" },
-    { name: "category_count", type: "number" },
-    { name: "sharing_scope", type: "string" },
-    { name: "skill_id", type: "string" },
-  ]);
-});
-
 test("extractor flags a missing proposed-telemetry suffix without hard-failing", () => {
   const output = withFixtureRepo(fixtureSource, ({ repoRoot, eventsFile }) =>
     extractProposedEvents({ repoRoot, eventsFile, ref: "fixture-sha" }),

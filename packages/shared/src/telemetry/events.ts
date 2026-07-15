@@ -95,22 +95,22 @@ export function trackSkillImported(
 export function trackSkillCreated(
   client: TelemetryClient,
   dims: {
-    skillId: string;
-    creationSource: RawDimension<"blank" | "fork" | "project_scan">;
-    sharingScope: RawDimension<"private" | "company" | "public_link">;
-    categoryCount: number;
-    fileCount: number;
+    skill_id: string;
+    creation_source: RawDimension<"blank" | "fork" | "project_scan">;
+    sharing_scope: RawDimension<"private" | "company" | "public_link">;
+    category_count: number;
+    file_count: number;
   },
 ): void {
   client.track(
-    // @ts-expect-error -- proposed-telemetry: measure successful Skill Studio skill creation funnel
+    // @ts-expect-error -- proposed-telemetry(https://github.com/paperclipai/paperclip/issues/9566): measure successful Skill Studio skill creation funnel
     "skill.created",
     {
-      skill_id: dims.skillId,
-      creation_source: asEventDimension(dims.creationSource),
-      sharing_scope: asEventDimension(dims.sharingScope),
-      category_count: dims.categoryCount,
-      file_count: dims.fileCount,
+      skill_id: dims.skill_id,
+      creation_source: asEventDimension(dims.creation_source),
+      sharing_scope: asEventDimension(dims.sharing_scope),
+      category_count: dims.category_count,
+      file_count: dims.file_count,
     },
   );
 }
@@ -118,18 +118,18 @@ export function trackSkillCreated(
 export function trackSkillVersionSaved(
   client: TelemetryClient,
   dims: {
-    skillId: string;
-    revisionNumber: number;
-    fileType: RawDimension<"skill" | "markdown" | "reference" | "script" | "asset" | "other">;
+    skill_id: string;
+    revision_number: number;
+    file_type: RawDimension<"skill" | "markdown" | "reference" | "script" | "asset" | "other">;
   },
 ): void {
   client.track(
-    // @ts-expect-error -- proposed-telemetry: measure Skill Studio editor save and version creation usage
+    // @ts-expect-error -- proposed-telemetry(https://github.com/paperclipai/paperclip/issues/9566): measure Skill Studio editor save and version creation usage
     "skill.version_saved",
     {
-      skill_id: dims.skillId,
-      revision_number: dims.revisionNumber,
-      file_type: asEventDimension(dims.fileType),
+      skill_id: dims.skill_id,
+      revision_number: dims.revision_number,
+      file_type: asEventDimension(dims.file_type),
     },
   );
 }
@@ -137,22 +137,22 @@ export function trackSkillVersionSaved(
 export function trackSkillTestRun(
   client: TelemetryClient,
   dims: {
-    skillId: string;
+    skill_id: string;
     status: RawDimension<"queued" | "running" | "succeeded" | "failed" | "cancelled">;
-    runSource: RawDimension<"run" | "rerun">;
-    adHoc: boolean;
-    templateUsed: boolean;
+    run_source: RawDimension<"run" | "rerun">;
+    ad_hoc: boolean;
+    template_used: boolean;
   },
 ): void {
   client.track(
-    // @ts-expect-error -- proposed-telemetry: measure Skill Studio validation loop usage
+    // @ts-expect-error -- proposed-telemetry(https://github.com/paperclipai/paperclip/issues/9566): measure Skill Studio validation loop usage
     "skill.test_run",
     {
-      skill_id: dims.skillId,
+      skill_id: dims.skill_id,
       status: asEventDimension(dims.status),
-      run_source: asEventDimension(dims.runSource),
-      ad_hoc: dims.adHoc,
-      template_used: dims.templateUsed,
+      run_source: asEventDimension(dims.run_source),
+      ad_hoc: dims.ad_hoc,
+      template_used: dims.template_used,
     },
   );
 }
@@ -160,22 +160,22 @@ export function trackSkillTestRun(
 export function trackSkillForked(
   client: TelemetryClient,
   dims: {
-    skillId: string;
-    forkFromSkillId: string;
-    sourceType: RawDimension<"local_path" | "github" | "url" | "catalog" | "skills_sh">;
-    sharingScope: RawDimension<"private" | "company" | "public_link">;
-    reassignAgentCount: number;
+    skill_id: string;
+    fork_from_skill_id: string;
+    source_type: RawDimension<"local_path" | "github" | "url" | "catalog" | "skills_sh">;
+    sharing_scope: RawDimension<"private" | "company" | "public_link">;
+    reassign_agent_count: number;
   },
 ): void {
   client.track(
-    // @ts-expect-error -- proposed-telemetry: measure Skill Studio fork completion and reassignment demand
+    // @ts-expect-error -- proposed-telemetry(https://github.com/paperclipai/paperclip/issues/9566): measure Skill Studio fork completion and reassignment demand
     "skill.forked",
     {
-      skill_id: dims.skillId,
-      fork_from_skill_id: dims.forkFromSkillId,
-      source_type: asEventDimension(dims.sourceType),
-      sharing_scope: asEventDimension(dims.sharingScope),
-      reassign_agent_count: dims.reassignAgentCount,
+      skill_id: dims.skill_id,
+      fork_from_skill_id: dims.fork_from_skill_id,
+      source_type: asEventDimension(dims.source_type),
+      sharing_scope: asEventDimension(dims.sharing_scope),
+      reassign_agent_count: dims.reassign_agent_count,
     },
   );
 }
@@ -183,14 +183,14 @@ export function trackSkillForked(
 export function trackSkillShareLinkCopied(
   client: TelemetryClient,
   dims: {
-    sharingScope: RawDimension<"private" | "company" | "public_link">;
+    sharing_scope: RawDimension<"private" | "company" | "public_link">;
   },
 ): void {
   client.track(
-    // @ts-expect-error -- proposed-telemetry: exercise triage of low-signal share-link copy proposal
+    // @ts-expect-error -- proposed-telemetry(https://github.com/paperclipai/paperclip/issues/9566): exercise triage of low-signal share-link copy proposal
     "skill.share_link",
     {
-      sharing_scope: asEventDimension(dims.sharingScope),
+      sharing_scope: asEventDimension(dims.sharing_scope),
     },
   );
 }

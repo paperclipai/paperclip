@@ -30,6 +30,28 @@ describe("TelemetryClient runtime event gate", () => {
     vi.restoreAllMocks();
   });
 
+  it("swallows proposed first-party events before they touch state or the queue", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true }));
+    const { client, stateFactory } = makeClient();
+
+    client.track(
+      // @ts-expect-error -- proposed-telemetry(https://github.com/paperclipai/paperclip/issues/9566): fixture proposal not in generated schema
+      "skill.created",
+      {
+        skill_id: "skill-1",
+        creation_source: "blank",
+        sharing_scope: "company",
+        category_count: 1,
+        file_count: 1,
+      },
+    );
+
+    await client.flush();
+
+    expect(stateFactory).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("uses own-property membership so prototype event names are swallowed", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true }));
     const { client, stateFactory } = makeClient();

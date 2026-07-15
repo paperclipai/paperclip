@@ -212,11 +212,11 @@ describe("shared Skill telemetry proposals", () => {
   it("emits primitive skill.created dimensions and omits user-authored identity", () => {
     const client = createClient();
     const dims = {
-      skillId: "11111111-1111-4111-8111-111111111111",
-      creationSource: "blank",
-      sharingScope: "company",
-      categoryCount: 2,
-      fileCount: 3,
+      skill_id: "11111111-1111-4111-8111-111111111111",
+      creation_source: "blank",
+      sharing_scope: "company",
+      category_count: 2,
+      file_count: 3,
       name: "Secret Skill",
       slug: "secret-skill",
       tagline: "keep this private",
@@ -242,9 +242,9 @@ describe("shared Skill telemetry proposals", () => {
   it("emits primitive skill.version_saved dimensions without file path or content", () => {
     const client = createClient();
     const dims = {
-      skillId: "22222222-2222-4222-8222-222222222222",
-      revisionNumber: 4,
-      fileType: "markdown",
+      skill_id: "22222222-2222-4222-8222-222222222222",
+      revision_number: 4,
+      file_type: "markdown",
       file_path: "customers/acme/SKILL.md",
       file_content: "keep this private",
       path: "customers/acme/SKILL.md",
@@ -269,11 +269,11 @@ describe("shared Skill telemetry proposals", () => {
   it("emits primitive skill.test_run dimensions without snapshots, prompts, or errors", () => {
     const client = createClient();
     const dims = {
-      skillId: "33333333-3333-4333-8333-333333333333",
+      skill_id: "33333333-3333-4333-8333-333333333333",
       status: "queued",
-      runSource: "run",
-      adHoc: true,
-      templateUsed: false,
+      run_source: "run",
+      ad_hoc: true,
+      template_used: false,
       inputSnapshot: "do not leak input",
       outputSnapshot: "do not leak output",
       harnessIssueDescription: "private harness issue",
@@ -302,11 +302,11 @@ describe("shared Skill telemetry proposals", () => {
   it("emits primitive skill.forked dimensions and passes opaque IDs through raw", () => {
     const client = createClient();
     const dims = {
-      skillId: "44444444-4444-4444-8444-444444444444",
-      forkFromSkillId: "55555555-5555-4555-8555-555555555555",
-      sourceType: "github",
-      sharingScope: "private",
-      reassignAgentCount: 1,
+      skill_id: "44444444-4444-4444-8444-444444444444",
+      fork_from_skill_id: "55555555-5555-4555-8555-555555555555",
+      source_type: "github",
+      sharing_scope: "private",
+      reassign_agent_count: 1,
       name: "Secret Skill",
       slug: "secret-skill",
       fork_from_name: "Secret Source",
@@ -332,7 +332,7 @@ describe("shared Skill telemetry proposals", () => {
   it("emits only sharing_scope for the deliberately rejectable share-link proposal", () => {
     const client = createClient();
     const dims = {
-      sharingScope: "public_link",
+      sharing_scope: "public_link",
       skill_id: "66666666-6666-4666-8666-666666666666",
       href: "https://paperclip.example/skills/secret-skill?token=secret-token",
       url: "https://paperclip.example/skills/secret-skill?token=secret-token",
