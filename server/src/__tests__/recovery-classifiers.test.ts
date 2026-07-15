@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { classifyIssueGraphLiveness as classifyIssueGraphLivenessCompat } from "../services/issue-liveness.ts";
 import { decideRunLivenessContinuation as decideRunLivenessContinuationCompat } from "../services/run-continuations.ts";
 import {
+  PERPETUAL_TRACKER_LABEL,
   RECOVERY_KEY_PREFIXES,
   RECOVERY_ORIGIN_KINDS,
   RECOVERY_REASON_KINDS,
@@ -10,6 +11,8 @@ import {
   buildRunLivenessContinuationIdempotencyKey,
   classifyIssueGraphLiveness,
   decideRunLivenessContinuation,
+  hasPerpetualTrackerLabel,
+  isProductivityReviewOriginKind,
   isStrandedIssueRecoveryOriginKind,
   parseIssueGraphLivenessIncidentKey,
 } from "../services/recovery/index.ts";
@@ -244,5 +247,68 @@ describe("recovery classifier boundary", () => {
     expect(isStrandedIssueRecoveryOriginKind("harness_liveness_escalation")).toBe(false);
     expect(isStrandedIssueRecoveryOriginKind("manual")).toBe(false);
     expect(isStrandedIssueRecoveryOriginKind(null)).toBe(false);
+  });
+
+  it("identifies productivity-review origins (BLU-10308 blocked-flip exemption)", () => {
+    expect(RECOVERY_ORIGIN_KINDS.issueProductivityReview).toBe("issue_productivity_review");
+    expect(isProductivityReviewOriginKind("issue_productivity_review")).toBe(true);
+    expect(isProductivityReviewOriginKind("stranded_issue_recovery")).toBe(false);
+    expect(isProductivityReviewOriginKind("manual")).toBe(false);
+    expect(isProductivityReviewOriginKind(null)).toBe(false);
+  });
+
+  it("detects the perpetual-tracker label (BLU-10337)", () => {
+    expect(PERPETUAL_TRACKER_LABEL).toBe("perpetual-tracker");
+    expect(hasPerpetualTrackerLabel({ labels: ["perpetual-tracker"] } as never)).toBe(true);
+    expect(hasPerpetualTrackerLabel({ labels: ["other", "perpetual-tracker"] } as never)).toBe(true);
+    expect(hasPerpetualTrackerLabel({ labels: ["other"] } as never)).toBe(false);
+    expect(hasPerpetualTrackerLabel({ labels: [] } as never)).toBe(false);
+    expect(hasPerpetualTrackerLabel({ labels: null } as never)).toBe(false);
+    expect(hasPerpetualTrackerLabel({} as never)).toBe(false);
+  });
+
+  it("treats a perpetual-tracker label as an explicit waiting path (BLU-10337)", () => {
+    const baseIssue = {
+      id: issueId,
+      companyId,
+      identifier: "PAP-9001",
+      title: "Perpetual roster monitor",
+      status: "in_review",
+      assigneeAgentId: agentId,
+      assigneeUserId: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      executionState: null,
+      // No monitorNextCheckAt: lacking a scheduled monitor is exactly the case the
+      // label must exempt — the tracker is its own perpetual waiting path.
+    };
+    const agents = [
+      {
+        id: agentId,
+        companyId,
+        name: "Coder",
+        role: "engineer",
+        status: "idle",
+        reportsTo: managerId,
+      },
+    ];
+
+    const exempt = classifyIssueGraphLiveness({
+      now: "2026-04-30T18:00:00.000Z",
+      issues: [{ ...baseIssue, labels: ["perpetual-tracker"] }],
+      relations: [],
+      agents,
+    });
+    expect(exempt).toEqual([]);
+
+    // Negative control: a different label does not exempt — the issue is still flagged,
+    // proving the exemption is label-specific, not a blanket suppression.
+    const flagged = classifyIssueGraphLiveness({
+      now: "2026-04-30T18:00:00.000Z",
+      issues: [{ ...baseIssue, labels: ["some-other-label"] }],
+      relations: [],
+      agents,
+    });
+    expect(flagged[0]?.state).toBe("in_review_without_action_path");
   });
 });

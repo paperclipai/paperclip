@@ -4,6 +4,7 @@ export {
   RECOVERY_REASON_KINDS,
   buildIssueGraphLivenessIncidentKey,
   buildIssueGraphLivenessLeafKey,
+  isProductivityReviewOriginKind,
   isStrandedIssueRecoveryOriginKind,
   parseIssueGraphLivenessIncidentKey,
 } from "./origins.js";
@@ -13,7 +14,9 @@ export type {
   RecoveryReasonKind,
 } from "./origins.js";
 export {
+  PERPETUAL_TRACKER_LABEL,
   classifyIssueGraphLiveness,
+  hasPerpetualTrackerLabel,
 } from "./issue-graph-liveness.js";
 export type {
   IssueGraphLivenessInput,

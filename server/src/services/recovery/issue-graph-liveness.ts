@@ -28,6 +28,16 @@ export interface IssueLivenessIssueInput {
   executionState?: Record<string, unknown> | null;
   monitorNextCheckAt?: Date | string | null;
   monitorAttemptCount?: number | null;
+  labels?: string[] | null;
+}
+
+// BLU-10308/BLU-10337: an issue carrying this label is its own perpetual monitor.
+// It must not be flipped to `blocked` nor fire source_scoped_recovery_action solely
+// for lacking a scheduled monitor check — the label IS the standing waiting path.
+export const PERPETUAL_TRACKER_LABEL = "perpetual-tracker";
+
+export function hasPerpetualTrackerLabel(issue: IssueLivenessIssueInput) {
+  return Array.isArray(issue.labels) && issue.labels.includes(PERPETUAL_TRACKER_LABEL);
 }
 
 export interface IssueLivenessRelationInput {
@@ -400,7 +410,8 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
   }
 
   function hasExplicitWaitingPath(issue: IssueLivenessIssueInput) {
-    return Boolean(issue.assigneeUserId) ||
+    return hasPerpetualTrackerLabel(issue) ||
+      Boolean(issue.assigneeUserId) ||
       hasScheduledMonitor(issue, nowMs) ||
       hasActiveExecutionPath(issue.companyId, issue.id, activeRuns, queuedWakeRequests) ||
       hasWaitingPath(issue.companyId, issue.id, pendingInteractions) ||
