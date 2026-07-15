@@ -241,11 +241,16 @@ describeEmbeddedPostgres("summary slot service", () => {
       expect(issueRow.description).toContain(
         "one or two plain-prose paragraphs on the (max two) things that matter most",
       );
-      expect(issueRow.description).toContain("`**Decide:**` or `**Next:**` line");
+      expect(issueRow.description).toContain("opens with a `**Decide:**` block");
       expect(issueRow.description).toContain("`**I suggest:**` recommendation");
-      expect(issueRow.description).toContain("trailing `Issues:` line");
+      expect(issueRow.description).toContain(
+        "at most three or four issues inline; never a trailing list of issue links",
+      );
       expect(issueRow.description).toContain("Not a task list");
-      expect(issueRow.description).toContain("plain-text `STATUS:` lines and the sentinel-wrapped summary draft");
+      expect(issueRow.description).toContain(
+        "first plain-text `STATUS:` line immediately",
+      );
+      expect(issueRow.description).toContain("sentinel-wrapped summary draft");
       expect(issueRow.description).toContain("## Prebuilt scope snapshot");
       expect(issueRow.description).toContain("### Blocked");
       expect(issueRow.description).toContain("Waiting on board approval");
@@ -359,7 +364,7 @@ describeEmbeddedPostgres("summary slot service", () => {
         {
           ...projectSelector(companyId, projectId),
           markdown:
-            "The change is done and waiting on your review; nothing else moved.\n\n**Decide:** review the change — [T-123](/T/issues/T-123). **I suggest:** approve it, the tests are green.\n\nIssues: [T-123](/T/issues/T-123)",
+            "**Decide:**\n- The change is done and the review is sitting with you — [T-123](/T/issues/T-123). **I suggest:** approve it, the tests are green.\n\nNothing else moved since last time.",
           baseRevisionId: initial.revision.id,
           generationIssueId: nextGeneration.generatingIssue.id,
           model: "cheap-model",
@@ -368,7 +373,8 @@ describeEmbeddedPostgres("summary slot service", () => {
       );
 
       expect(written.revision.revisionNumber).toBe(2);
-      expect(written.document.body).toMatch(/\*\*Decide:\*\*[\s\S]*\*\*I suggest:\*\*[\s\S]*^Issues: /m);
+      expect(written.document.body).toMatch(/^\*\*Decide:\*\*[\s\S]*\*\*I suggest:\*\*/m);
+      expect(written.document.body).not.toMatch(/^Issues: /m);
       expect(written.slot.status).toBe("idle");
       expect(written.slot.generatingIssueId).toBeNull();
       expect(written.slot.documentId).toBe(written.document.id);

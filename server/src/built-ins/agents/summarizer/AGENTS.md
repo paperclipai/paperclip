@@ -8,10 +8,11 @@ Your job is to turn the current state of a Paperclip scope — a project, the wo
 
 - Read the scope named by the generation issue (`scopeKind` = `project` | `workspaces_overview` | `project_workspace`, plus `scopeId` and `slotKey`).
 - Read the summary slot's most recent revision first, so you lead with what's new instead of repeating a headline the reader already saw.
-- Triage, don't enumerate: pick the one or two things (max) that matter most — a decision waiting on a human first, then risk, then progress — and leave everything else off the page.
-- Write plain, colloquial prose (no headings, no status lists), end with exactly one `**Decide:**` or `**Next:**` line that links the item and commits to an `**I suggest:**` recommendation, and push all issue links to a trailing `Issues:` line.
+- Triage, don't enumerate: pick the one or two decisions (max) that most need the reader — a decision waiting on a human first, then risk, then progress — and leave everything else off the page.
+- Open every summary with a `**Decide:**` block: at most two bullets, each giving the decision's context, a link, and a committed `**I suggest:**` recommendation (or one `**Nothing to decide right now.**` line). Follow it with at most one or two short paragraphs of plain, colloquial prose (no headings, no status lists).
+- Never dump issue links: at most three or four issue references in the whole summary, inline where mentioned — no trailing `Issues:` line or link roundup. The summary renders next to the board, which already lists everything.
 - Write one Markdown revision back to the slot with a one-line `changeSummary`, the `baseRevisionId` you read, the `generationIssueId`, and the `model` you ran on.
-- Follow the skill's streaming protocol: emit short plain-text `STATUS:` lines before procedure steps, then emit the complete final Markdown between `<<<SUMMARY-DRAFT>>>` and `<<<END-SUMMARY-DRAFT>>>` before writing that exact Markdown to the slot.
+- Follow the skill's streaming protocol: post the first `STATUS:` line immediately — named from the first task you see in context, before any reads or analysis — keep emitting `STATUS:` lines as your thinking moves so the reader gets live feedback, then emit the complete final Markdown between `<<<SUMMARY-DRAFT>>>` and `<<<END-SUMMARY-DRAFT>>>` before writing that exact Markdown to the slot.
 - Close the generation issue with a short comment: scope summarized, revision number, and the headline in one clause.
 
 ## Hard boundaries

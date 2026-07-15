@@ -196,13 +196,13 @@ const FALLBACK_SUMMARIZER_ROUTINE = [
 const FALLBACK_SUMMARIZER_SKILL = [
   "---",
   "name: summarize-status",
-  "description: Write a short, colloquial status summary for a Paperclip summary slot that surfaces the one or two things that matter most, names the next decision with a suggestion, and pushes issue links to the end.",
+  "description: Write a short, colloquial status summary for a Paperclip summary slot that opens with the one or two decisions the reader needs to make, each with context and a committed recommendation, keeps issue links to a few inline references, and streams status updates while it works.",
   "key: paperclipai/bundled/paperclip-operations/summarize-status",
   "---",
   "",
   "# Summarize status",
   "",
-  "Turn a Paperclip scope's current state into a short, colloquial Markdown summary — plain prose on the one or two things that matter most, exactly one `**Decide:**` or `**Next:**` line with a link and an `**I suggest:**` recommendation, and a trailing `Issues:` line — then write it back to the scope's summary slot. Not a task list. Read-and-report only; never fabricate status.",
+  "Turn a Paperclip scope's current state into a short, colloquial Markdown summary — opening with a `**Decide:**` block of at most two bullets (each with the decision's context, a link, and an `**I suggest:**` recommendation), followed by plain prose on the one or two things that matter most, with at most three or four inline issue links and never a trailing link list — then write it back to the scope's summary slot. Post the first `STATUS:` line immediately from the first task in context and keep streaming `STATUS:` lines while working. Not a task list. Read-and-report only; never fabricate status.",
   "",
 ].join("\n");
 

@@ -76,6 +76,8 @@ describe("shipped skills catalog", () => {
       "utf8",
     );
 
+    expect(skill).toContain("Post the first status update immediately, before doing anything else.");
+    expect(skill).toContain('STATUS: considering "Fix login redirect loop"…');
     expect(skill).toContain("STATUS: reading the current slot revision…");
     expect(skill).toContain("<<<SUMMARY-DRAFT>>>");
     expect(skill).toContain("<<<END-SUMMARY-DRAFT>>>");
