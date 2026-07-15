@@ -784,7 +784,10 @@ describe("company skill mutation permissions", () => {
 
   it("blocks unauthorized preview scan-projects requests before candidate data is returned", async () => {
     const workspaceId = "11111111-1111-4111-8111-111111111111";
-    mockAccessService.decide.mockResolvedValue(denySkillChangeDecision());
+    mockAccessService.decide.mockResolvedValue(denySkillChangeDecision(
+      "deny_actor_restricted",
+      "Actor is restricted from changing skill configuration.",
+    ));
 
     const res = await request(await createApp({
       type: "board",
@@ -797,7 +800,7 @@ describe("company skill mutation permissions", () => {
       .send({ mode: "preview", workspaceIds: [workspaceId] });
 
     expect(res.status, JSON.stringify(res.body)).toBe(403);
-    expect(res.body.error).toBe("Missing permission: skills:create or skills:suggest-changes.");
+    expect(res.body.error).toBe("Actor is restricted from changing skill configuration.");
     expect(mockCompanySkillService.scanProjectWorkspaces).not.toHaveBeenCalled();
   });
 
