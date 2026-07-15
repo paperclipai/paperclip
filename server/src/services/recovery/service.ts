@@ -2347,6 +2347,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     preferredOwnerAgentId?: string | null;
   }) {
     const originalAgentId = input.latestRun?.agentId ?? input.issue.assigneeAgentId;
+    const returnOwnerAgentId = input.issue.assigneeAgentId ?? originalAgentId;
     const routeToOriginal = input.recoveryCause === "process_lost" ||
       input.recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON ||
       input.recoveryCause === "codex_output_inactivity_monitor";
@@ -2381,7 +2382,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         input.issue,
         input.preferredOwnerAgentId,
       ),
-      returnOwnerAgentId: originalAgentId,
+      returnOwnerAgentId,
       routingFallbackReason: null,
     };
   }
