@@ -241,6 +241,12 @@ const TRANSIENT_INFRA_CONTINUATION_ERROR_CODES = new Set<string>([
   "adapter_failed",
   "codex_transient_upstream",
   "claude_transient_upstream",
+  // The hermes-gateway adapter classifies HTTP 429 from the Hermes API server as
+  // `hermes_gateway_rate_limited` (family transient_upstream, carrying retryNotBefore).
+  // Like the codex/claude upstream-throttle codes, it is transient infrastructure and the
+  // continuation should be retried honoring the backoff — not escalated to blocked after a
+  // single attempt. Without this, a rate-limited gateway strands its issue for a human.
+  "hermes_gateway_rate_limited",
   "provider_quota",
   "timeout",
 ]);
