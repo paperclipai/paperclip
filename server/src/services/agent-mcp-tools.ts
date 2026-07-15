@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { companies } from "@paperclipai/db";
+import { companies, mcpServerAuditLog } from "@paperclipai/db";
 import type {
   AgentMcpServerBindingDetail,
   AgentMcpToolDescriptor,
@@ -20,6 +20,33 @@ function normalizeName(value: string | null | undefined): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim().toLowerCase() : null;
 }
 
+// NEO-446 Phase 1: Requester-clearance dimension + MIN(agent, requester) gate.
+const CLEARANCE_RANK: Record<string, number> = { guest: 0, member: 1, board: 2 };
+
+function clearanceRank(role: string | null | undefined): number {
+  return CLEARANCE_RANK[role ?? ""] ?? -1;
+}
+
+function effectiveClearance(
+  bindingAuthority: string,
+  requestingUserRole: string | null | undefined,
+  autonomousAllowed: boolean,
+  invocationSource: string | null | undefined,
+): string {
+  const isAutonomous = requestingUserRole == null;
+  if (isAutonomous) {
+    // Autonomous (heartbeat/no user): grant full binding authority if autonomousAllowed, else guest floor
+    return autonomousAllowed ? bindingAuthority : "guest";
+  }
+  // MIN(agentAuthority, requesterClearance)
+  const agentRank = clearanceRank(bindingAuthority);
+  const requesterRank = clearanceRank(requestingUserRole);
+  const minRank = Math.min(agentRank, requesterRank);
+  if (minRank <= 0) return "guest";
+  if (minRank === 1) return "member";
+  return "board";
+}
+
 export function agentMcpToolService(
   db: Db,
   deps: {
@@ -30,6 +57,10 @@ export function agentMcpToolService(
     isCompanyMcpClientEnabled?: (companyId: string) => Promise<boolean>;
     /** Injectable for tests; defaults to one JSON line per call on stderr. */
     telemetry?: McpToolTelemetrySink;
+    /** Injectable for tests; defaults to db.insert for the real audit log. */
+    writeAuditLog?: (
+      values: typeof mcpServerAuditLog.$inferInsert,
+    ) => Promise<void>;
   },
 ) {
   const mcpServers = deps.mcpServers ?? mcpServerService(db, { secrets: deps.secrets });
@@ -46,6 +77,12 @@ export function agentMcpToolService(
         .where(eq(companies.id, companyId))
         .limit(1);
       return row?.enabled === true;
+    });
+
+  const writeAuditLog =
+    deps.writeAuditLog ??
+    (async (values: typeof mcpServerAuditLog.$inferInsert) => {
+      await db.insert(mcpServerAuditLog).values(values);
     });
 
   // The agent's visible MCP tool set is the intersection of the company's
@@ -120,6 +157,9 @@ export function agentMcpToolService(
       agentId: string;
       companyId?: string | null;
       workspacePath?: string | null;
+      requestingUserId?: string | null;
+      requestingUserRole?: string | null;
+      invocationSource?: "heartbeat" | "channel" | null;
     },
     request: ExecuteAgentMcpToolRequest,
   ): Promise<ExecuteAgentMcpToolResponse> {
@@ -156,6 +196,57 @@ export function agentMcpToolService(
     if (runContext.companyId != null && selectedBinding.server.companyId !== runContext.companyId) {
       throw notFound("The selected MCP server binding is no longer available");
     }
+
+    // Clearance gate (NEO-446 Phase 1): MIN(agentBindingAuthority, requestingUserClearance)
+    const effective = effectiveClearance(
+      selectedBinding.bindingAuthority,
+      runContext.requestingUserRole ?? null,
+      selectedBinding.autonomousAllowed,
+      runContext.invocationSource ?? null,
+    );
+    const toolClearanceRequired =
+      selectedBinding.toolClearances[selected.toolName] ??
+      selectedBinding.defaultMinUserRole;
+
+    const effectiveRank = clearanceRank(effective);
+    const requiredRank = clearanceRank(toolClearanceRequired);
+    const allowed = effectiveRank >= requiredRank;
+
+    // Write durable audit row for every allow/deny — fail-closed on audit failure.
+    await writeAuditLog({
+      companyId: runContext.companyId,
+      mcpServerId: selectedBinding.server.id,
+      serverSlug: selectedBinding.server.slug,
+      eventType: allowed ? "clearance.allowed" : "clearance.denied",
+      toolName: selected.toolName,
+      actorType: "agent",
+      actorId: runContext.agentId,
+      onBehalfOfUserId: runContext.requestingUserId ?? null,
+      onBehalfOfRole: runContext.requestingUserRole ?? null,
+      decision: allowed ? "allow" : "deny",
+      details: {
+        effectiveClearance: effective,
+        requiredClearance: toolClearanceRequired,
+        bindingAuthority: selectedBinding.bindingAuthority,
+        autonomousAllowed: selectedBinding.autonomousAllowed,
+        invocationSource: runContext.invocationSource ?? null,
+      },
+    });
+
+    if (!allowed) {
+      throw Object.assign(
+        new Error(
+          `MCP tool denied by clearance: requires '${toolClearanceRequired}', effective clearance is '${effective}'`,
+        ),
+        {
+          statusCode: 403,
+          code: "mcp_tool_denied_by_clearance",
+          requiredClearance: toolClearanceRequired,
+          requesterClearance: effective,
+        },
+      );
+    }
+
     // One telemetry event per call (NEO-286 D2-5, mirroring NEO-296): tool,
     // server, actor, company, outcome, latency. Arguments, headers, and
     // credentials are never part of the event.

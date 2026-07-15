@@ -9,6 +9,10 @@ export interface AgentMcpServerBinding {
   bindingMode: McpServerBindingMode;
   enabled: boolean;
   allowedTools: string[];
+  bindingAuthority: string;
+  toolClearances: Record<string, string>;
+  defaultMinUserRole: string;
+  autonomousAllowed: boolean;
   createdByAgentId: string | null;
   createdByUserId: string | null;
   createdAt: Date;

@@ -18,6 +18,11 @@ export const mcpServerAuditLog = pgTable(
     actorId: text("actor_id"),
     reason: text("reason"),
     details: jsonb("details").$type<Record<string, unknown>>().notNull().default({}),
+    onBehalfOfUserId: text("on_behalf_of_user_id"),
+    onBehalfOfRole: text("on_behalf_of_role"),
+    decision: text("decision"),
+    argsDigest: text("args_digest"),
+    resultDigest: text("result_digest"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({

@@ -5,6 +5,7 @@ import type {
   AgentMcpToolListResponse,
   ExecuteAgentMcpToolResponse,
 } from "@paperclipai/shared";
+import { executeAgentMcpToolSchema } from "@paperclipai/shared";
 import { agentMcpToolService } from "./agent-mcp-tools.js";
 import {
   agentToolCatalogService,
@@ -336,6 +337,10 @@ function binding(overrides: {
   enabled?: boolean;
   serverEnabled?: boolean;
   allowedTools?: string[];
+  bindingAuthority?: string;
+  toolClearances?: Record<string, string>;
+  defaultMinUserRole?: string;
+  autonomousAllowed?: boolean;
 }) {
   return {
     companyId: overrides.companyId,
@@ -343,7 +348,13 @@ function binding(overrides: {
     mcpServerId: overrides.serverId,
     bindingMode: "allowed" as const,
     enabled: overrides.enabled ?? true,
-    allowedTools: overrides.allowedTools ?? [],
+    allowedTools: overrides.allowedTools ?? ["create_issue"],
+    bindingAuthority: overrides.bindingAuthority ?? "board",
+    toolClearances: overrides.toolClearances ?? {},
+    defaultMinUserRole: overrides.defaultMinUserRole ?? "board",
+    // Default true in tests so pre-clearance-gate tests don't regress;
+    // clearance-gate tests explicitly set autonomousAllowed: false to exercise the deny path.
+    autonomousAllowed: overrides.autonomousAllowed ?? true,
     createdByAgentId: null,
     createdByUserId: null,
     createdAt: new Date().toISOString(),
@@ -374,22 +385,26 @@ function serviceWithBindings(
   bindings: unknown[],
   opts: {
     isCompanyMcpClientEnabled?: (companyId: string) => Promise<boolean>;
+    writeAuditLog?: () => Promise<void>;
   } = {},
 ) {
-  const executeTool = vi.fn(
-    async (): Promise<{
+  // Typed to the real executeTool return shape so error-outcome tests can
+  // mock a { content: null, error: "..." } result without a type mismatch.
+  const executeTool = vi.fn<
+    () => Promise<{
       content: string | null;
       data: unknown;
       error: string | null;
-      logs: unknown[];
-    }> => ({
-      content: "ok",
-      data: {},
-      error: null,
-      logs: [],
-    }),
-  );
+      logs: string[];
+    }>
+  >(async () => ({
+    content: "ok",
+    data: {},
+    error: null,
+    logs: [],
+  }));
   const telemetry = vi.fn();
+  const writeAuditLog = opts.writeAuditLog ?? vi.fn(async () => {});
   const svc = agentMcpToolService(NO_DB, {
     secrets: null as never,
     mcpServers: {
@@ -398,8 +413,9 @@ function serviceWithBindings(
     } as never,
     isCompanyMcpClientEnabled: opts.isCompanyMcpClientEnabled ?? (async () => true),
     telemetry,
+    writeAuditLog,
   });
-  return { svc, executeTool, telemetry };
+  return { svc, executeTool, telemetry, writeAuditLog };
 }
 
 describe("agentMcpToolService company scoping", () => {
@@ -553,6 +569,236 @@ describe("agentMcpToolService telemetry (NEO-286 D2-5)", () => {
     expect(result.ok).toBe(false);
     expect(telemetry.mock.calls[0]![0]).toMatchObject({ status: "error" });
     expect(telemetry.mock.calls[0]![0].errorName).toBeUndefined();
+  });
+});
+
+// NEO-445 Phase 0 regression tests — fail-closed hardening
+describe("NEO-445 fail-closed hardening", () => {
+  describe("Fix 4: empty allowedTools = ZERO tools", () => {
+    it("exposes no tools when allowedTools is empty", async () => {
+      const { svc } = serviceWithBindings([
+        binding({ companyId: COMPANY_A, serverId: SERVER_X, slug: "github", allowedTools: [] }),
+      ]);
+      const catalog = await svc.listForAgent(AGENT_1, { companyId: COMPANY_A });
+      expect(catalog.tools).toHaveLength(0);
+      expect(catalog.servers).toHaveLength(0);
+    });
+
+    it("refuses to execute when allowedTools is empty", async () => {
+      const { svc, executeTool } = serviceWithBindings([
+        binding({ companyId: COMPANY_A, serverId: SERVER_X, slug: "github", allowedTools: [] }),
+      ]);
+      await expect(
+        svc.executeForRun(
+          { agentId: AGENT_1, companyId: COMPANY_A },
+          { toolName: "create_issue" },
+        ),
+      ).rejects.toMatchObject({ status: 404 });
+      expect(executeTool).not.toHaveBeenCalled();
+    });
+
+    it("exposes only the explicitly listed tools", async () => {
+      const { svc } = serviceWithBindings([
+        binding({ companyId: COMPANY_A, serverId: SERVER_X, slug: "github", allowedTools: ["create_issue"] }),
+      ]);
+      const catalog = await svc.listForAgent(AGENT_1, { companyId: COMPANY_A });
+      expect(catalog.tools.map((t) => t.toolName)).toEqual(["create_issue"]);
+    });
+  });
+
+  describe("Fix 3: companyId required non-null in executeForRun", () => {
+    it("rejects execution when companyId mismatches server company", async () => {
+      const { svc, executeTool } = serviceWithBindings([
+        binding({ companyId: COMPANY_B, serverId: SERVER_Y, slug: "slack" }),
+      ]);
+      await expect(
+        svc.executeForRun(
+          { agentId: AGENT_1, companyId: COMPANY_A },
+          { toolName: "create_issue" },
+        ),
+      ).rejects.toMatchObject({ status: 404 });
+      expect(executeTool).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("Fix 5: strict schema rejects requester-spoofing fields", () => {
+    it("accepts a valid minimal request", () => {
+      const result = executeAgentMcpToolSchema.safeParse({ toolName: "my_tool" });
+      expect(result.success).toBe(true);
+    });
+
+    it("rejects requestingUserId in request body", () => {
+      const result = executeAgentMcpToolSchema.safeParse({
+        toolName: "my_tool",
+        requestingUserId: "evil-user",
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it("rejects onBehalfOf in request body", () => {
+      const result = executeAgentMcpToolSchema.safeParse({
+        toolName: "my_tool",
+        onBehalfOf: "someone-else",
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it("rejects actAs in request body", () => {
+      const result = executeAgentMcpToolSchema.safeParse({
+        toolName: "my_tool",
+        actAs: "admin",
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it("rejects any unknown field", () => {
+      const result = executeAgentMcpToolSchema.safeParse({
+        toolName: "my_tool",
+        unknownField: "should-fail",
+      });
+      expect(result.success).toBe(false);
+    });
+  });
+});
+
+describe("NEO-446 Phase 1: clearance gate", () => {
+  it("allows a board user with a board-required tool", async () => {
+    const auditLog = vi.fn(async () => {});
+    const { svc, executeTool } = serviceWithBindings(
+      [binding({ companyId: COMPANY_A, serverId: SERVER_X, slug: "github", bindingAuthority: "board", defaultMinUserRole: "board" })],
+      { writeAuditLog: auditLog },
+    );
+
+    const result = await svc.executeForRun(
+      { agentId: AGENT_1, companyId: COMPANY_A, requestingUserId: "user-1", requestingUserRole: "board" },
+      { toolName: "create_issue" },
+    );
+    expect(result.ok).toBe(true);
+    expect(executeTool).toHaveBeenCalledTimes(1);
+    expect(auditLog).toHaveBeenCalledWith(expect.objectContaining({ decision: "allow", eventType: "clearance.allowed" }));
+  });
+
+  it("denies a member user with a board-required tool", async () => {
+    const auditLog = vi.fn(async () => {});
+    const { svc, executeTool } = serviceWithBindings(
+      [binding({ companyId: COMPANY_A, serverId: SERVER_X, slug: "github", bindingAuthority: "board", defaultMinUserRole: "board" })],
+      { writeAuditLog: auditLog },
+    );
+
+    await expect(
+      svc.executeForRun(
+        { agentId: AGENT_1, companyId: COMPANY_A, requestingUserId: "user-2", requestingUserRole: "member" },
+        { toolName: "create_issue" },
+      ),
+    ).rejects.toMatchObject({
+      statusCode: 403,
+      code: "mcp_tool_denied_by_clearance",
+    });
+    expect(executeTool).not.toHaveBeenCalled();
+    expect(auditLog).toHaveBeenCalledWith(expect.objectContaining({ decision: "deny", eventType: "clearance.denied" }));
+  });
+
+  it("allows a guest user with a guest-required tool", async () => {
+    const auditLog = vi.fn(async () => {});
+    const { svc, executeTool } = serviceWithBindings(
+      [binding({ companyId: COMPANY_A, serverId: SERVER_X, slug: "github", bindingAuthority: "board", defaultMinUserRole: "guest" })],
+      { writeAuditLog: auditLog },
+    );
+
+    const result = await svc.executeForRun(
+      { agentId: AGENT_1, companyId: COMPANY_A, requestingUserId: "user-3", requestingUserRole: "guest" },
+      { toolName: "create_issue" },
+    );
+    expect(result.ok).toBe(true);
+    expect(executeTool).toHaveBeenCalledTimes(1);
+  });
+
+  it("allows autonomous invocation when autonomousAllowed=true", async () => {
+    const auditLog = vi.fn(async () => {});
+    const { svc, executeTool } = serviceWithBindings(
+      [binding({ companyId: COMPANY_A, serverId: SERVER_X, slug: "github", bindingAuthority: "board", defaultMinUserRole: "board", autonomousAllowed: true })],
+      { writeAuditLog: auditLog },
+    );
+
+    const result = await svc.executeForRun(
+      { agentId: AGENT_1, companyId: COMPANY_A, requestingUserId: null, requestingUserRole: null, invocationSource: "heartbeat" },
+      { toolName: "create_issue" },
+    );
+    expect(result.ok).toBe(true);
+    expect(executeTool).toHaveBeenCalledTimes(1);
+  });
+
+  it("denies autonomous invocation when autonomousAllowed=false", async () => {
+    const auditLog = vi.fn(async () => {});
+    const { svc, executeTool } = serviceWithBindings(
+      [binding({ companyId: COMPANY_A, serverId: SERVER_X, slug: "github", bindingAuthority: "board", defaultMinUserRole: "board", autonomousAllowed: false })],
+      { writeAuditLog: auditLog },
+    );
+
+    await expect(
+      svc.executeForRun(
+        { agentId: AGENT_1, companyId: COMPANY_A, requestingUserId: null, requestingUserRole: null, invocationSource: "heartbeat" },
+        { toolName: "create_issue" },
+      ),
+    ).rejects.toMatchObject({
+      statusCode: 403,
+      code: "mcp_tool_denied_by_clearance",
+    });
+    expect(executeTool).not.toHaveBeenCalled();
+  });
+
+  it("allows member user when binding authority=member and tool requires member: MIN(member,member)=member", async () => {
+    const auditLog = vi.fn(async () => {});
+    const { svc, executeTool } = serviceWithBindings(
+      [binding({ companyId: COMPANY_A, serverId: SERVER_X, slug: "github", bindingAuthority: "member", defaultMinUserRole: "member" })],
+      { writeAuditLog: auditLog },
+    );
+
+    const result = await svc.executeForRun(
+      { agentId: AGENT_1, companyId: COMPANY_A, requestingUserId: "user-4", requestingUserRole: "member" },
+      { toolName: "create_issue" },
+    );
+    expect(result.ok).toBe(true);
+    expect(executeTool).toHaveBeenCalledTimes(1);
+  });
+
+  it("respects per-tool clearance override in toolClearances map", async () => {
+    const auditLog = vi.fn(async () => {});
+    const { svc, executeTool } = serviceWithBindings(
+      [binding({
+        companyId: COMPANY_A,
+        serverId: SERVER_X,
+        slug: "github",
+        bindingAuthority: "board",
+        toolClearances: { create_issue: "member" },
+        defaultMinUserRole: "board",
+      })],
+      { writeAuditLog: auditLog },
+    );
+
+    // member user can use create_issue which has tool-specific override of "member"
+    const result = await svc.executeForRun(
+      { agentId: AGENT_1, companyId: COMPANY_A, requestingUserId: "user-5", requestingUserRole: "member" },
+      { toolName: "create_issue" },
+    );
+    expect(result.ok).toBe(true);
+    expect(executeTool).toHaveBeenCalledTimes(1);
+  });
+
+  it("propagates audit write failure (fail-closed)", async () => {
+    const auditLog = vi.fn(async () => { throw new Error("DB unavailable"); });
+    const { svc, executeTool } = serviceWithBindings(
+      [binding({ companyId: COMPANY_A, serverId: SERVER_X, slug: "github", bindingAuthority: "board", defaultMinUserRole: "board" })],
+      { writeAuditLog: auditLog },
+    );
+
+    await expect(
+      svc.executeForRun(
+        { agentId: AGENT_1, companyId: COMPANY_A, requestingUserId: "user-6", requestingUserRole: "board" },
+        { toolName: "create_issue" },
+      ),
+    ).rejects.toThrow("DB unavailable");
+    expect(executeTool).not.toHaveBeenCalled();
   });
 });
 

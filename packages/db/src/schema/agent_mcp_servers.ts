@@ -22,6 +22,10 @@ export const agentMcpServers = pgTable(
     bindingMode: text("binding_mode").$type<McpServerBindingMode>().notNull().default("allowed"),
     enabled: boolean("enabled").notNull().default(true),
     allowedTools: jsonb("allowed_tools").$type<string[]>().notNull().default([]),
+    bindingAuthority: text("binding_authority").notNull().default("board"),
+    toolClearances: jsonb("tool_clearances").$type<Record<string, string>>().notNull().default({}),
+    defaultMinUserRole: text("default_min_user_role").notNull().default("board"),
+    autonomousAllowed: boolean("autonomous_allowed").notNull().default(false),
     createdByAgentId: uuid("created_by_agent_id").references(() => agents.id, {
       onDelete: "set null",
     }),

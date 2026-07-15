@@ -1051,6 +1051,13 @@
       "when": 1783659600000,
       "tag": "10004_mcp_server_governance",
       "breakpoints": true
+    },
+    {
+      "idx": 115,
+      "version": "7",
+      "when": 1752624000000,
+      "tag": "0115_mcp_tool_clearance",
+      "breakpoints": true
     }
   ]
 }
