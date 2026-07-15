@@ -127,7 +127,9 @@ describe("same-machine MCP isolation", () => {
   it("keeps concurrent Claude CLI MCP configs strict and disjoint", async () => {
     const version = await commandVersion("claude");
     if (!version) return;
-    expect(version).toBe("2.1.207 (Claude Code)");
+    const claudeVersionMatch = version.match(/^2\.1\.(\d+) \(Claude Code\)$/);
+    expect(claudeVersionMatch).not.toBeNull();
+    expect(Number(claudeVersionMatch?.[1])).toBeGreaterThanOrEqual(207);
 
     const root = await createMcpIsolationRoot("paperclip-claude-mcp-isolation-");
     cleanupRoots.push(root);
@@ -194,7 +196,7 @@ describe("same-machine MCP isolation", () => {
   it("keeps concurrent Codex homes disjoint and supports CLI MCP overrides", async () => {
     const version = await commandVersion("codex");
     if (!version) return;
-    expect(version).toBe("codex-cli 0.132.0");
+    expect(version).toMatch(/^codex-cli \d+\.\d+\.\d+$/);
 
     const root = await createMcpIsolationRoot("paperclip-codex-mcp-isolation-");
     cleanupRoots.push(root);

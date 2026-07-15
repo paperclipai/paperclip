@@ -563,6 +563,8 @@ export type {
   CompanySkillImportRequest,
   CompanySkillImportResult,
   CompanySkillProjectScanRequest,
+  CompanySkillProjectScanCandidateStatus,
+  CompanySkillProjectScanCandidate,
   CompanySkillProjectScanSkipped,
   CompanySkillProjectScanConflict,
   CompanySkillProjectScanResult,
@@ -2108,3 +2110,4 @@ export {
   type CreateEnvironmentCustomImageTerminalSessionToken,
   type EnvironmentCustomImageTerminalSessionToken,
 } from "./validators/environment-custom-images.js";
+export * from "./validators/skill-policy.js";

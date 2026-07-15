@@ -17,6 +17,7 @@ import {
   resolveAdapterExecutionTargetTimeoutSec,
   resolveAdapterExecutionTargetCommandForLogs,
   runAdapterExecutionTargetProcess,
+  runAdapterExecutionTargetShellCommand,
   startAdapterExecutionTargetPaperclipBridge,
 } from "@paperclipai/adapter-utils/execution-target";
 import {
@@ -47,12 +48,14 @@ import {
 } from "@paperclipai/adapter-utils/local-process-sandbox";
 import {
   parseCodexJsonl,
+  classifyCodexAuthRefreshFailure,
   extractCodexRetryNotBefore,
   isCodexProviderQuotaError,
   isCodexTransientUpstreamError,
   isCodexUnknownSessionError,
 } from "./parse.js";
 import {
+  codexHomeHasUsableAuth,
   evaluateCodexCredentialReadiness,
   isManagedCodexHomePath,
   pathExists,
@@ -64,6 +67,12 @@ import {
   writeManagedCodexMcpConfig,
   type ManagedCodexMcpGateway,
 } from "./codex-home.js";
+import {
+  CODEX_SANDBOX_AUTH_EXISTS_COMMAND,
+  CODEX_SANDBOX_AUTH_PRECEDENCE_WARNING,
+  CODEX_SANDBOX_AUTH_PRECEDENCE_WARNING_LOG_LINE,
+  resolveCodexAuthPrecedence,
+} from "./auth-precedence.js";
 import { prepareCodexRuntimeConfig } from "./runtime-config.js";
 import { resolveCodexDesiredSkillNames } from "./skills.js";
 import { buildCodexExecArgs } from "./codex-args.js";
@@ -269,6 +278,76 @@ function managedMcpGatewaysFromContext(context: Record<string, unknown>): Manage
     .filter((gateway): gateway is ManagedCodexMcpGateway => Boolean(gateway));
 }
 
+type ResolvedExecutionTarget = ReturnType<typeof readAdapterExecutionTarget>;
+type MaybeResolvedExecutionTarget = ResolvedExecutionTarget | undefined;
+
+async function sandboxCodexAuthJsonExists(input: {
+  runId: string;
+  target: MaybeResolvedExecutionTarget;
+  cwd: string;
+}): Promise<boolean> {
+  if (!input.target || input.target.kind !== "remote" || input.target.transport !== "sandbox") {
+    return false;
+  }
+
+  try {
+    const result = await runAdapterExecutionTargetShellCommand(
+      input.runId,
+      input.target,
+      CODEX_SANDBOX_AUTH_EXISTS_COMMAND,
+      {
+        cwd: input.cwd,
+        env: {},
+        timeoutSec: 5,
+      },
+    );
+    return !result.timedOut && result.exitCode === 0;
+  } catch {
+    return false;
+  }
+}
+
+async function emitSandboxAuthPrecedenceWarningIfNeeded(input: {
+  runId: string;
+  target: MaybeResolvedExecutionTarget;
+  cwd: string;
+  configuredApiKey: boolean;
+  hostAuthJson: boolean;
+  onLog: AdapterExecutionContext["onLog"];
+  onEvent: AdapterExecutionContext["onEvent"];
+}): Promise<void> {
+  if (!input.target || input.target.kind !== "remote" || input.target.transport !== "sandbox") {
+    return;
+  }
+
+  const sandboxAuthJson = await sandboxCodexAuthJsonExists({
+    runId: input.runId,
+    target: input.target,
+    cwd: input.cwd,
+  });
+  const resolution = resolveCodexAuthPrecedence({
+    configuredApiKey: input.configuredApiKey,
+    hostAuthJson: input.hostAuthJson,
+    sandboxAuthJson,
+  });
+  if (!resolution.shouldWarn) return;
+
+  await input.onLog("stderr", CODEX_SANDBOX_AUTH_PRECEDENCE_WARNING_LOG_LINE);
+  await input.onEvent?.({
+    eventType: "codex.auth_precedence_warning",
+    stream: "system",
+    level: "warn",
+    message: CODEX_SANDBOX_AUTH_PRECEDENCE_WARNING,
+    payload: {
+      configuredApiKey: input.configuredApiKey,
+      hostAuthJson: input.hostAuthJson,
+      sandboxAuthJson,
+      winner: resolution.winner,
+      sandboxLoginShadowed: resolution.sandboxLoginShadowed,
+    },
+  });
+}
+
 function buildCodexTransientHandoffNote(input: {
   previousSessionId: string | null;
   fallbackMode: CodexTransientFallbackMode;
@@ -371,7 +450,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     await ctx.onLog("stderr", formatCodexAcpFallbackMessage(engineSelection.fallbackReason));
   }
 
-  const { runId, agent, runtime, config, context, onLog, onMeta, onSpawn, authToken } = ctx;
+  const { runId, agent, runtime, config, context, onLog, onMeta, onEvent, onSpawn, authToken } = ctx;
 
   const promptTemplate = asString(
     config.promptTemplate,
@@ -580,6 +659,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ? preparedExecutionTargetRuntime?.assetDirs.home ??
         path.posix.join(effectiveExecutionCwd, ".paperclip-runtime", "codex", "home")
       : null;
+    await emitSandboxAuthPrecedenceWarningIfNeeded({
+      runId,
+      target: runtimeExecutionTarget,
+      cwd: effectiveExecutionCwd,
+      configuredApiKey: Boolean(configuredOpenAiApiKey),
+      hostAuthJson: await codexHomeHasUsableAuth(effectiveCodexHome),
+      onLog,
+      onEvent,
+    });
     const hasExplicitApiKey =
       typeof envConfig.PAPERCLIP_API_KEY === "string" && envConfig.PAPERCLIP_API_KEY.trim().length > 0;
     const env: Record<string, string> = { ...paperclipBaseEnv };
@@ -1116,8 +1204,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
               errorMessage: fallbackErrorMessage,
             })
           : null;
+      const authRefreshFailure =
+        (attempt.proc.exitCode ?? 0) !== 0
+          ? classifyCodexAuthRefreshFailure({
+              stdout: attempt.proc.stdout,
+              stderr: attempt.proc.stderr,
+              errorMessage: fallbackErrorMessage,
+            })
+          : null;
       const providerQuota =
         (attempt.proc.exitCode ?? 0) !== 0 &&
+        !authRefreshFailure &&
         isCodexProviderQuotaError({
           stdout: attempt.proc.stdout,
           stderr: attempt.proc.stderr,
@@ -1125,13 +1222,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         });
       const transientUpstream =
         (attempt.proc.exitCode ?? 0) !== 0 &&
+        !authRefreshFailure &&
         !providerQuota &&
         isCodexTransientUpstreamError({
           stdout: attempt.proc.stdout,
           stderr: attempt.proc.stderr,
           errorMessage: fallbackErrorMessage,
         });
-      const errorFamily = providerQuota ? "provider_quota" : transientUpstream ? "transient_upstream" : null;
+      const errorFamily = authRefreshFailure ?? (providerQuota ? "provider_quota" : transientUpstream ? "transient_upstream" : null);
 
       return {
         exitCode: attempt.proc.exitCode,
@@ -1142,7 +1240,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             ? null
             : fallbackErrorMessage,
         errorCode:
-          providerQuota
+          authRefreshFailure
+            ? authRefreshFailure
+            : providerQuota
             ? "provider_quota"
             : transientUpstream
             ? "codex_transient_upstream"

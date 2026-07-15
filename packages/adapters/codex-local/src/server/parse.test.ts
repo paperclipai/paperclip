@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  classifyCodexAuthRefreshFailure,
   extractCodexRetryNotBefore,
   isCodexProviderQuotaError,
   isCodexTransientUpstreamError,
@@ -67,6 +68,28 @@ describe("parseCodexJsonl", () => {
       usageBasis: "per_run",
       errorMessage: null,
     });
+  });
+});
+
+describe("classifyCodexAuthRefreshFailure", () => {
+  it("classifies explicit refresh-token failure messages", () => {
+    expect(classifyCodexAuthRefreshFailure({ errorMessage: "provider error: refresh_token_reused" })).toBe(
+      "refresh_token_reused",
+    );
+    expect(classifyCodexAuthRefreshFailure({ stderr: "OAuth failed: refresh token has expired" })).toBe(
+      "refresh_token_expired",
+    );
+    expect(classifyCodexAuthRefreshFailure({ stdout: "OAuth failed: invalid_grant" })).toBe(
+      "refresh_token_invalidated",
+    );
+    expect(classifyCodexAuthRefreshFailure({ errorMessage: "credential refresh returned 401 Unauthorized" })).toBe(
+      "refresh_token_invalidated",
+    );
+  });
+
+  it("does not classify bare 401 or quota messages as auth-refresh failures", () => {
+    expect(classifyCodexAuthRefreshFailure({ errorMessage: "chatgpt wham api returned 401" })).toBeNull();
+    expect(classifyCodexAuthRefreshFailure({ errorMessage: "You've hit your usage limit for GPT-5." })).toBeNull();
   });
 });
 
