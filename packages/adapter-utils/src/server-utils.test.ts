@@ -1012,6 +1012,97 @@ describe("renderPaperclipWakePrompt", () => {
     });
   });
 
+  it("renders goal chain and company context when the payload carries goalContext", () => {
+    const payload = {
+      reason: "issue_assigned",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-2001",
+        title: "Ship onboarding flow",
+        status: "in_progress",
+      },
+      goalContext: {
+        company: {
+          name: "Acme",
+          description: "Autonomous companies for small businesses.",
+        },
+        goals: [
+          { id: "goal-root", title: "Reach $1M ARR", level: "company", status: "active" },
+          {
+            id: "goal-leaf",
+            title: "Launch self-serve onboarding",
+            level: "team",
+            status: "active",
+            description: "Reduce activation time from days to minutes.",
+          },
+        ],
+      },
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      comments: [],
+      fallbackFetchNeeded: false,
+    };
+
+    const prompt = renderPaperclipWakePrompt(payload);
+    expect(prompt).toContain("- company: Acme — Autonomous companies for small businesses.");
+    expect(prompt).toContain("- goal chain (root → leaf): Reach $1M ARR → Launch self-serve onboarding");
+    expect(prompt).toContain("- goal detail: Reduce activation time from days to minutes.");
+
+    const serialized = stringifyPaperclipWakePayload(payload);
+    expect(JSON.parse(serialized ?? "{}")).toMatchObject({
+      goalContext: {
+        company: { name: "Acme" },
+        goals: [{ title: "Reach $1M ARR" }, { title: "Launch self-serve onboarding" }],
+      },
+    });
+  });
+
+  it("keeps wake prompts unchanged when goalContext is absent or empty", () => {
+    const basePayload = {
+      reason: "issue_assigned",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-2002",
+        title: "No goal issue",
+        status: "in_progress",
+      },
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      comments: [],
+      fallbackFetchNeeded: false,
+    };
+
+    const withoutField = renderPaperclipWakePrompt(basePayload);
+    const withEmptyField = renderPaperclipWakePrompt({ ...basePayload, goalContext: { company: null, goals: [] } });
+
+    expect(withoutField).not.toContain("- company:");
+    expect(withoutField).not.toContain("- goal chain");
+    expect(withEmptyField).toBe(withoutField);
+  });
+
+  it("clips oversized goalContext descriptions and chains during normalization", () => {
+    const payload = {
+      reason: "issue_assigned",
+      issue: { id: "issue-1", identifier: "PAP-2003", title: "Clip test", status: "in_progress" },
+      goalContext: {
+        company: { name: "Acme", description: "x".repeat(1_000) },
+        goals: Array.from({ length: 10 }, (_, index) => ({
+          id: `goal-${index}`,
+          title: `Goal ${index}`,
+          description: "y".repeat(1_000),
+        })),
+      },
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      comments: [],
+      fallbackFetchNeeded: false,
+    };
+
+    const parsed = JSON.parse(stringifyPaperclipWakePayload(payload) ?? "{}") as {
+      goalContext: { company: { description: string }; goals: Array<{ description: string }> };
+    };
+    expect(parsed.goalContext.company.description.length).toBeLessThanOrEqual(280);
+    expect(parsed.goalContext.goals.length).toBeLessThanOrEqual(6);
+    expect(parsed.goalContext.goals[0]!.description.length).toBeLessThanOrEqual(400);
+  });
+
   it("preserves Chinese, Japanese, and Hindi issue and comment text in scoped wake prompts", () => {
     const title = "验证中文任务";
     const commentBody = [

@@ -620,9 +620,24 @@ type PaperclipWakeExecutionWorkspace = {
   branchName: string | null;
 };
 
+type PaperclipWakeGoalSummary = {
+  id: string | null;
+  title: string;
+  level: string | null;
+  status: string | null;
+  description: string | null;
+};
+
+type PaperclipWakeGoalContext = {
+  company: { name: string; description: string | null } | null;
+  // Ordered root → leaf so the chain reads mission-first.
+  goals: PaperclipWakeGoalSummary[];
+};
+
 type PaperclipWakePayload = {
   reason: string | null;
   issue: PaperclipWakeIssue | null;
+  goalContext: PaperclipWakeGoalContext | null;
   checkedOutByHarness: boolean;
   dependencyBlockedInteraction: boolean;
   treeHoldInteraction: boolean;
@@ -668,6 +683,47 @@ function normalizePaperclipWakeIssue(value: unknown): PaperclipWakeIssue | null 
     workMode,
     priority,
   };
+}
+
+const MAX_WAKE_GOAL_CONTEXT_CHAIN = 6;
+const MAX_WAKE_GOAL_CONTEXT_DESCRIPTION_CHARS = 400;
+const MAX_WAKE_GOAL_CONTEXT_COMPANY_DESCRIPTION_CHARS = 280;
+
+function normalizePaperclipWakeGoalContext(value: unknown): PaperclipWakeGoalContext | null {
+  const context = parseObject(value);
+  const companyRaw = parseObject(context.company);
+  const companyName = asString(companyRaw.name, "").trim();
+  const companyDescription = asString(companyRaw.description, "").trim();
+  const company = companyName
+    ? {
+        name: companyName,
+        description: companyDescription
+          ? companyDescription.slice(0, MAX_WAKE_GOAL_CONTEXT_COMPANY_DESCRIPTION_CHARS)
+          : null,
+      }
+    : null;
+  const goals = Array.isArray(context.goals)
+    ? context.goals
+        .map((entry): PaperclipWakeGoalSummary | null => {
+          const goal = parseObject(entry);
+          const title = asString(goal.title, "").trim();
+          if (!title) return null;
+          const description = asString(goal.description, "").trim();
+          return {
+            id: asString(goal.id, "").trim() || null,
+            title,
+            level: asString(goal.level, "").trim() || null,
+            status: asString(goal.status, "").trim() || null,
+            description: description
+              ? description.slice(0, MAX_WAKE_GOAL_CONTEXT_DESCRIPTION_CHARS)
+              : null,
+          };
+        })
+        .filter((entry): entry is PaperclipWakeGoalSummary => Boolean(entry))
+        .slice(0, MAX_WAKE_GOAL_CONTEXT_CHAIN)
+    : [];
+  if (!company && goals.length === 0) return null;
+  return { company, goals };
 }
 
 function normalizePaperclipWakeComment(value: unknown): PaperclipWakeComment | null {
@@ -1222,6 +1278,7 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
   return {
     reason: asString(payload.reason, "").trim() || null,
     issue: normalizePaperclipWakeIssue(payload.issue),
+    goalContext: normalizePaperclipWakeGoalContext(payload.goalContext),
     checkedOutByHarness: asBoolean(payload.checkedOutByHarness, false),
     dependencyBlockedInteraction: asBoolean(payload.dependencyBlockedInteraction, false),
     treeHoldInteraction: asBoolean(payload.treeHoldInteraction, false),
@@ -1359,6 +1416,23 @@ export function renderPaperclipWakePrompt(
   }
   if (normalized.issue?.priority) {
     lines.push(`- issue priority: ${normalized.issue.priority}`);
+  }
+  if (normalized.goalContext) {
+    const goalContext = normalized.goalContext;
+    if (goalContext.company) {
+      lines.push(
+        `- company: ${goalContext.company.name}${goalContext.company.description ? ` — ${goalContext.company.description}` : ""}`,
+      );
+    }
+    if (goalContext.goals.length > 0) {
+      lines.push(
+        `- goal chain (root → leaf): ${goalContext.goals.map((goal) => goal.title).join(" → ")}`,
+      );
+      const leafGoal = goalContext.goals[goalContext.goals.length - 1];
+      if (leafGoal?.description) {
+        lines.push(`- goal detail: ${leafGoal.description}`);
+      }
+    }
   }
   if (normalized.checkboxSelection) {
     if (normalized.checkboxSelection.prompt) {

@@ -43,6 +43,7 @@ import {
   documentAnnotationComments,
   documentAnnotationThreads,
   documentRevisions,
+  goals,
   issueDocuments,
   executionWorkspaces,
   heartbeatRunEvents,
@@ -301,6 +302,11 @@ const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_INLINE_WAKE_COMMENTS = 8;
 const MAX_INLINE_WAKE_COMMENT_BODY_CHARS = 4_000;
 const MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS = 12_000;
+// Wake goal context: keep the chain short and the descriptions clipped so the
+// "why" travels with every wake without bloating the prompt.
+const MAX_WAKE_GOAL_CHAIN_LENGTH = 6;
+const MAX_WAKE_GOAL_DESCRIPTION_CHARS = 400;
+const MAX_WAKE_COMPANY_DESCRIPTION_CHARS = 280;
 const execFile = promisify(execFileCallback);
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const CANCELLABLE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
@@ -4367,6 +4373,7 @@ export async function buildPaperclipWakePayload(input: {
         status: string;
         priority: string;
         workMode: string;
+        goalId?: string | null;
         projectId?: string | null;
         executionPolicy?: unknown;
       }
@@ -4389,12 +4396,73 @@ export async function buildPaperclipWakePayload(input: {
             status: issues.status,
             priority: issues.priority,
             workMode: issues.workMode,
+            goalId: issues.goalId,
           })
           .from(issues)
           .where(and(eq(issues.id, issueId), eq(issues.companyId, input.companyId)))
           .then((rows) => rows[0] ?? null)
       : null);
   if (commentIds.length === 0 && Object.keys(executionStage).length === 0 && !issueSummary) return null;
+
+  // Goal ancestry + company mission: the wake payload carries the "why" chain
+  // (root goal → leaf goal) alongside the "what" (issue + comments), so agents
+  // see purpose without an extra API round-trip. The chain walk and the company
+  // lookup are independent, so they run concurrently.
+  const goalChainPromise = (async () => {
+    const chain: Array<{
+      id: string;
+      title: string;
+      level: string | null;
+      status: string | null;
+      description: string | null;
+    }> = [];
+    if (!issueSummary?.goalId) return chain;
+    const visitedGoalIds = new Set<string>();
+    let currentGoalId: string | null = issueSummary.goalId;
+    while (currentGoalId && !visitedGoalIds.has(currentGoalId) && chain.length < MAX_WAKE_GOAL_CHAIN_LENGTH) {
+      visitedGoalIds.add(currentGoalId);
+      const goalRow: {
+        id: string;
+        title: string;
+        level: string | null;
+        status: string | null;
+        description: string | null;
+        parentId: string | null;
+      } | null = await input.db
+        .select({
+          id: goals.id,
+          title: goals.title,
+          level: goals.level,
+          status: goals.status,
+          description: goals.description,
+          parentId: goals.parentId,
+        })
+        .from(goals)
+        .where(and(eq(goals.id, currentGoalId), eq(goals.companyId, input.companyId)))
+        .then((rows) => rows[0] ?? null);
+      if (!goalRow) break;
+      chain.push({
+        id: goalRow.id,
+        title: goalRow.title,
+        level: goalRow.level,
+        status: goalRow.status,
+        description: goalRow.description
+          ? goalRow.description.slice(0, MAX_WAKE_GOAL_DESCRIPTION_CHARS)
+          : null,
+      });
+      currentGoalId = goalRow.parentId;
+    }
+    chain.reverse();
+    return chain;
+  })();
+  const companySummaryPromise = issueSummary
+    ? input.db
+        .select({ name: companies.name, description: companies.description })
+        .from(companies)
+        .where(eq(companies.id, input.companyId))
+        .then((rows) => rows[0] ?? null)
+    : Promise.resolve(null);
+  const [goalChain, companySummary] = await Promise.all([goalChainPromise, companySummaryPromise]);
 
   const commentRows =
     commentIds.length === 0
@@ -4566,6 +4634,20 @@ export async function buildPaperclipWakePayload(input: {
           workMode: issueSummary.workMode,
         }
       : null,
+    goalContext:
+      issueSummary && (companySummary || goalChain.length > 0)
+        ? {
+            company: companySummary
+              ? {
+                  name: companySummary.name,
+                  description: companySummary.description
+                    ? companySummary.description.slice(0, MAX_WAKE_COMPANY_DESCRIPTION_CHARS)
+                    : null,
+                }
+              : null,
+            goals: goalChain,
+          }
+        : null,
     childIssueSummaries: Array.isArray(input.contextSnapshot.childIssueSummaries)
       ? input.contextSnapshot.childIssueSummaries
       : [],
@@ -5809,6 +5891,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         status: issues.status,
         workMode: issues.workMode,
         priority: issues.priority,
+        goalId: issues.goalId,
         projectId: issues.projectId,
         projectWorkspaceId: issues.projectWorkspaceId,
         executionWorkspaceId: issues.executionWorkspaceId,
@@ -11574,6 +11657,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             status: issueRef.status,
             priority: issueRef.priority,
             workMode: issueRef.workMode,
+            goalId: issueContext?.goalId ?? null,
             projectId: issueRef.projectId,
             executionPolicy: issueContext?.executionPolicy ?? null,
           }
