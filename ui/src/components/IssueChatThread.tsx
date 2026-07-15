@@ -4304,16 +4304,29 @@ export function IssueChatThread({
   });
   const resolvedTranscriptByRun = transcriptsByRunId ?? transcriptByRun;
   const resolvedHasOutputForRun = hasOutputForRunOverride ?? hasOutputForRun;
-  const pendingConfirmationInteractions = useMemo(
-    () => interactions.filter(isPendingConfirmationInteraction),
-    [interactions],
-  );
-  const timelineInteractions = useMemo(
-    () => showComposer
-      ? interactions.filter((interaction) => !isPendingConfirmationInteraction(interaction))
-      : interactions,
-    [interactions, showComposer],
-  );
+  const { pendingConfirmationInteractions, timelineInteractions } = useMemo(() => {
+    if (!showComposer) {
+      return {
+        pendingConfirmationInteractions: [],
+        timelineInteractions: interactions,
+      };
+    }
+
+    const pending: Array<RequestConfirmationInteraction | RequestCheckboxConfirmationInteraction> = [];
+    const timeline: IssueThreadInteraction[] = [];
+    for (const interaction of interactions) {
+      if (isPendingConfirmationInteraction(interaction)) {
+        pending.push(interaction);
+      } else {
+        timeline.push(interaction);
+      }
+    }
+
+    return {
+      pendingConfirmationInteractions: pending,
+      timelineInteractions: timeline,
+    };
+  }, [interactions, showComposer]);
   const rawMessages = useMemo(
     () =>
       buildIssueChatMessages({
