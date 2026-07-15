@@ -2867,6 +2867,7 @@ export function issueRoutes(
 
   async function classifySourceRecoveryRevalidation(input: {
     issue: IssueRouteSnapshot;
+    activeRecoveryCause?: string | null;
     trigger: RecoveryRevalidationTrigger;
     statusChanged?: boolean;
     assigneeChanged?: boolean;
@@ -2880,6 +2881,9 @@ export function issueRoutes(
     blockedToTodoRecovery?: boolean;
   }): Promise<string | null> {
     const { issue } = input;
+    if (issue.status !== "cancelled" && input.activeRecoveryCause === "workspace_finalize_failed") {
+      return null;
+    }
     if (issue.status === "done" || issue.status === "cancelled") {
       return `Recovery action became stale because the source issue reached ${issue.status}.`;
     }
@@ -2976,7 +2980,10 @@ export function issueRoutes(
         : input.activeRecoveryAction;
     if (!activeRecoveryAction) return null;
 
-    const resolutionNote = await classifySourceRecoveryRevalidation(input);
+    const resolutionNote = await classifySourceRecoveryRevalidation({
+      ...input,
+      activeRecoveryCause: activeRecoveryAction.cause,
+    });
     if (!resolutionNote) return activeRecoveryAction;
 
     const resolved = await recoveryActionsSvc.resolveActiveForIssue({
@@ -7941,10 +7948,10 @@ export function issueRoutes(
       reopened,
       blockedToTodoRecovery: statusChangedFromBlockedToTodo,
     });
-    if (activeRecoveryActionBeforeUpdate && !revalidatedRecoveryAction) {
+    if (activeRecoveryActionBeforeUpdate) {
       issueResponse = {
         ...issueResponse,
-        activeRecoveryAction: null,
+        activeRecoveryAction: revalidatedRecoveryAction,
       };
     }
     await logActivity(db, {

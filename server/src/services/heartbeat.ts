@@ -14020,6 +14020,57 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       if (!issue) return null;
       if (issue.executionRunId && issue.executionRunId !== run.id) return null;
 
+      // A terminal adapter run can mark its issue done before the managed
+      // workspace finalizer runs. Keep the issue's product disposition, but
+      // surface (or clear) recovery metadata only when this run still owns the
+      // latest issue-attributed finalization result. The latest-operation guard
+      // prevents a replayed older run from hiding or recreating recovery after
+      // a newer finalization has already completed.
+      if (issue.status === "done") {
+        const currentFinalize = await tx
+          .select({
+            id: workspaceOperations.id,
+            executionWorkspaceId: workspaceOperations.executionWorkspaceId,
+            status: workspaceOperations.status,
+          })
+          .from(workspaceOperations)
+          .where(
+            and(
+              eq(workspaceOperations.companyId, issue.companyId),
+              eq(workspaceOperations.heartbeatRunId, run.id),
+              eq(workspaceOperations.issueId, issue.id),
+              eq(workspaceOperations.phase, "workspace_finalize"),
+            ),
+          )
+          .orderBy(desc(workspaceOperations.startedAt), desc(workspaceOperations.createdAt))
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+
+        if (currentFinalize?.executionWorkspaceId) {
+          const latestFinalize = await tx
+            .select({ id: workspaceOperations.id })
+            .from(workspaceOperations)
+            .where(
+              and(
+                eq(workspaceOperations.companyId, issue.companyId),
+                eq(workspaceOperations.executionWorkspaceId, currentFinalize.executionWorkspaceId),
+                eq(workspaceOperations.issueId, issue.id),
+              ),
+            )
+            .orderBy(desc(workspaceOperations.startedAt), desc(workspaceOperations.createdAt))
+            .limit(1)
+            .then((rows) => rows[0] ?? null);
+
+          if (latestFinalize?.id === currentFinalize.id) {
+            return currentFinalize.status === "succeeded"
+              ? { kind: "succeeded_terminal_workspace_finalize" as const, issue }
+              : currentFinalize.status === "failed"
+                ? { kind: "failed_terminal_workspace_finalize" as const, issue }
+                : { kind: "released" as const };
+          }
+        }
+      }
+
       // Workspace-validation recovery: if the finalizing run failed workspace
       // validation, surface the primary issue for the blocked-recovery comment path.
       // Sibling lock cleanup is already done above; only the primary issue carries
@@ -14618,6 +14669,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         run: queuedRun,
       };
     });
+
+    if (promotionResult?.kind === "failed_terminal_workspace_finalize") {
+      await recovery.surfaceFailedTerminalWorkspaceFinalize({
+        issue: promotionResult.issue,
+        latestRun: run,
+      });
+      return;
+    }
+
+    if (promotionResult?.kind === "succeeded_terminal_workspace_finalize") {
+      await recovery.resolveFailedTerminalWorkspaceFinalize({
+        issue: promotionResult.issue,
+        runId: run.id,
+      });
+      return;
+    }
 
     if (promotionResult?.kind === "blocked") {
       await recovery.escalateStrandedAssignedIssue({

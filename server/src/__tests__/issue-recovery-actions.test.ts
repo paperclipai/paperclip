@@ -818,6 +818,46 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     });
   });
 
+  it("keeps terminal workspace-finalize recovery visible through read and repair dispatch", async () => {
+    const { companyId, managerId, sourceIssueId } = await seedCompany();
+    const recoveryActionSvc = issueRecoveryActionService(db);
+    const action = await recoveryActionSvc.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "workspace_validation",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      cause: "workspace_finalize_failed",
+      fingerprint: "workspace-validation:terminal-finalize",
+      evidence: { sourceRunId: "failed-finalize-run" },
+      nextAction: "Repair and re-finalize the source workspace.",
+      wakePolicy: { type: "manual_repair_required" },
+    });
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, sourceIssueId));
+    const app = createApp();
+
+    const detail = await request(app).get(`/api/issues/${sourceIssueId}`).expect(200);
+    expect(detail.body).toMatchObject({
+      id: sourceIssueId,
+      status: "done",
+      activeRecoveryAction: { id: action.id, cause: "workspace_finalize_failed" },
+    });
+
+    const reopened = await request(app)
+      .patch(`/api/issues/${sourceIssueId}`)
+      .send({ status: "todo" })
+      .expect(200);
+    expect(reopened.body).toMatchObject({
+      id: sourceIssueId,
+      status: "todo",
+      activeRecoveryAction: { id: action.id, cause: "workspace_finalize_failed" },
+    });
+    await expect(recoveryActionSvc.getActiveForIssue(companyId, sourceIssueId)).resolves.toMatchObject({
+      id: action.id,
+      status: "active",
+    });
+  });
+
   it("keeps active recovery visible when a plain comment does not create a live path", async () => {
     const { companyId, managerId, sourceIssueId } = await seedCompany();
     await db

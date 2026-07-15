@@ -25,6 +25,8 @@ import {
   issueComments,
   issueDocuments,
   issuePlanDecompositions,
+  issueRecoveryActions,
+  issueRelations,
   issues,
   projects,
   projectWorkspaces,
@@ -36,6 +38,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.ts";
 import { instanceSettingsService } from "../services/instance-settings.ts";
+import { issueService } from "../services/issues.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -122,6 +125,34 @@ async function waitForRuntimeStateLastRun(db: Db, agentId: string, runId: string
     if (state?.lastRunId === runId) return;
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
+}
+
+async function waitForRecoveryAction(db: Db, issueId: string, status: "active" | "resolved", timeoutMs = 5_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const action = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(and(eq(issueRecoveryActions.sourceIssueId, issueId), eq(issueRecoveryActions.status, status)))
+      .then((rows) => rows[0] ?? null);
+    if (action) return action;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return null;
+}
+
+async function waitForRecoveryAttempt(db: Db, issueId: string, attemptCount: number, timeoutMs = 5_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const action = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(and(eq(issueRecoveryActions.sourceIssueId, issueId), eq(issueRecoveryActions.status, "active")))
+      .then((rows) => rows[0] ?? null);
+    if (action && action.attemptCount >= attemptCount) return action;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return null;
 }
 
 async function deleteHeartbeatRowsAfterActivityLogDrains(db: Db) {
@@ -298,6 +329,8 @@ describeEmbeddedPostgres("heartbeat workspace finalization branch guard", () => 
     await db.delete(workspaceOperations);
     await deleteHeartbeatRowsAfterActivityLogDrains(db);
     await db.delete(issueComments);
+    await db.delete(issueRecoveryActions);
+    await db.delete(issueRelations);
     await db.delete(issues);
     await db.delete(projectWorkspaces);
     await db.delete(projects);
@@ -536,4 +569,129 @@ describeEmbeddedPostgres("heartbeat workspace finalization branch guard", () => 
       },
     });
   }, 20_000);
+
+  it("keeps failed terminal workspace finalization visible until a successful re-finalize", async () => {
+    const repoRoot = await createGitRepo();
+    tempRoots.push(repoRoot);
+    const { companyId, agentId, issueId } = await seedRunTarget(db, repoRoot);
+    const dependentId = randomUUID();
+    let workspaceCwd: string | null = null;
+    let expectedBranch: string | null = null;
+
+    await db.insert(issues).values({
+      id: dependentId,
+      companyId,
+      title: "Wait for finalized workspace output",
+      status: "blocked",
+      workMode: "standard",
+      priority: "medium",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await issueService(db).update(dependentId, { blockedByIssueIds: [issueId] });
+
+    adapterExecute.mockImplementationOnce(async (input) => {
+      const workspace = readAdapterWorkspace(input);
+      workspaceCwd = workspace.cwd;
+      expectedBranch = workspace.branchName;
+      await db.update(issues).set({ status: "done", updatedAt: new Date() }).where(eq(issues.id, issueId));
+      await rm(workspace.cwd, { recursive: true, force: true });
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        summary: "Issue was marked done before workspace finalization failed.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+
+    const heartbeat = heartbeatService(db);
+    const failedRun = await wakeIssue(heartbeat, agentId, issueId);
+    expect(failedRun).not.toBeNull();
+    await expect(waitForRunToFinish(heartbeat, failedRun!.id)).resolves.toMatchObject({
+      status: "failed",
+      errorCode: "workspace_validation_failed",
+    });
+
+    const activeRecovery = await waitForRecoveryAction(db, issueId, "active");
+    expect(activeRecovery).toMatchObject({
+      kind: "workspace_validation",
+      cause: "workspace_finalize_failed",
+      status: "active",
+      attemptCount: 1,
+      maxAttempts: null,
+      timeoutAt: null,
+    });
+    await expect(issueService(db).getDependencyReadiness(dependentId)).resolves.toMatchObject({
+      isDependencyReady: false,
+      pendingFinalizeBlockerIssueIds: [issueId],
+      unresolvedBlockerIssueIds: [issueId],
+    });
+    await expect(db.select({ status: issues.status }).from(issues).where(eq(issues.id, issueId)))
+      .resolves.toEqual([{ status: "done" }]);
+
+    await runGit(repoRoot, ["worktree", "prune"]);
+    await runGit(repoRoot, ["worktree", "add", workspaceCwd!, expectedBranch!]);
+    await db.update(issues).set({ status: "todo", updatedAt: new Date() }).where(eq(issues.id, issueId));
+    adapterExecute.mockImplementationOnce(async () => {
+      await db.update(issues).set({ status: "done", updatedAt: new Date() }).where(eq(issues.id, issueId));
+      await rm(workspaceCwd!, { recursive: true, force: true });
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        summary: "The first repair attempt still failed finalization.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+
+    const repeatedFailureRun = await wakeIssue(heartbeat, agentId, issueId);
+    expect(repeatedFailureRun).not.toBeNull();
+    await expect(waitForRunToFinish(heartbeat, repeatedFailureRun!.id)).resolves.toMatchObject({
+      status: "failed",
+      errorCode: "workspace_validation_failed",
+    });
+    await expect(waitForRecoveryAttempt(db, issueId, 2)).resolves.toMatchObject({
+      id: activeRecovery?.id,
+      status: "active",
+      attemptCount: 2,
+    });
+
+    await runGit(repoRoot, ["worktree", "prune"]);
+    await runGit(repoRoot, ["worktree", "add", workspaceCwd!, expectedBranch!]);
+    await db.update(issues).set({ status: "todo", updatedAt: new Date() }).where(eq(issues.id, issueId));
+    adapterExecute.mockImplementationOnce(async () => {
+      await db.update(issues).set({ status: "done", updatedAt: new Date() }).where(eq(issues.id, issueId));
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        summary: "Workspace repair was finalized successfully.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+
+    const repairedRun = await wakeIssue(heartbeat, agentId, issueId);
+    expect(repairedRun).not.toBeNull();
+    await expect(waitForRunToFinish(heartbeat, repairedRun!.id)).resolves.toMatchObject({
+      status: "succeeded",
+      errorCode: null,
+    });
+
+    const resolvedRecovery = await waitForRecoveryAction(db, issueId, "resolved");
+    expect(resolvedRecovery).toMatchObject({
+      id: activeRecovery?.id,
+      cause: "workspace_finalize_failed",
+      status: "resolved",
+      outcome: "restored",
+    });
+    await expect(issueService(db).getDependencyReadiness(dependentId)).resolves.toMatchObject({
+      isDependencyReady: true,
+      pendingFinalizeBlockerIssueIds: [],
+      unresolvedBlockerIssueIds: [],
+    });
+  }, 45_000);
 });

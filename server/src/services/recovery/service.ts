@@ -141,11 +141,12 @@ type SuccessfulLatestIssueRun = NonNullable<LatestIssueRun> & { status: "succeed
 type StrandedRecoveryCause =
   | "stranded_assigned_issue"
   | "workspace_validation_failed"
+  | "workspace_finalize_failed"
   | "configuration_incomplete"
   | "execution_review_participant_recovery"
   | typeof SUCCESSFUL_RUN_MISSING_STATE_REASON;
 
-type StrandedPreviousStatus = "todo" | "in_progress" | "in_review";
+type StrandedPreviousStatus = "todo" | "in_progress" | "in_review" | "done";
 
 type SuccessfulRunHandoffRecoveryEvidence = {
   sourceRunId: string | null;
@@ -2472,7 +2473,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   function strandedRecoveryActionKind(cause: StrandedRecoveryCause) {
     return cause === SUCCESSFUL_RUN_MISSING_STATE_REASON
       ? "missing_disposition" as const
-      : cause === "workspace_validation_failed"
+      : cause === "workspace_validation_failed" || cause === "workspace_finalize_failed"
         ? "workspace_validation" as const
       : cause === "configuration_incomplete"
         ? "configuration_validation" as const
@@ -2484,7 +2485,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     recoveryCause: StrandedRecoveryCause;
     latestRun: LatestIssueRun;
   }) {
-    if (input.recoveryCause === "workspace_validation_failed") {
+    if (
+      input.recoveryCause === "workspace_validation_failed" ||
+      input.recoveryCause === "workspace_finalize_failed"
+    ) {
       const workspaceFingerprint = readWorkspaceValidationFingerprint(input.latestRun);
       if (workspaceFingerprint) {
         return [
@@ -2512,7 +2516,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
   }) {
     const context = parseObject(input.latestRun?.contextSnapshot);
-    const workspaceValidation = input.recoveryCause === "workspace_validation_failed"
+    const workspaceValidation =
+      input.recoveryCause === "workspace_validation_failed" || input.recoveryCause === "workspace_finalize_failed"
       ? readWorkspaceValidationPayload(input.latestRun)
       : null;
     return {
@@ -2571,6 +2576,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }),
       nextAction: recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON
         ? "Choose and record a valid issue disposition without copying transcript content."
+        : recoveryCause === "workspace_finalize_failed"
+          ? "Repair the terminal workspace finalization failure, then re-finalize the source issue workspace before consuming its output."
         : recoveryCause === "workspace_validation_failed"
           ? readWorkspaceValidationPayload(input.latestRun)?.reason === "git_worktree_branch_incoherence"
             ? "Repair the source issue git worktree branch incoherence, or choose a new execution workspace, before resuming adapter execution."
@@ -2580,7 +2587,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         : recoveryCause === "execution_review_participant_recovery"
           ? "Repair the failed review participant path, restore the source issue to in_review with a live reviewer, or record an intentional manual resolution."
         : "Restore a live execution path, fix the runtime/adapter failure, or record an intentional manual resolution.",
-      wakePolicy: recoveryCause === "workspace_validation_failed" || recoveryCause === "configuration_incomplete"
+      wakePolicy:
+        recoveryCause === "workspace_validation_failed" ||
+        recoveryCause === "workspace_finalize_failed" ||
+        recoveryCause === "configuration_incomplete"
         ? {
           type: "manual_repair_required",
           reason: recoveryCause,
@@ -2610,7 +2620,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     latestRun: LatestIssueRun;
     recoveryCause: StrandedRecoveryCause;
   }) {
-    if (input.recoveryCause === "workspace_validation_failed") return;
+    if (
+      input.recoveryCause === "workspace_validation_failed" ||
+      input.recoveryCause === "workspace_finalize_failed"
+    ) return;
     if (input.recoveryCause === "configuration_incomplete") return;
     if (!input.action.ownerAgentId) return;
     await deps.enqueueWakeup(input.action.ownerAgentId, {
@@ -2974,6 +2987,92 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     }
 
     return updated;
+  }
+
+  async function surfaceFailedTerminalWorkspaceFinalize(input: {
+    issue: typeof issues.$inferSelect;
+    latestRun: LatestIssueRun;
+  }) {
+    const recoveryAction = await ensureSourceScopedStrandedRecoveryAction({
+      issue: input.issue,
+      previousStatus: "done",
+      latestRun: input.latestRun,
+      recoveryCause: "workspace_finalize_failed",
+    });
+
+    if (recoveryAction.attemptCount === 1) {
+      await issuesSvc.addComment(
+        input.issue.id,
+        [
+          "Paperclip kept this issue in `done`, but its terminal workspace finalization failed.",
+          "",
+          `- Recovery action: \`${recoveryAction.id}\``,
+          "- Dependency safety: downstream issues remain blocked until a later workspace finalization succeeds.",
+          `- Next action: ${recoveryAction.nextAction}`,
+        ].join("\n"),
+        {},
+        { authorType: "system" },
+      );
+    }
+
+    await logActivity(db, {
+      companyId: input.issue.companyId,
+      actorType: "system",
+      actorId: "system",
+      agentId: recoveryAction.ownerAgentId,
+      runId: input.latestRun?.id ?? null,
+      action: "issue.workspace_finalize_recovery_opened",
+      entityType: "issue",
+      entityId: input.issue.id,
+      details: {
+        identifier: input.issue.identifier,
+        status: input.issue.status,
+        recoveryActionId: recoveryAction.id,
+        recoveryCause: recoveryAction.cause,
+        latestRunId: input.latestRun?.id ?? null,
+        latestRunStatus: input.latestRun?.status ?? null,
+      },
+    });
+
+    return recoveryAction;
+  }
+
+  async function resolveFailedTerminalWorkspaceFinalize(input: {
+    issue: typeof issues.$inferSelect;
+    runId: string;
+  }) {
+    const activeRecoveryAction = await recoveryActionsSvc.getActiveForIssue(input.issue.companyId, input.issue.id);
+    if (activeRecoveryAction?.cause !== "workspace_finalize_failed") return null;
+
+    const resolved = await recoveryActionsSvc.resolveActiveForIssue({
+      companyId: input.issue.companyId,
+      sourceIssueId: input.issue.id,
+      actionId: activeRecoveryAction.id,
+      status: "resolved",
+      outcome: "restored",
+      resolutionNote: `Workspace finalization succeeded on heartbeat run ${input.runId}.`,
+    });
+    if (!resolved) return null;
+
+    await logActivity(db, {
+      companyId: input.issue.companyId,
+      actorType: "system",
+      actorId: "system",
+      agentId: resolved.ownerAgentId,
+      runId: input.runId,
+      action: "issue.workspace_finalize_recovery_resolved",
+      entityType: "issue",
+      entityId: input.issue.id,
+      details: {
+        identifier: input.issue.identifier,
+        status: input.issue.status,
+        recoveryActionId: resolved.id,
+        recoveryCause: resolved.cause,
+        resolutionRunId: input.runId,
+      },
+    });
+
+    return resolved;
   }
 
   async function reconcileStrandedAssignedIssues(opts?: { issueCreatedAtGte?: Date | null }) {
@@ -4735,6 +4834,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     buildRunOutputSilence,
     escalateStrandedRecoveryIssueInPlace,
     escalateStrandedAssignedIssue,
+    surfaceFailedTerminalWorkspaceFinalize,
+    resolveFailedTerminalWorkspaceFinalize,
     recordWatchdogDecision,
     scanSilentActiveRuns,
     reconcileStrandedAssignedIssues,
