@@ -644,6 +644,56 @@ describe("Inbox toolbar", () => {
       root.unmount();
     });
   });
+
+  it("keeps a successful archive hidden when stale query data arrives", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    const archivedIssue = createIssue({
+      id: "issue-a",
+      identifier: "PAP-1001",
+      title: "Archived inbox row",
+    });
+    apiMocks.issuesList.mockResolvedValue([archivedIssue]);
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 0, gcTime: 0 } },
+    });
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Inbox />
+        </QueryClientProvider>,
+      );
+    });
+    await vi.waitFor(() => {
+      expect(container.textContent).toContain("Archived inbox row");
+    });
+
+    const archiveButton = container.querySelector<HTMLButtonElement>('button[aria-label="Archive"]');
+    expect(archiveButton).not.toBeNull();
+
+    await act(async () => {
+      archiveButton!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    });
+    await vi.waitFor(() => {
+      expect(apiMocks.archiveFromInbox).toHaveBeenCalledWith("issue-a");
+      expect(container.textContent).not.toContain("Archived inbox row");
+    });
+
+    await act(async () => {
+      queryClient.setQueriesData<Issue[]>(
+        { queryKey: ["issues", "company-1", "mine-by-me"] },
+        [archivedIssue],
+      );
+    });
+
+    expect(container.textContent).not.toContain("Archived inbox row");
+
+    act(() => {
+      root.unmount();
+    });
+  });
 });
 
 describe("FailedRunInboxRow", () => {
