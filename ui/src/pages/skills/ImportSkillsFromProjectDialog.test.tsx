@@ -14,6 +14,7 @@ import {
   isSelectableCandidate,
   isValidSelectionSlug,
   scannableWorkspaces,
+  selectAllSelection,
   selectionKey,
   suggestedConflictSlug,
 } from "./ImportSkillsFromProjectDialog";
@@ -38,8 +39,8 @@ function candidate(
 }
 
 /**
- * A mixed candidate set: two default-selected new skills, one selectable
- * conflict, and two disabled statuses.
+ * A mixed candidate set: two new skills, one selectable conflict, and two
+ * disabled statuses.
  */
 function mixedCandidates(): CompanySkillProjectScanCandidate[] {
   return [
@@ -73,20 +74,13 @@ describe("ImportSkillsFromProjectDialog selection logic", () => {
     expect(selectable.map((c) => c.slug)).toEqual(["alpha", "beta", "delta"]);
   });
 
-  it("default selection checks every new candidate and excludes disabled rows (N)", () => {
-    const selection = defaultSelection(mixedCandidates());
-    // N = 2 (only alpha + beta), disabled rows never counted.
-    expect(selection.size).toBe(2);
-    expect(selection.has(selectionKey(WS_A, ".claude/skills/alpha"))).toBe(true);
-    expect(selection.has(selectionKey(WS_A, ".claude/skills/beta"))).toBe(true);
-    expect(selection.has(selectionKey(WS_A, ".claude/skills/gamma"))).toBe(false);
-    expect(selection.has(selectionKey(WS_A, ".claude/skills/delta"))).toBe(false);
-    expect(selection.has(selectionKey(WS_A, ".claude/skills/epsilon"))).toBe(false);
+  it("default selection leaves every candidate unchecked", () => {
+    expect(defaultSelection(mixedCandidates())).toEqual(new Map());
   });
 
-  it("default selection leaves conflicts unchecked", () => {
+  it("select all checks new candidates and leaves conflicts unchecked", () => {
     const candidates = mixedCandidates();
-    const selectAll = defaultSelection(candidates);
+    const selectAll = selectAllSelection(candidates);
     const defaultChecked = candidates.filter((candidate) => candidate.status === "new");
     expect(selectAll.size).toBe(defaultChecked.length);
     for (const c of defaultChecked) {
@@ -101,7 +95,7 @@ describe("ImportSkillsFromProjectDialog selection logic", () => {
   });
 
   it("selection payload carries workspaceId + path for each checked new candidate", () => {
-    const selection = defaultSelection(mixedCandidates());
+    const selection = selectAllSelection(mixedCandidates());
     const payload = Array.from(selection.values());
     expect(payload).toEqual([
       { workspaceId: WS_A, path: ".claude/skills/alpha" },
@@ -110,7 +104,7 @@ describe("ImportSkillsFromProjectDialog selection logic", () => {
   });
 
   it("toggling a single new candidate removes only that row from N", () => {
-    const selection = defaultSelection(mixedCandidates());
+    const selection = selectAllSelection(mixedCandidates());
     const key = selectionKey(WS_A, ".claude/skills/alpha");
     selection.delete(key);
     expect(selection.size).toBe(1);
@@ -118,7 +112,7 @@ describe("ImportSkillsFromProjectDialog selection logic", () => {
     expect(selection.has(selectionKey(WS_A, ".claude/skills/beta"))).toBe(true);
   });
 
-  it("groups candidates by workspace + directory root", () => {
+  it("groups folders beneath each workspace and sorts the primary workspace first", () => {
     const candidates = [
       candidate({ slug: "a", relativePath: ".claude/skills/a", status: "new" }),
       candidate({
@@ -135,13 +129,15 @@ describe("ImportSkillsFromProjectDialog selection logic", () => {
         status: "new",
       }),
     ];
-    const groups = groupCandidates(candidates);
-    expect(groups).toHaveLength(3);
-    // Sorted by workspace name then directory root.
-    expect(groups.map((g) => `${g.workspaceName}:${g.directoryRoot}`)).toEqual([
-      "Workspace A:.claude/skills",
-      "Workspace A:skills",
-      "Workspace B:.claude/skills",
+    const groups = groupCandidates(candidates, [
+      workspace({ id: WS_A, name: "Workspace A", isPrimary: false }),
+      workspace({ id: WS_B, name: "Workspace B", isPrimary: true }),
+    ]);
+    expect(groups).toHaveLength(2);
+    expect(groups.map((group) => group.workspaceName)).toEqual(["Workspace B", "Workspace A"]);
+    expect(groups[1]?.directories.map((directory) => directory.directoryRoot)).toEqual([
+      ".claude/skills",
+      "skills",
     ]);
   });
 

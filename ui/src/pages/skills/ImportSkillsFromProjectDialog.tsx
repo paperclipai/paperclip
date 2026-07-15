@@ -127,46 +127,67 @@ export function filterCandidates(
   ].some((value) => value?.toLowerCase().includes(query)));
 }
 
-interface CandidateGroup {
+export interface CandidateDirectoryGroup {
   key: string;
-  workspaceId: string;
-  workspaceName: string;
   directoryRoot: string;
   candidates: CompanySkillProjectScanCandidate[];
 }
 
+export interface CandidateWorkspaceGroup {
+  key: string;
+  workspaceId: string;
+  workspaceName: string;
+  isPrimary: boolean;
+  directories: CandidateDirectoryGroup[];
+}
+
 export function groupCandidates(
   candidates: CompanySkillProjectScanCandidate[],
-): CandidateGroup[] {
-  const groups = new Map<string, CandidateGroup>();
+  workspaces: ProjectWorkspace[] = [],
+): CandidateWorkspaceGroup[] {
+  const workspaceMetadata = new Map(workspaces.map((workspace) => [workspace.id, workspace]));
+  const groups = new Map<string, CandidateWorkspaceGroup>();
   for (const candidate of candidates) {
-    const key = `${candidate.workspaceId} ${candidate.directoryRoot}`;
-    let group = groups.get(key);
+    let group = groups.get(candidate.workspaceId);
     if (!group) {
       group = {
-        key,
+        key: candidate.workspaceId,
         workspaceId: candidate.workspaceId,
         workspaceName: candidate.workspaceName,
+        isPrimary: workspaceMetadata.get(candidate.workspaceId)?.isPrimary ?? false,
+        directories: [],
+      };
+      groups.set(candidate.workspaceId, group);
+    }
+    let directory = group.directories.find((entry) => entry.directoryRoot === candidate.directoryRoot);
+    if (!directory) {
+      directory = {
+        key: `${candidate.workspaceId} ${candidate.directoryRoot}`,
         directoryRoot: candidate.directoryRoot,
         candidates: [],
       };
-      groups.set(key, group);
+      group.directories.push(directory);
     }
-    group.candidates.push(candidate);
+    directory.candidates.push(candidate);
   }
-  return Array.from(groups.values()).sort((a, b) => {
-    if (a.workspaceName !== b.workspaceName) {
+  return Array.from(groups.values())
+    .map((group) => ({
+      ...group,
+      directories: group.directories.sort((a, b) => a.directoryRoot.localeCompare(b.directoryRoot)),
+    }))
+    .sort((a, b) => {
+      if (a.isPrimary !== b.isPrimary) return a.isPrimary ? -1 : 1;
       return a.workspaceName.localeCompare(b.workspaceName);
-    }
-    return a.directoryRoot.localeCompare(b.directoryRoot);
-  });
+    });
 }
 
-/**
- * Selection keys for every default-checked (new) candidate. New skills start
- * checked so the primary action reads "Import N skills" out of the gate.
- */
 export function defaultSelection(
+  _candidates: CompanySkillProjectScanCandidate[],
+): Map<string, SkillSelection> {
+  return new Map();
+}
+
+export function selectAllSelection(
   candidates: CompanySkillProjectScanCandidate[],
 ): Map<string, SkillSelection> {
   const next = new Map<string, SkillSelection>();
@@ -362,7 +383,10 @@ export function ImportSkillsFromProjectDialog({
     () => filterCandidates(candidates, candidateFilter),
     [candidateFilter, candidates],
   );
-  const groups = useMemo(() => groupCandidates(filteredCandidates), [filteredCandidates]);
+  const groups = useMemo(
+    () => groupCandidates(filteredCandidates, selectedProject?.workspaces ?? []),
+    [filteredCandidates, selectedProject],
+  );
   const selectedCount = selection.size;
   const hasInvalidSelection = Array.from(selection.values()).some(
     (selected) => !isValidSelectionSlug(selected),
@@ -398,7 +422,7 @@ export function ImportSkillsFromProjectDialog({
   }
 
   function selectAll() {
-    setSelection(defaultSelection(candidates));
+    setSelection(selectAllSelection(candidates));
   }
 
   function deselectAll() {
@@ -697,7 +721,7 @@ interface SelectStepProps {
   scanError: unknown;
   onRetry: () => void;
   onImportFromPath?: () => void;
-  groups: CandidateGroup[];
+  groups: CandidateWorkspaceGroup[];
   totalCandidates: number;
   filter: string;
   onFilterChange: (value: string) => void;
@@ -803,100 +827,118 @@ function SelectStep({
           <div className="flex h-full items-center justify-center p-6 text-sm text-muted-foreground">
             No skills match “{filter.trim()}”.
           </div>
-        ) : groups.map((group) => (
-          <section key={group.key}>
-          <header className="sticky top-0 z-10 flex items-center gap-2 bg-muted/40 px-5 py-1.5 text-xs uppercase tracking-wide text-muted-foreground">
-            <span className="font-medium normal-case text-foreground">{group.workspaceName}</span>
-            <span className="font-mono lowercase">{group.directoryRoot}</span>
-          </header>
-          <ul className="divide-y divide-border/60">
-            {group.candidates.map((candidate) => {
-              const selectable = isSelectableCandidate(candidate);
-              const isSelected = selection.has(
-                selectionKey(candidate.workspaceId, candidate.relativePath),
-              );
-              const selectedValue = selection.get(
-                selectionKey(candidate.workspaceId, candidate.relativePath),
-              );
-              return (
-                <li
-                  key={`${candidate.workspaceId} ${candidate.relativePath}`}
-                  className={cn(
-                    "flex items-start gap-3 px-5 py-2.5 transition-colors",
-                    selectable ? "cursor-pointer hover:bg-accent/40" : "opacity-70",
-                    isSelected && "bg-accent/50",
-                  )}
-                  onClick={() => toggleCandidate(candidate)}
-                  data-testid={`candidate-${candidate.relativePath}`}
-                  data-status={candidate.status}
-                  data-selected={isSelected ? "true" : "false"}
-                >
-                  <div className="pt-0.5" onClick={(event) => event.stopPropagation()}>
-                    <Checkbox
-                      checked={isSelected}
-                      onCheckedChange={() => toggleCandidate(candidate)}
-                      disabled={!selectable}
-                      aria-label={`Select ${candidate.name}`}
-                    />
+        ) : (
+          groups.map((group, groupIndex) => (
+            <section key={group.key}>
+              {groupIndex > 0 && !group.isPrimary && groups[groupIndex - 1]?.isPrimary && (
+                <header className="border-y border-border/60 bg-muted/30 px-5 py-2 text-xs uppercase tracking-wide text-muted-foreground">
+                  Other Workspaces
+                </header>
+              )}
+              <header className="sticky top-0 z-10 border-b border-border/60 bg-background px-5 py-2 text-sm font-medium text-foreground">
+                {group.workspaceName}
+              </header>
+              {group.directories.map((directory) => (
+                <div key={directory.key}>
+                  <div className="bg-muted/30 px-5 py-1.5 font-mono text-(length:--text-micro) text-muted-foreground">
+                    {directory.directoryRoot}
                   </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
-                      <span className="truncate text-sm font-medium">{candidate.name}</span>
-                      <CandidateStatusBadge status={candidate.status} />
-                    </div>
-                    {candidate.description && (
-                      <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">
-                        {candidate.description}
-                      </p>
-                    )}
-                    <p className="mt-0.5 font-mono text-(length:--text-micro) text-muted-foreground">
-                      {candidate.relativePath}
-                    </p>
-                    {candidate.reason && (
-                      <p
-                        className={cn(
-                          "mt-0.5 text-(length:--text-micro)",
-                          candidate.status === "conflict"
-                            ? "text-amber-600 dark:text-amber-400"
-                            : "text-muted-foreground",
-                        )}
-                      >
-                        {candidate.reason}
-                      </p>
-                    )}
-                    {candidate.status === "conflict" && isSelected && (
-                      <div
-                        className="mt-2 flex flex-wrap items-center gap-2"
-                        onClick={(event) => event.stopPropagation()}
-                      >
-                        <label
-                          htmlFor={`rename-${candidate.workspaceId}-${candidate.slug}`}
-                          className="shrink-0 text-xs text-muted-foreground"
+                  <ul className="divide-y divide-border/60">
+                    {directory.candidates.map((candidate) => {
+                      const selectable = isSelectableCandidate(candidate);
+                      const key = selectionKey(candidate.workspaceId, candidate.relativePath);
+                      const isSelected = selection.has(key);
+                      const selectedValue = selection.get(key);
+                      return (
+                        <li
+                          key={`${candidate.workspaceId} ${candidate.relativePath}`}
+                          className={cn(
+                            "flex items-start gap-3 px-5 py-2.5 transition-colors",
+                            selectable ? "cursor-pointer hover:bg-accent/40" : "opacity-70",
+                            isSelected && "bg-accent/50",
+                          )}
+                          onClick={() => toggleCandidate(candidate)}
+                          data-testid={`candidate-${candidate.relativePath}`}
+                          data-status={candidate.status}
+                          data-selected={isSelected ? "true" : "false"}
                         >
-                          Import as
-                        </label>
-                        <Input
-                          id={`rename-${candidate.workspaceId}-${candidate.slug}`}
-                          value={selectedValue?.slug ?? ""}
-                          onChange={(event) => renameCandidate(candidate, event.target.value)}
-                          className="h-7 max-w-xs font-mono text-xs"
-                          aria-label={`Rename ${candidate.name}`}
-                          aria-invalid={selectedValue ? !isValidSelectionSlug(selectedValue) : undefined}
-                        />
-                        {selectedValue && !isValidSelectionSlug(selectedValue) && (
-                          <span className="text-xs text-destructive">
-                            Use a lowercase URL-safe slug.
-                          </span>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
-          </section>
-        ))}
+                          <div className="pt-0.5" onClick={(event) => event.stopPropagation()}>
+                            <Checkbox
+                              checked={isSelected}
+                              onCheckedChange={() => toggleCandidate(candidate)}
+                              disabled={!selectable}
+                              aria-label={`Select ${candidate.name}`}
+                            />
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+                              <span className="min-w-0 truncate text-sm font-medium">
+                                {candidate.name}
+                              </span>
+                              <CandidateStatusBadge status={candidate.status} />
+                            </div>
+                            {candidate.description && (
+                              <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">
+                                {candidate.description}
+                              </p>
+                            )}
+                            <p className="mt-0.5 font-mono text-(length:--text-micro) text-muted-foreground">
+                              {candidate.relativePath}
+                            </p>
+                            {candidate.reason && (
+                              <p
+                                className={cn(
+                                  "mt-0.5 text-(length:--text-micro)",
+                                  candidate.status === "conflict"
+                                    ? "text-amber-600 dark:text-amber-400"
+                                    : "text-muted-foreground",
+                                )}
+                              >
+                                {candidate.reason}
+                              </p>
+                            )}
+                            {candidate.status === "conflict" && isSelected && (
+                              <div
+                                className="mt-2 flex flex-wrap items-center gap-2"
+                                onClick={(event) => event.stopPropagation()}
+                              >
+                                <label
+                                  htmlFor={`rename-${candidate.workspaceId}-${candidate.slug}`}
+                                  className="shrink-0 text-xs text-muted-foreground"
+                                >
+                                  Import as
+                                </label>
+                                <Input
+                                  id={`rename-${candidate.workspaceId}-${candidate.slug}`}
+                                  value={selectedValue?.slug ?? ""}
+                                  onChange={(event) =>
+                                    renameCandidate(candidate, event.target.value)
+                                  }
+                                  className="h-7 max-w-xs font-mono text-xs"
+                                  aria-label={`Rename ${candidate.name}`}
+                                  aria-invalid={
+                                    selectedValue
+                                      ? !isValidSelectionSlug(selectedValue)
+                                      : undefined
+                                  }
+                                />
+                                {selectedValue && !isValidSelectionSlug(selectedValue) && (
+                                  <span className="text-xs text-destructive">
+                                    Use a lowercase URL-safe slug.
+                                  </span>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              ))}
+            </section>
+          ))
+        )}
       </div>
     </div>
   );

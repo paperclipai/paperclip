@@ -2105,10 +2105,19 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     cleanupDirs.add(workspaceDir);
     const selectedSkillDir = path.join(workspaceDir, ".gemini", "skills", "selected-skill");
     const ignoredSkillDir = path.join(workspaceDir, ".opencode", "skills", "ignored-skill");
+    const ignoredLinkedSkillDir = path.join(workspaceDir, ".claude", "skills", "ignored-link");
+    const outsideSkillFile = path.join(
+      await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-skill-selective-outside-")),
+      "SKILL.md",
+    );
+    cleanupDirs.add(path.dirname(outsideSkillFile));
     await fs.mkdir(selectedSkillDir, { recursive: true });
     await fs.mkdir(ignoredSkillDir, { recursive: true });
+    await fs.mkdir(ignoredLinkedSkillDir, { recursive: true });
     await fs.writeFile(path.join(selectedSkillDir, "SKILL.md"), "---\nname: Selected Skill\n---\n", "utf8");
     await fs.writeFile(path.join(ignoredSkillDir, "SKILL.md"), "---\nname: Ignored Skill\n---\n", "utf8");
+    await fs.writeFile(outsideSkillFile, "---\nname: Ignored Linked Skill\n---\n", "utf8");
+    await fs.symlink(outsideSkillFile, path.join(ignoredLinkedSkillDir, "SKILL.md"));
     await db.insert(companies).values({
       id: companyId,
       name: "Paperclip",
@@ -2141,14 +2150,15 @@ describeEmbeddedPostgres("companySkillService.list", () => {
       sourceLocator: selectedSkillDir,
       metadata: expect.objectContaining({ sourceKind: "project_scan", workspaceId, projectId }),
     });
-    expect(result.candidates).toEqual(expect.arrayContaining([
+    expect(result.candidates).toEqual([
       expect.objectContaining({ relativePath: ".gemini/skills/selected-skill", status: "new" }),
-      expect.objectContaining({
-        relativePath: ".opencode/skills/ignored-skill",
-        status: "skipped",
-        reason: "Not selected for import.",
-      }),
-    ]));
+    ]);
+    expect(result.warnings.join("\n")).not.toContain("symbolic link");
+    expect(result.skipped).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ reason: expect.stringContaining("symbolic link") }),
+      ]),
+    );
     expect(result.skipped).toEqual(expect.arrayContaining([
       expect.objectContaining({
         workspaceId,

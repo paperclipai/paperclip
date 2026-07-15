@@ -4423,6 +4423,9 @@ export function companySkillService(db: Db) {
         ...(renamedSlug ? { slug: renamedSlug } : {}),
       });
     }
+    const selectedWorkspaceIds = new Set(
+      Array.from(selectedPaths.values()).map((selection) => selection.workspaceId),
+    );
 
     const trackWarning = (message: string) => {
       warnings.push(message);
@@ -4444,6 +4447,7 @@ export function companySkillService(db: Db) {
           workspaceName: workspace.name,
         });
         if (workspaceFilter.size > 0 && !workspaceFilter.has(workspace.id)) continue;
+        if (selectiveImport && !selectedWorkspaceIds.has(workspace.id)) continue;
         const workspaceCwd = asString(workspace.cwd);
         if (!workspaceCwd) {
           skipped.push({
@@ -4490,6 +4494,7 @@ export function companySkillService(db: Db) {
         const selected = !selectiveImport || selectedPaths.has(selectionKey);
         const selectedRename = selectedPaths.get(selectionKey)?.slug;
         if (selectedPaths.has(selectionKey)) rediscoveredSelections.add(selectionKey);
+        if (selectiveImport && !selected) continue;
 
         let nextSkill: ImportedSkill;
         try {
