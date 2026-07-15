@@ -1445,6 +1445,43 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
   });
 
+  it("clears process identity evidence when rejecting an awaiting hot-restart adoption", async () => {
+    const { runId } = await seedRunFixture({
+      agentStatus: "running",
+    });
+    const now = new Date("2026-03-19T00:06:00.000Z");
+
+    await db
+      .update(heartbeatRuns)
+      .set({
+        lifecycleState: "awaiting_adoption",
+        adoptionMarkedAt: new Date("2026-03-19T00:05:00.000Z"),
+        processPid: 999_999,
+        processGroupId: 999_999,
+        processStartTicks: 123_456,
+      })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.adoptAwaitingRuns(now);
+
+    expect(result).toMatchObject({
+      adopted: 0,
+      finalizedWhileDown: 0,
+      rejected: 1,
+      rejectedRunIds: [runId],
+    });
+
+    const run = await heartbeat.getRun(runId);
+    expect(run).toMatchObject({
+      lifecycleState: null,
+      adoptionMarkedAt: null,
+      processPid: null,
+      processGroupId: null,
+      processStartTicks: null,
+    });
+  });
+
   it("does not overwrite a run that is no longer running during graceful shutdown drain", async () => {
     const { runId, wakeupRequestId } = await seedRunFixture({
       agentStatus: "running",
