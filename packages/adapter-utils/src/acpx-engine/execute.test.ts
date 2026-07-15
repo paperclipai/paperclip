@@ -620,6 +620,32 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(fp(sameEnvNewWake)).toBe(fp(first));
   });
 
+  it("busts the session fingerprint when a stable configured PAPERCLIP_* value rotates", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const baseConfig = { agentCommand: "node ./fake-acp.js", stateDir };
+
+    // An explicitly configured PAPERCLIP_API_KEY is stable per-run config (not a
+    // per-wake runtime var): rotating it must invalidate a warm/resumable session
+    // so the next launch sources the new key, even across an otherwise-identical
+    // wake context.
+    const context = { taskId: "issue-1", wakeReason: "issue_assigned" };
+    const withKey = await runExecutor(
+      { ...baseConfig, env: { PAPERCLIP_API_KEY: "explicit-key-1" } },
+      { context },
+    );
+    const rotatedKey = await runExecutor(
+      { ...baseConfig, env: { PAPERCLIP_API_KEY: "explicit-key-2" } },
+      { context },
+    );
+
+    const fp = (r: { result: { sessionParams?: unknown } }) =>
+      (r.result.sessionParams as { configFingerprint?: string } | undefined)?.configFingerprint;
+
+    expect(fp(withKey)).toBeDefined();
+    expect(fp(rotatedKey)).not.toBe(fp(withKey));
+  });
+
   it("shapes ACPX wrapper workspace env for remote execution identities", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
