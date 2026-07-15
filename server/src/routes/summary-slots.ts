@@ -3,7 +3,8 @@ import type { Db } from "@paperclipai/db";
 import { generateSummarySlotSchema, writeSummarySlotSchema } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { forbidden, notFound } from "../errors.js";
-import { accessService, instanceSettingsService, logActivity } from "../services/index.js";
+import { accessService, heartbeatService, instanceSettingsService, logActivity } from "../services/index.js";
+import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
 import { summarySlotService } from "../services/summary-slots.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 
@@ -13,11 +14,21 @@ function readScopeId(req: Request): string | null {
   return null;
 }
 
+export function summarySlotSessionTaskKey(input: {
+  companyId: string;
+  scopeKind: string;
+  slotKey: string;
+  scopeId: string | null;
+}) {
+  return `summary-slot:${input.companyId}:${input.scopeKind}:${input.scopeId ?? "company"}:${input.slotKey}`;
+}
+
 export function summarySlotRoutes(db: Db) {
   const router = Router();
   const access = accessService(db);
   const settings = instanceSettingsService(db);
   const svc = summarySlotService(db);
+  const heartbeat = heartbeatService(db);
 
   async function assertSummariesEnabled() {
     const experimental = await settings.getExperimental();
@@ -121,6 +132,28 @@ export function summarySlotRoutes(db: Db) {
           alreadyGenerating: result.alreadyGenerating,
         },
       });
+      if (!result.alreadyGenerating) {
+        await queueIssueAssignmentWakeup({
+          heartbeat,
+          issue: {
+            id: result.generatingIssue.id,
+            assigneeAgentId: result.generatingIssue.assigneeAgentId ?? null,
+            status: result.generatingIssue.status,
+          },
+          reason: "summary_slot_generation_requested",
+          mutation: "summary_slot.generate",
+          contextSource: "summary-slot.generate",
+          requestedByActorType: actor.actorType === "agent" ? "agent" : "user",
+          requestedByActorId: actor.actorId,
+          taskKey: summarySlotSessionTaskKey({
+            companyId,
+            scopeKind: result.slot.scopeKind,
+            slotKey: result.slot.slotKey,
+            scopeId: result.slot.scopeId,
+          }),
+          rethrowOnError: true,
+        });
+      }
       res.status(result.alreadyGenerating ? 200 : 202).json(result);
     },
   );

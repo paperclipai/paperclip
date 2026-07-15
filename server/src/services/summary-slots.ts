@@ -1,4 +1,4 @@
-import { and, desc, eq, isNull } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   documentRevisions,
@@ -35,6 +35,8 @@ export const SUMMARIZER_BUILT_IN_KEY = "summarizer";
 const TERMINAL_ISSUE_STATUSES = new Set<IssueStatus>(["done", "cancelled"]);
 
 const DEFAULT_SUMMARY_FORMAT = "markdown";
+const SUMMARY_SNAPSHOT_GROUP_LIMIT = 12;
+const SUMMARY_SNAPSHOT_INITIAL_LOOKBACK_MS = 7 * 24 * 60 * 60 * 1_000;
 
 export interface SummarySlotSelectorInput {
   companyId: string;
@@ -216,6 +218,7 @@ export function summarySlotService(db: Db) {
         identifier: row.identifier ?? null,
         title: row.title,
         status: row.status as IssueStatus,
+        assigneeAgentId: row.assigneeAgentId ?? null,
       },
     };
   }
@@ -308,7 +311,82 @@ export function summarySlotService(db: Db) {
     return { projectId: null, projectWorkspaceId: null };
   }
 
-  function generationIssueDescription(sel: ResolvedSelector, generationIssueId: string | null = null): string {
+  function scopeIssueConditions(sel: ResolvedSelector) {
+    if (sel.scopeKind === "project") return [eq(issues.projectId, sel.scopeId!)];
+    if (sel.scopeKind === "project_workspace") return [eq(issues.projectWorkspaceId, sel.scopeId!)];
+    return [];
+  }
+
+  async function buildScopeSnapshot(sel: ResolvedSelector, previousGeneratedAt: Date | null): Promise<string> {
+    const commonConditions = [
+      eq(issues.companyId, sel.companyId),
+      isNull(issues.hiddenAt),
+      ...scopeIssueConditions(sel),
+    ];
+    const recentlyDoneSince = previousGeneratedAt
+      ?? new Date(Date.now() - SUMMARY_SNAPSHOT_INITIAL_LOOKBACK_MS);
+    const selectFields = {
+      identifier: issues.identifier,
+      title: issues.title,
+      status: issues.status,
+      priority: issues.priority,
+      updatedAt: issues.updatedAt,
+    };
+
+    const [blocked, inReview, inProgress, recentlyDone] = await Promise.all([
+      db.select(selectFields).from(issues)
+        .where(and(...commonConditions, eq(issues.status, "blocked")))
+        .orderBy(desc(issues.updatedAt)).limit(SUMMARY_SNAPSHOT_GROUP_LIMIT),
+      db.select(selectFields).from(issues)
+        .where(and(...commonConditions, eq(issues.status, "in_review")))
+        .orderBy(desc(issues.updatedAt)).limit(SUMMARY_SNAPSHOT_GROUP_LIMIT),
+      db.select(selectFields).from(issues)
+        .where(and(...commonConditions, eq(issues.status, "in_progress")))
+        .orderBy(desc(issues.updatedAt)).limit(SUMMARY_SNAPSHOT_GROUP_LIMIT),
+      db.select(selectFields).from(issues)
+        .where(and(
+          ...commonConditions,
+          inArray(issues.status, ["done"]),
+          gte(issues.updatedAt, recentlyDoneSince),
+        ))
+        .orderBy(desc(issues.updatedAt)).limit(SUMMARY_SNAPSHOT_GROUP_LIMIT),
+    ]);
+
+    const formatGroup = (
+      heading: string,
+      rows: Array<typeof blocked[number]>,
+    ) => [
+      `### ${heading}`,
+      ...(rows.length > 0
+        ? rows.map((row) => {
+            const identifier = row.identifier ?? "Unnumbered issue";
+            const issueLink = row.identifier ? `[${identifier}](/PAP/issues/${identifier})` : identifier;
+            return `- ${issueLink} — ${row.title} (${row.priority}; updated ${row.updatedAt.toISOString()})`;
+          })
+        : ["- None."]),
+    ];
+
+    return [
+      "## Prebuilt scope snapshot",
+      "",
+      `Snapshot generated at ${new Date().toISOString()}. Recently done means updated since ${recentlyDoneSince.toISOString()}.`,
+      "Use this bounded, company-scoped snapshot as the issue source of truth for this run. Do not call issue-list endpoints.",
+      "",
+      ...formatGroup("Blocked", blocked),
+      "",
+      ...formatGroup("In review", inReview),
+      "",
+      ...formatGroup("In progress", inProgress),
+      "",
+      ...formatGroup("Recently done", recentlyDone),
+    ].join("\n");
+  }
+
+  function generationIssueDescription(
+    sel: ResolvedSelector,
+    scopeSnapshot: string,
+    generationIssueId: string | null = null,
+  ): string {
     const target = sel.scopeId ? `\`${sel.scopeId}\`` : "the workspaces overview";
     const summarySlotPath = `/api/companies/${encodeURIComponent(sel.companyId)}/summary-slots/${encodeURIComponent(sel.scopeKind)}/${encodeURIComponent(sel.slotKey)}`;
     const scopeQuery = sel.scopeId ? `?scopeId=${encodeURIComponent(sel.scopeId)}` : "";
@@ -318,7 +396,6 @@ export function summarySlotService(db: Db) {
       "Call `/summarize-status`. Its API quick reference has the full request shapes; use these resolved routes for this generation:",
       "",
       `- Read current slot: \`GET ${summarySlotPath}${scopeQuery}\``,
-      `- Read revisions: \`GET ${summarySlotPath}/revisions${scopeQuery}\``,
       `- Write revision: \`PUT ${summarySlotPath}\``,
       "",
       "Use this write payload:",
@@ -337,8 +414,12 @@ export function summarySlotService(db: Db) {
       "```",
       "",
       "Write one concise Markdown summary with exactly these sections: `## Needs you`, `## Next`, and `## Since last summary`.",
+      "The current-slot response includes the latest document body and `latestRevisionId`; do not call the revisions or issues-list endpoints.",
       "Follow the skill's streaming protocol: emit plain-text `STATUS:` lines and the sentinel-wrapped summary draft before the authoritative summary-slot write.",
       "Pass the `generationIssueId` from the payload, the previous revision id when present, and the model actually used to the summary-slot write API.",
+      "",
+      scopeSnapshot,
+      "",
       "Close this task with a short comment once the summary revision is written.",
     ].join("\n");
   }
@@ -378,12 +459,13 @@ export function summarySlotService(db: Db) {
     }
 
     const { projectId, projectWorkspaceId } = await resolveGenerationTargetProject(sel);
+    const scopeSnapshot = await buildScopeSnapshot(sel, existing?.lastGeneratedAt ?? null);
     const createdAt = new Date();
     const created = await issuesSvc.create(sel.companyId, {
       projectId,
       projectWorkspaceId,
       title: generationIssueTitle(sel, createdAt),
-      description: generationIssueDescription(sel),
+      description: generationIssueDescription(sel, scopeSnapshot),
       status: "todo",
       priority: "medium",
       assigneeAgentId: summarizerAgentId,
@@ -393,7 +475,7 @@ export function summarySlotService(db: Db) {
     });
     const generationIssue = (
       await issuesSvc.update(created.id, {
-        description: generationIssueDescription(sel, created.id),
+        description: generationIssueDescription(sel, scopeSnapshot, created.id),
       })
     ) ?? created;
 
@@ -409,6 +491,7 @@ export function summarySlotService(db: Db) {
         identifier: generationIssue.identifier ?? null,
         title: generationIssue.title,
         status: generationIssue.status as IssueStatus,
+        assigneeAgentId: generationIssue.assigneeAgentId ?? null,
       },
       alreadyGenerating: false,
     };

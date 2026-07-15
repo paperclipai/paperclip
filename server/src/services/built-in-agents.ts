@@ -418,7 +418,7 @@ const DEFINITIONS = validateBuiltInAgentDefinitions([
     },
     defaultBudgetMonthlyCents: 0,
     bundle: {
-      stockVersion: "2026-07-14",
+      stockVersion: "2026-07-15",
       instructions: {
         entryFile: "AGENTS.md",
         files: {

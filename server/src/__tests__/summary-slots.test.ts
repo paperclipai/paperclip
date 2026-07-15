@@ -165,8 +165,48 @@ describeEmbeddedPostgres("summary slot service", () => {
     it("creates a summarizer task, links it, and marks the slot generating", async () => {
       const companyId = await seedCompany();
       const projectId = await seedProject(companyId);
+      const otherProjectId = await seedProject(companyId);
       const summarizerAgentId = await seedSummarizer(companyId);
       const svc = summarySlotService(db);
+
+      await db.insert(issues).values([
+        {
+          companyId,
+          projectId,
+          identifier: `${issuePrefix(companyId)}-101`,
+          issueNumber: 101,
+          title: "Waiting on board approval",
+          status: "blocked",
+          priority: "high",
+        },
+        {
+          companyId,
+          projectId,
+          identifier: `${issuePrefix(companyId)}-102`,
+          issueNumber: 102,
+          title: "Implement summary cards",
+          status: "in_progress",
+          priority: "medium",
+        },
+        {
+          companyId,
+          projectId,
+          identifier: `${issuePrefix(companyId)}-103`,
+          issueNumber: 103,
+          title: "Ship the previous summary",
+          status: "done",
+          priority: "low",
+        },
+        {
+          companyId,
+          projectId: otherProjectId,
+          identifier: `${issuePrefix(companyId)}-104`,
+          issueNumber: 104,
+          title: "Other project issue",
+          status: "blocked",
+          priority: "critical",
+        },
+      ]);
 
       const result = await svc.generate(projectSelector(companyId, projectId), { userId: "board-user" });
 
@@ -192,13 +232,21 @@ describeEmbeddedPostgres("summary slot service", () => {
         `GET /api/companies/${companyId}/summary-slots/project/header?scopeId=${projectId}`,
       );
       expect(issueRow.description).toContain(
-        `GET /api/companies/${companyId}/summary-slots/project/header/revisions?scopeId=${projectId}`,
+        "do not call the revisions or issues-list endpoints",
       );
       expect(issueRow.description).toContain(
         `PUT /api/companies/${companyId}/summary-slots/project/header`,
       );
       expect(issueRow.description).toContain("`## Needs you`, `## Next`, and `## Since last summary`");
       expect(issueRow.description).toContain("plain-text `STATUS:` lines and the sentinel-wrapped summary draft");
+      expect(issueRow.description).toContain("## Prebuilt scope snapshot");
+      expect(issueRow.description).toContain("### Blocked");
+      expect(issueRow.description).toContain("Waiting on board approval");
+      expect(issueRow.description).toContain("### In progress");
+      expect(issueRow.description).toContain("Implement summary cards");
+      expect(issueRow.description).toContain("### Recently done");
+      expect(issueRow.description).toContain("Ship the previous summary");
+      expect(issueRow.description).not.toContain("Other project issue");
     });
 
     it("dedupes duplicate generate clicks while a generation is active", async () => {

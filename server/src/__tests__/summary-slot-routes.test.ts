@@ -26,6 +26,7 @@ const mockSummarySlotService = vi.hoisted(() => ({
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
+const mockHeartbeatWakeup = vi.hoisted(() => vi.fn());
 
 function slot(overrides: Record<string, unknown> = {}) {
   return {
@@ -52,6 +53,7 @@ function generatingIssue(overrides: Record<string, unknown> = {}) {
     identifier: "PAP-1000",
     title: "Summarize project",
     status: "todo",
+    assigneeAgentId: agentId,
     ...overrides,
   };
 }
@@ -59,6 +61,7 @@ function generatingIssue(overrides: Record<string, unknown> = {}) {
 function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
     accessService: () => mockAccessService,
+    heartbeatService: () => ({ wakeup: mockHeartbeatWakeup }),
     instanceSettingsService: () => mockInstanceSettingsService,
     logActivity: mockLogActivity,
   }));
@@ -109,6 +112,7 @@ describe("summary slot routes", () => {
     mockAccessService.decide.mockResolvedValue({ allowed: true, explanation: "Allowed." });
     mockAccessService.canUser.mockResolvedValue(true);
     mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableSummaries: true });
+    mockHeartbeatWakeup.mockResolvedValue({ id: "run-1" });
     mockSummarySlotService.getSlot.mockResolvedValue({ slot: slot(), document: null, generatingIssue: null });
     mockSummarySlotService.listRevisions.mockResolvedValue({ slot: slot(), revisions: [] });
     mockSummarySlotService.generate.mockResolvedValue({
@@ -181,6 +185,20 @@ describe("summary slot routes", () => {
           entityId: slotId,
         }),
       );
+      expect(mockHeartbeatWakeup).toHaveBeenCalledWith(
+        agentId,
+        expect.objectContaining({
+          reason: "summary_slot_generation_requested",
+          payload: expect.objectContaining({
+            issueId: generatingIssueId,
+            taskKey: `summary-slot:${companyId}:project:${projectId}:header`,
+          }),
+          contextSnapshot: expect.objectContaining({
+            issueId: generatingIssueId,
+            taskKey: `summary-slot:${companyId}:project:${projectId}:header`,
+          }),
+        }),
+      );
     });
 
     it("returns 200 without re-creating a task when a generation is already active", async () => {
@@ -195,6 +213,7 @@ describe("summary slot routes", () => {
       ).send({});
       expect(res.status, JSON.stringify(res.body)).toBe(200);
       expect(res.body.alreadyGenerating).toBe(true);
+      expect(mockHeartbeatWakeup).not.toHaveBeenCalled();
     });
 
     it("denies generate when the operator lacks tasks:assign", async () => {

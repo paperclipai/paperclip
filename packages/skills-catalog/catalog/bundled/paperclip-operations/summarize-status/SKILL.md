@@ -52,7 +52,7 @@ From the generation issue / run context:
 Use these routes directly. Do not guess unscoped `/api/issues` or alternate summary paths:
 
 - Read the current slot: `GET /api/companies/{companyId}/summary-slots/{scopeKind}/{slotKey}?scopeId=...`
-- Read revision history: `GET /api/companies/{companyId}/summary-slots/{scopeKind}/{slotKey}/revisions?scopeId=...`
+- Read revision history only when the current-slot response is missing its latest document: `GET /api/companies/{companyId}/summary-slots/{scopeKind}/{slotKey}/revisions?scopeId=...`
 - Gather project issues: `GET /api/companies/{companyId}/issues?projectId=...`
 - Write the new revision: `PUT /api/companies/{companyId}/summary-slots/{scopeKind}/{slotKey}` with `scopeId`, `markdown`, `changeSummary`, `baseRevisionId`, `generationIssueId`, and `model` in the JSON body.
 
@@ -129,9 +129,11 @@ Use this streaming output protocol throughout the procedure:
 
 ### 1) Confirm scope and read the current slot
 
-Read the summary slot for the scope you were given and its most recent revision. Record the previous revision's body and `lastGeneratedAt` so you can compute "what changed" and set a useful `changeSummary`.
+Read the summary slot for the scope you were given. Its response includes the latest document body and `latestRevisionId`; use those directly. Only call revision history if the current-slot response is malformed or missing that document.
 
 ### 2) Gather current state (company-scoped, minimal)
+
+Generation issues normally include a `Prebuilt scope snapshot` grouped into blocked, in-review, in-progress, and recently done work. When that snapshot is present, use it as the issue source of truth and make zero issue-list calls. Only gather from the API when an older generation issue does not include a snapshot.
 
 For the scope, pull the live signal that answers the three questions:
 
