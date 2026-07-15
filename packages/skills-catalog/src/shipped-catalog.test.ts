@@ -83,6 +83,8 @@ describe("shipped skills catalog", () => {
     expect(skill).toContain("<<<END-SUMMARY-DRAFT>>>");
     expect(skill).toContain("Assistant prose streams token-by-token to the UI; tool-call arguments do not");
     expect(skill).toContain("UI gracefully falls back to its spinner");
+    expect(skill).toContain("**Review:**");
+    expect(skill).toContain("approve on a skim");
   });
 
   it("keeps repo and catalog skill descriptions within the prompt budget cap", () => {

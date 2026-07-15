@@ -243,6 +243,10 @@ describeEmbeddedPostgres("summary slot service", () => {
       );
       expect(issueRow.description).toContain("opens with a `**Decide:**` block");
       expect(issueRow.description).toContain("`**I suggest:**` recommendation");
+      expect(issueRow.description).toContain("followed by a `**Review:**` block");
+      expect(issueRow.description).toContain(
+        "what the reader can approve on a skim vs what needs their eyes",
+      );
       expect(issueRow.description).toContain(
         "at most three or four issues inline; never a trailing list of issue links",
       );

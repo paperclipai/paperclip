@@ -1,6 +1,6 @@
 ---
 name: summarize-status
-description: Write a short, colloquial status summary for a Paperclip summary slot that opens with the one or two decisions the reader needs to make, each with context and a committed recommendation, keeps issue links to a few inline references, and streams status updates while it works.
+description: Write a short, colloquial summary for a Paperclip summary slot that opens with the one or two decisions the reader must make — or, when nothing needs deciding, what to review split into easy approves and needs-your-eyes — each with a committed recommendation, streaming status updates as it works.
 key: paperclipai/bundled/paperclip-operations/summarize-status
 recommendedForRoles:
   - general
@@ -21,7 +21,7 @@ A summary is **not a task list**. The board already shows every issue; repeating
 
 Every summary answers, in order:
 
-1. **What do I need to decide?** — the summary **starts** with the decisions: at most two bullets, each giving enough context to understand the decision, a link, and what you recommend. If nothing needs a decision, say so in one line and name the next event worth watching.
+1. **What do I need to decide?** — the summary **starts** with the decisions: at most two bullets, each giving enough context to understand the decision, a link, and what you recommend. If nothing needs a decision, pivot to review: say so in one line, then tell the reader what to **review** — which items they can approve on a skim and which genuinely need their eyes — each with your recommendation. Only if there's nothing to decide *and* nothing to review do you fall back to one line naming the next event worth watching.
 2. **What's the headline?** — after the decisions, at most one or two short paragraphs of plain conversational language on what's moving. Everything else stays off the page.
 
 The summary renders next to the board itself, so the reader can already see every issue and link. Never dump a list of issue links anywhere in the summary — reference **at most three or four issues total**, inline, where they're mentioned.
@@ -158,7 +158,20 @@ sign-off" — not "PAP-123: in_review (high)". No headings, no status-by-status 
 ```
 
 - The summary **opens** with the `**Decide:**` block: at most two bullets, each pairing the decision's context with a link and a committed **I suggest:** recommendation. This block is the point of the whole summary.
-- If nothing needs a decision, open with `**Nothing to decide right now.**` followed by one clause naming the next event worth watching — then the prose paragraph if there's anything worth saying.
+- If nothing needs a decision but work is sitting in review, open with `**Nothing to decide right now.**` and follow it immediately with a `**Review:**` block — same shape and budget as **Decide:**, at most two bullets — that triages the review pile for the reader: which items they can approve on a skim, and which genuinely need their eyes and why. Each bullet still carries a link and a committed **I suggest:**:
+
+  ```markdown
+  **Nothing to decide right now.**
+
+  **Review:**
+  - <The easy one — "the banner contrast fixes are two-line CSS changes and tests are
+    green"> — [PAP-456](/PAP/issues/PAP-456). **I suggest:** approve on a skim.
+  - <The one that needs eyes — "the auth change rewrites token refresh"> —
+    [PAP-789](/PAP/issues/PAP-789). **I suggest:** read the token-handling diff closely
+    before you approve.
+  ```
+
+- If there's nothing to decide *and* nothing to review, open with `**Nothing to decide right now.**` followed by one clause naming the next event worth watching — then the prose paragraph if there's anything worth saying.
 - Never hedge the suggestion into a menu. Pick one option and say why in half a sentence. The reader can disagree — that's fine — but "you could do A or B or C" is a task list wearing a disguise.
 
 Rules:
@@ -187,7 +200,7 @@ Leave a short comment on the generation issue: scope summarized, revision number
 
 ## Budget
 
-- Opening **Decide:** block: at most two bullets (or one `**Nothing to decide right now.**` line).
+- Opening **Decide:** block: at most two bullets. When empty it becomes one `**Nothing to decide right now.**` line, plus a **Review:** block of at most two bullets when review work is waiting.
 - Body after the decisions: one or two short paragraphs, ~120 words total, two topics max.
 - At most three or four issue links in the entire summary, inline — never a list of links.
 - Workspaces overview: same shape — the decisions and headline come from the one or two workspaces that most need attention, not one line per workspace.
@@ -195,7 +208,7 @@ Leave a short comment on the generation issue: scope summarized, revision number
 
 ## Verification (self-check before writing the revision)
 
-- [ ] The summary **opens** with the **Decide:** block — at most two bullets, each with decision context, a link, and a committed **I suggest** recommendation (or one honest `**Nothing to decide right now.**` line).
+- [ ] The summary **opens** with the **Decide:** block — at most two bullets, each with decision context, a link, and a committed **I suggest** recommendation. If there are no decisions, it opens with `**Nothing to decide right now.**` followed by a **Review:** block (easy approves vs needs-your-eyes, each with **I suggest**) when anything is in review.
 - [ ] The prose after it covers at most two topics, in plain conversational language — no headings, no status lists, no jargon.
 - [ ] At most three or four issue links total, all inline — no trailing issue list, no link dump anywhere.
 - [ ] No fabricated status, no secrets, no cross-company data.
