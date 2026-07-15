@@ -1878,14 +1878,16 @@ export function IssueProperties({
 
   return (
     <div>
-      <PropertyRow label="Task ID">
-        <span
-          className="font-mono text-sm font-bold text-foreground truncate"
-          title={taskIdDisplay}
-        >
-          {taskIdDisplay}
-        </span>
-      </PropertyRow>
+      <div className="mb-2 border-b border-border pb-2">
+        <PropertyRow label="Task ID">
+          <span
+            className="font-mono text-sm font-bold text-foreground truncate"
+            title={taskIdDisplay}
+          >
+            {taskIdDisplay}
+          </span>
+        </PropertyRow>
+      </div>
 
       <PropertySection title="Triage" first>
         <PropertyRow label="Status">

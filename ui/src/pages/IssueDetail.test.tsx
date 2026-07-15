@@ -1578,7 +1578,7 @@ describe("IssueDetail", () => {
     expect(container.querySelector('[data-status-icon-state="covered"]')?.textContent).toBe("blocked");
   });
 
-  it("adds the task identifier as its own breadcrumb item between the source list and the title", async () => {
+  it("does not add the task identifier as its own breadcrumb item (it is not a parent of the title)", async () => {
     mockSetBreadcrumbs.mockClear();
     mockIssuesApi.get.mockResolvedValue(createIssue({ identifier: "PAP-1", title: "Breadcrumb id task" }));
 
@@ -1593,13 +1593,12 @@ describe("IssueDetail", () => {
 
     const crumbs = mockSetBreadcrumbs.mock.calls.at(-1)?.[0] as Array<{ label: string; href?: string }>;
     expect(crumbs).toBeTruthy();
-    const idIndex = crumbs.findIndex((crumb) => crumb.label === "PAP-1");
+    // The identifier lives in the properties pane, not the breadcrumb — surfacing it
+    // as a standalone crumb makes the title read as a sub-item of the identifier.
+    expect(crumbs.some((crumb) => crumb.label === "PAP-1")).toBe(false);
     const titleIndex = crumbs.findIndex((crumb) => crumb.label === "Breadcrumb id task");
-    // Identifier crumb sits after the source list ("Tasks") and before the title.
-    expect(idIndex).toBeGreaterThan(0);
-    expect(idIndex).toBeLessThan(titleIndex);
-    // No href -> renders as static breadcrumb text, not a self-link.
-    expect(crumbs[idIndex].href).toBeUndefined();
+    // Breadcrumb is just source list -> title.
+    expect(titleIndex).toBe(crumbs.length - 1);
   });
 
   it("refreshes subtree pause state after resuming a hold", async () => {

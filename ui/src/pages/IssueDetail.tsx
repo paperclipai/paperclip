@@ -1938,9 +1938,6 @@ export function IssueDetail() {
     [comments, optimisticComments],
   );
   const breadcrumbTitle = issue?.title ?? issueId ?? "Task";
-  // Surface the task identifier (e.g. NEO-449) as its own breadcrumb item so it
-  // stays omnipresent during review, mirroring the Task ID row in the properties pane.
-  const breadcrumbIdentifier = issue?.identifier ?? null;
   const breadcrumbStatus = issue?.status;
   const breadcrumbBlockerAttention = issue?.blockerAttention;
   // Stable identity for the breadcrumb status glyph. The glyph's shape/colour
@@ -3092,9 +3089,6 @@ export function IssueDetail() {
   useEffect(() => {
     setBreadcrumbs([
       sourceBreadcrumb,
-      // Task ID crumb (no href — it points at the current page, so it renders as
-      // static text between the source list and the title).
-      ...(breadcrumbIdentifier ? [{ label: breadcrumbIdentifier }] : []),
       {
         // The status glyph (leading) already conveys in-progress/live state;
         // no redundant 🔵 emoji prefix on the title.
@@ -3105,7 +3099,6 @@ export function IssueDetail() {
     ]);
   }, [
     breadcrumbTitle,
-    breadcrumbIdentifier,
     hasLiveRuns,
     setBreadcrumbs,
     sourceBreadcrumb.href,
