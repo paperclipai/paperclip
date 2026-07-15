@@ -15,10 +15,12 @@ const apiPrefixes: Record<string, string> = {
   "activity.ts": "/api",
   "adapters.ts": "/api",
   "agents.ts": "/api",
+  "attention.ts": "/api",
   "approvals.ts": "/api",
   "assets.ts": "/api",
   "auth.ts": "/api/auth",
   "board-chat.ts": "/api",
+  "built-in-agents.ts": "/api",
   "cloud-upstreams.ts": "/api",
   "companies.ts": "/api/companies",
   "company-skills.ts": "/api",
@@ -45,6 +47,8 @@ const apiPrefixes: Record<string, string> = {
   "sidebar-badges.ts": "/api",
   "sidebar-preferences.ts": "/api",
   "teams-catalog.ts": "/api",
+  "tool-access.ts": "/api",
+  "tool-gateway.ts": "/api",
   "user-profiles.ts": "/api",
 };
 
@@ -54,6 +58,10 @@ const HTTP_METHODS = new Set(["get", "put", "post", "delete", "options", "head",
 const explicitOpenApiCoverageExclusions = new Set([
   // Pipeline routes are experimental and not yet represented in the public OpenAPI document.
   "pipelines.ts",
+  // Case routes are experimental (enableCases flag) and not yet in the public OpenAPI document.
+  "cases.ts",
+  // Smoke lab routes are experimental and not yet represented in the public OpenAPI document.
+  "smoke-lab.ts",
 ]);
 
 function createApp() {
@@ -71,6 +79,9 @@ function normalizeExpressPath(routePath: string) {
 }
 
 function resolveMountedPath(file: string, prefix: string, routePath: string) {
+  if (file === "tool-gateway.ts" && routePath.startsWith("/mcp/gateways/")) {
+    return routePath;
+  }
   if ((file === "companies.ts" || file === "health.ts") && routePath === "/") {
     return prefix;
   }
@@ -143,6 +154,8 @@ describe("openapi routes", () => {
       AgentBearerAuth: { type: "http", scheme: "bearer" },
     });
     expect(res.body.paths["/api/health"].get.security).toEqual([]);
+    expect(res.body.paths["/mcp/gateways/{gatewayPublicId}"].post.security).toEqual([]);
+    expect(res.body.paths["/api/mcp/gateways/{gatewayPublicId}"]).toBeUndefined();
     expect(res.body.paths["/api/companies"].post.responses["201"]).toBeDefined();
     expect(res.body.paths["/api/companies"].post.requestBody.content["application/json"].schema).toMatchObject({
       type: "object",
@@ -157,6 +170,8 @@ describe("openapi routes", () => {
         name: { type: "string" },
       },
     });
+    expect(JSON.stringify(res.body.paths["/api/tool-gateway/tools"].get)).not.toContain("sessionToken");
+    expect(JSON.stringify(res.body.paths["/api/tool-gateway/tools/call"].post)).not.toContain("sessionToken");
   });
 
   it("covers the mounted server routes exactly", () => {
@@ -184,6 +199,13 @@ describe("openapi routes", () => {
     expect(spec.paths["/api/plugins/install"].post["x-paperclip-authorization"]).toEqual({
       actor: "board",
       instanceAdmin: true,
+    });
+    expect(spec.paths["/api/execution-workspaces/{id}/reconcile-branch"].post.security).toEqual([
+      { BoardSessionAuth: [] },
+      { BoardApiKeyAuth: [] },
+    ]);
+    expect(spec.paths["/api/execution-workspaces/{id}/reconcile-branch"].post["x-paperclip-authorization"]).toEqual({
+      actor: "board",
     });
     expect(spec.paths["/api/companies/{companyId}/cost-events"].post.responses["201"]).toBeDefined();
     expect(spec.paths["/api/companies/{companyId}/cost-events"].post.responses["403"]).toBeDefined();

@@ -84,7 +84,7 @@ export function nextWorkMode(mode: IssueWorkMode): IssueWorkMode {
 
 export function titleForPendingWorkMode(mode: IssueWorkMode): string {
   if (mode === "ask") {
-    return "Ask mode for this submission. Click to change. The assignee will answer in this thread; no implementation work.";
+    return "Ask mode for this submission. Click to change. The responsible will answer in this thread; no implementation work.";
   }
   if (mode === "planning") {
     return "Plan mode is on for this submission. Click to change.";

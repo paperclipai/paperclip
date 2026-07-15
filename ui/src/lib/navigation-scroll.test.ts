@@ -41,6 +41,37 @@ describe("navigation-scroll", () => {
     ).toBe(false);
   });
 
+  it("resets scroll when navigating into the top-level issues page", () => {
+    expect(
+      shouldResetScrollOnNavigation({
+        previousPathname: "/issues/PAP-1389",
+        pathname: "/issues",
+        navigationType: "PUSH",
+        state: null,
+      }),
+    ).toBe(true);
+
+    expect(
+      shouldResetScrollOnNavigation({
+        previousPathname: "/PAP/issues/PAP-1389",
+        pathname: "/PAP/issues",
+        navigationType: "REPLACE",
+        state: null,
+      }),
+    ).toBe(true);
+  });
+
+  it("does not reset issues page scroll on browser history restoration", () => {
+    expect(
+      shouldResetScrollOnNavigation({
+        previousPathname: "/issues/PAP-1389",
+        pathname: "/issues",
+        navigationType: "POP",
+        state: null,
+      }),
+    ).toBe(false);
+  });
+
   it("resets scroll when navigating directly between issue detail routes", () => {
     expect(
       shouldResetScrollOnNavigation({

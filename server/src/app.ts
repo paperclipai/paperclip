@@ -4,6 +4,7 @@ import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { Db } from "@paperclipai/db";
 import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
+import type { InspectDatabaseBackupHealthOptions } from "./services/database-backup-health.js";
 import type { StorageService } from "./storage/types.js";
 import { httpLogger, errorHandler } from "./middleware/index.js";
 import { actorMiddleware } from "./middleware/auth.js";
@@ -13,11 +14,13 @@ import { applyTrustProxy, parseTrustProxyEnv } from "./middleware/trust-proxy.js
 import { healthRoutes } from "./routes/health.js";
 import { companyRoutes } from "./routes/companies.js";
 import { companySkillRoutes } from "./routes/company-skills.js";
+import { builtInAgentRoutes } from "./routes/built-in-agents.js";
 import { teamsCatalogRoutes } from "./routes/teams-catalog.js";
 import { agentRoutes } from "./routes/agents.js";
 import { projectRoutes } from "./routes/projects.js";
 import { issueRoutes } from "./routes/issues.js";
 import { issueTreeControlRoutes } from "./routes/issue-tree-control.js";
+import { caseRoutes } from "./routes/cases.js";
 import { fileResourceRoutes } from "./routes/file-resources.js";
 import { routineRoutes } from "./routes/routines.js";
 import { pipelineRoutes } from "./routes/pipelines.js";
@@ -27,9 +30,12 @@ import { goalRoutes } from "./routes/goals.js";
 import { boardChatRoutes } from "./routes/board-chat.js";
 import { approvalRoutes } from "./routes/approvals.js";
 import { secretRoutes } from "./routes/secrets.js";
+import { toolAccessRoutes } from "./routes/tool-access.js";
+import { smokeLabRoutes } from "./routes/smoke-lab.js";
 import { costRoutes } from "./routes/costs.js";
 import { activityRoutes } from "./routes/activity.js";
 import { dashboardRoutes } from "./routes/dashboard.js";
+import { attentionRoutes } from "./routes/attention.js";
 import { userProfileRoutes } from "./routes/user-profiles.js";
 import { sidebarBadgeRoutes } from "./routes/sidebar-badges.js";
 import { sidebarPreferenceRoutes } from "./routes/sidebar-preferences.js";
@@ -46,6 +52,7 @@ import { authRoutes } from "./routes/auth.js";
 import { assetRoutes } from "./routes/assets.js";
 import { accessRoutes } from "./routes/access.js";
 import { pluginRoutes } from "./routes/plugins.js";
+import { mcpGatewayProtocolRoutes, toolGatewayRoutes } from "./routes/tool-gateway.js";
 import { adapterRoutes } from "./routes/adapters.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
 import { readBrandedStaticIndexHtml } from "./static-index-html.js";
@@ -56,6 +63,7 @@ import { createPluginWorkerManager, type PluginWorkerManager } from "./services/
 import { createPluginJobScheduler } from "./services/plugin-job-scheduler.js";
 import { pluginJobStore } from "./services/plugin-job-store.js";
 import { createPluginToolDispatcher } from "./services/plugin-tool-dispatcher.js";
+import { createToolGatewayService } from "./services/tool-gateway.js";
 import { pluginLifecycleManager } from "./services/plugin-lifecycle.js";
 import { createPluginJobCoordinator } from "./services/plugin-job-coordinator.js";
 import { buildHostServices, flushPluginLogBuffer } from "./services/plugin-host-services.js";
@@ -69,6 +77,7 @@ import type { BetterAuthSessionResult } from "./auth/better-auth.js";
 import { createCachedViteHtmlRenderer } from "./vite-html-renderer.js";
 import { DEFAULT_JSON_BODY_LIMIT, PORTABLE_JSON_BODY_LIMIT } from "./http/body-limits.js";
 import { COMPANY_IMPORT_API_PATH } from "./routes/company-import-paths.js";
+import { apiCompression } from "./middleware/api-compression.js";
 
 type UiMode = "none" | "static" | "vite-dev";
 const FEEDBACK_EXPORT_FLUSH_INTERVAL_MS = 5_000;
@@ -142,6 +151,7 @@ export async function createApp(
       }): Promise<unknown>;
     };
     databaseBackupService?: InstanceDatabaseBackupService;
+    databaseBackupHealth?: InspectDatabaseBackupHealthOptions;
     deploymentMode: DeploymentMode;
     deploymentExposure: DeploymentExposure;
     allowedHostnames: string[];
@@ -158,6 +168,7 @@ export async function createApp(
   },
 ) {
   const app = express();
+  app.locals.paperclipDb = db;
   const captureRawBody = (req: express.Request, _res: express.Response, buf: Buffer) => {
     (req as unknown as { rawBody: Buffer }).rawBody = buf;
   };
@@ -175,6 +186,7 @@ export async function createApp(
     limit: DEFAULT_JSON_BODY_LIMIT,
     verify: captureRawBody,
   }));
+  app.use("/api", apiCompression());
   app.use(httpLogger);
   const privateHostnameGateEnabled = shouldEnablePrivateHostnameGuard({
     deploymentMode: opts.deploymentMode,
@@ -216,20 +228,19 @@ export async function createApp(
       deploymentExposure: opts.deploymentExposure,
       authReady: opts.authReady,
       companyDeletionEnabled: opts.companyDeletionEnabled,
+      databaseBackupHealth: opts.databaseBackupHealth,
     }),
   );
   api.use(openApiRoutes());
   api.use("/companies", companyRoutes(db, opts.storageService));
   api.use(llmRoutes(db));
   api.use(companySkillRoutes(db));
+  api.use(builtInAgentRoutes(db));
   api.use(teamsCatalogRoutes(db));
   api.use(agentRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(assetRoutes(db, opts.storageService));
   api.use(projectRoutes(db));
-  api.use(issueRoutes(db, opts.storageService, {
-    feedbackExportService: opts.feedbackExportService,
-    pluginWorkerManager: workerManager,
-  }));
+  api.use(caseRoutes(db, opts.storageService));
   api.use(issueTreeControlRoutes(db));
   api.use(fileResourceRoutes(db));
   api.use(routineRoutes(db, { pluginWorkerManager: workerManager }));
@@ -240,9 +251,14 @@ export async function createApp(
   api.use(boardChatRoutes(db, { deploymentMode: opts.deploymentMode }));
   api.use(approvalRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(secretRoutes(db));
+  const trustedLocalStdioRuntimeHost =
+    process.env.PAPERCLIP_TRUSTED_MCP_RUNTIME_HOST
+    ?? process.env.PAPERCLIP_TOOL_RUNTIME_TRUSTED_HOST
+    ?? null;
   api.use(costRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(activityRoutes(db));
   api.use(dashboardRoutes(db));
+  api.use(attentionRoutes(db));
   api.use(userProfileRoutes(db));
   api.use(sidebarBadgeRoutes(db));
   api.use(sidebarPreferenceRoutes(db));
@@ -267,6 +283,31 @@ export async function createApp(
     lifecycleManager: lifecycle,
     db,
   });
+  const toolGateway = createToolGatewayService(db, {
+    pluginToolDispatcher: toolDispatcher,
+    deploymentMode: opts.deploymentMode,
+    deploymentExposure: opts.deploymentExposure,
+    trustedLocalStdioRuntimeHost,
+  });
+  // Issue routes are intentionally mounted after the gateway is constructed because
+  // issue approval endpoints delegate to it. The intervening routers use distinct
+  // route prefixes, so this dependency does not change issue-route precedence.
+  api.use(issueRoutes(db, opts.storageService, {
+    feedbackExportService: opts.feedbackExportService,
+    pluginWorkerManager: workerManager,
+    approveToolActionRequest: (input) => toolGateway.approveActionRequest(input),
+  }));
+  app.use(mcpGatewayProtocolRoutes(toolGateway));
+  api.use(toolAccessRoutes(db, {
+    deploymentMode: opts.deploymentMode,
+    deploymentExposure: opts.deploymentExposure,
+    trustedLocalStdioRuntimeHost,
+    toolGateway,
+  }));
+  api.use(smokeLabRoutes(db, {
+    deploymentMode: opts.deploymentMode,
+    deploymentExposure: opts.deploymentExposure,
+  }));
   const jobCoordinator = createPluginJobCoordinator({
     db,
     lifecycle,
@@ -313,6 +354,9 @@ export async function createApp(
     },
   );
   api.use(
+    toolGatewayRoutes(db, toolGateway),
+  );
+  api.use(
     pluginRoutes(
       db,
       loader,
@@ -320,6 +364,7 @@ export async function createApp(
       { workerManager },
       { toolDispatcher },
       { workerManager },
+      { toolGateway },
     ),
   );
   api.use(adapterRoutes());

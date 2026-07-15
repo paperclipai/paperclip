@@ -3,6 +3,7 @@ import {
   assigneeValueFromSelection,
   currentUserAssigneeOption,
   formatAssigneeUserLabel,
+  formatUserLabel,
   parseAssigneeValue,
   suggestedCommentAssigneeValue,
 } from "./assignees";
@@ -50,6 +51,12 @@ describe("assignee selection helpers", () => {
     expect(formatAssigneeUserLabel("user-1", "user-1")).toBe("You");
     expect(formatAssigneeUserLabel("local-board", "someone-else")).toBe("Board");
     expect(formatAssigneeUserLabel("user-abcdef", "someone-else")).toBe("user-");
+  });
+
+  it("formats actual user labels without current-user substitution", () => {
+    expect(formatUserLabel("user-1", new Map([["user-1", "Dotta"]]))).toBe("Dotta");
+    expect(formatUserLabel("user-1", new Map([["user-2", "Someone Else"]]))).toBe("user-");
+    expect(formatUserLabel("local-board")).toBe("Board");
   });
 
   it("suggests the last non-me commenter without changing the actual assignee encoding", () => {

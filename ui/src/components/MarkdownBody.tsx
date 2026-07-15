@@ -4,13 +4,23 @@ import { Check, Copy, ExternalLink, Github, WrapText } from "lucide-react";
 import Markdown, { defaultUrlTransform, type Components, type Options } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { cn } from "../lib/utils";
-import { Link } from "@/lib/router";
+import { Link, useCaseHref } from "@/lib/router";
 import { useTheme } from "../context/ThemeContext";
 import { useOptionalCompany } from "../context/CompanyContext";
 import { mentionChipInlineStyle, parseMentionChipHref } from "../lib/mention-chips";
 import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
 import { parseIssueReferenceFromHref, remarkLinkIssueReferences } from "../lib/issue-reference";
+import { remarkLinkCaseReferences } from "../lib/case-reference";
+
+const CASE_HREF_RE = /^\/cases\/([A-Z][A-Z0-9]*-C\d+)$/i;
+
+/** Recover the case identifier from a `/cases/PAP-C7` href produced by the plugin. */
+function caseIdentifierFromHref(href: string | undefined): string | null {
+  if (!href) return null;
+  const match = decodeURIComponent(href.trim()).match(CASE_HREF_RE);
+  return match ? match[1]!.toUpperCase() : null;
+}
 import { parseWorkspaceFileHref, remarkWorkspaceFileRefs, WORKSPACE_FILE_HREF_PREFIX } from "../lib/remark-workspace-file-refs";
 import { remarkSoftBreaks } from "../lib/remark-soft-breaks";
 import { StatusIcon } from "./StatusIcon";
@@ -52,6 +62,11 @@ interface MarkdownBodyProps {
   style?: React.CSSProperties;
   softBreaks?: boolean;
   linkIssueReferences?: boolean;
+  /**
+   * Linkify bare case identifiers (`PAP-C7`) to the case detail page. Off by
+   * default; enabled on surfaces behind the experimental Cases flag (PAP-12969).
+   */
+  linkCaseReferences?: boolean;
   /** Opt into Obsidian-style [[target]] / [[target|label]] wikilinks. */
   enableWikiLinks?: boolean;
   /** Base href used for wikilinks when no resolver is supplied. */
@@ -105,6 +120,28 @@ function MarkdownIssueLink({
       {status ? (
         <StatusIcon status={status} size="lg" className="relative -top-px mr-1 inline-block h-5 w-5 align-middle" />
       ) : null}
+      {children}
+    </Link>
+  );
+}
+
+function MarkdownCaseLink({
+  identifier,
+  children,
+}: {
+  identifier: string;
+  children: ReactNode;
+}) {
+  // Cases resolve via the get-by-identifier route; navigate there on click.
+  // Kept boxless/underlined to match the issue mention treatment.
+  const caseHref = useCaseHref();
+  return (
+    <Link
+      to={caseHref(identifier)}
+      data-mention-kind="case"
+      className={cn("paperclip-markdown-case-ref", "font-normal underline")}
+      aria-label={`Case ${identifier}`}
+    >
       {children}
     </Link>
   );
@@ -194,7 +231,7 @@ const codeBlockActionStyle: React.CSSProperties = {
   border: "1px solid color-mix(in oklab, var(--foreground) 14%, transparent)",
   backgroundColor: "color-mix(in oklab, var(--muted) 92%, var(--background) 8%)",
   color: "var(--muted-foreground)",
-  fontSize: "0.7rem",
+  fontSize: "var(--text-micro)",
   lineHeight: 1,
   cursor: "pointer",
 };
@@ -209,6 +246,30 @@ const tableCellWrapStyle: React.CSSProperties = {
   overflowWrap: "anywhere",
   wordBreak: "normal",
 };
+
+function isHtmlCommentNode(node: MarkdownAstNode) {
+  return node.type === "html" && typeof node.value === "string" && /^<!--[\s\S]*-->$/.test(node.value.trim());
+}
+
+function isEscapedHtmlCommentPlaceholder(node: MarkdownAstNode) {
+  if (node.type !== "text" || typeof node.value !== "string") return false;
+  const value = node.value.trim();
+  return /^\\?<!--(?:\s*-{0,2}>?)?$/.test(value) || /^&lt;!--(?:\s*-{0,2}(?:&gt;)?)?$/.test(value);
+}
+
+function remarkDropHtmlComments() {
+  return (tree: MarkdownAstNode) => {
+    const visit = (node: MarkdownAstNode) => {
+      const children = node.children;
+      if (!children) return;
+      node.children = children.filter((child) => !isHtmlCommentNode(child) && !isEscapedHtmlCommentPlaceholder(child));
+      for (const child of node.children) {
+        visit(child);
+      }
+    };
+    visit(tree);
+  };
+}
 
 function mergeWrapStyle(style?: React.CSSProperties): React.CSSProperties {
   return {
@@ -652,6 +713,7 @@ function MarkdownBodyImpl({
   style,
   softBreaks = true,
   linkIssueReferences = true,
+  linkCaseReferences = false,
   enableWikiLinks = false,
   wikiLinkRoot,
   resolveWikiLinkHref,
@@ -688,7 +750,7 @@ function MarkdownBodyImpl({
   // parent re-renders frequently (see PAP-10767). Memoize both so re-renders
   // that don't change the inputs are cheap and non-destructive.
   const remarkPlugins = useMemo<NonNullable<Options["remarkPlugins"]>>(() => {
-    const plugins: NonNullable<Options["remarkPlugins"]> = [remarkGfm];
+    const plugins: NonNullable<Options["remarkPlugins"]> = [remarkGfm, remarkDropHtmlComments];
     if (enableWikiLinks) {
       plugins.push(createRemarkWikiLinks({ wikiLinkRoot, resolveWikiLinkHref }));
     }
@@ -698,11 +760,14 @@ function MarkdownBodyImpl({
     if (linkIssueReferences) {
       plugins.push([remarkLinkIssueReferences, { knownPrefixes }]);
     }
+    if (linkCaseReferences) {
+      plugins.push([remarkLinkCaseReferences, { knownPrefixes }]);
+    }
     if (softBreaks) {
       plugins.push(remarkSoftBreaks);
     }
     return plugins;
-  }, [enableWikiLinks, wikiLinkRoot, resolveWikiLinkHref, linkWorkspaceFileRefs, linkIssueReferences, knownPrefixes, softBreaks]);
+  }, [enableWikiLinks, wikiLinkRoot, resolveWikiLinkHref, linkWorkspaceFileRefs, linkIssueReferences, linkCaseReferences, knownPrefixes, softBreaks]);
   const components = useMemo<Components>(() => {
     const map: Components = {
     p: ({ node: _node, style: paragraphStyle, children: paragraphChildren, ...paragraphProps }) => (
@@ -785,6 +850,11 @@ function MarkdownBodyImpl({
         );
       }
 
+      const caseIdentifier = linkCaseReferences ? caseIdentifierFromHref(href) : null;
+      if (caseIdentifier) {
+        return <MarkdownCaseLink identifier={caseIdentifier}>{linkChildren}</MarkdownCaseLink>;
+      }
+
       const parsed = href ? parseMentionChipHref(href) : null;
       if (parsed) {
         const targetHref = parsed.kind === "project"
@@ -827,10 +897,10 @@ function MarkdownBodyImpl({
       const isGitHubLink = isGitHubUrl(href);
       const isExternal = isExternalHttpUrl(href);
       const leadingIcon = isGitHubLink ? (
-        <Github aria-hidden="true" className="mr-1 inline h-3.5 w-3.5 align-[-0.125em]" />
+        <Github aria-hidden="true" className="mr-1 inline h-3.5 w-3.5 align-(--va-0_125em)" />
       ) : null;
       const trailingIcon = isExternal && !isGitHubLink ? (
-        <ExternalLink aria-hidden="true" className="ml-1 inline h-3 w-3 align-[-0.125em]" />
+        <ExternalLink aria-hidden="true" className="ml-1 inline h-3 w-3 align-(--va-0_125em)" />
       ) : null;
       return (
         <a
@@ -861,7 +931,7 @@ function MarkdownBodyImpl({
       };
     }
     return map;
-  }, [theme, linkIssueReferences, externalReferenceLookup, resolveImageSrc, onImageClick]);
+  }, [theme, linkIssueReferences, linkCaseReferences, externalReferenceLookup, resolveImageSrc, onImageClick]);
 
   return (
     <div

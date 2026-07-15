@@ -7,8 +7,15 @@ import { NavigationType } from "react-router-dom";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { canBoardResolveRecoveryAction, IssueDetail, shouldScrollIssueDetailToTopOnNavigation } from "./IssueDetail";
+import {
+  canBoardManageRuntime,
+  canBoardResolveRecoveryAction,
+  IssueDetail,
+  readRecoveryReconcileWorkspaceId,
+  shouldScrollIssueDetailToTopOnNavigation,
+} from "./IssueDetail";
 import { queryKeys } from "../lib/queryKeys";
+import { createIssueDetailLocationState } from "../lib/issueDetailBreadcrumb";
 
 const mockIssuesApi = vi.hoisted(() => ({
   get: vi.fn(),
@@ -68,6 +75,12 @@ const mockInstanceSettingsApi = vi.hoisted(() => ({
 }));
 
 const mockNavigate = vi.hoisted(() => vi.fn());
+const mockLocation = vi.hoisted(() => ({
+  pathname: "/issues/PAP-1",
+  search: "",
+  hash: "",
+  state: null as unknown,
+}));
 const mockOpenPanel = vi.hoisted(() => vi.fn());
 const mockClosePanel = vi.hoisted(() => vi.fn());
 const mockSetBreadcrumbs = vi.hoisted(() => vi.fn());
@@ -77,6 +90,14 @@ const mockIssuesListRender = vi.hoisted(() => vi.fn());
 const mockIssueChatThreadRender = vi.hoisted(() => vi.fn());
 const mockImageGalleryRender = vi.hoisted(() => vi.fn());
 const mockIssueWorkspaceCardRender = vi.hoisted(() => vi.fn());
+
+class ResizeObserverStub {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+
+(globalThis as any).ResizeObserver = (globalThis as any).ResizeObserver ?? ResizeObserverStub;
 
 vi.mock("../api/issues", () => ({
   issuesApi: mockIssuesApi,
@@ -136,7 +157,7 @@ vi.mock("@/lib/router", () => ({
   } & AnchorHTMLAttributes<HTMLAnchorElement>) => (
     <a href={to} {...props}>{children}</a>
   ),
-  useLocation: () => ({ pathname: "/issues/PAP-1", search: "", hash: "", state: null }),
+  useLocation: () => mockLocation,
   useNavigate: () => mockNavigate,
   useNavigationType: () => "PUSH",
   useParams: () => ({ issueId: "PAP-1" }),
@@ -316,7 +337,7 @@ vi.mock("../components/ApprovalCard", () => ({
 }));
 
 vi.mock("../components/Identity", () => ({
-  Identity: () => <span>Identity</span>,
+  Identity: ({ name, shape }: { name: string; shape?: string }) => <span data-shape={shape ?? "circle"}>{name}</span>,
 }));
 
 vi.mock("@/components/ui/button", () => ({
@@ -932,6 +953,7 @@ describe("IssueDetail", () => {
     mockIssuesApi.listWorkProducts.mockResolvedValue([]);
     mockIssuesApi.listFeedbackVotes.mockResolvedValue([]);
     mockIssuesApi.markRead.mockResolvedValue({ id: "issue-1", lastReadAt: new Date().toISOString() });
+    mockIssuesApi.archiveFromInbox.mockResolvedValue({ id: "issue-1", archivedAt: new Date() });
     mockIssuesApi.getTreeControlState.mockResolvedValue({ activePauseHold: null });
     mockIssuesApi.listTreeHolds.mockResolvedValue([]);
     mockActivityApi.forIssue.mockResolvedValue([]);
@@ -964,6 +986,11 @@ describe("IssueDetail", () => {
     mockIssueChatThreadRender.mockClear();
     mockImageGalleryRender.mockClear();
     mockIssueWorkspaceCardRender.mockClear();
+    mockNavigate.mockClear();
+    mockLocation.pathname = "/issues/PAP-1";
+    mockLocation.search = "";
+    mockLocation.hash = "";
+    mockLocation.state = null;
   });
 
   afterEach(async () => {
@@ -999,6 +1026,185 @@ describe("IssueDetail", () => {
         String(call[0]).includes("React has detected a change in the order of Hooks"),
       ),
     ).toBe(false);
+  });
+
+  it("removes an inbox-origin archived issue from cached inbox variants before navigating back", async () => {
+    const issue = createIssue({ id: "issue-1", identifier: "PAP-1", title: "Archive me from detail" });
+    const otherIssue = createIssue({ id: "issue-2", identifier: "PAP-2", title: "Keep me in inbox" });
+    const archiveRequest = createDeferred<{ id: string; archivedAt: Date }>();
+    mockLocation.state = createIssueDetailLocationState("Inbox", "/inbox/mine", "inbox");
+    mockIssuesApi.get.mockResolvedValue(issue);
+    mockIssuesApi.archiveFromInbox.mockReturnValue(archiveRequest.promise);
+
+    const mineKey = [
+      ...queryKeys.issues.listMineByMe("company-1"),
+      "with-routine-executions",
+      "live-descendant-summary",
+    ] as const;
+    const touchedKey = [
+      ...queryKeys.issues.listTouchedByMe("company-1"),
+      "with-routine-executions",
+      "live-descendant-summary",
+    ] as const;
+    const unreadKey = queryKeys.issues.listUnreadTouchedByMe("company-1");
+    queryClient.setQueryData<Issue[]>(mineKey, [issue, otherIssue]);
+    queryClient.setQueryData<Issue[]>(touchedKey, [issue, otherIssue]);
+    queryClient.setQueryData<Issue[]>(unreadKey, [issue, otherIssue]);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const archiveButton = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Archive from inbox"]',
+    );
+    expect(archiveButton).not.toBeNull();
+
+    await act(async () => {
+      archiveButton!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    });
+
+    await waitForAssertion(() => {
+      expect(queryClient.getQueryData<Issue[]>(mineKey)?.map((item) => item.id)).toEqual(["issue-2"]);
+      expect(queryClient.getQueryData<Issue[]>(touchedKey)?.map((item) => item.id)).toEqual(["issue-2"]);
+      expect(queryClient.getQueryData<Issue[]>(unreadKey)?.map((item) => item.id)).toEqual(["issue-2"]);
+      expect(mockNavigate).not.toHaveBeenCalled();
+    });
+
+    await act(async () => {
+      archiveRequest.resolve({ id: "issue-1", archivedAt: new Date() });
+    });
+    await flushReact();
+
+    expect(mockNavigate).toHaveBeenCalledWith("/inbox/mine", { replace: true });
+    expect(mockPushToast).toHaveBeenCalledWith({ title: "Task archived from inbox", tone: "success" });
+  });
+
+  it("shows assignee and originating avatars in the issue header metadata", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue({
+      assigneeAgentId: "agent-1",
+      projectId: "project-1",
+      createdByUserId: "user-1",
+    }));
+    mockAgentsApi.list.mockResolvedValue([createAgent({ name: "CodexCoder" })]);
+    mockProjectsApi.list.mockResolvedValue([{ id: "project-1", name: "Core Product", color: "#2563eb" }]);
+    mockAccessApi.listUserDirectory.mockResolvedValue({
+      users: [
+        {
+          principalId: "user-1",
+          status: "active",
+          user: { id: "user-1", name: "Dotta", email: "dotta@example.com", image: null },
+        },
+      ],
+    });
+    mockAuthApi.getSession.mockResolvedValue({
+      session: { userId: "user-1" },
+      user: { id: "user-1" },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    await waitForAssertion(() => {
+      const avatarStack = container.querySelector('[data-testid="issue-attribution-avatar-stack"]');
+      const assigneeAvatar = container.querySelector('[data-testid="issue-assignee-avatar"]');
+      const originatingAvatar = container.querySelector('[data-testid="issue-originating-avatar"]');
+
+      expect(container.textContent).toContain("Core Product");
+      expect(avatarStack).toBeTruthy();
+      expect(assigneeAvatar?.getAttribute("aria-label")).toBe("Assignee: CodexCoder");
+      expect(originatingAvatar?.getAttribute("aria-label")).toBe("Originating: Dotta");
+      expect(assigneeAvatar?.getAttribute("title")).toBeNull();
+      expect(originatingAvatar?.getAttribute("title")).toBeNull();
+      expect(avatarStack?.textContent).not.toContain("Assignee");
+      expect(avatarStack?.textContent).not.toContain("Originating");
+      expect(avatarStack?.textContent).not.toContain("CodexCoder");
+      expect(avatarStack?.textContent).not.toContain("Dotta");
+    });
+
+    const pointerEvent = window.PointerEvent ?? MouseEvent;
+    const assigneeAvatar = container.querySelector('[data-testid="issue-assignee-avatar"]');
+    const originatingAvatar = container.querySelector('[data-testid="issue-originating-avatar"]');
+
+    await act(async () => {
+      assigneeAvatar?.dispatchEvent(new pointerEvent("pointermove", { bubbles: true }));
+    });
+    await waitForAssertion(() => {
+      const tooltip = document.body.querySelector('[data-testid="issue-assignee-tooltip"]');
+      expect(tooltip?.textContent).toContain("Assignee");
+      expect(tooltip?.textContent).toContain("CodexCoder");
+    });
+
+    await act(async () => {
+      originatingAvatar?.dispatchEvent(new pointerEvent("pointermove", { bubbles: true }));
+    });
+    await waitForAssertion(() => {
+      const tooltip = document.body.querySelector('[data-testid="issue-originating-tooltip"]');
+      expect(tooltip?.textContent).toContain("Originating");
+      expect(tooltip?.textContent).toContain("Dotta");
+    });
+  });
+
+  it("attributes an agent-created issue to the transitive responsible user with a via affordance", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue({
+      assigneeAgentId: "agent-1",
+      createdByAgentId: "agent-1",
+      createdByUserId: null,
+      responsibleUserId: "user-1",
+    }));
+    mockAgentsApi.list.mockResolvedValue([createAgent({ name: "CodexCoder" })]);
+    mockAccessApi.listUserDirectory.mockResolvedValue({
+      users: [
+        {
+          principalId: "user-1",
+          status: "active",
+          user: { id: "user-1", name: "Dotta", email: "dotta@example.com", image: null },
+        },
+      ],
+    });
+    mockAuthApi.getSession.mockResolvedValue({
+      session: { userId: "user-1" },
+      user: { id: "user-1" },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    await waitForAssertion(() => {
+      const originatingAvatar = container.querySelector('[data-testid="issue-originating-avatar"]');
+      expect(originatingAvatar?.getAttribute("aria-label")).toBe("Originating: Dotta · via CodexCoder");
+    });
+
+    const pointerEvent = window.PointerEvent ?? MouseEvent;
+    const originatingAvatar = container.querySelector('[data-testid="issue-originating-avatar"]');
+    await act(async () => {
+      originatingAvatar?.dispatchEvent(new pointerEvent("pointermove", { bubbles: true }));
+    });
+    await waitForAssertion(() => {
+      const tooltip = document.body.querySelector('[data-testid="issue-originating-tooltip"]');
+      expect(tooltip?.textContent).toContain("Dotta");
+      expect(tooltip?.textContent).toContain("via CodexCoder");
+    });
   });
 
   it("does not mark the wake comment for the current live run as queued when active-run cache is stale", async () => {
@@ -2234,7 +2440,7 @@ describe("IssueDetail", () => {
 
     const dialogContent = container.querySelector('[data-slot="dialog-content"]') as HTMLDivElement | null;
     expect(dialogContent).toBeTruthy();
-    expect(dialogContent!.className).toContain("max-h-[calc(100dvh-2rem)]");
+    expect(dialogContent!.className).toContain("max-h-(--sz-calc-18)");
     expect(dialogContent!.className).toContain("overflow-hidden");
     expect(dialogContent!.className).toContain("flex-col");
 
@@ -2303,6 +2509,132 @@ describe("canBoardResolveRecoveryAction", () => {
         userId: "user-1",
       }),
     ).toBe(false);
+  });
+});
+
+describe("canBoardManageRuntime", () => {
+  it("falls back to companyIds when memberships are not populated", () => {
+    expect(
+      canBoardManageRuntime("company-1", {
+        companyIds: ["company-1"],
+        memberships: [],
+        isInstanceAdmin: false,
+        source: "session",
+        keyId: null,
+        user: null,
+        userId: "user-1",
+      }),
+    ).toBe(true);
+  });
+
+  it("denies viewers the runtime-manage-gated break-glass affordance", () => {
+    expect(
+      canBoardManageRuntime("company-1", {
+        companyIds: ["company-1"],
+        memberships: [
+          {
+            companyId: "company-1",
+            membershipRole: "viewer",
+            status: "active",
+          },
+        ],
+        isInstanceAdmin: false,
+        source: "session",
+        keyId: null,
+        user: null,
+        userId: "user-1",
+      }),
+    ).toBe(false);
+  });
+
+  it("allows non-viewer active members (mirrors the backend runtime:manage member gate)", () => {
+    expect(
+      canBoardManageRuntime("company-1", {
+        companyIds: ["company-1"],
+        memberships: [
+          {
+            companyId: "company-1",
+            membershipRole: "operator",
+            status: "active",
+          },
+        ],
+        isInstanceAdmin: false,
+        source: "session",
+        keyId: null,
+        user: null,
+        userId: "user-1",
+      }),
+    ).toBe(true);
+  });
+});
+
+describe("readRecoveryReconcileWorkspaceId", () => {
+  const makeAction = (evidence: Record<string, unknown>, kind = "workspace_validation") =>
+    ({ kind, evidence } as unknown as Parameters<typeof readRecoveryReconcileWorkspaceId>[0]);
+
+  it("returns null when the action is missing", () => {
+    expect(readRecoveryReconcileWorkspaceId(null)).toBeNull();
+    expect(readRecoveryReconcileWorkspaceId(undefined)).toBeNull();
+  });
+
+  it("returns null for non-workspace_validation actions even with a workspace id in evidence", () => {
+    expect(
+      readRecoveryReconcileWorkspaceId(
+        makeAction(
+          { workspaceValidation: { persistedExecutionWorkspaceId: "ws-1" } },
+          "stranded_assigned_issue",
+        ),
+      ),
+    ).toBeNull();
+  });
+
+  it("prefers persistedExecutionWorkspaceId (git_worktree_branch_incoherence shape)", () => {
+    expect(
+      readRecoveryReconcileWorkspaceId(
+        makeAction({
+          workspaceValidation: {
+            reason: "git_worktree_branch_incoherence",
+            persistedExecutionWorkspaceId: "ws-diverged",
+            executionWorkspaceId: "ws-other",
+          },
+        }),
+      ),
+    ).toBe("ws-diverged");
+  });
+
+  it("falls back to executionWorkspaceId (git_worktree_not_reusable shape)", () => {
+    expect(
+      readRecoveryReconcileWorkspaceId(
+        makeAction({
+          workspaceValidation: {
+            reason: "git_worktree_not_reusable",
+            executionWorkspaceId: "ws-not-reusable",
+          },
+        }),
+      ),
+    ).toBe("ws-not-reusable");
+  });
+
+  it("returns null when the evidence carries no workspace reference (so the caller falls back to the page-level id)", () => {
+    expect(readRecoveryReconcileWorkspaceId(makeAction({}))).toBeNull();
+    expect(
+      readRecoveryReconcileWorkspaceId(
+        makeAction({ workspaceValidation: { reason: "git_worktree_branch_incoherence" } }),
+      ),
+    ).toBeNull();
+  });
+
+  it("ignores non-string / empty workspace ids", () => {
+    expect(
+      readRecoveryReconcileWorkspaceId(
+        makeAction({ workspaceValidation: { persistedExecutionWorkspaceId: "" } }),
+      ),
+    ).toBeNull();
+    expect(
+      readRecoveryReconcileWorkspaceId(
+        makeAction({ workspaceValidation: { persistedExecutionWorkspaceId: 42 } }),
+      ),
+    ).toBeNull();
   });
 });
 

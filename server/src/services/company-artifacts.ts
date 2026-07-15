@@ -315,7 +315,11 @@ function buildArtifactGroups(input: {
 
 export function companyArtifactsService(db: Db, storage?: StorageService) {
   return {
-    list: async (companyId: string, rawQuery: Partial<CompanyArtifactsQuery> = {}): Promise<CompanyArtifactsResponse> => {
+    list: async (
+      companyId: string,
+      rawQuery: Partial<CompanyArtifactsQuery> = {},
+      options: { issueConditions?: SQL[] } = {},
+    ): Promise<CompanyArtifactsResponse> => {
       const query = companyArtifactsQuerySchema.parse(rawQuery);
       const cursor = decodeCursor(query.cursor);
       const groupBy = query.groupBy === "none" ? null : query.groupBy;
@@ -329,6 +333,11 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
       const fetchLimit = Math.min(query.limit + 1, COMPANY_ARTIFACTS_MAX_LIMIT + 1);
       const sourceFetchLimit = groupBy ? GROUPED_ARTIFACT_FETCH_LIMIT : fetchLimit;
       const q = query.q ? `%${escapeLikePattern(query.q)}%` : null;
+      const issueConditions: SQL[] = [
+        isNull(issues.hiddenAt),
+        isNull(issues.harnessKind),
+        ...(options.issueConditions ?? []),
+      ];
       const artifacts: CompanyArtifact[] = [];
       const workProductAttachmentIds = new Set<string>();
 
@@ -341,6 +350,7 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
           eq(documents.companyId, companyId),
           or(isNotNull(documents.createdByAgentId), isNotNull(documents.updatedByAgentId))!,
           notInArray(issueDocuments.key, [...SYSTEM_ISSUE_DOCUMENT_KEYS]),
+          ...issueConditions,
         ];
         const documentCursor = groupBy ? undefined : cursorCondition(sql<Date>`${documents.updatedAt}`, documentArtifactId, cursor);
         if (documentCursor) documentConditions.push(documentCursor);
@@ -442,6 +452,7 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
           eq(issueWorkProducts.companyId, companyId),
           eq(issueWorkProducts.type, "artifact"),
           eq(issueWorkProducts.provider, "paperclip"),
+          ...issueConditions,
         ];
         const workProductConditions: SQL[] = [...workProductBaseConditions];
         const workProductCursor = groupBy
@@ -578,6 +589,7 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
           eq(issueAttachments.companyId, companyId),
           isNull(issueAttachments.issueCommentId),
           isNotNull(assets.createdByAgentId),
+          ...issueConditions,
         ];
         const attachmentCursor = groupBy
           ? undefined

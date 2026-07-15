@@ -30,6 +30,12 @@ export interface FakeSandboxEnvironmentConfig {
   reuseLease: boolean;
   /** Stream agent CLI stdout/stderr during sandbox runs (bridge log-tail loop). */
   streamRunLogs?: boolean;
+  /**
+   * Archive the sandbox on lease release instead of deleting it, so operators
+   * can inspect it from the provider dashboard. Injected by test/probe paths;
+   * providers without archive support delete as usual.
+   */
+  archiveOnRelease?: boolean;
 }
 
 export interface PluginSandboxEnvironmentConfig {
@@ -38,6 +44,12 @@ export interface PluginSandboxEnvironmentConfig {
   timeoutMs?: number;
   /** Stream agent CLI stdout/stderr during sandbox runs (bridge log-tail loop). */
   streamRunLogs?: boolean;
+  /**
+   * Archive the sandbox on lease release instead of deleting it, so operators
+   * can inspect it from the provider dashboard. Injected by test/probe paths;
+   * providers without archive support delete as usual.
+   */
+  archiveOnRelease?: boolean;
   [key: string]: unknown;
 }
 
@@ -69,6 +81,28 @@ export interface Environment {
   metadata: Record<string, unknown> | null;
   createdAt: Date;
   updatedAt: Date;
+}
+
+export type EnvironmentDeleteBlockedReason = "managed_local" | "instance_default";
+
+export interface EnvironmentDeleteBlastRadius {
+  environmentId: string;
+  canDelete: boolean;
+  deleteBlockedReasons: EnvironmentDeleteBlockedReason[];
+  staticReferences: {
+    isManagedLocal: boolean;
+    isInstanceDefault: boolean;
+    agentDefaultCount: number;
+    executionWorkspaceSelectionCount: number;
+    issueSelectionCount: number;
+    projectSelectionCount: number;
+    secretBindingCount: number;
+  };
+  activeRuntimeUse: {
+    activeLeaseCount: number;
+    activeCustomImageSetupSessionCount: number;
+    hasActiveRuntimeUse: boolean;
+  };
 }
 
 export interface EnvironmentLease {

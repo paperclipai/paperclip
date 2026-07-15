@@ -96,6 +96,7 @@ export const routineRevisionSnapshotRoutineV1Schema = z.object({
   catchUpPolicy: z.enum(ROUTINE_CATCH_UP_POLICIES),
   variables: z.array(routineVariableSchema),
   env: envConfigSchema.nullable().default(null),
+  responsibleUserId: z.string().nullable().default(null),
 }).strict();
 
 export const routineRevisionSnapshotTriggerV1Schema = z.object({

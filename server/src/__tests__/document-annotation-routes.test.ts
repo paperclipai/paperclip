@@ -120,6 +120,9 @@ function registerModuleMocks() {
       hasPermission: vi.fn(async () => false),
     }),
     agentService: () => ({ getById: vi.fn(), list: vi.fn(async () => []) }),
+    companySkillService: () => ({
+      completeTestRunForIssue: vi.fn(async () => null),
+    }),
     companyService: () => ({ getById: vi.fn(async () => ({ id: companyId, attachmentMaxBytes: 10_000_000 })) }),
     documentAnnotationService: () => mockAnnotationService,
     documentService: () => mockDocumentService,
@@ -306,10 +309,10 @@ describe("document annotation routes", () => {
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
-  it("rejects agent cross-company annotation reads", async () => {
+  it("rejects agent cross-company annotation reads with a uniform 404", async () => {
     await request(await createApp("agent", otherCompanyId))
       .get(`/api/issues/${issueId}/documents/plan/annotations`)
-      .expect(403);
+      .expect(404);
   });
 
   it("adds annotation comments without waking the assignee and resolves threads", async () => {

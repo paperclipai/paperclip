@@ -165,7 +165,7 @@ export const PAPERCLIP_ENUM_DESCRIPTIONS = {
     "adapter_type": {
       "process": "Agent runtime uses a local process adapter.",
       "http": "Agent runtime uses a generic HTTP adapter.",
-      "acpx_local": "Agent runtime uses the local ACPX adapter.",
+      "acpx_local": "Agent runtime used the retired local ACPX adapter.",
       "claude_local": "Agent runtime uses the local Claude adapter.",
       "codex_local": "Agent runtime uses the local Codex adapter.",
       "cursor_cloud": "Agent runtime uses the Cursor cloud adapter.",
@@ -218,7 +218,7 @@ export const PAPERCLIP_ENUM_DESCRIPTIONS = {
     "adapter_type": {
       "process": "Agent runtime uses a local process adapter.",
       "http": "Agent runtime uses a generic HTTP adapter.",
-      "acpx_local": "Agent runtime uses the local ACPX adapter.",
+      "acpx_local": "Agent runtime used the retired local ACPX adapter.",
       "claude_local": "Agent runtime uses the local Claude adapter.",
       "codex_local": "Agent runtime uses the local Codex adapter.",
       "cursor_cloud": "Agent runtime uses the Cursor cloud adapter.",

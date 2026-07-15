@@ -4,6 +4,8 @@ import { Outlet, useLocation, useNavigate, useNavigationType, useParams } from "
 import { Sidebar } from "./Sidebar";
 import { CompanySettingsSidebar } from "./CompanySettingsSidebar";
 import { CompanySettingsNav } from "./access/CompanySettingsNav";
+import { AppsSidebar } from "./AppsSidebar";
+import { AppDetailSidebar } from "./AppConnectionSidebar";
 import { BreadcrumbBar } from "./BreadcrumbBar";
 import { PropertiesPanel } from "./PropertiesPanel";
 import { CommandPalette } from "./CommandPalette";
@@ -27,6 +29,7 @@ import { usePanel } from "../context/PanelContext";
 import { useCompany } from "../context/CompanyContext";
 import { useSidebar } from "../context/SidebarContext";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
+import { useAppsEnabled } from "../hooks/useAppsEnabled";
 import { useCompanyPageMemory } from "../hooks/useCompanyPageMemory";
 import { healthApi } from "../api/health";
 import { instanceSettingsApi } from "../api/instanceSettings";
@@ -45,11 +48,27 @@ import { NotFoundPage } from "../pages/NotFound";
 import { PluginSlotMount, resolveRouteSidebarSlot, usePluginSlots } from "../plugins/slots";
 
 function getCompanyRouteSegment(pathname: string, companyPrefix: string | undefined): string | null {
-  if (!companyPrefix) return null;
+  return getCompanyPathSegments(pathname, companyPrefix)[0]?.toLowerCase() ?? null;
+}
+
+function getCompanyPathSegments(pathname: string, companyPrefix: string | undefined): string[] {
+  if (!companyPrefix) return [];
   const segments = pathname.split("/").filter(Boolean);
-  if (segments.length < 2) return null;
-  if (segments[0]?.toUpperCase() !== companyPrefix.toUpperCase()) return null;
-  return segments[1]?.toLowerCase() ?? null;
+  if (segments.length < 2) return [];
+  if (segments[0]?.toUpperCase() !== companyPrefix.toUpperCase()) return [];
+  return segments.slice(1);
+}
+
+const RESERVED_APP_SUBPATHS = new Set(["browse", "connect", "review", "attention", "gateways", "advanced", "app"]);
+
+function isSkillsStoreRoute(pathname: string, companyPrefix: string | undefined) {
+  const segments = pathname.split("/").filter(Boolean);
+  if (segments[0]?.toLowerCase() === "skills") return true;
+  if (!companyPrefix) return false;
+  return (
+    segments[0]?.toUpperCase() === companyPrefix.toUpperCase() &&
+    segments[1]?.toLowerCase() === "skills"
+  );
 }
 
 export function Layout() {
@@ -81,10 +100,22 @@ export function Layout() {
   const navigate = useNavigate();
   const location = useLocation();
   const navigationType = useNavigationType();
+  const { enabled: appsEnabled } = useAppsEnabled();
   const isCompanySettingsRoute = location.pathname.includes("/company/settings");
+  const companyPathSegments = getCompanyPathSegments(location.pathname, companyPrefix);
+  const isToolsRoute = companyPathSegments[0]?.toLowerCase() === "tools";
+  const isAppsRoute = companyPathSegments[0]?.toLowerCase() === "apps";
+  const appDetailConnectionId =
+    isAppsRoute && companyPathSegments[1] && !RESERVED_APP_SUBPATHS.has(companyPathSegments[1].toLowerCase())
+      ? companyPathSegments[1]
+      : null;
+  const appDetailApplicationId =
+    isAppsRoute && companyPathSegments[1]?.toLowerCase() === "app" && companyPathSegments[2]
+      ? companyPathSegments[2]
+      : null;
   // The Skills Store renders its own secondary (category) sidebar, so the main
-  // app nav collapses to its rail throughout the /skills section (PAP-10879).
-  const isSkillsRoute = /(^|\/)skills(\/|$)/.test(location.pathname);
+  // app nav collapses to its rail throughout the Skills Store section (PAP-10879).
+  const isSkillsRoute = isSkillsStoreRoute(location.pathname, companyPrefix);
   const onboardingTriggered = useRef(false);
   const lastMainScrollTop = useRef(0);
   const previousPathname = useRef<string | null>(null);
@@ -128,6 +159,12 @@ export function Layout() {
   // both desktop (SecondarySidebar) and mobile (off-canvas drawer).
   const secondarySidebar = isCompanySettingsRoute ? (
     <CompanySettingsSidebar />
+  ) : appsEnabled && appDetailConnectionId ? (
+    <AppDetailSidebar kind="connection" connectionId={appDetailConnectionId} />
+  ) : appsEnabled && appDetailApplicationId ? (
+    <AppDetailSidebar kind="application" applicationId={appDetailApplicationId} />
+  ) : appsEnabled && (isAppsRoute || isToolsRoute) ? (
+    <AppsSidebar />
   ) : routeSidebarSlot ? (
     <PluginSlotMount
       slot={routeSidebarSlot}
@@ -338,6 +375,7 @@ export function Layout() {
     onToggleCollapse: toggleCollapse,
     onTogglePanel: togglePanel,
     onShowShortcuts: () => setShortcutsOpen(true),
+    onGoToInbox: () => navigate("/inbox"),
   });
 
   useEffect(() => {
@@ -498,7 +536,7 @@ export function Layout() {
     <GeneralSettingsProvider value={{ keyboardShortcutsEnabled }}>
       <div
       className={cn(
-        "bg-background text-foreground pt-[env(safe-area-inset-top)]",
+        "bg-background text-foreground pt-(--sz-safe-top)",
         // overflow-x-clip on mobile keeps a stray wide descendant from making the
         // whole viewport scroll horizontally. clip (not hidden) leaves overflow-y
         // computed as visible, so native body scroll + the sticky breadcrumb keep
@@ -508,7 +546,7 @@ export function Layout() {
       >
       <a
         href="#main-content"
-        className="sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-[200] focus:rounded-md focus:bg-background focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:shadow-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className="sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-(--z-200) focus:rounded-md focus:bg-background focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:shadow-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
         Skip to Main Content
       </a>
@@ -527,7 +565,7 @@ export function Layout() {
         {isMobile ? (
           <div
             className={cn(
-              "fixed inset-y-0 left-0 z-50 flex flex-col overflow-hidden pt-[env(safe-area-inset-top)] transition-transform duration-100 ease-out",
+              "fixed inset-y-0 left-0 z-50 flex flex-col overflow-hidden pt-(--sz-safe-top) transition-transform duration-100 ease-out",
               sidebarOpen ? "translate-x-0" : "-translate-x-full"
             )}
           >
@@ -538,6 +576,7 @@ export function Layout() {
             </div>
             <SidebarAccountMenu
               deploymentMode={health?.deploymentMode}
+              serverGit={health?.serverInfo?.git}
               version={health?.version}
             />
           </div>
@@ -557,6 +596,7 @@ export function Layout() {
             </div>
             <SidebarAccountMenu
               deploymentMode={health?.deploymentMode}
+              serverGit={health?.serverInfo?.git}
               version={health?.version}
             />
           </SidebarShell>
@@ -591,7 +631,7 @@ export function Layout() {
                 // changes (e.g. switching skill-detail tabs) don't widen/shift
                 // when the vertical scrollbar appears or disappears (PAP-10907).
                 isMobile
-                  ? "overflow-visible pb-[calc(5rem+env(safe-area-inset-bottom))]"
+                  ? "overflow-visible pb-(--sz-calc-14)"
                   : "overflow-auto [scrollbar-gutter:stable]",
               )}
             >

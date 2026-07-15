@@ -33,6 +33,12 @@ export interface WorkTimelineSpan {
   retryOfRunId?: string | null;
   continuationAttempt?: number;
   invocationSource?: string | null;
+  usage?: {
+    inputTokens: number;
+    cachedInputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+  } | null;
 }
 
 export interface WorkTimelineEvent {

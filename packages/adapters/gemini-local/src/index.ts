@@ -52,16 +52,23 @@ Core fields:
 - instructionsFilePath (string, optional): absolute path to a markdown instructions file prepended to the run prompt
 - promptTemplate (string, optional): run prompt template
 - model (string, optional): Gemini model id. Defaults to auto.
+- engine (string, optional): leave unset/auto to use ACP when prerequisites pass and fall back to the Gemini CLI with diagnostics. Use "cli" to pin the CLI lane or "acp" to require ACP.
 - sandbox (boolean, optional): run in sandbox mode (default: false, passes --sandbox=none)
 - command (string, optional): defaults to "gemini"
 - extraArgs (string[], optional): additional CLI args
 - env (object, optional): KEY=VALUE environment variables
+- agentCommand (string, optional): ACP server command override used only when engine="acp"; defaults to gemini --acp
+- mode (string, optional): ACP session mode when engine="acp"; persistent or oneshot
+- nonInteractivePermissions (string, optional): ACP non-interactive permission fallback when engine="acp"; deny or fail
+- stateDir (string, optional): ACP state directory override when engine="acp"
+- warmHandleIdleMs (number, optional): warm ACP process idle timeout when engine="acp"; defaults to 0
 
 Operational fields:
 - timeoutSec (number, optional): run timeout in seconds
 - graceSec (number, optional): SIGTERM grace period in seconds
 
 Notes:
+- Gemini ACP is the preferred auto lane when Node >=20 and the local Gemini CLI command is available. It runs Gemini CLI's native \`gemini --acp\` server through Paperclip's shared ACP engine, including selected skill links, Paperclip runtime prompt/env guidance, model config, and persistent ACP session state. Auto selection falls back to the CLI lane when ACP prerequisites are unavailable; explicit engine="acp" fails loudly.
 - Runs use --prompt for non-interactive execution, not stdin.
 - The adapter sets a headless-safe terminal/browser environment for Gemini CLI child processes so unattended runs do not wait on browser auth or 256-color terminal prompts.
 - Sessions resume with --resume when stored session cwd matches the current cwd.

@@ -1,6 +1,6 @@
 ---
 name: paperclip-distill
-description: Use when an operation issue is a Paperclip cursor-window, distill, or backfill — `operationType: "distill"` or `"backfill"` and the body references a Paperclip source bundle for a project or root issue. Turn raw Paperclip activity into a wiki-insightful project page, decisions log, and history note. This skill exists specifically to replace the stiff, datestamp-heavy templated output that the deterministic distiller produces.
+description: Use when an operation issue is a Paperclip cursor-window, distill, or backfill. Turn source-bundled Paperclip activity into wiki-insightful project standups, durable project pages, decisions, and history without asset dereferencing.
 ---
 
 # Paperclip Distill

@@ -75,7 +75,7 @@ export interface TestHarnessOptions {
   manifest: PaperclipPluginManifestV1;
   /** Optional capability override. Defaults to `manifest.capabilities`. */
   capabilities?: PluginCapability[];
-  /** Initial config returned by `ctx.config.get()`. */
+  /** Initial config returned by `ctx.config.get(companyId)`. */
   config?: Record<string, unknown>;
 }
 
@@ -1206,6 +1206,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
             parentIssueId: null,
             title: declaration.title,
             description: declaration.description ?? null,
+            responsibleUserId: null,
             assigneeAgentId,
             priority: declaration.priority ?? "medium",
             status: declaration.status ?? (assigneeAgentId ? "active" : "paused"),
@@ -1574,6 +1575,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           executionLockedAt: null,
           createdByAgentId: null,
           createdByUserId: null,
+          responsibleUserId: null,
           issueNumber: null,
           identifier: null,
           originKind,

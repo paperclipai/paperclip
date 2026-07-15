@@ -4,6 +4,19 @@ export { companySearchService } from "./company-search.js";
 export { feedbackService } from "./feedback.js";
 export { companySkillService } from "./company-skills.js";
 export { agentService, deduplicateAgentName } from "./agents.js";
+export {
+  builtInAgentService,
+  deriveBuiltInAgentStatus,
+  getBuiltInAgentDefinition,
+  listBuiltInAgentDefinitions,
+  reconcileBuiltInAgentsOnStartup,
+  validateBuiltInAgentDefinitions,
+  type BuiltInAgentDefinition,
+  type BuiltInManagedResourceState,
+  type BuiltInManagedResourceStockStatus,
+  type BuiltInAgentState,
+  type BuiltInAgentStatus,
+} from "./built-in-agents.js";
 export { agentInstructionsService, syncInstructionsBundleConfigFromFilePath } from "./agent-instructions.js";
 export { assetService } from "./assets.js";
 export { documentService, extractLegacyPlanBody } from "./documents.js";
@@ -45,6 +58,7 @@ export {
 export { goalService } from "./goals.js";
 export { activityService, type ActivityFilters } from "./activity.js";
 export { workTimelineService, normalizeTimelineWindow } from "./work-timeline.js";
+export { attentionService } from "./attention.js";
 export type {
   WorkTimelineActor,
   WorkTimelineEdge,
@@ -56,10 +70,14 @@ export type {
 export { approvalService } from "./approvals.js";
 export { budgetService } from "./budgets.js";
 export { secretService } from "./secrets.js";
+export { googleSheetsRobotEmailFromEnv, toolAccessService } from "./tool-access.js";
+export { smokeLabService } from "./smoke-lab.js";
+export { backfillLegacyToolOAuthTokens } from "./tool-oauth-legacy-backfill.js";
+export { toolAccessPolicyService } from "./tool-access-policy.js";
 export { routineService } from "./routines.js";
 export { costService } from "./costs.js";
 export { financeService } from "./finance.js";
-export { heartbeatService } from "./heartbeat.js";
+export { heartbeatService, resolveHeartbeatSchedulingSuppression } from "./heartbeat.js";
 export {
   productivityReviewService,
   PRODUCTIVITY_REVIEW_ORIGIN_KIND,

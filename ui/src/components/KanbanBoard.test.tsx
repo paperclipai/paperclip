@@ -45,6 +45,7 @@ function createIssue(index: number, status: IssueStatus): Issue {
     priority: "medium",
     assigneeAgentId: index === 1 ? "agent-1" : null,
     assigneeUserId: null,
+    responsibleUserId: null,
     createdByAgentId: null,
     createdByUserId: null,
     issueNumber: index,
@@ -186,9 +187,12 @@ describe("KanbanBoard", () => {
     expect(container.textContent).not.toContain("Issue 1");
   });
 
-  it("uses distinct review, done, and cancelled column tones", () => {
-    expect(getKanbanColumnTone("in_progress").body).toBe("bg-muted/20");
+  it("gives every column a status-hued tone", () => {
+    expect(getKanbanColumnTone("backlog").body).toContain("bg-muted/30");
+    expect(getKanbanColumnTone("todo").body).toContain("amber");
+    expect(getKanbanColumnTone("in_progress").body).toContain("blue");
     expect(getKanbanColumnTone("in_review").body).toContain("violet");
+    expect(getKanbanColumnTone("blocked").body).toContain("red");
     expect(getKanbanColumnTone("done").body).toContain("green");
     expect(getKanbanColumnTone("cancelled").body).toContain("bg-muted/25");
     expect(getKanbanColumnTone("cancelled").card).toContain("opacity-80");

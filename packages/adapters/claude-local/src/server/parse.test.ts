@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  claudeModelUsageTotals,
+  parseClaudeStreamJson,
   detectClaudeLoginRequired,
   extractClaudeRetryNotBefore,
+  isClaudeProviderQuotaError,
   isClaudeTransientUpstreamError,
   isClaudePoisonedPreviousMessageIdError,
   isClaudeRefusalResult,
@@ -32,20 +35,36 @@ describe("detectClaudeLoginRequired", () => {
 });
 
 describe("isClaudeTransientUpstreamError", () => {
-  it("classifies the 'out of extra usage' subscription window failure as transient", () => {
+  it("classifies the 'out of extra usage' subscription window failure as provider quota", () => {
     expect(
-      isClaudeTransientUpstreamError({
+      isClaudeProviderQuotaError({
         errorMessage: "You're out of extra usage · resets 4pm (America/Chicago)",
       }),
     ).toBe(true);
     expect(
-      isClaudeTransientUpstreamError({
+      isClaudeProviderQuotaError({
         parsed: {
           is_error: true,
           result: "You're out of extra usage. Resets at 4pm (America/Chicago).",
         },
       }),
     ).toBe(true);
+    expect(
+      isClaudeTransientUpstreamError({
+        errorMessage: "You're out of extra usage · resets 4pm (America/Chicago)",
+      }),
+    ).toBe(false);
+  });
+
+  it("classifies Claude session-limit windows as provider quota and extracts the retry time", () => {
+    const now = new Date("2026-04-22T15:15:00.000Z");
+    const errorMessage = "You've hit your session limit - resets at 4pm (America/Chicago).";
+
+    expect(isClaudeProviderQuotaError({ errorMessage })).toBe(true);
+    expect(isClaudeTransientUpstreamError({ errorMessage })).toBe(false);
+    expect(extractClaudeRetryNotBefore({ errorMessage }, now)?.toISOString()).toBe(
+      "2026-04-22T21:00:00.000Z",
+    );
   });
 
   it("classifies Anthropic API rate_limit_error and overloaded_error as transient", () => {
@@ -77,14 +96,14 @@ describe("isClaudeTransientUpstreamError", () => {
     ).toBe(true);
   });
 
-  it("classifies the subscription 5-hour / weekly limit wording", () => {
+  it("classifies the subscription 5-hour / weekly limit wording as provider quota", () => {
     expect(
-      isClaudeTransientUpstreamError({
+      isClaudeProviderQuotaError({
         errorMessage: "Claude usage limit reached — weekly limit reached. Try again in 2 days.",
       }),
     ).toBe(true);
     expect(
-      isClaudeTransientUpstreamError({
+      isClaudeProviderQuotaError({
         errorMessage: "5-hour limit reached.",
       }),
     ).toBe(true);
@@ -326,5 +345,81 @@ describe("extractClaudeRetryNotBefore", () => {
     expect(
       extractClaudeRetryNotBefore({ errorMessage: "Overloaded. Try again later." }, new Date()),
     ).toBeNull();
+  });
+});
+
+describe("claudeModelUsageTotals", () => {
+  it("sums per-model usage across models and counts cache writes as input", () => {
+    const totals = claudeModelUsageTotals({
+      "claude-fable-5": {
+        inputTokens: 100,
+        outputTokens: 70_000,
+        cacheReadInputTokens: 250_000,
+        cacheCreationInputTokens: 4_000,
+        costUSD: 1.2,
+      },
+      "claude-haiku-4-5": {
+        inputTokens: 50,
+        outputTokens: 7_000,
+        cacheReadInputTokens: 10_000,
+        cacheCreationInputTokens: 500,
+        costUSD: 0.05,
+      },
+    });
+    expect(totals).toEqual({
+      inputTokens: 4_650,
+      outputTokens: 77_000,
+      cachedInputTokens: 260_000,
+    });
+  });
+
+  it("returns null for missing or empty modelUsage", () => {
+    expect(claudeModelUsageTotals(undefined)).toBeNull();
+    expect(claudeModelUsageTotals({})).toBeNull();
+  });
+});
+
+describe("parseClaudeStreamJson usage extraction", () => {
+  const resultEvent = (extra: Record<string, unknown>) =>
+    JSON.stringify({
+      type: "result",
+      subtype: "success",
+      session_id: "sess-1",
+      result: "done",
+      total_cost_usd: 1.25,
+      usage: { input_tokens: 10, output_tokens: 1_800, cache_read_input_tokens: 20 },
+      ...extra,
+    });
+
+  it("prefers modelUsage totals over the main-loop usage block and marks them per-run", () => {
+    const parsed = parseClaudeStreamJson(
+      `${resultEvent({
+        modelUsage: {
+          "claude-fable-5": {
+            inputTokens: 90,
+            outputTokens: 77_000,
+            cacheReadInputTokens: 300_000,
+            cacheCreationInputTokens: 2_000,
+          },
+        },
+      })}\n`,
+    );
+    expect(parsed.usage).toEqual({
+      inputTokens: 2_090,
+      outputTokens: 77_000,
+      cachedInputTokens: 300_000,
+    });
+    expect(parsed.usageBasis).toBe("per_run");
+    expect(parsed.costUsd).toBeCloseTo(1.25);
+  });
+
+  it("falls back to the result usage block when modelUsage is absent", () => {
+    const parsed = parseClaudeStreamJson(`${resultEvent({})}\n`);
+    expect(parsed.usage).toEqual({
+      inputTokens: 10,
+      outputTokens: 1_800,
+      cachedInputTokens: 20,
+    });
+    expect(parsed.usageBasis).toBe("per_run");
   });
 });

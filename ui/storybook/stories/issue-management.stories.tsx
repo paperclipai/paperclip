@@ -53,7 +53,7 @@ import {
 const companyId = "company-storybook";
 const issueListViewKey = "storybook:issue-management:list";
 const scopedIssueListViewKey = `${issueListViewKey}:${companyId}`;
-const visibleColumns: InboxIssueColumn[] = ["status", "id", "assignee", "project", "workspace", "labels", "updated"];
+const visibleColumns: InboxIssueColumn[] = ["status", "id", "assignee", "kickedOffBy", "project", "workspace", "labels", "updated"];
 
 const issueDocumentSummaries = storybookIssueDocuments.map(({ body: _body, ...summary }) => summary);
 const primaryIssue: Issue = {
@@ -123,6 +123,35 @@ const longValueIssue: Issue = {
     },
   ],
 };
+const attributionIssues: Issue[] = [
+  {
+    ...primaryIssue,
+    id: "issue-attribution-explicit",
+    title: "Human kickoff with explicit responsible owner",
+    createdByAgentId: null,
+    createdByUserId: "user-board",
+    responsibleUserId: "user-product",
+    assigneeAgentId: "agent-codex",
+  },
+  {
+    ...primaryIssue,
+    id: "issue-attribution-collapsed",
+    title: "Responsible auto-derived from kickoff user",
+    createdByAgentId: null,
+    createdByUserId: "user-board",
+    responsibleUserId: null,
+    assigneeAgentId: "agent-codex",
+  },
+  {
+    ...primaryIssue,
+    id: "issue-attribution-unassigned",
+    title: "Agent-created task with no responsible human",
+    createdByAgentId: "agent-codex",
+    createdByUserId: null,
+    responsibleUserId: null,
+    assigneeAgentId: "agent-qa",
+  },
+];
 
 function Section({
   eyebrow,
@@ -168,6 +197,16 @@ function hydrateStorybookQueries(queryClient: ReturnType<typeof useQueryClient>)
           id: "user-board",
           email: "riley@paperclip.local",
           name: "Riley Board",
+          image: null,
+        },
+      },
+      {
+        principalId: "user-product",
+        status: "active",
+        user: {
+          id: "user-product",
+          email: "morgan@paperclip.local",
+          name: "Morgan Product",
           image: null,
         },
       },
@@ -289,8 +328,9 @@ function ColumnConfigurationMatrix() {
       <div className="overflow-hidden rounded-lg border border-border bg-background/70">
         <div className="grid grid-cols-[minmax(0,1fr)_minmax(420px,0.9fr)] items-center border-b border-border px-4 py-2 text-[11px] font-semibold uppercase text-muted-foreground">
           <span>Issue</span>
-          <span className="grid grid-cols-[6rem_7rem_9rem_6rem_4.5rem] gap-2">
+          <span className="grid grid-cols-[6rem_6rem_7rem_9rem_6rem_4.5rem] gap-2">
             <span>Assignee</span>
+            <span>Kicked off by</span>
             <span>Project</span>
             <span>Workspace</span>
             <span>Tags</span>
@@ -317,6 +357,8 @@ function ColumnConfigurationMatrix() {
               workspaceName={issue.currentExecutionWorkspace?.name ?? "Board UI"}
               assigneeName={issue.assigneeAgentId ? storybookAgentMap.get(issue.assigneeAgentId)?.name ?? null : null}
               assigneeUserName={issue.assigneeUserId ? "Riley Board" : null}
+              creatorAgentName={issue.createdByAgentId ? storybookAgentMap.get(issue.createdByAgentId)?.name ?? null : null}
+              creatorUserName={issue.createdByUserId ? "Riley Board" : null}
               currentUserId="user-board"
               parentIdentifier={storybookIssues.find((candidate) => candidate.id === issue.parentId)?.identifier ?? null}
               parentTitle={storybookIssues.find((candidate) => candidate.id === issue.parentId)?.title ?? null}
@@ -745,6 +787,19 @@ function IssueManagementStories() {
                   inline
                 />
               </div>
+            </div>
+            <div className="mt-5 grid gap-4 lg:grid-cols-3">
+              {attributionIssues.map((issue) => (
+                <div key={issue.id} className="rounded-lg border border-border bg-background/70 p-4">
+                  <div className="mb-3 truncate text-sm font-medium">{issue.title}</div>
+                  <IssueProperties
+                    issue={issue}
+                    childIssues={[]}
+                    onUpdate={() => undefined}
+                    inline
+                  />
+                </div>
+              ))}
             </div>
           </Section>
 

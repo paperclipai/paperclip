@@ -18,6 +18,7 @@ import { createIssueDetailLocationState } from "../lib/issueDetailBreadcrumb";
 import { collectLiveIssueIds } from "../lib/liveIssueIds";
 import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "../lib/recent-assignees";
 import { getRecentProjectIds, trackRecentProject } from "../lib/recent-projects";
+import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSharedPolling";
 import { EmptyState } from "../components/EmptyState";
 import { IssuesList } from "../components/IssuesList";
 import { PageSkeleton } from "../components/PageSkeleton";
@@ -81,6 +82,8 @@ type RoutineGroup = {
   label: string | null;
   items: RoutineListItem[];
 };
+
+const builtInRoutineGroupKey = "__built_in_routines";
 
 const defaultRoutineViewState: RoutineViewState = {
   sortField: "title",
@@ -170,6 +173,38 @@ export function buildRoutineGroups(
     }));
 }
 
+export function isBuiltInRoutine(routine: Pick<RoutineListItem, "originKind">) {
+  return routine.originKind === "built_in_agent_bundle";
+}
+
+export function buildRoutineSections(
+  routines: RoutineListItem[],
+  groupByValue: RoutineGroupBy,
+  projectById: Map<string, { name: string }>,
+  agentById: Map<string, { name: string }>,
+): RoutineGroup[] {
+  const builtInRoutines = routines.filter(isBuiltInRoutine);
+  const customRoutines = routines.filter((routine) => !isBuiltInRoutine(routine));
+  const customGroups = buildRoutineGroups(customRoutines, groupByValue, projectById, agentById)
+    .filter((group) => group.items.length > 0)
+    .map((group) => (
+      builtInRoutines.length > 0 && groupByValue === "none" && group.key === "__all"
+        ? { ...group, label: "Custom routines" }
+        : group
+    ));
+
+  if (builtInRoutines.length === 0) return customGroups;
+
+  return [
+    ...customGroups,
+    {
+      key: builtInRoutineGroupKey,
+      label: "Built-in routines",
+      items: builtInRoutines,
+    },
+  ];
+}
+
 export function sortRoutines(
   routines: RoutineListItem[],
   sortField: RoutineSortField,
@@ -197,6 +232,34 @@ export function sortRoutines(
 
 function buildRoutinesTabHref(tab: RoutinesTab) {
   return tab === "runs" ? "/routines?tab=runs" : "/routines";
+}
+
+function RoutineSectionHeader({
+  label,
+  count,
+  isOpen,
+}: {
+  label: string;
+  count: number;
+  isOpen: boolean;
+}) {
+  return (
+    <div
+      className={`flex items-center gap-2 rounded-lg border border-border px-3 py-2${
+        isOpen ? " mb-1" : ""
+      }`}
+    >
+      <CollapsibleTrigger className="flex items-center gap-1.5">
+        <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform [[data-state=open]>&]:rotate-90" />
+        <span className="text-sm font-semibold uppercase tracking-wide">
+          {label}
+        </span>
+      </CollapsibleTrigger>
+      <span className="text-xs text-muted-foreground">
+        {count}
+      </span>
+    </div>
+  );
 }
 
 export function Routines() {
@@ -273,12 +336,22 @@ export function Routines() {
     queryFn: () => issuesApi.list(selectedCompanyId!, { originKind: "routine_execution" }),
     enabled: !!selectedCompanyId && activeTab === "runs",
   });
-  const { data: liveRuns } = useQuery({
-    queryKey: queryKeys.liveRuns(selectedCompanyId!),
-    queryFn: () => heartbeatsApi.liveRunsForCompany(selectedCompanyId!),
+  const liveRunsQueryKey = queryKeys.liveRuns(selectedCompanyId!);
+  const sharedLiveRuns = useSharedPollingQuery({
+    companyId: selectedCompanyId,
+    resourceKey: "live-runs",
+    queryKey: liveRunsQueryKey,
     enabled: !!selectedCompanyId && activeTab === "runs",
     refetchInterval: 5000,
+    leaderOnly: true,
   });
+  const { data: liveRuns, dataUpdatedAt: liveRunsUpdatedAt } = useQuery({
+    queryKey: liveRunsQueryKey,
+    queryFn: () => heartbeatsApi.liveRunsForCompany(selectedCompanyId!),
+    enabled: sharedLiveRuns.enabled,
+    refetchInterval: sharedLiveRuns.refetchInterval,
+  });
+  usePublishSharedQueryData(sharedLiveRuns, liveRuns, liveRunsUpdatedAt);
 
   useEffect(() => {
     autoResizeTextarea(titleInputRef.current);
@@ -425,8 +498,8 @@ export function Routines() {
     () => sortRoutines(visibleRoutines, routineViewState.sortField, routineViewState.sortDir),
     [routineViewState.sortDir, routineViewState.sortField, visibleRoutines],
   );
-  const routineGroups = useMemo(
-    () => buildRoutineGroups(sortedRoutines, routineViewState.groupBy, projectById, agentById),
+  const routineSections = useMemo(
+    () => buildRoutineSections(sortedRoutines, routineViewState.groupBy, projectById, agentById),
     [agentById, projectById, routineViewState.groupBy, sortedRoutines],
   );
   const recentRunsIssueLinkState = useMemo(
@@ -622,11 +695,11 @@ export function Routines() {
       >
         <DialogContent
           showCloseButton={false}
-          className="flex max-h-[calc(100dvh-2rem)] max-w-3xl flex-col gap-0 overflow-hidden p-0"
+          className="flex max-h-(--sz-calc-18) max-w-3xl flex-col gap-0 overflow-hidden p-0"
         >
           <div className="shrink-0 flex flex-wrap items-center justify-between gap-3 border-b border-border/60 px-5 py-3">
             <div>
-              <p className="text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground">New routine</p>
+              <p className="text-xs font-medium uppercase tracking-(--tracking-caps) text-muted-foreground">New routine</p>
               <p className="text-sm text-muted-foreground">
                 Define the recurring work first. Default project and agent are optional for draft routines.
               </p>
@@ -688,10 +761,10 @@ export function Routines() {
                     value={draft.assigneeAgentId}
                     options={assigneeOptions}
                     recentOptionIds={recentAssigneeIds}
-                    placeholder="Assignee"
-                    noneLabel="No assignee"
-                    searchPlaceholder="Search assignees..."
-                    emptyMessage="No assignees found."
+                    placeholder="Responsible"
+                    noneLabel="No responsible"
+                    searchPlaceholder="Search responsible..."
+                    emptyMessage="No responsible found."
                     onChange={(assigneeAgentId) => {
                       if (assigneeAgentId) trackRecentAssignee(assigneeAgentId);
                       setDraft((current) => ({ ...current, assigneeAgentId }));
@@ -714,7 +787,7 @@ export function Routines() {
                           <span className="truncate">{option.label}</span>
                         )
                       ) : (
-                        <span className="text-muted-foreground">Assignee</span>
+                        <span className="text-muted-foreground">Responsible</span>
                       )
                     }
                     renderOption={(option) => {
@@ -748,7 +821,7 @@ export function Routines() {
                         <>
                           <span
                             className="h-3.5 w-3.5 shrink-0 rounded-sm"
-                            style={{ backgroundColor: currentProject.color ?? "#64748b" }}
+                            style={{ backgroundColor: currentProject.color ?? "var(--project-none)" }}
                           />
                           <span className="truncate">{option.label}</span>
                         </>
@@ -763,7 +836,7 @@ export function Routines() {
                         <>
                           <span
                             className="h-3.5 w-3.5 shrink-0 rounded-sm"
-                            style={{ backgroundColor: project?.color ?? "#64748b" }}
+                            style={{ backgroundColor: project?.color ?? "var(--project-none)" }}
                           />
                           <span className="truncate">{option.label}</span>
                         </>
@@ -781,7 +854,7 @@ export function Routines() {
                 onChange={(description) => setDraft((current) => ({ ...current, description }))}
                 placeholder="Add instructions..."
                 bordered={false}
-                contentClassName="min-h-[160px] text-sm text-muted-foreground"
+                contentClassName="min-h-(--sz-160px) text-sm text-muted-foreground"
                 mentions={mentionOptions}
                 onSubmit={() => {
                   if (!createRoutine.isPending && draft.title.trim() && draft.projectId && draft.assigneeAgentId) {
@@ -803,7 +876,7 @@ export function Routines() {
                 <CollapsibleContent className="pt-3">
                   <div className="grid gap-4 md:grid-cols-2">
                     <div className="space-y-2">
-                      <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Concurrency</p>
+                      <p className="text-xs font-medium uppercase tracking-(--tracking-caps) text-muted-foreground">Concurrency</p>
                       <Select
                         value={draft.concurrencyPolicy}
                         onValueChange={(concurrencyPolicy) => setDraft((current) => ({ ...current, concurrencyPolicy }))}
@@ -820,7 +893,7 @@ export function Routines() {
                       <p className="text-xs text-muted-foreground">{concurrencyPolicyDescriptions[draft.concurrencyPolicy]}</p>
                     </div>
                     <div className="space-y-2">
-                      <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">Catch-up</p>
+                      <p className="text-xs font-medium uppercase tracking-(--tracking-caps) text-muted-foreground">Catch-up</p>
                       <Select
                         value={draft.catchUpPolicy}
                         onValueChange={(catchUpPolicy) => setDraft((current) => ({ ...current, catchUpPolicy }))}
@@ -886,7 +959,7 @@ export function Routines() {
             </div>
           ) : (
             <div className="flex flex-col gap-3">
-              {routineGroups.map((group) => {
+              {routineSections.map((group) => {
                 const isOpen = !routineViewState.collapsedGroups.includes(group.key);
                 return (
                   <Collapsible
@@ -901,21 +974,11 @@ export function Routines() {
                     }}
                   >
                     {group.label ? (
-                      <div
-                        className={`flex items-center gap-2 rounded-lg border border-border px-3 py-2${
-                          isOpen ? " mb-1" : ""
-                        }`}
-                      >
-                        <CollapsibleTrigger className="flex items-center gap-1.5">
-                          <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform [[data-state=open]>&]:rotate-90" />
-                          <span className="text-sm font-semibold uppercase tracking-wide">
-                            {group.label}
-                          </span>
-                        </CollapsibleTrigger>
-                        <span className="text-xs text-muted-foreground">
-                          {group.items.length}
-                        </span>
-                      </div>
+                      <RoutineSectionHeader
+                        label={group.label}
+                        count={group.items.length}
+                        isOpen={isOpen}
+                      />
                     ) : null}
                     <CollapsibleContent>
                       {group.items.map((routine) => (

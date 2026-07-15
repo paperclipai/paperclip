@@ -5,11 +5,31 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   codexHomeHasUsableAuth,
   ensureSymlink,
+  evaluateCodexCredentialReadiness,
+  mergeManagedCodexMcpGateways,
   isManagedCodexHomePath,
   prepareManagedCodexHome,
   reconcileManagedCodexHome,
   seedManagedCodexHome,
+  writeManagedCodexMcpConfig,
 } from "./codex-home.js";
+
+describe("mergeManagedCodexMcpGateways", () => {
+  it("keeps runtime gateways and appends non-overlapping context gateways", () => {
+    expect(
+      mergeManagedCodexMcpGateways(
+        [{ name: "runtime", endpointPath: "/runtime", bearerToken: "runtime-token" }],
+        [
+          { name: "runtime", endpointPath: "/stale", bearerToken: "stale-token" },
+          { name: "manual", endpointPath: "/manual", bearerToken: "manual-token" },
+        ],
+      ),
+    ).toEqual([
+      { name: "runtime", endpointPath: "/runtime", bearerToken: "runtime-token" },
+      { name: "manual", endpointPath: "/manual", bearerToken: "manual-token" },
+    ]);
+  });
+});
 
 describe("codex managed home", () => {
   afterEach(() => {
@@ -32,7 +52,7 @@ describe("codex managed home", () => {
     const managedAuth = path.join(managedCodexHome, "auth.json");
 
     await fs.mkdir(sharedCodexHome, { recursive: true });
-    await fs.writeFile(sharedAuth, '{"token":"shared"}\n', "utf8");
+    await fs.writeFile(sharedAuth, '{"OPENAI_API_KEY":"shared"}\n', "utf8");
 
     const originalSymlink = fs.symlink.bind(fs);
     vi.spyOn(fs, "symlink").mockImplementationOnce(async (source, target, type) => {
@@ -79,7 +99,7 @@ describe("codex managed home", () => {
     const managedAuth = path.join(managedCodexHome, "auth.json");
 
     await fs.mkdir(sharedCodexHome, { recursive: true });
-    await fs.writeFile(sharedAuth, '{"token":"shared"}\n', "utf8");
+    await fs.writeFile(sharedAuth, '{"OPENAI_API_KEY":"shared"}\n', "utf8");
     await fs.writeFile(wrongAuth, '{"token":"other"}\n', "utf8");
 
     const originalSymlink = fs.symlink.bind(fs);
@@ -255,7 +275,67 @@ describe("codexHomeHasUsableAuth", () => {
       await fs.writeFile(path.join(root, "auth.json"), '{"foo":"bar"}', "utf8");
       expect(await codexHomeHasUsableAuth(root)).toBe(false);
       await fs.writeFile(path.join(root, "auth.json"), '{"token":"shared"}', "utf8");
+      expect(await codexHomeHasUsableAuth(root)).toBe(false);
+      await fs.writeFile(path.join(root, "auth.json"), '{"access_token":"shared"}', "utf8");
+      expect(await codexHomeHasUsableAuth(root)).toBe(false);
+      await fs.writeFile(path.join(root, "auth.json"), '{"OPENAI_API_KEY":"shared"}', "utf8");
       expect(await codexHomeHasUsableAuth(root)).toBe(true);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("recognizes the Codex 0.143 AuthDotJson subscription shape", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-auth-modern-"));
+    try {
+      await fs.writeFile(
+        path.join(root, "auth.json"),
+        JSON.stringify({
+          tokens: {
+            id_token: "synthetic-id-token",
+            access_token: "synthetic-access-token",
+            refresh_token: "synthetic-refresh-token",
+            account_id: "acct-modern",
+          },
+          last_refresh: "2026-07-09T00:00:00Z",
+        }),
+        "utf8",
+      );
+
+      expect(await codexHomeHasUsableAuth(root)).toBe(true);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("treats subscription auth without account_id or token material as unusable", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-auth-modern-invalid-"));
+    try {
+      await fs.writeFile(
+        path.join(root, "auth.json"),
+        JSON.stringify({
+          tokens: {
+            id_token: "synthetic-id-token",
+            access_token: "synthetic-access-token",
+            refresh_token: "synthetic-refresh-token",
+          },
+          last_refresh: "2026-07-09T00:00:00Z",
+        }),
+        "utf8",
+      );
+      expect(await codexHomeHasUsableAuth(root)).toBe(false);
+
+      await fs.writeFile(
+        path.join(root, "auth.json"),
+        JSON.stringify({
+          tokens: {
+            account_id: "acct-modern",
+          },
+          last_refresh: "2026-07-09T00:00:00Z",
+        }),
+        "utf8",
+      );
+      expect(await codexHomeHasUsableAuth(root)).toBe(false);
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }
@@ -291,7 +371,7 @@ describe("seedManagedCodexHome", () => {
       const agentAuth = path.join(agentHome, "auth.json");
 
       await fs.mkdir(sharedCodexHome, { recursive: true });
-      await fs.writeFile(sharedAuth, '{"token":"shared"}', "utf8");
+      await fs.writeFile(sharedAuth, '{"OPENAI_API_KEY":"shared"}', "utf8");
 
       await seedManagedCodexHome(agentHome, { CODEX_HOME: sharedCodexHome }, async () => {});
 
@@ -339,7 +419,7 @@ describe("reconcileManagedCodexHome", () => {
     const sharedAuth = path.join(sharedCodexHome, "auth.json");
     const agentAuth = path.join(agentHome, "auth.json");
     await fs.mkdir(sharedCodexHome, { recursive: true });
-    await fs.writeFile(sharedAuth, '{"token":"shared"}', "utf8");
+    await fs.writeFile(sharedAuth, '{"OPENAI_API_KEY":"shared"}', "utf8");
     const env = {
       CODEX_HOME: sharedCodexHome,
       PAPERCLIP_HOME: paperclipHome,
@@ -499,6 +579,190 @@ describe("reconcileManagedCodexHome", () => {
       });
     } finally {
       await fs.rm(fx.root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("evaluateCodexCredentialReadiness", () => {
+  async function makeFixture() {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-readiness-"));
+    const sharedCodexHome = path.join(root, "shared-codex-home");
+    const paperclipHome = path.join(root, "paperclip-home");
+    const companyRoot = path.join(
+      paperclipHome,
+      "instances",
+      "default",
+      "companies",
+      "company-1",
+    );
+    const managedCompanyHome = path.join(companyRoot, "codex-home");
+    const managedAgentHome = path.join(companyRoot, "agents", "agent-1", "codex-home");
+    const env: NodeJS.ProcessEnv = {
+      CODEX_HOME: sharedCodexHome,
+      PAPERCLIP_HOME: paperclipHome,
+      PAPERCLIP_INSTANCE_ID: "default",
+    };
+    await fs.mkdir(sharedCodexHome, { recursive: true });
+    return { root, sharedCodexHome, managedCompanyHome, managedAgentHome, env };
+  }
+
+  async function writeUsableAuth(home: string) {
+    await fs.mkdir(home, { recursive: true });
+    await fs.writeFile(path.join(home, "auth.json"), '{"OPENAI_API_KEY":"sk-live"}\n', "utf8");
+  }
+
+  it("flags a managed home with no source auth and empty OPENAI_API_KEY as not ready", async () => {
+    const fx = await makeFixture();
+    try {
+      const result = await evaluateCodexCredentialReadiness({
+        env: fx.env,
+        companyId: "company-1",
+        configuredCodexHome: fx.managedAgentHome,
+        configuredApiKey: "",
+      });
+      expect(result).toMatchObject({ managed: true, authMode: "subscription", ready: false });
+      expect(result.effectiveHome).toBe(path.resolve(fx.managedAgentHome));
+    } finally {
+      await fs.rm(fx.root, { recursive: true, force: true });
+    }
+  });
+
+  it("treats a non-empty resolved OPENAI_API_KEY as ready without touching disk", async () => {
+    const fx = await makeFixture();
+    try {
+      const result = await evaluateCodexCredentialReadiness({
+        env: fx.env,
+        companyId: "company-1",
+        configuredCodexHome: fx.managedAgentHome,
+        configuredApiKey: "sk-agent-key",
+      });
+      expect(result).toMatchObject({ managed: true, authMode: "api", ready: true });
+    } finally {
+      await fs.rm(fx.root, { recursive: true, force: true });
+    }
+  });
+
+  it("is ready when the shared source home carries usable subscription auth", async () => {
+    const fx = await makeFixture();
+    try {
+      await writeUsableAuth(fx.sharedCodexHome);
+      const result = await evaluateCodexCredentialReadiness({
+        env: fx.env,
+        companyId: "company-1",
+        configuredCodexHome: fx.managedAgentHome,
+        configuredApiKey: "",
+      });
+      expect(result).toMatchObject({ managed: true, authMode: "subscription", ready: true });
+    } finally {
+      await fs.rm(fx.root, { recursive: true, force: true });
+    }
+  });
+
+  it("is ready when the already-seeded effective home carries usable auth", async () => {
+    const fx = await makeFixture();
+    try {
+      await writeUsableAuth(fx.managedAgentHome);
+      const result = await evaluateCodexCredentialReadiness({
+        env: fx.env,
+        companyId: "company-1",
+        configuredCodexHome: fx.managedAgentHome,
+        configuredApiKey: "",
+      });
+      expect(result).toMatchObject({ managed: true, authMode: "subscription", ready: true });
+    } finally {
+      await fs.rm(fx.root, { recursive: true, force: true });
+    }
+  });
+
+  it("defaults to the managed company home when no CODEX_HOME is configured", async () => {
+    const fx = await makeFixture();
+    try {
+      const result = await evaluateCodexCredentialReadiness({
+        env: fx.env,
+        companyId: "company-1",
+        configuredCodexHome: null,
+        configuredApiKey: "",
+      });
+      expect(result).toMatchObject({ managed: true, authMode: "subscription", ready: false });
+      expect(result.effectiveHome).toBe(path.resolve(fx.managedCompanyHome));
+    } finally {
+      await fs.rm(fx.root, { recursive: true, force: true });
+    }
+  });
+
+  it("treats an external/user-supplied CODEX_HOME override as self-managed and ready", async () => {
+    const fx = await makeFixture();
+    try {
+      const externalHome = path.join(fx.root, "user-codex-home");
+      await fs.mkdir(externalHome, { recursive: true });
+      const result = await evaluateCodexCredentialReadiness({
+        env: fx.env,
+        companyId: "company-1",
+        configuredCodexHome: externalHome,
+        configuredApiKey: "",
+      });
+      expect(result).toMatchObject({ managed: false, ready: true });
+    } finally {
+      await fs.rm(fx.root, { recursive: true, force: true });
+    }
+  });
+
+  it("replaces the managed MCP block and clears stale servers for an empty runtime set", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-mcp-config-"));
+    try {
+      const alphaHome = path.join(root, "agent-alpha");
+      const zeroHome = path.join(root, "agent-zero");
+      await writeManagedCodexMcpConfig({
+        codexHome: alphaHome,
+        apiBaseUrl: "https://paperclip.example",
+        gateways: [{
+          name: "alpha",
+          endpointPath: "https://paperclip.example/api/tool-gateway/gateways/alpha/mcp",
+          bearerToken: "alpha-token",
+        }],
+      });
+      await writeManagedCodexMcpConfig({
+        codexHome: zeroHome,
+        apiBaseUrl: "https://paperclip.example",
+        gateways: [{
+          name: "stale",
+          endpointPath: "/api/tool-gateway/gateways/stale/mcp",
+          bearerToken: "stale-token",
+        }],
+      });
+      await writeManagedCodexMcpConfig({
+        codexHome: zeroHome,
+        apiBaseUrl: "https://paperclip.example",
+        gateways: [],
+      });
+
+      const alpha = await fs.readFile(path.join(alphaHome, "config.toml"), "utf8");
+      const zero = await fs.readFile(path.join(zeroHome, "config.toml"), "utf8");
+      expect(alpha).toContain('[mcp_servers."alpha"]');
+      expect(alpha).toContain('Authorization = "Bearer alpha-token"');
+      expect(zero).not.toContain("mcp_servers.");
+      expect(zero).not.toContain("stale-token");
+      expect(alphaHome).not.toBe(zeroHome);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("restricts permissions on an existing managed MCP config", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-mcp-config-"));
+    try {
+      const configPath = path.join(root, "config.toml");
+      await fs.writeFile(configPath, "model = \"gpt-5\"\n", { mode: 0o644 });
+
+      await writeManagedCodexMcpConfig({
+        codexHome: root,
+        apiBaseUrl: "https://paperclip.example",
+        gateways: [],
+      });
+
+      expect((await fs.stat(configPath)).mode & 0o777).toBe(0o600);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
     }
   });
 });

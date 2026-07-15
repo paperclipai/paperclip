@@ -1,4 +1,4 @@
-import type { Agent } from "@paperclipai/shared";
+import { ADAPTER_AGNOSTIC_KEYS, type Agent } from "@paperclipai/shared";
 
 export interface AgentModelProfileOverlay {
   enabled?: boolean;
@@ -19,21 +19,7 @@ export interface AgentConfigOverlay {
   modelProfiles?: { cheap?: AgentModelProfileOverlay };
 }
 
-const ADAPTER_AGNOSTIC_KEYS = [
-  "env",
-  "promptTemplate",
-  "instructionsFilePath",
-  "cwd",
-  "timeoutSec",
-  "graceSec",
-  "bootstrapPromptTemplate",
-  // Desired-skill selection is a company-level, adapter-agnostic choice even
-  // though it is persisted inside the per-adapter config; keep it when the
-  // adapter type changes so switching adapters does not wipe the agent's skills.
-  "paperclipSkillSync",
-] as const;
-
-function omitUndefinedEntries(value: Record<string, unknown>) {
+export function omitUndefinedEntries(value: Record<string, unknown>) {
   return Object.fromEntries(
     Object.entries(value).filter(([, entryValue]) => entryValue !== undefined),
   );

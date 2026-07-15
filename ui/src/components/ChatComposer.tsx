@@ -231,7 +231,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
         "relative rounded-xl border px-3 pt-2.5 pb-2 transition-colors duration-150 focus-within:border-muted-foreground/40",
         // Surface: opaque card vs the task glass recipe (IssueChatThread.tsx shell).
         surface === "translucent"
-          ? "border-border/70 bg-background/95 shadow-[0_-12px_28px_rgba(15,23,42,0.08)] backdrop-blur supports-[backdrop-filter]:bg-background/85 dark:shadow-[0_-12px_28px_rgba(0,0,0,0.28)]"
+          ? "border-border/70 bg-background/95 shadow-(--shadow-extract-4) backdrop-blur supports-[backdrop-filter]:bg-background/85 dark:shadow-(--shadow-extract-5)"
           : "border-border bg-card",
         // No blue focus ring — neutral border darkening only.
         isAsk &&
@@ -250,7 +250,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
       {isDragOver && canAttach ? (
         <div
           data-testid="chat-composer-drop-overlay"
-          className="pointer-events-none absolute inset-1.5 z-20 flex items-center justify-center rounded-lg border border-dashed border-muted-foreground/50 bg-background/80 text-xs text-muted-foreground backdrop-blur-[1px]"
+          className="pointer-events-none absolute inset-1.5 z-20 flex items-center justify-center rounded-lg border border-dashed border-muted-foreground/50 bg-background/80 text-xs text-muted-foreground backdrop-blur-(--blur-1px)"
         >
           <span className="inline-flex items-center gap-2">
             <Paperclip className="h-3.5 w-3.5" />
@@ -271,10 +271,10 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
         rows={1}
         wrap={singleLine ? "off" : "soft"}
         className={cn(
-          "block min-h-[22px] w-full resize-none border-0 bg-transparent p-0 text-sm leading-6 text-foreground outline-none placeholder:text-muted-foreground focus:outline-none focus:ring-0",
+          "block min-h-(--sz-22px) w-full resize-none border-0 bg-transparent p-0 text-sm leading-6 text-foreground outline-none placeholder:text-muted-foreground focus:outline-none focus:ring-0",
           singleLine
-            ? "max-h-[22px] overflow-x-auto whitespace-nowrap"
-            : "max-h-[200px] overflow-y-auto",
+            ? "max-h-(--sz-22px) overflow-x-auto whitespace-nowrap"
+            : "max-h-(--sz-200px) overflow-y-auto",
           textareaClassName,
         )}
       />
@@ -323,7 +323,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
       ) : null}
 
       {hint ? (
-        <div className="mt-2 inline-flex items-center rounded-full border border-border/70 bg-muted/30 px-2 py-0.5 text-[11px] text-muted-foreground">
+        <div className="mt-2 inline-flex items-center rounded-full border border-border/70 bg-muted/30 px-2 py-0.5 text-(length:--text-micro) text-muted-foreground">
           {hint}
         </div>
       ) : null}

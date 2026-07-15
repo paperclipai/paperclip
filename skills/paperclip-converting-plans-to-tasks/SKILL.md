@@ -1,13 +1,9 @@
 ---
 name: paperclip-converting-plans-to-tasks
 description: >
-  The Paperclip way of converting a plan into executable tasks. Use whenever
-  you are asked to plan, scope, or break down work inside a Paperclip company.
-  Industry-agnostic guidance on how to translate a plan into assigned issues
-  with the right specialty, dependencies, and parallelization so Paperclip's
-  executor can pick up the work — it does not prescribe a plan format. Pair
-  with the `paperclip` skill, which covers the mechanics of writing the plan
-  document and reassigning the issue.
+  Convert Paperclip plans into executable issue graphs. Use when asked to plan,
+  scope, or break down Paperclip company work into assigned tasks with specialty
+  fit, dependencies, blockers, and parallelization.
 ---
 
 # Paperclip — Converting Plans to Tasks

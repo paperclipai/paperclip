@@ -3,7 +3,23 @@ import type { IssuePriority, IssueStatus } from "../constants.js";
 export const COMPANY_SEARCH_SCOPES = ["all", "issues", "comments", "documents", "artifacts", "agents", "projects"] as const;
 export type CompanySearchScope = (typeof COMPANY_SEARCH_SCOPES)[number];
 
+export const COMPANY_SEARCH_SORTS = ["relevance", "updated", "created", "priority"] as const;
+export type CompanySearchSort = (typeof COMPANY_SEARCH_SORTS)[number];
+
+export const COMPANY_SEARCH_UPDATED_WITHIN_OPTIONS = ["24h", "7d", "30d", "90d"] as const;
+export type CompanySearchUpdatedWithinOption = (typeof COMPANY_SEARCH_UPDATED_WITHIN_OPTIONS)[number];
+
 export type CompanySearchResultType = "issue" | "artifact" | "agent" | "project";
+export type CompanySearchCountType = CompanySearchResultType | "comment" | "document";
+export type CompanySearchIssueFilterKey =
+  | "status"
+  | "assigneeAgentId"
+  | "assigneeUserId"
+  | "projectId"
+  | "labelId"
+  | "priority"
+  | "updatedWithin"
+  | "updatedAfter";
 
 export interface CompanySearchHighlight {
   start: number;
@@ -57,13 +73,38 @@ export interface CompanySearchResult {
   previewImageUrl: string | null;
 }
 
+export interface CompanySearchFilterOptionCounts {
+  status: Partial<Record<IssueStatus, number>>;
+  priority: Partial<Record<IssuePriority, number>>;
+  assigneeAgentId: Record<string, number>;
+  assigneeUserId: Record<string, number>;
+  projectId: Record<string, number>;
+  labelId: Record<string, number>;
+  updatedWithin: Partial<Record<CompanySearchUpdatedWithinOption, number>>;
+}
+
+export interface CompanySearchZeroResultsLoosenSuggestion {
+  filter: CompanySearchIssueFilterKey;
+  values: string[];
+  resultCount: number;
+  additionalCount: number;
+}
+
+export interface CompanySearchZeroResults {
+  unfilteredTotal: number;
+  loosenSuggestions: CompanySearchZeroResultsLoosenSuggestion[];
+}
+
 export interface CompanySearchResponse {
   query: string;
   normalizedQuery: string;
   scope: CompanySearchScope;
+  sort: CompanySearchSort;
   limit: number;
   offset: number;
   results: CompanySearchResult[];
-  countsByType: Record<CompanySearchResultType, number>;
+  countsByType: Record<CompanySearchCountType, number>;
+  filterOptionCounts: CompanySearchFilterOptionCounts;
+  zeroResults: CompanySearchZeroResults | null;
   hasMore: boolean;
 }

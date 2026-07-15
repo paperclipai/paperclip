@@ -90,6 +90,7 @@ describeEmbeddedPostgres("pipelineService", () => {
     const [company] = await db.insert(companies).values({
       name: "Pipeline Co",
       issuePrefix: `P${randomUUID().replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      defaultResponsibleUserId: "board-user",
     }).returning();
     return company!;
   }
