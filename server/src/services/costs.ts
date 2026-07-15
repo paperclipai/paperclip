@@ -4,6 +4,7 @@ import type { Db } from "@paperclipai/db";
 import { activityLog, agents, companies, costEvents, issues, projects } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
 import { budgetService, type BudgetServiceHooks } from "./budgets.js";
+import { withCostEventSpan } from "../otel/spans.js";
 
 export interface CostDateRange {
   from?: Date;
@@ -52,53 +53,63 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
   const budgets = budgetService(db, budgetHooks);
   return {
     createEvent: async (companyId: string, data: Omit<typeof costEvents.$inferInsert, "companyId">) => {
-      const agent = await db
-        .select()
-        .from(agents)
-        .where(eq(agents.id, data.agentId))
-        .then((rows) => rows[0] ?? null);
-
-      if (!agent) throw notFound("Agent not found");
-      if (agent.companyId !== companyId) {
-        throw unprocessable("Agent does not belong to company");
-      }
-
-      const event = await db
-        .insert(costEvents)
-        .values({
-          ...data,
-          companyId,
-          biller: data.biller ?? data.provider,
+      return withCostEventSpan(
+        {
+          provider: data.provider ?? "unknown",
+          model: data.model ?? "unknown",
+          costCents: data.costCents ?? 0,
           billingType: data.billingType ?? "unknown",
-          cachedInputTokens: data.cachedInputTokens ?? 0,
-        })
-        .returning()
-        .then((rows) => rows[0]);
+        },
+        async () => {
+          const agent = await db
+            .select()
+            .from(agents)
+            .where(eq(agents.id, data.agentId))
+            .then((rows) => rows[0] ?? null);
 
-      const [agentMonthSpend, companyMonthSpend] = await Promise.all([
-        getMonthlySpendTotal(db, { companyId, agentId: event.agentId }),
-        getMonthlySpendTotal(db, { companyId }),
-      ]);
+          if (!agent) throw notFound("Agent not found");
+          if (agent.companyId !== companyId) {
+            throw unprocessable("Agent does not belong to company");
+          }
 
-      await db
-        .update(agents)
-        .set({
-          spentMonthlyCents: agentMonthSpend,
-          updatedAt: new Date(),
-        })
-        .where(eq(agents.id, event.agentId));
+          const event = await db
+            .insert(costEvents)
+            .values({
+              ...data,
+              companyId,
+              biller: data.biller ?? data.provider,
+              billingType: data.billingType ?? "unknown",
+              cachedInputTokens: data.cachedInputTokens ?? 0,
+            })
+            .returning()
+            .then((rows) => rows[0]);
 
-      await db
-        .update(companies)
-        .set({
-          spentMonthlyCents: companyMonthSpend,
-          updatedAt: new Date(),
-        })
-        .where(eq(companies.id, companyId));
+          const [agentMonthSpend, companyMonthSpend] = await Promise.all([
+            getMonthlySpendTotal(db, { companyId, agentId: event.agentId }),
+            getMonthlySpendTotal(db, { companyId }),
+          ]);
 
-      await budgets.evaluateCostEvent(event);
+          await db
+            .update(agents)
+            .set({
+              spentMonthlyCents: agentMonthSpend,
+              updatedAt: new Date(),
+            })
+            .where(eq(agents.id, event.agentId));
 
-      return event;
+          await db
+            .update(companies)
+            .set({
+              spentMonthlyCents: companyMonthSpend,
+              updatedAt: new Date(),
+            })
+            .where(eq(companies.id, companyId));
+
+          await budgets.evaluateCostEvent(event);
+
+          return event;
+        },
+      );
     },
 
     summary: async (companyId: string, range?: CostDateRange) => {

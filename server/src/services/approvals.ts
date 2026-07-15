@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 import { approvalComments, approvals } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
 import { redactCurrentUserText } from "../log-redaction.js";
+import { withApprovalSpan } from "../otel/spans.js";
 import { agentService } from "./agents.js";
 import { budgetService } from "./budgets.js";
 import { notifyHireApproved } from "./hire-hook.js";
@@ -40,41 +41,47 @@ export function approvalService(db: Db) {
     decidedByUserId: string,
     decisionNote: string | null | undefined,
   ): Promise<ResolutionResult> {
-    const existing = await getExistingApproval(id);
-    if (!canResolveStatuses.has(existing.status)) {
-      if (existing.status === targetStatus) {
-        return { approval: existing, applied: false };
-      }
-      throw unprocessable(
-        `Only pending or revision requested approvals can be ${targetStatus === "approved" ? "approved" : "rejected"}`,
-      );
-    }
+    return withApprovalSpan(
+      "approval.resolve",
+      { "approval.id": id, "approval.target_status": targetStatus },
+      async () => {
+        const existing = await getExistingApproval(id);
+        if (!canResolveStatuses.has(existing.status)) {
+          if (existing.status === targetStatus) {
+            return { approval: existing, applied: false };
+          }
+          throw unprocessable(
+            `Only pending or revision requested approvals can be ${targetStatus === "approved" ? "approved" : "rejected"}`,
+          );
+        }
 
-    const now = new Date();
-    const updated = await db
-      .update(approvals)
-      .set({
-        status: targetStatus,
-        decidedByUserId,
-        decisionNote: decisionNote ?? null,
-        decidedAt: now,
-        updatedAt: now,
-      })
-      .where(and(eq(approvals.id, id), inArray(approvals.status, resolvableStatuses)))
-      .returning()
-      .then((rows) => rows[0] ?? null);
+        const now = new Date();
+        const updated = await db
+          .update(approvals)
+          .set({
+            status: targetStatus,
+            decidedByUserId,
+            decisionNote: decisionNote ?? null,
+            decidedAt: now,
+            updatedAt: now,
+          })
+          .where(and(eq(approvals.id, id), inArray(approvals.status, resolvableStatuses)))
+          .returning()
+          .then((rows) => rows[0] ?? null);
 
-    if (updated) {
-      return { approval: updated, applied: true };
-    }
+        if (updated) {
+          return { approval: updated, applied: true };
+        }
 
-    const latest = await getExistingApproval(id);
-    if (latest.status === targetStatus) {
-      return { approval: latest, applied: false };
-    }
+        const latest = await getExistingApproval(id);
+        if (latest.status === targetStatus) {
+          return { approval: latest, applied: false };
+        }
 
-    throw unprocessable(
-      `Only pending or revision requested approvals can be ${targetStatus === "approved" ? "approved" : "rejected"}`,
+        throw unprocessable(
+          `Only pending or revision requested approvals can be ${targetStatus === "approved" ? "approved" : "rejected"}`,
+        );
+      },
     );
   }
 
