@@ -6,6 +6,8 @@ export type {
   AdapterRuntimeServiceReport,
   AdapterExecutionResult,
   AdapterInvocationMeta,
+  AdapterRuntimeMcpServer,
+  AdapterRuntimeMcpAccess,
   AdapterExecutionContext,
   AdapterEnvironmentCheckLevel,
   AdapterEnvironmentCheck,

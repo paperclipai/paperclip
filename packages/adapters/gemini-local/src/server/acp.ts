@@ -8,7 +8,11 @@ import type {
   AdapterExecutionContext,
   AdapterExecutionResult,
 } from "@paperclipai/adapter-utils";
-import { readAdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
+import {
+  ensureAdapterExecutionTargetCommandResolvable,
+  readAdapterExecutionTarget,
+  resolveAdapterExecutionTargetCwd,
+} from "@paperclipai/adapter-utils/execution-target";
 import {
   DEFAULT_ACP_ENGINE_MODE,
   DEFAULT_ACP_ENGINE_NON_INTERACTIVE_PERMISSIONS,
@@ -183,9 +187,30 @@ function resolveConfigPath(config: Record<string, unknown>): string {
     : process.env.PATH ?? "";
 }
 
-async function commandIsResolvable(command: string, pathValue = process.env.PATH ?? ""): Promise<boolean> {
+async function commandIsResolvable(
+  command: string,
+  pathValue = process.env.PATH ?? "",
+  input?: GeminiEngineResolutionInput,
+): Promise<boolean> {
   const token = firstShellToken(command);
   if (!token) return true;
+  const target = readAdapterExecutionTarget({
+    executionTarget: input?.executionTarget,
+    legacyRemoteExecution: input?.executionTransport?.remoteExecution,
+  });
+  if (target?.kind === "remote") {
+    try {
+      await ensureAdapterExecutionTargetCommandResolvable(
+        token,
+        target,
+        resolveAdapterExecutionTargetCwd(target, asString(input?.config.cwd, ""), process.cwd()),
+        process.env,
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  }
   if (path.isAbsolute(token) || hasPathSeparator(token)) return pathExists(token);
   return (await findCommandOnPath(token, pathValue)) !== null;
 }
@@ -197,6 +222,12 @@ function resolveGeminiAcpCommand(config: Record<string, unknown>): string {
   return `${geminiCommand} --acp`;
 }
 
+function sandboxTargetHasProcessSessionBridge(
+  target: ReturnType<typeof readAdapterExecutionTarget>,
+): boolean {
+  return target?.kind === "remote" && target.transport === "sandbox" && Boolean(target.runner);
+}
+
 async function defaultGeminiAcpFallbackReason(
   input: GeminiEngineResolutionInput,
 ): Promise<string | null> {
@@ -204,14 +235,17 @@ async function defaultGeminiAcpFallbackReason(
     executionTarget: input.executionTarget,
     legacyRemoteExecution: input.executionTransport?.remoteExecution,
   });
-  if (target?.kind === "remote") {
-    return "Gemini ACP currently supports only the local Paperclip host, but this run targets a remote environment.";
+  if (target?.kind === "remote" && !sandboxTargetHasProcessSessionBridge(target)) {
+    if (target.transport === "sandbox") {
+      return "Gemini ACP requires a bidirectional remote process target; this sandbox exposes only one-shot command execution.";
+    }
+    return "Gemini ACP supports sandbox remote targets only; this run targets a non-sandbox remote environment.";
   }
   if (!nodeVersionMeetsGeminiAcpMinimum()) {
     return `Node ${process.version} does not satisfy Gemini ACP's Node >=${MIN_ACP_NODE_VERSION} prerequisite.`;
   }
   const command = resolveGeminiAcpCommand(input.config);
-  if (!(await commandIsResolvable(command, resolveConfigPath(input.config)))) {
+  if (!(await commandIsResolvable(command, resolveConfigPath(input.config), input))) {
     return `Gemini ACP command is not available: ${command}.`;
   }
   return null;
@@ -244,10 +278,10 @@ export async function testGeminiAcpEnvironment(
 
   if (targetIsRemote) {
     checks.push({
-      code: "gemini_acp_remote_target_unsupported",
-      level: "error",
-      message: "Gemini ACP currently runs on the local Paperclip host and cannot target a remote execution environment.",
-      hint: "Use engine=cli for remote or sandbox Gemini runs.",
+      code: "gemini_acp_remote_target",
+      level: "info",
+      message: "Gemini ACP will run against the remote execution environment.",
+      hint: "Remote ACP requires a bidirectional process target such as SSH or Paperclip's sandbox process-session bridge.",
     });
   }
 
@@ -280,7 +314,10 @@ export async function testGeminiAcpEnvironment(
   });
 
   const command = resolveGeminiAcpCommand(config);
-  const commandResolvable = await commandIsResolvable(command, resolveConfigPath(config));
+  const commandResolvable = await commandIsResolvable(command, resolveConfigPath(config), {
+    config,
+    executionTarget: ctx.executionTarget,
+  });
   checks.push({
     code: commandResolvable ? "gemini_acp_command_resolvable" : "gemini_acp_command_missing",
     level: commandResolvable ? "info" : "error",

@@ -39,7 +39,15 @@ import {
   joinPromptSections,
 } from "@paperclipai/adapter-utils/server-utils";
 import {
+  parseLocalProcessFilesystemScope,
+  parseLocalProcessSandboxExtraPaths,
+  parseLocalProcessNetworkAllowlist,
+  parseLocalProcessNetworkScope,
+  type LocalProcessSandboxOptions,
+} from "@paperclipai/adapter-utils/local-process-sandbox";
+import {
   parseCodexJsonl,
+  classifyCodexAuthRefreshFailure,
   extractCodexRetryNotBefore,
   isCodexProviderQuotaError,
   isCodexTransientUpstreamError,
@@ -53,6 +61,9 @@ import {
   resolveManagedCodexHomeDir,
   resolveSharedCodexHomeDir,
   seedManagedCodexHome,
+  mergeManagedCodexMcpGateways,
+  writeManagedCodexMcpConfig,
+  type ManagedCodexMcpGateway,
 } from "./codex-home.js";
 import { prepareCodexRuntimeConfig } from "./runtime-config.js";
 import { resolveCodexDesiredSkillNames } from "./skills.js";
@@ -241,6 +252,22 @@ function fallbackModeUsesSaferInvocation(mode: CodexTransientFallbackMode | null
 
 function fallbackModeUsesFreshSession(mode: CodexTransientFallbackMode | null): boolean {
   return mode === "fresh_session" || mode === "fresh_session_safer_invocation";
+}
+
+function managedMcpGatewaysFromContext(context: Record<string, unknown>): ManagedCodexMcpGateway[] {
+  const managedMcp = parseObject(context.paperclipManagedMcp);
+  if (managedMcp.managedMcpOnly !== true) return [];
+  const gateways = Array.isArray(managedMcp.gateways) ? managedMcp.gateways : [];
+  return gateways
+    .map((raw): ManagedCodexMcpGateway | null => {
+      const gateway = parseObject(raw);
+      const name = asString(gateway.name, "").trim();
+      const endpointPath = asString(gateway.endpointPath, "").trim();
+      const bearerToken = asString(gateway.bearerToken, "").trim();
+      if (!name || !endpointPath || !bearerToken) return null;
+      return { name, endpointPath, bearerToken };
+    })
+    .filter((gateway): gateway is ManagedCodexMcpGateway => Boolean(gateway));
 }
 
 function buildCodexTransientHandoffNote(input: {
@@ -461,6 +488,30 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     for (const note of preparedRuntimeConfig.notes) {
       await onLog("stdout", `[paperclip] ${note}\n`);
     }
+    const paperclipBaseEnv = buildPaperclipEnv(agent);
+    const runtimeMcpGateways = (ctx.runtimeMcp?.getServers() ?? []).map((server) => ({
+      name: server.name,
+      endpointPath: server.url,
+      bearerToken: server.token,
+    }));
+    const managedMcpGateways = mergeManagedCodexMcpGateways(
+      runtimeMcpGateways,
+      managedMcpGatewaysFromContext(context),
+    );
+    const managedMcp = await writeManagedCodexMcpConfig({
+      codexHome: effectiveCodexHome,
+      apiBaseUrl: paperclipBaseEnv.PAPERCLIP_API_URL,
+      gateways: managedMcpGateways,
+    });
+    if (managedMcpGateways.length > 0) {
+      await onLog(
+        "stdout",
+        `[paperclip] Wrote ${managedMcpGateways.length} managed MCP gateway(s) into Codex config "${managedMcp.configPath}".\n`,
+      );
+    }
+    for (const warning of managedMcp.warnings) {
+      await onLog("stderr", `[paperclip] ${warning}\n`);
+    }
     // Inject skills into the same CODEX_HOME that Codex will actually run with
     // (managed home in the default case, or an explicit override from adapter config).
     const codexSkillsDir = resolveCodexSkillsDir(effectiveCodexHome);
@@ -532,7 +583,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       : null;
     const hasExplicitApiKey =
       typeof envConfig.PAPERCLIP_API_KEY === "string" && envConfig.PAPERCLIP_API_KEY.trim().length > 0;
-    const env: Record<string, string> = { ...buildPaperclipEnv(agent) };
+    const env: Record<string, string> = { ...paperclipBaseEnv };
     env.PAPERCLIP_RUN_ID = runId;
     const wakeTaskId =
       (typeof context.taskId === "string" && context.taskId.trim().length > 0 && context.taskId.trim()) ||
@@ -632,6 +683,30 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ),
     );
     const billingType = resolveCodexBillingType(effectiveEnv);
+    const networkScope = parseLocalProcessNetworkScope(config.networkScope);
+    const filesystemScope = parseLocalProcessFilesystemScope(config.filesystemScope);
+    const localProcessSandbox: LocalProcessSandboxOptions | null =
+      (filesystemScope || networkScope) && !executionTargetIsRemote
+        ? {
+            workspaceDir: effectiveExecutionCwd,
+            filesystemScope,
+            managedPaths: [{ path: effectiveCodexHome, access: "rw" }],
+            extraPaths: parseLocalProcessSandboxExtraPaths(config.filesystemExtraPaths),
+            homeDir: filesystemScope ? effectiveCodexHome : null,
+            networkScope,
+            networkAllowlist: parseLocalProcessNetworkAllowlist(config.networkAllowlist),
+            command: asString(config.filesystemSandboxCommand, "bwrap"),
+          }
+        : null;
+    if (localProcessSandbox) {
+      const scopes = [filesystemScope ? "workspace filesystem" : null, networkScope ? `${networkScope} network` : null]
+        .filter(Boolean)
+        .join(" and ");
+      await onLog(
+        "stdout",
+        `[paperclip] Confining Codex with ${scopes} scope.\n`,
+      );
+    }
     const runtimeEnv = Object.fromEntries(
       Object.entries(ensurePathInEnv(effectiveEnv)).filter(
         (entry): entry is [string, string] => typeof entry[1] === "string",
@@ -923,6 +998,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             await onLog(stream, cleaned);
           },
           runLogTail: paperclipBridge?.runLogTail,
+          localProcessSandbox,
         });
         const cleanedStderr = stripCodexRolloutNoise(proc.stderr);
         return {
@@ -976,6 +1052,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           errorCode: "codex_output_inactivity_monitor",
           errorFamily: null,
           usage: attempt.parsed.usage,
+          usageBasis: attempt.parsed.usageBasis,
           sessionId: null,
           sessionParams: null,
           sessionDisplayId: null,
@@ -1040,8 +1117,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
               errorMessage: fallbackErrorMessage,
             })
           : null;
+      const authRefreshFailure =
+        (attempt.proc.exitCode ?? 0) !== 0
+          ? classifyCodexAuthRefreshFailure({
+              stdout: attempt.proc.stdout,
+              stderr: attempt.proc.stderr,
+              errorMessage: fallbackErrorMessage,
+            })
+          : null;
       const providerQuota =
         (attempt.proc.exitCode ?? 0) !== 0 &&
+        !authRefreshFailure &&
         isCodexProviderQuotaError({
           stdout: attempt.proc.stdout,
           stderr: attempt.proc.stderr,
@@ -1049,13 +1135,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         });
       const transientUpstream =
         (attempt.proc.exitCode ?? 0) !== 0 &&
+        !authRefreshFailure &&
         !providerQuota &&
         isCodexTransientUpstreamError({
           stdout: attempt.proc.stdout,
           stderr: attempt.proc.stderr,
           errorMessage: fallbackErrorMessage,
         });
-      const errorFamily = providerQuota ? "provider_quota" : transientUpstream ? "transient_upstream" : null;
+      const errorFamily = authRefreshFailure ?? (providerQuota ? "provider_quota" : transientUpstream ? "transient_upstream" : null);
 
       return {
         exitCode: attempt.proc.exitCode,
@@ -1066,7 +1153,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             ? null
             : fallbackErrorMessage,
         errorCode:
-          providerQuota
+          authRefreshFailure
+            ? authRefreshFailure
+            : providerQuota
             ? "provider_quota"
             : transientUpstream
             ? "codex_transient_upstream"
@@ -1074,6 +1163,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         errorFamily,
         retryNotBefore: transientRetryNotBefore ? transientRetryNotBefore.toISOString() : null,
         usage: attempt.parsed.usage,
+        usageBasis: attempt.parsed.usageBasis,
         sessionId: resolvedSessionId,
         sessionParams: resolvedSessionParams,
         sessionDisplayId: resolvedSessionId,

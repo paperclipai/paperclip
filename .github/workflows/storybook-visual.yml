@@ -55,7 +55,7 @@ jobs:
         run: npx playwright install --with-deps chromium
 
       - name: Cache Storybook visual baseline archive
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: tests/storybook-visual/.cache
           key: storybook-visual-baseline-${{ runner.os }}-${{ hashFiles('tests/storybook-visual/baseline-manifest.json') }}

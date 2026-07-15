@@ -8,11 +8,24 @@ import {
   type EnvironmentCustomImageTemplateKind,
   type SandboxEnvironmentConfig,
 } from "@paperclipai/shared";
-import { writeConfigValueAtPath } from "./json-schema-secret-refs.js";
+import { readConfigValueAtPath, writeConfigValueAtPath } from "./json-schema-secret-refs.js";
 
 type TemplateRow = typeof environmentCustomImageTemplates.$inferSelect;
 
 export const ENVIRONMENT_CUSTOM_IMAGE_RUNTIME_CONFIG_BINDING_METADATA_KEY = "runtimeConfigBinding";
+export const ENVIRONMENT_CUSTOM_IMAGE_CONFIG_FINGERPRINT_EXCLUDED_PATHS = [
+  "timeoutMs",
+  "reuseLease",
+  "streamRunLogs",
+  "archiveOnRelease",
+  "cpu",
+  "memory",
+  "disk",
+  "gpu",
+  "autoStopInterval",
+  "autoArchiveInterval",
+  "autoDeleteInterval",
+];
 
 export interface EnvironmentCustomImageRuntimeConfigBinding {
   field: string;
@@ -111,6 +124,101 @@ export function applyCustomImageTemplateToSandboxConfig(
   return next as SandboxEnvironmentConfig;
 }
 
+export function environmentCustomImageTemplateMatchesBaseConfig(input: {
+  template: EnvironmentCustomImageTemplate;
+  baseConfig: SandboxEnvironmentConfig;
+  secretRefExcludePaths?: Iterable<string>;
+}): boolean {
+  const expectedFingerprint = input.template.sourceEnvironmentConfigFingerprint;
+  if (!expectedFingerprint) return true;
+  // Capture-time fingerprints exclude both runtime-only fields and the
+  // provider's secret-ref paths (see finishSetupSession); the runtime match
+  // must exclude the same set or configs that carry a secret ref can never
+  // match and the active template gets silently dropped.
+  const secretRefExcludePaths = [...(input.secretRefExcludePaths ?? [])];
+  const normalizedFingerprint = fingerprintEnvironmentSandboxProviderConfig(input.baseConfig, {
+    excludePaths: [
+      ...ENVIRONMENT_CUSTOM_IMAGE_CONFIG_FINGERPRINT_EXCLUDED_PATHS,
+      ...secretRefExcludePaths,
+    ],
+  });
+  if (normalizedFingerprint === expectedFingerprint) return true;
+  // Backward compatibility for templates captured before runtime-only fields
+  // were excluded from the source fingerprint (secret-ref paths have always
+  // been excluded at capture time).
+  return fingerprintEnvironmentSandboxProviderConfig(input.baseConfig, {
+    excludePaths: secretRefExcludePaths,
+  }) === expectedFingerprint;
+}
+
+// Standard boot-source fields shared across sandbox providers. A change to any
+// of these means the user asked for a different base, so a captured template
+// no longer reflects the saved config and cannot simply be re-linked.
+export const ENVIRONMENT_CUSTOM_IMAGE_TEMPLATE_SOURCE_FIELDS = [
+  "snapshot",
+  "image",
+  "template",
+] as const;
+
+export type EnvironmentCustomImageConfigChangeKind = "none" | "relinkable" | "breaking";
+
+/**
+ * Classifies a saved-config change relative to an active captured template.
+ *
+ * - `none`: the template either already matched the new config, or was already
+ *   detached before this change; nothing to reconcile.
+ * - `relinkable`: only fields that cannot affect the captured template's
+ *   contents or reachability changed (for example a region hint), so the
+ *   template's source fingerprint can be re-stamped to the new config.
+ * - `breaking`: a boot-source field or a provider-declared template identity
+ *   path changed; the captured template no longer corresponds to the config
+ *   and a fresh capture is required.
+ */
+export function classifyEnvironmentCustomImageConfigChange(input: {
+  template: EnvironmentCustomImageTemplate;
+  previousConfig: SandboxEnvironmentConfig;
+  nextConfig: SandboxEnvironmentConfig;
+  secretRefExcludePaths?: Iterable<string>;
+  templateIdentityPaths?: Iterable<string>;
+}): EnvironmentCustomImageConfigChangeKind {
+  const secretRefExcludePaths = [...(input.secretRefExcludePaths ?? [])];
+  if (!environmentCustomImageTemplateMatchesBaseConfig({
+    template: input.template,
+    baseConfig: input.previousConfig,
+    secretRefExcludePaths,
+  })) {
+    return "none";
+  }
+  if (environmentCustomImageTemplateMatchesBaseConfig({
+    template: input.template,
+    baseConfig: input.nextConfig,
+    secretRefExcludePaths,
+  })) {
+    return "none";
+  }
+  const binding = resolveEnvironmentCustomImageRuntimeConfigBinding({
+    templateKind: input.template.templateKind,
+    metadata: input.template.metadata,
+  });
+  const breakingPaths = new Set<string>([
+    "provider",
+    binding.field,
+    ...binding.unsetFields,
+    ...ENVIRONMENT_CUSTOM_IMAGE_TEMPLATE_SOURCE_FIELDS,
+    ...(input.templateIdentityPaths ?? []),
+  ]);
+  const previous = input.previousConfig as Record<string, unknown>;
+  const next = input.nextConfig as Record<string, unknown>;
+  for (const path of breakingPaths) {
+    const before = readConfigValueAtPath(previous, path);
+    const after = readConfigValueAtPath(next, path);
+    if (stableStringify(before ?? null) !== stableStringify(after ?? null)) {
+      return "breaking";
+    }
+  }
+  return "relinkable";
+}
+
 export function environmentCustomImageTemplateFromRow(row: TemplateRow): EnvironmentCustomImageTemplate {
   return {
     id: row.id,
@@ -138,6 +246,7 @@ export async function resolveActiveEnvironmentCustomImageTemplateForRuntime(
     environmentId: string;
     baseConfig: SandboxEnvironmentConfig;
     runtimeConfig: SandboxEnvironmentConfig;
+    secretRefExcludePaths?: Iterable<string>;
     now?: Date;
   },
 ): Promise<SandboxEnvironmentConfig> {
@@ -155,15 +264,19 @@ export async function resolveActiveEnvironmentCustomImageTemplateForRuntime(
 
   const active = environmentCustomImageTemplateFromRow(row);
   if (!active.templateRef) return input.runtimeConfig;
+  if (!environmentCustomImageTemplateMatchesBaseConfig({
+    template: active,
+    baseConfig: input.baseConfig,
+    secretRefExcludePaths: input.secretRefExcludePaths,
+  })) {
+    return input.runtimeConfig;
+  }
 
   // An active template is an explicit, environment+provider-scoped artifact: the
   // captured snapshot/image fully replaces the base image at create time, so it is
-  // applied whenever present. We deliberately do not gate on a base-config
-  // fingerprint — the config dialog re-saves the environment right after capture,
-  // and ordinary resource/lifecycle tweaks (cpu/memory/lease knobs that don't
-  // affect image identity and are dropped for snapshot creation) would otherwise
-  // silently discard the captured setup state and provider metadata. Re-running
-  // setup supersedes the template when the user wants a fresh capture.
+  // applied whenever the image/template-defining parts of the base config still
+  // match. Runtime-only knobs such as lease reuse, timeouts, and resource hints
+  // are excluded from the fingerprint so those edits do not discard the capture.
   const now = input.now ?? new Date();
   await db
     .update(environmentCustomImageTemplates)

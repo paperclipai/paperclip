@@ -48,6 +48,8 @@ function createMockSandbox(overrides: {
     recover: vi.fn().mockResolvedValue(undefined),
     resize: vi.fn().mockResolvedValue(undefined),
     delete: vi.fn().mockResolvedValue(undefined),
+    archive: vi.fn().mockResolvedValue(undefined),
+    setAutoDeleteInterval: vi.fn().mockResolvedValue(undefined),
     createSshAccess: vi.fn().mockResolvedValue({
       token: "ssh-token-secret",
       command: "ssh ssh-token-secret@ssh.app.daytona.io",
@@ -133,6 +135,7 @@ describe("Daytona sandbox provider plugin", () => {
         autoArchiveInterval: 60,
         autoDeleteInterval: -1,
         reuseLease: true,
+        archiveOnRelease: false,
       },
     });
   });
@@ -954,6 +957,54 @@ describe("Daytona sandbox provider plugin", () => {
     expect(reusable.stop).toHaveBeenCalledWith(300);
     expect(reusable.delete).not.toHaveBeenCalled();
     expect(ephemeral.delete).toHaveBeenCalledWith(300);
+  });
+
+  it("archives instead of deleting when the lease was acquired with archiveOnRelease", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const sandbox = createMockSandbox({ id: "sandbox-test-probe", state: "started" });
+    mockGet.mockResolvedValue(sandbox);
+
+    await plugin.definition.onEnvironmentReleaseLease?.({
+      driverKey: "daytona",
+      companyId: "company-1",
+      environmentId: "env-1",
+      providerLeaseId: "sandbox-test-probe",
+      config: {
+        timeoutMs: 300000,
+        reuseLease: false,
+        archiveOnRelease: true,
+      },
+    });
+
+    expect(sandbox.stop).toHaveBeenCalledWith(300);
+    expect(sandbox.setAutoDeleteInterval).toHaveBeenCalledWith(60);
+    expect(sandbox.archive).toHaveBeenCalled();
+    expect(sandbox.delete).not.toHaveBeenCalled();
+  });
+
+  it("falls back to delete when archiving an archiveOnRelease lease fails", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const sandbox = createMockSandbox({ id: "sandbox-test-probe", state: "stopped" });
+    sandbox.archive.mockRejectedValueOnce(new Error("archive unsupported"));
+    mockGet.mockResolvedValue(sandbox);
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    await plugin.definition.onEnvironmentReleaseLease?.({
+      driverKey: "daytona",
+      companyId: "company-1",
+      environmentId: "env-1",
+      providerLeaseId: "sandbox-test-probe",
+      config: {
+        timeoutMs: 300000,
+        reuseLease: false,
+        archiveOnRelease: true,
+      },
+    });
+
+    expect(sandbox.stop).not.toHaveBeenCalled();
+    expect(sandbox.archive).toHaveBeenCalled();
+    expect(sandbox.delete).toHaveBeenCalledWith(300);
+    expect(warnSpy).toHaveBeenCalled();
   });
 
   it("falls back to delete when stopping a reusable lease from an error state fails", async () => {

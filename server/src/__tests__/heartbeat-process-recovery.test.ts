@@ -106,6 +106,10 @@ import {
   SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY,
   SUCCESSFUL_RUN_MISSING_STATE_REASON,
 } from "../services/recovery/index.ts";
+import {
+  UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
+  UNMANAGED_BACKGROUND_TASK_STOP_REASON,
+} from "@paperclipai/adapter-utils/server-utils";
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
@@ -655,6 +659,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     livenessState?: "completed" | "advanced" | "plan_only" | "empty_response" | "blocked" | "failed" | "needs_followup" | null;
     runErrorCode?: string | null;
     runError?: string | null;
+    resultJson?: Record<string, unknown> | null;
+    monitorNextCheckAt?: Date | null;
   }) {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -729,6 +735,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         ? null
         : ("runError" in input ? input.runError : "run failed before issue advanced"),
       livenessState: input.livenessState ?? null,
+      resultJson: input.resultJson ?? null,
     });
 
     await db.insert(issues).values([
@@ -755,6 +762,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         assigneeUserId: input.assignToUser ? "user-1" : null,
         checkoutRunId: input.status === "in_progress" ? runId : null,
         executionRunId: null,
+        monitorNextCheckAt: input.monitorNextCheckAt ?? null,
         responsibleUserId: "responsible-user",
         issueNumber: input.activePauseHold ? 2 : 1,
         identifier: `${issuePrefix}-${input.activePauseHold ? 2 : 1}`,
@@ -1554,6 +1562,17 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(failedRun?.status).toBe("failed");
     expect(failedRun?.errorCode).toBe("process_lost");
     expect(failedRun?.error).toContain("descendant process group");
+    expect(failedRun?.resultJson).toMatchObject({
+      stopReason: UNMANAGED_BACKGROUND_TASK_STOP_REASON,
+      unmanagedBackgroundTask: {
+        kind: "orphaned_process_group_cleanup",
+        stopped: true,
+        stopReason: UNMANAGED_BACKGROUND_TASK_STOP_REASON,
+        reason: UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
+        processPid: orphan.processPid,
+        processGroupId: orphan.processGroupId,
+      },
+    });
 
     const retryRun = runs.find((row) => row.id !== runId);
     expect(["queued", "running"]).toContain(retryRun?.status);
@@ -5285,6 +5304,155 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const wakeups = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
     expect(wakeups).toHaveLength(2);
+  });
+
+
+  it("does not accept unmanaged local-background wait evidence as a live continuation path", async () => {
+    const localWaitEvidence = {
+      summary: "Started a local polling watcher and will check the log later.",
+      externalWait: {
+        kind: "local_background",
+        pid: 12345,
+        logPath: "run/watch.log",
+        durable: false,
+      },
+    };
+    const { agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      livenessState: "advanced",
+      resultJson: localWaitEvidence,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.continuationRequeued).toBe(1);
+    expect(result.escalated).toBe(0);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    const retryRun = runs.find((row) => row.id !== runId);
+    expect(retryRun?.contextSnapshot as Record<string, unknown> | undefined).toMatchObject({
+      issueId,
+      retryReason: "issue_continuation_needed",
+      retryOfRunId: runId,
+      source: "issue.productive_terminal_continuation_recovery",
+    });
+    expect(retryRun?.contextSnapshot as Record<string, unknown>).not.toHaveProperty("modelProfile");
+  });
+
+  it("escalates repeated unmanaged local-background waits instead of retrying forever", async () => {
+    const localWaitEvidence = {
+      summary: "Still waiting on the local background watcher.",
+      externalWait: {
+        kind: "local_background",
+        pid: 12345,
+        logPath: "run/watch.log",
+        durable: false,
+      },
+    };
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      retryReason: "issue_continuation_needed",
+      runSource: "issue.productive_terminal_continuation_recovery",
+      livenessState: "advanced",
+      resultJson: localWaitEvidence,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.escalated).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("blocked");
+
+    await expectSourceScopedStrandedRecoveryAction({
+      companyId,
+      agentId,
+      issueId,
+      runId,
+      previousStatus: "in_progress",
+      retryReason: "issue_continuation_needed",
+    });
+
+    const followupRuns = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(followupRuns).toHaveLength(2);
+  });
+
+  it("preserves a persisted issue monitor as the durable external-wait path", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      livenessState: "advanced",
+      monitorNextCheckAt: new Date("2026-03-19T01:00:00.000Z"),
+      resultJson: {
+        summary: "Waiting for the deploy to settle; monitor is scheduled.",
+        externalWait: { kind: "issue_monitor", durable: true },
+      },
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.escalated).toBe(0);
+    expect(result.skipped).toBe(1);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_progress");
+    expect(issue?.monitorNextCheckAt?.toISOString()).toBe("2026-03-19T01:00:00.000Z");
+
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(1);
+    const recoveryIssues = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stranded_issue_recovery")));
+    expect(recoveryIssues).toHaveLength(0);
+  });
+
+  it("preserves a delegated blocker edge as the durable external-wait path", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      livenessState: "advanced",
+      resultJson: {
+        summary: "Delegated the external account check to a child task.",
+        externalWait: { kind: "delegated_child", durable: true },
+      },
+    });
+    const blockerIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: blockerIssueId,
+      companyId,
+      parentId: issueId,
+      title: "Check external account approval",
+      status: "todo",
+      priority: "medium",
+      assigneeUserId: "external-owner",
+      responsibleUserId: "responsible-user",
+      issueNumber: 2,
+      identifier: "PAP-2",
+    });
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerIssueId,
+      relatedIssueId: issueId,
+      type: "blocks",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.escalated).toBe(0);
+    expect(result.skipped).toBe(1);
+
+    const source = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(source?.status).toBe("in_progress");
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(1);
   });
 
   it("blocks stranded in-progress work after a productive continuation retry was already used", async () => {

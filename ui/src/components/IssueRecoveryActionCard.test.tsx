@@ -196,6 +196,48 @@ describe("IssueRecoveryActionCard", () => {
     expect(node.textContent).toContain("Manual repair required");
   });
 
+  it("renders a human evidence summary as prose, not a mono log line", () => {
+    const node = render(
+      <IssueRecoveryActionCard
+        action={buildAction({
+          kind: "stranded_assigned_issue",
+          cause: "stranded_assigned_issue",
+          evidence: {
+            summary: "Unmanaged background task stopped; no durable live path.",
+            latestRunStatus: "failed",
+            latestRunErrorCode: "unmanaged_background_task_stopped",
+            sourceRunId: "7accd7a4-c9ca-4db2-9233-3228a037cc09",
+          },
+        })}
+      />,
+    );
+    const summary = Array.from(node.querySelectorAll("span")).find((el) =>
+      el.textContent === "Unmanaged background task stopped; no durable live path.",
+    );
+    expect(summary).toBeTruthy();
+    expect(summary?.className).toContain("text-xs");
+    expect(summary?.className).not.toContain("font-mono");
+  });
+
+  it("keeps code-shaped evidence (error code, no summary) in the mono treatment", () => {
+    const node = render(
+      <IssueRecoveryActionCard
+        action={buildAction({
+          kind: "workspace_validation",
+          cause: "workspace_validation_failed",
+          evidence: {
+            latestRunErrorCode: "workspace_validation_failed",
+          },
+        })}
+      />,
+    );
+    const code = Array.from(node.querySelectorAll("span")).find((el) =>
+      el.textContent === "workspace_validation_failed",
+    );
+    expect(code).toBeTruthy();
+    expect(code?.className).toContain("font-mono");
+  });
+
   it("renders the resolved label and outcome when resolved", () => {
     const node = render(
       <IssueRecoveryActionCard action={buildAction({ status: "resolved", outcome: "restored", resolvedAt: "2026-05-09T19:35:00.000Z" })} />,

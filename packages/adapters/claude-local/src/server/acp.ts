@@ -2,13 +2,22 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
+  AdapterBillingType,
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestContext,
   AdapterEnvironmentTestResult,
   AdapterExecutionContext,
   AdapterExecutionResult,
 } from "@paperclipai/adapter-utils";
-import { readAdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
+import {
+  parseLocalProcessFilesystemScope,
+  parseLocalProcessNetworkScope,
+} from "@paperclipai/adapter-utils/local-process-sandbox";
+import {
+  ensureAdapterExecutionTargetCommandResolvable,
+  readAdapterExecutionTarget,
+  resolveAdapterExecutionTargetCwd,
+} from "@paperclipai/adapter-utils/execution-target";
 import {
   DEFAULT_ACP_ENGINE_MODE,
   DEFAULT_ACP_ENGINE_NON_INTERACTIVE_PERMISSIONS,
@@ -60,6 +69,20 @@ export async function resolveClaudeExecutionEngineForRun(
   input: ClaudeEngineResolutionInput,
 ): Promise<ClaudeEngineSelection> {
   const selection = normalizeEngine(input.config.engine);
+  const filesystemScope = parseLocalProcessFilesystemScope(input.config.filesystemScope);
+  const networkScope = parseLocalProcessNetworkScope(input.config.networkScope);
+  if (filesystemScope || networkScope) {
+    if (selection.explicit && selection.engine === "acp") {
+      throw new Error("Local filesystem/network confinement requires the Claude CLI engine; ACP confinement is not supported.");
+    }
+    return {
+      engine: "cli",
+      explicit: selection.explicit,
+      ...(!selection.explicit
+        ? { fallbackReason: "Local filesystem/network scope requires spawn-level confinement in the CLI lane." }
+        : {}),
+    };
+  }
   if (selection.explicit || selection.engine !== "acp") return selection;
 
   const fallbackReason = await defaultClaudeAcpFallbackReason(input);
@@ -107,8 +130,45 @@ export function buildClaudeAcpConfig(config: Record<string, unknown>): Record<st
   };
 }
 
+/**
+ * Classify billing the same way the Claude CLI lane does so ACP runs land in
+ * the cost ledger with a real provider/billingType instead of acpx/unknown.
+ * Host env only counts for local execution targets; remote targets see just
+ * the adapter-config env.
+ */
+export function resolveClaudeAcpBillingIdentity(
+  ctx: Pick<AdapterExecutionContext, "config"> &
+    Partial<Pick<AdapterExecutionContext, "executionTarget" | "executionTransport">>,
+): { provider: string; biller: string; billingType: AdapterBillingType } {
+  const envConfig = parseObject(parseObject(ctx.config).env);
+  const target = readAdapterExecutionTarget({
+    executionTarget: ctx.executionTarget,
+    legacyRemoteExecution: ctx.executionTransport?.remoteExecution,
+  });
+  const considerHostEnv = target?.kind !== "remote";
+  const readEnvValue = (key: string): string => {
+    const fromConfig = envConfig[key];
+    if (typeof fromConfig === "string" && fromConfig.trim()) return fromConfig.trim();
+    const fromHost = considerHostEnv ? process.env[key] : undefined;
+    return typeof fromHost === "string" ? fromHost.trim() : "";
+  };
+  const bedrockFlag = readEnvValue("CLAUDE_CODE_USE_BEDROCK");
+  const bedrock = bedrockFlag === "1" || bedrockFlag === "true" || Boolean(readEnvValue("ANTHROPIC_BEDROCK_BASE_URL"));
+  const billingType: AdapterBillingType = bedrock
+    ? "metered_api"
+    : readEnvValue("ANTHROPIC_API_KEY")
+    ? "api"
+    : "subscription";
+  return {
+    provider: "anthropic",
+    biller: bedrock ? "aws_bedrock" : "anthropic",
+    billingType,
+  };
+}
+
 function withClaudeAcpDefaults(options: ClaudeAcpExecutorOptions): AcpxEngineExecutorOptions {
   return {
+    resolveBillingIdentity: resolveClaudeAcpBillingIdentity,
     ...options,
     adapterType: "claude_local",
     moduleDir,
@@ -179,10 +239,30 @@ async function findAncestorBin(startDir: string, binName: string): Promise<strin
   }
 }
 
-async function commandIsResolvable(command: string): Promise<boolean> {
+async function commandIsResolvable(
+  command: string,
+  input?: ClaudeEngineResolutionInput,
+): Promise<boolean> {
   const trimmed = command.trim();
   if (!trimmed) return false;
   if (looksLikeShellCommand(trimmed)) return true;
+  const target = readAdapterExecutionTarget({
+    executionTarget: input?.executionTarget,
+    legacyRemoteExecution: input?.executionTransport?.remoteExecution,
+  });
+  if (target?.kind === "remote") {
+    try {
+      await ensureAdapterExecutionTargetCommandResolvable(
+        trimmed,
+        target,
+        resolveAdapterExecutionTargetCwd(target, asString(input?.config.cwd, ""), process.cwd()),
+        process.env,
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  }
   if (path.isAbsolute(trimmed) || hasPathSeparator(trimmed)) return pathExists(trimmed);
   return (await findCommandOnPath(trimmed)) !== null;
 }
@@ -197,6 +277,22 @@ async function resolveClaudeAcpCommand(config: Record<string, unknown>): Promise
   );
 }
 
+function sandboxTargetHasProcessSessionBridge(
+  target: ReturnType<typeof readAdapterExecutionTarget>,
+): boolean {
+  return target?.kind === "remote" && target.transport === "sandbox" && Boolean(target.runner);
+}
+
+async function resolveClaudeAcpCommandForTarget(
+  config: Record<string, unknown>,
+  target: ReturnType<typeof readAdapterExecutionTarget>,
+): Promise<string> {
+  const configured = firstNonEmptyString(config.agentCommand, config.acpAgentCommand);
+  if (configured) return configured;
+  if (target?.kind === "remote") return "claude-agent-acp";
+  return resolveClaudeAcpCommand(config);
+}
+
 async function defaultClaudeAcpFallbackReason(
   input: ClaudeEngineResolutionInput,
 ): Promise<string | null> {
@@ -204,14 +300,17 @@ async function defaultClaudeAcpFallbackReason(
     executionTarget: input.executionTarget,
     legacyRemoteExecution: input.executionTransport?.remoteExecution,
   });
-  if (target?.kind === "remote") {
-    return "Claude ACP currently supports only the local Paperclip host, but this run targets a remote environment.";
+  if (target?.kind === "remote" && !sandboxTargetHasProcessSessionBridge(target)) {
+    if (target.transport === "sandbox") {
+      return "Claude ACP requires a bidirectional remote process target; this sandbox exposes only one-shot command execution.";
+    }
+    return "Claude ACP supports sandbox remote targets only; this run targets a non-sandbox remote environment.";
   }
   if (!nodeVersionMeetsClaudeAcpMinimum()) {
     return `Node ${process.version} does not satisfy Claude ACP's Node >=${MIN_ACP_NODE_VERSION} prerequisite.`;
   }
-  const command = await resolveClaudeAcpCommand(input.config);
-  if (!(await commandIsResolvable(command))) {
+  const command = await resolveClaudeAcpCommandForTarget(input.config, target);
+  if (!(await commandIsResolvable(command, input))) {
     return `Claude ACP server command is not available: ${command}.`;
   }
   return null;
@@ -244,10 +343,10 @@ export async function testClaudeAcpEnvironment(
 
   if (targetIsRemote) {
     checks.push({
-      code: "claude_acp_remote_target_unsupported",
-      level: "error",
-      message: "Claude ACP currently runs on the local Paperclip host and cannot target a remote execution environment.",
-      hint: "Use engine=cli for remote or sandbox Claude runs.",
+      code: "claude_acp_remote_target",
+      level: "info",
+      message: "Claude ACP will run against the remote execution environment.",
+      hint: "Remote ACP requires a bidirectional process target such as SSH or Paperclip's sandbox process-session bridge.",
     });
   }
 
@@ -279,8 +378,11 @@ export async function testClaudeAcpEnvironment(
       : `Run Claude ACP with Node >=${MIN_ACP_NODE_VERSION} or switch engine=cli.`,
   });
 
-  const command = await resolveClaudeAcpCommand(config);
-  const commandResolvable = await commandIsResolvable(command);
+  const command = await resolveClaudeAcpCommandForTarget(config, target);
+  const commandResolvable = await commandIsResolvable(command, {
+    config,
+    executionTarget: ctx.executionTarget,
+  });
   checks.push({
     code: commandResolvable ? "claude_acp_command_resolvable" : "claude_acp_command_missing",
     level: commandResolvable ? "info" : "error",

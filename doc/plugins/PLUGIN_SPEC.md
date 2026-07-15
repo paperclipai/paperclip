@@ -556,11 +556,12 @@ Returns:
 
 ### 13.4 `configChanged`
 
-Called when the operator updates the plugin's instance config at runtime.
+Called when the operator updates a plugin config for a specific company at runtime.
 
 Input includes:
 
 - new resolved config
+- `companyId` for the company-scoped config row
 
 If the worker implements this method, it applies the new config without restarting. If the worker does not implement this method, the host restarts the worker process with the new config (graceful shutdown then restart).
 
@@ -731,7 +732,10 @@ export { z } from "zod";
 export interface PluginContext {
   manifest: PaperclipPluginManifestV1;
   config: {
-    get(): Promise<Record<string, unknown>>;
+    get(companyId: string): Promise<Record<string, unknown>>;
+  };
+  secrets: {
+    resolve(secretRef: { type: "secret_ref"; secretId: string; version?: number | "latest" }, options: { companyId: string; configPath?: string }): Promise<string>;
   };
   events: {
     on(name: string, fn: (event: unknown) => Promise<void>): void;
@@ -1215,14 +1219,14 @@ The `@paperclipai/plugin-sdk/ui` subpath should also export an `ErrorBoundary` c
 
 ## 19.8 Plugin Settings UI
 
-Each plugin that declares an `instanceConfigSchema` in its manifest gets an auto-generated settings form at `/settings/plugins/:pluginId`. The host renders the form from the JSON Schema.
+Each plugin that declares an `instanceConfigSchema` in its manifest gets an auto-generated company-scoped settings form at `/settings/plugins/:pluginId`. The host renders the form from the JSON Schema for the selected company.
 
 The auto-generated form supports:
 
 - text inputs, number inputs, toggles, select dropdowns derived from schema types and enums
 - nested objects rendered as fieldsets
 - arrays rendered as repeatable field groups with add/remove controls
-- secret ref fields: any schema property annotated with `"format": "secret-ref"` renders as a secret picker that resolves through the Paperclip secret provider system rather than a plain text input
+- secret ref fields: any schema property annotated with `"format": "secret-ref"` renders as a secret picker that stores the shared `{ type: "secret_ref", secretId, version? }` object shape and resolves through the Paperclip secret provider system rather than a plain text input
 - validation messages derived from schema constraints (`required`, `minLength`, `pattern`, `minimum`, etc.)
 - a "Test Connection" action if the plugin declares a `validateConfig` RPC method — the host calls it and displays the result inline
 
@@ -1283,11 +1287,16 @@ Indexes:
 ### `plugin_config`
 
 - `id` uuid pk
-- `plugin_id` uuid fk `plugins.id` unique not null
+- `plugin_id` uuid fk `plugins.id` not null
+- `company_id` uuid fk `companies.id` not null
 - `config_json` jsonb not null
 - `created_at` timestamptz not null
 - `updated_at` timestamptz not null
 - `last_error` text null
+
+Constraints:
+
+- unique `(plugin_id, company_id)`
 
 ### `plugin_state`
 
@@ -1425,10 +1434,11 @@ Plugin config must never persist raw secret values.
 
 Rules:
 
-1. Plugin config stores secret refs only.
-2. Secret refs resolve through the existing Paperclip secret provider system.
-3. Plugin workers receive resolved secrets only at execution time.
-4. Secret values must never be written to:
+1. Plugin config stores shared `{ type: "secret_ref", secretId, version? }` refs only. Legacy UUID string refs are rejected.
+2. Save-time validation rejects refs to secrets outside the selected company.
+3. Secret refs resolve through the existing Paperclip secret provider system using explicit `companyId`.
+4. Plugin workers receive resolved secrets only at execution time, and resolution writes `secret_access_events` with `consumerType: "plugin_worker"`.
+5. Secret values must never be written to:
    - plugin config JSON
    - activity logs
    - webhook delivery rows
@@ -1560,12 +1570,13 @@ When a plugin is upgraded at runtime:
 
 #### 25.4.4 Hot Config Change
 
-When an operator updates a plugin's instance config at runtime:
+When an operator updates a plugin config for a company at runtime:
 
-1. The host writes the new config to `plugin_config`.
-2. The host sends a `configChanged` notification to the running worker via IPC.
-3. The worker receives the new config through `ctx.config` and applies it without restarting. If the plugin needs to re-initialize connections (e.g. a new API token), it does so internally.
-4. If the plugin does not handle `configChanged`, the host restarts the worker process with the new config (graceful shutdown then restart).
+1. The host validates that any shared `{ type: "secret_ref", secretId, version? }` refs belong to that company, then writes the new config to `plugin_config`.
+2. The host syncs plugin secret bindings in `company_secret_bindings` under `(company_id, target_type = "plugin", target_id = plugin_id)`.
+3. The host sends a `configChanged` notification with `companyId` to the running worker via IPC.
+4. The worker reads the config through `ctx.config.get(companyId)` and applies it without restarting. If the plugin needs to re-initialize connections (e.g. a new API token), it does so internally.
+5. If the plugin does not handle `configChanged`, the host restarts the worker process; the worker must still request company-scoped config explicitly.
 
 #### 25.4.5 Frontend Cache Invalidation
 

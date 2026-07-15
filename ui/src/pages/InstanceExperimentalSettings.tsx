@@ -7,7 +7,7 @@ import type {
   PatchInstanceExperimentalSettings,
 } from "@paperclipai/shared";
 import { instanceSettingsApi } from "@/api/instanceSettings";
-import { isWorktreeRuntime } from "../lib/worktree-branding";
+import { getWorktreeInstanceId, isWorktreeRuntime } from "../lib/worktree-branding";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
@@ -32,6 +32,43 @@ function issueHref(identifier: string | null, issueId: string) {
 
 function formatRecoveryState(state: string) {
   return state.replace(/_/g, " ");
+}
+
+type WorktreeRunExecutionDisplayState =
+  | { kind: "off" }
+  | { kind: "armed"; activatedAt: string }
+  | { kind: "fail_closed"; reason: "missing_cutoff" | "missing_instance_id" | "instance_mismatch" };
+
+/**
+ * Mirror of the server's `resolveWorktreeRunExecutionActivation` fail-closed
+ * ladder (server/src/services/instance-settings.ts) so the card never claims a
+ * copied/legacy row is arming execution. The derived fields are display-only —
+ * the PATCH the toggle sends still writes just the boolean.
+ */
+function resolveWorktreeRunExecutionDisplayState(
+  settings:
+    | Pick<
+        InstanceExperimentalSettings,
+        | "enableWorktreeRunExecution"
+        | "worktreeRunExecutionActivatedAt"
+        | "worktreeRunExecutionActivationInstanceId"
+      >
+    | undefined,
+  currentInstanceId: string | null,
+): WorktreeRunExecutionDisplayState {
+  if (settings?.enableWorktreeRunExecution !== true) return { kind: "off" };
+  if (!settings.worktreeRunExecutionActivatedAt) return { kind: "fail_closed", reason: "missing_cutoff" };
+  if (!currentInstanceId) return { kind: "fail_closed", reason: "missing_instance_id" };
+  if (settings.worktreeRunExecutionActivationInstanceId !== currentInstanceId) {
+    return { kind: "fail_closed", reason: "instance_mismatch" };
+  }
+  return { kind: "armed", activatedAt: settings.worktreeRunExecutionActivatedAt };
+}
+
+function formatActivationTimestamp(iso: string): string {
+  const parsed = new Date(iso);
+  if (Number.isNaN(parsed.getTime())) return iso;
+  return parsed.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 }
 
 // PAP-11233: keep Conference Room code intact, but hide the user-facing opt-in for now.
@@ -133,6 +170,11 @@ export function InstanceExperimentalSettings() {
   const [previewDialogOpen, setPreviewDialogOpen] = useState(false);
   const [pendingPreview, setPendingPreview] = useState<IssueGraphLivenessAutoRecoveryPreview | null>(null);
 
+  function closeRecoveryPreview() {
+    setPreviewDialogOpen(false);
+    setPendingPreview(null);
+  }
+
   useEffect(() => {
     setBreadcrumbs([
       { label: "Settings", href: "/company/settings" },
@@ -202,7 +244,7 @@ export function InstanceExperimentalSettings() {
       instanceSettingsApi.runIssueGraphLivenessAutoRecovery({ lookbackHours }),
     onSuccess: async () => {
       setActionError(null);
-      setPreviewDialogOpen(false);
+      closeRecoveryPreview();
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.instance.experimentalSettings }),
         queryClient.invalidateQueries({ queryKey: queryKeys.health }),
@@ -236,8 +278,13 @@ export function InstanceExperimentalSettings() {
 
   const inWorktree = isWorktreeRuntime();
   const enableWorktreeRunExecution = experimentalQuery.data?.enableWorktreeRunExecution === true;
+  const worktreeRunExecutionState = resolveWorktreeRunExecutionDisplayState(
+    experimentalQuery.data,
+    getWorktreeInstanceId(),
+  );
   const enableEnvironments = experimentalQuery.data?.enableEnvironments === true;
   const enableIsolatedWorkspaces = experimentalQuery.data?.enableIsolatedWorkspaces === true;
+  const enableApps = experimentalQuery.data?.enableApps === true;
   // Streamlined left navigation is now the standard sidebar (PAP-12472); the
   // experimental opt-out was retired, so it no longer surfaces a toggle here.
   const enableConferenceRoomChat = experimentalQuery.data?.enableConferenceRoomChat === true;
@@ -249,9 +296,11 @@ export function InstanceExperimentalSettings() {
   const enableCloudSync = experimentalQuery.data?.enableCloudSync === true;
   const enableExternalObjects = experimentalQuery.data?.enableExternalObjects === true;
   const enableBuiltInAgents = experimentalQuery.data?.enableBuiltInAgents === true;
+  const enableDecisions = experimentalQuery.data?.enableDecisions === true;
   const enableGoalsSidebarLink = experimentalQuery.data?.enableGoalsSidebarLink === true;
   const enableCases = experimentalQuery.data?.enableCases === true;
   const enableServerInfoDebugView = experimentalQuery.data?.enableServerInfoDebugView === true;
+  const enableSmokeLab = experimentalQuery.data?.enableSmokeLab === true;
   const autoRestartDevServerWhenIdle = experimentalQuery.data?.autoRestartDevServerWhenIdle === true;
   const enableIssueGraphLivenessAutoRecovery =
     experimentalQuery.data?.enableIssueGraphLivenessAutoRecovery === true;
@@ -268,21 +317,22 @@ export function InstanceExperimentalSettings() {
       setActionError("Lookback hours must be a whole number from 1 to 720.");
       return;
     }
+    closeRecoveryPreview();
     previewMutation.mutate(parsedLookbackHours);
   }
 
   function enableOnly() {
     if (!lookbackHoursIsValid) return;
+    closeRecoveryPreview();
     toggleMutation.mutate({
       enableIssueGraphLivenessAutoRecovery: true,
       issueGraphLivenessAutoRecoveryLookbackHours: parsedLookbackHours,
-    }, {
-      onSuccess: () => setPreviewDialogOpen(false),
     });
   }
 
   function enableAndRun() {
     if (!lookbackHoursIsValid) return;
+    closeRecoveryPreview();
     toggleMutation.mutate({
       enableIssueGraphLivenessAutoRecovery: true,
       issueGraphLivenessAutoRecoveryLookbackHours: parsedLookbackHours,
@@ -327,26 +377,76 @@ export function InstanceExperimentalSettings() {
 
       {inWorktree ? (
         <Card className="block p-5">
-          <div className="flex items-start justify-between gap-4">
-            <div className="space-y-1.5">
-              <h2 className="text-sm font-semibold">Run tasks in this worktree</h2>
-              <p className="max-w-2xl text-sm text-muted-foreground">
-                This is an isolated git-worktree preview instance. By default it does not execute agent runs; tasks stay
-                queued so previews never self-run work. Turn this on to let the heartbeat scheduler execute runs here.
-                This setting only affects this worktree instance and is ignored outside a worktree.
-              </p>
+          <div className="flex flex-col gap-4">
+            <div className="flex items-start justify-between gap-4">
+              <div className="space-y-1.5">
+                <h2 className="text-sm font-semibold">Run tasks in this worktree</h2>
+                <p className="max-w-2xl text-sm text-muted-foreground">
+                  This is an isolated git-worktree preview instance. Turn this on to let the scheduler execute runs
+                  here. Only tasks created after enabling will run automatically — copied/pre-existing tasks stay
+                  parked. Toggling off and on resets the cutoff.
+                </p>
+              </div>
+              <ToggleSwitch
+                checked={enableWorktreeRunExecution}
+                onCheckedChange={(checked) =>
+                  toggleMutation.mutate({ enableWorktreeRunExecution: checked })
+                }
+                disabled={toggleMutation.isPending}
+                aria-label="Toggle worktree run execution setting"
+              />
             </div>
-            <ToggleSwitch
-              checked={enableWorktreeRunExecution}
-              onCheckedChange={(checked) =>
-                toggleMutation.mutate({ enableWorktreeRunExecution: checked })
-              }
-              disabled={toggleMutation.isPending}
-              aria-label="Toggle worktree run execution setting"
-            />
+
+            {worktreeRunExecutionState.kind === "armed" ? (
+              <div className="flex items-center gap-2 rounded-md border border-emerald-500/30 bg-emerald-500/5 px-3 py-2 text-sm text-foreground">
+                <Play className="h-4 w-4 shrink-0 text-emerald-600" />
+                <span>
+                  Running tasks created after{" "}
+                  <span className="font-medium">
+                    {formatActivationTimestamp(worktreeRunExecutionState.activatedAt)}
+                  </span>
+                  .
+                </span>
+              </div>
+            ) : null}
+
+            {worktreeRunExecutionState.kind === "fail_closed" ? (
+              <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-sm">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-700" />
+                <div className="space-y-0.5">
+                  <p className="font-medium text-foreground">Execution is suppressed — effectively off.</p>
+                  <p className="text-muted-foreground">
+                    {worktreeRunExecutionState.reason === "instance_mismatch"
+                      ? "This setting was armed in a different instance and copied here, so no tasks run automatically."
+                      : "This setting is missing its activation cutoff, so no tasks run automatically."}{" "}
+                    Toggle it off and back on to arm execution for tasks created here.
+                  </p>
+                </div>
+              </div>
+            ) : null}
           </div>
         </Card>
       ) : null}
+
+      <Card className="block p-5">
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-1.5">
+            <div className="flex items-center gap-2">
+              <h2 className="text-sm font-semibold">Apps</h2>
+              <Badge variant="secondary">Experimental</Badge>
+            </div>
+            <p className="max-w-2xl text-sm text-muted-foreground">
+              Show the Apps navigation and allow access to app connections, gateways, and advanced app tooling.
+            </p>
+          </div>
+          <ToggleSwitch
+            checked={enableApps}
+            onCheckedChange={() => toggleMutation.mutate({ enableApps: !enableApps })}
+            disabled={toggleMutation.isPending}
+            aria-label="Toggle apps experimental setting"
+          />
+        </div>
+      </Card>
 
       <Card className="block p-5">
         <div className="flex items-start justify-between gap-4">
@@ -443,6 +543,24 @@ export function InstanceExperimentalSettings() {
             onCheckedChange={() => toggleMutation.mutate({ enableExternalObjects: !enableExternalObjects })}
             disabled={toggleMutation.isPending}
             aria-label="Toggle external objects experimental setting"
+          />
+        </div>
+      </Card>
+
+      <Card className="block p-5">
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-1.5">
+            <h2 className="text-sm font-semibold">Decisions</h2>
+            <p className="max-w-2xl text-sm text-muted-foreground">
+              Show the Decisions item in the main sidebar — the attention home that surfaces the tasks awaiting your
+              input — while the surface is still being evaluated.
+            </p>
+          </div>
+          <ToggleSwitch
+            checked={enableDecisions}
+            onCheckedChange={() => toggleMutation.mutate({ enableDecisions: !enableDecisions })}
+            disabled={toggleMutation.isPending}
+            aria-label="Toggle decisions experimental setting"
           />
         </div>
       </Card>
@@ -593,6 +711,25 @@ export function InstanceExperimentalSettings() {
       <Card className="block p-5">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1.5">
+            <h2 className="text-sm font-semibold">Smoke Lab</h2>
+            <p className="max-w-2xl text-sm text-muted-foreground">
+              Add a "Smoke Lab" tab under Apps → Developer and an "Integration smoke" card on the
+              dashboard for exercising every integration path against deterministic local fixtures
+              (fake OAuth provider + loopback MCP servers). Private (non-public) deployments only.
+            </p>
+          </div>
+          <ToggleSwitch
+            checked={enableSmokeLab}
+            onCheckedChange={() => toggleMutation.mutate({ enableSmokeLab: !enableSmokeLab })}
+            disabled={toggleMutation.isPending}
+            aria-label="Toggle smoke lab experimental setting"
+          />
+        </div>
+      </Card>
+
+      <Card className="block p-5">
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-1.5">
             <h2 className="text-sm font-semibold">Auto-Restart Dev Server When Idle</h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
               In `pnpm dev:once`, wait for all queued and running local agent runs to finish, then restart the server
@@ -694,14 +831,20 @@ export function InstanceExperimentalSettings() {
         </div>
       </Card>
 
-      <RecoveryPreviewDialog
-        open={previewDialogOpen}
-        onOpenChange={setPreviewDialogOpen}
-        preview={pendingPreview}
-        onEnableOnly={enableOnly}
-        onEnableAndRun={enableAndRun}
-        isPending={recoveryActionPending}
-      />
+      {previewDialogOpen ? (
+        <RecoveryPreviewDialog
+          open
+          onOpenChange={(open) => {
+            if (!open) {
+              closeRecoveryPreview();
+            }
+          }}
+          preview={pendingPreview}
+          onEnableOnly={enableOnly}
+          onEnableAndRun={enableAndRun}
+          isPending={recoveryActionPending}
+        />
+      ) : null}
     </div>
   );
 }

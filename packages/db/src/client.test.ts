@@ -5,6 +5,7 @@ import postgres from "postgres";
 import {
   applyPendingMigrations,
   inspectMigrations,
+  resetPostgresDatabase,
 } from "./client.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -87,6 +88,34 @@ if (!embeddedPostgresSupport.supported) {
     `Skipping embedded Postgres migration tests on this host: ${embeddedPostgresSupport.reason ?? "unsupported environment"}`,
   );
 }
+
+describeEmbeddedPostgres("resetPostgresDatabase", () => {
+  it("recreates an existing database so stale tables are removed", async () => {
+    const connectionString = await createTempDatabase();
+    const adminUrl = new URL(connectionString);
+    const databaseName = adminUrl.pathname.replace(/^\//, "");
+    adminUrl.pathname = "/postgres";
+
+    const setupSql = postgres(connectionString, { max: 1, onnotice: () => {} });
+    try {
+      await setupSql.unsafe(`CREATE TABLE stale_reseed_target_only (id integer PRIMARY KEY)`);
+    } finally {
+      await setupSql.end();
+    }
+
+    await resetPostgresDatabase(adminUrl.toString(), databaseName);
+
+    const verifySql = postgres(connectionString, { max: 1, onnotice: () => {} });
+    try {
+      const rows = await verifySql.unsafe<{ stale_table: string | null }[]>(
+        `SELECT to_regclass('public.stale_reseed_target_only')::text AS stale_table`,
+      );
+      expect(rows[0]?.stale_table).toBeNull();
+    } finally {
+      await verifySql.end();
+    }
+  });
+});
 
 describeEmbeddedPostgres("applyPendingMigrations", () => {
   it("rejects unallowlisted migration backfills that bump updated_at on user-visible tables", async () => {

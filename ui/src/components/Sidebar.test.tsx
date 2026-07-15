@@ -12,6 +12,10 @@ const mockHeartbeatsApi = vi.hoisted(() => ({
   liveRunsForCompany: vi.fn(),
 }));
 
+const mockAttentionApi = vi.hoisted(() => ({
+  list: vi.fn(),
+}));
+
 const mockInstanceSettingsApi = vi.hoisted(() => ({
   getExperimental: vi.fn(),
 }));
@@ -64,6 +68,10 @@ vi.mock("../context/SidebarContext", () => ({
 
 vi.mock("../api/heartbeats", () => ({
   heartbeatsApi: mockHeartbeatsApi,
+}));
+
+vi.mock("../api/attention", () => ({
+  attentionApi: mockAttentionApi,
 }));
 
 vi.mock("../api/instanceSettings", () => ({
@@ -139,6 +147,7 @@ describe("Sidebar", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([]);
+    mockAttentionApi.list.mockResolvedValue({ items: [] });
     mockSidebar.isMobile = false;
     mockSidebar.collapsed = false;
     mockSidebar.peeking = false;
@@ -289,6 +298,17 @@ describe("Sidebar", () => {
     });
   });
 
+  it("does not poll attention until Decisions is enabled", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableDecisions: false });
+    const root = await renderSidebar();
+
+    expect(mockAttentionApi.list).not.toHaveBeenCalled();
+
+    flushSync(() => {
+      root.unmount();
+    });
+  });
+
   it("shows Skills directly below Artifacts in Work", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
     const root = await renderSidebar();
@@ -429,6 +449,27 @@ describe("Sidebar", () => {
 
     flushSync(() => {
       root.unmount();
+    });
+  });
+
+  it("hides the Apps nav item unless experimental apps are enabled", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableApps: false });
+    const disabledRoot = await renderSidebar();
+
+    expect([...container.querySelectorAll("a")].some((anchor) => anchor.textContent === "Apps")).toBe(false);
+
+    flushSync(() => {
+      disabledRoot.unmount();
+    });
+
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableApps: true });
+    const enabledRoot = await renderSidebar();
+
+    const link = [...container.querySelectorAll("a")].find((anchor) => anchor.textContent === "Apps");
+    expect(link?.getAttribute("href")).toBe("/apps");
+
+    flushSync(() => {
+      enabledRoot.unmount();
     });
   });
 

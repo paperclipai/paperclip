@@ -113,7 +113,7 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
-  });
+  }, 30_000);
 
   async function enableAutoRecovery() {
     await instanceSettingsService(db).updateExperimental({
@@ -1248,5 +1248,15 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
       .from(issueRelations)
       .where(eq(issueRelations.relatedIssueId, blockedIssueId));
     expect(blockers.some((row) => row.blockerIssueId === escalations[0]!.id)).toBe(false);
+  });
+
+  it("handles an armed cutoff when no liveness findings exist", async () => {
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileIssueGraphLiveness({
+      issueCreatedAtGte: new Date(),
+    });
+
+    expect(result.findings).toBe(0);
   });
 });

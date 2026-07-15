@@ -2566,6 +2566,12 @@ export function Inbox() {
                               >
                                 <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", isExpanded && "rotate-90")} />
                               </button>
+                            ) : (isUnread || isFading) ? (
+                              // Unread rows already carry the leading mark-read
+                              // dot (IssueRow, order-first) in the chevron
+                              // column, so skip the spacer — otherwise the dot
+                              // and this spacer would double-indent the status.
+                              null
                             ) : (
                               <span className="hidden w-4 shrink-0 sm:block" />
                             )

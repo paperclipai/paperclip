@@ -17,6 +17,8 @@ export type {
   AdapterExecutionContext,
   AdapterExecutionResult,
   AdapterInvocationMeta,
+  AdapterRuntimeMcpServer,
+  AdapterRuntimeMcpAccess,
   AdapterModelProfileDefinition,
   AdapterEnvironmentCheckLevel,
   AdapterEnvironmentCheck,

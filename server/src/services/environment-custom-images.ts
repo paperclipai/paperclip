@@ -38,9 +38,12 @@ import {
 } from "./plugin-environment-driver.js";
 import { environmentService } from "./environments.js";
 import {
+  ENVIRONMENT_CUSTOM_IMAGE_CONFIG_FINGERPRINT_EXCLUDED_PATHS,
+  classifyEnvironmentCustomImageConfigChange,
   fingerprintEnvironmentSandboxProviderConfig,
   ENVIRONMENT_CUSTOM_IMAGE_RUNTIME_CONFIG_BINDING_METADATA_KEY,
   defaultEnvironmentCustomImageRuntimeConfigBinding,
+  environmentCustomImageTemplateMatchesBaseConfig,
   normalizeEnvironmentCustomImageRuntimeConfigBinding,
   environmentCustomImageTemplateFromRow,
   readEnvironmentCustomImageTemplateKind as readTemplateKind,
@@ -57,9 +60,21 @@ type SetupSessionRow = typeof environmentCustomImageSetupSessions.$inferSelect;
 
 export interface EnvironmentCustomImageOverview {
   activeTemplate: EnvironmentCustomImageTemplate | null;
+  /**
+   * Whether the active template's captured fingerprint still matches the
+   * environment's saved config. `false` means runs silently fall back to the
+   * base image until the template is re-captured. `null` when unknown (no
+   * active template, or the config could not be evaluated).
+   */
+  activeTemplateMatchesConfig: boolean | null;
   activeSession: EnvironmentCustomImageSetupSession | null;
   latestSession: EnvironmentCustomImageSetupSession | null;
 }
+
+export type EnvironmentCustomImageReconciliation =
+  | { action: "none" }
+  | { action: "relinked"; template: EnvironmentCustomImageTemplate }
+  | { action: "detached"; template: EnvironmentCustomImageTemplate };
 
 export interface EnvironmentCustomImageSetupSessionResult {
   session: EnvironmentCustomImageSetupSession;
@@ -595,17 +610,44 @@ export function environmentCustomImageService(
     }
   }
 
+  async function templateMatchesEnvironmentConfig(
+    environment: Environment,
+    template: EnvironmentCustomImageTemplate,
+  ): Promise<boolean | null> {
+    try {
+      const parsed = parseEnvironmentDriverConfig(environment);
+      if (parsed.driver !== "sandbox") return false;
+      if (parsed.config.provider !== template.provider) return false;
+      return environmentCustomImageTemplateMatchesBaseConfig({
+        template,
+        baseConfig: parsed.config,
+        secretRefExcludePaths: parsed.config.provider === "fake"
+          ? []
+          : await resolveSandboxProviderSecretRefPaths(db, parsed.config.provider),
+      });
+    } catch {
+      return null;
+    }
+  }
+
   return {
     getOverview: async (input: {
       environmentId: string;
     }): Promise<EnvironmentCustomImageOverview> => {
-      await requireEnvironment(input.environmentId);
+      const environment = await requireEnvironment(input.environmentId);
       const [activeTemplate, activeSession, latestSession] = await Promise.all([
         resolveActiveTemplate(db, input),
         getActiveSetupSession(input),
         getLatestSetupSession(input),
       ]);
-      return { activeTemplate, activeSession, latestSession };
+      return {
+        activeTemplate,
+        activeTemplateMatchesConfig: activeTemplate
+          ? await templateMatchesEnvironmentConfig(environment, activeTemplate)
+          : null,
+        activeSession,
+        latestSession,
+      };
     },
 
     getActiveTemplate: async (input: {
@@ -763,7 +805,10 @@ export function environmentCustomImageService(
         const parsed = parseEnvironmentDriverConfig(environment);
         const baseFingerprint = parsed.driver === "sandbox"
           ? fingerprintEnvironmentSandboxProviderConfig(parsed.config, {
-              excludePaths: await resolveSandboxProviderSecretRefPaths(db, parsed.config.provider),
+              excludePaths: [
+                ...ENVIRONMENT_CUSTOM_IMAGE_CONFIG_FINGERPRINT_EXCLUDED_PATHS,
+                ...await resolveSandboxProviderSecretRefPaths(db, parsed.config.provider),
+              ],
             })
           : null;
         const provider = await resolveSetupProvider({
@@ -874,6 +919,84 @@ export function environmentCustomImageService(
       const session = await getSessionById(input.sessionId);
       if (!session) throw notFound("Environment customImage setup session not found");
       return await cancelSession(session, input.reason ?? "cancelled", "cancelled");
+    },
+
+    /**
+     * Keeps the active captured template consistent with a just-saved config
+     * change. Changes that cannot affect the captured contents (for example a
+     * region hint) re-stamp the template's source fingerprint so it keeps
+     * applying; boot-source or provider-identity changes report `detached` so
+     * callers can tell the user a fresh capture is required. Never throws for
+     * unparseable configs; the save itself must not fail on reconciliation.
+     */
+    reconcileActiveTemplateForConfigChange: async (input: {
+      environmentId: string;
+      previous: Pick<Environment, "driver" | "config">;
+      next: Pick<Environment, "driver" | "config">;
+      now?: Date;
+    }): Promise<EnvironmentCustomImageReconciliation> => {
+      let previousParsed;
+      let nextParsed;
+      try {
+        previousParsed = parseEnvironmentDriverConfig(input.previous);
+        nextParsed = parseEnvironmentDriverConfig(input.next);
+      } catch {
+        return { action: "none" };
+      }
+      if (previousParsed.driver !== "sandbox") return { action: "none" };
+      const template = await resolveActiveTemplate(db, {
+        environmentId: input.environmentId,
+        provider: previousParsed.config.provider,
+      });
+      if (!template?.templateRef) return { action: "none" };
+      const secretRefExcludePaths = previousParsed.config.provider === "fake"
+        ? []
+        : [...await resolveSandboxProviderSecretRefPaths(db, previousParsed.config.provider)];
+      if (!environmentCustomImageTemplateMatchesBaseConfig({
+        template,
+        baseConfig: previousParsed.config,
+        secretRefExcludePaths,
+      })) {
+        // Already detached before this save; leave it alone.
+        return { action: "none" };
+      }
+      if (nextParsed.driver !== "sandbox" || nextParsed.config.provider !== template.provider) {
+        return { action: "detached", template };
+      }
+      const resolvedDriver = await resolvePluginSandboxProviderDriverByKey({
+        db,
+        driverKey: template.provider,
+      });
+      if (!resolvedDriver) {
+        // Without driver metadata the change cannot be classified safely.
+        return { action: "detached", template };
+      }
+      const changeKind = classifyEnvironmentCustomImageConfigChange({
+        template,
+        previousConfig: previousParsed.config,
+        nextConfig: nextParsed.config,
+        secretRefExcludePaths,
+        templateIdentityPaths: resolvedDriver.driver.templateIdentityPaths ?? [],
+      });
+      if (changeKind === "none") return { action: "none" };
+      if (changeKind === "breaking") return { action: "detached", template };
+      const now = input.now ?? new Date();
+      const nextFingerprint = fingerprintEnvironmentSandboxProviderConfig(nextParsed.config, {
+        excludePaths: [
+          ...ENVIRONMENT_CUSTOM_IMAGE_CONFIG_FINGERPRINT_EXCLUDED_PATHS,
+          ...secretRefExcludePaths,
+        ],
+      });
+      const row = await db
+        .update(environmentCustomImageTemplates)
+        .set({ sourceEnvironmentConfigFingerprint: nextFingerprint, updatedAt: now })
+        .where(eq(environmentCustomImageTemplates.id, template.id))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      return {
+        action: "relinked",
+        template: row ? environmentCustomImageTemplateFromRow(row) : template,
+      };
     },
 
     rollbackTemplate: async (input: {

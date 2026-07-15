@@ -89,6 +89,9 @@ describe("instance settings routes", () => {
         enableIssueGraphLivenessAutoRecovery: true,
         enableWorkspaceBranchReconcileForward: true,
         enableWorkspaceDirtyQuarantineRepair: true,
+        enableWorktreeRunExecution: false,
+        worktreeRunExecutionActivatedAt: null,
+        worktreeRunExecutionActivationInstanceId: null,
         issueGraphLivenessAutoRecoveryLookbackHours: 24,
       },
       createdAt: "2026-06-20T00:00:00.000Z",
@@ -114,6 +117,9 @@ describe("instance settings routes", () => {
       enableIssueGraphLivenessAutoRecovery: true,
       enableWorkspaceBranchReconcileForward: true,
       enableWorkspaceDirtyQuarantineRepair: true,
+      enableWorktreeRunExecution: false,
+      worktreeRunExecutionActivatedAt: null,
+      worktreeRunExecutionActivationInstanceId: null,
       issueGraphLivenessAutoRecoveryLookbackHours: 24,
     });
     mockInstanceSettingsService.update.mockResolvedValue({
@@ -138,6 +144,9 @@ describe("instance settings routes", () => {
         enableIssueGraphLivenessAutoRecovery: true,
         enableWorkspaceBranchReconcileForward: true,
         enableWorkspaceDirtyQuarantineRepair: true,
+        enableWorktreeRunExecution: false,
+        worktreeRunExecutionActivatedAt: null,
+        worktreeRunExecutionActivationInstanceId: null,
         issueGraphLivenessAutoRecoveryLookbackHours: 24,
       },
       createdAt: "2026-06-20T00:00:00.000Z",
@@ -168,6 +177,9 @@ describe("instance settings routes", () => {
         enableIssueGraphLivenessAutoRecovery: true,
         enableWorkspaceBranchReconcileForward: true,
         enableWorkspaceDirtyQuarantineRepair: true,
+        enableWorktreeRunExecution: false,
+        worktreeRunExecutionActivatedAt: null,
+        worktreeRunExecutionActivationInstanceId: null,
         issueGraphLivenessAutoRecoveryLookbackHours: 24,
       },
     });
@@ -226,6 +238,9 @@ describe("instance settings routes", () => {
       enableIssueGraphLivenessAutoRecovery: true,
       enableWorkspaceBranchReconcileForward: true,
       enableWorkspaceDirtyQuarantineRepair: true,
+      enableWorktreeRunExecution: false,
+      worktreeRunExecutionActivatedAt: null,
+      worktreeRunExecutionActivationInstanceId: null,
       issueGraphLivenessAutoRecoveryLookbackHours: 24,
     });
 
@@ -239,6 +254,28 @@ describe("instance settings routes", () => {
     });
     expect(mockLogActivity).toHaveBeenCalledTimes(2);
   }, 10_000);
+
+  it("strips server-managed worktree run execution fields before updating experimental settings", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "local-board",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+
+    await request(app)
+      .patch("/api/instance/settings/experimental")
+      .send({
+        enableWorktreeRunExecution: true,
+        worktreeRunExecutionActivatedAt: "2026-07-10T12:00:00.000Z",
+        worktreeRunExecutionActivationInstanceId: "copied-instance",
+      })
+      .expect(200);
+
+    expect(mockInstanceSettingsService.updateExperimental).toHaveBeenCalledWith({
+      enableWorktreeRunExecution: true,
+    });
+  });
 
   it("allows local board users to read and update the instance default environment", async () => {
     const app = await createApp({
