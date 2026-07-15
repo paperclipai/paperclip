@@ -48,6 +48,22 @@ describe("isClaudeTransientUpstreamError", () => {
     ).toBe(true);
   });
 
+  it("classifies the 'session limit' wording as transient", () => {
+    expect(
+      isClaudeTransientUpstreamError({
+        errorMessage: "You've hit your session limit · resets 3:10pm (America/New_York)",
+      }),
+    ).toBe(true);
+    expect(
+      isClaudeTransientUpstreamError({
+        parsed: {
+          is_error: true,
+          result: "You've hit your session limit · resets 3:10pm (America/New_York)",
+        },
+      }),
+    ).toBe(true);
+  });
+
   it("classifies Anthropic API rate_limit_error and overloaded_error as transient", () => {
     expect(
       isClaudeTransientUpstreamError({
@@ -326,5 +342,29 @@ describe("extractClaudeRetryNotBefore", () => {
     expect(
       extractClaudeRetryNotBefore({ errorMessage: "Overloaded. Try again later." }, new Date()),
     ).toBeNull();
+  });
+
+  it("parses the 'session limit' reset hint with explicit timezone", () => {
+    const now = new Date("2026-07-15T18:00:00.000Z");
+    const extracted = extractClaudeRetryNotBefore(
+      { errorMessage: "You've hit your session limit · resets 3:10pm (America/New_York)" },
+      now,
+    );
+    // 3:10pm America/New_York = 19:10 UTC
+    expect(extracted?.toISOString()).toBe("2026-07-15T19:10:00.000Z");
+  });
+
+  it("parses the session limit reset hint from the parsed result field", () => {
+    const now = new Date("2026-07-15T18:00:00.000Z");
+    const extracted = extractClaudeRetryNotBefore(
+      {
+        parsed: {
+          is_error: true,
+          result: "You've hit your session limit · resets 3:10pm (America/New_York)",
+        },
+      },
+      now,
+    );
+    expect(extracted?.toISOString()).toBe("2026-07-15T19:10:00.000Z");
   });
 });
