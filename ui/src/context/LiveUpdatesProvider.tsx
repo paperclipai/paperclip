@@ -818,6 +818,9 @@ function applyRunLifecycleToCompanyLiveRuns(
       queryKeys.liveRuns(companyId),
       (current: LiveRunForIssue[] | undefined) => removeRunFromList(current, runId),
     );
+    // Always "handled": a terminal run must never be in the live list, so if it
+    // wasn't present there is deliberately nothing to refetch (removeRunFromList
+    // was a no-op and we must not re-add it).
     return true;
   }
 

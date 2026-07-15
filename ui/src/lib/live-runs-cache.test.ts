@@ -49,11 +49,11 @@ describe("patchRunStatusInList", () => {
     expect(next).toBe(list);
   });
 
-  it("no-ops (same content) when status is unchanged", () => {
+  it("returns the same reference (no re-render) when status is unchanged", () => {
     const list = [run("a", "running")];
     const { next, present } = patchRunStatusInList(list, "a", "running");
     expect(present).toBe(true);
-    expect(next?.[0]?.status).toBe("running");
+    expect(next).toBe(list); // unchanged → original reference preserved
   });
 
   it("handles undefined", () => {

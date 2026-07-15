@@ -35,10 +35,15 @@ export function patchRunStatusInList(
 ): { next: LiveRunForIssue[] | undefined; present: boolean } {
   if (!runs) return { next: runs, present: false };
   let present = false;
+  let changed = false;
   const next = runs.map((run) => {
     if (run.id !== runId) return run;
     present = true;
-    return run.status === status ? run : { ...run, status };
+    if (run.status === status) return run;
+    changed = true;
+    return { ...run, status };
   });
-  return { next: present ? next : runs, present };
+  // Preserve the original reference when nothing actually changed (run absent,
+  // or its status already matched) so redundant events don't trigger re-renders.
+  return { next: changed ? next : runs, present };
 }
