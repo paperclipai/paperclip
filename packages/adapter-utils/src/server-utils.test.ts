@@ -11,6 +11,7 @@ import {
   buildRuntimeMountedSkillSnapshot,
   buildInvocationEnvForLogs,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
+  killAllRunningProcesses,
   materializePaperclipSkillCopy,
   refreshPaperclipWorkspaceEnvForExecution,
   renderPaperclipWakePrompt,
@@ -2063,4 +2064,87 @@ describe("appendWithByteCap", () => {
     expect(Buffer.from(output, "utf8").toString("utf8")).toBe(output);
     expect(Buffer.byteLength(output, "utf8")).toBeLessThanOrEqual(7);
   });
+});
+
+describe("killAllRunningProcesses", () => {
+  it.skipIf(process.platform === "win32")(
+    "SIGTERMs all tracked processes and clears the map",
+    async () => {
+      const runIds = [randomUUID(), randomUUID(), randomUUID()];
+      const pids: number[] = [];
+
+      for (const runId of runIds) {
+        const child = spawn(
+          process.execPath,
+          ["-e", "process.stdout.write(String(process.pid));setInterval(()=>{},1000)"],
+          { detached: true, stdio: ["ignore", "pipe", "ignore"] },
+        );
+        const pid = await new Promise<number>((resolvePid, rejectPid) => {
+          child.stdout!.on("data", (d) => resolvePid(Number.parseInt(String(d).trim(), 10)));
+          child.on("error", rejectPid);
+        });
+        pids.push(pid);
+        const processGroupId = child.pid ?? 0;
+        runningProcesses.set(runId, { child, graceSec: 1, processGroupId });
+      }
+
+      expect(runningProcesses.size).toBe(runIds.length);
+      for (const pid of pids) expect(isPidAlive(pid)).toBe(true);
+
+      killAllRunningProcesses("SIGTERM");
+
+      expect(runningProcesses.size).toBe(0);
+      for (const pid of pids) {
+        expect(await waitForPidExit(pid, 2_000)).toBe(true);
+      }
+    },
+  );
+
+  it("is a safe no-op when no processes are tracked", () => {
+    runningProcesses.clear();
+    expect(runningProcesses.size).toBe(0);
+    expect(() => killAllRunningProcesses()).not.toThrow();
+    expect(runningProcesses.size).toBe(0);
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "clears the entire map even if a child has already exited",
+    async () => {
+      const exitedRunId = randomUUID();
+      const liveRunId = randomUUID();
+
+      const exitedChild = spawn(process.execPath, ["-e", "process.exit(0)"], {
+        detached: true,
+        stdio: "ignore",
+      });
+      await new Promise<void>((resolve) => exitedChild.on("close", () => resolve()));
+      runningProcesses.set(exitedRunId, {
+        child: exitedChild,
+        graceSec: 1,
+        processGroupId: exitedChild.pid ?? 0,
+      });
+
+      const liveChild = spawn(
+        process.execPath,
+        ["-e", "process.stdout.write(String(process.pid));setInterval(()=>{},1000)"],
+        { detached: true, stdio: ["ignore", "pipe", "ignore"] },
+      );
+      const livePid = await new Promise<number>((resolvePid, rejectPid) => {
+        liveChild.stdout!.on("data", (d) => resolvePid(Number.parseInt(String(d).trim(), 10)));
+        liveChild.on("error", rejectPid);
+      });
+      runningProcesses.set(liveRunId, {
+        child: liveChild,
+        graceSec: 1,
+        processGroupId: liveChild.pid ?? 0,
+      });
+
+      expect(runningProcesses.size).toBe(2);
+
+      killAllRunningProcesses("SIGTERM");
+
+      expect(runningProcesses.size).toBe(0);
+      expect(await waitForPidExit(livePid, 2_000)).toBe(true);
+    },
+  );
 });
