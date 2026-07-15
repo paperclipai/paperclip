@@ -597,7 +597,6 @@ async function writeFileAtomic0600(targetPath: string, bytes: Buffer): Promise<v
     await fs.writeFile(tempPath, bytes, { mode: 0o600 });
     await fs.chmod(tempPath, 0o600);
     await fs.rename(tempPath, targetPath);
-    await fs.chmod(targetPath, 0o600);
   } catch (error) {
     await fs.rm(tempPath, { force: true }).catch(() => undefined);
     throw error;
@@ -649,7 +648,7 @@ async function syncCodexHomeAuthJsonBackToHost(input: {
       }
     }
   } catch (error) {
-    throw new Error(`Failed to sync Codex auth.json from sandbox to host${errorCodeSuffix(error)}.`);
+    throw new Error(`Failed to sync Codex auth.json from sandbox to host${errorCodeSuffix(error)}.`, { cause: error });
   }
 
   await emitCodexAuthSyncBackOutcome({
@@ -1072,7 +1071,7 @@ export async function prepareSandboxManagedRuntime(input: {
               await emitRuntimeStatus(
                 input.onRuntimeProgress,
                 "restore",
-                "Codex auth.json sync-back skipped after workspace restore failure",
+                "Codex auth.json sync-back failed (suppressed after workspace restore failure)",
               );
             }
           }

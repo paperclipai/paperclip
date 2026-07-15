@@ -341,6 +341,124 @@ describe("sandbox managed runtime", () => {
     await expect(readFile(path.join(nextPrepared.assetDirs.home, "auth.json"), "utf8")).resolves.toBe(expectedSyncedAuth);
   });
 
+  it("preserves Codex auth sync-back error cause", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-codex-auth-cause-"));
+    cleanupDirs.push(rootDir);
+    const localWorkspaceDir = path.join(rootDir, "local-workspace");
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+    const localCodexHome = path.join(rootDir, "local-codex-home");
+    const hostCodexHome = path.join(rootDir, "host-codex-home");
+    const hostAuthSource = path.join(hostCodexHome, "auth.json");
+    await mkdir(localWorkspaceDir, { recursive: true });
+    await mkdir(localCodexHome, { recursive: true });
+    await mkdir(hostCodexHome, { recursive: true });
+
+    const hostAuth = codexSubscriptionAuth({
+      lastRefresh: "2026-01-01T00:00:00.000Z",
+      refreshToken: "refresh-host-before-cause",
+    });
+    const sandboxAuth = codexSubscriptionAuth({
+      lastRefresh: "2026-01-01T00:10:00.000Z",
+      refreshToken: "refresh-sandbox-cause",
+    });
+    await writeFile(hostAuthSource, hostAuth, { mode: 0o600 });
+    await symlink(hostAuthSource, path.join(localCodexHome, "auth.json"));
+
+    const prepared = await prepareSandboxManagedRuntime({
+      spec: {
+        transport: "sandbox",
+        provider: "test",
+        sandboxId: "sandbox-1",
+        remoteCwd: remoteWorkspaceDir,
+        timeoutMs: 30_000,
+        apiKey: null,
+      },
+      adapterKey: "codex",
+      client: createLocalSandboxClient(),
+      workspaceLocalDir: localWorkspaceDir,
+      assets: [{ key: "home", localDir: localCodexHome, followSymlinks: true }],
+    });
+    await writeFile(path.join(prepared.assetDirs.home, "auth.json"), sandboxAuth, "utf8");
+    await rm(hostAuthSource, { force: true });
+    await mkdir(hostAuthSource, { recursive: true });
+
+    let thrown: unknown = null;
+    try {
+      await prepared.restoreWorkspace();
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(Error);
+    const error = thrown as Error & { cause?: unknown };
+    expect(error.message).toContain("Failed to sync Codex auth.json from sandbox to host");
+    expect(error.message).toContain("EISDIR");
+    expect(error.cause).toBeInstanceOf(Error);
+    expect((error.cause as { code?: unknown }).code).toBe("EISDIR");
+  });
+
+  it("reports failed Codex auth sync-back when suppressing it after restore failure", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-codex-auth-suppressed-"));
+    cleanupDirs.push(rootDir);
+    const localWorkspaceDir = path.join(rootDir, "local-workspace");
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+    const localCodexHome = path.join(rootDir, "local-codex-home");
+    const hostCodexHome = path.join(rootDir, "host-codex-home");
+    const hostAuthSource = path.join(hostCodexHome, "auth.json");
+    await mkdir(localWorkspaceDir, { recursive: true });
+    await mkdir(localCodexHome, { recursive: true });
+    await mkdir(hostCodexHome, { recursive: true });
+
+    const hostAuth = codexSubscriptionAuth({
+      lastRefresh: "2026-01-01T00:00:00.000Z",
+      refreshToken: "refresh-host-before-suppressed",
+    });
+    const sandboxAuth = codexSubscriptionAuth({
+      lastRefresh: "2026-01-01T00:10:00.000Z",
+      refreshToken: "refresh-sandbox-suppressed",
+    });
+    await writeFile(hostAuthSource, hostAuth, { mode: 0o600 });
+    await symlink(hostAuthSource, path.join(localCodexHome, "auth.json"));
+
+    const baseClient = createLocalSandboxClient();
+    const client: SandboxManagedRuntimeClient = {
+      ...baseClient,
+      run: async (command, options) => {
+        if (command.includes("workspace-download.tar")) {
+          throw new Error("forced workspace restore failure");
+        }
+        await baseClient.run(command, options);
+      },
+    };
+    const runtimeStatuses: string[] = [];
+    const prepared = await prepareSandboxManagedRuntime({
+      spec: {
+        transport: "sandbox",
+        provider: "test",
+        sandboxId: "sandbox-1",
+        remoteCwd: remoteWorkspaceDir,
+        timeoutMs: 30_000,
+        apiKey: null,
+      },
+      adapterKey: "codex",
+      client,
+      workspaceLocalDir: localWorkspaceDir,
+      assets: [{ key: "home", localDir: localCodexHome, followSymlinks: true }],
+      onRuntimeProgress: (status) => {
+        runtimeStatuses.push(status.phase + ":" + status.message);
+      },
+    });
+    await writeFile(path.join(prepared.assetDirs.home, "auth.json"), sandboxAuth, "utf8");
+    await rm(hostAuthSource, { force: true });
+    await mkdir(hostAuthSource, { recursive: true });
+
+    await expect(prepared.restoreWorkspace()).rejects.toThrow("forced workspace restore failure");
+    expect(runtimeStatuses).toContain(
+      "restore:Codex auth.json sync-back failed (suppressed after workspace restore failure)",
+    );
+    expect(runtimeStatuses).not.toContain("restore:Codex auth.json sync-back skipped after workspace restore failure");
+  });
+
   it("does not sync oversized sandbox Codex auth.json back to host", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-codex-auth-too-large-"));
     cleanupDirs.push(rootDir);
