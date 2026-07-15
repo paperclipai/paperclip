@@ -3564,11 +3564,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             continue;
           }
         } else {
-          const classifiedRun = withAdapterFailureRecoveryClassification(latestRun, adapterFailureClassification);
           const updated = await escalateStrandedAssignedIssue({
             issue,
             previousStatus: issue.status as StrandedPreviousStatus,
-            latestRun: classifiedRun,
+            latestRun,
             recoveryCause: "configuration_incomplete",
             comment:
               "Paperclip classified the latest adapter failure as `configuration_incomplete`. " +
