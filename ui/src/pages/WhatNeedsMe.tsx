@@ -333,7 +333,7 @@ export function WhatNeedsMe() {
         title: "Dismissed",
         body: item.subject.title ?? undefined,
         tone: "info",
-        ttlMs: 8000,
+        ttlMs: 20000,
         action: { label: "Undo", onClick: () => handleUndoDismiss(item) },
       });
     },

@@ -49,14 +49,18 @@ interface ToastContextValue extends ToastActionsContextValue {
   toasts: ToastItem[];
 }
 
+// Display durations lengthened ~2.5x (NEO-450) so growler messages linger long
+// enough to read before auto-dismissing.
 const DEFAULT_TTL_BY_TONE: Record<ToastTone, number> = {
-  info: 4000,
-  success: 3500,
-  warn: 8000,
-  error: 10000,
+  info: 10000,
+  success: 9000,
+  warn: 20000,
+  error: 25000,
 };
 const MIN_TTL_MS = 1500;
-const MAX_TTL_MS = 15000;
+// Raised alongside the defaults so the longer per-tone durations (and any
+// explicit ttlMs callers pass) aren't clamped back down.
+const MAX_TTL_MS = 40000;
 const MAX_TOASTS = 5;
 const DEDUPE_WINDOW_MS = 3500;
 const DEDUPE_MAX_AGE_MS = 20000;

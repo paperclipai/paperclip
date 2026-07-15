@@ -790,7 +790,7 @@ function buildRunStatusToast(
     title,
     body,
     tone,
-    ttlMs: status === "succeeded" ? 5000 : 7000,
+    ttlMs: status === "succeeded" ? 12000 : 18000,
     action: { label: "View run", href: `/agents/${agentId}/runs/${runId}` },
     dedupeKey: `run-status:${runId}:${status}`,
   };
