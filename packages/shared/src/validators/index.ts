@@ -196,6 +196,7 @@ export {
 } from "./company-skill.js";
 export {
   folderKindSchema,
+  folderSlugSchema,
   folderSchema,
   folderListItemSchema,
   folderListResultSchema,
@@ -203,10 +204,12 @@ export {
   updateFolderSchema,
   moveFolderSchema,
   moveFolderItemSchema,
+  ensureMySkillFolderSchema,
   type CreateFolder,
   type UpdateFolder,
   type MoveFolder,
   type MoveFolderItem,
+  type EnsureMySkillFolder,
 } from "./folder.js";
 export {
   catalogTeamKindSchema,

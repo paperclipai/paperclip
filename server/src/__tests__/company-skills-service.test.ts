@@ -11,6 +11,7 @@ import {
   companySkillVersions,
   companySkills,
   createDb,
+  folders,
   projects,
   projectWorkspaces,
 } from "@paperclipai/db";
@@ -19,6 +20,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { companySkillService } from "../services/company-skills.ts";
+import { folderService } from "../services/folders.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -63,6 +65,7 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     await db.delete(companySkills);
     await db.delete(projectWorkspaces);
     await db.delete(projects);
+    await db.delete(folders);
     await db.delete(companies);
     await db.delete(authUsers);
     await Promise.all(Array.from(cleanupDirs, (dir) => fs.rm(dir, { recursive: true, force: true })));
@@ -684,6 +687,92 @@ describeEmbeddedPostgres("companySkillService.list", () => {
       categories: [],
     });
     await expect(svc.categoryCounts(companyId)).resolves.toEqual([]);
+  });
+
+  it("filters by folder subtree, keeps search global, and returns canonical folder paths", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    const folderSvc = folderService(db);
+    const engineering = await folderSvc.create(companyId, { kind: "skill", name: "Engineering" });
+    const reviews = await folderSvc.create(companyId, { kind: "skill", parentId: engineering.id, name: "Reviews" });
+    const operations = await folderSvc.create(companyId, { kind: "skill", name: "Operations" });
+
+    const reviewDir = await createManagedSkillDir(companyId, "review-");
+    const deployDir = await createManagedSkillDir(companyId, "deploy-");
+    await fs.writeFile(path.join(reviewDir, "SKILL.md"), "# Review\n", "utf8");
+    await fs.writeFile(path.join(deployDir, "SKILL.md"), "# Deploy\n", "utf8");
+    await db.insert(companySkills).values([
+      {
+        companyId,
+        folderId: reviews.id,
+        key: `company/${companyId}/review`,
+        slug: "review",
+        name: "Review",
+        markdown: "# Review",
+        sourceType: "local_path",
+        sourceLocator: reviewDir,
+        categories: ["engineering"],
+      },
+      {
+        companyId,
+        folderId: operations.id,
+        key: `company/${companyId}/deploy`,
+        slug: "deploy",
+        name: "Deploy",
+        markdown: "# Deploy",
+        sourceType: "local_path",
+        sourceLocator: deployDir,
+        categories: ["operations"],
+      },
+    ]);
+
+    await expect(svc.list(companyId, {
+      folderId: engineering.id,
+      includeSubtree: true,
+      categories: ["engineering"],
+    })).resolves.toEqual([
+      expect.objectContaining({ name: "Review", folderPath: "engineering/reviews" }),
+    ]);
+    await expect(svc.list(companyId, { folderId: engineering.id })).resolves.toEqual([]);
+    await expect(svc.list(companyId, { folderId: engineering.id, q: "deploy" })).resolves.toEqual([
+      expect.objectContaining({ name: "Deploy", folderPath: "operations" }),
+    ]);
+  });
+
+  it("creates skills in same-company folders and rejects cross-company folder references", async () => {
+    const companyId = randomUUID();
+    const otherCompanyId = randomUUID();
+    await db.insert(companies).values([
+      {
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+      {
+        id: otherCompanyId,
+        name: "Other",
+        issuePrefix: `T${otherCompanyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+    ]);
+    const folderSvc = folderService(db);
+    const folder = await folderSvc.create(companyId, { kind: "skill", name: "Personal" });
+    const otherFolder = await folderSvc.create(otherCompanyId, { kind: "skill", name: "Private" });
+
+    await expect(svc.createLocalSkill(companyId, {
+      name: "Filed Skill",
+      folderId: folder.id,
+    })).resolves.toMatchObject({ folderId: folder.id });
+    await expect(svc.createLocalSkill(companyId, {
+      name: "Cross Company Skill",
+      folderId: otherFolder.id,
+    })).rejects.toMatchObject({ status: 404, message: "Skill folder not found" });
   });
 
   it("resolves detail by unique skill slug for Studio deep links", async () => {

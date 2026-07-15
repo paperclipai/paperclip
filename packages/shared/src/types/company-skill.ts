@@ -35,6 +35,7 @@ export interface CompanySkill {
   id: string;
   companyId: string;
   folderId?: string | null;
+  folderPath?: string | null;
   key: string;
   slug: string;
   name: string;
@@ -69,6 +70,7 @@ export interface CompanySkillListItem {
   id: string;
   companyId: string;
   folderId?: string | null;
+  folderPath?: string | null;
   key: string;
   slug: string;
   name: string;
@@ -142,6 +144,8 @@ export interface CompanySkillListQuery {
   categories?: string[];
   scope?: CompanySkillSharingScope;
   include?: CompanySkillListInclude[];
+  folderId?: string;
+  includeSubtree?: boolean;
 }
 
 export interface CompanySkillCategoryCount {
@@ -376,6 +380,7 @@ export interface CompanySkillProjectScanResult {
 }
 
 export interface CompanySkillCreateRequest {
+  folderId?: string | null;
   name: string;
   slug?: string | null;
   description?: string | null;

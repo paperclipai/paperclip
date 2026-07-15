@@ -2,13 +2,14 @@ import { Router } from "express";
 import type { Db } from "@paperclipai/db";
 import {
   createFolderSchema,
+  ensureMySkillFolderSchema,
   folderKindSchema,
   moveFolderItemSchema,
   moveFolderSchema,
   updateFolderSchema,
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
-import { badRequest } from "../errors.js";
+import { badRequest, forbidden } from "../errors.js";
 import { folderService, logActivity } from "../services/index.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 
@@ -42,10 +43,36 @@ export function folderRoutes(db: Db) {
       action: "folder.created",
       entityType: "folder",
       entityId: created.id,
-      details: { kind: created.kind, name: created.name, position: created.position },
+      details: { kind: created.kind, name: created.name, path: created.path, parentId: created.parentId, position: created.position },
     });
     res.status(201).json(created);
   });
+
+  router.post(
+    "/companies/:companyId/folders/ensure-my",
+    validate(ensureMySkillFolderSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      if (req.actor.type !== "board" || !req.actor.userId) {
+        throw forbidden("A signed-in board user is required to create a personal skill folder");
+      }
+      const folder = await svc.ensureMyFolder(companyId, req.actor.userId, req.actor.userName ?? null, req.body.slug);
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "folder.personal_ensured",
+        entityType: "folder",
+        entityId: folder.id,
+        details: { path: folder.path, systemKey: folder.systemKey },
+      });
+      res.json(folder);
+    },
+  );
 
   router.patch("/companies/:companyId/folders/:folderId", validate(updateFolderSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
@@ -66,7 +93,7 @@ export function folderRoutes(db: Db) {
       action: "folder.updated",
       entityType: "folder",
       entityId: updated.id,
-      details: { kind: updated.kind, name: updated.name, position: updated.position },
+      details: { kind: updated.kind, name: updated.name, path: updated.path, position: updated.position },
     });
     res.json(updated);
   });
@@ -109,7 +136,7 @@ export function folderRoutes(db: Db) {
       action: "folder.moved",
       entityType: "folder",
       entityId: updated.id,
-      details: { kind: updated.kind, position: updated.position },
+      details: { kind: updated.kind, parentId: updated.parentId, path: updated.path, position: updated.position },
     });
     res.json(updated);
   });

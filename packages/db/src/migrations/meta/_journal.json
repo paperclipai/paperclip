@@ -1212,6 +1212,13 @@
       "when": 1784210754027,
       "tag": "0174_folders",
       "breakpoints": true
+    },
+    {
+      "idx": 172,
+      "version": "7",
+      "when": 1784140398002,
+      "tag": "0172_nested_skill_folders",
+      "breakpoints": true
     }
   ]
 }

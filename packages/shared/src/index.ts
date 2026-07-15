@@ -2110,6 +2110,7 @@ export type {
   UpdateFolderRequest,
   MoveFolderRequest,
   MoveFolderItemRequest,
+  EnsureMySkillFolderRequest,
 } from "./types/folder.js";
 
 export {
@@ -2119,6 +2120,7 @@ export {
 } from "./validators/adapter-registry.js";
 export {
   folderKindSchema,
+  folderSlugSchema,
   folderSchema,
   folderListItemSchema,
   folderListResultSchema,
@@ -2126,10 +2128,12 @@ export {
   updateFolderSchema,
   moveFolderSchema,
   moveFolderItemSchema,
+  ensureMySkillFolderSchema,
   type CreateFolder,
   type UpdateFolder,
   type MoveFolder,
   type MoveFolderItem,
+  type EnsureMySkillFolder,
 } from "./validators/folder.js";
 
 export {

@@ -2,6 +2,9 @@ import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import {
+  folderSlugSchema,
+} from "@paperclipai/shared";
+import {
   companies,
   companySkills,
   createDb,
@@ -168,5 +171,68 @@ describeEmbeddedPostgres("folder service", () => {
     const [updatedRoutine] = await db.select().from(routines).where(eq(routines.id, routine.id));
     expect(updatedRoutine?.folderId).toBeNull();
     expect(await db.select().from(folders).where(eq(folders.id, folder.id))).toHaveLength(0);
+  });
+
+  it("computes canonical paths and updates descendant paths after rename and move", async () => {
+    const companyId = await seedCompany();
+    const svc = folderService(db);
+    const root = await svc.create(companyId, { kind: "skill", name: "Engineering" });
+    const child = await svc.create(companyId, { kind: "skill", parentId: root.id, name: "Code Review" });
+    const destination = await svc.create(companyId, { kind: "skill", name: "Operations" });
+
+    expect(child).toMatchObject({ path: "engineering/code-review", depth: 2 });
+    await svc.update(companyId, root.id, { name: "Product Engineering" });
+    expect(await svc.getFolder(companyId, child.id)).toMatchObject({
+      path: "product-engineering/code-review",
+      depth: 2,
+    });
+
+    await svc.moveFolder(companyId, child.id, { parentId: destination.id, position: 0 });
+    expect(await svc.getFolder(companyId, child.id)).toMatchObject({
+      parentId: destination.id,
+      path: "operations/code-review",
+      depth: 2,
+    });
+  });
+
+  it("rejects invalid slugs, cycles, and folders deeper than four levels", async () => {
+    expect(folderSlugSchema.safeParse("../escape").success).toBe(false);
+    expect(folderSlugSchema.safeParse("Valid Slug").success).toBe(false);
+    expect(folderSlugSchema.safeParse("valid-slug-2").success).toBe(true);
+
+    const companyId = await seedCompany();
+    const svc = folderService(db);
+    const level1 = await svc.create(companyId, { kind: "skill", name: "Level 1" });
+    const level2 = await svc.create(companyId, { kind: "skill", parentId: level1.id, name: "Level 2" });
+    const level3 = await svc.create(companyId, { kind: "skill", parentId: level2.id, name: "Level 3" });
+    const level4 = await svc.create(companyId, { kind: "skill", parentId: level3.id, name: "Level 4" });
+
+    await expect(svc.create(companyId, {
+      kind: "skill",
+      parentId: level4.id,
+      name: "Level 5",
+    })).rejects.toMatchObject({ status: 422, message: "Folder depth cannot exceed 4" });
+    await expect(svc.moveFolder(companyId, level1.id, {
+      parentId: level3.id,
+      position: 0,
+    })).rejects.toMatchObject({ status: 422, message: "A folder cannot be moved into its own subtree" });
+  });
+
+  it("creates stable personal roots and protects bundled folders", async () => {
+    const companyId = await seedCompany();
+    const svc = folderService(db);
+    const personal = await svc.ensureMyFolder(companyId, "user-1", "Ada Lovelace");
+    const repeated = await svc.ensureMyFolder(companyId, "user-1", "Ada Lovelace");
+    const bundled = await svc.ensureBundledCategory(companyId, "software-development");
+
+    expect(repeated.id).toBe(personal.id);
+    expect(personal).toMatchObject({ systemKey: "my:user-1", path: "my/ada-lovelace", depth: 2 });
+    expect(bundled.path).toBe("bundled/software-development");
+    await expect(svc.create(companyId, {
+      kind: "skill",
+      parentId: bundled.id,
+      name: "Nested",
+    })).rejects.toMatchObject({ status: 403, message: "Bundled folders are read-only" });
+    await expect(svc.update(companyId, bundled.id, { name: "Changed" })).rejects.toMatchObject({ status: 403 });
   });
 });

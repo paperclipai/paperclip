@@ -172,6 +172,7 @@ export type {
   UpdateFolderRequest,
   MoveFolderRequest,
   MoveFolderItemRequest,
+  EnsureMySkillFolderRequest,
 } from "./folder.js";
 export type {
   CatalogTeamKind,
