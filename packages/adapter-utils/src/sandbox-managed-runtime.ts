@@ -117,7 +117,11 @@ type ParsedCodexAuth =
   };
 
 type CodexAuthTokenField = "id_token" | "access_token" | "refresh_token";
-const CODEX_AUTH_TOKEN_FIELDS = ["id_token", "access_token", "refresh_token"] as const satisfies readonly CodexAuthTokenField[];
+const CODEX_AUTH_TOKEN_FIELDS = [
+  "id_token",
+  "access_token",
+  "refresh_token",
+] as const satisfies readonly CodexAuthTokenField[];
 
 interface CanonicalCodexSubscriptionAuth {
   tokens: { account_id: string } & Partial<Record<CodexAuthTokenField, string>>;

@@ -599,6 +599,99 @@ describe("sandbox managed runtime", () => {
     expect(lines.join("")).not.toContain("acct-sandbox");
   });
 
+  it("does not sync sandbox API-key Codex auth.json back to subscription host auth", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-codex-auth-apikey-"));
+    cleanupDirs.push(rootDir);
+    const localWorkspaceDir = path.join(rootDir, "local-workspace");
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+    const localCodexHome = path.join(rootDir, "local-codex-home");
+    const hostCodexHome = path.join(rootDir, "host-codex-home");
+    const hostAuthSource = path.join(hostCodexHome, "auth.json");
+    await mkdir(localWorkspaceDir, { recursive: true });
+    await mkdir(localCodexHome, { recursive: true });
+    await mkdir(hostCodexHome, { recursive: true });
+
+    const hostAuth = codexSubscriptionAuth({
+      lastRefresh: "2026-01-01T00:00:00.000Z",
+      refreshToken: "refresh-host-before-apikey",
+    });
+    const sandboxApiKey = "sk-sandbox-secret-should-not-copy-back";
+    const sandboxAuth = `${JSON.stringify({ OPENAI_API_KEY: sandboxApiKey })}\n`;
+    await writeFile(hostAuthSource, hostAuth, { mode: 0o600 });
+    await symlink(hostAuthSource, path.join(localCodexHome, "auth.json"));
+
+    const lines: string[] = [];
+    const prepared = await prepareSandboxManagedRuntime({
+      spec: {
+        transport: "sandbox",
+        provider: "test",
+        sandboxId: "sandbox-1",
+        remoteCwd: remoteWorkspaceDir,
+        timeoutMs: 30_000,
+        apiKey: null,
+      },
+      adapterKey: "codex",
+      client: createLocalSandboxClient(),
+      workspaceLocalDir: localWorkspaceDir,
+      assets: [{ key: "home", localDir: localCodexHome, followSymlinks: true }],
+      onProgress: (line) => {
+        lines.push(line);
+      },
+    });
+    await writeFile(path.join(prepared.assetDirs.home, "auth.json"), sandboxAuth, "utf8");
+
+    await prepared.restoreWorkspace();
+
+    await expect(readFile(hostAuthSource, "utf8")).resolves.toBe(hostAuth);
+    expect(lines.join("")).toContain("API-key auth is not synced back");
+    expect(lines.join("")).not.toContain(sandboxApiKey);
+  });
+
+  it("skips Codex auth.json sync-back when sandbox auth is missing", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-codex-auth-missing-"));
+    cleanupDirs.push(rootDir);
+    const localWorkspaceDir = path.join(rootDir, "local-workspace");
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+    const localCodexHome = path.join(rootDir, "local-codex-home");
+    const hostCodexHome = path.join(rootDir, "host-codex-home");
+    const hostAuthSource = path.join(hostCodexHome, "auth.json");
+    await mkdir(localWorkspaceDir, { recursive: true });
+    await mkdir(localCodexHome, { recursive: true });
+    await mkdir(hostCodexHome, { recursive: true });
+
+    const hostAuth = codexSubscriptionAuth({
+      lastRefresh: "2026-01-01T00:00:00.000Z",
+      refreshToken: "refresh-host-before-missing",
+    });
+    await writeFile(hostAuthSource, hostAuth, { mode: 0o600 });
+    await symlink(hostAuthSource, path.join(localCodexHome, "auth.json"));
+
+    const lines: string[] = [];
+    const prepared = await prepareSandboxManagedRuntime({
+      spec: {
+        transport: "sandbox",
+        provider: "test",
+        sandboxId: "sandbox-1",
+        remoteCwd: remoteWorkspaceDir,
+        timeoutMs: 30_000,
+        apiKey: null,
+      },
+      adapterKey: "codex",
+      client: createLocalSandboxClient(),
+      workspaceLocalDir: localWorkspaceDir,
+      assets: [{ key: "home", localDir: localCodexHome, followSymlinks: true }],
+      onProgress: (line) => {
+        lines.push(line);
+      },
+    });
+    await rm(path.join(prepared.assetDirs.home, "auth.json"), { force: true });
+
+    await prepared.restoreWorkspace();
+
+    await expect(readFile(hostAuthSource, "utf8")).resolves.toBe(hostAuth);
+    expect(lines.join("")).toContain("sandbox auth.json is missing");
+  });
+
   it("does not sync Codex auth.json back through a regular host auth file", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-codex-auth-regular-"));
     cleanupDirs.push(rootDir);
