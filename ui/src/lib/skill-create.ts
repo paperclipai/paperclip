@@ -112,7 +112,7 @@ export function buildForkSkillDraft(skill: CompanySkillDetail): SkillCreateDraft
     sharingScope: "company",
     forkedFromSkillId: skill.id,
     forkedFromName: skill.name,
-    folderId: skill.folderId ?? null,
+    folderId: null,
   };
 }
 
