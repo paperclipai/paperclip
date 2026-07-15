@@ -51,6 +51,9 @@ vi.mock("@/components/ui/dropdown-menu", () => ({
     <button type="button" onClick={onSelect}>{children}</button>
   ),
   DropdownMenuSeparator: () => <hr />,
+  DropdownMenuSub: ({ children }: { children: ReactNode }) => <>{children}</>,
+  DropdownMenuSubContent: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  DropdownMenuSubTrigger: ({ children }: { children: ReactNode }) => <button type="button">{children}</button>,
   DropdownMenuTrigger: ({ children }: { children: ReactNode }) => <>{children}</>,
 }));
 
@@ -325,6 +328,47 @@ describe("DiscoveryGrid Studio entry points", () => {
     await click(buttonsNamed(node, "Create a skill")[0] as HTMLButtonElement);
 
     expect(onCreate).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not open a skill when keyboard-activating its actions button", async () => {
+    const onOpenCard = vi.fn();
+    const card = {
+      key: "demo-skill",
+      skillId: "skill-1",
+      folderId: null,
+      catalogRef: null,
+      name: "Demo Skill",
+      slug: "demo-skill",
+      author: "Paperclip",
+      version: null,
+      tagline: null,
+      description: null,
+      categories: [],
+      iconUrl: null,
+      color: null,
+      starCount: 0,
+      agentCount: 0,
+      forkCount: 0,
+      installed: true,
+      required: false,
+      forkedFrom: false,
+      updatedAt: 0,
+    };
+    const node = await renderDiscoveryGrid({
+      cards: [card],
+      totalCount: 1,
+      onOpenCard,
+      folderResult: { kind: "skill", folders: [], allCount: 1, unfiledCount: 1 },
+      onMoveCard: vi.fn(),
+      onCreateFolderAndMoveCard: vi.fn(),
+    });
+    const actionsButton = node.querySelector<HTMLButtonElement>('[aria-label="More actions for Demo Skill"]');
+
+    await act(async () => {
+      actionsButton?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+
+    expect(onOpenCard).not.toHaveBeenCalled();
   });
 });
 

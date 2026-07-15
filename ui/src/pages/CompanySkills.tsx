@@ -779,6 +779,7 @@ function SkillCard({
     <div
       onClick={() => onOpen(card)}
       onKeyDown={(event) => {
+        if (event.target !== event.currentTarget) return;
         if (event.key === "Enter" || event.key === " ") {
           event.preventDefault();
           onOpen(card);
