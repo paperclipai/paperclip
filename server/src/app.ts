@@ -9,6 +9,7 @@ import { httpLogger, errorHandler } from "./middleware/index.js";
 import { actorMiddleware } from "./middleware/auth.js";
 import { boardMutationGuard } from "./middleware/board-mutation-guard.js";
 import { privateHostnameGuard, resolvePrivateHostnameAllowSet } from "./middleware/private-hostname-guard.js";
+import { otelHttpMetrics } from "./otel/middleware.js";
 import { healthRoutes } from "./routes/health.js";
 import { companyRoutes } from "./routes/companies.js";
 import { companySkillRoutes } from "./routes/company-skills.js";
@@ -144,6 +145,7 @@ export async function createApp(
       (req as unknown as { rawBody: Buffer }).rawBody = buf;
     },
   }));
+  app.use(otelHttpMetrics());
   app.use(httpLogger);
   const privateHostnameGateEnabled = shouldEnablePrivateHostnameGuard({
     deploymentMode: opts.deploymentMode,
