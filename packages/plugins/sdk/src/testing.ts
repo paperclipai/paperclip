@@ -15,6 +15,7 @@ import type {
   RoutineRun,
   Issue,
   IssueComment,
+  Approval,
   IssueThreadInteraction,
   CreateIssueThreadInteraction,
   IssueDocument,
@@ -489,6 +490,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
   const routines = new Map<string, Routine>();
   const routineRuns = new Map<string, RoutineRun>();
   const issues = new Map<string, Issue>();
+  const approvals = new Map<string, Approval>();
   const blockedByIssueIds = new Map<string, string[]>();
   const issueComments = new Map<string, IssueComment[]>();
   const issueInteractions = new Map<string, IssueThreadInteraction[]>();
@@ -1892,6 +1894,44 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
             invocationBlocks: [],
           };
         },
+      },
+    },
+    approvals: {
+      async approve(approvalId, companyId, decidedByUserId, decisionNote) {
+        requireCapability(manifest, capabilitySet, "approvals.resolve");
+        const existing = approvals.get(approvalId);
+        if (!isInCompany(existing, companyId)) throw new Error("Approval not found");
+        if (existing.status !== "pending" && existing.status !== "revision_requested") {
+          return { approval: existing, applied: false };
+        }
+        const updated: Approval = {
+          ...existing,
+          status: "approved",
+          decidedByUserId,
+          decisionNote: decisionNote ?? null,
+          decidedAt: new Date(),
+          updatedAt: new Date(),
+        };
+        approvals.set(approvalId, updated);
+        return { approval: updated, applied: true };
+      },
+      async reject(approvalId, companyId, decidedByUserId, decisionNote) {
+        requireCapability(manifest, capabilitySet, "approvals.resolve");
+        const existing = approvals.get(approvalId);
+        if (!isInCompany(existing, companyId)) throw new Error("Approval not found");
+        if (existing.status !== "pending" && existing.status !== "revision_requested") {
+          return { approval: existing, applied: false };
+        }
+        const updated: Approval = {
+          ...existing,
+          status: "rejected",
+          decidedByUserId,
+          decisionNote: decisionNote ?? null,
+          decidedAt: new Date(),
+          updatedAt: new Date(),
+        };
+        approvals.set(approvalId, updated);
+        return { approval: updated, applied: true };
       },
     },
     agents: {

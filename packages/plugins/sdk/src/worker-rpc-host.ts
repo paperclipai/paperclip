@@ -1015,6 +1015,16 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         },
       },
 
+      approvals: {
+        async approve(approvalId: string, companyId: string, decidedByUserId: string, decisionNote?: string | null) {
+          return callHost("approvals.approve", { approvalId, companyId, decidedByUserId, decisionNote });
+        },
+
+        async reject(approvalId: string, companyId: string, decidedByUserId: string, decisionNote?: string | null) {
+          return callHost("approvals.reject", { approvalId, companyId, decidedByUserId, decisionNote });
+        },
+      },
+
       agents: {
         async list(input) {
           return callHost("agents.list", {

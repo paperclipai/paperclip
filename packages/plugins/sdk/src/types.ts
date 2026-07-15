@@ -19,6 +19,7 @@ import type {
   Project,
   Issue,
   IssueComment,
+  Approval,
   IssueDocument,
   IssueDocumentSummary,
   IssueRelationIssueSummary,
@@ -1479,6 +1480,43 @@ export interface PluginIssuesClient {
 }
 
 /**
+ * `ctx.approvals` — resolve pending board approvals from within a plugin.
+ *
+ * Requires `approvals.resolve` capability. Unlike the `/api/approvals/:id/approve`
+ * REST endpoint (which requires an authenticated board actor), this namespace is
+ * gated purely by the plugin's declared capability grant — it exists so plugins
+ * that surface approvals through a third-party UI (e.g. Slack interactive buttons)
+ * can resolve them without needing to hold board-level Paperclip credentials or
+ * make an outbound HTTP call back to the host (which the `http.outbound` SSRF guard
+ * would reject for any self-hosted, same-machine deployment).
+ *
+ * @see PLUGIN_SPEC.md §15 — Capability Model
+ */
+export interface PluginApprovalsClient {
+  /**
+   * Approve a pending or revision-requested approval.
+   *
+   * @param approvalId - The approval to resolve
+   * @param companyId - Company the approval belongs to (enforces in-company scoping)
+   * @param decidedByUserId - Free-text identity of who made the decision (e.g. `"slack:U123"`), stored for audit/display
+   * @param decisionNote - Optional note recorded alongside the decision
+   */
+  approve(
+    approvalId: string,
+    companyId: string,
+    decidedByUserId: string,
+    decisionNote?: string | null,
+  ): Promise<{ approval: Approval; applied: boolean }>;
+  /** Reject a pending or revision-requested approval. Same semantics as {@link approve}. */
+  reject(
+    approvalId: string,
+    companyId: string,
+    decidedByUserId: string,
+    decisionNote?: string | null,
+  ): Promise<{ approval: Approval; applied: boolean }>;
+}
+
+/**
  * `ctx.agents` — read and manage agents.
  *
  * Requires `agents.read` for reads; `agents.pause` / `agents.resume` /
@@ -1904,6 +1942,9 @@ export interface PluginContext {
 
   /** Read and write issues, comments, and documents. Requires issue capabilities. */
   issues: PluginIssuesClient;
+
+  /** Resolve pending board approvals. Requires `approvals.resolve`. */
+  approvals: PluginApprovalsClient;
 
   /** Read and manage agents. Requires `agents.read` for reads; `agents.pause` / `agents.resume` / `agents.invoke` for write ops. */
   agents: PluginAgentsClient;

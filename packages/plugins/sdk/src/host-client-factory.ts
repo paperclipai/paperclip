@@ -241,6 +241,12 @@ export interface HostServices {
     createInteraction(params: WorkerToHostMethods["issues.createInteraction"][0]): Promise<WorkerToHostMethods["issues.createInteraction"][1]>;
   };
 
+  /** Provides `approvals.approve`, `approvals.reject`. */
+  approvals: {
+    approve(params: WorkerToHostMethods["approvals.approve"][0]): Promise<WorkerToHostMethods["approvals.approve"][1]>;
+    reject(params: WorkerToHostMethods["approvals.reject"][0]): Promise<WorkerToHostMethods["approvals.reject"][1]>;
+  };
+
   /** Provides `issues.documents.list`, `issues.documents.get`, `issues.documents.upsert`, `issues.documents.delete`. */
   issueDocuments: {
     list(params: WorkerToHostMethods["issues.documents.list"][0]): Promise<WorkerToHostMethods["issues.documents.list"][1]>;
@@ -445,6 +451,10 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   "issues.listComments": "issue.comments.read",
   "issues.createComment": "issue.comments.create",
   "issues.createInteraction": "issue.interactions.create",
+
+  // Approvals
+  "approvals.approve": "approvals.resolve",
+  "approvals.reject": "approvals.resolve",
 
   // Issue Documents
   "issues.documents.list": "issue.documents.read",
@@ -886,6 +896,14 @@ export function createHostClientHandlers(
     }),
     "issues.createInteraction": gated("issues.createInteraction", async (params) => {
       return services.issues.createInteraction(params);
+    }),
+
+    // Approvals
+    "approvals.approve": gated("approvals.approve", async (params) => {
+      return services.approvals.approve(params);
+    }),
+    "approvals.reject": gated("approvals.reject", async (params) => {
+      return services.approvals.reject(params);
     }),
 
     // Issue Documents
