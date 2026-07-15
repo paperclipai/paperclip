@@ -101,6 +101,17 @@ export function signalRunningProcess(
 
 export const runningProcesses = new Map<string, RunningProcess>();
 export const MAX_CAPTURE_BYTES = 4 * 1024 * 1024;
+
+export function killAllRunningProcesses(signal: NodeJS.Signals = "SIGTERM"): void {
+  for (const [runId, running] of runningProcesses) {
+    try {
+      signalRunningProcess(running, signal);
+    } catch {
+      // Best-effort cleanup during shutdown — individual failures are non-fatal.
+    }
+    runningProcesses.delete(runId);
+  }
+}
 export const MAX_EXCERPT_BYTES = 32 * 1024;
 const TERMINAL_RESULT_SCAN_OVERLAP_CHARS = 64 * 1024;
 const DEFAULT_PAPERCLIP_INSTANCE_ID = "default";
