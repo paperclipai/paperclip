@@ -44,6 +44,8 @@ Read tools:
 - `paperclipListIssueApprovals`
 - `paperclipListDocuments`
 - `paperclipGetDocument`
+- `paperclipListDocumentAnnotations`
+- `paperclipGetDocumentAnnotation`
 - `paperclipListDocumentRevisions`
 - `paperclipListProjects`
 - `paperclipGetProject`
