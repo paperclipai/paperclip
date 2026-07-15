@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "packageName": "@paperclipai/skills-catalog",
   "packageVersion": "0.3.1",
-  "generatedAt": "2026-07-13T16:16:47.622Z",
+  "generatedAt": "2026-07-10T13:15:25.878Z",
   "skills": [
     {
       "id": "paperclipai:bundled:docs:doc-maintenance",
@@ -1007,62 +1007,6 @@
         "path": "skills/last30days",
         "url": "https://github.com/mvanhorn/last30days-skill/tree/v3.3.0/skills/last30days"
       }
-    },
-    {
-      "id": "paperclipai:optional:software-development:pr-gardening",
-      "key": "paperclipai/optional/software-development/pr-gardening",
-      "kind": "optional",
-      "category": "software-development",
-      "slug": "pr-gardening",
-      "name": "pr-gardening",
-      "description": "Discover recently referenced Paperclip pull requests, mechanically verify their current-head readiness, drive non-draft PRs back to green through their originating issues, and publish a merge-confidence report without merging.",
-      "path": "catalog/optional/software-development/pr-gardening",
-      "entrypoint": "SKILL.md",
-      "trustLevel": "scripts_executables",
-      "compatibility": "compatible",
-      "defaultInstall": false,
-      "recommendedForRoles": [
-        "engineer"
-      ],
-      "requires": [],
-      "tags": [
-        "github",
-        "pull-requests",
-        "quality"
-      ],
-      "files": [
-        {
-          "path": "SKILL.md",
-          "kind": "skill",
-          "sizeBytes": 6542,
-          "sha256": "1e6a1c991a816a0aa09c8142195ca11ac0d8204fde432c7941bd7ee0272eaf3b"
-        },
-        {
-          "path": "scripts/check-readiness.mjs",
-          "kind": "script",
-          "sizeBytes": 7571,
-          "sha256": "e5f5922ffd2c15abaa43027e769a22a20a07657428f3e95efdd73ffe18e5b47a"
-        },
-        {
-          "path": "scripts/find-candidates.mjs",
-          "kind": "script",
-          "sizeBytes": 5394,
-          "sha256": "dd5307e80ed5b695092f0ffea8f87956ee2c6a1321be32fbf54f8bf5f0f23906"
-        },
-        {
-          "path": "scripts/lib.mjs",
-          "kind": "script",
-          "sizeBytes": 4847,
-          "sha256": "ded21a9c1492f2b1d07feb8d7a27d542d3f92b08ea0a778848eb2787eeb058f9"
-        },
-        {
-          "path": "scripts/render-report.mjs",
-          "kind": "script",
-          "sizeBytes": 2934,
-          "sha256": "d0e7d63ecad92f9fa0c2dbe132558f8baa63595eeae240e4742c0dad81865292"
-        }
-      ],
-      "contentHash": "sha256:9f8a7506db477bc54c69e58cbbe1aca9c0803c12f9adc53ffdd7034e2a7a72ec"
     }
   ]
 }

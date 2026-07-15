@@ -21,7 +21,6 @@ const EXPECTED_OPTIONAL_KEYS = [
   "paperclipai/optional/finance/ramp",
   "paperclipai/optional/product/design-critique",
   "paperclipai/optional/research/last30days",
-  "paperclipai/optional/software-development/pr-gardening",
 ];
 
 const MAX_FRONTMATTER_DESCRIPTION_LENGTH = 300;
@@ -107,7 +106,6 @@ describe("shipped skills catalog", () => {
     const scriptBearing = catalogSkills.filter((skill) => skill.trustLevel === "scripts_executables");
     expect(scriptBearing.map((skill) => skill.key)).toEqual([
       "paperclipai/optional/research/last30days",
-      "paperclipai/optional/software-development/pr-gardening",
     ]);
   });
 
