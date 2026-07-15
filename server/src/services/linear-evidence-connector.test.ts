@@ -1,12 +1,25 @@
 import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { companies, createDb, issues, linearEvidenceDeliveries, linearEvidenceMappings } from "@paperclipai/db";
+import {
+  companies,
+  createDb,
+  issues,
+  linearEvidenceConflicts,
+  linearEvidenceDeliveries,
+  linearEvidenceMappings,
+} from "@paperclipai/db";
 import {
   linearEvidenceConnector,
   type LinearCommentReceipt,
   type LinearEvidenceTransport,
 } from "./linear-evidence-connector.js";
-import { linearEvidenceMappingKey, type LinearEvidencePayload } from "./linear-evidence-bridge.js";
+import {
+  buildLinearEvidenceComment,
+  linearEvidenceCommentSha256,
+  linearEvidenceMappingKey,
+  type LinearEvidencePayload,
+} from "./linear-evidence-bridge.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 
 const support = await getEmbeddedPostgresTestSupport();
@@ -67,6 +80,8 @@ describePg("linearEvidenceConnector", () => {
     const second = await connector.publish(input);
     expect(first.delivery.state).toBe("published");
     expect(second.delivery.remoteCommentId).toBe("comment-1");
+    expect(first.delivery.commentBodySha256).toBe(linearEvidenceCommentSha256(input.evidence));
+    expect([...comments.values()][0]?.body).toBe(buildLinearEvidenceComment(input.evidence));
     expect(transport.createComment).toHaveBeenCalledTimes(1);
     expect((await db.select().from(linearEvidenceDeliveries))).toHaveLength(1);
   });
@@ -84,5 +99,71 @@ describePg("linearEvidenceConnector", () => {
     expect(retry.delivery.state).toBe("pending");
     expect(transport.createComment).not.toHaveBeenCalled();
     expect((await db.select().from(linearEvidenceDeliveries))).toHaveLength(1);
+  });
+
+  it("reconciles by marker after an ambiguous accepted create without duplicating the comment", async () => {
+    const input = await fixture();
+    const comments = new Map<string, LinearCommentReceipt>();
+    const transport: LinearEvidenceTransport = {
+      findCommentByMarker: vi.fn(async ({ marker }) => [...comments.values()].find((comment) => comment.body.includes(marker)) ?? null),
+      createComment: vi.fn(async ({ linearIssueId, body }) => {
+        comments.set("comment-accepted", {
+          id: "comment-accepted",
+          linearIssueId,
+          body,
+          createdAt: "2026-07-15T18:02:00.000Z",
+        });
+        throw new Error("connection closed after remote acceptance");
+      }),
+      getComment: vi.fn(),
+    };
+    const connector = linearEvidenceConnector(db, transport);
+
+    await expect(connector.publish(input)).rejects.toMatchObject({ code: "delivery_ambiguous" });
+    const receipt = await connector.publish(input);
+    expect(receipt.delivery).toMatchObject({ state: "published", remoteCommentId: "comment-accepted" });
+    expect(transport.createComment).toHaveBeenCalledTimes(1);
+    expect(transport.getComment).not.toHaveBeenCalled();
+    expect((await db.select().from(linearEvidenceDeliveries))).toHaveLength(1);
+  });
+
+  it("rejects stale Paperclip versions before state persistence or remote access", async () => {
+    const input = await fixture();
+    await db.update(issues).set({ updatedAt: new Date("2026-07-15T18:05:00.000Z") })
+      .where(eq(issues.id, input.paperclipIssueId));
+    const transport: LinearEvidenceTransport = {
+      findCommentByMarker: vi.fn(),
+      createComment: vi.fn(),
+      getComment: vi.fn(),
+    };
+    const connector = linearEvidenceConnector(db, transport);
+
+    await expect(connector.publish(input)).rejects.toMatchObject({ code: "stale_version" });
+    expect(transport.findCommentByMarker).not.toHaveBeenCalled();
+    expect(await db.select().from(linearEvidenceMappings)).toHaveLength(0);
+    expect(await db.select().from(linearEvidenceDeliveries)).toHaveLength(0);
+  });
+
+  it("preserves exact remote body conflicts and refuses a successful receipt", async () => {
+    const input = await fixture();
+    const transport: LinearEvidenceTransport = {
+      findCommentByMarker: vi.fn(async () => null),
+      createComment: vi.fn(async () => ({ id: "comment-mutated" })),
+      getComment: vi.fn(async ({ linearIssueId, commentId }) => ({
+        id: commentId,
+        linearIssueId,
+        body: `${buildLinearEvidenceComment(input.evidence)}\nmutated`,
+        createdAt: "2026-07-15T18:02:00.000Z",
+      })),
+    };
+    const connector = linearEvidenceConnector(db, transport);
+
+    await expect(connector.publish(input)).rejects.toMatchObject({ code: "remote_conflict" });
+    expect(await db.select().from(linearEvidenceConflicts)).toHaveLength(1);
+    expect((await db.select().from(linearEvidenceDeliveries))[0]).toMatchObject({
+      state: "conflict",
+      remoteCommentId: null,
+      lastErrorCode: "remote_conflict",
+    });
   });
 });

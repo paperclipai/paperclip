@@ -4,6 +4,7 @@ import {
   linearEvidenceConflicts,
   linearEvidenceDeliveries,
   linearEvidenceMappings,
+  issues,
   type Db,
 } from "@paperclipai/db";
 import {
@@ -32,7 +33,7 @@ export interface LinearEvidenceTransport {
 }
 
 export class LinearEvidenceConnectorError extends Error {
-  constructor(public readonly code: "invalid_evidence" | "mapping_conflict" | "remote_conflict" | "delivery_ambiguous") {
+  constructor(public readonly code: "invalid_evidence" | "stale_version" | "mapping_conflict" | "remote_conflict" | "delivery_ambiguous") {
     super(`Linear evidence connector failed: ${code}`);
     this.name = "LinearEvidenceConnectorError";
   }
@@ -160,6 +161,19 @@ export function linearEvidenceConnector(
 
   async function publish(input: LinearEvidencePublishInput) {
     validateInput(input);
+    const [issue] = await db.select({
+      id: issues.id,
+      companyId: issues.companyId,
+      updatedAt: issues.updatedAt,
+    }).from(issues).where(and(
+      eq(issues.id, input.paperclipIssueId),
+      eq(issues.companyId, input.companyId),
+    )).limit(1);
+    if (!issue || issue.updatedAt.toISOString() !== input.evidence.paperclipIssueUpdatedAt) {
+      // Never publish evidence for a version that is already stale. This check
+      // precedes mapping/delivery persistence and all credentialed transport.
+      throw new LinearEvidenceConnectorError("stale_version");
+    }
     const mapping = await ensureMapping(input);
     const evidenceSha256 = linearEvidencePayloadSha256(input.evidence);
     const idempotencyKey = linearEvidenceIdempotencyKey(input.evidence);

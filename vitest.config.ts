@@ -7,6 +7,7 @@ export default defineConfig({
       "packages/skills-catalog",
       "packages/db",
       "packages/adapter-utils",
+      "packages/linear-evidence-transport",
       "packages/adapters/claude-local",
       "packages/adapters/codex-local",
       "packages/adapters/cursor-cloud",

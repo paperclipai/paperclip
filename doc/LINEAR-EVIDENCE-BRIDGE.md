@@ -152,11 +152,24 @@ the only credential-bearing boundary; Paperclip core contains no Linear token,
 network client, or secret logging. `dryRun: true` persists a pending delivery
 without invoking the transport.
 
-A separately configured deployment adapter/plugin must:
+The private workspace deployment companion at
+`packages/linear-evidence-transport` implements `LinearEvidenceTransport`
+against Linear's GraphQL comment API. It accepts only a SecretRef and injected
+resolver, uses a fixed Linear API origin, resolves the credential per request,
+performs bounded complete marker scans, rejects duplicate markers, reads a
+concrete comment after creation, and never retains remote or resolver messages
+in public errors.
 
-- resolve a least-privilege Linear credential from SecretRef outside core;
-- implement `LinearEvidenceTransport` against Linear's comment API; and
+Deployment still requires an explicit approved composition step:
+
+- provision a least-privilege Linear credential with only the issue/comment
+  read and comment-create access needed for the intended workspace;
+- provide a deployment-owned SecretRef resolver without exposing the resolved
+  value to Paperclip core;
+- instantiate the companion transport and `linearEvidenceConnector`; and
 - inject the connector as `createApp(..., { linearEvidenceBridge })`.
 
-Until that adapter is installed, gated issues cannot be completed. That is the
-intended fail-closed behavior, not a degraded success path.
+No credential, live config, or real Linear call is included in this repository
+change. Until the deployment owner approves and installs that composition and
+independent live acceptance passes, gated issues cannot be completed. That is
+the intended fail-closed behavior, not a degraded success path.

@@ -399,6 +399,8 @@ importers:
         specifier: ^4.1.8
         version: 4.1.8(@types/node@24.13.3)(jsdom@28.1.0(@noble/hashes@2.2.0))(vite@7.3.1(@types/node@24.13.3)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.23.0))
 
+  packages/linear-evidence-transport: {}
+
   packages/mcp-server:
     dependencies:
       '@modelcontextprotocol/sdk':
