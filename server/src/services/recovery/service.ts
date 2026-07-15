@@ -3576,7 +3576,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             result.skipped += 1;
             continue;
           }
-        } else {
+        } else if (issue.status !== "in_review") {
           const updated = await escalateStrandedAssignedIssue({
             issue,
             previousStatus: issue.status as StrandedPreviousStatus,
