@@ -7193,6 +7193,11 @@ export function issueService(db: Db) {
       },
       dbOrTx: any = db,
     ) => {
+      // Defense-in-depth: reject whitespace-only bodies even if a caller bypasses
+      // the route validator (addIssueCommentSchema). Empty comments carry no signal.
+      if (typeof body === "string" && body.trim() === "") {
+        throw unprocessable("Comment body cannot be empty");
+      }
       const issue = await dbOrTx
         .select({ companyId: issues.companyId })
         .from(issues)

@@ -459,7 +459,7 @@ export const updateIssueSchema = createIssueBaseSchema.omit({
 }).partial().extend({
   requestDepth: issueRequestDepthInputSchema.optional(),
   assigneeAgentId: z.string().trim().min(1).optional().nullable(),
-  comment: multilineTextSchema.pipe(z.string().min(1)).optional(),
+  comment: multilineTextSchema.pipe(z.string().trim().min(1)).optional(),
   reviewRequest: issueReviewRequestSchema.optional().nullable(),
   reopen: z.boolean().optional(),
   resume: z.boolean().optional(),
@@ -563,7 +563,7 @@ export const issueCommentMetadataSchema = z.object({
 export type IssueCommentMetadata = z.infer<typeof issueCommentMetadataSchema>;
 
 export const addIssueCommentSchema = z.object({
-  body: multilineTextSchema.pipe(z.string().min(1)),
+  body: multilineTextSchema.pipe(z.string().trim().min(1)),
   authorType: issueCommentAuthorTypeSchema.optional(),
   presentation: issueCommentPresentationSchema.nullable().optional(),
   metadata: issueCommentMetadataSchema.nullable().optional(),

@@ -1072,6 +1072,22 @@ export function issueThreadInteractionService(db: Db) {
       throw conflict("Interaction has already been resolved");
     }
     await touchIssue(db, args.issue.id);
+    // Surface the decline reason as a first-class thread comment so the resolution
+    // is visible in the issue history, not buried in the interaction result JSON.
+    if (reason) {
+      try {
+        await db.insert(issueComments).values({
+          companyId: args.issue.companyId,
+          issueId: args.issue.id,
+          authorAgentId: args.actor.agentId ?? null,
+          authorUserId: args.actor.userId ?? null,
+          authorType: args.actor.userId ? "user" : args.actor.agentId ? "agent" : "system",
+          body: `**Board resolution — confirmation declined** (interaction ${args.current.id.slice(0, 8)}): ${reason}`,
+        });
+      } catch (e) {
+        console.error("Failed to surface confirmation-decline reason as a comment", e);
+      }
+    }
     const rejected = hydrateInteraction(updated);
     await emitInteractionResolvedTelemetry(db, rejected);
     return rejected;
@@ -1565,6 +1581,21 @@ export function issueThreadInteractionService(db: Db) {
       }
 
       await touchIssue(db, issue.id);
+      const declineReason = input.reason?.trim();
+      if (declineReason) {
+        try {
+          await db.insert(issueComments).values({
+            companyId: issue.companyId,
+            issueId: issue.id,
+            authorAgentId: actor.agentId ?? null,
+            authorUserId: actor.userId ?? null,
+            authorType: actor.userId ? "user" : actor.agentId ? "agent" : "system",
+            body: `**Board resolution — suggested tasks declined** (interaction ${interactionId.slice(0, 8)}): ${declineReason}`,
+          });
+        } catch (e) {
+          console.error("Failed to surface suggested-tasks-decline reason as a comment", e);
+        }
+      }
       const rejected = hydrateInteraction(updated);
       await emitInteractionResolvedTelemetry(db, rejected);
       return rejected;
@@ -1957,6 +1988,20 @@ export function issueThreadInteractionService(db: Db) {
       }
 
       await touchIssue(db, issue.id);
+      if (reason) {
+        try {
+          await db.insert(issueComments).values({
+            companyId: issue.companyId,
+            issueId: issue.id,
+            authorAgentId: actor.agentId ?? null,
+            authorUserId: actor.userId ?? null,
+            authorType: actor.userId ? "user" : actor.agentId ? "agent" : "system",
+            body: `**Board resolution — questions cancelled** (interaction ${interactionId.slice(0, 8)}): ${reason}`,
+          });
+        } catch (e) {
+          console.error("Failed to surface questions-cancellation reason as a comment", e);
+        }
+      }
       const cancelled = hydrateInteraction(updated);
       await emitInteractionResolvedTelemetry(db, cancelled);
       return cancelled;
