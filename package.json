@@ -27,6 +27,9 @@
     "issue-references:backfill": "pnpm run preflight:workspace-links && tsx scripts/backfill-issue-reference-mentions.ts",
     "secrets:migrate-inline-env": "tsx scripts/migrate-inline-env-secrets.ts",
     "db:backup": "./scripts/backup-db.sh",
+    "ops:build-artifact": "node scripts/ops/build-artifact.mjs",
+    "ops:inventory": "node scripts/ops/reconcile-agent-inventory.mjs",
+    "ops:restore-drill": "node cli/node_modules/tsx/dist/cli.mjs scripts/ops/restore-drill.ts",
     "paperclipai": "node cli/node_modules/tsx/dist/cli.mjs cli/src/index.ts",
     "build:npm": "./scripts/build-npm.sh",
     "release": "./scripts/release.sh",
@@ -71,7 +74,7 @@
     "vitest": "^4.1.8"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=24 <25"
   },
   "packageManager": "pnpm@9.15.4",
   "pnpm": {
