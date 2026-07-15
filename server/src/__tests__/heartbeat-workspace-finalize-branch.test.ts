@@ -577,6 +577,7 @@ describeEmbeddedPostgres("heartbeat workspace finalization branch guard", () => 
     const dependentId = randomUUID();
     let workspaceCwd: string | null = null;
     let expectedBranch: string | null = null;
+    let executionWorkspaceId: string | null = null;
 
     await db.insert(issues).values({
       id: dependentId,
@@ -594,7 +595,17 @@ describeEmbeddedPostgres("heartbeat workspace finalization branch guard", () => 
       const workspace = readAdapterWorkspace(input);
       workspaceCwd = workspace.cwd;
       expectedBranch = workspace.branchName;
+      executionWorkspaceId = workspace.executionWorkspaceId;
       await db.update(issues).set({ status: "done", updatedAt: new Date() }).where(eq(issues.id, issueId));
+      await db.insert(workspaceOperations).values({
+        companyId,
+        executionWorkspaceId: workspace.executionWorkspaceId,
+        issueId,
+        phase: "workspace_prepare",
+        status: "succeeded",
+        startedAt: new Date(Date.now() + 500),
+        finishedAt: new Date(Date.now() + 500),
+      });
       await rm(workspace.cwd, { recursive: true, force: true });
       return {
         exitCode: 0,
@@ -623,6 +634,16 @@ describeEmbeddedPostgres("heartbeat workspace finalization branch guard", () => 
       maxAttempts: null,
       timeoutAt: null,
     });
+    const overlappingOperations = await db
+      .select({ phase: workspaceOperations.phase, startedAt: workspaceOperations.startedAt })
+      .from(workspaceOperations)
+      .where(and(
+        eq(workspaceOperations.issueId, issueId),
+        eq(workspaceOperations.executionWorkspaceId, executionWorkspaceId!),
+      ));
+    const newerPrepare = overlappingOperations.find((operation) => operation.phase === "workspace_prepare");
+    const failedFinalize = overlappingOperations.find((operation) => operation.phase === "workspace_finalize");
+    expect(newerPrepare?.startedAt.getTime()).toBeGreaterThan(failedFinalize!.startedAt.getTime());
     await expect(issueService(db).getDependencyReadiness(dependentId)).resolves.toMatchObject({
       isDependencyReady: false,
       pendingFinalizeBlockerIssueIds: [issueId],
@@ -631,6 +652,7 @@ describeEmbeddedPostgres("heartbeat workspace finalization branch guard", () => 
     await expect(db.select({ status: issues.status }).from(issues).where(eq(issues.id, issueId)))
       .resolves.toEqual([{ status: "done" }]);
 
+    await new Promise((resolve) => setTimeout(resolve, 600));
     await runGit(repoRoot, ["worktree", "prune"]);
     await runGit(repoRoot, ["worktree", "add", workspaceCwd!, expectedBranch!]);
     await db.update(issues).set({ status: "todo", updatedAt: new Date() }).where(eq(issues.id, issueId));
@@ -694,4 +716,36 @@ describeEmbeddedPostgres("heartbeat workspace finalization branch guard", () => 
       unresolvedBlockerIssueIds: [],
     });
   }, 45_000);
+
+  it("does not create terminal-finalize recovery after cancellation commits before stale promotion", async () => {
+    const repoRoot = await createGitRepo();
+    tempRoots.push(repoRoot);
+    const { agentId, issueId } = await seedRunTarget(db, repoRoot);
+
+    adapterExecute.mockImplementationOnce(async (input) => {
+      const workspace = readAdapterWorkspace(input);
+      await db.update(issues).set({ status: "cancelled", updatedAt: new Date() }).where(eq(issues.id, issueId));
+      await rm(workspace.cwd, { recursive: true, force: true });
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        summary: "Cancellation completed before stale finalization failure promotion.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+
+    const heartbeat = heartbeatService(db);
+    const failedRun = await wakeIssue(heartbeat, agentId, issueId);
+    expect(failedRun).not.toBeNull();
+    await expect(waitForRunToFinish(heartbeat, failedRun!.id)).resolves.toMatchObject({
+      status: "failed",
+      errorCode: "workspace_validation_failed",
+    });
+
+    await expect(waitForRecoveryAction(db, issueId, "active", 250)).resolves.toBeNull();
+    await expect(db.select({ status: issues.status }).from(issues).where(eq(issues.id, issueId)))
+      .resolves.toEqual([{ status: "cancelled" }]);
+  }, 20_000);
 });

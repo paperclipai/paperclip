@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
@@ -856,6 +856,60 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       id: action.id,
       status: "active",
     });
+  });
+
+  it("serializes terminal-finalize recovery creation and resolution on the source issue lock", async () => {
+    const { companyId, managerId, sourceIssueId } = await seedCompany();
+    const recoveryActionSvc = issueRecoveryActionService(db);
+    let releaseFailureLock!: () => void;
+    let failureLockAcquired!: () => void;
+    const holdFailureLock = new Promise<void>((resolve) => {
+      releaseFailureLock = resolve;
+    });
+    const failureHasLock = new Promise<void>((resolve) => {
+      failureLockAcquired = resolve;
+    });
+
+    const failedFinalize = db.transaction(async (tx) => {
+      await tx.execute(sql`select ${issues.id} from ${issues} where ${issues.id} = ${sourceIssueId} for update`);
+      const action = await recoveryActionSvc.upsertSourceScoped({
+        companyId,
+        sourceIssueId,
+        kind: "workspace_validation",
+        ownerType: "agent",
+        ownerAgentId: managerId,
+        cause: "workspace_finalize_failed",
+        fingerprint: "workspace-validation:terminal-finalize-lock",
+        evidence: { sourceRunId: "failed-finalize-run" },
+        nextAction: "Repair and re-finalize.",
+      }, tx);
+      failureLockAcquired();
+      await holdFailureLock;
+      return action;
+    });
+
+    await failureHasLock;
+    let successHasLock = false;
+    const newerSuccess = db.transaction(async (tx) => {
+      await tx.execute(sql`select ${issues.id} from ${issues} where ${issues.id} = ${sourceIssueId} for update`);
+      successHasLock = true;
+      return recoveryActionSvc.resolveActiveForIssue({
+        companyId,
+        sourceIssueId,
+        cause: "workspace_finalize_failed",
+        status: "resolved",
+        outcome: "restored",
+        resolutionNote: "A newer finalization succeeded.",
+      }, tx);
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(successHasLock).toBe(false);
+    releaseFailureLock();
+
+    const [created, resolved] = await Promise.all([failedFinalize, newerSuccess]);
+    expect(resolved).toMatchObject({ id: created.id, status: "resolved", outcome: "restored" });
+    await expect(recoveryActionSvc.getActiveForIssue(companyId, sourceIssueId)).resolves.toBeNull();
   });
 
   it("keeps active recovery visible when a plain comment does not create a live path", async () => {

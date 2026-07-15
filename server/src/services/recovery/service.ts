@@ -70,6 +70,9 @@ import {
 } from "./model-profile-hint.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
 
+type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
+type DbOrTransaction = Db | DbTransaction;
+
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["interrupted", "failed", "cancelled", "timed_out"] as const;
 export const ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS = 60 * 60 * 1000;
@@ -2546,7 +2549,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     recoveryCause?: StrandedRecoveryCause;
     recoveryOwnerAgentId?: string | null;
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
-  }) {
+  }, dbOrTx: DbOrTransaction = db) {
     const recoveryCause = input.recoveryCause ?? "stranded_assigned_issue";
     const ownerAgentId = await resolveStrandedIssueRecoveryOwnerAgentId(
       input.issue,
@@ -2609,7 +2612,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       monitorPolicy: null,
       maxAttempts: null,
       lastAttemptAt: now,
-    });
+    }, dbOrTx);
 
     return action;
   }
@@ -2989,16 +2992,24 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return updated;
   }
 
-  async function surfaceFailedTerminalWorkspaceFinalize(input: {
+  async function ensureFailedTerminalWorkspaceFinalizeRecovery(input: {
     issue: typeof issues.$inferSelect;
     latestRun: LatestIssueRun;
-  }) {
-    const recoveryAction = await ensureSourceScopedStrandedRecoveryAction({
+  }, dbOrTx: DbOrTransaction) {
+    return ensureSourceScopedStrandedRecoveryAction({
       issue: input.issue,
       previousStatus: "done",
       latestRun: input.latestRun,
       recoveryCause: "workspace_finalize_failed",
-    });
+    }, dbOrTx);
+  }
+
+  async function surfaceFailedTerminalWorkspaceFinalize(input: {
+    issue: typeof issues.$inferSelect;
+    latestRun: LatestIssueRun;
+    recoveryAction: Awaited<ReturnType<typeof ensureFailedTerminalWorkspaceFinalizeRecovery>>;
+  }) {
+    const { recoveryAction } = input;
 
     if (recoveryAction.attemptCount === 1) {
       await issuesSvc.addComment(
@@ -3040,19 +3051,30 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   async function resolveFailedTerminalWorkspaceFinalize(input: {
     issue: typeof issues.$inferSelect;
     runId: string;
-  }) {
-    const activeRecoveryAction = await recoveryActionsSvc.getActiveForIssue(input.issue.companyId, input.issue.id);
+  }, dbOrTx: DbOrTransaction) {
+    const activeRecoveryAction = await recoveryActionsSvc.getActiveForIssue(
+      input.issue.companyId,
+      input.issue.id,
+      dbOrTx,
+    );
     if (activeRecoveryAction?.cause !== "workspace_finalize_failed") return null;
 
-    const resolved = await recoveryActionsSvc.resolveActiveForIssue({
+    return recoveryActionsSvc.resolveActiveForIssue({
       companyId: input.issue.companyId,
       sourceIssueId: input.issue.id,
       actionId: activeRecoveryAction.id,
       status: "resolved",
       outcome: "restored",
       resolutionNote: `Workspace finalization succeeded on heartbeat run ${input.runId}.`,
-    });
-    if (!resolved) return null;
+    }, dbOrTx);
+  }
+
+  async function recordResolvedTerminalWorkspaceFinalize(input: {
+    issue: typeof issues.$inferSelect;
+    runId: string;
+    resolved: NonNullable<Awaited<ReturnType<typeof resolveFailedTerminalWorkspaceFinalize>>>;
+  }) {
+    const { resolved } = input;
 
     await logActivity(db, {
       companyId: input.issue.companyId,
@@ -3071,8 +3093,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         resolutionRunId: input.runId,
       },
     });
-
-    return resolved;
   }
 
   async function reconcileStrandedAssignedIssues(opts?: { issueCreatedAtGte?: Date | null }) {
@@ -4834,8 +4854,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     buildRunOutputSilence,
     escalateStrandedRecoveryIssueInPlace,
     escalateStrandedAssignedIssue,
+    ensureFailedTerminalWorkspaceFinalizeRecovery,
     surfaceFailedTerminalWorkspaceFinalize,
     resolveFailedTerminalWorkspaceFinalize,
+    recordResolvedTerminalWorkspaceFinalize,
     recordWatchdogDecision,
     scanSilentActiveRuns,
     reconcileStrandedAssignedIssues,

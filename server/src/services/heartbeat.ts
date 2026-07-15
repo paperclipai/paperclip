@@ -14042,7 +14042,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               eq(workspaceOperations.phase, "workspace_finalize"),
             ),
           )
-          .orderBy(desc(workspaceOperations.startedAt), desc(workspaceOperations.createdAt))
+          .orderBy(
+            desc(workspaceOperations.startedAt),
+            desc(workspaceOperations.createdAt),
+            desc(workspaceOperations.id),
+          )
           .limit(1)
           .then((rows) => rows[0] ?? null);
 
@@ -14055,18 +14059,33 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 eq(workspaceOperations.companyId, issue.companyId),
                 eq(workspaceOperations.executionWorkspaceId, currentFinalize.executionWorkspaceId),
                 eq(workspaceOperations.issueId, issue.id),
+                eq(workspaceOperations.phase, "workspace_finalize"),
               ),
             )
-            .orderBy(desc(workspaceOperations.startedAt), desc(workspaceOperations.createdAt))
+            .orderBy(
+              desc(workspaceOperations.startedAt),
+              desc(workspaceOperations.createdAt),
+              desc(workspaceOperations.id),
+            )
             .limit(1)
             .then((rows) => rows[0] ?? null);
 
           if (latestFinalize?.id === currentFinalize.id) {
-            return currentFinalize.status === "succeeded"
-              ? { kind: "succeeded_terminal_workspace_finalize" as const, issue }
-              : currentFinalize.status === "failed"
-                ? { kind: "failed_terminal_workspace_finalize" as const, issue }
-                : { kind: "released" as const };
+            if (currentFinalize.status === "failed") {
+              const recoveryAction = await recovery.ensureFailedTerminalWorkspaceFinalizeRecovery({
+                issue,
+                latestRun: run,
+              }, tx);
+              return { kind: "failed_terminal_workspace_finalize" as const, issue, recoveryAction };
+            }
+            if (currentFinalize.status === "succeeded") {
+              const resolved = await recovery.resolveFailedTerminalWorkspaceFinalize({
+                issue,
+                runId: run.id,
+              }, tx);
+              return { kind: "succeeded_terminal_workspace_finalize" as const, issue, resolved };
+            }
+            return { kind: "released" as const };
           }
         }
       }
@@ -14674,15 +14693,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       await recovery.surfaceFailedTerminalWorkspaceFinalize({
         issue: promotionResult.issue,
         latestRun: run,
+        recoveryAction: promotionResult.recoveryAction,
       });
       return;
     }
 
     if (promotionResult?.kind === "succeeded_terminal_workspace_finalize") {
-      await recovery.resolveFailedTerminalWorkspaceFinalize({
-        issue: promotionResult.issue,
-        runId: run.id,
-      });
+      if (promotionResult.resolved) {
+        await recovery.recordResolvedTerminalWorkspaceFinalize({
+          issue: promotionResult.issue,
+          runId: run.id,
+          resolved: promotionResult.resolved,
+        });
+      }
       return;
     }
 
