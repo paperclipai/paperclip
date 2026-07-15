@@ -15,10 +15,12 @@ function cacheKeyForTarget(command: string, target: AdapterExecutionTarget | nul
     return `local:${target.environmentId ?? ""}:${target.leaseId ?? ""}:${command}`;
   }
   if (target.transport === "sandbox") {
+    const remoteCwd = target.remoteCwd.trim();
     return [
       "sandbox",
       target.providerKey ?? "",
       target.environmentId ?? "",
+      remoteCwd,
       command,
     ].join(":");
   }

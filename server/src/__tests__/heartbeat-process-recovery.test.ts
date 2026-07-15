@@ -2802,6 +2802,62 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(activity.some((event) => event.action === "issue.successful_run_handoff_required")).toBe(true);
   });
 
+  it("does not queue a finish-handoff wake when an open child already owns the next action", async () => {
+    const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    mockAdapterExecute.mockImplementationOnce(async (ctx: { runId: string }) => {
+      await db.insert(issueComments).values({
+        companyId,
+        issueId,
+        authorAgentId: agentId,
+        createdByRunId: ctx.runId,
+        body: "Finished the umbrella pass and left the follow-up child lane to continue.",
+      });
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "Finished the umbrella pass and left the follow-up child lane to continue.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+    await db.insert(issues).values({
+      id: randomUUID(),
+      companyId,
+      parentId: issueId,
+      title: "Follow-up child lane",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      issueNumber: 2,
+      identifier: `${issuePrefix}-2`,
+    });
+
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId, 5_000);
+    await waitForHeartbeatIdle(db, 5_000);
+
+    const handoffWakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+
+    expect(handoffWakeups.filter((wakeup) => wakeup.reason === "finish_successful_run_handoff")).toHaveLength(0);
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments.find((comment) => comment.body === SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY)).toBeUndefined();
+
+    const activity = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, issueId));
+    expect(activity.some((event) => event.action === "issue.successful_run_handoff_required")).toBe(false);
+  });
+
   it("requeues a missing-disposition handoff when the previous corrective wake was cancelled", async () => {
     const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
     const idempotencyKey = `finish_successful_run_handoff:${issueId}:${runId}:1`;

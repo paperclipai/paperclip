@@ -262,6 +262,20 @@ describe("issue thread interaction schemas", () => {
     });
   });
 
+  it("parses accepted request_confirmation results as decision-only records", () => {
+    const parsed = requestConfirmationResultSchema.parse({
+      version: 1,
+      outcome: "accepted",
+      targetMutationApplied: false,
+    });
+
+    expect(parsed).toMatchObject({
+      version: 1,
+      outcome: "accepted",
+      targetMutationApplied: false,
+    });
+  });
+
   it("rejects invalid request_checkbox_confirmation option references and bounds", () => {
     const base = {
       kind: "request_checkbox_confirmation",

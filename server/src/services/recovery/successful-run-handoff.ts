@@ -371,6 +371,7 @@ export function decideSuccessfulRunHandoff(input: {
   hasPendingInteractionOrApproval: boolean;
   hasPersistedMonitor: boolean;
   hasExplicitBlockerPath: boolean;
+  hasOpenChildPath?: boolean;
   hasOpenRecoveryIssue: boolean;
   hasPauseHold: boolean;
   hasActiveRoutineContinuation: boolean;
@@ -413,6 +414,7 @@ export function decideSuccessfulRunHandoff(input: {
   }
   if (input.hasPersistedMonitor) return { kind: "skip", reason: "persisted issue monitor owns the next action" };
   if (input.hasExplicitBlockerPath) return { kind: "skip", reason: "explicit blocker path owns the next action" };
+  if (input.hasOpenChildPath) return { kind: "skip", reason: "open child work already owns the next action" };
   if (input.hasOpenRecoveryIssue) return { kind: "skip", reason: "open recovery issue owns the ambiguity" };
   if (input.hasPauseHold) return { kind: "skip", reason: "issue is under an active pause hold" };
   if (input.budgetBlocked) return { kind: "skip", reason: "budget hard stop blocks corrective wake" };

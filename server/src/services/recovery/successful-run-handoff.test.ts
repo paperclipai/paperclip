@@ -153,6 +153,10 @@ describe("successful run handoff decision", () => {
       kind: "skip",
       reason: "issue already has a queued or deferred wake",
     });
+    expect(decide({ hasOpenChildPath: true })).toEqual({
+      kind: "skip",
+      reason: "open child work already owns the next action",
+    });
     expect(decide({ hasPersistedMonitor: true })).toEqual({
       kind: "skip",
       reason: "persisted issue monitor owns the next action",

@@ -637,6 +637,83 @@ describeEmbeddedPostgres("workspace file resources", () => {
     });
   });
 
+  it("skips auto workspace candidates denied by symlink-mirror realpath checks when a linked local workspace can resolve the path", async () => {
+    const { root, projectRoot: mirrorRoot, targetProjectRoot: linkedRoot } = await makeWorkspace();
+    const graph = await seedGraph(db, {
+      projectRoot: mirrorRoot,
+      targetProjectRoot: linkedRoot,
+      executionRoot: mirrorRoot,
+    });
+    const linkedWorkspaceId = crypto.randomUUID();
+    const relativePath = "work-knowledge/deliverables/drafts/fra1372-trolley-concept/supplier-rfq-concept-sheet-36-trolley.pdf";
+
+    await db.insert(projectWorkspaces).values({
+      id: linkedWorkspaceId,
+      companyId: graph.companyId,
+      projectId: graph.projectId,
+      name: "Linked local workspace",
+      sourceType: "non_git_path",
+      cwd: linkedRoot,
+      isPrimary: false,
+    });
+    await db.update(issues).set({ projectWorkspaceId: linkedWorkspaceId }).where(eq(issues.id, graph.issueId));
+
+    await fs.mkdir(path.join(linkedRoot, path.dirname(relativePath)), { recursive: true });
+    await fs.writeFile(path.join(linkedRoot, relativePath), "%PDF-1.4\nmock trolley pdf\n", "utf8");
+    await fs.symlink(path.join(linkedRoot, "work-knowledge"), path.join(mirrorRoot, "work-knowledge"));
+
+    const app = createApp(db, {
+      type: "board",
+      userId: "board-user",
+      companyIds: [graph.companyId],
+      source: "session",
+      isInstanceAdmin: false,
+    });
+
+    const resolved = await request(app)
+      .get(`/api/issues/${graph.issueId}/file-resources/resolve`)
+      .query({ workspace: "auto", path: relativePath });
+
+    expect(resolved.status).toBe(200);
+    expect(resolved.body).toMatchObject({
+      workspaceKind: "project_workspace",
+      workspaceId: linkedWorkspaceId,
+      displayPath: relativePath,
+      previewKind: "pdf",
+    });
+    expect(JSON.stringify(resolved.body)).not.toContain(root);
+
+    const content = await request(app)
+      .get(`/api/issues/${graph.issueId}/file-resources/content`)
+      .query({ workspace: "auto", path: relativePath });
+
+    expect(content.status).toBe(200);
+    expect(content.body.resource).toMatchObject({
+      workspaceKind: "project_workspace",
+      workspaceId: linkedWorkspaceId,
+      displayPath: relativePath,
+      previewKind: "pdf",
+    });
+    expect(content.body.content.encoding).toBe("base64");
+    expect(Buffer.from(content.body.content.data, "base64").toString("utf8")).toContain("mock trolley pdf");
+    expect(JSON.stringify(content.body)).not.toContain(root);
+
+    const downloaded = await request(app)
+      .get(`/api/issues/${graph.issueId}/file-resources/content`)
+      .query({ workspace: "auto", path: relativePath, download: "1" })
+      .buffer(true)
+      .parse((res, callback) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+        res.on("end", () => callback(null, Buffer.concat(chunks)));
+      });
+
+    expect(downloaded.status).toBe(200);
+    expect(downloaded.headers["content-disposition"]).toBe('attachment; filename="supplier-rfq-concept-sheet-36-trolley.pdf"');
+    expect(downloaded.headers["x-content-type-options"]).toBe("nosniff");
+    expect((downloaded.body as Buffer).toString("utf8")).toContain("mock trolley pdf");
+  });
+
   it("resolves and reads video workspace files as base64 previews", async () => {
     const { projectRoot, executionRoot } = await makeWorkspace();
     const graph = await seedGraph(db, { projectRoot, executionRoot });

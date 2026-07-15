@@ -3,6 +3,9 @@ import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockWakeup = vi.hoisted(() => vi.fn(async () => undefined));
+const mockGetRun = vi.hoisted(() => vi.fn(async () => null));
+const mockGetActiveRunForAgent = vi.hoisted(() => vi.fn(async () => null));
+const mockCancelRun = vi.hoisted(() => vi.fn(async () => null));
 const mockFindExistingIssueBlockersResolvedWake = vi.hoisted(() => vi.fn(async () => null));
 const mockIssueService = vi.hoisted(() => ({
   getAncestors: vi.fn(),
@@ -13,7 +16,6 @@ const mockIssueService = vi.hoisted(() => ({
   getRelationSummaries: vi.fn(),
   update: vi.fn(),
   getDependencyReadiness: vi.fn(),
-  listWakeableBlockedDependents: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
   findMentionedAgents: vi.fn(async () => []),
 }));
@@ -46,6 +48,9 @@ vi.mock("../services/index.js", () => ({
   }),
   heartbeatService: () => ({
     wakeup: mockWakeup,
+    getRun: mockGetRun,
+    getActiveRunForAgent: mockGetActiveRunForAgent,
+    cancelRun: mockCancelRun,
     reportRunActivity: vi.fn(async () => undefined),
   }),
   getIssueContinuationSummaryDocument: vi.fn(async () => null),
@@ -129,6 +134,9 @@ describe("issue dependency wakeups in issue routes", () => {
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
     vi.clearAllMocks();
+    mockGetRun.mockResolvedValue(null);
+    mockGetActiveRunForAgent.mockResolvedValue(null);
+    mockCancelRun.mockResolvedValue(null);
     mockFindExistingIssueBlockersResolvedWake.mockResolvedValue(null);
     mockIssueService.getAncestors.mockResolvedValue([]);
     mockIssueService.getComment.mockResolvedValue(null);
@@ -147,7 +155,6 @@ describe("issue dependency wakeups in issue routes", () => {
       allBlockersDone: true,
       isDependencyReady: true,
     });
-    mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
   });
 
@@ -185,14 +192,19 @@ describe("issue dependency wakeups in issue routes", () => {
       executionWorkspaceId: null,
       labels: [],
       labelIds: [],
-    });
-    mockIssueService.listWakeableBlockedDependents.mockResolvedValue([
-      {
-        id: "issue-2",
-        assigneeAgentId: "agent-2",
-        blockerIssueIds: ["issue-1", "issue-3"],
+      autoPrunedTerminalBlockerEffect: {
+        prunedDependentIssueIds: ["issue-2"],
+        reopenedIssueIds: ["issue-2"],
+        wakeTargets: [
+          {
+            id: "issue-2",
+            assigneeAgentId: "agent-2",
+            blockerIssueIds: ["issue-1"],
+            resolvedBlockerIssueId: "issue-1",
+          },
+        ],
       },
-    ]);
+    });
 
     const res = await request(await createApp()).patch("/api/issues/issue-1").send({ status: "done" });
     expect(res.status).toBe(200);
@@ -204,6 +216,71 @@ describe("issue dependency wakeups in issue routes", () => {
           payload: expect.objectContaining({
             issueId: "issue-2",
             resolvedBlockerIssueId: "issue-1",
+          }),
+        }),
+      );
+    });
+  });
+
+  it("wakes dependents when the final blocker transitions to cancelled and is auto-pruned", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      id: "issue-1",
+      companyId: "company-1",
+      identifier: "PAP-100",
+      title: "Cancelled blocker",
+      description: null,
+      status: "blocked",
+      priority: "medium",
+      parentId: null,
+      assigneeAgentId: "agent-1",
+      assigneeUserId: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      executionWorkspaceId: null,
+      labels: [],
+      labelIds: [],
+    });
+    mockIssueService.update.mockResolvedValue({
+      id: "issue-1",
+      companyId: "company-1",
+      identifier: "PAP-100",
+      title: "Cancelled blocker",
+      description: null,
+      status: "cancelled",
+      priority: "medium",
+      parentId: null,
+      assigneeAgentId: "agent-1",
+      assigneeUserId: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      executionWorkspaceId: null,
+      labels: [],
+      labelIds: [],
+      autoPrunedTerminalBlockerEffect: {
+        prunedDependentIssueIds: ["issue-2"],
+        reopenedIssueIds: ["issue-2"],
+        wakeTargets: [
+          {
+            id: "issue-2",
+            assigneeAgentId: "agent-2",
+            blockerIssueIds: ["issue-1"],
+            resolvedBlockerIssueId: "issue-1",
+          },
+        ],
+      },
+    });
+
+    const res = await request(await createApp()).patch("/api/issues/issue-1").send({ status: "cancelled" });
+    expect(res.status).toBe(200);
+    await vi.waitFor(() => {
+      expect(mockWakeup).toHaveBeenCalledWith(
+        "agent-2",
+        expect.objectContaining({
+          reason: "issue_blockers_resolved",
+          payload: expect.objectContaining({
+            issueId: "issue-2",
+            resolvedBlockerIssueId: "issue-1",
+            mutation: "blocker_cancelled",
           }),
         }),
       );

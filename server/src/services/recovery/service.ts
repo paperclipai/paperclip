@@ -4996,7 +4996,22 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         .limit(RESOLVED_DEPENDENCY_WAKE_BACKSTOP_CANDIDATE_LIMIT);
     };
 
-    let candidateRows = await queryCandidates(useCursor ? resolvedDependencyWakeBackstopCandidateCursor : null);
+    const terminalBlockerEffect = opts?.blockerIssueId
+      ? await issuesSvc.resolveTerminalBlockerDependents(
+          opts.blockerIssueId,
+          { runId: opts.runId ?? null },
+        )
+      : null;
+
+    let candidateRows = opts?.blockerIssueId
+      ? terminalBlockerEffect!.wakeTargets.map((target) => ({
+          id: target.id,
+          companyId: opts.companyId ?? "",
+          identifier: null,
+          assigneeAgentId: target.assigneeAgentId,
+          totalCount: terminalBlockerEffect!.wakeTargets.length,
+        }))
+      : await queryCandidates(useCursor ? resolvedDependencyWakeBackstopCandidateCursor : null);
     if (useCursor && candidateRows.length === 0 && resolvedDependencyWakeBackstopCandidateCursor) {
       resolvedDependencyWakeBackstopCandidateCursor = null;
       candidateRows = await queryCandidates(null);
@@ -5032,36 +5047,45 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     }
 
     for (const [companyId, companyCandidates] of candidatesByCompany.entries()) {
-      const readinessMap = await issuesSvc.listDependencyReadiness(
-        companyId,
-        companyCandidates.map((candidate) => candidate.id),
-      );
-
       for (const candidate of companyCandidates) {
         const agentId = candidate.assigneeAgentId;
         if (!agentId) continue;
-
-        const readiness = readinessMap.get(candidate.id);
-        const resolvedBlockerIssueId = readiness?.blockerIssueIds[0] ?? null;
-        if (
+        const terminalWakeTarget = opts?.blockerIssueId
+          ? terminalBlockerEffect?.wakeTargets.find((target) => target.id === candidate.id) ?? null
+          : null;
+        const readiness = terminalWakeTarget
+          ? null
+          : (await issuesSvc.listDependencyReadiness(companyId, [candidate.id])).get(candidate.id);
+        const blockerIssueIds = terminalWakeTarget?.blockerIssueIds ?? readiness?.blockerIssueIds ?? [];
+        const resolvedBlockerIssueId = terminalWakeTarget?.resolvedBlockerIssueId ?? readiness?.blockerIssueIds[0] ?? null;
+        if (!terminalWakeTarget && (
           !readiness ||
           !readiness.isDependencyReady ||
           readiness.blockerIssueIds.length === 0 ||
           !resolvedBlockerIssueId
-        ) {
+        )) {
           result.notReadySkipped += 1;
           continue;
         }
 
-        const idempotencyKeys = readiness.blockerIssueIds.map((blockerIssueId) =>
+        const idempotencyKeys = blockerIssueIds.map((blockerIssueId) =>
           buildIssueBlockersResolvedWakeIdempotencyKey({
             dependentIssueId: candidate.id,
             resolvedBlockerIssueId: blockerIssueId,
           })
         );
-        const idempotencyKey = buildIssueBlockersResolvedWakeIdempotencyKey({
+        if (resolvedBlockerIssueId && !idempotencyKeys.includes(buildIssueBlockersResolvedWakeIdempotencyKey({
           dependentIssueId: candidate.id,
           resolvedBlockerIssueId,
+        }))) {
+          idempotencyKeys.push(buildIssueBlockersResolvedWakeIdempotencyKey({
+            dependentIssueId: candidate.id,
+            resolvedBlockerIssueId,
+          }));
+        }
+        const idempotencyKey = buildIssueBlockersResolvedWakeIdempotencyKey({
+          dependentIssueId: candidate.id,
+          resolvedBlockerIssueId: resolvedBlockerIssueId!,
         });
         const existingWake = await findExistingIssueBlockersResolvedWakeForAnyKey(db, {
           companyId,
@@ -5098,7 +5122,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             payload: {
               issueId: candidate.id,
               resolvedBlockerIssueId,
-              blockerIssueIds: readiness.blockerIssueIds,
+              blockerIssueIds,
               backstop: payloadBackstop,
             },
             idempotencyKey,
@@ -5110,7 +5134,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
               wakeReason: ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
               source,
               resolvedBlockerIssueId,
-              blockerIssueIds: readiness.blockerIssueIds,
+              blockerIssueIds,
             },
           });
           if (!wake) {
@@ -5138,7 +5162,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
               wakeupRunId: wake.id,
               idempotencyKey,
               resolvedBlockerIssueId,
-              blockerIssueIds: readiness.blockerIssueIds,
+              blockerIssueIds,
             },
           });
         } catch (err) {

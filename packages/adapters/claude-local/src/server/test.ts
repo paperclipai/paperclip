@@ -86,6 +86,41 @@ function summarizeProbeDetail(stdout: string, stderr: string): string | null {
   return clean.length > max ? `${clean.slice(0, max - 1)}…` : clean;
 }
 
+type EffortArgState = {
+  effortFromArgs: string;
+  argsWithoutEffort: string[];
+};
+
+function extractEffortFromExtraArgs(inputArgs: string[]): EffortArgState {
+  const argsWithoutEffort: string[] = [];
+  let effortFromArgs = "";
+
+  for (let index = 0; index < inputArgs.length; index += 1) {
+    const arg = inputArgs[index] ?? "";
+    if (arg === "--effort" && index + 1 < inputArgs.length) {
+      const next = inputArgs[index + 1];
+      if (!effortFromArgs && typeof next === "string" && !next.startsWith("--")) {
+        effortFromArgs = next;
+        index += 1;
+      }
+      continue;
+    }
+    if (arg === "--effort") {
+      continue;
+    }
+    if (arg.startsWith("--effort=")) {
+      const candidate = arg.slice("--effort=".length);
+      if (!effortFromArgs && candidate.length > 0) {
+        effortFromArgs = candidate;
+      }
+      continue;
+    }
+    argsWithoutEffort.push(arg);
+  }
+
+  return { effortFromArgs, argsWithoutEffort };
+}
+
 export async function testEnvironment(
   ctx: AdapterEnvironmentTestContext,
 ): Promise<AdapterEnvironmentTestResult> {
@@ -314,8 +349,11 @@ export async function testEnvironment(
         return asStringArray(config.args);
       })();
 
-      let effectiveEffort = effort;
-      if (targetIsSandbox && effort) {
+      const extraArgsState = extractEffortFromExtraArgs(extraArgs);
+      const effectiveEffortSource = effort || extraArgsState.effortFromArgs;
+      let effectiveEffort = effectiveEffortSource;
+
+      if (effectiveEffort) {
         const supportsEffort = await claudeCommandSupportsEffortFlag({
           runId,
           command,
@@ -325,14 +363,14 @@ export async function testEnvironment(
           timeoutSec: 45,
           graceSec: 5,
         });
-        if (supportsEffort === false) {
+        if (supportsEffort !== true) {
           effectiveEffort = "";
           checks.push({
             code: "claude_effort_flag_unsupported",
             level: "warn",
             message:
-              "Claude CLI in the sandbox does not advertise --effort; the probe omitted the configured reasoning effort.",
-            hint: "Upgrade the sandbox CLI/template to a newer Claude Code release to restore reasoning-effort control.",
+              "Claude CLI does not advertise --effort; the probe omitted the configured reasoning effort.",
+            hint: "Upgrade the CLI/runtime image to a newer Claude Code release to restore reasoning-effort control.",
           });
         }
       }
@@ -346,7 +384,9 @@ export async function testEnvironment(
       }
       if (effectiveEffort) args.push("--effort", effectiveEffort);
       if (maxTurns > 0) args.push("--max-turns", String(maxTurns));
-      if (extraArgs.length > 0) args.push(...extraArgs);
+      if (extraArgsState.argsWithoutEffort.length > 0) {
+        args.push(...extraArgsState.argsWithoutEffort);
+      }
 
       // Sandbox bridges still add lease warmup and transport overhead, but
       // the standard-2 Cloudflare tier now probes fast enough that a 90s

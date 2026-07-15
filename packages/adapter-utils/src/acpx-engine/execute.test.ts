@@ -91,9 +91,7 @@ function createLocalSandboxRunner(
   };
 }
 
-function buildRuntime(
-  onSetConfigOption?: (input: { key: string; value: string }) => void,
-) {
+function buildRuntime() {
   return {
     ensureSession: async () => ({
       backendSessionId: "backend-session",
@@ -107,9 +105,6 @@ function buildRuntime(
       result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
       cancel: async () => {},
     }),
-    setConfigOption: async (input: { key: string; value: string }) => {
-      onSetConfigOption?.(input);
-    },
     close: async () => {},
   };
 }
@@ -122,16 +117,20 @@ async function runExecutor(
     authToken?: string;
     executionTarget?: Record<string, unknown>;
     runtimeMcp?: AdapterRuntimeMcpAccess;
+    createRuntime?: (options: Record<string, unknown>) => unknown;
   } = {},
 ) {
   const runtimeOptions: Record<string, unknown>[] = [];
-  const configOptions: Array<{ key: string; value: string }> = [];
   const meta: Record<string, unknown>[] = [];
   const logs: Array<{ stream: string; text: string }> = [];
+  const runtimeFactory = options.createRuntime;
   const execute = createAcpxEngineExecutor({
-    createRuntime: (options) => {
-      runtimeOptions.push(options as unknown as Record<string, unknown>);
-      return buildRuntime(({ key, value }) => configOptions.push({ key, value })) as never;
+    createRuntime: (runtimeInput) => {
+      runtimeOptions.push(runtimeInput as unknown as Record<string, unknown>);
+      if (runtimeFactory) {
+        return runtimeFactory(runtimeInput as unknown as Record<string, unknown>) as never;
+      }
+      return buildRuntime() as never;
     },
   });
 
@@ -157,110 +156,10 @@ async function runExecutor(
   } as never);
 
   expect(result.exitCode).toBe(0);
-  return { logs, meta, runtimeOptions, configOptions, result };
+  return { logs, meta, runtimeOptions, result };
 }
 
 describe("shared ACPX engine runtime behavior", () => {
-  it("sets Codex model, effort, and fast mode through CODEX_CONFIG without session config calls", async () => {
-    const { configOptions, meta } = await runExecutor({
-      agent: "codex",
-      model: "gpt-5.6-sol",
-      modelReasoningEffort: "high",
-      fastMode: true,
-    });
-
-    expect(JSON.parse(String((meta[0]?.env as Record<string, string>).CODEX_CONFIG))).toEqual({
-      model: "gpt-5.6-sol",
-      model_reasoning_effort: "high",
-      service_tier: "fast",
-      features: { fast_mode: true },
-    });
-    expect(configOptions).toEqual([]);
-    expect(meta[0]?.commandNotes).toContain(
-      "Requested ACPX model: gpt-5.6-sol (set via CODEX_CONFIG at startup).",
-    );
-  });
-
-  it("forwards arbitrary Codex model IDs verbatim without picker-dependent session config", async () => {
-    const arbitraryModel = "gpt-999-test-does-not-exist";
-    const { configOptions, meta } = await runExecutor({
-      agent: "codex",
-      model: arbitraryModel,
-      reasoningEffort: "xhigh",
-      fastMode: true,
-    });
-
-    const codexConfig = JSON.parse(
-      String((meta[0]?.env as Record<string, string>).CODEX_CONFIG),
-    ) as Record<string, unknown>;
-    expect(codexConfig.model).toBe(arbitraryModel);
-    expect(codexConfig.model_reasoning_effort).toBe("xhigh");
-    expect(configOptions).toEqual([]);
-  });
-
-  it("merges user CODEX_CONFIG while runtime model settings win", async () => {
-    const { meta } = await runExecutor({
-      agent: "codex",
-      model: "gpt-runtime",
-      fastMode: true,
-      env: {
-        CODEX_CONFIG: JSON.stringify({
-          model: "gpt-user",
-          approval_policy: "never",
-          features: { experimental_feature: true, fast_mode: false },
-        }),
-      },
-    });
-
-    expect(JSON.parse(String((meta[0]?.env as Record<string, string>).CODEX_CONFIG))).toEqual({
-      model: "gpt-runtime",
-      approval_policy: "never",
-      service_tier: "fast",
-      features: { experimental_feature: true, fast_mode: true },
-    });
-  });
-
-  it("warns when runtime settings replace malformed user CODEX_CONFIG", async () => {
-    const { logs, meta } = await runExecutor({
-      agent: "codex",
-      model: "gpt-runtime",
-      env: { CODEX_CONFIG: "not-json" },
-    });
-
-    expect(JSON.parse(String((meta[0]?.env as Record<string, string>).CODEX_CONFIG))).toEqual({
-      model: "gpt-runtime",
-    });
-    expect(logs).toContainEqual({
-      stream: "stderr",
-      text: "[paperclip] Ignoring invalid user CODEX_CONFIG while applying runtime Codex settings; expected a JSON object.\n",
-    });
-  });
-
-  it("keeps Claude startup model handling and Gemini session config handling unchanged", async () => {
-    const claude = await runExecutor({ agent: "claude", model: "claude-opus-4-7" });
-    expect((claude.meta[0]?.env as Record<string, string>).ANTHROPIC_MODEL).toBe(
-      "claude-opus-4-7",
-    );
-    expect(claude.configOptions).toEqual([]);
-
-    const gemini = await runExecutor({
-      agent: "gemini",
-      model: "gemini-2.5-pro",
-      thinkingEffort: "high",
-    });
-    expect(gemini.configOptions).toEqual([
-      { key: "model", value: "gemini-2.5-pro" },
-      { key: "effort", value: "high" },
-    ]);
-  });
-
-  it("does not inject CODEX_CONFIG or session config when Codex overrides are absent", async () => {
-    const { configOptions, meta } = await runExecutor({ agent: "codex" });
-
-    expect((meta[0]?.env as Record<string, string>).CODEX_CONFIG).toBeUndefined();
-    expect(configOptions).toEqual([]);
-  });
-
   it("includes Paperclip env and API access notes in the ACPX prompt without leaking the token", async () => {
     const { meta } = await runExecutor(
       { agent: "custom", agentCommand: "node ./fake-acp.js" },
@@ -661,95 +560,6 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(wrapper).not.toContain("old-key");
     expect(env).toContain("PAPERCLIP_API_KEY='new-key'");
     expect(env).not.toContain("old-key");
-  });
-
-  it("forwards resolved adapter env (plain + secret) to the wrapper without overriding runtime vars", async () => {
-    const root = await makeTempRoot();
-    const stateDir = path.join(root, "state");
-
-    await runExecutor(
-      {
-        agentCommand: "node ./fake-acp.js",
-        stateDir,
-        env: {
-          OOGA_BOOGA_123: "plain-value",
-          // Server-resolved secret_ref values arrive here as plain strings.
-          OPENROUTER_API_KEY: "resolved-secret-value",
-          // Reserved-namespace config keys must not clobber runtime identity/wake.
-          PAPERCLIP_TASK_ID: "attacker-issue",
-        },
-      },
-      {
-        authToken: "runtime-secret-token",
-        context: { taskId: "issue-real", wakeReason: "issue_assigned" },
-      },
-    );
-
-    const wrappers = await fs.readdir(path.join(stateDir, "wrappers"));
-    const envPath = path.join(stateDir, "wrappers", wrappers.find((name) => name.endsWith(".env"))!);
-    const env = await fs.readFile(envPath, "utf8");
-
-    expect(env).toContain("OOGA_BOOGA_123='plain-value'");
-    expect(env).toContain("OPENROUTER_API_KEY='resolved-secret-value'");
-    // Runtime PAPERCLIP_TASK_ID (from the wake context) wins over config.
-    expect(env).toContain("PAPERCLIP_TASK_ID='issue-real'");
-    expect(env).not.toContain("attacker-issue");
-  });
-
-  it("busts the session fingerprint when resolved adapter env changes but not across wakes", async () => {
-    const root = await makeTempRoot();
-    const stateDir = path.join(root, "state");
-    const baseConfig = { agentCommand: "node ./fake-acp.js", stateDir };
-
-    const first = await runExecutor(
-      { ...baseConfig, env: { OPENROUTER_API_KEY: "value-1" } },
-      { context: { taskId: "issue-1", wakeReason: "issue_assigned" } },
-    );
-    const changedEnv = await runExecutor(
-      { ...baseConfig, env: { OPENROUTER_API_KEY: "value-2" } },
-      { context: { taskId: "issue-1", wakeReason: "issue_assigned" } },
-    );
-    const sameEnvNewWake = await runExecutor(
-      { ...baseConfig, env: { OPENROUTER_API_KEY: "value-1" } },
-      { context: { taskId: "issue-1", wakeReason: "comment", wakeCommentId: "c-9" } },
-    );
-
-    const fp = (r: { result: { sessionParams?: unknown } }) =>
-      (r.result.sessionParams as { configFingerprint?: string } | undefined)?.configFingerprint;
-
-    // A changed forwarded env value invalidates warm-handle / session reuse so
-    // the next launch sources the latest env.
-    expect(fp(first)).toBeDefined();
-    expect(fp(changedEnv)).not.toBe(fp(first));
-    // A new heartbeat with the same config env keeps the fingerprint stable, so
-    // per-wake PAPERCLIP_* churn does not needlessly reset the session.
-    expect(fp(sameEnvNewWake)).toBe(fp(first));
-  });
-
-  it("busts the session fingerprint when a stable configured PAPERCLIP_* value rotates", async () => {
-    const root = await makeTempRoot();
-    const stateDir = path.join(root, "state");
-    const baseConfig = { agentCommand: "node ./fake-acp.js", stateDir };
-
-    // An explicitly configured PAPERCLIP_API_KEY is stable per-run config (not a
-    // per-wake runtime var): rotating it must invalidate a warm/resumable session
-    // so the next launch sources the new key, even across an otherwise-identical
-    // wake context.
-    const context = { taskId: "issue-1", wakeReason: "issue_assigned" };
-    const withKey = await runExecutor(
-      { ...baseConfig, env: { PAPERCLIP_API_KEY: "explicit-key-1" } },
-      { context },
-    );
-    const rotatedKey = await runExecutor(
-      { ...baseConfig, env: { PAPERCLIP_API_KEY: "explicit-key-2" } },
-      { context },
-    );
-
-    const fp = (r: { result: { sessionParams?: unknown } }) =>
-      (r.result.sessionParams as { configFingerprint?: string } | undefined)?.configFingerprint;
-
-    expect(fp(withKey)).toBeDefined();
-    expect(fp(rotatedKey)).not.toBe(fp(withKey));
   });
 
   it("shapes ACPX wrapper workspace env for remote execution identities", async () => {
@@ -1375,6 +1185,72 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(JSON.stringify(first.result.sessionParams)).not.toContain("token-one");
     expect(first.result.sessionParams?.configFingerprint).toBe(rotatedToken.result.sessionParams?.configFingerprint);
     expect(first.result.sessionParams?.configFingerprint).not.toBe(changedSet.result.sessionParams?.configFingerprint);
+  });
+
+  it("skips Codex model transport through ACP session config", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const modelConfigInputs: Array<{ key: string; value: string }> = [];
+    const execute = createAcpxEngineExecutor({
+      createRuntime: () => ({
+        ensureSession: async () => ({
+          backendSessionId: "backend-session",
+          agentSessionId: "agent-session",
+          runtimeSessionName: "runtime-session",
+        }),
+        setConfigOption: async (input: { key: string; value: string }) => {
+          modelConfigInputs.push({ key: input.key, value: input.value });
+        },
+        startTurn: () => ({
+          events: {
+            [Symbol.asyncIterator]: async function* () {
+              yield { type: "done", stopReason: "end_turn" };
+            },
+          },
+          result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+          cancel: async () => {},
+        }),
+        close: async () => {},
+      }) as never,
+    });
+
+    const meta: Array<Record<string, unknown>> = [];
+    const result = await execute({
+      runId: "run-1",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+      },
+      runtime: {},
+      config: {
+        agent: "codex",
+        stateDir,
+        model: "gpt-5.6-sol",
+        modelReasoningEffort: "high",
+        fastMode: true,
+      },
+      context: { paperclipWorkspace: { cwd: root, source: "project_workspace", workspaceId: "workspace-1" } },
+      onLog: async () => {},
+      onMeta: async (payload: Record<string, unknown>) => {
+        meta.push(payload);
+      },
+    } as never);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.errorCode).toBeNull();
+    expect(modelConfigInputs).toEqual([
+      { key: "reasoning_effort", value: "high" },
+      { key: "service_tier", value: "fast" },
+      { key: "features.fast_mode", value: "true" },
+    ]);
+    const commandNotes = meta[0]?.commandNotes;
+    expect(Array.isArray(commandNotes)).toBe(true);
+    expect(
+      (commandNotes as string[]).some((note) =>
+        String(note).includes("Requested ACPX model: gpt-5.6-sol (using Codex lane default model configuration)."),
+      ),
+    ).toBe(true);
+    expect(modelConfigInputs.some(({ key, value }) => key === "model" && value === "gpt-5.6-sol")).toBe(false);
   });
 });
 

@@ -161,6 +161,31 @@ console.log(JSON.stringify({ type: "result", session_id: "44444444-4444-4444-844
   await fs.chmod(commandPath, 0o755);
 }
 
+async function writeEffortModeAwareClaudeCommand(commandPath: string): Promise<void> {
+  const script = `#!/usr/bin/env node
+const fs = require("node:fs");
+
+const argv = process.argv.slice(2);
+if (argv.includes("--help")) {
+  const supportsEffort = process.env.PAPERCLIP_TEST_SUPPORTS_EFFORT === "1";
+  const helpCountPath = process.env.PAPERCLIP_TEST_HELP_COUNT_PATH;
+  if (helpCountPath) {
+    const current = fs.existsSync(helpCountPath) ? Number(fs.readFileSync(helpCountPath, "utf8")) || 0 : 0;
+    fs.writeFileSync(helpCountPath, String(current + 1), "utf8");
+  }
+  if (supportsEffort) {
+    process.stdout.write("Usage: claude [options]\\n  --print\\n  --effort <level>\\n  --model <id>\\n");
+  } else {
+    process.stdout.write("Usage: claude [options]\\n  --print\\n  --model <id>\\n");
+  }
+  process.exit(0);
+}
+process.exit(0);
+`;
+  await fs.writeFile(commandPath, script, "utf8");
+  await fs.chmod(commandPath, 0o755);
+}
+
 type CapturePayload = {
   argv: string[];
   prompt: string;
@@ -946,6 +971,65 @@ describe("claude execute", () => {
     }
   }, 10_000);
 
+  it("extracts legacy --effort extraArgs and preserves the remaining args when the sandbox CLI is old", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-sandbox-legacy-effort-"));
+    const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root, {
+      commandWriter: writeHelpWithoutEffortClaudeCommand,
+    });
+    const remoteWorkspace = path.join(root, "sandbox-workspace");
+    await fs.mkdir(remoteWorkspace, { recursive: true });
+
+    try {
+      const result = await execute({
+        runId: "run-sandbox-legacy-effort-fallback",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Claude Coder",
+          adapterType: "claude_local",
+          adapterConfig: { engine: "cli" },
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          engine: "cli",
+          command: commandPath,
+          cwd: workspace,
+          extraArgs: ["--effort", "low", "--model", "claude-sonnet", "--max-turns", "4", "plain-arg"],
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          },
+          promptTemplate: "Fallback cleanly if the sandbox CLI is old.",
+        },
+        context: {},
+        executionTarget: {
+          kind: "remote",
+          transport: "sandbox",
+          providerKey: "daytona",
+          environmentId: "env-1",
+          leaseId: "lease-1",
+          remoteCwd: remoteWorkspace,
+          timeoutMs: 30_000,
+          runner: createLocalSandboxRunner(),
+        },
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(0);
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      expect(capture.argv).not.toContain("--effort");
+      expect(capture.argv).toEqual(expect.arrayContaining(["--model", "claude-sonnet", "--max-turns", "4", "plain-arg"]));
+    } finally {
+      restore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  }, 10_000);
+
   it("passes through --effort and reuses the sandbox capability probe across sandbox leases when the installed Claude CLI advertises it", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-sandbox-effort-supported-"));
     const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root, {
@@ -1017,6 +1101,68 @@ describe("claude execute", () => {
       expect(await fs.readFile(helpCountPath, "utf8")).toBe("1");
     } finally {
       restore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  }, 10_000);
+
+  it("re-probes sandbox capability when target identity changes and support status changes", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-sandbox-effort-identity-"));
+    const commandPath = path.join(root, "claude");
+    const helpCountPath = path.join(root, "help-count.txt");
+    const remoteWorkspaceOne = path.join(root, "remote", "one");
+    const remoteWorkspaceTwo = path.join(root, "remote", "two");
+    await fs.mkdir(remoteWorkspaceOne, { recursive: true });
+    await fs.mkdir(remoteWorkspaceTwo, { recursive: true });
+    await writeEffortModeAwareClaudeCommand(commandPath);
+
+    try {
+      const baseInput = {
+        command: commandPath,
+        cwd: "/host/workspace",
+        env: {
+          PAPERCLIP_TEST_HELP_COUNT_PATH: helpCountPath,
+          PAPERCLIP_TEST_SUPPORTS_EFFORT: "1",
+        },
+        timeoutSec: 20,
+        graceSec: 5,
+      };
+
+      const targetOne = {
+        kind: "remote" as const,
+        transport: "sandbox" as const,
+        providerKey: "daytona",
+        remoteCwd: remoteWorkspaceOne,
+        timeoutMs: 30_000,
+        runner: createLocalSandboxRunner(),
+      };
+
+      expect(
+        await claudeCommandSupportsEffortFlag({
+          ...baseInput,
+          runId: "run-sandbox-effort-identity-1",
+          target: targetOne,
+        }),
+      ).toBe(true);
+
+      const targetTwo = {
+        ...targetOne,
+        remoteCwd: remoteWorkspaceTwo,
+      };
+
+      expect(
+        await claudeCommandSupportsEffortFlag({
+          ...baseInput,
+          runId: "run-sandbox-effort-identity-2",
+          target: targetTwo,
+          env: {
+            PAPERCLIP_TEST_HELP_COUNT_PATH: helpCountPath,
+            PAPERCLIP_TEST_SUPPORTS_EFFORT: "0",
+          },
+        }),
+      ).toBe(false);
+
+      expect(await fs.readFile(helpCountPath, "utf8")).toBe("2");
+    } finally {
       await fs.rm(root, { recursive: true, force: true });
     }
   }, 10_000);

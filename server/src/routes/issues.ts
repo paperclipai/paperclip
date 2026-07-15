@@ -3632,6 +3632,157 @@ export function issueRoutes(
     return false;
   }
 
+  type SupervisoryNormalizationScope =
+    | { kind: "none" }
+    | { kind: "invalid"; detail: string }
+    | {
+        kind: "supervisor";
+        companyId: string;
+        supervisorIssueId: string;
+        supervisorIssueIdentifier: string | null;
+        supervisorRunId: string;
+      };
+
+  function readSupervisoryIssueIdFromRunContext(contextSnapshot: unknown) {
+    if (!contextSnapshot || typeof contextSnapshot !== "object" || Array.isArray(contextSnapshot)) return null;
+    const context = contextSnapshot as Record<string, unknown>;
+    const marker = context.supervisoryNormalization;
+    if (!marker || typeof marker !== "object" || Array.isArray(marker)) return null;
+    const parsedMarker = marker as Record<string, unknown>;
+    const candidates = [parsedMarker.supervisorIssueId, parsedMarker.issueId];
+    for (const candidate of candidates) {
+      if (typeof candidate === "string" && candidate.trim().length > 0) return candidate.trim();
+    }
+    return null;
+  }
+
+  async function resolveSupervisoryNormalizationScope(req: Request): Promise<SupervisoryNormalizationScope> {
+    if (req.actor.type !== "agent") return { kind: "none" };
+    const actorAgentId = req.actor.agentId?.trim();
+    const actorCompanyId = req.actor.companyId?.trim();
+    const runId = req.actor.runId?.trim();
+    if (!actorAgentId || !actorCompanyId || !runId) return { kind: "none" };
+
+    const run = await db
+      .select({
+        id: heartbeatRuns.id,
+        companyId: heartbeatRuns.companyId,
+        agentId: heartbeatRuns.agentId,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+
+    if (!run) return { kind: "none" };
+    if (run.agentId !== actorAgentId || run.companyId !== actorCompanyId) {
+      return {
+        kind: "invalid",
+        detail: "Supervisory normalization run context does not belong to this agent.",
+      };
+    }
+
+    const supervisorIssueId = readSupervisoryIssueIdFromRunContext(run.contextSnapshot);
+    if (!supervisorIssueId) return { kind: "none" };
+
+    const supervisorIssue = await db
+      .select({
+        id: issueRows.id,
+        companyId: issueRows.companyId,
+        identifier: issueRows.identifier,
+        assigneeAgentId: issueRows.assigneeAgentId,
+      })
+      .from(issueRows)
+      .where(and(eq(issueRows.id, supervisorIssueId), eq(issueRows.companyId, run.companyId)))
+      .then((rows) => rows[0] ?? null);
+
+    if (!supervisorIssue) {
+      return {
+        kind: "invalid",
+        detail: "Supervisory normalization source issue no longer exists in this company.",
+      };
+    }
+    if (supervisorIssue.assigneeAgentId !== actorAgentId) {
+      return {
+        kind: "invalid",
+        detail: "Supervisory normalization is only allowed from an issue currently assigned to this agent.",
+      };
+    }
+
+    return {
+      kind: "supervisor",
+      companyId: supervisorIssue.companyId,
+      supervisorIssueId: supervisorIssue.id,
+      supervisorIssueIdentifier: supervisorIssue.identifier ?? null,
+      supervisorRunId: run.id,
+    };
+  }
+
+  async function issueIsDescendantOfSupervisor(companyId: string, issueId: string, supervisorIssueId: string) {
+    let currentId: string | null = issueId;
+    const seen = new Set<string>();
+    let depth = 0;
+
+    while (currentId && depth < 100) {
+      if (seen.has(currentId)) return false;
+      seen.add(currentId);
+
+      const row = await db
+        .select({
+          id: issueRows.id,
+          companyId: issueRows.companyId,
+          parentId: issueRows.parentId,
+        })
+        .from(issueRows)
+        .where(and(eq(issueRows.id, currentId), eq(issueRows.companyId, companyId)))
+        .then((rows) => rows[0] ?? null);
+
+      if (!row) return false;
+      if (row.id === supervisorIssueId) return depth > 0;
+      currentId = row.parentId ?? null;
+      depth += 1;
+    }
+
+    return false;
+  }
+
+  async function resolveSupervisoryNormalizationForIssue(
+    req: Request,
+    res: Response,
+    issue: {
+      id: string;
+      companyId: string;
+    },
+  ) {
+    const scope = await resolveSupervisoryNormalizationScope(req);
+    if (scope.kind === "none") return null;
+    if (scope.kind === "invalid") return null;
+    if (issue.companyId !== scope.companyId) {
+      res.status(403).json({ error: "Supervisory normalization target is outside the supervising company." });
+      return false;
+    }
+    if (!(await issueIsDescendantOfSupervisor(scope.companyId, issue.id, scope.supervisorIssueId))) {
+      return null;
+    }
+    return scope;
+  }
+
+  function supervisoryUpdateUsesOnlyNormalizationFields(body: Record<string, unknown>) {
+    const allowedKeys = new Set(["status", "blockedByIssueIds", "comment"]);
+    return Object.keys(body).every((key) => body[key] === undefined || allowedKeys.has(key));
+  }
+
+  function buildSupervisoryNormalizationActivityDetails(scope: SupervisoryNormalizationScope | null) {
+    if (!scope || scope.kind !== "supervisor") return {};
+    return {
+      supervisoryNormalization: {
+        supervisorIssueId: scope.supervisorIssueId,
+        supervisorIssueIdentifier: scope.supervisorIssueIdentifier,
+        supervisorRunId: scope.supervisorRunId,
+      },
+    };
+  }
+
   async function rejectTaskWatchdogConfigMutation(req: Request, res: Response) {
     if (req.actor.type !== "agent") return false;
     const scope = await resolveTaskWatchdogMutationScope(db, req.actor);
@@ -7627,7 +7778,16 @@ export function issueRoutes(
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
     if (!existing) return;
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
-    if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+    const supervisoryNormalizationScope = await resolveSupervisoryNormalizationForIssue(req, res, existing);
+    if (supervisoryNormalizationScope === false) return;
+    if (supervisoryNormalizationScope?.kind === "supervisor") {
+      if (!supervisoryUpdateUsesOnlyNormalizationFields(req.body)) {
+        res.status(403).json({
+          error: "Supervisory normalization only allows descendant status changes, blocker updates, and explanatory comments.",
+        });
+        return;
+      }
+    } else if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
 
     const actor = getActorInfo(req);
@@ -8144,6 +8304,7 @@ export function issueRoutes(
         ...updateFields,
         identifier: issue.identifier,
         ...(commentBody ? { source: "comment" } : {}),
+        ...buildSupervisoryNormalizationActivityDetails(supervisoryNormalizationScope),
         ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
         ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus } : {}),
         ...(scheduledRetrySupersededByComment
@@ -8218,6 +8379,7 @@ export function issueRoutes(
           details: {
             identifier: issue.identifier,
             blockedByIssueIds: req.body.blockedByIssueIds,
+            ...buildSupervisoryNormalizationActivityDetails(supervisoryNormalizationScope),
             addedBlockedByIssueIds,
             removedBlockedByIssueIds,
             blockedByIssues: nextBlockedByRelations.map(summarizeIssueRelationForActivity),
@@ -8410,6 +8572,7 @@ export function issueRoutes(
           bodySnippet: comment.body.slice(0, 120),
           identifier: issue.identifier,
           issueTitle: issue.title,
+          ...buildSupervisoryNormalizationActivityDetails(supervisoryNormalizationScope),
           ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
           ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus, source: "comment" } : {}),
           ...(scheduledRetrySupersededByComment
@@ -8602,7 +8765,24 @@ export function issueRoutes(
         const selfComment = actorIsAgent && actor.actorId === assigneeId;
         const skipAssigneeCommentWake = selfComment || isClosed;
 
-        if (assigneeId && !assigneeChanged && (reopened || !skipAssigneeCommentWake)) {
+        let mentionedIds: string[] = [];
+        try {
+          mentionedIds = await svc.findMentionedAgents(issue.companyId, commentBody);
+        } catch (err) {
+          logger.warn({ err, issueId: id }, "failed to resolve @-mentions");
+        }
+
+        const shouldSuppressAssigneeCommentWake =
+          !!assigneeId &&
+          mentionedIds.length > 0 &&
+          !mentionedIds.includes(assigneeId);
+
+        if (
+          assigneeId &&
+          !assigneeChanged &&
+          (reopened || !skipAssigneeCommentWake) &&
+          !shouldSuppressAssigneeCommentWake
+        ) {
           addWakeup(assigneeId, {
             source: "automation",
             triggerDetail: "system",
@@ -8631,13 +8811,6 @@ export function issueRoutes(
           });
         }
 
-        let mentionedIds: string[] = [];
-        try {
-          mentionedIds = await svc.findMentionedAgents(issue.companyId, commentBody);
-        } catch (err) {
-          logger.warn({ err, issueId: id }, "failed to resolve @-mentions");
-        }
-
         for (const mentionedId of mentionedIds) {
           if (actor.actorType === "agent" && actor.actorId === mentionedId) continue;
           addWakeup(mentionedId, {
@@ -8659,17 +8832,26 @@ export function issueRoutes(
         }
       }
 
-      const becameDone = existing.status !== "done" && issue.status === "done";
-      if (becameDone) {
-        const dependents = await svc.listWakeableBlockedDependents(issue.id);
-        for (const dependent of dependents) {
+      const autoPruneEffect = (issue as typeof issue & {
+        autoPrunedTerminalBlockerEffect?: {
+          wakeTargets?: Array<{
+            id: string;
+            assigneeAgentId: string;
+            blockerIssueIds: string[];
+            resolvedBlockerIssueId: string;
+          }>;
+        };
+      }).autoPrunedTerminalBlockerEffect;
+      const dependencyWakeTargets = autoPruneEffect?.wakeTargets ?? [];
+      if (dependencyWakeTargets.length > 0) {
+        for (const dependent of dependencyWakeTargets) {
           await addDependencyResolvedWakeup({
             agentId: dependent.assigneeAgentId,
             dependentIssueId: dependent.id,
-            resolvedBlockerIssueId: issue.id,
+            resolvedBlockerIssueId: dependent.resolvedBlockerIssueId,
             blockerIssueIds: dependent.blockerIssueIds,
             source: "issue.blockers_resolved",
-            mutation: "blocker_done",
+            mutation: issue.status === "cancelled" ? "blocker_cancelled" : "blocker_done",
           });
         }
       }
@@ -9672,8 +9854,13 @@ export function issueRoutes(
     const id = req.params.id as string;
     const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
     if (!issue) return;
-    const commentAccessDecision = await assertAgentIssueCommentAllowed(req, res, issue);
-    if (!commentAccessDecision) return;
+    const supervisoryNormalizationScope = await resolveSupervisoryNormalizationForIssue(req, res, issue);
+    if (supervisoryNormalizationScope === false) return;
+    let commentAccessDecision: Awaited<ReturnType<typeof assertAgentIssueCommentAllowed>> = true;
+    if (supervisoryNormalizationScope?.kind !== "supervisor") {
+      commentAccessDecision = await assertAgentIssueCommentAllowed(req, res, issue);
+      if (!commentAccessDecision) return;
+    }
     if (!assertStructuredCommentFieldsAllowed(req, res, {
       presentation: req.body.presentation,
       metadata: req.body.metadata,
@@ -10017,6 +10204,7 @@ export function issueRoutes(
         bodySnippet: comment.body.slice(0, 120),
         identifier: currentIssue.identifier,
         issueTitle: currentIssue.title,
+        ...buildSupervisoryNormalizationActivityDetails(supervisoryNormalizationScope),
         ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
         ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus, source: "comment" } : {}),
         ...(scheduledRetrySupersededByComment
@@ -10130,7 +10318,19 @@ export function issueRoutes(
       // transition (in_review -> done) suppresses a stale `issue_commented` wake
       // to the returnAssignee for an already-completed issue.
       const skipWake = selfComment || isClosedIssueStatus(currentIssue.status);
-      if (assigneeId && (reopened || !skipWake)) {
+      let mentionedIds: string[] = [];
+      try {
+        mentionedIds = await svc.findMentionedAgents(issue.companyId, req.body.body);
+      } catch (err) {
+        logger.warn({ err, issueId: id }, "failed to resolve @-mentions");
+      }
+
+      const shouldSuppressAssigneeCommentWake =
+        !!assigneeId &&
+        mentionedIds.length > 0 &&
+        !mentionedIds.includes(assigneeId);
+
+      if (assigneeId && (reopened || !skipWake) && !shouldSuppressAssigneeCommentWake) {
         if (reopened) {
           addWakeup(assigneeId, {
             source: "automation",
@@ -10186,13 +10386,6 @@ export function issueRoutes(
         }
       }
 
-      let mentionedIds: string[] = [];
-      try {
-        mentionedIds = await svc.findMentionedAgents(issue.companyId, req.body.body);
-      } catch (err) {
-        logger.warn({ err, issueId: id }, "failed to resolve @-mentions");
-      }
-
       for (const mentionedId of mentionedIds) {
         if (actorIsAgent && actor.actorId === mentionedId) continue;
         addWakeup(mentionedId, {
@@ -10213,14 +10406,23 @@ export function issueRoutes(
         });
       }
 
-      const becameDone = issueBeforeCommentDecision.status !== "done" && currentIssue.status === "done";
-      if (becameDone) {
-        const dependents = await svc.listWakeableBlockedDependents(currentIssue.id);
-        for (const dependent of dependents) {
+      const autoPruneEffect = (currentIssue as typeof currentIssue & {
+        autoPrunedTerminalBlockerEffect?: {
+          wakeTargets?: Array<{
+            id: string;
+            assigneeAgentId: string;
+            blockerIssueIds: string[];
+            resolvedBlockerIssueId: string;
+          }>;
+        };
+      }).autoPrunedTerminalBlockerEffect;
+      const dependencyWakeTargets = autoPruneEffect?.wakeTargets ?? [];
+      if (dependencyWakeTargets.length > 0) {
+        for (const dependent of dependencyWakeTargets) {
           await addDependencyResolvedWakeup({
             agentId: dependent.assigneeAgentId,
             dependentIssueId: dependent.id,
-            resolvedBlockerIssueId: currentIssue.id,
+            resolvedBlockerIssueId: dependent.resolvedBlockerIssueId,
             blockerIssueIds: dependent.blockerIssueIds,
           });
         }

@@ -114,6 +114,41 @@ interface ClaudeRuntimeConfig {
   extraArgs: string[];
 }
 
+interface ExtractedEffortArg {
+  effortFromArgs: string;
+  argsWithoutEffort: string[];
+}
+
+function extractEffortFromExtraArgs(inputArgs: string[]): ExtractedEffortArg {
+  const argsWithoutEffort: string[] = [];
+  let effortFromArgs = "";
+
+  for (let index = 0; index < inputArgs.length; index += 1) {
+    const arg = inputArgs[index] ?? "";
+    if (arg === "--effort" && index + 1 < inputArgs.length) {
+      const next = inputArgs[index + 1];
+      if (!effortFromArgs && typeof next === "string" && !next.startsWith("--")) {
+        effortFromArgs = next;
+        index += 1;
+      }
+      continue;
+    }
+    if (arg === "--effort") {
+      continue;
+    }
+    if (arg.startsWith("--effort=")) {
+      const candidate = arg.slice("--effort=".length);
+      if (!effortFromArgs && candidate.length > 0) {
+        effortFromArgs = candidate;
+      }
+      continue;
+    }
+    argsWithoutEffort.push(arg);
+  }
+
+  return { effortFromArgs, argsWithoutEffort };
+}
+
 export function claudeSessionCwdMatchesExecutionTarget(input: {
   runtimeSessionCwd: string;
   effectiveExecutionCwd: string;
@@ -415,7 +450,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   );
   const model = asString(config.model, "");
-  const effort = asString(config.effort, "");
+  const effort = asString(config.effort, "").trim();
   const chrome = asBoolean(config.chrome, false);
   const maxTurns = asNumber(config.maxTurnsPerRun, 0);
   const dangerouslySkipPermissions = asBoolean(config.dangerouslySkipPermissions, true);
@@ -464,6 +499,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   } = runtimeConfig;
   let loggedEnv = initialLoggedEnv;
   let effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
+  const extraArgsConfig = extractEffortFromExtraArgs(extraArgs);
+  const configuredEffort = effort || extraArgsConfig.effortFromArgs;
+  const sanitizedExtraArgs = extraArgsConfig.argsWithoutEffort;
   const terminalResultCleanupGraceMs = Math.max(
     0,
     asNumber(config.terminalResultCleanupGraceMs, 5_000),
@@ -689,8 +727,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       }
     }
   }
-  let effectiveEffort = effort;
-  if (executionTargetIsSandbox && effort) {
+  let effectiveEffort = configuredEffort;
+  if (executionTargetIsSandbox && effectiveEffort) {
     const supportsEffort = await claudeCommandSupportsEffortFlag({
       runId,
       command,
@@ -700,11 +738,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       timeoutSec,
       graceSec,
     });
-    if (supportsEffort === false) {
+    if (supportsEffort !== true) {
       effectiveEffort = "";
       await onLog(
         "stderr",
-        `[paperclip] Claude CLI in the sandbox does not advertise --effort; omitting configured effort "${effort}". Upgrade the sandbox CLI/image to restore reasoning-effort control.\n`,
+        `[paperclip] Claude CLI does not advertise --effort; omitting configured reasoning effort. ` +
+          `Upgrade the CLI/runtime image to restore reasoning-effort control.\n`,
       );
     }
   }
@@ -844,7 +883,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       args.push("--mcp-config", effectiveMcpConfigPath, "--strict-mcp-config");
     }
     args.push("--add-dir", effectivePromptBundleAddDir);
-    if (extraArgs.length > 0) args.push(...extraArgs);
+    if (sanitizedExtraArgs.length > 0) args.push(...sanitizedExtraArgs);
     return args;
   };
 

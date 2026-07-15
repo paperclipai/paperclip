@@ -314,6 +314,7 @@ function buildStaleTargetResult(
   return {
     version: 1,
     outcome: "stale_target",
+    targetMutationApplied: false,
     staleTarget,
   } as const;
 }
@@ -958,6 +959,7 @@ export function issueThreadInteractionService(db: Db) {
           result: {
             version: 1,
             outcome: "accepted",
+            targetMutationApplied: false,
             ...(selectedOptionIds ? { selectedOptionIds } : {}),
           },
           resolvedByAgentId: args.actor.agentId ?? null,

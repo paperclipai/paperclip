@@ -106,7 +106,7 @@ describe("claude sandbox hello probe diagnostics", () => {
       exitCode: 1,
       stdout: [
         initLine,
-        '{"type":"result","subtype":"error_during_execution","is_error":true,"result":"Claude usage limit reached. Please try again later.","session_id":"abc"}',
+        '{"type":"result","subtype":"error_during_execution","is_error":true,"result":"Claude rate limit exceeded. Please try again later.","session_id":"abc"}',
       ].join("\n"),
       stderr: "",
     };
@@ -159,5 +159,44 @@ describe("claude sandbox hello probe diagnostics", () => {
 
     const failed = result.checks.find((check) => check.code === "claude_hello_probe_failed");
     expect(failed?.detail).toBeUndefined();
+  });
+
+  it("preserves non-effort args that follow --effort", async () => {
+    probeResult.value = {
+      exitCode: 0,
+      stdout: [
+        initLine,
+        '{"type":"result","subtype":"success","result":"hello","session_id":"abc"}',
+      ].join("\n"),
+      stderr: "",
+    };
+
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "claude_local",
+      config: {
+        engine: "cli",
+        command: "claude",
+        extraArgs: ["--effort", "--model", "opus", "--max-turns", "4", "plain-arg"],
+      },
+      executionTarget: sandboxTarget,
+      environmentName: "Daytona",
+    });
+
+    expect(runAdapterExecutionTargetProcess).toHaveBeenCalledTimes(1);
+    expect(runAdapterExecutionTargetProcess).toHaveBeenCalledWith(
+      expect.any(String),
+      sandboxTarget,
+      "claude",
+      expect.arrayContaining(["--model", "opus", "--max-turns", "4", "plain-arg"]),
+      expect.any(Object),
+    );
+    const adapterCalls = runAdapterExecutionTargetProcess.mock.calls as unknown as Array<
+      [string, AdapterExecutionTarget, string, string[], Record<string, unknown>]
+    >;
+    const calledArgs = adapterCalls[0]?.[3] ?? [];
+    expect(calledArgs).not.toContain("--effort");
+
+    expect(result.status).not.toBe("fail");
   });
 });

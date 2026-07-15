@@ -1,6 +1,9 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { errorHandler } from "../middleware/index.js";
+import { goalRoutes } from "../routes/goals.js";
+import { projectRoutes } from "../routes/projects.js";
 
 const mockProjectService = vi.hoisted(() => ({
   list: vi.fn(),
@@ -51,31 +54,7 @@ vi.mock("../services/workspace-runtime.js", () => ({
   stopRuntimeServicesForProjectWorkspace: vi.fn(),
 }));
 
-function registerModuleMocks() {
-  vi.doMock("../telemetry.js", () => ({
-    getTelemetryClient: mockGetTelemetryClient,
-  }));
-
-  vi.doMock("../services/index.js", () => ({
-    accessService: () => mockAccessService,
-    environmentService: () => mockEnvironmentService,
-    goalService: () => mockGoalService,
-    logActivity: mockLogActivity,
-    projectService: () => mockProjectService,
-    secretService: () => mockSecretService,
-    workspaceOperationService: () => mockWorkspaceOperationService,
-  }));
-
-  vi.doMock("../services/workspace-runtime.js", () => ({
-    startRuntimeServicesForWorkspaceControl: vi.fn(),
-    stopRuntimeServicesForProjectWorkspace: vi.fn(),
-  }));
-}
-
 async function createApp(routeType: "project" | "goal") {
-  const { errorHandler } = await vi.importActual<typeof import("../middleware/index.js")>(
-    "../middleware/index.js",
-  );
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -89,14 +68,8 @@ async function createApp(routeType: "project" | "goal") {
     next();
   });
   if (routeType === "project") {
-    const { projectRoutes } = await vi.importActual<typeof import("../routes/projects.js")>(
-      "../routes/projects.js",
-    );
     app.use("/api", projectRoutes({} as any));
   } else {
-    const { goalRoutes } = await vi.importActual<typeof import("../routes/goals.js")>(
-      "../routes/goals.js",
-    );
     app.use("/api", goalRoutes({} as any));
   }
   app.use(errorHandler);
@@ -105,15 +78,6 @@ async function createApp(routeType: "project" | "goal") {
 
 describe("project and goal telemetry routes", () => {
   beforeEach(() => {
-    vi.resetModules();
-    vi.doUnmock("../telemetry.js");
-    vi.doUnmock("../services/index.js");
-    vi.doUnmock("../services/workspace-runtime.js");
-    vi.doUnmock("../routes/projects.js");
-    vi.doUnmock("../routes/goals.js");
-    vi.doUnmock("../routes/authz.js");
-    vi.doUnmock("../middleware/index.js");
-    registerModuleMocks();
     vi.clearAllMocks();
     mockAccessService.decide.mockResolvedValue({
       allowed: true,

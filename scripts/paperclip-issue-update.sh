@@ -5,7 +5,7 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  scripts/paperclip-issue-update.sh [--issue-id ID] [--status STATUS] [--comment TEXT] [--dry-run]
+  scripts/paperclip-issue-update.sh [--issue-id ID] [--status STATUS] [--comment TEXT] [--blocked-by-issue-ids CSV] [--dry-run]
 
 Reads a multiline markdown comment from stdin when stdin is piped. This preserves
 newlines when building the JSON payload for PATCH /api/issues/{issueId}.
@@ -23,6 +23,11 @@ Examples:
 
   - Fixed the issue update helper
   MD
+
+  scripts/paperclip-issue-update.sh --issue-id "$PAPERCLIP_TASK_ID" \
+    --status blocked \
+    --blocked-by-issue-ids "issue-id-1,issue-id-2" \
+    --comment "Parking behind first-class blockers."
 EOF
 }
 
@@ -36,6 +41,7 @@ require_command() {
 issue_id="${PAPERCLIP_TASK_ID:-}"
 status=""
 comment_arg=""
+blocked_by_issue_ids=""
 dry_run=0
 
 while [[ $# -gt 0 ]]; do
@@ -50,6 +56,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --comment)
       comment_arg="${2:-}"
+      shift 2
+      ;;
+    --blocked-by-issue-ids)
+      blocked_by_issue_ids="${2:-}"
       shift 2
       ;;
     --dry-run)
@@ -86,9 +96,16 @@ payload="$(
   jq -nc \
     --arg status "$status" \
     --arg comment "$comment" \
+    --arg blockedByIssueIds "$blocked_by_issue_ids" \
     '
       (if $status == "" then {} else {status: $status} end) +
-      (if $comment == "" then {} else {comment: $comment} end)
+      (if $comment == "" then {} else {comment: $comment} end) +
+      (if $blockedByIssueIds == "" then {} else {
+        blockedByIssueIds: ($blockedByIssueIds
+          | split(",")
+          | map(gsub("^\\s+|\\s+$"; ""))
+          | map(select(length > 0)))
+      } end)
     '
 )"
 

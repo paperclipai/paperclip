@@ -956,6 +956,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       result: {
         version: 1,
         outcome: "accepted",
+        targetMutationApplied: false,
       },
       resolvedByUserId: "local-board",
     });

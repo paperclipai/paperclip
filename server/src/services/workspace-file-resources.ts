@@ -381,6 +381,16 @@ function isHttpStatus(error: unknown, status: number) {
   );
 }
 
+function httpErrorCode(error: unknown): string | null {
+  if (!(error instanceof HttpError)) return null;
+  const code = (error.details as { code?: unknown } | undefined)?.code;
+  return typeof code === "string" && code.length > 0 ? code : null;
+}
+
+function isSkippableAutoCandidateError(error: unknown) {
+  return isHttpStatus(error, 403) && httpErrorCode(error) === "outside_workspace";
+}
+
 function directoryResource(input: {
   candidate: WorkspaceCandidate;
   relativePath: string;
@@ -1036,6 +1046,7 @@ export function workspaceFileResourceService(db: Db) {
         matches.push(await check(candidate));
       } catch (error) {
         if (isHttpStatus(error, 404)) continue;
+        if (isSkippableAutoCandidateError(error)) continue;
         throw error;
       }
       if (matches.length > 1) return { state: "ambiguous", count: matches.length };
@@ -1068,6 +1079,7 @@ export function workspaceFileResourceService(db: Db) {
     }
 
     let lastNotFound: unknown = null;
+    let lastSkippedDenied: unknown = null;
     for (const candidate of candidates) {
       if (candidate.remote) {
         if (explicitTarget || selector !== "auto") return remoteResource(candidate, normalized.relativePath);
@@ -1080,6 +1092,10 @@ export function workspaceFileResourceService(db: Db) {
       } catch (error) {
         if (!explicitTarget && selector === "auto" && isHttpStatus(error, 404)) {
           lastNotFound = error;
+          continue;
+        }
+        if (!explicitTarget && selector === "auto" && isSkippableAutoCandidateError(error)) {
+          lastSkippedDenied = error;
           continue;
         }
         throw error;
@@ -1099,6 +1115,7 @@ export function workspaceFileResourceService(db: Db) {
     }
 
     if (lastNotFound) throw lastNotFound;
+    if (lastSkippedDenied) throw lastSkippedDenied;
     throw unprocessable("No local-readable workspace is available for this issue", { code: "no_local_workspace" });
   }
 
@@ -1159,6 +1176,10 @@ export function workspaceFileResourceService(db: Db) {
         if (normalizedPath) {
           if (!explicitTarget && selector === "auto" && isHttpStatus(error, 404)) {
             lastNotFound = error;
+            continue;
+          }
+          if (!explicitTarget && selector === "auto" && isSkippableAutoCandidateError(error)) {
+            firstUnavailable ??= { candidate, reason: httpErrorCode(error) ?? "outside_workspace" };
             continue;
           }
           throw error;
@@ -1325,6 +1346,7 @@ export function workspaceFileResourceService(db: Db) {
     }
 
     let lastNotFound: unknown = null;
+    let lastSkippedDenied: unknown = null;
     for (const candidate of candidates) {
       if (candidate.remote) {
         if (explicitTarget || selector !== "auto") {
@@ -1338,6 +1360,10 @@ export function workspaceFileResourceService(db: Db) {
       } catch (error) {
         if (!explicitTarget && selector === "auto" && isHttpStatus(error, 404)) {
           lastNotFound = error;
+          continue;
+        }
+        if (!explicitTarget && selector === "auto" && isSkippableAutoCandidateError(error)) {
+          lastSkippedDenied = error;
           continue;
         }
         throw error;
@@ -1390,6 +1416,7 @@ export function workspaceFileResourceService(db: Db) {
     }
 
     if (lastNotFound) throw lastNotFound;
+    if (lastSkippedDenied) throw lastSkippedDenied;
     throw unprocessable("No local-readable workspace is available for this issue", { code: "no_local_workspace" });
   }
 
@@ -1409,6 +1436,7 @@ export function workspaceFileResourceService(db: Db) {
     }
 
     let lastNotFound: unknown = null;
+    let lastSkippedDenied: unknown = null;
     for (const candidate of candidates) {
       if (candidate.remote) {
         if (explicitTarget || selector !== "auto") {
@@ -1423,11 +1451,15 @@ export function workspaceFileResourceService(db: Db) {
           lastNotFound = error;
           continue;
         }
+        if (!explicitTarget && selector === "auto" && isSkippableAutoCandidateError(error)) {
+          lastSkippedDenied = error;
+          continue;
+        }
         throw error;
       }
     }
 
-    if (lastNotFound && !explicitTarget && selector === "auto") {
+    if ((lastNotFound || lastSkippedDenied) && !explicitTarget && selector === "auto") {
       const discovered = await discoverUniqueProjectWorkspaceMatch(
         issue,
         new Set(candidates.map((candidate) => candidate.workspaceId)),
@@ -1438,6 +1470,7 @@ export function workspaceFileResourceService(db: Db) {
     }
 
     if (lastNotFound) throw lastNotFound;
+    if (lastSkippedDenied) throw lastSkippedDenied;
     throw unprocessable("No local-readable workspace is available for this issue", { code: "no_local_workspace" });
   }
 

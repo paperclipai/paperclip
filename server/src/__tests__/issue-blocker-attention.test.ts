@@ -101,6 +101,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     originFingerprint?: string | null;
     executionState?: Record<string, unknown> | null;
     description?: string | null;
+    monitorNextCheckAt?: Date | null;
   }) {
     const id = input.id ?? randomUUID();
     await db.insert(issues).values({
@@ -118,6 +119,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       originFingerprint: input.originFingerprint ?? "default",
       executionState: input.executionState ?? null,
       description: input.description ?? null,
+      monitorNextCheckAt: input.monitorNextCheckAt ?? null,
     });
     return id;
   }
@@ -420,6 +422,59 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     expect(parent?.blockerAttention).toMatchObject({
       state: "covered",
       stalledBlockerCount: 0,
+    });
+  });
+
+  it("treats an in_review leaf with a future scheduled monitor as covered", async () => {
+    const { companyId, agentId } = await createCompany("PBMON");
+    const parentId = await insertIssue({ companyId, identifier: "PBMON-1", title: "Parent", status: "blocked" });
+    const reviewLeafId = await insertIssue({
+      companyId,
+      identifier: "PBMON-2",
+      title: "Monitor-backed review leaf",
+      status: "in_review",
+      assigneeAgentId: agentId,
+      monitorNextCheckAt: new Date(Date.now() + 60 * 60 * 1000),
+    });
+    await block({ companyId, blockerIssueId: reviewLeafId, blockedIssueId: parentId });
+
+    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "covered",
+      unresolvedBlockerCount: 1,
+      coveredBlockerCount: 1,
+      stalledBlockerCount: 0,
+      attentionBlockerCount: 0,
+      sampleBlockerIdentifier: "PBMON-2",
+      sampleStalledBlockerIdentifier: null,
+    });
+  });
+
+  it("keeps an in_review leaf with an overdue monitor stalled", async () => {
+    const { companyId, agentId } = await createCompany("PBMOD");
+    const parentId = await insertIssue({ companyId, identifier: "PBMOD-1", title: "Parent", status: "blocked" });
+    const reviewLeafId = await insertIssue({
+      companyId,
+      identifier: "PBMOD-2",
+      title: "Overdue monitor review leaf",
+      status: "in_review",
+      assigneeAgentId: agentId,
+      monitorNextCheckAt: new Date(Date.now() - 60 * 1000),
+    });
+    await block({ companyId, blockerIssueId: reviewLeafId, blockedIssueId: parentId });
+
+    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "stalled",
+      reason: "stalled_review",
+      unresolvedBlockerCount: 1,
+      coveredBlockerCount: 0,
+      stalledBlockerCount: 1,
+      attentionBlockerCount: 0,
+      sampleBlockerIdentifier: "PBMOD-2",
+      sampleStalledBlockerIdentifier: "PBMOD-2",
     });
   });
 
@@ -833,6 +888,38 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     expect(exhaustedRows.find((row) => row.id === handoffId)?.blockedInboxAttention).toMatchObject({
       state: "missing_disposition",
       reason: "missing_successful_run_disposition",
+    });
+  });
+
+  it("downgrades human-owned missing successful-run dispositions to medium severity", async () => {
+    const { companyId } = await createCompany("BIE");
+    const handoffId = await insertIssue({
+      companyId,
+      identifier: "BIE-1",
+      title: "David needs to choose disposition",
+      status: "in_progress",
+      assigneeUserId: "board-user-1",
+    });
+    await db.insert(activityLog).values({
+      companyId,
+      actorType: "system",
+      actorId: "system",
+      action: "issue.successful_run_handoff_required",
+      entityType: "issue",
+      entityId: handoffId,
+      agentId: null,
+      details: { sourceRunId: randomUUID(), detectedProgressSummary: "Progress was made" },
+    });
+
+    const rows = await svc.list(companyId, { attention: "blocked" });
+    const byId = new Map(rows.map((row) => [row.id, row]));
+
+    expect(byId.get(handoffId)?.blockedInboxAttention).toMatchObject({
+      state: "missing_disposition",
+      reason: "missing_successful_run_disposition",
+      severity: "medium",
+      owner: { type: "user", userId: "board-user-1" },
+      action: { label: "Choose disposition" },
     });
   });
 

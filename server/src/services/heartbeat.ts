@@ -462,6 +462,49 @@ function readTransientRecoveryContractFromRun(
     : null;
 }
 
+const CLAUDE_CODEX_FALLBACK_ACTIVE_MARKER = "CLAUDE_CODEX_FALLBACK_ACTIVE";
+const CLAUDE_CODEX_FALLBACK_RETURN_STATUS = "todo" as const;
+
+function readClaudeCodexFallbackContract(
+  agent: Pick<typeof agents.$inferSelect, "adapterType" | "adapterConfig" | "runtimeConfig" | "metadata">,
+) {
+  if (agent.adapterType !== "claude_local") return null;
+
+  const adapterConfig = parseObject(agent.adapterConfig);
+  const runtimeConfig = parseObject(agent.runtimeConfig);
+  const metadata = parseObject(agent.metadata);
+  const candidates = [
+    parseObject(adapterConfig.claudeCodexFallback),
+    parseObject(runtimeConfig.claudeCodexFallback),
+    parseObject(metadata.claudeCodexFallback),
+  ];
+
+  for (const candidate of candidates) {
+    const fallbackAgentId = readNonEmptyString(candidate.fallbackAgentId);
+    if (!fallbackAgentId) continue;
+    return {
+      fallbackAgentId,
+      returnStatus: CLAUDE_CODEX_FALLBACK_RETURN_STATUS,
+    };
+  }
+
+  return null;
+}
+
+function buildClaudeCodexFallbackMarkerComment(input: {
+  intendedClaudeAgentId: string;
+  fallbackAgentId: string;
+  returnStatus: typeof CLAUDE_CODEX_FALLBACK_RETURN_STATUS;
+}) {
+  return [
+    CLAUDE_CODEX_FALLBACK_ACTIVE_MARKER,
+    "reason: claude_limit",
+    `intendedClaudeAgentId: ${input.intendedClaudeAgentId}`,
+    `fallbackAgentId: ${input.fallbackAgentId}`,
+    `returnStatus: ${input.returnStatus}`,
+  ].join("\n");
+}
+
 function isResolvedInteractionContinuationWakeContext(contextSnapshot: unknown) {
   const context = parseObject(contextSnapshot);
   const interactionId = readNonEmptyString(context.interactionId);
@@ -4936,6 +4979,11 @@ export function buildPaperclipTaskMarkdown(input: {
   wakeComment?: {
     id: string;
     body: string;
+    authorType?: string | null;
+    author?: {
+      type?: string | null;
+      id?: string | null;
+    } | null;
   } | null;
   interaction?: {
     kind?: string | null;
@@ -4955,6 +5003,8 @@ export function buildPaperclipTaskMarkdown(input: {
   const issue = input.issue;
   const ancestors = (input.ancestors ?? []).slice(0, 6);
   const wakeComment = input.wakeComment ?? null;
+  const wakeCommentAuthorType =
+    wakeComment?.authorType ?? wakeComment?.author?.type ?? null;
   const acceptedPlanContinuation =
     !wakeComment &&
     (input.acceptedPlanContinuation || (
@@ -5027,7 +5077,11 @@ export function buildPaperclipTaskMarkdown(input: {
     }
   }
   if (wakeComment?.body.trim()) {
-    lines.push("", "Latest wake comment:", fenceTaskText(wakeComment.body.trim()));
+    lines.push("");
+    if (wakeCommentAuthorType) {
+      lines.push(`- Wake comment author type: ${quoteTaskScalar(wakeCommentAuthorType)}`);
+    }
+    lines.push("Latest wake comment:", fenceTaskText(wakeComment.body.trim()));
   }
   lines.push("", "Use this task context as the current assignment.");
   return lines.join("\n");
@@ -7927,6 +7981,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       pendingInteraction,
       pendingApproval,
       explicitBlocker,
+      openChild,
       openRecoveryIssue,
       existingWake,
       budgetBlock,
@@ -8030,6 +8085,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           .where(
             and(
               eq(issues.companyId, issue.companyId),
+              eq(issues.parentId, issue.id),
+              isNull(issues.hiddenAt),
+              notInArray(issues.status, ["done", "cancelled"]),
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null)
+        : Promise.resolve(null),
+      issue
+        ? db
+          .select({ id: issues.id })
+          .from(issues)
+          .where(
+            and(
+              eq(issues.companyId, issue.companyId),
               inArray(issues.originKind, [
                 RECOVERY_ORIGIN_KINDS.strandedIssueRecovery,
                 RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation,
@@ -8085,6 +8155,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       hasPendingInteractionOrApproval: Boolean(pendingInteraction || pendingApproval),
       hasPersistedMonitor: Boolean(issue?.monitorNextCheckAt),
       hasExplicitBlockerPath: Boolean(explicitBlocker),
+      hasOpenChildPath: Boolean(openChild),
       hasOpenRecoveryIssue: Boolean(openRecoveryIssue),
       hasPauseHold: Boolean(pauseHold),
       hasActiveRoutineContinuation: Boolean(activeRoutineContinuation),
@@ -9494,6 +9565,102 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return { outcome: "promoted", run: promoted };
   }
 
+  async function reassignClaudeProviderQuotaIssueToCodexFallback(input: {
+    run: typeof heartbeatRuns.$inferSelect;
+    agent: typeof agents.$inferSelect;
+    issueId: string;
+    fallbackAgentId: string;
+    returnStatus: typeof CLAUDE_CODEX_FALLBACK_RETURN_STATUS;
+  }) {
+    const fallbackAgent = await getAgent(input.fallbackAgentId);
+    if (!fallbackAgent || fallbackAgent.companyId !== input.agent.companyId) return null;
+
+    const markerComment = buildClaudeCodexFallbackMarkerComment({
+      intendedClaudeAgentId: input.agent.id,
+      fallbackAgentId: input.fallbackAgentId,
+      returnStatus: input.returnStatus,
+    });
+
+    const reassignedIssue = await db.transaction(async (tx) => {
+      const lockedIssue = await tx
+        .select({
+          id: issues.id,
+          status: issues.status,
+          assigneeAgentId: issues.assigneeAgentId,
+        })
+        .from(issues)
+        .where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.run.companyId)))
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      if (!lockedIssue) return null;
+      if (lockedIssue.assigneeAgentId !== input.agent.id) return null;
+      if (lockedIssue.status === "done" || lockedIssue.status === "cancelled") return null;
+
+      await issuesSvc.addComment(
+        input.issueId,
+        markerComment,
+        { runId: input.run.id },
+        { authorType: "system" },
+        tx,
+      );
+
+      return issuesSvc.update(
+        input.issueId,
+        {
+          assigneeAgentId: input.fallbackAgentId,
+          status: input.returnStatus,
+          actorAgentId: input.agent.id,
+        },
+        tx,
+      );
+    });
+    if (!reassignedIssue) return null;
+
+    const wakeup = await enqueueWakeup(input.fallbackAgentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: {
+        issueId: input.issueId,
+        mutation: "update",
+        intendedClaudeAgentId: input.agent.id,
+        fallbackAgentId: input.fallbackAgentId,
+        returnStatus: input.returnStatus,
+      },
+      requestedByActorType: "system",
+      contextSnapshot: {
+        issueId: input.issueId,
+        source: "heartbeat.claude_codex_fallback",
+        wakeReason: "issue_assigned",
+        intendedClaudeAgentId: input.agent.id,
+        fallbackAgentId: input.fallbackAgentId,
+        returnStatus: input.returnStatus,
+      },
+    });
+
+    await appendRunEvent(input.run, await nextRunEventSeq(input.run.id), {
+      eventType: "lifecycle",
+      stream: "system",
+      level: "warn",
+      message: "Claude provider quota hit; reassigned issue to the configured Codex fallback owner",
+      payload: {
+        issueId: input.issueId,
+        intendedClaudeAgentId: input.agent.id,
+        fallbackAgentId: input.fallbackAgentId,
+        returnStatus: input.returnStatus,
+        fallbackRunId: wakeup?.id ?? null,
+      },
+    });
+
+    return {
+      outcome: "fallback_reassigned" as const,
+      issueId: input.issueId,
+      fallbackAgentId: input.fallbackAgentId,
+      returnStatus: input.returnStatus,
+      run: wakeup,
+    };
+  }
+
   async function scheduleBoundedRetryForRun(
     run: typeof heartbeatRuns.$inferSelect,
     agent: typeof agents.$inferSelect,
@@ -9536,6 +9703,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const transientRetryNotBefore = transientRecovery?.retryNotBefore ?? null;
     const contextSnapshot = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(contextSnapshot.issueId);
+    const claudeCodexFallback =
+      retryReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON &&
+      transientRecovery?.errorFamily === "provider_quota" &&
+      issueId
+        ? readClaudeCodexFallbackContract(agent)
+        : null;
+
+    if (claudeCodexFallback) {
+      const fallbackResult = await reassignClaudeProviderQuotaIssueToCodexFallback({
+        run,
+        agent,
+        issueId,
+        fallbackAgentId: claudeCodexFallback.fallbackAgentId,
+        returnStatus: claudeCodexFallback.returnStatus,
+      });
+      if (fallbackResult) return fallbackResult;
+    }
 
     if (!baseSchedule) {
       await appendRunEvent(run, await nextRunEventSeq(run.id), {

@@ -64,7 +64,10 @@ import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-
 import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
 import { initTelemetry, getTelemetryClient } from "./telemetry.js";
 import { conflict } from "./errors.js";
-import { coordinateHeartbeatSchedulerShutdown } from "./shutdown.js";
+import {
+  clearRuntimeStartupState,
+  writeRuntimeStartupState,
+} from "./runtime-startup-state.js";
 import type {
   InstanceDatabaseBackupRunResult,
   InstanceDatabaseBackupTrigger,
@@ -107,11 +110,69 @@ export interface StartedServer {
   databaseUrl: string;
 }
 
+export type ServerShutdownSequenceInput = {
+  signal: "SIGINT" | "SIGTERM";
+  stopHeartbeatScheduler: () => void;
+  waitForHeartbeatSchedulerIdle: () => Promise<void>;
+  drainHeartbeatRunsForShutdown?: ((signal: "SIGINT" | "SIGTERM") => Promise<unknown>) | null;
+  stopTelemetry: () => Promise<void>;
+  appShutdown?: (() => void) | null;
+  stopEmbeddedPostgres?: (() => Promise<void>) | null;
+  shutdownInstrumentation: () => Promise<void>;
+  exitProcess: (code: number) => never;
+};
+
+export async function runServerShutdownSequence(input: ServerShutdownSequenceInput): Promise<never> {
+  input.stopHeartbeatScheduler();
+
+  if (input.drainHeartbeatRunsForShutdown) {
+    try {
+      const drain = await input.drainHeartbeatRunsForShutdown(input.signal);
+      logger.info({ signal: input.signal, drain }, "graceful heartbeat run drain complete");
+    } catch (err) {
+      logger.error({ err, signal: input.signal }, "graceful heartbeat run drain failed");
+    }
+  }
+
+  await input.waitForHeartbeatSchedulerIdle();
+  await input.stopTelemetry();
+
+  input.appShutdown?.();
+
+  if (input.stopEmbeddedPostgres) {
+    logger.info({ signal: input.signal }, "Stopping embedded PostgreSQL");
+    try {
+      await input.stopEmbeddedPostgres();
+    } catch (err) {
+      logger.error({ err }, "Failed to stop embedded PostgreSQL cleanly");
+    }
+  }
+
+  // Flush buffered OTel spans before the process goes away; without this
+  // await the exporter's final batch is dropped on exit.
+  await input.shutdownInstrumentation();
+
+  return input.exitProcess(0);
+}
+
 export async function startServer(): Promise<StartedServer> {
   // Tracing must be active (or have failed and logged) before the first DB
   // connection or the HTTP server exists — see instrumentation.ts.
   await instrumentationReady;
   let config = loadConfig();
+  const startupStateStartedAt = new Date().toISOString();
+  const writeStartupState = (
+    phase: "booting" | "migrating" | "starting-http",
+    extra?: { databaseLabel?: string | null },
+  ) =>
+    writeRuntimeStartupState({
+      pid: process.pid,
+      phase,
+      startedAt: startupStateStartedAt,
+      updatedAt: new Date().toISOString(),
+      databaseLabel: extra?.databaseLabel ?? null,
+    });
+  writeStartupState("booting");
   initTelemetry({ enabled: config.telemetryEnabled });
   if (process.env.PAPERCLIP_SECRETS_PROVIDER === undefined) {
     process.env.PAPERCLIP_SECRETS_PROVIDER = config.secretsProvider;
@@ -322,6 +383,7 @@ export async function startServer(): Promise<StartedServer> {
   assertCloudDatabaseContract();
   if (config.databaseUrl) {
     const migrationUrl = config.databaseMigrationUrl ?? config.databaseUrl;
+    writeStartupState("migrating", { databaseLabel: "PostgreSQL" });
     migrationSummary = await ensureMigrations(migrationUrl, "PostgreSQL");
   
     db = createDb(config.databaseUrl);
@@ -483,6 +545,7 @@ export async function startServer(): Promise<StartedServer> {
     if (shouldAutoApplyFirstRunMigrations) {
       logger.info("Detected first-run embedded PostgreSQL setup; applying pending migrations automatically");
     }
+    writeStartupState("migrating", { databaseLabel: "Embedded PostgreSQL" });
     migrationSummary = await ensureMigrations(embeddedConnectionString, "Embedded PostgreSQL", {
       autoApply: shouldAutoApplyFirstRunMigrations,
     });
@@ -823,7 +886,6 @@ export async function startServer(): Promise<StartedServer> {
   }
 
   let drainHeartbeatRunsForShutdown: ((signal: "SIGINT" | "SIGTERM") => Promise<unknown>) | null = null;
-  let prepareHotRestartShutdown: ((signal: "SIGINT" | "SIGTERM") => Promise<{ skipDrain: boolean }>) | null = null;
   let heartbeatSchedulerStopped = false;
   let heartbeatSchedulerInterval: ReturnType<typeof setInterval> | null = null;
   const heartbeatSchedulerInFlight = new Set<Promise<void>>();
@@ -845,7 +907,6 @@ export async function startServer(): Promise<StartedServer> {
   if (config.heartbeatSchedulerEnabled) {
     const heartbeat = heartbeatService(db as any, { pluginWorkerManager });
     drainHeartbeatRunsForShutdown = heartbeat.drainRunningRunsForShutdown;
-    prepareHotRestartShutdown = heartbeat.prepareHotRestartShutdown;
     const environmentCustomImages = environmentCustomImageService(db as any, { pluginWorkerManager });
     const routines = routineService(db as any, { pluginWorkerManager });
     const tools = toolAccessService(db as any, {
@@ -876,21 +937,6 @@ export async function startServer(): Promise<StartedServer> {
       );
     } else {
       const startupHeartbeatRecovery = (async () => {
-        try {
-          const hotRestart = await heartbeat.reconcileHotRestartAdoption();
-          if (hotRestart.mode === "reported") {
-            logger.info(
-              hotRestart,
-              "startup hot-restart adoption reconciliation complete",
-            );
-          }
-        } catch (err) {
-          logger.error(
-            { err },
-            "startup hot-restart adoption reconciliation failed - orphan reaper will serve as degraded backstop",
-          );
-        }
-
         for (let attempt = 1; attempt <= 2; attempt++) {
           try {
             const result = await heartbeat.reapOrphanedRuns();
@@ -1135,6 +1181,10 @@ export async function startServer(): Promise<StartedServer> {
     logger.error({ err }, "failed to reconcile adapter availability from PAPERCLIP_ADAPTERS");
     throw err;
   }
+  writeStartupState("starting-http", {
+    databaseLabel:
+      startupDbInfo.mode === "embedded-postgres" ? "Embedded PostgreSQL" : "PostgreSQL",
+  });
 
   await new Promise<void>((resolveListen, rejectListen) => {
     const onError = (err: Error) => {
@@ -1145,6 +1195,7 @@ export async function startServer(): Promise<StartedServer> {
     server.once("error", onError);
     server.listen(listenPort, config.host, () => {
       server.off("error", onError);
+      clearRuntimeStartupState();
       logger.info(`Server listening on ${config.host}:${listenPort}`);
       if (process.env.PAPERCLIP_OPEN_ON_LISTEN === "true") {
         const openHost = config.host === "0.0.0.0" || config.host === "::" ? "127.0.0.1" : config.host;
@@ -1199,62 +1250,31 @@ export async function startServer(): Promise<StartedServer> {
   
   {
     const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
-      heartbeatSchedulerStopped = true;
-      if (heartbeatSchedulerInterval) {
-        clearInterval(heartbeatSchedulerInterval);
-        heartbeatSchedulerInterval = null;
-      }
-
-      const heartbeatShutdown = await coordinateHeartbeatSchedulerShutdown({
+      await runServerShutdownSequence({
         signal,
-        prepareHotRestartShutdown,
+        stopHeartbeatScheduler: () => {
+          heartbeatSchedulerStopped = true;
+          if (heartbeatSchedulerInterval) {
+            clearInterval(heartbeatSchedulerInterval);
+            heartbeatSchedulerInterval = null;
+          }
+        },
         waitForHeartbeatSchedulerIdle,
+        drainHeartbeatRunsForShutdown,
+        stopTelemetry: async () => {
+          const telemetryClient = getTelemetryClient();
+          if (!telemetryClient) return;
+          telemetryClient.stop();
+          await telemetryClient.flush();
+        },
+        appShutdown: (app as { locals?: { paperclipShutdown?: () => void } }).locals?.paperclipShutdown,
+        stopEmbeddedPostgres:
+          embeddedPostgres && embeddedPostgresStartedByThisProcess
+            ? async () => embeddedPostgres.stop()
+            : null,
+        shutdownInstrumentation,
+        exitProcess: (code) => process.exit(code),
       });
-      const skipHeartbeatDrain = heartbeatShutdown.hotRestart?.skipDrain === true;
-      if (skipHeartbeatDrain) {
-        logger.info(
-          { signal, hotRestart: heartbeatShutdown.hotRestart },
-          "hot-restart shutdown prepared; skipping heartbeat scheduler idle wait and graceful run drain",
-        );
-      } else if (heartbeatShutdown.preparationError) {
-        logger.error(
-          { err: heartbeatShutdown.preparationError, signal },
-          "hot-restart shutdown preparation failed; falling back to graceful heartbeat run drain",
-        );
-      }
-
-      const telemetryClient = getTelemetryClient();
-      if (telemetryClient) {
-        telemetryClient.stop();
-        await telemetryClient.flush();
-      }
-
-      if (!skipHeartbeatDrain && drainHeartbeatRunsForShutdown) {
-        try {
-          const drain = await drainHeartbeatRunsForShutdown(signal);
-          logger.info({ signal, drain }, "graceful heartbeat run drain complete");
-        } catch (err) {
-          logger.error({ err, signal }, "graceful heartbeat run drain failed");
-        }
-      }
-
-      const appShutdown = (app as { locals?: { paperclipShutdown?: () => void } }).locals?.paperclipShutdown;
-      appShutdown?.();
-
-      if (embeddedPostgres && embeddedPostgresStartedByThisProcess) {
-        logger.info({ signal }, "Stopping embedded PostgreSQL");
-        try {
-          await embeddedPostgres?.stop();
-        } catch (err) {
-          logger.error({ err }, "Failed to stop embedded PostgreSQL cleanly");
-        }
-      }
-
-      // Flush buffered OTel spans before the process goes away; without this
-      // await the exporter's final batch is dropped on exit.
-      await shutdownInstrumentation();
-
-      process.exit(0);
     };
 
     process.once("SIGINT", () => {

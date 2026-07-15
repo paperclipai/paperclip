@@ -474,6 +474,48 @@ describe("issue update comment wakeups", () => {
     );
   });
 
+  it("suppresses the assignee wake on comment-only updates that explicitly mention a different agent", async () => {
+    const existing = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "in_progress",
+    });
+    const updated = { ...existing };
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(updated);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-mentioned-other-agent-update",
+      issueId: existing.id,
+      companyId: existing.companyId,
+      body: "[@QA](/agents/33333333-3333-4333-8333-333333333333) please inspect this",
+    });
+    mockIssueService.findMentionedAgents.mockResolvedValue([MENTIONED_AGENT_ID]);
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${existing.id}`)
+      .send({
+        comment: "[@QA](/agents/33333333-3333-4333-8333-333333333333) please inspect this",
+      });
+
+    expect(res.status).toBe(200);
+    await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1));
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      MENTIONED_AGENT_ID,
+      expect.objectContaining({
+        source: "automation",
+        reason: "issue_comment_mentioned",
+        payload: expect.objectContaining({
+          issueId: existing.id,
+          commentId: "comment-mentioned-other-agent-update",
+        }),
+      }),
+    );
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.anything(),
+    );
+  });
+
   it("wakes the assignee on top-level board issue comments", async () => {
     const existing = makeIssue({
       assigneeAgentId: ASSIGNEE_AGENT_ID,
@@ -515,6 +557,46 @@ describe("issue update comment wakeups", () => {
           source: "issue.comment",
         }),
       }),
+    );
+  });
+
+  it("suppresses the assignee wake when a board comment explicitly mentions a different agent", async () => {
+    const existing = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "in_progress",
+    });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-mentioned-other-agent",
+      issueId: existing.id,
+      companyId: existing.companyId,
+      body: "[@QA](/agents/33333333-3333-4333-8333-333333333333) what is wrong here?",
+    });
+    mockIssueService.findMentionedAgents.mockResolvedValue([MENTIONED_AGENT_ID]);
+
+    const res = await request(await createApp())
+      .post(`/api/issues/${existing.id}/comments`)
+      .send({
+        body: "[@QA](/agents/33333333-3333-4333-8333-333333333333) what is wrong here?",
+      });
+
+    expect(res.status).toBe(201);
+    await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1));
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      MENTIONED_AGENT_ID,
+      expect.objectContaining({
+        source: "automation",
+        reason: "issue_comment_mentioned",
+        payload: expect.objectContaining({
+          issueId: existing.id,
+          commentId: "comment-mentioned-other-agent",
+        }),
+      }),
+    );
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.anything(),
     );
   });
 

@@ -129,6 +129,26 @@ describe("buildPaperclipTaskMarkdown", () => {
     expect(commentWake).toContain("Update the plan only. Do not write code or perform implementation work.");
     expect(commentWake).not.toContain("Create child issues from the approved plan only");
   });
+
+  it("includes the wake comment author type when available", () => {
+    const commentWake = buildPaperclipTaskMarkdown({
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-3404",
+        title: "Plan first",
+        workMode: "standard",
+        description: null,
+      },
+      wakeComment: {
+        id: "comment-1",
+        body: "[@QA] please inspect this.",
+        authorType: "user",
+      },
+    });
+
+    expect(commentWake).toContain('- Wake comment author type: "user"');
+    expect(commentWake).toContain("Latest wake comment:");
+  });
 });
 
 describe("mergeCoalescedContextSnapshot", () => {
