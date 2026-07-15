@@ -74,6 +74,7 @@ import {
   withRecoveryModelProfileHint,
 } from "./model-profile-hint.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
+import { attemptMechanicalWorkspaceValidationRepair } from "../workspace-runtime.js";
 
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["interrupted", "failed", "cancelled", "timed_out"] as const;
@@ -3157,6 +3158,74 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         previousStatus: input.previousStatus,
         latestRun: input.latestRun,
       });
+    }
+
+    if (input.recoveryCause === "workspace_validation_failed") {
+      const workspaceValidation = readWorkspaceValidationPayload(input.latestRun);
+      if (workspaceValidation) {
+        const repair = await attemptMechanicalWorkspaceValidationRepair({
+          db,
+          issue: input.issue,
+          workspaceValidation,
+        });
+        if (repair.repaired) {
+          await issuesSvc.addComment(
+            input.issue.id,
+            [
+              "Paperclip automatically repaired the execution workspace before recovery escalation.",
+              "",
+              `- Execution workspace: \`${repair.executionWorkspaceId ?? "unknown"}\``,
+              `- Failed run: \`${input.latestRun?.id ?? "unknown"}\``,
+              `- Repair result: ${repair.reason}`,
+              "- Next action: retry the source issue on the repaired workspace.",
+            ].join("\n"),
+            {},
+            { authorType: "system" },
+          );
+          await logActivity(db, {
+            companyId: input.issue.companyId,
+            actorType: "system",
+            actorId: "system",
+            agentId: null,
+            runId: null,
+            action: "execution_workspace.auto_repaired",
+            entityType: "execution_workspace",
+            entityId: repair.executionWorkspaceId ?? input.issue.id,
+            details: {
+              issueId: input.issue.id,
+              issueIdentifier: input.issue.identifier,
+              failedRunId: input.latestRun?.id ?? null,
+              recoveryCause: input.recoveryCause,
+              repairReason: repair.reason,
+            },
+          });
+          if (input.issue.assigneeAgentId) {
+            await deps.enqueueWakeup(input.issue.assigneeAgentId, {
+              source: "assignment",
+              triggerDetail: "system",
+              reason: "workspace_validation_auto_repaired",
+              idempotencyKey: `workspace_validation_auto_repaired:${input.issue.id}:${input.latestRun?.id ?? "unknown"}`,
+              payload: {
+                issueId: input.issue.id,
+                sourceIssueId: input.issue.id,
+                failedRunId: input.latestRun?.id ?? null,
+                executionWorkspaceId: repair.executionWorkspaceId,
+              },
+              requestedByActorType: "system",
+              requestedByActorId: null,
+              contextSnapshot: withRecoveryModelProfileHint({
+                issueId: input.issue.id,
+                taskId: input.issue.id,
+                wakeReason: "issue_continuation_needed",
+                retryReason: "workspace_validation_auto_repaired",
+                retryOfRunId: input.latestRun?.id ?? null,
+                executionWorkspaceId: repair.executionWorkspaceId,
+              }, "normal_model"),
+            });
+          }
+          return input.issue;
+        }
+      }
     }
 
     const recoveryCause = resolveStrandedRecoveryCause(input.latestRun, input.recoveryCause);
