@@ -1389,7 +1389,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
     await db
       .update(issues)
-      .set({ monitorNextCheckAt: new Date("2026-03-19T00:00:00.000Z") })
+      .set({ monitorNextCheckAt: new Date("2099-03-19T00:00:00.000Z") })
       .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)));
 
     const heartbeat = heartbeatService(db);
