@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
+import { HTTP_LOG_REDACT_PATHS } from "../middleware/logger.js";
 import { redactSensitive } from "../middleware/redact-sensitive.js";
 
 describe("redactSensitive", () => {
+  it("redacts deploy relay token headers from request logs", () => {
+    expect(HTTP_LOG_REDACT_PATHS).toContain("req.headers.x-paperclip-deploy-token");
+  });
+
   it("redacts a plaintext password field on a sign-in body", () => {
     const body = { email: "user@example.com", password: "founding6gomez6croaking" };
 

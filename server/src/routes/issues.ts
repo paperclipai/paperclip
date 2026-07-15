@@ -187,6 +187,7 @@ import {
   type TrustPresetResolution,
 } from "../services/trust-preset-resolver.js";
 import { externalObjectService } from "../services/external-objects.js";
+import { releaseCandidateService } from "../services/release-candidates.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
@@ -9079,6 +9080,31 @@ export function issueRoutes(
         forceFreshSession: acceptedPlanConfirmation,
         workspaceRefreshReason: acceptedPlanConfirmation ? "accepted_plan_confirmation" : null,
       });
+
+      const deployAuthorization = await releaseCandidateService(db).handleAcceptedInteraction(issue.id, interaction, {
+        agentId: actor.agentId,
+        userId: actor.actorType === "user" ? actor.actorId : null,
+        runId: actor.runId,
+      });
+
+      if (deployAuthorization) {
+        res.json({
+          interaction: continuationInteraction,
+          deployAuthorization: {
+            id: deployAuthorization.authorization.id,
+            candidateId: deployAuthorization.authorization.candidateId,
+            token: deployAuthorization.token,
+            tokenReturnedOnce: deployAuthorization.token !== null,
+            alreadyIssued: deployAuthorization.alreadyIssued,
+            targetHost: deployAuthorization.authorization.targetHost,
+            imageDigest: deployAuthorization.authorization.imageDigest,
+            environment: deployAuthorization.authorization.environment,
+            sequence: deployAuthorization.authorization.sequence,
+            expiresAt: deployAuthorization.authorization.expiresAt,
+          },
+        });
+        return;
+      }
 
       res.json(continuationInteraction);
     },

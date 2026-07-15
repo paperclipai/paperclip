@@ -28,9 +28,11 @@ const sharedOpts = {
   singleLine: true,
 };
 
+export const HTTP_LOG_REDACT_PATHS = ["req.headers.authorization", "req.headers.x-paperclip-deploy-token"];
+
 export const logger = pino({
   level: "debug",
-  redact: ["req.headers.authorization"],
+  redact: HTTP_LOG_REDACT_PATHS,
 }, pino.transport({
   targets: [
     {
