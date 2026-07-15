@@ -236,7 +236,7 @@ export function folderService(db: Db) {
       .set({
         name,
         slug,
-        color: normalizeColor(patch.color) ?? existing.color,
+        color: patch.color === undefined ? existing.color : normalizeColor(patch.color),
         position: patch.position ?? existing.position,
         updatedAt: new Date(),
       })
@@ -370,39 +370,68 @@ export function folderService(db: Db) {
     return candidate;
   }
 
-  async function ensureContainer(companyId: string, slug: "my" | "projects", name: string) {
-    const existingSystem = await db
+  async function findSystemFolder(companyId: string, systemKey: string) {
+    return db
       .select()
       .from(folders)
       .where(and(
         eq(folders.companyId, companyId),
         eq(folders.kind, "skill"),
-        eq(folders.systemKey, slug),
+        eq(folders.systemKey, systemKey),
       ))
       .then((rows) => rows[0] ?? null);
-    if (existingSystem) return (await getFolder(companyId, existingSystem.id))!;
-    const squatted = await db
-      .select({ id: folders.id })
-      .from(folders)
-      .where(and(
-        eq(folders.companyId, companyId),
-        eq(folders.kind, "skill"),
-        sql`${folders.parentId} is null`,
-        eq(folders.slug, slug),
-      ))
-      .then((rows) => rows[0] ?? null);
-    if (squatted) {
-      await db
-        .update(folders)
-        .set({ slug: await uniqueSiblingSlug(companyId, null, slug, squatted.id.slice(0, 8)), updatedAt: new Date() })
-        .where(and(eq(folders.companyId, companyId), eq(folders.id, squatted.id)));
-    }
-    const row = await db
+  }
+
+  async function insertSystemFolder(input: {
+    companyId: string;
+    parentId: string | null;
+    name: string;
+    slug: string;
+    systemKey: string;
+  }) {
+    const inserted = await db
       .insert(folders)
-      .values({ companyId, kind: "skill", parentId: null, name, slug, systemKey: slug, position: await nextPosition(companyId, "skill", null) })
+      .values({
+        companyId: input.companyId,
+        kind: "skill",
+        parentId: input.parentId,
+        name: input.name,
+        slug: input.slug,
+        systemKey: input.systemKey,
+        position: await nextPosition(input.companyId, "skill", input.parentId),
+      })
+      .onConflictDoNothing()
       .returning({ id: folders.id })
-      .then((rows) => rows[0]!);
-    return (await getFolder(companyId, row.id))!;
+      .then((rows) => rows[0] ?? null);
+    if (inserted) return (await getFolder(input.companyId, inserted.id))!;
+    const existing = await findSystemFolder(input.companyId, input.systemKey);
+    return existing ? (await getFolder(input.companyId, existing.id))! : null;
+  }
+
+  async function ensureContainer(companyId: string, slug: "bundled" | "my" | "projects", name: string) {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const existingSystem = await findSystemFolder(companyId, slug);
+      if (existingSystem) return (await getFolder(companyId, existingSystem.id))!;
+      const squatted = await db
+        .select({ id: folders.id })
+        .from(folders)
+        .where(and(
+          eq(folders.companyId, companyId),
+          eq(folders.kind, "skill"),
+          sql`${folders.parentId} is null`,
+          eq(folders.slug, slug),
+        ))
+        .then((rows) => rows[0] ?? null);
+      if (squatted) {
+        await db
+          .update(folders)
+          .set({ slug: await uniqueSiblingSlug(companyId, null, slug, squatted.id.slice(0, 8)), updatedAt: new Date() })
+          .where(and(eq(folders.companyId, companyId), eq(folders.id, squatted.id)));
+      }
+      const created = await insertSystemFolder({ companyId, parentId: null, name, slug, systemKey: slug });
+      if (created) return created;
+    }
+    throw conflict(`Could not create ${name} folder`);
   }
 
   async function uniqueSystemSlug(
@@ -427,84 +456,56 @@ export function folderService(db: Db) {
   async function ensureMyFolder(companyId: string, userId: string, userName: string | null, requestedSlug?: string | null) {
     const parent = await ensureContainer(companyId, "my", "My Skills");
     const systemKey = `my:${userId}`;
-    const resolved = await uniqueSystemSlug(companyId, parent.id, requestedSlug ?? normalizeFolderSlug(userName ?? userId), systemKey);
-    if (resolved.id) return (await getFolder(companyId, resolved.id))!;
-    const row = await db
-      .insert(folders)
-      .values({
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const resolved = await uniqueSystemSlug(companyId, parent.id, requestedSlug ?? normalizeFolderSlug(userName ?? userId), systemKey);
+      if (resolved.id) return (await getFolder(companyId, resolved.id))!;
+      const created = await insertSystemFolder({
         companyId,
-        kind: "skill",
         parentId: parent.id,
         name: userName?.trim() || "My Skills",
         slug: resolved.slug!,
         systemKey,
-        position: await nextPosition(companyId, "skill", parent.id),
-      })
-      .returning({ id: folders.id })
-      .then((rows) => rows[0]!);
-    return (await getFolder(companyId, row.id))!;
+      });
+      if (created) return created;
+    }
+    throw conflict("Could not create personal skill folder");
   }
 
   async function ensureProjectFolder(companyId: string, projectId: string, projectName: string) {
     const parent = await ensureContainer(companyId, "projects", "Projects");
     const systemKey = `project:${projectId}`;
-    const resolved = await uniqueSystemSlug(companyId, parent.id, normalizeFolderSlug(projectName), systemKey);
-    if (resolved.id) return (await getFolder(companyId, resolved.id))!;
-    const row = await db
-      .insert(folders)
-      .values({
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const resolved = await uniqueSystemSlug(companyId, parent.id, normalizeFolderSlug(projectName), systemKey);
+      if (resolved.id) return (await getFolder(companyId, resolved.id))!;
+      const created = await insertSystemFolder({
         companyId,
-        kind: "skill",
         parentId: parent.id,
         name: projectName,
         slug: resolved.slug!,
         systemKey,
-        position: await nextPosition(companyId, "skill", parent.id),
-      })
-      .returning({ id: folders.id })
-      .then((rows) => rows[0]!);
-    return (await getFolder(companyId, row.id))!;
+      });
+      if (created) return created;
+    }
+    throw conflict("Could not create project skill folder");
   }
 
   async function ensureBundledCategory(companyId: string, category: string) {
-    let root = await db
-      .select({ id: folders.id })
-      .from(folders)
-      .where(and(eq(folders.companyId, companyId), eq(folders.kind, "skill"), eq(folders.systemKey, "bundled")))
-      .then((rows) => rows[0] ?? null);
-    if (!root) {
-      const squatted = await db
-        .select({ id: folders.id })
-        .from(folders)
-        .where(and(
-          eq(folders.companyId, companyId),
-          eq(folders.kind, "skill"),
-          sql`${folders.parentId} is null`,
-          eq(folders.slug, "bundled"),
-        ))
-        .then((rows) => rows[0] ?? null);
-      if (squatted) {
-        await db
-          .update(folders)
-          .set({ slug: await uniqueSiblingSlug(companyId, null, "bundled", squatted.id.slice(0, 8)), updatedAt: new Date() })
-          .where(and(eq(folders.companyId, companyId), eq(folders.id, squatted.id)));
-      }
-      root = await db
-        .insert(folders)
-        .values({ companyId, kind: "skill", parentId: null, name: "Bundled", slug: "bundled", systemKey: "bundled", position: await nextPosition(companyId, "skill", null) })
-        .returning({ id: folders.id })
-        .then((rows) => rows[0]!);
-    }
+    const root = await ensureContainer(companyId, "bundled", "Bundled");
     const slug = normalizeFolderSlug(category);
     const systemKey = `bundled:${slug}`;
-    const resolved = await uniqueSystemSlug(companyId, root.id, slug, systemKey, "bundled");
-    if (resolved.id) return (await getFolder(companyId, resolved.id))!;
-    const row = await db
-      .insert(folders)
-      .values({ companyId, kind: "skill", parentId: root.id, name: category, slug: resolved.slug!, systemKey, position: await nextPosition(companyId, "skill", root.id) })
-      .returning({ id: folders.id })
-      .then((rows) => rows[0]!);
-    return (await getFolder(companyId, row.id))!;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const resolved = await uniqueSystemSlug(companyId, root.id, slug, systemKey, "bundled");
+      if (resolved.id) return (await getFolder(companyId, resolved.id))!;
+      const created = await insertSystemFolder({
+        companyId,
+        parentId: root.id,
+        name: category,
+        slug: resolved.slug!,
+        systemKey,
+      });
+      if (created) return created;
+    }
+    throw conflict("Could not create bundled skill folder");
   }
 
   return {

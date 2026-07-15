@@ -99,6 +99,8 @@ describeEmbeddedPostgres("folder service", () => {
 
     const renamed = await svc.update(companyId, cleanup.id, { name: "Ops", color: "cyan" });
     expect(renamed).toMatchObject({ id: cleanup.id, name: "Ops", color: "cyan" });
+    const cleared = await svc.update(companyId, cleanup.id, { color: null });
+    expect(cleared).toMatchObject({ id: cleanup.id, color: null });
 
     const movedFolder = await svc.moveFolder(companyId, reporting.id, { position: 10 });
     expect(movedFolder).toMatchObject({ id: reporting.id, position: 10 });
@@ -234,6 +236,28 @@ describeEmbeddedPostgres("folder service", () => {
       name: "Nested",
     })).rejects.toMatchObject({ status: 403, message: "Bundled folders are read-only" });
     await expect(svc.update(companyId, bundled.id, { name: "Changed" })).rejects.toMatchObject({ status: 403 });
+  });
+
+  it("creates reserved folders idempotently under concurrent requests", async () => {
+    const companyId = await seedCompany();
+    const svc = folderService(db);
+
+    const [personalA, personalB] = await Promise.all([
+      svc.ensureMyFolder(companyId, "user-1", "Ada Lovelace"),
+      svc.ensureMyFolder(companyId, "user-1", "Ada Lovelace"),
+    ]);
+    const [projectA, projectB] = await Promise.all([
+      svc.ensureProjectFolder(companyId, "project-1", "Core App"),
+      svc.ensureProjectFolder(companyId, "project-1", "Core App"),
+    ]);
+    const [bundledA, bundledB] = await Promise.all([
+      svc.ensureBundledCategory(companyId, "software-development"),
+      svc.ensureBundledCategory(companyId, "software-development"),
+    ]);
+
+    expect(personalA.id).toBe(personalB.id);
+    expect(projectA.id).toBe(projectB.id);
+    expect(bundledA.id).toBe(bundledB.id);
   });
 
   it("reserves system skill roots from manual create, update, and move", async () => {
