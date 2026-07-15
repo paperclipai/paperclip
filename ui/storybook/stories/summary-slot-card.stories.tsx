@@ -316,8 +316,8 @@ const STREAMING_DRAFT_PARTIAL = [
 
 const STREAMING_DRAFT_COMPLETE = [
   STREAMING_DRAFT_PARTIAL,
-  " passing a first visual review. Nothing else is stuck.",
-  "<<<END-SUMMARY-DRAFT>>>",
+  " passing a first visual review. Nothing else is stuck.\n",
+  "<<<END-SUMMARY-DRAFT>>>\n",
 ].join("");
 
 const DESKTOP = 640;
