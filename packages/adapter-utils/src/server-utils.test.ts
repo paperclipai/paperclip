@@ -659,6 +659,52 @@ describe("runChildProcess", () => {
     }
   });
 
+  it.skipIf(process.platform === "win32")("waits for an adopted process to exit before trusting its sentinel", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-run-journal-adopt-sentinel-"));
+    const stdoutPath = path.join(root, "stdout.log");
+    const stderrPath = path.join(root, "stderr.log");
+    await fs.writeFile(stdoutPath, "before-");
+    await fs.writeFile(stderrPath, "");
+    const child = spawn(process.execPath, [
+      "-e",
+      [
+        "const fs = require('node:fs');",
+        `fs.writeFileSync(${JSON.stringify(path.join(root, "exit.json"))}, JSON.stringify({ version: 1, code: 99, signal: null, startedAt: new Date().toISOString(), finishedAt: new Date().toISOString() }));`,
+        `setTimeout(() => fs.appendFileSync(${JSON.stringify(stdoutPath)}, 'after'), 150);`,
+        "setTimeout(() => process.exit(0), 250);",
+      ].join(" "),
+    ], { detached: true, stdio: "ignore" });
+    if (!child.pid) throw new Error("Expected child pid");
+
+    try {
+      const chunks: string[] = [];
+      const result = await runChildProcess(randomUUID(), process.execPath, ["-e", "throw new Error('must not spawn')"], {
+        cwd: process.cwd(),
+        env: {},
+        timeoutSec: 5,
+        graceSec: 1,
+        onLog: async (_stream, chunk) => {
+          chunks.push(chunk);
+        },
+        journal: {
+          spoolDir: root,
+          stdoutOffset: Buffer.byteLength("before-"),
+          adoptExisting: {
+            pid: child.pid,
+            processGroupId: child.pid,
+            activeElapsedMs: 0,
+          },
+        },
+      });
+
+      expect(chunks.join("")).toBe("after");
+      expect(result).toMatchObject({ exitCode: 99, signal: null, timedOut: false, stdout: "after" });
+    } finally {
+      child.kill("SIGKILL");
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("produces the same captured transcript through pipe and journal paths", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-run-journal-parity-"));
     const args = [
