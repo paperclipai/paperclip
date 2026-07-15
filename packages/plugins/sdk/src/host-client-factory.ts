@@ -257,6 +257,8 @@ export interface HostServices {
     pause(params: WorkerToHostMethods["agents.pause"][0]): Promise<WorkerToHostMethods["agents.pause"][1]>;
     resume(params: WorkerToHostMethods["agents.resume"][0]): Promise<WorkerToHostMethods["agents.resume"][1]>;
     invoke(params: WorkerToHostMethods["agents.invoke"][0]): Promise<WorkerToHostMethods["agents.invoke"][1]>;
+    channelRunsRegister(params: WorkerToHostMethods["agents.channelRuns.register"][0]): Promise<WorkerToHostMethods["agents.channelRuns.register"][1]>;
+    channelRunsFinalize(params: WorkerToHostMethods["agents.channelRuns.finalize"][0]): Promise<WorkerToHostMethods["agents.channelRuns.finalize"][1]>;
     managedGet(params: WorkerToHostMethods["agents.managed.get"][0]): Promise<WorkerToHostMethods["agents.managed.get"][1]>;
     managedReconcile(params: WorkerToHostMethods["agents.managed.reconcile"][0]): Promise<WorkerToHostMethods["agents.managed.reconcile"][1]>;
     managedReset(params: WorkerToHostMethods["agents.managed.reset"][0]): Promise<WorkerToHostMethods["agents.managed.reset"][1]>;
@@ -462,6 +464,10 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   "agents.pause": "agents.pause",
   "agents.resume": "agents.resume",
   "agents.invoke": "agents.invoke",
+  // Registering/finalizing a channel run is an invoke-class operation: it
+  // mints run-scoped agent authority. Gated under the same capability.
+  "agents.channelRuns.register": "agents.invoke",
+  "agents.channelRuns.finalize": "agents.invoke",
   "agents.managed.get": "agents.managed",
   "agents.managed.reconcile": "agents.managed",
   "agents.managed.reset": "agents.managed",
@@ -890,6 +896,12 @@ export function createHostClientHandlers(
     }),
     "agents.invoke": gated("agents.invoke", async (params) => {
       return services.agents.invoke(params);
+    }),
+    "agents.channelRuns.register": gated("agents.channelRuns.register", async (params) => {
+      return services.agents.channelRunsRegister(params);
+    }),
+    "agents.channelRuns.finalize": gated("agents.channelRuns.finalize", async (params) => {
+      return services.agents.channelRunsFinalize(params);
     }),
     "agents.managed.get": gated("agents.managed.get", async (params) => {
       return services.agents.managedGet(params);

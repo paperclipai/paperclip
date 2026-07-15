@@ -5524,6 +5524,93 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
   }
 
+  /**
+   * NEO-447 Phase 2: register a run row for a channel-dispatched turn (Cliq
+   * etc.). Channel adapters spawn the agent harness directly (outside the
+   * heartbeat spawn path), so this is how a channel turn becomes a first-class
+   * run: the requester snapshot is persisted onto the TRUSTED run row here, at
+   * dispatch time by the plugin host — the agent can never self-assert it —
+   * and the MCP execute PEP re-derives identity + authority from this row.
+   * Returns a run-scoped agent JWT so the spawned harness's API calls carry
+   * the run id (token is null when the local agent JWT secret is unset).
+   */
+  async function registerChannelRun(input: {
+    agentId: string;
+    companyId: string;
+    requester: {
+      userId: string | null;
+      channelUserId?: string | null;
+      channelId?: string | null;
+      source?: string | null;
+    } | null;
+    reason?: string | null;
+  }) {
+    const agent = await getAgent(input.agentId);
+    if (!agent || agent.companyId !== input.companyId) {
+      throw new Error("Agent not found in company");
+    }
+    const now = new Date();
+    const run = await db
+      .insert(heartbeatRuns)
+      .values({
+        companyId: agent.companyId,
+        agentId: agent.id,
+        invocationSource: "channel",
+        triggerDetail: "callback",
+        status: "running",
+        startedAt: now,
+        contextSnapshot: {
+          wakeReason: "channel_message",
+          ...(input.reason ? { reason: input.reason } : {}),
+          // Identity only — authority (clearance) is re-derived fresh from
+          // company_memberships at MCP execute time, never snapshotted.
+          requester: input.requester
+            ? {
+                userId: input.requester.userId ?? null,
+                channelUserId: input.requester.channelUserId ?? null,
+                channelId: input.requester.channelId ?? null,
+                source: input.requester.source ?? null,
+              }
+            : null,
+        },
+        issueCommentStatus: "not_applicable",
+        updatedAt: now,
+      })
+      .returning({ id: heartbeatRuns.id })
+      .then((rows) => rows[0]!);
+
+    const token = createLocalAgentJwt(agent.id, agent.companyId, agent.adapterType, run.id);
+    return { runId: run.id, token };
+  }
+
+  /** Close out a channel run registered via registerChannelRun. */
+  async function finalizeChannelRun(input: {
+    runId: string;
+    companyId: string;
+    status: "succeeded" | "failed" | "timed_out" | "cancelled";
+    error?: string | null;
+  }) {
+    const now = new Date();
+    const updated = await db
+      .update(heartbeatRuns)
+      .set({
+        status: input.status,
+        finishedAt: now,
+        error: input.error ?? null,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(heartbeatRuns.id, input.runId),
+          eq(heartbeatRuns.companyId, input.companyId),
+          eq(heartbeatRuns.invocationSource, "channel"),
+          eq(heartbeatRuns.status, "running"),
+        ),
+      )
+      .returning({ id: heartbeatRuns.id });
+    return { finalized: updated.length > 0 };
+  }
+
   async function getIssueExecutionContext(companyId: string, issueId: string) {
     return db
       .select({
@@ -15968,6 +16055,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     decorateActiveRunStatus: decorateHeartbeatRunRuntimeStatus,
     recordRuntimeProgress: recordCurrentHeartbeatRunRuntimeProgress,
     sweepExpiredRuntimeStatuses: sweepExpiredHeartbeatRunRuntimeStatuses,
+    registerChannelRun,
+
+    finalizeChannelRun,
 
     getRunLogAccess,
 

@@ -1453,6 +1453,35 @@ export interface WorkerToHostMethods {
     params: { agentId: string; companyId: string; prompt: string; reason?: string },
     result: { runId: string },
   ];
+  // NEO-447: channel adapters (Cliq etc.) spawn the harness directly, so they
+  // register each conversational turn as a first-class run. The requester
+  // snapshot is persisted onto the trusted run row by the HOST at dispatch
+  // time (the agent can never self-assert it); the MCP execute PEP re-derives
+  // identity + authority from that row. `token` is a run-scoped agent JWT for
+  // the spawned harness (null when the local agent JWT secret is unset).
+  "agents.channelRuns.register": [
+    params: {
+      agentId: string;
+      companyId: string;
+      requester: {
+        userId: string | null;
+        channelUserId?: string | null;
+        channelId?: string | null;
+        source?: string | null;
+      } | null;
+      reason?: string;
+    },
+    result: { runId: string; token: string | null },
+  ];
+  "agents.channelRuns.finalize": [
+    params: {
+      runId: string;
+      companyId: string;
+      status: "succeeded" | "failed" | "timed_out" | "cancelled";
+      error?: string | null;
+    },
+    result: { finalized: boolean },
+  ];
   "agents.managed.get": [
     params: { agentKey: string; companyId: string },
     result: PluginManagedAgentResolution,

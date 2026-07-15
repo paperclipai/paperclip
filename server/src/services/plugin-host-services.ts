@@ -2233,6 +2233,32 @@ export function buildHostServices(
         if (!run) throw new Error("Agent wakeup was skipped by heartbeat policy");
         return { runId: run.id };
       },
+      // NEO-447: first-class runs for channel-dispatched turns. The requester
+      // snapshot is persisted onto the trusted run row HERE (host-side, at
+      // dispatch time) — the spawned agent can never self-assert it. Returns
+      // a run-scoped agent JWT for the harness.
+      async channelRunsRegister(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const agent = await agents.getById(params.agentId);
+        requireInCompany("Agent", agent, companyId);
+        return heartbeat.registerChannelRun({
+          agentId: params.agentId,
+          companyId,
+          requester: params.requester ?? null,
+          reason: params.reason ?? null,
+        });
+      },
+      async channelRunsFinalize(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return heartbeat.finalizeChannelRun({
+          runId: params.runId,
+          companyId,
+          status: params.status,
+          error: params.error ?? null,
+        });
+      },
       async managedGet(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);

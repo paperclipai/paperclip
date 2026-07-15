@@ -35,6 +35,10 @@ function effectiveClearance(
 ): string {
   const isAutonomous = requestingUserRole == null;
   if (isAutonomous) {
+    // NEO-447 Phase 2: a channel run is BY DEFINITION on behalf of someone —
+    // an unresolved/unmapped requester must never inherit the binding's
+    // autonomous authority. Floor to guest, fail-closed.
+    if (invocationSource === "channel") return "guest";
     // Autonomous (heartbeat/no user): grant full binding authority if autonomousAllowed, else guest floor
     return autonomousAllowed ? bindingAuthority : "guest";
   }
@@ -93,9 +97,23 @@ export function agentMcpToolService(
   // read path must not depend on that invariant.
   async function listForAgent(
     agentId: string,
-    opts?: { companyId?: string | null },
+    opts?: {
+      companyId?: string | null;
+      /**
+       * NEO-447 Phase 2: clearance-aware surfacing. When present, the catalog
+       * is clamped to tools whose required clearance is within the requester's
+       * effective clearance, so an agent cannot volunteer/enumerate a tool the
+       * asker isn't cleared for. This clamp is advisory UX — the execute path
+       * re-verifies against the SAME rule and remains the single audited PEP.
+       */
+      requester?: {
+        role: string | null;
+        invocationSource: "heartbeat" | "channel" | null;
+      };
+    },
   ): Promise<AgentMcpToolListResponse> {
     const companyId = opts?.companyId ?? null;
+    const requester = opts?.requester;
     if (companyId !== null && !(await isCompanyMcpClientEnabled(companyId))) {
       return { servers: [], tools: [] };
     }
@@ -121,8 +139,29 @@ export function agentMcpToolService(
     const servers = gatedBindings
       .map((binding) => {
         const allowedTools = new Set(binding.allowedTools);
+        // Clearance clamp (NEO-447): with a requester in scope, hide tools
+        // whose required clearance exceeds MIN(bindingAuthority, requester).
+        const surfacedClearance = requester
+          ? clearanceRank(
+              effectiveClearance(
+                binding.bindingAuthority,
+                requester.role,
+                binding.autonomousAllowed,
+                requester.invocationSource,
+              ),
+            )
+          : null;
+        const clearedFor = (toolName: string): boolean => {
+          if (surfacedClearance === null) return true;
+          const required =
+            binding.toolClearances[toolName] ?? binding.defaultMinUserRole;
+          return surfacedClearance >= clearanceRank(required);
+        };
+        // Empty allowedTools means the binding exposes ZERO tools (deny by
+        // default), not ALL tools. Callers must populate the allow-list to
+        // grant access.
         const tools = (binding.latestSnapshot?.tools ?? [])
-          .filter((tool) => allowedTools.size === 0 || allowedTools.has(tool.name))
+          .filter((tool) => allowedTools.has(tool.name) && clearedFor(tool.name))
           .map<AgentMcpToolDescriptor>((tool) => ({
             serverId: binding.server.id,
             serverName: binding.server.name,

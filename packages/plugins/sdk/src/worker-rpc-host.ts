@@ -1059,6 +1059,42 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
           return callHost("agents.invoke", { agentId, companyId, prompt: opts.prompt, reason: opts.reason });
         },
 
+        channelRuns: {
+          async register(
+            agentId: string,
+            companyId: string,
+            opts: {
+              requester: {
+                userId: string | null;
+                channelUserId?: string | null;
+                channelId?: string | null;
+                source?: string | null;
+              } | null;
+              reason?: string;
+            },
+          ) {
+            return callHost("agents.channelRuns.register", {
+              agentId,
+              companyId,
+              requester: opts.requester,
+              reason: opts.reason,
+            });
+          },
+
+          async finalize(
+            runId: string,
+            companyId: string,
+            opts: { status: "succeeded" | "failed" | "timed_out" | "cancelled"; error?: string | null },
+          ) {
+            return callHost("agents.channelRuns.finalize", {
+              runId,
+              companyId,
+              status: opts.status,
+              error: opts.error,
+            });
+          },
+        },
+
         managed: {
           async get(agentKey: string, companyId: string) {
             return callHost("agents.managed.get", { agentKey, companyId });

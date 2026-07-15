@@ -291,8 +291,12 @@ describeEmbeddedPostgres("plugin-managed MCP servers", () => {
     });
 
     // Governance still applies: nothing is visible until the company enables
-    // the server AND the agent is bound to it.
-    await operatorSvc.bindToAgent(companyId, agentId, { mcpServerId: serverId });
+    // the server AND the agent is bound to it. The allow-list must be explicit —
+    // an empty allowedTools exposes ZERO tools (NEO-445 deny-by-default).
+    await operatorSvc.bindToAgent(companyId, agentId, {
+      mcpServerId: serverId,
+      allowedTools: ["create_issue"],
+    });
     const beforeEnable = await toolSvc.listForAgent(agentId, { companyId });
     expect(beforeEnable.tools).toHaveLength(0);
 

@@ -1516,6 +1516,32 @@ export interface PluginAgentsClient {
   resume(agentId: string, companyId: string): Promise<Agent>;
   /** Invoke (wake up) an agent with a prompt payload. Throws if paused, terminated, pending_approval, or not found. Requires `agents.invoke`. */
   invoke(agentId: string, companyId: string, opts: { prompt: string; reason?: string }): Promise<{ runId: string }>;
+  /**
+   * Register/finalize first-class runs for channel-dispatched turns (NEO-447).
+   * `register` persists the requester snapshot onto the trusted run row and
+   * returns a run-scoped agent JWT for the spawned harness (null when the
+   * host's local agent JWT secret is unset). Requires `agents.invoke`.
+   */
+  channelRuns: {
+    register(
+      agentId: string,
+      companyId: string,
+      opts: {
+        requester: {
+          userId: string | null;
+          channelUserId?: string | null;
+          channelId?: string | null;
+          source?: string | null;
+        } | null;
+        reason?: string;
+      },
+    ): Promise<{ runId: string; token: string | null }>;
+    finalize(
+      runId: string,
+      companyId: string,
+      opts: { status: "succeeded" | "failed" | "timed_out" | "cancelled"; error?: string | null },
+    ): Promise<{ finalized: boolean }>;
+  };
   /** Resolve and reconcile manifest-declared plugin-managed agents by stable key. Requires `agents.managed`. */
   managed: {
     get(agentKey: string, companyId: string): Promise<PluginManagedAgentResolution>;

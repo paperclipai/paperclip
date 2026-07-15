@@ -802,6 +802,119 @@ describe("NEO-446 Phase 1: clearance gate", () => {
   });
 });
 
+describe("NEO-447 Phase 2: channel requester floor + clearance-aware surfacing", () => {
+  it("denies a channel run with an unresolved requester even when autonomousAllowed=true", async () => {
+    // A channel run is BY DEFINITION on behalf of someone; an unmapped/spoofed
+    // sender must never inherit the binding's autonomous authority.
+    const auditLog = vi.fn(async () => {});
+    const { svc, executeTool } = serviceWithBindings(
+      [binding({ companyId: COMPANY_A, serverId: SERVER_X, slug: "github", bindingAuthority: "board", defaultMinUserRole: "board", autonomousAllowed: true })],
+      { writeAuditLog: auditLog },
+    );
+
+    await expect(
+      svc.executeForRun(
+        { agentId: AGENT_1, companyId: COMPANY_A, requestingUserId: null, requestingUserRole: null, invocationSource: "channel" },
+        { toolName: "create_issue" },
+      ),
+    ).rejects.toMatchObject({
+      statusCode: 403,
+      code: "mcp_tool_denied_by_clearance",
+    });
+    expect(executeTool).not.toHaveBeenCalled();
+    expect(auditLog).toHaveBeenCalledWith(expect.objectContaining({ decision: "deny", eventType: "clearance.denied" }));
+  });
+
+  it("allows an unresolved channel requester only guest-cleared tools", async () => {
+    const { svc, executeTool } = serviceWithBindings([
+      binding({ companyId: COMPANY_A, serverId: SERVER_X, slug: "github", bindingAuthority: "board", defaultMinUserRole: "guest", autonomousAllowed: true }),
+    ]);
+
+    const result = await svc.executeForRun(
+      { agentId: AGENT_1, companyId: COMPANY_A, requestingUserId: null, requestingUserRole: null, invocationSource: "channel" },
+      { toolName: "create_issue" },
+    );
+    expect(result.ok).toBe(true);
+    expect(executeTool).toHaveBeenCalledTimes(1);
+  });
+
+  it("applies MIN(agent, requester) to a resolved channel requester like any other", async () => {
+    const { svc, executeTool } = serviceWithBindings([
+      binding({ companyId: COMPANY_A, serverId: SERVER_X, slug: "github", bindingAuthority: "board", defaultMinUserRole: "member" }),
+    ]);
+
+    const result = await svc.executeForRun(
+      { agentId: AGENT_1, companyId: COMPANY_A, requestingUserId: "user-7", requestingUserRole: "member", invocationSource: "channel" },
+      { toolName: "create_issue" },
+    );
+    expect(result.ok).toBe(true);
+    expect(executeTool).toHaveBeenCalledTimes(1);
+  });
+
+  it("clamps listForAgent to the requester's clearance (surfacing parity with execute)", async () => {
+    const boardOnly = binding({
+      companyId: COMPANY_A,
+      serverId: SERVER_X,
+      slug: "github",
+      bindingAuthority: "board",
+      toolClearances: { create_issue: "board" },
+      defaultMinUserRole: "board",
+    });
+    const { svc } = serviceWithBindings([boardOnly]);
+
+    // board-required tool hidden from a member requester...
+    const clamped = await svc.listForAgent(AGENT_1, {
+      companyId: COMPANY_A,
+      requester: { role: "member", invocationSource: "channel" },
+    });
+    expect(clamped.tools).toHaveLength(0);
+
+    // ...but visible once the per-tool clearance is member-reachable.
+    const memberReachable = binding({
+      companyId: COMPANY_A,
+      serverId: SERVER_X,
+      slug: "github",
+      bindingAuthority: "board",
+      toolClearances: { create_issue: "member" },
+      defaultMinUserRole: "board",
+    });
+    const { svc: svc2 } = serviceWithBindings([memberReachable]);
+    const visible = await svc2.listForAgent(AGENT_1, {
+      companyId: COMPANY_A,
+      requester: { role: "member", invocationSource: "channel" },
+    });
+    expect(visible.tools.map((t) => t.toolName)).toEqual(["create_issue"]);
+  });
+
+  it("hides all non-guest tools from an unresolved channel requester in listForAgent", async () => {
+    const { svc } = serviceWithBindings([
+      binding({ companyId: COMPANY_A, serverId: SERVER_X, slug: "github", bindingAuthority: "board", defaultMinUserRole: "board", autonomousAllowed: true }),
+    ]);
+
+    const clamped = await svc.listForAgent(AGENT_1, {
+      companyId: COMPANY_A,
+      requester: { role: null, invocationSource: "channel" },
+    });
+    expect(clamped.tools).toHaveLength(0);
+
+    // Same binding, heartbeat autonomous with autonomousAllowed=true: full authority.
+    const autonomous = await svc.listForAgent(AGENT_1, {
+      companyId: COMPANY_A,
+      requester: { role: null, invocationSource: "heartbeat" },
+    });
+    expect(autonomous.tools.map((t) => t.toolName)).toEqual(["create_issue"]);
+  });
+
+  it("leaves listForAgent unclamped when no requester context is supplied (agent-token path)", async () => {
+    const { svc } = serviceWithBindings([
+      binding({ companyId: COMPANY_A, serverId: SERVER_X, slug: "github", bindingAuthority: "board", defaultMinUserRole: "board" }),
+    ]);
+
+    const listing = await svc.listForAgent(AGENT_1, { companyId: COMPANY_A });
+    expect(listing.tools.map((t) => t.toolName)).toEqual(["create_issue"]);
+  });
+});
+
 describe("buildCompactMcpRunContext", () => {
   it("drops schemas and per-server tool arrays", () => {
     const compact = buildCompactMcpRunContext(mcpCatalog([mcpTool()]));

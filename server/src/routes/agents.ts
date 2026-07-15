@@ -52,6 +52,8 @@ import {
   issueService,
   logActivity,
   agentMcpToolService,
+  readRunRequester,
+  resolveRequesterClearance,
   syncInstructionsBundleConfigFromFilePath,
   workspaceOperationService,
 } from "../services/index.js";
@@ -2123,13 +2125,65 @@ export function agentRoutes(
   });
 
   if (isMcpClientEnabled()) {
+    // NEO-447 Phase 2: derive the requester (identity from the TRUSTED run
+    // row, authority re-derived fresh from company_memberships) for both the
+    // surfacing and execute paths. The agent never supplies these fields —
+    // they were persisted at dispatch time by the heartbeat/channel-run
+    // registrar. Unresolved requester on a channel run ⇒ role null, which the
+    // clearance gate floors to guest (never the binding's autonomous grant).
+    const deriveRunRequesterContext = async (run: {
+      companyId: string;
+      invocationSource: string | null;
+      contextSnapshot: unknown;
+    }): Promise<{
+      requestingUserId: string | null;
+      requestingUserRole: string | null;
+      invocationSource: "heartbeat" | "channel";
+    }> => {
+      const invocationSource = run.invocationSource === "channel" ? "channel" : "heartbeat";
+      const requester = readRunRequester(run.contextSnapshot);
+      if (!requester?.userId) {
+        return { requestingUserId: null, requestingUserRole: null, invocationSource };
+      }
+      const role = await resolveRequesterClearance(db, run.companyId, requester.userId);
+      return {
+        requestingUserId: requester.userId,
+        requestingUserRole: role,
+        invocationSource,
+      };
+    };
+
     router.get("/agents/me/mcp-tools", async (req, res) => {
       if (req.actor.type !== "agent" || !req.actor.agentId || !req.actor.companyId) {
         res.status(401).json({ error: "Agent authentication required" });
         return;
       }
 
-      res.json(await agentMcpTools.listForAgent(req.actor.agentId, { companyId: req.actor.companyId }));
+      // Clearance-aware surfacing: with a run-scoped token, clamp the catalog
+      // to the requester's clearance so a preferred-mode agent can't volunteer
+      // or enumerate tools the asker isn't cleared for (re-verified at execute).
+      let requester:
+        | { role: string | null; invocationSource: "heartbeat" | "channel" }
+        | undefined;
+      if (req.actor.runId) {
+        const run = await heartbeat.getRun(req.actor.runId);
+        if (!run || run.companyId !== req.actor.companyId || run.agentId !== req.actor.agentId) {
+          res.status(403).json({ error: "Run identity mismatch" });
+          return;
+        }
+        const derived = await deriveRunRequesterContext(run);
+        requester = {
+          role: derived.requestingUserRole,
+          invocationSource: derived.invocationSource,
+        };
+      }
+
+      res.json(
+        await agentMcpTools.listForAgent(req.actor.agentId, {
+          companyId: req.actor.companyId,
+          requester,
+        }),
+      );
     });
 
     router.post("/agents/me/mcp-tools/execute", validate(executeAgentMcpToolSchema), async (req, res) => {
@@ -2144,10 +2198,14 @@ export function agentRoutes(
         return;
       }
 
+      const requesterContext = await deriveRunRequesterContext(run);
       const result = await agentMcpTools.executeForRun(
         {
-          agentId: req.actor.agentId,
-          companyId: req.actor.companyId,
+          agentId: run.agentId,
+          companyId: run.companyId,
+          requestingUserId: requesterContext.requestingUserId,
+          requestingUserRole: requesterContext.requestingUserRole,
+          invocationSource: requesterContext.invocationSource,
         },
         req.body,
       );

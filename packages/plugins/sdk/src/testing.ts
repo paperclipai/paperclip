@@ -1562,11 +1562,10 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
             env: {},
             credentialSecretRef: options?.credential ? `sealed:${randomUUID()}` : null,
             enabled: false,
-            // Governance defaults for a freshly reconciled server — mirrors the
-            // real row mapper (server/src/services/mcp-servers.ts): a new server
-            // starts `pending` with `unknown` risk until discovery classifies it.
-            governanceStatus: "pending",
-            riskLevel: "unknown",
+            // Governance defaults mirror the server-side reconcile path: a fresh
+            // plugin-managed server starts pending (execution denied until allowlisted).
+            governanceStatus: "pending" as const,
+            riskLevel: "unknown" as const,
             riskFactors: [],
             governanceUpdatedAt: null,
             governanceUpdatedBy: null,
@@ -2056,6 +2055,20 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           throw new Error(`Agent is not invokable in its current state: ${agent!.status}`);
         }
         return { runId: randomUUID() };
+      },
+      channelRuns: {
+        async register(agentId, companyId, _opts) {
+          requireCapability(manifest, capabilitySet, "agents.invoke");
+          const cid = requireCompanyId(companyId);
+          const agent = agents.get(agentId);
+          if (!isInCompany(agent, cid)) throw new Error(`Agent not found: ${agentId}`);
+          return { runId: randomUUID(), token: null };
+        },
+        async finalize(_runId, companyId, _opts) {
+          requireCapability(manifest, capabilitySet, "agents.invoke");
+          requireCompanyId(companyId);
+          return { finalized: true };
+        },
       },
       managed: {
         async get(agentKey, companyId) {

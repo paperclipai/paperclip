@@ -72,6 +72,12 @@ export { budgetService } from "./budgets.js";
 export { secretService } from "./secrets.js";
 export { mcpServerService } from "./mcp-servers.js";
 export { agentMcpToolService } from "./agent-mcp-tools.js";
+export {
+  readRunRequester,
+  resolveRequesterClearance,
+  clearanceForMembershipRole,
+  type RunRequesterSnapshot,
+} from "./requester-clearance.js";
 export { agentToolCatalogService, buildCompactMcpRunContext, mcpQualifiedToolName, parseMcpQualifiedToolName } from "./agent-tools.js";
 export { routineService } from "./routines.js";
 export { costService } from "./costs.js";

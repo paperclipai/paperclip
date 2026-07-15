@@ -798,6 +798,10 @@ export const HEARTBEAT_INVOCATION_SOURCES = [
   "assignment",
   "on_demand",
   "automation",
+  // NEO-447: a conversational turn dispatched by an agent-channel adapter
+  // (e.g. Cliq). Channel runs carry a requester snapshot in contextSnapshot
+  // and are never treated as autonomous by the MCP clearance gate.
+  "channel",
 ] as const;
 export type HeartbeatInvocationSource = (typeof HEARTBEAT_INVOCATION_SOURCES)[number];
 
