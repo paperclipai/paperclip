@@ -96,6 +96,7 @@ function registerRouteMocks() {
     agentService: () => mockAgentService,
     clampIssueListLimit: (value: number) => Math.min(Math.max(value, 1), 500),
     companyService: () => mockCompanyService,
+    companySkillService: () => ({ listRuntimeSkillEntries: vi.fn() }),
     documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
     documentService: () => ({}),
     executionWorkspaceService: () => ({}),
