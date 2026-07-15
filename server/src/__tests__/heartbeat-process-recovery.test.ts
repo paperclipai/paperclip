@@ -5667,4 +5667,58 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     expect(runs).toHaveLength(1);
   });
+
+  it("does not re-escalate an in_progress issue that already has an active source-scoped recovery action", async () => {
+    // Scenario: issue was escalated → set to blocked → CEO checked out → issue is in_progress again.
+    // The recovery action is still active. The reconciler must skip re-escalation so we don't loop.
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+    });
+
+    // Simulate an already-active source-scoped recovery action (created during prior escalation pass).
+    await db.insert(issueRecoveryActions).values({
+      companyId,
+      sourceIssueId: issueId,
+      kind: "stranded_assigned_issue",
+      status: "active",
+      ownerType: "agent",
+      ownerAgentId: agentId,
+      previousOwnerAgentId: agentId,
+      returnOwnerAgentId: agentId,
+      cause: "stranded_assigned_issue",
+      fingerprint: `stranded:${issueId}:failed`,
+      evidence: {},
+      nextAction: "Restore a live execution path.",
+      wakePolicy: { type: "wake_owner", reason: "source_scoped_recovery_action", ownerAgentId: agentId },
+      monitorPolicy: null,
+      attemptCount: 1,
+      lastAttemptAt: new Date(),
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    // Should be skipped entirely — no new escalation, no re-block
+    expect(result.escalated).toBe(0);
+    expect(result.successfulRunHandoffEscalated).toBe(0);
+    expect(result.skipped).toBeGreaterThanOrEqual(1);
+    expect(result.issueIds).not.toContain(issueId);
+
+    // Issue must remain in_progress, not re-blocked
+    const updatedIssue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(updatedIssue?.status).toBe("in_progress");
+
+    // Only the original recovery action exists — no duplicate created
+    const actions = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(and(
+        eq(issueRecoveryActions.companyId, companyId),
+        eq(issueRecoveryActions.sourceIssueId, issueId),
+      ));
+    expect(actions).toHaveLength(1);
+    expect(actions[0]?.status).toBe("active");
+  });
 });
