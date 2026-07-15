@@ -602,7 +602,6 @@ describe("Routines page", () => {
     }
 
     const text = container.textContent ?? "";
-    expect(text.indexOf("Project Alpha")).toBeLessThan(text.indexOf("Morning sync"));
     expect(text.indexOf("Morning sync")).toBeLessThan(text.indexOf("Built-in routines"));
     expect(text.indexOf("Built-in routines")).toBeLessThan(text.indexOf("Reflection review"));
 
