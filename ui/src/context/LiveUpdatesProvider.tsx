@@ -1,5 +1,6 @@
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, type ReactNode } from "react";
 import { useQuery, useQueryClient, type InfiniteData, type QueryClient } from "@tanstack/react-query";
+import { createCoalescingQueryClient, createInvalidationBatcher } from "../lib/query-invalidation-batcher";
 import type { Agent, Issue, IssueComment, LiveEvent } from "@paperclipai/shared";
 import type { RunForIssue } from "../api/activity";
 import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
@@ -1197,6 +1198,16 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
     agentId: null,
   });
 
+  // Coalesce the per-event invalidation storm. Optimistic setQueryData writes
+  // still pass straight through (immediate); only invalidateQueries is batched
+  // and flushed at most a few times per second.
+  const invalidationBatcher = useMemo(() => createInvalidationBatcher(queryClient), [queryClient]);
+  const coalescingClient = useMemo(
+    () => createCoalescingQueryClient(queryClient, invalidationBatcher),
+    [queryClient, invalidationBatcher],
+  );
+  useEffect(() => () => invalidationBatcher.dispose(), [invalidationBatcher]);
+
   useEffect(() => {
     pathnameRef.current = location.pathname;
   }, [location.pathname]);
@@ -1258,7 +1269,7 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
 
         try {
           const parsed = JSON.parse(raw) as LiveEvent;
-          handleLiveEvent(queryClient, liveCompanyId, pathnameRef.current, parsed, pushToast, gateRef.current, {
+          handleLiveEvent(coalescingClient, liveCompanyId, pathnameRef.current, parsed, pushToast, gateRef.current, {
             userId: currentActorRef.current.userId,
             agentId: currentActorRef.current.agentId,
           });
@@ -1293,7 +1304,7 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
       socket = null;
       closeSocketQuietly(activeSocket, "provider_unmount");
     };
-  }, [queryClient, liveCompanyId, pushToast, canConnectSocket, socketAuthKey]);
+  }, [coalescingClient, liveCompanyId, pushToast, canConnectSocket, socketAuthKey]);
 
   return <>{children}</>;
 }
