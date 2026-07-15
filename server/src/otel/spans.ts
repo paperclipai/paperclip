@@ -53,7 +53,7 @@ export async function withHeartbeatSpan<T>(
       ...(attrs.companyId ? { "heartbeat.company_id": attrs.companyId } : {}),
     });
 
-    let outcome = "succeeded";
+    let outcome = "success";
     try {
       return await fn(span);
     } catch (err) {
