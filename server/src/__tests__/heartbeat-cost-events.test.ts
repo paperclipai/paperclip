@@ -7,6 +7,7 @@ import {
   agentWakeupRequests,
   agents,
   companies,
+  companySkills,
   costEvents,
   createDb,
   heartbeatRunEvents,
@@ -72,6 +73,7 @@ describeEmbeddedPostgres("heartbeat cost events", () => {
     await db.delete(agentWakeupRequests);
     await db.delete(agentRuntimeState);
     await db.delete(agents);
+    await db.delete(companySkills);
     await db.delete(companies);
   });
 
@@ -148,6 +150,7 @@ describeEmbeddedPostgres("heartbeat cost events", () => {
       expect(run).not.toBeNull();
       const terminalRun = await waitForRun(db, run!.id);
       expect(terminalRun?.status).toBe("succeeded");
+      await heartbeat.waitForRunExecutionDrain(run!.id);
       return terminalRun!;
     };
 
