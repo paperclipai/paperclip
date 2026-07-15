@@ -8,11 +8,14 @@ import type {
 import { describe, expect, it } from "vitest";
 import {
   defaultSelection,
+  filterCandidates,
   groupCandidates,
   isScannableWorkspace,
   isSelectableCandidate,
+  isValidSelectionSlug,
   scannableWorkspaces,
   selectionKey,
+  suggestedConflictSlug,
 } from "./ImportSkillsFromProjectDialog";
 
 const WS_A = "11111111-1111-1111-1111-111111111111";
@@ -35,8 +38,8 @@ function candidate(
 }
 
 /**
- * A mixed candidate set: two importable "new" skills plus one of each disabled
- * status. The disabled rows must never count toward the import selection (N).
+ * A mixed candidate set: two default-selected new skills, one selectable
+ * conflict, and two disabled statuses.
  */
 function mixedCandidates(): CompanySkillProjectScanCandidate[] {
   return [
@@ -64,10 +67,10 @@ function mixedCandidates(): CompanySkillProjectScanCandidate[] {
 }
 
 describe("ImportSkillsFromProjectDialog selection logic", () => {
-  it("only 'new' candidates are selectable", () => {
+  it("new and conflict candidates are selectable", () => {
     const candidates = mixedCandidates();
     const selectable = candidates.filter(isSelectableCandidate);
-    expect(selectable.map((c) => c.slug)).toEqual(["alpha", "beta"]);
+    expect(selectable.map((c) => c.slug)).toEqual(["alpha", "beta", "delta"]);
   });
 
   it("default selection checks every new candidate and excludes disabled rows (N)", () => {
@@ -81,15 +84,15 @@ describe("ImportSkillsFromProjectDialog selection logic", () => {
     expect(selection.has(selectionKey(WS_A, ".claude/skills/epsilon"))).toBe(false);
   });
 
-  it("select all matches the set of selectable candidates only", () => {
+  it("default selection leaves conflicts unchecked", () => {
     const candidates = mixedCandidates();
-    // "Select all" reuses defaultSelection — it acts on selectable rows only.
     const selectAll = defaultSelection(candidates);
-    const selectable = candidates.filter(isSelectableCandidate);
-    expect(selectAll.size).toBe(selectable.length);
-    for (const c of selectable) {
+    const defaultChecked = candidates.filter((candidate) => candidate.status === "new");
+    expect(selectAll.size).toBe(defaultChecked.length);
+    for (const c of defaultChecked) {
       expect(selectAll.has(selectionKey(c.workspaceId, c.relativePath))).toBe(true);
     }
+    expect(selectAll.has(selectionKey(WS_A, ".claude/skills/delta"))).toBe(false);
   });
 
   it("deselect all yields an empty selection (N = 0)", () => {
@@ -140,6 +143,22 @@ describe("ImportSkillsFromProjectDialog selection logic", () => {
       "Workspace A:skills",
       "Workspace B:.claude/skills",
     ]);
+  });
+
+  it("filters candidates by name, slug, path, workspace, and status", () => {
+    const candidates = mixedCandidates();
+    expect(filterCandidates(candidates, "DELTA").map((entry) => entry.slug)).toEqual(["delta"]);
+    expect(filterCandidates(candidates, "already_imported").map((entry) => entry.slug)).toEqual(["gamma"]);
+    expect(filterCandidates(candidates, ".claude/skills/epsilon").map((entry) => entry.slug)).toEqual(["epsilon"]);
+    expect(filterCandidates(candidates, "workspace a")).toHaveLength(candidates.length);
+  });
+
+  it("suggests and validates a URL-safe rename for conflicts", () => {
+    const conflict = mixedCandidates().find((entry) => entry.status === "conflict")!;
+    expect(suggestedConflictSlug(conflict)).toBe("delta-copy");
+    expect(isValidSelectionSlug({ workspaceId: WS_A, path: conflict.relativePath, slug: "delta-copy" })).toBe(true);
+    expect(isValidSelectionSlug({ workspaceId: WS_A, path: conflict.relativePath, slug: "Delta Copy" })).toBe(false);
+    expect(isValidSelectionSlug({ workspaceId: WS_A, path: conflict.relativePath, slug: "" })).toBe(false);
   });
 });
 

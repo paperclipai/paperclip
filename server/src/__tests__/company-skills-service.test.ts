@@ -1920,6 +1920,183 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     expect(persisted.filter((skill) => skill.metadata?.sourceKind === "project_scan")).toEqual([]);
   });
 
+  it("reports a project skill as already installed when the source path matches", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const workspaceId = randomUUID();
+    const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-skill-same-path-"));
+    cleanupDirs.add(workspaceDir);
+    const skillDir = path.join(workspaceDir, ".codex", "skills", "same-path");
+    await fs.mkdir(skillDir, { recursive: true });
+    await fs.writeFile(path.join(skillDir, "SKILL.md"), "---\nname: Same Path\n---\n", "utf8");
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({ id: projectId, companyId, name: "Skills Project" });
+    await db.insert(projectWorkspaces).values({
+      id: workspaceId,
+      companyId,
+      projectId,
+      name: "Primary",
+      cwd: workspaceDir,
+      isPrimary: true,
+    });
+
+    const imported = await svc.scanProjectWorkspaces(companyId, {
+      mode: "import",
+      workspaceIds: [workspaceId],
+      selection: [{ workspaceId, path: ".codex/skills/same-path" }],
+    });
+    expect(imported.imported).toHaveLength(1);
+
+    const preview = await svc.scanProjectWorkspaces(companyId, {
+      mode: "preview",
+      workspaceIds: [workspaceId],
+    });
+    expect(preview.conflicts).toEqual([]);
+    expect(preview.candidates).toEqual([
+      expect.objectContaining({
+        relativePath: ".codex/skills/same-path",
+        status: "already_imported",
+        existingSkillId: imported.imported[0]!.id,
+        reason: "This skill is already installed from the same path.",
+      }),
+    ]);
+  });
+
+  it("reports project skills that duplicate built-in slugs as already available", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const workspaceId = randomUUID();
+    const bundledSkillId = randomUUID();
+    const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-skill-built-in-"));
+    const bundledSkillDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-skill-bundled-source-"));
+    cleanupDirs.add(workspaceDir);
+    cleanupDirs.add(bundledSkillDir);
+    const skillDir = path.join(workspaceDir, ".claude", "skills", "built-in-review");
+    await fs.mkdir(skillDir, { recursive: true });
+    await fs.writeFile(path.join(skillDir, "SKILL.md"), "---\nname: Built In Review\n---\n", "utf8");
+    await fs.writeFile(path.join(bundledSkillDir, "SKILL.md"), "---\nname: Built In Review\n---\n", "utf8");
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(companySkills).values({
+      id: bundledSkillId,
+      companyId,
+      key: "paperclipai/paperclip/built-in-review",
+      slug: "built-in-review",
+      name: "Built In Review",
+      markdown: "---\nname: Built In Review\n---\n",
+      sourceType: "local_path",
+      sourceLocator: bundledSkillDir,
+      trustLevel: "markdown_only",
+      compatibility: "compatible",
+      fileInventory: [{ path: "SKILL.md", kind: "skill" }],
+      metadata: { sourceKind: "paperclip_bundled" },
+    });
+    await db.insert(projects).values({ id: projectId, companyId, name: "Skills Project" });
+    await db.insert(projectWorkspaces).values({
+      id: workspaceId,
+      companyId,
+      projectId,
+      name: "Primary",
+      cwd: workspaceDir,
+      isPrimary: true,
+    });
+
+    const preview = await svc.scanProjectWorkspaces(companyId, {
+      mode: "preview",
+      workspaceIds: [workspaceId],
+    });
+
+    expect(preview.conflicts).toEqual([]);
+    expect(preview.candidates).toEqual([
+      expect.objectContaining({
+        slug: "built-in-review",
+        status: "already_imported",
+        existingSkillId: bundledSkillId,
+        reason: "This skill is already available as a built-in.",
+      }),
+    ]);
+  });
+
+  it("imports a conflicting project skill under a selected replacement slug", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const workspaceId = randomUUID();
+    const existingSkillId = randomUUID();
+    const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-skill-rename-"));
+    const existingSkillDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-skill-existing-"));
+    cleanupDirs.add(workspaceDir);
+    cleanupDirs.add(existingSkillDir);
+    const skillDir = path.join(workspaceDir, ".cursor", "skills", "shared-skill");
+    await fs.mkdir(skillDir, { recursive: true });
+    await fs.writeFile(path.join(skillDir, "SKILL.md"), "---\nname: Shared Skill\n---\n", "utf8");
+    await fs.writeFile(path.join(existingSkillDir, "SKILL.md"), "---\nname: Shared Skill\n---\n", "utf8");
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(companySkills).values({
+      id: existingSkillId,
+      companyId,
+      key: "local/existing/shared-skill",
+      slug: "shared-skill",
+      name: "Shared Skill",
+      markdown: "---\nname: Shared Skill\n---\n",
+      sourceType: "local_path",
+      sourceLocator: existingSkillDir,
+      trustLevel: "markdown_only",
+      compatibility: "compatible",
+      fileInventory: [{ path: "SKILL.md", kind: "skill" }],
+      metadata: { sourceKind: "local_path" },
+    });
+    await db.insert(projects).values({ id: projectId, companyId, name: "Skills Project" });
+    await db.insert(projectWorkspaces).values({
+      id: workspaceId,
+      companyId,
+      projectId,
+      name: "Primary",
+      cwd: workspaceDir,
+      isPrimary: true,
+    });
+
+    const preview = await svc.scanProjectWorkspaces(companyId, {
+      mode: "preview",
+      workspaceIds: [workspaceId],
+    });
+    expect(preview.candidates).toEqual([
+      expect.objectContaining({ slug: "shared-skill", status: "conflict", existingSkillId }),
+    ]);
+
+    const result = await svc.scanProjectWorkspaces(companyId, {
+      mode: "import",
+      workspaceIds: [workspaceId],
+      selection: [{
+        workspaceId,
+        path: ".cursor/skills/shared-skill",
+        slug: "shared-skill-project",
+      }],
+    });
+
+    expect(result.conflicts).toEqual([]);
+    expect(result.imported).toEqual([
+      expect.objectContaining({
+        slug: "shared-skill-project",
+        key: expect.stringMatching(/^local\/[a-f0-9]+\/shared-skill-project$/),
+        sourceLocator: skillDir,
+      }),
+    ]);
+  });
+
   it("imports only selections rediscovered inside project workspaces", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();

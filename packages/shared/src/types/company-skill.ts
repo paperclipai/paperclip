@@ -317,6 +317,7 @@ export interface CompanySkillProjectScanRequest {
   selection?: Array<{
     workspaceId: string;
     path: string;
+    slug?: string;
   }>;
 }
 

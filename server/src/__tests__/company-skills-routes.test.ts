@@ -764,13 +764,13 @@ describe("company skill mutation permissions", () => {
       .send({
         mode: "import",
         workspaceIds: [workspaceId],
-        selection: [{ workspaceId, path: ".codex/skills/review" }],
+        selection: [{ workspaceId, path: ".codex/skills/review", slug: "review-project" }],
       });
     expect(selective.status, JSON.stringify(selective.body)).toBe(200);
     expect(mockCompanySkillService.scanProjectWorkspaces).toHaveBeenLastCalledWith("company-1", {
       mode: "import",
       workspaceIds: [workspaceId],
-      selection: [{ workspaceId, path: ".codex/skills/review" }],
+      selection: [{ workspaceId, path: ".codex/skills/review", slug: "review-project" }],
     });
     expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
       action: "skill_config:update",

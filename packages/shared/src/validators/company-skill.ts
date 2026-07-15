@@ -265,6 +265,7 @@ export const companySkillProjectScanRequestSchema = z.object({
   selection: z.array(z.object({
     workspaceId: z.string().uuid(),
     path: z.string().min(1),
+    slug: z.string().min(1).optional(),
   })).optional(),
 });
 

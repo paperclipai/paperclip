@@ -22,6 +22,7 @@ import type {
   Project,
   ProjectWorkspace,
 } from "@paperclipai/shared";
+import { normalizeAgentUrlKey } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { ApiError } from "../../api/client";
 import { companySkillsApi } from "../../api/companySkills";
@@ -43,6 +44,7 @@ import { EmptyState } from "../../components/EmptyState";
 import { cn } from "../../lib/utils";
 
 type Step = "pick" | "scanning" | "select" | "result";
+export type SkillSelection = { workspaceId: string; path: string; slug?: string };
 
 interface ImportSkillsFromProjectDialogProps {
   open: boolean;
@@ -101,12 +103,28 @@ function summarizeWorkspaceKinds(workspaces: ProjectWorkspace[]): string {
 }
 
 /**
- * Which candidate statuses can be checked and imported. Everything else
- * (already imported, conflicting, skipped) renders disabled and never counts
- * toward N.
+ * New skills and conflicts can be checked. Conflicts remain unchecked by
+ * default and require an alternate slug before import.
  */
 export function isSelectableCandidate(candidate: CompanySkillProjectScanCandidate): boolean {
-  return candidate.status === "new";
+  return candidate.status === "new" || candidate.status === "conflict";
+}
+
+export function filterCandidates(
+  candidates: CompanySkillProjectScanCandidate[],
+  filter: string,
+): CompanySkillProjectScanCandidate[] {
+  const query = filter.trim().toLowerCase();
+  if (!query) return candidates;
+  return candidates.filter((candidate) => [
+    candidate.name,
+    candidate.slug,
+    candidate.description,
+    candidate.relativePath,
+    candidate.workspaceName,
+    candidate.directoryRoot,
+    candidate.status,
+  ].some((value) => value?.toLowerCase().includes(query)));
 }
 
 interface CandidateGroup {
@@ -150,16 +168,26 @@ export function groupCandidates(
  */
 export function defaultSelection(
   candidates: CompanySkillProjectScanCandidate[],
-): Map<string, { workspaceId: string; path: string }> {
-  const next = new Map<string, { workspaceId: string; path: string }>();
+): Map<string, SkillSelection> {
+  const next = new Map<string, SkillSelection>();
   for (const candidate of candidates) {
-    if (!isSelectableCandidate(candidate)) continue;
+    if (candidate.status !== "new") continue;
     next.set(selectionKey(candidate.workspaceId, candidate.relativePath), {
       workspaceId: candidate.workspaceId,
       path: candidate.relativePath,
     });
   }
   return next;
+}
+
+export function suggestedConflictSlug(candidate: CompanySkillProjectScanCandidate): string {
+  return `${candidate.slug}-copy`;
+}
+
+export function isValidSelectionSlug(selection: SkillSelection): boolean {
+  if (selection.slug === undefined) return true;
+  const trimmed = selection.slug.trim();
+  return Boolean(trimmed) && normalizeAgentUrlKey(trimmed) === trimmed;
 }
 
 function readableErrorMessage(error: unknown): string {
@@ -232,12 +260,11 @@ export function ImportSkillsFromProjectDialog({
 
   const [step, setStep] = useState<Step>("pick");
   const [projectFilter, setProjectFilter] = useState("");
+  const [candidateFilter, setCandidateFilter] = useState("");
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
   const [scanResult, setScanResult] = useState<CompanySkillProjectScanResult | null>(null);
   const [scanError, setScanError] = useState<unknown>(null);
-  const [selection, setSelection] = useState<Map<string, { workspaceId: string; path: string }>>(
-    new Map(),
-  );
+  const [selection, setSelection] = useState<Map<string, SkillSelection>>(new Map());
   const [importResult, setImportResult] = useState<CompanySkillProjectScanResult | null>(null);
   const scanTokenRef = useRef(0);
 
@@ -252,6 +279,7 @@ export function ImportSkillsFromProjectDialog({
     if (!open) return;
     setStep("pick");
     setProjectFilter("");
+    setCandidateFilter("");
     setSelectedProject(null);
     setScanResult(null);
     setScanError(null);
@@ -330,8 +358,15 @@ export function ImportSkillsFromProjectDialog({
     () => candidates.filter(isSelectableCandidate),
     [candidates],
   );
-  const groups = useMemo(() => groupCandidates(candidates), [candidates]);
+  const filteredCandidates = useMemo(
+    () => filterCandidates(candidates, candidateFilter),
+    [candidateFilter, candidates],
+  );
+  const groups = useMemo(() => groupCandidates(filteredCandidates), [filteredCandidates]);
   const selectedCount = selection.size;
+  const hasInvalidSelection = Array.from(selection.values()).some(
+    (selected) => !isValidSelectionSlug(selected),
+  );
 
   function toggleCandidate(candidate: CompanySkillProjectScanCandidate) {
     if (!isSelectableCandidate(candidate)) return;
@@ -341,8 +376,23 @@ export function ImportSkillsFromProjectDialog({
       if (next.has(key)) {
         next.delete(key);
       } else {
-        next.set(key, { workspaceId: candidate.workspaceId, path: candidate.relativePath });
+        next.set(key, {
+          workspaceId: candidate.workspaceId,
+          path: candidate.relativePath,
+          ...(candidate.status === "conflict" ? { slug: suggestedConflictSlug(candidate) } : {}),
+        });
       }
+      return next;
+    });
+  }
+
+  function renameCandidate(candidate: CompanySkillProjectScanCandidate, slug: string) {
+    setSelection((prev) => {
+      const next = new Map(prev);
+      const key = selectionKey(candidate.workspaceId, candidate.relativePath);
+      const selected = next.get(key);
+      if (!selected) return prev;
+      next.set(key, { ...selected, slug });
       return next;
     });
   }
@@ -365,6 +415,7 @@ export function ImportSkillsFromProjectDialog({
     setSelectedProject(null);
     setScanResult(null);
     setScanError(null);
+    setCandidateFilter("");
     setSelection(new Map());
     setStep("pick");
   }
@@ -382,7 +433,7 @@ export function ImportSkillsFromProjectDialog({
         className="flex max-h-(--sz-85vh) flex-col gap-0 overflow-hidden p-0 sm:max-w-3xl"
         data-testid="import-skills-from-project-dialog"
       >
-        <header className="flex items-start justify-between gap-3 border-b border-border/60 px-5 py-4">
+        <header className="flex shrink-0 items-start justify-between gap-3 border-b border-border/60 px-5 py-4">
           <div className="flex flex-col gap-1">
             <DialogTitle className="text-base font-semibold">
               Import skills from project
@@ -420,15 +471,19 @@ export function ImportSkillsFromProjectDialog({
               onRetry={() => selectedProject && startScan(selectedProject)}
               onImportFromPath={onImportFromPath}
               groups={groups}
+              totalCandidates={candidates.length}
+              filter={candidateFilter}
+              onFilterChange={setCandidateFilter}
               selection={selection}
               toggleCandidate={toggleCandidate}
+              renameCandidate={renameCandidate}
             />
           )}
           {step === "result" && importResult && <ResultStep result={importResult} />}
         </div>
 
-        <footer className="flex flex-col gap-2 border-t border-border/60 bg-muted/20 px-5 py-3 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
-          {step === "select" && !scanError && groups.length > 0 ? (
+        <footer className="flex shrink-0 flex-col gap-2 border-t border-border/60 bg-muted/20 px-5 py-3 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
+          {step === "select" && !scanError && candidates.length > 0 ? (
             <div className="min-w-0 flex-1 text-xs text-muted-foreground">
               <span className="flex items-center gap-1.5">
                 <Link2 className="h-3.5 w-3.5 shrink-0" />
@@ -441,7 +496,7 @@ export function ImportSkillsFromProjectDialog({
           <div className="flex flex-wrap items-center justify-end gap-2 sm:shrink-0">
             {step === "select" && (
               <>
-                {!scanError && groups.length > 0 && (
+                {!scanError && candidates.length > 0 && (
                   <div className="mr-1 flex items-center gap-1">
                     <Button
                       variant="ghost"
@@ -466,11 +521,11 @@ export function ImportSkillsFromProjectDialog({
                 <Button variant="outline" size="sm" onClick={backToPick}>
                   <ArrowLeft className="mr-1 h-3.5 w-3.5" /> Back
                 </Button>
-                {!scanError && groups.length > 0 && (
+                {!scanError && candidates.length > 0 && (
                   <Button
                     size="sm"
                     onClick={() => importMutation.mutate()}
-                    disabled={selectedCount === 0 || importMutation.isPending}
+                    disabled={selectedCount === 0 || hasInvalidSelection || importMutation.isPending}
                     data-testid="import-skills"
                   >
                     {importMutation.isPending ? (
@@ -643,8 +698,12 @@ interface SelectStepProps {
   onRetry: () => void;
   onImportFromPath?: () => void;
   groups: CandidateGroup[];
-  selection: Map<string, { workspaceId: string; path: string }>;
+  totalCandidates: number;
+  filter: string;
+  onFilterChange: (value: string) => void;
+  selection: Map<string, SkillSelection>;
   toggleCandidate: (candidate: CompanySkillProjectScanCandidate) => void;
+  renameCandidate: (candidate: CompanySkillProjectScanCandidate, slug: string) => void;
 }
 
 function SelectStep({
@@ -652,8 +711,12 @@ function SelectStep({
   onRetry,
   onImportFromPath,
   groups,
+  totalCandidates,
+  filter,
+  onFilterChange,
   selection,
   toggleCandidate,
+  renameCandidate,
 }: SelectStepProps) {
   if (scanError) {
     const grant = isGrantError(scanError);
@@ -685,7 +748,7 @@ function SelectStep({
     );
   }
 
-  if (groups.length === 0) {
+  if (totalCandidates === 0) {
     return (
       <div
         className="flex min-h-0 flex-1 items-center justify-center p-6"
@@ -722,9 +785,26 @@ function SelectStep({
   }
 
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto" data-testid="candidate-list">
-      {groups.map((group) => (
-        <section key={group.key}>
+    <div className="flex min-h-0 flex-1 flex-col" data-testid="candidate-list">
+      <div className="shrink-0 border-b border-border/60 px-5 py-2.5">
+        <div className="relative">
+          <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            value={filter}
+            onChange={(event) => onFilterChange(event.target.value)}
+            placeholder="Search discovered skills…"
+            className="h-8 pl-8 text-xs"
+            aria-label="Search discovered skills"
+          />
+        </div>
+      </div>
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        {groups.length === 0 ? (
+          <div className="flex h-full items-center justify-center p-6 text-sm text-muted-foreground">
+            No skills match “{filter.trim()}”.
+          </div>
+        ) : groups.map((group) => (
+          <section key={group.key}>
           <header className="sticky top-0 z-10 flex items-center gap-2 bg-muted/40 px-5 py-1.5 text-xs uppercase tracking-wide text-muted-foreground">
             <span className="font-medium normal-case text-foreground">{group.workspaceName}</span>
             <span className="font-mono lowercase">{group.directoryRoot}</span>
@@ -733,6 +813,9 @@ function SelectStep({
             {group.candidates.map((candidate) => {
               const selectable = isSelectableCandidate(candidate);
               const isSelected = selection.has(
+                selectionKey(candidate.workspaceId, candidate.relativePath),
+              );
+              const selectedValue = selection.get(
                 selectionKey(candidate.workspaceId, candidate.relativePath),
               );
               return (
@@ -769,7 +852,7 @@ function SelectStep({
                     <p className="mt-0.5 font-mono text-(length:--text-micro) text-muted-foreground">
                       {candidate.relativePath}
                     </p>
-                    {!selectable && candidate.reason && (
+                    {candidate.reason && (
                       <p
                         className={cn(
                           "mt-0.5 text-(length:--text-micro)",
@@ -781,13 +864,40 @@ function SelectStep({
                         {candidate.reason}
                       </p>
                     )}
+                    {candidate.status === "conflict" && isSelected && (
+                      <div
+                        className="mt-2 flex flex-wrap items-center gap-2"
+                        onClick={(event) => event.stopPropagation()}
+                      >
+                        <label
+                          htmlFor={`rename-${candidate.workspaceId}-${candidate.slug}`}
+                          className="shrink-0 text-xs text-muted-foreground"
+                        >
+                          Import as
+                        </label>
+                        <Input
+                          id={`rename-${candidate.workspaceId}-${candidate.slug}`}
+                          value={selectedValue?.slug ?? ""}
+                          onChange={(event) => renameCandidate(candidate, event.target.value)}
+                          className="h-7 max-w-xs font-mono text-xs"
+                          aria-label={`Rename ${candidate.name}`}
+                          aria-invalid={selectedValue ? !isValidSelectionSlug(selectedValue) : undefined}
+                        />
+                        {selectedValue && !isValidSelectionSlug(selectedValue) && (
+                          <span className="text-xs text-destructive">
+                            Use a lowercase URL-safe slug.
+                          </span>
+                        )}
+                      </div>
+                    )}
                   </div>
                 </li>
               );
             })}
           </ul>
-        </section>
-      ))}
+          </section>
+        ))}
+      </div>
     </div>
   );
 }

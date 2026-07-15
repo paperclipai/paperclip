@@ -1118,7 +1118,9 @@ async function validateProjectSkillImportPath(
 
 function projectSkillImportFailureReason(error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
-  if (message.includes("symbolic link")) return "Project skill candidate contains a symbolic link.";
+  if (message.includes("symbolic link")) {
+    return "Skipped because symbolic links can point outside the project workspace. Replace the link with a real file or directory to import this skill.";
+  }
   if (message.includes("outside workspace root")) return "Project skill candidate resolves outside the workspace.";
   if (message.includes("No SKILL.md file")) return "Project skill candidate does not contain a readable SKILL.md file.";
   return "Project skill candidate could not be read.";
@@ -4396,8 +4398,8 @@ export function companySkillService(db: Db) {
       workspaceId: string;
       workspaceName: string;
     }>();
-    const selectedPaths = new Map<string, { workspaceId: string; path: string }>();
-    const invalidSelections: Array<{ workspaceId: string; path: string }> = [];
+    const selectedPaths = new Map<string, { workspaceId: string; path: string; slug?: string }>();
+    const invalidSelections: Array<{ workspaceId: string; path: string; slug?: string }> = [];
     const rediscoveredSelections = new Set<string>();
     const scannedProjectIds = new Set<string>();
     let discovered = 0;
@@ -4408,9 +4410,17 @@ export function companySkillService(db: Db) {
         invalidSelections.push(selection);
         continue;
       }
+      const renamedSlug = selection.slug === undefined
+        ? undefined
+        : normalizeSkillSlug(selection.slug);
+      if (selection.slug !== undefined && !renamedSlug) {
+        invalidSelections.push(selection);
+        continue;
+      }
       selectedPaths.set(projectScanSelectionKey(selection.workspaceId, normalizedPath), {
         workspaceId: selection.workspaceId,
         path: normalizedPath,
+        ...(renamedSlug ? { slug: renamedSlug } : {}),
       });
     }
 
@@ -4478,6 +4488,7 @@ export function companySkillService(db: Db) {
         discovered += 1;
         const selectionKey = projectScanSelectionKey(target.workspaceId, directory.relativePath);
         const selected = !selectiveImport || selectedPaths.has(selectionKey);
+        const selectedRename = selectedPaths.get(selectionKey)?.slug;
         if (selectedPaths.has(selectionKey)) rediscoveredSelections.add(selectionKey);
 
         let nextSkill: ImportedSkill;
@@ -4523,6 +4534,62 @@ export function companySkillService(db: Db) {
         }
 
         const normalizedSourceDir = normalizeSourceLocatorDirectory(nextSkill.sourceLocator);
+        const existingBySource = normalizedSourceDir
+          ? acceptedSkills.find((skill) => normalizeSkillDirectory(skill) === normalizedSourceDir) ?? null
+          : null;
+        if (existingBySource) {
+          candidates.push({
+            slug: nextSkill.slug,
+            name: nextSkill.name,
+            description: nextSkill.description,
+            workspaceId: target.workspaceId,
+            workspaceName: target.workspaceName,
+            projectId: target.projectId,
+            projectName: target.projectName,
+            directoryRoot: directory.directoryRoot,
+            relativePath: directory.relativePath,
+            status: "already_imported",
+            existingSkillId: existingBySource.id,
+            reason: "This skill is already installed from the same path.",
+          });
+          continue;
+        }
+
+        const existingBundledBySlug = acceptedSkills.find((skill) => (
+          skill.slug === nextSkill.slug
+          && (isPaperclipBundledSkillKey(skill.key) || asString(skill.metadata?.sourceKind) === "paperclip_bundled")
+        )) ?? null;
+        if (existingBundledBySlug) {
+          candidates.push({
+            slug: nextSkill.slug,
+            name: nextSkill.name,
+            description: nextSkill.description,
+            workspaceId: target.workspaceId,
+            workspaceName: target.workspaceName,
+            projectId: target.projectId,
+            projectName: target.projectName,
+            directoryRoot: directory.directoryRoot,
+            relativePath: directory.relativePath,
+            status: "already_imported",
+            existingSkillId: existingBundledBySlug.id,
+            reason: "This skill is already available as a built-in.",
+          });
+          continue;
+        }
+
+        if (selectedRename) {
+          const renamedKey = `local/${hashSkillValue(path.resolve(nextSkill.sourceLocator ?? directory.skillDir))}/${selectedRename}`;
+          nextSkill = {
+            ...nextSkill,
+            key: renamedKey,
+            slug: selectedRename,
+            metadata: {
+              ...(isPlainRecord(nextSkill.metadata) ? nextSkill.metadata : {}),
+              skillKey: renamedKey,
+            },
+          };
+        }
+
         const existingByKey = acceptedByKey.get(nextSkill.key) ?? null;
         if (existingByKey) {
           const existingSourceDir = normalizeSkillDirectory(existingByKey);
