@@ -519,7 +519,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       monitorNextCheckAt: null,
     });
     const [updatedRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
-    expect(updatedRun?.errorCode).toBe("provider_quota");
+    expect(updatedRun?.errorCode).toBe("adapter_failed");
     expect(await db.select().from(issueRecoveryActions)).toHaveLength(0);
     expect(enqueueWakeup).not.toHaveBeenCalled();
   });

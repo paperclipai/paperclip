@@ -3522,7 +3522,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         ? classifyAdapterFailureForRecovery(latestRun, new Date())
         : null;
       if (latestRun && adapterFailureClassification) {
-        latestRun = await persistAdapterFailureRecoveryClassification(latestRun, adapterFailureClassification);
         if (adapterFailureClassification.kind === "provider_quota") {
           const monitored = await scheduleProviderQuotaRecoveryMonitor({
             issue,
@@ -3530,6 +3529,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             classification: adapterFailureClassification,
           });
           if (monitored) {
+            latestRun = await persistAdapterFailureRecoveryClassification(latestRun, adapterFailureClassification);
             result.providerQuotaMonitored += 1;
             result.issueIds.push(issue.id);
           } else {
@@ -3537,6 +3537,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           }
           continue;
         } else {
+          latestRun = await persistAdapterFailureRecoveryClassification(latestRun, adapterFailureClassification);
           const updated = await escalateStrandedAssignedIssue({
             issue,
             previousStatus: issue.status as StrandedPreviousStatus,
