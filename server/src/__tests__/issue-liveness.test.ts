@@ -297,6 +297,26 @@ describe("issue graph liveness classifier", () => {
     });
   });
 
+  it("prefers the blocker finding for an in-review source with a cancelled blocker", () => {
+    const findings = classifyIssueGraphLiveness({
+      issues: [
+        issue({ status: "in_review" }),
+        issue({
+          id: blockerId,
+          identifier: "PAP-1704",
+          title: "Cancelled unblock work",
+          status: "cancelled",
+          assigneeAgentId: "blocker-agent",
+        }),
+      ],
+      relations: blocks,
+      agents: [agent(), manager, agent({ id: "blocker-agent", name: "Cancelled owner" })],
+    });
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]?.state).toBe("blocked_by_cancelled_issue");
+  });
+
   it("detects blocker assignees under terminated org ancestors as uninvokable", () => {
     const findings = classifyIssueGraphLiveness({
       issues: [
