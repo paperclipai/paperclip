@@ -238,7 +238,13 @@ describeEmbeddedPostgres("summary slot service", () => {
       expect(issueRow.description).toContain(
         `PUT /api/companies/${companyId}/summary-slots/project/header`,
       );
-      expect(issueRow.description).toContain("`## Needs you`, `## Next`, and `## Since last summary`");
+      expect(issueRow.description).toContain(
+        "one or two plain-prose paragraphs on the (max two) things that matter most",
+      );
+      expect(issueRow.description).toContain("`**Decide:**` or `**Next:**` line");
+      expect(issueRow.description).toContain("`**I suggest:**` recommendation");
+      expect(issueRow.description).toContain("trailing `Issues:` line");
+      expect(issueRow.description).toContain("Not a task list");
       expect(issueRow.description).toContain("plain-text `STATUS:` lines and the sentinel-wrapped summary draft");
       expect(issueRow.description).toContain("## Prebuilt scope snapshot");
       expect(issueRow.description).toContain("### Blocked");
@@ -334,7 +340,7 @@ describeEmbeddedPostgres("summary slot service", () => {
         {
           ...projectSelector(companyId, projectId),
           markdown:
-            "## Needs you\nNothing is waiting on you right now.\n\n## Next\nNothing is next.\n\n## Since last summary\nFirst summary for this scope.",
+            "Quiet scope — nothing is in flight and nothing is waiting on you. First summary for this scope.\n\n**Next:** nothing needs a decision from you right now; the next thing worth watching is the first issue landing here.",
           model: "cheap-model",
           generationIssueId,
         },
@@ -353,7 +359,7 @@ describeEmbeddedPostgres("summary slot service", () => {
         {
           ...projectSelector(companyId, projectId),
           markdown:
-            "## Needs you\n- Review [T-123](/T/issues/T-123).\n\n## Next\n- Merge the approved change.\n\n## Since last summary\n- [T-123](/T/issues/T-123) entered review.",
+            "The change is done and waiting on your review; nothing else moved.\n\n**Decide:** review the change — [T-123](/T/issues/T-123). **I suggest:** approve it, the tests are green.\n\nIssues: [T-123](/T/issues/T-123)",
           baseRevisionId: initial.revision.id,
           generationIssueId: nextGeneration.generatingIssue.id,
           model: "cheap-model",
@@ -362,7 +368,7 @@ describeEmbeddedPostgres("summary slot service", () => {
       );
 
       expect(written.revision.revisionNumber).toBe(2);
-      expect(written.document.body).toMatch(/^## Needs you\n[\s\S]*## Next\n[\s\S]*## Since last summary/m);
+      expect(written.document.body).toMatch(/\*\*Decide:\*\*[\s\S]*\*\*I suggest:\*\*[\s\S]*^Issues: /m);
       expect(written.slot.status).toBe("idle");
       expect(written.slot.generatingIssueId).toBeNull();
       expect(written.slot.documentId).toBe(written.document.id);

@@ -414,7 +414,7 @@ export function summarySlotService(db: Db) {
       ),
       "```",
       "",
-      "Write one concise Markdown summary with exactly these sections: `## Needs you`, `## Next`, and `## Since last summary`.",
+      "Write one short, colloquial Markdown summary: one or two plain-prose paragraphs on the (max two) things that matter most, then exactly one `**Decide:**` or `**Next:**` line with a link and an `**I suggest:**` recommendation, then a trailing `Issues:` line with every issue link. Not a task list.",
       "The current-slot response includes the latest document body and `latestRevisionId`; do not call the revisions or issues-list endpoints.",
       "Follow the skill's streaming protocol: emit plain-text `STATUS:` lines and the sentinel-wrapped summary draft before the authoritative summary-slot write.",
       "Pass the `generationIssueId` from the payload, the previous revision id when present, and the model actually used to the summary-slot write API.",

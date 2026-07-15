@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "packageName": "@paperclipai/skills-catalog",
   "packageVersion": "0.3.1",
-  "generatedAt": "2026-07-15T13:35:45.288Z",
+  "generatedAt": "2026-07-15T21:09:00.152Z",
   "skills": [
     {
       "id": "paperclipai:bundled:docs:doc-maintenance",
@@ -115,7 +115,7 @@
       "category": "paperclip-operations",
       "slug": "summarize-status",
       "name": "summarize-status",
-      "description": "Write a short, human-readable Markdown status summary for a Paperclip summary slot (project header, workspaces overview, or project-workspace) so the first read answers what needs me, what is next, and what changed.",
+      "description": "Write a short, colloquial status summary for a Paperclip summary slot (project header, workspaces overview, or project-workspace) that surfaces the one or two things that matter most, names the decision or next action with a concrete suggestion, and pushes issue links to the end.",
       "path": "catalog/bundled/paperclip-operations/summarize-status",
       "entrypoint": "SKILL.md",
       "trustLevel": "markdown_only",
@@ -137,11 +137,11 @@
         {
           "path": "SKILL.md",
           "kind": "skill",
-          "sizeBytes": 8197,
-          "sha256": "79a70f656b6e4eb61e884fd828e979b17a5f73e1a8beec277987456924e25918"
+          "sizeBytes": 12513,
+          "sha256": "ef59ab665ba64224ee109c510ca67887d7227bf5f931432de4aac3ef74e70b1a"
         }
       ],
-      "contentHash": "sha256:9ef89a31c265eb9de1f83eb09b2873c45991ead0e113d8e80ad5b24686adf12e"
+      "contentHash": "sha256:5f15e808c00c8fcd8f9cc1ec42e3a658550fba55e17b7ca621b9c18cb6b7cd46"
     },
     {
       "id": "paperclipai:bundled:paperclip-operations:task-planning",
