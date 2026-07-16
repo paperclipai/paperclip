@@ -38,12 +38,13 @@ import { IssueReferencePill } from "../IssueReferencePill";
 import { formatDate, formatDateTime, cn, projectUrl } from "../../lib/utils";
 import type { IssueExternalObjectGroup } from "../../hooks/useIssueExternalObjects";
 import { timeAgo } from "../../lib/timeAgo";
+import { invalidateInboxIssueQueries } from "../../lib/inboxArchiveCache";
 import { Button } from "@/components/ui/button";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { User, ArrowUpRight, Plus, GitBranch, FolderOpen, HardDrive, Check, Clock, RotateCcw, Loader2, CheckCircle2 } from "lucide-react";
+import { User, ArrowUpRight, Plus, GitBranch, FolderOpen, HardDrive, Check, Clock, RotateCcw, Loader2, CheckCircle2, ArchiveRestore } from "lucide-react";
 import { AgentIcon } from "../AgentIconPicker";
 import { InlineEntitySelector, type InlineEntityOption } from "../InlineEntitySelector";
 import {
@@ -267,6 +268,17 @@ export function IssueProperties({
       onUpdate({ labelIds: [...(issue.labelIds ?? []), created.id] });
       void queryClient.invalidateQueries({ queryKey: queryKeys.issues.labels(companyId!) });
       setNewLabelName("");
+    },
+  });
+
+  const unarchiveFromInbox = useMutation({
+    mutationFn: () => issuesApi.unarchiveFromInbox(issue.id),
+    onSuccess: () => {
+      queryClient.setQueryData<Issue>(queryKeys.issues.detail(issue.id), (current) =>
+        current ? { ...current, archivedAt: null, archivedByActorType: null, archivedByAgentId: null, archivedByRunId: null } : current,
+      );
+      void queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issue.id) });
+      if (companyId) invalidateInboxIssueQueries(queryClient, companyId);
     },
   });
 
@@ -2293,6 +2305,33 @@ export function IssueProperties({
         <PropertyRow label="Updated">
           <span className="text-sm">{timeAgo(issue.updatedAt)}</span>
         </PropertyRow>
+        {issue.archivedAt && issue.archivedByActorType === "agent" && issue.archivedByAgentId ? (
+          <PropertyRow label="Archived">
+            <div className="flex min-w-0 flex-col items-start gap-1.5">
+              <span className="flex min-w-0 max-w-full items-center gap-1.5 text-sm" title={formatDateTime(issue.archivedAt)}>
+                {(() => {
+                  const archivedByAgent = (agents ?? []).find((candidate) => candidate.id === issue.archivedByAgentId);
+                  return archivedByAgent
+                    ? <AgentIcon icon={archivedByAgent.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                    : null;
+                })()}
+                <span className="min-w-0 truncate">
+                  Archived by {agentName(issue.archivedByAgentId)}
+                </span>
+                <span className="shrink-0 text-xs text-muted-foreground">· {timeAgo(issue.archivedAt)}</span>
+              </span>
+              <button
+                type="button"
+                className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground disabled:opacity-50"
+                onClick={() => unarchiveFromInbox.mutate()}
+                disabled={unarchiveFromInbox.isPending}
+              >
+                <ArchiveRestore className="h-3 w-3" />
+                {unarchiveFromInbox.isPending ? "Unarchiving…" : "Unarchive"}
+              </button>
+            </div>
+          </PropertyRow>
+        ) : null}
         {issue.requestDepth > 0 && (
           <PropertyRow label="Depth">
             <span className="text-sm font-mono">{issue.requestDepth}</span>
