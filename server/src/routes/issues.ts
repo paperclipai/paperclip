@@ -4247,16 +4247,28 @@ export function issueRoutes(
   }
 
   function isDelegatedRecoveryIssueConflict(error: unknown) {
-    const maybe = error as { code?: string; constraint?: string; constraint_name?: string; message?: string } | null;
-    return Boolean(
-      maybe &&
-        maybe.code === "23505" &&
-        (
-          maybe.constraint === "issues_delegated_recovery_fingerprint_uq" ||
-          maybe.constraint_name === "issues_delegated_recovery_fingerprint_uq" ||
-          typeof maybe.message === "string" && maybe.message.includes("issues_delegated_recovery_fingerprint_uq")
-        ),
-    );
+    const constraintName = "issues_delegated_recovery_fingerprint_uq";
+    const queue: unknown[] = [error];
+    const messages: string[] = [];
+    let hasUniqueCode = false;
+    let hasConstraint = false;
+    for (const candidate of queue) {
+      if (!candidate || typeof candidate !== "object") continue;
+      const typed = candidate as {
+        code?: string;
+        constraint?: string;
+        constraint_name?: string;
+        cause?: unknown;
+        message?: string;
+      };
+      if (typed.code === "23505") hasUniqueCode = true;
+      if (typed.constraint === constraintName || typed.constraint_name === constraintName) hasConstraint = true;
+      if (typed.message) messages.push(typed.message);
+      if (typed.cause) queue.push(typed.cause);
+    }
+    const message = messages.join("\n");
+    return (hasUniqueCode || message.includes("duplicate key value violates unique constraint")) &&
+      (hasConstraint || message.includes(constraintName));
   }
 
   async function getDelegatedRecoveryIssue(companyId: string, fingerprint: string) {
@@ -5601,12 +5613,8 @@ export function issueRoutes(
     validate(delegateIssueRecoveryActionSchema),
     async (req, res) => {
       const id = req.params.id as string;
-      const existing = await svc.getById(id);
-      if (!existing) {
-        res.status(404).json({ error: "Issue not found" });
-        return;
-      }
-      assertCompanyAccess(req, existing.companyId);
+      const existing = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+      if (!existing) return;
       if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
 
       const { actionId, target } = req.body;
@@ -5713,7 +5721,7 @@ export function issueRoutes(
       });
       if (!updatedSource) throw notFound("Issue not found");
 
-      const recoveryAction = await recoveryActionsSvc.resolveActiveForIssue({
+      let recoveryAction = await recoveryActionsSvc.resolveActiveForIssue({
         companyId: existing.companyId,
         sourceIssueId: existing.id,
         actionId,
@@ -5722,7 +5730,28 @@ export function issueRoutes(
         outcome: "delegated",
         resolutionNote: `Delegated to ${target} recovery issue ${recoveryIssue.identifier ?? recoveryIssue.id}.`,
       });
-      if (!recoveryAction) throw notFound("Active recovery action not found");
+      if (!recoveryAction) {
+        const resolvedAction = await recoveryActionsSvc.getById(existing.companyId, actionId);
+        if (
+          resolvedAction?.sourceIssueId === existing.id &&
+          resolvedAction.status === "resolved" &&
+          resolvedAction.outcome === "delegated" &&
+          resolvedAction.recoveryIssueId === recoveryIssue.id
+        ) {
+          recoveryAction = resolvedAction;
+          res.json({
+            issue: {
+              ...updatedSource,
+              activeRecoveryAction: null,
+            },
+            recoveryIssue,
+            recoveryAction,
+            reused: true,
+          });
+          return;
+        }
+        throw notFound("Active recovery action not found");
+      }
 
       await issueReferencesSvc.syncIssue(recoveryIssue.id);
       await externalObjectsSvc.syncIssueSafely(recoveryIssue.id);

@@ -1504,7 +1504,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     await request(app)
       .post(`/api/issues/${sourceIssueId}/recovery-actions/delegate`)
       .send({ actionId: action.id, target: "ceo" })
-      .expect(403);
+      .expect(404);
 
     const delegatedIssues = await db
       .select()
@@ -1516,6 +1516,53 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       .from(issueRecoveryActions)
       .where(eq(issueRecoveryActions.id, action.id));
     expect(actionRow?.status).toBe("active");
+  });
+
+  it("returns the delegated recovery result to concurrent callers", async () => {
+    const { companyId, managerId, sourceIssueId } = await seedCompany();
+    await seedCeo(companyId);
+    const recoveryActionSvc = issueRecoveryActionService(db);
+    const action = await recoveryActionSvc.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "workspace_validation",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      cause: "workspace_validation_failed",
+      fingerprint: "workspace-validation:concurrent-delegation",
+      evidence: { reason: "git_worktree_branch_incoherence" },
+      nextAction: "Repair the source issue workspace link before resuming.",
+      wakePolicy: { type: "manual_repair_required" },
+    });
+    const app = createApp();
+
+    const responses = await Promise.all([
+      request(app)
+        .post(`/api/issues/${sourceIssueId}/recovery-actions/delegate`)
+        .send({ actionId: action.id, target: "ceo" }),
+      request(app)
+        .post(`/api/issues/${sourceIssueId}/recovery-actions/delegate`)
+        .send({ actionId: action.id, target: "ceo" }),
+    ]);
+
+    expect(responses.map((response) => response.status).sort()).toEqual([200, 201]);
+    expect(responses[0].body.recoveryIssue.id).toBe(responses[1].body.recoveryIssue.id);
+    expect(responses).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          body: expect.objectContaining({
+            issue: expect.objectContaining({ activeRecoveryAction: null }),
+            reused: true,
+          }),
+        }),
+      ]),
+    );
+
+    const delegatedIssues = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "delegated_recovery")));
+    expect(delegatedIssues).toHaveLength(1);
   });
 
   it("rejects peer-agent delegated recovery outside the recovery authority boundary", async () => {
