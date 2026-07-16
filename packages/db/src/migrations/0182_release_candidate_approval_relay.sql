@@ -110,6 +110,8 @@ CREATE INDEX "release_candidates_approval_interaction_idx" ON "release_candidate
 --> statement-breakpoint
 CREATE INDEX "release_deploy_authorizations_company_candidate_idx" ON "release_deploy_authorizations" USING btree ("company_id","candidate_id");
 --> statement-breakpoint
+CREATE UNIQUE INDEX "release_deploy_authorizations_candidate_approval_interaction_uq" ON "release_deploy_authorizations" USING btree ("candidate_id","approval_interaction_id");
+--> statement-breakpoint
 CREATE UNIQUE INDEX "release_deploy_authorizations_token_hash_uq" ON "release_deploy_authorizations" USING btree ("token_hash");
 --> statement-breakpoint
 CREATE INDEX "release_candidate_audit_events_candidate_created_idx" ON "release_candidate_audit_events" USING btree ("candidate_id","created_at");

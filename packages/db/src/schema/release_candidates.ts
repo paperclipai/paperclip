@@ -79,6 +79,8 @@ export const releaseDeployAuthorizations = pgTable(
   },
   (table) => ({
     companyCandidateIdx: index("release_deploy_authorizations_company_candidate_idx").on(table.companyId, table.candidateId),
+    candidateApprovalInteractionUq: uniqueIndex("release_deploy_authorizations_candidate_approval_interaction_uq")
+      .on(table.candidateId, table.approvalInteractionId),
     tokenHashUq: uniqueIndex("release_deploy_authorizations_token_hash_uq").on(table.tokenHash),
   }),
 );

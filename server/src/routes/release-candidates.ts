@@ -12,6 +12,7 @@ import { assetService } from "../services/assets.js";
 import { issueService } from "../services/issues.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
 import { releaseCandidateService } from "../services/release-candidates.js";
+import { DEFAULT_JSON_BODY_LIMIT_BYTES } from "../http/body-limits.js";
 
 const digestSchema = z.string().trim().min(12).max(300);
 const sha256Schema = z.string().trim().regex(/^(sha256:)?[a-fA-F0-9]{64}$/, "Expected SHA-256 hash");
@@ -43,6 +44,8 @@ const updateReleaseCandidateSchema = z.object({
 
 const createApprovalInteractionSchema = z.object({}).strict();
 const DEPLOY_TOKEN_HEADER = "x-paperclip-deploy-token";
+const MAX_RELAY_BASE64_CHARS = DEFAULT_JSON_BODY_LIMIT_BYTES;
+const MAX_RELAY_DECODED_BYTES = Math.floor(MAX_RELAY_BASE64_CHARS / 4) * 3;
 
 const approvedLeaseQuerySchema = z.object({
   authorizationId: z.string().uuid(),
@@ -54,9 +57,9 @@ const stageRelayArtifactSchema = z.object({
   signatureVerified: z.boolean(),
   sbomVerified: z.boolean(),
   tarballSha256: sha256Schema,
-  tarballBase64: z.string().trim().min(1),
+  tarballBase64: z.string().trim().min(1).max(MAX_RELAY_BASE64_CHARS),
   signatureBundleSha256: sha256Schema,
-  signatureBundleBase64: z.string().trim().min(1),
+  signatureBundleBase64: z.string().trim().min(1).max(MAX_RELAY_BASE64_CHARS),
   originalFilename: z.string().trim().min(1).max(255).nullable().optional(),
   signatureBundleFilename: z.string().trim().min(1).max(255).nullable().optional(),
 }).strict();
@@ -79,6 +82,15 @@ function readDeployTokenHeader(req: Request) {
 
 function normalizeSha256(value: string) {
   return value.replace(/^sha256:/i, "").toLowerCase();
+}
+
+function decodeRelayPayload(value: string, fieldName: string) {
+  const bytes = Buffer.from(value, "base64");
+  if (bytes.length <= 0) throw badRequest(`${fieldName} decoded to an empty artifact`);
+  if (bytes.length > MAX_RELAY_DECODED_BYTES) {
+    throw badRequest(`${fieldName} decoded payload exceeds ${MAX_RELAY_DECODED_BYTES} bytes`);
+  }
+  return bytes;
 }
 
 export function releaseCandidateRoutes(db: Db, storage: StorageService) {
@@ -243,22 +255,8 @@ export function releaseCandidateRoutes(db: Db, storage: StorageService) {
     async (req, res) => {
       const body = req.body as z.infer<typeof stageRelayArtifactSchema>;
       const token = readDeployTokenHeader(req);
-      const tarballBytes = Buffer.from(body.tarballBase64, "base64");
-      if (tarballBytes.length <= 0) throw badRequest("tarballBase64 decoded to an empty artifact");
-      const actualTarballSha = createHash("sha256").update(tarballBytes).digest("hex");
       const expectedTarballSha = normalizeSha256(body.tarballSha256);
-      if (actualTarballSha !== expectedTarballSha) throw badRequest("tarballBase64 does not match tarballSha256");
-      const signatureBundleBytes = Buffer.from(body.signatureBundleBase64, "base64");
-      if (signatureBundleBytes.length <= 0) {
-        throw badRequest("signatureBundleBase64 decoded to an empty artifact");
-      }
-      const actualSignatureBundleSha = createHash("sha256").update(signatureBundleBytes).digest("hex");
       const expectedSignatureBundleSha = normalizeSha256(body.signatureBundleSha256);
-      if (actualSignatureBundleSha !== expectedSignatureBundleSha) {
-        throw badRequest("signatureBundleBase64 does not match signatureBundleSha256");
-      }
-
-      const actor = getActorInfo(req);
       const { candidate } = await candidates.verifyRelayAuthorization(req.params.authorizationId as string, token, {
         imageDigest: body.imageDigest,
         sbomHash: body.sbomHash,
@@ -269,6 +267,17 @@ export function releaseCandidateRoutes(db: Db, storage: StorageService) {
       });
       if (!hasCompanyAccess(req, candidate.companyId)) throw notFound("Release deploy authorization not found");
       assertCompanyAccess(req, candidate.companyId);
+
+      const tarballBytes = decodeRelayPayload(body.tarballBase64, "tarballBase64");
+      const actualTarballSha = createHash("sha256").update(tarballBytes).digest("hex");
+      if (actualTarballSha !== expectedTarballSha) throw badRequest("tarballBase64 does not match tarballSha256");
+      const signatureBundleBytes = decodeRelayPayload(body.signatureBundleBase64, "signatureBundleBase64");
+      const actualSignatureBundleSha = createHash("sha256").update(signatureBundleBytes).digest("hex");
+      if (actualSignatureBundleSha !== expectedSignatureBundleSha) {
+        throw badRequest("signatureBundleBase64 does not match signatureBundleSha256");
+      }
+
+      const actor = getActorInfo(req);
       const storedArtifact = await storage.putFile({
         companyId: candidate.companyId,
         namespace: "release-candidates",

@@ -3,7 +3,8 @@ import { Readable } from "node:stream";
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { conflict } from "../errors.js";
+import { conflict, unauthorized } from "../errors.js";
+import { DEFAULT_JSON_BODY_LIMIT_BYTES } from "../http/body-limits.js";
 import { errorHandler } from "../middleware/index.js";
 import { releaseCandidateRoutes } from "../routes/release-candidates.js";
 
@@ -36,9 +37,9 @@ vi.mock("../services/assets.js", () => ({
 
 const companyId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 
-function createApp(beforeRoutes?: express.RequestHandler) {
+function createApp(beforeRoutes?: express.RequestHandler, jsonLimit: string | number = "100kb") {
   const app = express();
-  app.use(express.json());
+  app.use(express.json({ limit: jsonLimit }));
   app.use((req, _res, next) => {
     req.actor = {
       type: "agent",
@@ -402,6 +403,14 @@ describe("release candidate routes", () => {
   it("rejects relay artifact staging when the signature bundle bytes do not match the declared hash", async () => {
     const authorizationId = "99999999-9999-4999-8999-999999999999";
     const tarball = Buffer.from("scanner relay artifact");
+    mockReleaseCandidateService.verifyRelayAuthorization.mockResolvedValue({
+      authorization: { id: authorizationId },
+      candidate: {
+        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        companyId,
+        sourceIssueId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      },
+    });
 
     const res = await request(createApp())
       .post(`/api/release-deploy-authorizations/${authorizationId}/stage-relay-artifact`)
@@ -419,6 +428,53 @@ describe("release candidate routes", () => {
 
     expect(res.status).toBe(400);
     expect(res.body.error).toBe("signatureBundleBase64 does not match signatureBundleSha256");
+    expect(mockReleaseCandidateService.verifyRelayAuthorization).toHaveBeenCalledOnce();
+  });
+
+  it("verifies relay authorization before decoding artifact payloads", async () => {
+    const authorizationId = "99999999-9999-4999-8999-999999999999";
+    mockReleaseCandidateService.verifyRelayAuthorization.mockRejectedValue(
+      unauthorized("Deploy authorization token is invalid"),
+    );
+
+    const res = await request(createApp())
+      .post(`/api/release-deploy-authorizations/${authorizationId}/stage-relay-artifact`)
+      .set("X-Paperclip-Deploy-Token", "pcdeploy_invalid-token")
+      .send({
+        imageDigest: "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        sbomHash: "2222222222222222222222222222222222222222222222222222222222222222",
+        signatureVerified: true,
+        sbomVerified: true,
+        tarballSha256: "4444444444444444444444444444444444444444444444444444444444444444",
+        tarballBase64: "%%%",
+        signatureBundleSha256: "3333333333333333333333333333333333333333333333333333333333333333",
+        signatureBundleBase64: "%%%",
+      });
+
+    expect(res.status).toBe(401);
+    expect(res.body.error).toBe("Deploy authorization token is invalid");
+    expect(mockReleaseCandidateService.verifyRelayAuthorization).toHaveBeenCalledOnce();
+    expect(mockReleaseCandidateService.stageRelayArtifact).not.toHaveBeenCalled();
+  });
+
+  it("rejects relay base64 fields larger than the bounded JSON request budget", async () => {
+    const authorizationId = "99999999-9999-4999-8999-999999999999";
+
+    const res = await request(createApp(undefined, "12mb"))
+      .post(`/api/release-deploy-authorizations/${authorizationId}/stage-relay-artifact`)
+      .set("X-Paperclip-Deploy-Token", "pcdeploy_header-token")
+      .send({
+        imageDigest: "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        sbomHash: "2222222222222222222222222222222222222222222222222222222222222222",
+        signatureVerified: true,
+        sbomVerified: true,
+        tarballSha256: "4444444444444444444444444444444444444444444444444444444444444444",
+        tarballBase64: "A".repeat(DEFAULT_JSON_BODY_LIMIT_BYTES + 1),
+        signatureBundleSha256: "3333333333333333333333333333333333333333333333333333333333333333",
+        signatureBundleBase64: "c2lnbmF0dXJl",
+      });
+
+    expect(res.status).toBe(400);
     expect(mockReleaseCandidateService.verifyRelayAuthorization).not.toHaveBeenCalled();
   });
 

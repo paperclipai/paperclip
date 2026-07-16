@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
+import { releaseDeployAuthorizations } from "@paperclipai/db";
 import { HttpError } from "../errors.js";
 import { releaseCandidateService, verifyRelayArtifact } from "./release-candidates.js";
 
@@ -34,24 +35,47 @@ const candidate = {
   updatedAt: new Date("2026-07-13T00:00:00.000Z"),
 };
 
-function makeDb(selectRows: unknown[][] = [], options: { atomicAuthorizationConsume?: boolean } = {}) {
+function makeDb(
+  selectRows: unknown[][] = [],
+  options: { atomicAuthorizationConsume?: boolean; atomicAuthorizationIssue?: boolean } = {},
+) {
   const inserted: unknown[] = [];
   const updated: unknown[] = [];
   let authorizationConsumed = false;
+  let issuedAuthorization: Record<string, unknown> | null = null;
   const db = {
     select: () => ({
-      from: () => ({
+      from: (table: unknown) => ({
         where: () => ({
-          then: (resolve: (rows: unknown[]) => unknown) => resolve(selectRows.shift() ?? []),
+          then: (resolve: (rows: unknown[]) => unknown) => {
+            const queuedRows = selectRows.shift();
+            if (queuedRows) return resolve(queuedRows);
+            if (options.atomicAuthorizationIssue && table === releaseDeployAuthorizations && issuedAuthorization) {
+              return resolve([issuedAuthorization]);
+            }
+            return resolve([]);
+          },
         }),
       }),
     }),
     insert: () => ({
       values: (value: unknown) => {
         inserted.push(value);
-        return {
-          returning: async () => [value],
+        const builder = {
+          onConflictDoNothing: () => builder,
+          returning: async () => {
+            if (options.atomicAuthorizationIssue && "tokenHash" in (value as Record<string, unknown>)) {
+              if (issuedAuthorization) return [];
+              issuedAuthorization = {
+                id: "99999999-9999-4999-8999-999999999999",
+                ...(value as Record<string, unknown>),
+              };
+              return [issuedAuthorization];
+            }
+            return [value];
+          },
         };
+        return builder;
       },
     }),
     update: () => ({
@@ -190,6 +214,54 @@ describe("release candidate approval relay", () => {
     expect(authInsert.tokenHash).toEqual(expect.any(String));
     expect(authInsert).not.toHaveProperty("token");
     expect(authInsert).not.toHaveProperty("secret");
+  });
+
+  it("issues exactly one plaintext token when the same approval is accepted concurrently", async () => {
+    const approvedCandidate = {
+      ...candidate,
+      status: "approval_requested",
+      approvalInteractionId: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+    };
+    const interaction = {
+      id: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+      companyId: candidate.companyId,
+      issueId: candidate.sourceIssueId,
+      kind: "request_confirmation" as const,
+      status: "accepted" as const,
+      continuationPolicy: "wake_assignee" as const,
+      idempotencyKey: null,
+      sourceCommentId: null,
+      sourceRunId: null,
+      title: null,
+      summary: null,
+      payload: {
+        version: 1 as const,
+        prompt: "approve",
+        target: {
+          type: "custom" as const,
+          key: `release_candidate:${candidate.id}`,
+          revisionId: candidate.imageDigest,
+        },
+      },
+      result: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    const { db } = makeDb(
+      [[approvedCandidate], [approvedCandidate], [], []],
+      { atomicAuthorizationIssue: true },
+    );
+    const service = releaseCandidateService(db);
+
+    const results = await Promise.all([
+      service.handleAcceptedInteraction(candidate.sourceIssueId, interaction, { userId: "founder" }),
+      service.handleAcceptedInteraction(candidate.sourceIssueId, interaction, { userId: "founder" }),
+    ]);
+
+    expect(results.filter((result) => result?.token?.startsWith("pcdeploy_"))).toHaveLength(1);
+    expect(results.filter((result) => result?.token === null)).toHaveLength(1);
+    expect(results.map((result) => result?.alreadyIssued).sort()).toEqual([false, true]);
+    expect(results[0]?.authorization.id).toBe(results[1]?.authorization.id);
   });
 
   it("resolves approved leases and records deploy audit events through the token scope", async () => {

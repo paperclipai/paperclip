@@ -1,3 +1,4 @@
 export const DEFAULT_JSON_BODY_LIMIT = "10mb";
+export const DEFAULT_JSON_BODY_LIMIT_BYTES = 10 * 1024 * 1024;
 export const PORTABLE_JSON_BODY_LIMIT = "64mb";
 export const PORTABLE_JSON_BODY_LIMIT_BYTES = 64 * 1024 * 1024;

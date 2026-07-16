@@ -389,8 +389,25 @@ export function releaseCandidateService(db: Db) {
         sequence: candidate.sequence,
         expiresAt,
         createdByUserId: actor.userId ?? null,
+      }).onConflictDoNothing({
+        target: [releaseDeployAuthorizations.candidateId, releaseDeployAuthorizations.approvalInteractionId],
       }).returning();
-      if (!authorization) throw conflict("Failed to create deploy authorization");
+      if (!authorization) {
+        const concurrentAuthorization = await db
+          .select()
+          .from(releaseDeployAuthorizations)
+          .where(and(
+            eq(releaseDeployAuthorizations.candidateId, candidate.id),
+            eq(releaseDeployAuthorizations.approvalInteractionId, interaction.id),
+          ))
+          .then((rows) => rows[0] ?? null);
+        if (!concurrentAuthorization) throw conflict("Failed to create deploy authorization");
+        return {
+          authorization: concurrentAuthorization,
+          token: null,
+          alreadyIssued: true,
+        };
+      }
 
       const [updated] = await db.update(releaseCandidates).set({
         status: "approved",
