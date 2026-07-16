@@ -64,6 +64,7 @@ import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-
 import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
 import { initTelemetry, getTelemetryClient } from "./telemetry.js";
 import { conflict } from "./errors.js";
+import { coordinateHeartbeatSchedulerShutdown } from "./shutdown.js";
 import type {
   InstanceDatabaseBackupRunResult,
   InstanceDatabaseBackupTrigger,
@@ -1203,25 +1204,29 @@ export async function startServer(): Promise<StartedServer> {
         clearInterval(heartbeatSchedulerInterval);
         heartbeatSchedulerInterval = null;
       }
-      await waitForHeartbeatSchedulerIdle();
+
+      const heartbeatShutdown = await coordinateHeartbeatSchedulerShutdown({
+        signal,
+        prepareHotRestartShutdown,
+        waitForHeartbeatSchedulerIdle,
+      });
+      const skipHeartbeatDrain = heartbeatShutdown.hotRestart?.skipDrain === true;
+      if (skipHeartbeatDrain) {
+        logger.info(
+          { signal, hotRestart: heartbeatShutdown.hotRestart },
+          "hot-restart shutdown prepared; skipping heartbeat scheduler idle wait and graceful run drain",
+        );
+      } else if (heartbeatShutdown.preparationError) {
+        logger.error(
+          { err: heartbeatShutdown.preparationError, signal },
+          "hot-restart shutdown preparation failed; falling back to graceful heartbeat run drain",
+        );
+      }
 
       const telemetryClient = getTelemetryClient();
       if (telemetryClient) {
         telemetryClient.stop();
         await telemetryClient.flush();
-      }
-
-      let skipHeartbeatDrain = false;
-      if (prepareHotRestartShutdown) {
-        try {
-          const hotRestart = await prepareHotRestartShutdown(signal);
-          skipHeartbeatDrain = hotRestart.skipDrain;
-          if (skipHeartbeatDrain) {
-            logger.info({ signal, hotRestart }, "hot-restart shutdown prepared; skipping graceful heartbeat run drain");
-          }
-        } catch (err) {
-          logger.error({ err, signal }, "hot-restart shutdown preparation failed; falling back to graceful heartbeat run drain");
-        }
       }
 
       if (!skipHeartbeatDrain && drainHeartbeatRunsForShutdown) {
