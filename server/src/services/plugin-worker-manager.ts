@@ -62,7 +62,26 @@ import { logger } from "../middleware/logger.js";
 const DEFAULT_RPC_TIMEOUT_MS = 30_000;
 
 /** Hard upper bound for any RPC timeout (15 minutes). Prevents unbounded waits. */
-const MAX_RPC_TIMEOUT_MS = 15 * 60 * 1_000;
+const DEFAULT_MAX_RPC_TIMEOUT_MS = 15 * 60 * 1_000;
+
+/**
+ * Resolve the hard upper bound for any plugin RPC timeout. Defaults to 15
+ * minutes; operators whose sandbox executions legitimately need longer can
+ * raise it via PAPERCLIP_PLUGIN_RPC_MAX_TIMEOUT_MS (milliseconds). Callers
+ * that derive plugin-side execution budgets (plugin-environment-driver) MUST
+ * use this same cap so the plugin's graceful timeout path always fires before
+ * the host-side timer rejects the call.
+ */
+export function resolveMaxRpcTimeoutMs(
+  env: Record<string, string | undefined> = process.env,
+): number {
+  const raw = env.PAPERCLIP_PLUGIN_RPC_MAX_TIMEOUT_MS;
+  if (raw != null && raw.trim().length > 0) {
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed) && parsed > 0) return Math.trunc(parsed);
+  }
+  return DEFAULT_MAX_RPC_TIMEOUT_MS;
+}
 
 /** Timeout for the initialize RPC call. */
 const INITIALIZE_TIMEOUT_MS = 15_000;
@@ -1132,7 +1151,7 @@ export function createPluginWorkerHandle(
       }
 
       const id = nextRequestId++;
-      const timeout = Math.min(timeoutMs ?? rpcTimeoutMs, MAX_RPC_TIMEOUT_MS);
+      const timeout = Math.min(timeoutMs ?? rpcTimeoutMs, resolveMaxRpcTimeoutMs());
       const invocationScope = deriveInvocationScope(method, params);
       const invocation = invocationScope ? registerInvocation(invocationScope) : null;
 
@@ -1257,7 +1276,7 @@ export function createPluginWorkerHandle(
     notify(method: string, params: unknown) {
       if (status !== "running") return;
       const invocationScope = deriveInvocationScope(method, params);
-      const invocation = invocationScope ? registerInvocation(invocationScope, MAX_RPC_TIMEOUT_MS) : null;
+      const invocation = invocationScope ? registerInvocation(invocationScope, resolveMaxRpcTimeoutMs()) : null;
       try {
         sendMessage({
           jsonrpc: JSONRPC_VERSION,

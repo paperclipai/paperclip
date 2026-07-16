@@ -229,3 +229,72 @@ describe("onEnvironmentDestroyLease", () => {
     expect(deleteCr).not.toHaveBeenCalled();
   });
 });
+
+describe("onEnvironmentReleaseLease (per-run Secret cleanup)", () => {
+  it("explicitly deletes the per-run Secret on normal release (defense against a wedged ownerRef cascade)", async () => {
+    const deleteCr = vi.fn().mockResolvedValue({});
+    const deleteSecret = vi.fn().mockResolvedValue({});
+    h.clients = {
+      custom: { deleteNamespacedCustomObject: deleteCr },
+      core: { deleteNamespacedSecret: deleteSecret },
+    };
+
+    await plugin.definition.onEnvironmentReleaseLease!({
+      driverKey: "kubernetes",
+      companyId: "acme",
+      environmentId: "env-1",
+      config: CONFIG,
+      providerLeaseId: "pc-abc",
+      leaseMetadata: leaseMetadata(),
+    });
+
+    expect(deleteSecret).toHaveBeenCalledWith({
+      namespace: "paperclip-acme",
+      name: "pc-abc-env",
+    });
+  });
+
+  it("tolerates a 404 on the Secret delete (cascade already removed it) without throwing", async () => {
+    const deleteCr = vi.fn().mockResolvedValue({});
+    const deleteSecret = vi.fn().mockRejectedValue(notFound());
+    h.clients = {
+      custom: { deleteNamespacedCustomObject: deleteCr },
+      core: { deleteNamespacedSecret: deleteSecret },
+    };
+
+    await expect(
+      plugin.definition.onEnvironmentReleaseLease!({
+        driverKey: "kubernetes",
+        companyId: "acme",
+        environmentId: "env-1",
+        config: CONFIG,
+        providerLeaseId: "pc-abc",
+        leaseMetadata: leaseMetadata(),
+      }),
+    ).resolves.toBeUndefined();
+    expect(deleteSecret).toHaveBeenCalled();
+  });
+
+  it("reconstructs the Secret name from the providerLeaseId when leaseMetadata omits it", async () => {
+    const deleteCr = vi.fn().mockResolvedValue({});
+    const deleteSecret = vi.fn().mockResolvedValue({});
+    h.clients = {
+      custom: { deleteNamespacedCustomObject: deleteCr },
+      core: { deleteNamespacedSecret: deleteSecret },
+    };
+
+    await plugin.definition.onEnvironmentReleaseLease!({
+      driverKey: "kubernetes",
+      companyId: "acme",
+      environmentId: "env-1",
+      config: CONFIG,
+      providerLeaseId: "pc-xyz",
+      leaseMetadata: { namespace: "paperclip-acme", backend: "sandbox-cr" },
+    });
+
+    expect(deleteSecret).toHaveBeenCalledWith({
+      namespace: "paperclip-acme",
+      name: "pc-xyz-env",
+    });
+  });
+});

@@ -34,6 +34,26 @@ export const kubernetesProviderConfigSchema = z
     podActivityDeadlineSec: z.number().int().positive().default(3600),
 
     /**
+     * How long a sandbox pod may sit with PodScheduled=False reason
+     * Unschedulable before the readiness wait fails fast with a distinct
+     * scheduling error (sandbox-cr backend only). A pod the scheduler cannot
+     * place (cluster out of capacity, autoscaler outage) will never become
+     * Ready by waiting inside the same exec budget; the grace period only
+     * absorbs normal autoscaler scale-up latency.
+     */
+    podUnschedulableGraceSec: z.number().int().positive().default(120),
+
+    /**
+     * Budget for the wait-for-Ready phase on the first exec of a lease
+     * (sandbox-cr backend only). Independent of the exec budget: a pod that
+     * needs longer than this to come up is an infrastructure problem, and
+     * failing the readiness wait early keeps most of the caller's exec budget
+     * out of the blast radius. The exec/streaming phase continues to use the
+     * remaining share of the caller's overall budget.
+     */
+    podReadyTimeoutSec: z.number().int().positive().default(300),
+
+    /**
      * The adapter type that Jobs in this environment will run.
      * Each Kubernetes environment is bound to one adapter; create multiple
      * environments for different adapters.
@@ -73,6 +93,18 @@ export const kubernetesProviderConfigSchema = z
       message:
         "kubernetes provider requires one of `inCluster` or `kubeconfig`",
     },
+  )
+  .refine(
+    (cfg) => cfg.podUnschedulableGraceSec < cfg.podReadyTimeoutSec,
+    {
+      // The readiness wait is bounded by podReadyTimeoutSec; a grace period
+      // at or above it would expire the wait before the unschedulable
+      // fail-fast path can ever trigger, silently reclassifying capacity
+      // failures as generic sandbox_not_ready. Reject at config-parse time.
+      message:
+        "podUnschedulableGraceSec must be less than podReadyTimeoutSec (otherwise the readiness wait times out before unschedulable detection can fire)",
+      path: ["podUnschedulableGraceSec"],
+    },
   );
 
 export type KubernetesProviderConfig = z.infer<typeof kubernetesProviderConfigSchema>;
@@ -90,4 +122,11 @@ export interface KubernetesLeaseMetadata {
   phase: "Pending" | "Running" | "Succeeded" | "Failed";
   /** Which backend provisioned this lease. */
   backend: "sandbox-cr" | "job";
+  /**
+   * Realized workspace cwd for this lease (e.g. "/workspace"), set at lease
+   * acquisition. Lets the execution target resolve the correct cwd from the
+   * lease itself, matching the SSH/Daytona providers. Optional for backward
+   * compatibility with leases acquired before this field existed.
+   */
+  remoteCwd?: string;
 }

@@ -191,3 +191,30 @@ export async function destroyLeaseResources(
     );
   }
 }
+
+/**
+ * Best-effort, idempotent deletion of a lease's per-run Secret.
+ *
+ * On NORMAL release the Sandbox CR / Job ownerReference is expected to cascade
+ * the Secret away. But that cascade depends on a healthy controller + GC; a
+ * wedged controller or a broken ownerRef would otherwise leave the per-run
+ * Secret — which carries the provider API keys injected into the sandbox — sitting
+ * in the tenant namespace indefinitely. Deleting it explicitly on release too
+ * (in addition to the destroy path) bounds that exposure. 404 is success
+ * (already gone, e.g. the cascade beat us); other errors are swallowed because
+ * release must not fail just because cleanup raced. SECURITY-relevant.
+ */
+export async function deleteLeaseSecretBestEffort(
+  clients: KubeClients,
+  namespace: string,
+  secretName: string,
+): Promise<void> {
+  if (!secretName) return;
+  try {
+    await clients.core.deleteNamespacedSecret({ namespace, name: secretName });
+  } catch (err) {
+    if (isKubeNotFoundError(err)) return;
+    // Swallow: a failed best-effort cleanup must not break release. The destroy
+    // path and the ownerRef cascade remain as additional backstops.
+  }
+}

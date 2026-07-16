@@ -32,9 +32,10 @@ import { jobOrchestrator, JobTimeoutError } from "./job-orchestrator.js";
 import {
   sandboxCrOrchestrator,
   SandboxCrTimeoutError,
+  SandboxSchedulingError,
 } from "./sandbox-cr-orchestrator.js";
 import { execInPod, wrapCommandWithEnv } from "./pod-exec.js";
-import { checkLeaseResumable, destroyLeaseResources } from "./lease-lifecycle.js";
+import { checkLeaseResumable, destroyLeaseResources, deleteLeaseSecretBestEffort } from "./lease-lifecycle.js";
 import {
   deriveCompanySlug,
   deriveNamespaceName,
@@ -108,6 +109,11 @@ const readySandboxesByLease = new Set<string>();
 // faster and more reliable than waiting.
 const RESUME_READY_TIMEOUT_MS = 30_000;
 const RESUME_READY_POLL_MS = 1_000;
+
+// The default realized workspace cwd. The agent pod mounts /workspace as an
+// emptyDir at scheduling time (see pod-spec-builder); onEnvironmentRealizeWorkspace
+// hands this back and the lease metadata carries it from acquisition.
+const REALIZED_WORKSPACE_CWD = "/workspace";
 
 const plugin = definePlugin({
   async setup(ctx) {
@@ -335,6 +341,12 @@ const plugin = definePlugin({
       secretName,
       phase: "Pending",
       backend: config.backend,
+      // Carry the realized workspace cwd on the lease from acquisition, matching
+      // what onEnvironmentRealizeWorkspace returns ("/workspace"). The SSH and
+      // Daytona providers do the same: a lease that knows its own cwd makes the
+      // execution target correct even if the orchestrator's separate cwd
+      // threading regresses. Defense-in-depth.
+      remoteCwd: REALIZED_WORKSPACE_CWD,
     };
 
     return {
@@ -424,7 +436,7 @@ const plugin = definePlugin({
     const cwd =
       params.workspace.remotePath && params.workspace.remotePath.trim().length > 0
         ? params.workspace.remotePath.trim()
-        : "/workspace";
+        : REALIZED_WORKSPACE_CWD;
     return {
       cwd,
       metadata: {
@@ -456,6 +468,12 @@ const plugin = definePlugin({
         : config.backend;
     const releaseOrchestrator =
       leaseBackend === "sandbox-cr" ? sandboxCrOrchestrator : jobOrchestrator;
+    // acquireLease names the per-run Secret `${jobName}-env` and uses jobName as
+    // the providerLeaseId, so the suffix fallback reconstructs it exactly.
+    const secretName =
+      typeof params.leaseMetadata?.secretName === "string"
+        ? params.leaseMetadata.secretName
+        : `${params.providerLeaseId}-env`;
 
     // Drop the FastUploadInterceptor associated with THIS lease (only).
     // Each lease has its own interceptor instance via uploadInterceptorsByLease,
@@ -471,6 +489,14 @@ const plugin = definePlugin({
         ?? (err as { code?: number; statusCode?: number }).statusCode;
       if (code !== 404) throw err;
     }
+
+    // Explicitly delete the per-run Secret on release too. Normal release relies
+    // on the Sandbox CR / Job ownerRef cascade to remove it, but a wedged
+    // controller or broken ownerRef would otherwise strand per-run env Secrets
+    // (which carry the provider API keys) in tenant namespaces. Best-effort +
+    // 404-tolerant so release never fails on a cleanup race. SECURITY-relevant.
+    // See deleteLeaseSecretBestEffort.
+    await deleteLeaseSecretBestEffort(clients, namespace, secretName);
   },
 
   async onEnvironmentDestroyLease(
@@ -576,27 +602,68 @@ const plugin = definePlugin({
       // block for up to twice the requested timeout.
       const executeStartedAt = Date.now();
 
+      // The readiness wait has its OWN budget (podReadyTimeoutSec), never
+      // more than the caller's whole exec budget. Before this cap the wait
+      // shared the full exec budget, so a pod that was never coming up burned
+      // the entire window before the (host-side) timer produced a contentless
+      // RPC timeout. The exec/streaming phase below keeps the remaining share
+      // of the caller's budget.
+      const readyTimeoutMs = Math.min(
+        config.podReadyTimeoutSec * 1000,
+        effectiveTimeoutMs,
+      );
+
       if (!podAlreadyKnownReady) {
         try {
           await sandboxCrOrchestrator.waitForCompletion(
             clients,
             namespace,
             lease.providerLeaseId,
-            { timeoutMs: effectiveTimeoutMs, pollMs: 2000 },
+            {
+              timeoutMs: readyTimeoutMs,
+              pollMs: 2000,
+              unschedulableGraceMs: config.podUnschedulableGraceSec * 1000,
+            },
           );
           readySandboxesByLease.add(lease.providerLeaseId);
         } catch (err) {
-          if (err instanceof SandboxCrTimeoutError) {
+          if (err instanceof SandboxSchedulingError) {
+            // The scheduler cannot place the pod (cluster out of capacity /
+            // autoscaler outage). Fail fast with an actionable message and a
+            // distinct error code instead of burning the whole exec budget.
+            // NOTE: the stderr marker below is classified server-side (see
+            // adapter-utils sandbox-infra-failure) — keep them in sync.
             return {
-              exitCode: null,
-              timedOut: true,
+              exitCode: 1,
+              timedOut: false,
               stdout: "",
-              stderr: `Sandbox pod did not become Ready within ${effectiveTimeoutMs}ms`,
+              stderr:
+                "Sandbox pod could not be scheduled: cluster has no capacity for it. " +
+                "This is an infrastructure issue, not a problem with your task. " +
+                `(${err.message})`,
               metadata: {
                 provider: "kubernetes",
                 backend: "sandbox-cr",
                 namespace,
                 sandboxName: lease.providerLeaseId,
+                errorCode: "sandbox_unschedulable",
+              },
+            };
+          }
+          if (err instanceof SandboxCrTimeoutError) {
+            // NOTE: the stderr marker below is classified server-side (see
+            // adapter-utils sandbox-infra-failure) — keep them in sync.
+            return {
+              exitCode: null,
+              timedOut: true,
+              stdout: "",
+              stderr: `Sandbox pod did not become Ready within ${readyTimeoutMs}ms`,
+              metadata: {
+                provider: "kubernetes",
+                backend: "sandbox-cr",
+                namespace,
+                sandboxName: lease.providerLeaseId,
+                errorCode: "sandbox_not_ready",
               },
             };
           }

@@ -7,6 +7,33 @@ describe("plugin", () => {
     expect(plugin.definition.onEnvironmentValidateConfig).toBeTypeOf("function");
   });
 
+  it("onEnvironmentRealizeWorkspace returns /workspace cwd by default (matches the lease remoteCwd)", async () => {
+    const result = await plugin.definition.onEnvironmentRealizeWorkspace!({
+      driverKey: "kubernetes",
+      companyId: "acme",
+      environmentId: "env-1",
+      config: { inCluster: true },
+      providerLeaseId: "pc-abc",
+      leaseMetadata: {},
+      workspace: {},
+    } as never);
+    expect(result.cwd).toBe("/workspace");
+    expect((result.metadata as Record<string, unknown>).remoteCwd).toBe("/workspace");
+  });
+
+  it("onEnvironmentRealizeWorkspace honors a caller-supplied remotePath", async () => {
+    const result = await plugin.definition.onEnvironmentRealizeWorkspace!({
+      driverKey: "kubernetes",
+      companyId: "acme",
+      environmentId: "env-1",
+      config: { inCluster: true },
+      providerLeaseId: "pc-abc",
+      leaseMetadata: {},
+      workspace: { remotePath: "/custom/dir" },
+    } as never);
+    expect(result.cwd).toBe("/custom/dir");
+  });
+
   it("validateConfig accepts inCluster=true config", async () => {
     const result = await plugin.definition.onEnvironmentValidateConfig!({
       driverKey: "kubernetes",

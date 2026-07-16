@@ -227,6 +227,7 @@ import {
 } from "../log-redaction.js";
 import { redactEventPayload, redactSensitiveText } from "../redaction.js";
 import {
+  classifySandboxInfraFailure,
   hasSessionCompactionThresholds,
   resolveSessionCompactionPolicy,
   type RuntimeStatusUpdate,
@@ -13326,7 +13327,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           : outcome === "cancelled"
             ? (latestRun?.errorCode ?? "cancelled")
             : outcome === "failed"
-              ? (adapterResult.errorCode ?? recordedResponsibleUserDenialCode ?? "adapter_failed")
+              ? (adapterResult.errorCode ??
+                recordedResponsibleUserDenialCode ??
+                classifySandboxInfraFailure(adapterResult.errorMessage) ??
+                "adapter_failed")
               : null;
 
       let logSummary: { bytes: number; sha256?: string; compressed: boolean } | null = null;
@@ -13607,6 +13611,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         workspaceValidationFailure?.code
         ?? configurationIncompleteFailure?.code
         ?? recordedResponsibleUserDenialCode
+        // A sandbox capacity/readiness failure often surfaces as a THROWN
+        // prep-exec error (workspace restore, runtime install) rather than an
+        // adapter result. Recognize the plugin's stable markers so recovery
+        // applies the capacity-appropriate backoff instead of the generic one.
+        ?? classifySandboxInfraFailure(message)
         ?? "adapter_failed";
       logger.error({ err, runId }, "heartbeat execution failed");
 

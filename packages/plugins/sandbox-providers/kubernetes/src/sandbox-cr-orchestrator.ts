@@ -37,6 +37,24 @@ export class SandboxCrTimeoutError extends Error {
   }
 }
 
+/**
+ * The Sandbox pod cannot be placed on any node (PodScheduled=False with
+ * reason Unschedulable persisting past the configured grace period). This is
+ * a cluster-capacity/autoscaler condition, categorically different from a
+ * slow container start: waiting longer inside the same exec budget cannot
+ * fix it, so callers should fail fast with an actionable infrastructure
+ * error instead of burning the whole readiness timeout.
+ */
+export class SandboxSchedulingError extends Error {
+  constructor(namespace: string, name: string, detail?: string) {
+    super(
+      `Sandbox ${namespace}/${name} pod cannot be scheduled` +
+        (detail && detail.trim().length > 0 ? `: ${detail.trim()}` : ""),
+    );
+    this.name = "SandboxSchedulingError";
+  }
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -243,18 +261,77 @@ export async function deleteSandboxCr(
  *
  * Throws SandboxCrTimeoutError if Ready is not reached within timeoutMs.
  * Throws if the Sandbox transitions to Failed.
+ * Throws SandboxSchedulingError if `unschedulableGraceMs` is set and the
+ * backing pod's PodScheduled condition stays False with reason Unschedulable
+ * for at least that long (cluster capacity problem, not a slow start).
+ *
+ * The agent-sandbox v1alpha1 Sandbox CR status exposes only phase,
+ * conditions[type=Ready|Failed] and podName (populated once Ready) — pod
+ * scheduling state is NOT mirrored onto the CR. So while Pending we read the
+ * backing pod directly: status.podName when present, else the CR name (the
+ * v0.4.x controller names the pod exactly after the Sandbox, see
+ * findPodForSandbox). Pod inspection is best-effort: a missing pod (404) or
+ * a transient read error never aborts the wait.
  */
 export async function waitForSandboxReady(
   clients: KubeClients,
   namespace: string,
   name: string,
-  opts: { timeoutMs: number; pollMs?: number } = {
+  opts: { timeoutMs: number; pollMs?: number; unschedulableGraceMs?: number } = {
     timeoutMs: 120_000,
     pollMs: 2000,
   },
 ): Promise<SandboxStatus> {
   const deadline = Date.now() + opts.timeoutMs;
   const pollMs = opts.pollMs ?? 2000;
+  const unschedulableGraceMs = opts.unschedulableGraceMs ?? 0;
+  // Fallback persistence tracking for pods whose PodScheduled condition has
+  // no lastTransitionTime: timestamp of our first Unschedulable observation.
+  let unschedulableFirstObservedAt: number | null = null;
+
+  const checkPodSchedulable = async (crStatus: Record<string, unknown>): Promise<void> => {
+    const podName =
+      typeof crStatus.podName === "string" && crStatus.podName.trim().length > 0
+        ? crStatus.podName
+        : name;
+    let pod: {
+      status?: {
+        conditions?: Array<{
+          type?: string;
+          status?: string;
+          reason?: string;
+          message?: string;
+          lastTransitionTime?: string;
+        }>;
+      };
+    };
+    try {
+      pod = (await clients.core.readNamespacedPod({ namespace, name: podName })) as typeof pod;
+    } catch {
+      // Pod not created yet (404) or a transient API error — scheduling
+      // detection is best-effort; keep polling the CR as before.
+      return;
+    }
+    const conditions = Array.isArray(pod?.status?.conditions) ? pod.status!.conditions! : [];
+    const scheduled = conditions.find((c) => c?.type === "PodScheduled");
+    if (!scheduled || scheduled.status !== "False" || scheduled.reason !== "Unschedulable") {
+      unschedulableFirstObservedAt = null;
+      return;
+    }
+    const transitionAtMs = scheduled.lastTransitionTime
+      ? Date.parse(scheduled.lastTransitionTime)
+      : Number.NaN;
+    let unschedulableForMs: number;
+    if (Number.isFinite(transitionAtMs)) {
+      unschedulableForMs = Date.now() - transitionAtMs;
+    } else {
+      unschedulableFirstObservedAt ??= Date.now();
+      unschedulableForMs = Date.now() - unschedulableFirstObservedAt;
+    }
+    if (unschedulableForMs >= unschedulableGraceMs) {
+      throw new SandboxSchedulingError(namespace, name, scheduled.message ?? scheduled.reason);
+    }
+  };
 
   while (Date.now() < deadline) {
     const cr = await clients.custom.getNamespacedCustomObject({
@@ -292,7 +369,12 @@ export async function waitForSandboxReady(
         `Sandbox ${namespace}/${name} is Terminating — cannot wait for Ready`,
       );
     }
-    // Pending — keep polling
+    // Pending — a pod stuck Unschedulable past the grace period will never
+    // become Ready inside this wait; surface it as a distinct scheduling
+    // failure instead of an indistinguishable timeout.
+    if (unschedulableGraceMs > 0) {
+      await checkPodSchedulable(status);
+    }
     await sleep(pollMs);
   }
 

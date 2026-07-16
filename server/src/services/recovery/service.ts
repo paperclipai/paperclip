@@ -24,6 +24,10 @@ import {
   issueThreadInteractions,
   issues,
 } from "@paperclipai/db";
+import {
+  SANDBOX_NOT_READY_ERROR_CODE,
+  SANDBOX_UNSCHEDULABLE_ERROR_CODE,
+} from "@paperclipai/adapter-utils";
 import { parseObject, asBoolean, asNumber } from "../../adapters/utils.js";
 import { runningProcesses } from "../../adapters/index.js";
 import { visibleIssueCondition } from "../issue-visibility.js";
@@ -290,9 +294,20 @@ const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
 // than escalating it as stranded.
 const CONTINUATION_WAITING_ON_REVIEW_ERROR_CODE = "issue_continuation_waiting_on_review";
 
+// Sandbox capacity failures (the cluster cannot schedule or bring up the
+// sandbox pod) are transient infrastructure, but they do NOT resolve on the
+// generic 60s backoff: node provisioning / autoscaler recovery takes minutes.
+// Retrying on the short backoff just burns full readiness windows back to
+// back, so these codes get a longer base backoff with the same attempt cap.
+const SANDBOX_CAPACITY_CONTINUATION_ERROR_CODES = new Set<string>([
+  SANDBOX_UNSCHEDULABLE_ERROR_CODE,
+  SANDBOX_NOT_READY_ERROR_CODE,
+]);
+
 const CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS = 3;
 const CONTINUATION_RECOVERY_DEFAULT_MAX_ATTEMPTS = 1;
 const CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS = 60_000;
+const CONTINUATION_RECOVERY_SANDBOX_CAPACITY_BASE_BACKOFF_MS = 5 * 60_000;
 
 type ContinuationRetryClassification = {
   kind: "transient_infra" | "non_retryable" | "default";
@@ -305,6 +320,14 @@ export function classifyContinuationFailure(latestRun: LatestIssueRun): Continua
   const errorCode = readNonEmptyString(latestRun?.errorCode);
   if (errorCode && NON_RETRYABLE_CONTINUATION_ERROR_CODES.has(errorCode)) {
     return { kind: "non_retryable", maxAttempts: 0, baseBackoffMs: 0, errorCode };
+  }
+  if (errorCode && SANDBOX_CAPACITY_CONTINUATION_ERROR_CODES.has(errorCode)) {
+    return {
+      kind: "transient_infra",
+      maxAttempts: CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS,
+      baseBackoffMs: CONTINUATION_RECOVERY_SANDBOX_CAPACITY_BASE_BACKOFF_MS,
+      errorCode,
+    };
   }
   if (errorCode && TRANSIENT_INFRA_CONTINUATION_ERROR_CODES.has(errorCode)) {
     return {
