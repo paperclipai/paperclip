@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { activityLog } from "@paperclipai/db";
+import { activityLog, agentApiKeys, companies, heartbeatRuns, issues } from "@paperclipai/db";
 import { PLUGIN_EVENT_TYPES, type PluginEventType } from "@paperclipai/shared";
 import type { PluginEvent } from "@paperclipai/plugin-sdk";
 import { publishLiveEvent } from "./live-events.js";
@@ -59,7 +60,63 @@ export interface LogActivityInput {
   entityId: string;
   agentId?: string | null;
   runId?: string | null;
+  agentApiKeyId?: string | null;
+  issueId?: string | null;
   details?: Record<string, unknown> | null;
+}
+
+function readNonEmptyString(value: unknown) {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+export async function resolveResponsibleUserIdForActivity(db: Db, input: LogActivityInput) {
+  if (input.runId) {
+    const run = await db
+      .select({ responsibleUserId: heartbeatRuns.responsibleUserId })
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId)))
+      .then((rows) => rows[0] ?? null);
+    const runResponsibleUserId = readNonEmptyString(run?.responsibleUserId);
+    if (runResponsibleUserId) return runResponsibleUserId;
+  }
+
+  const issueId = readNonEmptyString(input.issueId)
+    ?? (input.entityType === "issue" ? readNonEmptyString(input.entityId) : null)
+    ?? readNonEmptyString(input.details?.issueId);
+  if (issueId) {
+    const issue = await db
+      .select({
+        responsibleUserId: issues.responsibleUserId,
+        createdByUserId: issues.createdByUserId,
+      })
+      .from(issues)
+      .where(and(eq(issues.companyId, input.companyId), eq(issues.id, issueId)))
+      .then((rows) => rows[0] ?? null);
+    const issueResponsibleUserId = readNonEmptyString(issue?.responsibleUserId)
+      ?? readNonEmptyString(issue?.createdByUserId);
+    if (issueResponsibleUserId) return issueResponsibleUserId;
+  }
+
+  if (input.agentApiKeyId) {
+    const apiKey = await db
+      .select({ responsibleUserId: agentApiKeys.responsibleUserId })
+      .from(agentApiKeys)
+      .where(and(
+        eq(agentApiKeys.companyId, input.companyId),
+        eq(agentApiKeys.id, input.agentApiKeyId),
+        ...(input.agentId ? [eq(agentApiKeys.agentId, input.agentId)] : []),
+      ))
+      .then((rows) => rows[0] ?? null);
+    const apiKeyResponsibleUserId = readNonEmptyString(apiKey?.responsibleUserId);
+    if (apiKeyResponsibleUserId) return apiKeyResponsibleUserId;
+  }
+
+  const company = await db
+    .select({ defaultResponsibleUserId: companies.defaultResponsibleUserId })
+    .from(companies)
+    .where(eq(companies.id, input.companyId))
+    .then((rows) => rows[0] ?? null);
+  return readNonEmptyString(company?.defaultResponsibleUserId);
 }
 
 export async function logActivity(db: Db, input: LogActivityInput) {
@@ -70,6 +127,7 @@ export async function logActivity(db: Db, input: LogActivityInput) {
   const redactedDetails = sanitizedDetails
     ? redactCurrentUserValue(sanitizedDetails, currentUserRedactionOptions)
     : null;
+  const responsibleUserId = await resolveResponsibleUserIdForActivity(db, input);
   await db.insert(activityLog).values({
     companyId: input.companyId,
     actorType: input.actorType,
@@ -79,6 +137,7 @@ export async function logActivity(db: Db, input: LogActivityInput) {
     entityId: input.entityId,
     agentId: input.agentId ?? null,
     runId: input.runId ?? null,
+    responsibleUserId,
     details: redactedDetails,
   });
 
@@ -93,6 +152,7 @@ export async function logActivity(db: Db, input: LogActivityInput) {
       entityId: input.entityId,
       agentId: input.agentId ?? null,
       runId: input.runId ?? null,
+      responsibleUserId,
       details: redactedDetails,
     },
   });
@@ -112,6 +172,7 @@ export async function logActivity(db: Db, input: LogActivityInput) {
         ...redactedDetails,
         agentId: input.agentId ?? null,
         runId: input.runId ?? null,
+        responsibleUserId,
       },
     };
     publishPluginDomainEvent(event);

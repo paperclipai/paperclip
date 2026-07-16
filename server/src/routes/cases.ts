@@ -837,6 +837,7 @@ export function caseRoutes(db: Db, storage: StorageService) {
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         action: "case.document_annotation_thread_created",
         entityType: "case",
         entityId: caseRow.id,
@@ -875,6 +876,7 @@ export function caseRoutes(db: Db, storage: StorageService) {
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         action: "case.document_annotation_comment_added",
         entityType: "case",
         entityId: caseRow.id,
@@ -911,6 +913,7 @@ export function caseRoutes(db: Db, storage: StorageService) {
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         action: thread.status === "resolved"
           ? "case.document_annotation_thread_resolved"
           : "case.document_annotation_thread_reopened",

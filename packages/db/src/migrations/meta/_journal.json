@@ -1226,6 +1226,13 @@
       "when": 1784211956161,
       "tag": "0176_issue_create_idempotency_key_expiry",
       "breakpoints": true
+    },
+    {
+      "idx": 177,
+      "version": "7",
+      "when": 1784241826832,
+      "tag": "0177_activity_log_responsible_user",
+      "breakpoints": true
     }
   ]
 }
