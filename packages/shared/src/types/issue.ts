@@ -772,6 +772,10 @@ export interface Issue {
   lastExternalCommentAt?: Date | null;
   lastActivityAt?: Date | null;
   isUnreadForMe?: boolean;
+  archivedAt?: Date | null;
+  archivedByActorType?: "user" | "agent" | null;
+  archivedByAgentId?: string | null;
+  archivedByRunId?: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -823,6 +827,10 @@ export type CompactIssue = Pick<
   lastExternalCommentAt?: Date | null;
   lastActivityAt?: Date | null;
   isUnreadForMe?: boolean;
+  archivedAt?: Date | null;
+  archivedByActorType?: "user" | "agent" | null;
+  archivedByAgentId?: string | null;
+  archivedByRunId?: string | null;
   activeRecoveryAction: IssueRecoveryAction | null;
   successfulRunHandoff: SuccessfulRunHandoffState | null;
 };

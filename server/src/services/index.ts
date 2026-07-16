@@ -98,6 +98,7 @@ export {
   type PrincipalAccessCompatibilityBackfillStats,
 } from "./principal-access-compatibility.js";
 export { authorizationService } from "./authorization.js";
+export { inboxAgentPolicyService } from "./inbox-agent-policy.js";
 export type {
   AuthorizationAction,
   AuthorizationActor,
