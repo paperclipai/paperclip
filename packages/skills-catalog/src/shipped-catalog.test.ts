@@ -178,6 +178,21 @@ describe("shipped skills catalog", () => {
     expect(resolveCatalogSkillRef(sample.slug)).toMatchObject({ key: sample.key });
   });
 
+  it("keeps review-bot and issue-authorization guidance explicit", () => {
+    const githubPrWorkflow = readFileSync(
+      new URL("../catalog/bundled/software-development/github-pr-workflow/SKILL.md", import.meta.url),
+      "utf8",
+    );
+    const paperclipSkill = readFileSync(new URL("../../../skills/paperclip/SKILL.md", import.meta.url), "utf8");
+
+    expect(githubPrWorkflow).toContain("## Automated code-review bots");
+    expect(githubPrWorkflow).toContain("top confidence with zero unresolved threads");
+    expect(paperclipSkill).toContain("Paperclip evaluates `issue:read`, `issue:comment`, and `issue:mutate`");
+    expect(paperclipSkill).toContain("separately. Local task-bridge credentials are run-scoped");
+    expect(paperclipSkill).toContain("`authorizationBoundary` field");
+    expect(paperclipSkill).toContain("do not infer mutation access");
+  });
+
   it("keeps the Ramp wrapper fail-closed on mixed-provenance playbooks", () => {
     const rampSkill = readFileSync(new URL("../catalog/optional/finance/ramp/SKILL.md", import.meta.url), "utf8");
 
