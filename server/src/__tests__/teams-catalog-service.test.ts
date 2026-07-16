@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { CatalogTeam } from "@paperclipai/shared";
+import catalogManifest from "../../../packages/teams-catalog/generated/catalog.json" with { type: "json" };
 
 const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -39,7 +40,7 @@ const {
 } = await import("../services/teams-catalog.js");
 
 const CORE_EXEC_TEAM_ID = "paperclipai:bundled:company-defaults:core-exec-team";
-const CORE_EXEC_TEAM_HASH = "sha256:0f20e9d56124c1dc90a1e4b128fabd863538bcc935117220f719d9620f7c89f1";
+const CORE_EXEC_TEAM_HASH = catalogManifest.teams.find((team) => team.id === CORE_EXEC_TEAM_ID)!.contentHash;
 
 function agentWithCatalogTeam(originHash: string | null, extra: Record<string, unknown> = {}) {
   return {
