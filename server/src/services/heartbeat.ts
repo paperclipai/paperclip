@@ -11371,7 +11371,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       if (
         !latestOperation ||
         latestOperation.heartbeatRunId !== run.id ||
-        (latestOperation.phase === "workspace_finalize" && latestOperation.status === "succeeded")
+        latestOperation.phase === "workspace_finalize"
       ) {
         return false;
       }

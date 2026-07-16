@@ -1964,6 +1964,126 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
   });
 
+  it("does not synthesize a successful finalize over a failed workspace finalize", async () => {
+    const { companyId, agentId, runId, issueId: blockerIssueId } = await seedRunFixture({
+      agentStatus: "idle",
+      processPid: null,
+      processGroupId: null,
+    });
+    const projectId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+    const dependentIssueId = randomUUID();
+
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Failed finalize project",
+      status: "in_progress",
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      mode: "shared_workspace",
+      strategyType: "local_path",
+      name: "Failed finalize workspace",
+      status: "active",
+      providerType: "local_fs",
+    });
+    await db
+      .update(issues)
+      .set({
+        projectId,
+        status: "done",
+        executionWorkspaceId,
+        completedAt: new Date("2026-03-19T00:01:00.000Z"),
+      })
+      .where(eq(issues.id, blockerIssueId));
+    await db.insert(issues).values({
+      id: dependentIssueId,
+      companyId,
+      projectId,
+      title: "Dependent waiting on failed finalize",
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      responsibleUserId: "responsible-user",
+      issueNumber: 2,
+      identifier: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}-2`,
+    });
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerIssueId,
+      relatedIssueId: dependentIssueId,
+      type: "blocks",
+    });
+    await db.insert(workspaceOperations).values([
+      {
+        companyId,
+        executionWorkspaceId,
+        heartbeatRunId: runId,
+        issueId: blockerIssueId,
+        phase: "adapter_execute",
+        status: "succeeded",
+        metadata: { qaFixture: "failed-dead-run-finalize", preFinalize: true },
+        startedAt: new Date("2026-03-19T00:00:30.000Z"),
+        finishedAt: new Date("2026-03-19T00:00:45.000Z"),
+      },
+      {
+        companyId,
+        executionWorkspaceId,
+        heartbeatRunId: runId,
+        issueId: blockerIssueId,
+        phase: "workspace_finalize",
+        status: "failed",
+        metadata: { qaFixture: "failed-dead-run-finalize", error: "sync-back failed" },
+        startedAt: new Date("2026-03-19T00:00:50.000Z"),
+        finishedAt: new Date("2026-03-19T00:00:55.000Z"),
+      },
+    ]);
+
+    await heartbeatService(db).reapOrphanedRuns();
+
+    const finalizeRows = await db
+      .select({
+        phase: workspaceOperations.phase,
+        status: workspaceOperations.status,
+        metadata: workspaceOperations.metadata,
+      })
+      .from(workspaceOperations)
+      .where(and(
+        eq(workspaceOperations.heartbeatRunId, runId),
+        eq(workspaceOperations.phase, "workspace_finalize"),
+      ));
+    expect(finalizeRows).toEqual([{
+      phase: "workspace_finalize",
+      status: "failed",
+      metadata: expect.objectContaining({ qaFixture: "failed-dead-run-finalize" }),
+    }]);
+
+    const after = await issueService(db).getDependencyReadiness(dependentIssueId);
+    expect(after).toMatchObject({
+      allBlockersDone: false,
+      isDependencyReady: false,
+      unresolvedBlockerCount: 1,
+      pendingFinalizeBlockerIssueIds: [blockerIssueId],
+    });
+
+    const reconciled = await heartbeatService(db).reconcileIssueGraphLiveness();
+    expect(reconciled.dependencyWakesHealed).toBe(0);
+    expect(reconciled.dependencyWakeIssueIds).toEqual([]);
+
+    const wake = await db
+      .select({ id: agentWakeupRequests.id })
+      .from(agentWakeupRequests)
+      .where(and(
+        eq(agentWakeupRequests.agentId, agentId),
+        eq(agentWakeupRequests.reason, "issue_blockers_resolved"),
+      ))
+      .then((rows) => rows[0] ?? null);
+    expect(wake).toBeNull();
+  });
+
   it("leaves an existing successful live workspace finalize unchanged when reaping a dead done run", async () => {
     const { companyId, runId, issueId } = await seedRunFixture({
       agentStatus: "idle",
