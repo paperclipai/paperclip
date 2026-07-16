@@ -79,12 +79,16 @@ You can build and distribute adapters as standalone packages — no changes to P
 
 ```sh
 # Install from npm via API
-curl -X POST http://localhost:3102/api/adapters \
+curl -X POST http://localhost:3102/api/adapters/install \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
   -d '{"packageName": "my-paperclip-adapter"}'
 
 # Or link from a local directory
-curl -X POST http://localhost:3102/api/adapters \
-  -d '{"localPath": "/home/user/my-adapter"}'
+curl -X POST http://localhost:3102/api/adapters/install \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"packageName": "/home/user/my-adapter", "isLocalPath": true}'
 ```
 
 See [External Adapters](/adapters/external-adapters) for the full guide.

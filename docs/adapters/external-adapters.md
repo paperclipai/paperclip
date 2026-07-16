@@ -280,7 +280,7 @@ Check levels:
 # Settings → Adapters → Install from npm → "my-paperclip-adapter"
 
 # Or via API
-curl -X POST http://localhost:3102/api/adapters \
+curl -X POST http://localhost:3102/api/adapters/install \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
   -d '{"packageName": "my-paperclip-adapter"}'
@@ -289,13 +289,32 @@ curl -X POST http://localhost:3102/api/adapters \
 ### From local directory
 
 ```sh
-curl -X POST http://localhost:3102/api/adapters \
+curl -X POST http://localhost:3102/api/adapters/install \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
-  -d '{"localPath": "/home/user/my-adapter"}'
+  -d '{"packageName": "/home/user/my-adapter", "isLocalPath": true}'
 ```
 
-Local adapters are symlinked into Paperclip's adapter directory. Changes to the source are picked up on server restart.
+Local adapters are loaded from the resolved package directory. After changing the source, use **Reload** in Settings → Adapter manager or call the reload endpoint; a server restart is not required.
+
+```sh
+curl -X POST http://localhost:3102/api/adapters/my_adapter/reload \
+  -H "Authorization: Bearer <token>"
+```
+
+### Lifecycle operations
+
+Adapter management mutations require instance-admin access.
+
+| Action | API | Notes |
+|---|---|---|
+| List | `GET /api/adapters` | Returns built-in and external adapters |
+| Install | `POST /api/adapters/install` | Accepts an npm package or a local package path |
+| Reload | `POST /api/adapters/:type/reload` | Reloads local changes and refreshes registration |
+| Reinstall | `POST /api/adapters/:type/reinstall` | Reinstalls an npm-backed adapter; unavailable for local paths |
+| Disable or enable | `PATCH /api/adapters/:type` | Set `{ "disabled": true }` or `false` |
+| Pause an override | `PATCH /api/adapters/:type/override` | Temporarily fall back to the built-in adapter with the same type |
+| Uninstall | `DELETE /api/adapters/:type` | Removes an external adapter; built-ins are protected |
 
 ### Via adapter-plugins.json
 

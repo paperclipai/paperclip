@@ -19,7 +19,7 @@ If you're using Claude Code, the `.agents/skills/create-agent-adapter` skill can
 | Registration | Edit 3 registries | Auto-loaded at startup |
 | Best for | Core adapters, contributors | Third-party adapters, internal tools |
 
-For most cases, **build an external adapter plugin**. It's cleaner, independently versioned, and doesn't require modifying Paperclip's source. See [External Adapters](/adapters/external-adapters) for the full guide.
+For most cases, **build an external adapter plugin**. It's cleaner, independently versioned, and doesn't require modifying Paperclip's source. See [External Adapters](/adapters/external-adapters) for the package format and install, reload, disable, and uninstall lifecycle.
 
 The rest of this page covers the shared internals that both paths use.
 
