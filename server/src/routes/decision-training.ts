@@ -112,7 +112,6 @@ export function decisionTrainingRoutes(db: Db) {
       res.status(404).json({ error: "Decision training example not found" });
       return;
     }
-    assertCompanyAccess(req, existing.companyId);
     const userId = requireHumanUser(req, res);
     if (!userId) return;
     const updated = await svc.updateNotes(existing.id, userId, req.body.notes);
@@ -141,7 +140,6 @@ export function decisionTrainingRoutes(db: Db) {
       res.status(404).json({ error: "Decision training example not found" });
       return;
     }
-    assertCompanyAccess(req, existing.companyId);
     const userId = requireHumanUser(req, res);
     if (!userId) return;
     const deleted = await svc.delete(existing.id);

@@ -8,9 +8,11 @@ import {
   companies,
   createDb,
   decisionTrainingExamples,
+  executionWorkspaces,
   issueComments,
   issues,
   issueThreadInteractions,
+  projectWorkspaces,
   projects,
 } from "@paperclipai/db";
 import {
@@ -45,7 +47,9 @@ describeEmbeddedPostgres("decision training", () => {
     await db.delete(decisionTrainingExamples);
     await db.delete(issueThreadInteractions);
     await db.delete(issueComments);
+    await db.delete(executionWorkspaces);
     await db.delete(issues);
+    await db.delete(projectWorkspaces);
     await db.delete(projects);
     await db.delete(companies);
   });
@@ -90,7 +94,7 @@ describeEmbeddedPostgres("decision training", () => {
       { id: atCutoffId, companyId, issueId, body: "At cutoff", createdAt: cutoffAt },
       { id: afterId, companyId, issueId, body: "Leaked later context", createdAt: new Date("2026-07-16T12:00:01.000Z") },
     ]);
-    return { companyId, issueId, interactionId, cutoffAt, beforeId, atCutoffId, afterId };
+    return { companyId, projectId, issueId, interactionId, cutoffAt, beforeId, atCutoffId, afterId };
   }
 
   it("includes the cutoff boundary and excludes later comments", async () => {
@@ -112,6 +116,31 @@ describeEmbeddedPostgres("decision training", () => {
     expect(JSON.stringify(captured.snapshot)).not.toContain("Leaked later context");
   });
 
+  it("labels workspace-only commit evidence accurately", async () => {
+    const seeded = await seedResolvedInteraction();
+    await db.insert(projectWorkspaces).values({
+      companyId: seeded.companyId,
+      projectId: seeded.projectId,
+      name: "Primary workspace",
+      repoUrl: "https://github.com/paperclipai/paperclip.git",
+      metadata: { commitSha: "abcdef1234567890" },
+      isPrimary: true,
+      createdAt: new Date("2026-07-16T11:00:00.000Z"),
+    });
+
+    const captured = await captureDecisionSnapshot(db, {
+      companyId: seeded.companyId,
+      sourceKind: "interaction",
+      sourceId: seeded.interactionId,
+      issueId: seeded.issueId,
+    }, new Date("2026-07-16T13:00:00.000Z"));
+
+    expect(captured.snapshot.code).toMatchObject({
+      commitSha: "abcdef1234567890",
+      resolution: "workspace",
+    });
+  });
+
   it("enforces one example per decision and author", async () => {
     const seeded = await seedResolvedInteraction();
     const svc = decisionTrainingService(db);
@@ -130,6 +159,8 @@ describeEmbeddedPostgres("decision training", () => {
     expect(updated?.notesHistory).toEqual([
       expect.objectContaining({ author: "board-user", body: "Ship behind a flag." }),
     ]);
+    const unchanged = await svc.updateNotes(created.id, "board-user", "Use a 10% canary first.");
+    expect(unchanged?.notesHistory).toEqual(updated?.notesHistory);
     expect(updated?.snapshot).toEqual(created.snapshot);
   });
 

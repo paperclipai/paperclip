@@ -239,7 +239,13 @@ export async function captureDecisionSnapshot(
           ?? projectWorkspace?.defaultRef
           ?? null,
         commitSha: commitSha ?? null,
-        resolution: exactCommit ? "exact" : commitSha ? "nearest_run" : "none",
+        resolution: exactCommit
+          ? "exact"
+          : nearestCommit
+            ? "nearest_run"
+            : workspaceCommit
+              ? "workspace"
+              : "none",
       },
     },
   };
@@ -302,6 +308,7 @@ export function decisionTrainingService(db: Db) {
         where: eq(decisionTrainingExamples.id, id),
       });
       if (!row) return null;
+      if (notes === row.notes) return row;
       const history: DecisionTrainingNotesHistoryEntry[] = [
         ...(row.notesHistory ?? []),
         { author, at: new Date().toISOString(), body: row.notes },
