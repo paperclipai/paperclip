@@ -414,8 +414,8 @@ describe("SummarySlotCard", () => {
     await flushQueries();
 
     expect(container.textContent).toContain("Current body");
-    expect(container.textContent).toContain("Latest (Rev 3) - Jul 14");
     expect(container.textContent).toContain("3 revisions");
+    expect(container.textContent).not.toContain("Latest (Rev 3)");
     expect([...container.querySelectorAll<HTMLButtonElement>("button")].some(
       (button) => button.textContent === "Revision 1" || button.textContent === "Rev 1",
     )).toBe(false);
@@ -443,6 +443,45 @@ describe("SummarySlotCard", () => {
 
     expect(container.textContent).toContain("Current body");
     expect(container.textContent).not.toContain("Historical revision");
+  });
+
+  it("limits the revision picker to the 30 newest revisions", async () => {
+    const revisions = Array.from({ length: 32 }, (_, index) => {
+      const revisionNumber = index + 1;
+      return revision({
+        id: `rev-${revisionNumber}`,
+        revisionNumber,
+        body: `Revision ${revisionNumber}`,
+        createdAt: new Date(Date.UTC(2026, 6, revisionNumber, 12)).toISOString(),
+      });
+    });
+    mockSummarySlotsApi.get.mockResolvedValue({
+      slot: slot({ documentId: "doc-1" }),
+      document: summaryDocument({
+        body: "Revision 32",
+        latestRevisionId: "rev-32",
+        latestRevisionNumber: 32,
+      }),
+      generatingIssue: null,
+    } satisfies GetSummarySlotResponse);
+    mockSummarySlotsApi.revisions.mockResolvedValue({
+      slot: slot({ documentId: "doc-1" }),
+      revisions,
+    });
+
+    root = renderCard(container);
+    await flushQueries();
+
+    expect(container.textContent).toContain("32 revisions");
+
+    await openRevisionSelect(container);
+
+    const options = Array.from(document.body.querySelectorAll<HTMLElement>('[role="option"]'));
+    expect(options).toHaveLength(30);
+    expect(options.some((option) => option.textContent?.includes("Latest (Rev 32)"))).toBe(true);
+    expect(options.some((option) => option.textContent?.includes("Rev 3 -"))).toBe(true);
+    expect(options.some((option) => option.textContent?.includes("Rev 2 -"))).toBe(false);
+    expect(options.some((option) => option.textContent?.includes("Rev 1 -"))).toBe(false);
   });
 
   it("shows stopped generation as a failed retryable state", async () => {

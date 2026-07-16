@@ -28,6 +28,7 @@ import { cn, formatDateTime, relativeTime } from "@/lib/utils";
 const SUMMARIZER_KEY = "summarizer";
 const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
 const LATEST_REVISION_SELECT_VALUE = "__latest__";
+const MAX_REVISION_OPTIONS = 30;
 
 export interface SummarySlotCardProps {
   companyId: string | null | undefined;
@@ -226,9 +227,11 @@ export function SummarySlotCard({
     : null;
   const displayedBody = historicalRevision?.body ?? latestDocument?.body ?? "";
   const displayingHistoricalRevision = Boolean(historicalRevision);
-  const historicalRevisionOptions = latestDocument
+  const historicalRevisionOptions = (latestDocument
     ? revisions.filter((revision) => revision.id !== latestDocument.latestRevisionId)
-    : revisions;
+    : revisions)
+    .toSorted((left, right) => right.revisionNumber - left.revisionNumber)
+    .slice(0, MAX_REVISION_OPTIONS - (latestDocument ? 1 : 0));
   const revisionSelectValue = historicalRevision?.id ?? LATEST_REVISION_SELECT_VALUE;
   const latestSelectLabel = latestDocument ? latestRevisionOptionLabel(latestDocument, latestRevision) : "Latest";
   const generatingIssue = slotQuery.data?.generatingIssue ?? null;
@@ -264,50 +267,15 @@ export function SummarySlotCard({
           {description ? <p className="text-sm text-muted-foreground">{description}</p> : null}
         </div>
         <div className="flex shrink-0 flex-wrap items-center gap-2">
-          {latestDocument && revisions.length > 1 ? (
-            <>
-              <Select
-                value={revisionSelectValue}
-                onValueChange={(value) => {
-                  setSelectedRevisionId(value === LATEST_REVISION_SELECT_VALUE ? null : value);
-                }}
-              >
-                <SelectTrigger
-                  size="sm"
-                  className="w-(--sz-240px) text-xs"
-                  aria-label="Select summary revision"
-                  title={historicalRevision ? revisionOptionLabel(historicalRevision) : latestSelectLabel}
-                >
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent align="end" position="popper">
-                  <SelectItem value={LATEST_REVISION_SELECT_VALUE} className="text-xs">
-                    {latestSelectLabel}
-                  </SelectItem>
-                  {historicalRevisionOptions.length > 0 ? <SelectSeparator /> : null}
-                  {historicalRevisionOptions.map((revision) => (
-                    <SelectItem
-                      key={revision.id}
-                      value={revision.id}
-                      className="text-xs"
-                      title={formatDateTime(revision.createdAt)}
-                    >
-                      {revisionOptionLabel(revision)}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              {displayingHistoricalRevision ? (
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  onClick={() => setSelectedRevisionId(null)}
-                >
-                  Latest
-                </Button>
-              ) : null}
-            </>
+          {displayingHistoricalRevision ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() => setSelectedRevisionId(null)}
+            >
+              Latest
+            </Button>
           ) : null}
           {latestDocument && !generationFailed ? (
             <Button
@@ -490,21 +458,45 @@ export function SummarySlotCard({
           </MarkdownBody>
 
           <div className="flex flex-col gap-3 text-xs text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
-            <div className="flex flex-wrap items-center gap-2">
-              <span>
-                Updated {relativeTime(historicalRevision?.createdAt ?? latestRevision?.createdAt ?? latestDocument.updatedAt)}
-              </span>
-              <span aria-hidden="true">.</span>
-              <span title={formatDateTime(historicalRevision?.createdAt ?? latestRevision?.createdAt ?? latestDocument.updatedAt)}>
-                {displayingHistoricalRevision ? revisionOptionLabel(historicalRevision!) : latestSelectLabel}
-              </span>
-            </div>
+            <span title={formatDateTime(historicalRevision?.createdAt ?? latestRevision?.createdAt ?? latestDocument.updatedAt)}>
+              Updated {relativeTime(historicalRevision?.createdAt ?? latestRevision?.createdAt ?? latestDocument.updatedAt)}
+            </span>
 
             {revisions.length > 1 ? (
-              <div className="flex items-center gap-1">
-                <History className="h-3.5 w-3.5" aria-hidden="true" />
-                <span>{revisions.length} revisions</span>
-              </div>
+              <Select
+                value={revisionSelectValue}
+                onValueChange={(value) => {
+                  setSelectedRevisionId(value === LATEST_REVISION_SELECT_VALUE ? null : value);
+                }}
+              >
+                <SelectTrigger
+                  size="sm"
+                  className="h-auto border-0 bg-transparent p-0 text-xs shadow-none hover:text-foreground focus-visible:ring-0"
+                  aria-label="Select summary revision"
+                  title={historicalRevision ? revisionOptionLabel(historicalRevision) : latestSelectLabel}
+                >
+                  <SelectValue>
+                    <History className="size-3.5" aria-hidden="true" />
+                    <span>{revisions.length} revisions</span>
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent align="end" position="popper">
+                  <SelectItem value={LATEST_REVISION_SELECT_VALUE} className="text-xs">
+                    {latestSelectLabel}
+                  </SelectItem>
+                  {historicalRevisionOptions.length > 0 ? <SelectSeparator /> : null}
+                  {historicalRevisionOptions.map((revision) => (
+                    <SelectItem
+                      key={revision.id}
+                      value={revision.id}
+                      className="text-xs"
+                      title={formatDateTime(revision.createdAt)}
+                    >
+                      {revisionOptionLabel(revision)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             ) : null}
           </div>
         </div>
