@@ -2306,31 +2306,45 @@ export function IssueProperties({
           <span className="text-sm">{timeAgo(issue.updatedAt)}</span>
         </PropertyRow>
         {issue.archivedAt && issue.archivedByActorType === "agent" && issue.archivedByAgentId ? (
-          <PropertyRow label="Archived">
-            <div className="flex min-w-0 flex-col items-start gap-1.5">
-              <span className="flex min-w-0 max-w-full items-center gap-1.5 text-sm" title={formatDateTime(issue.archivedAt)}>
-                {(() => {
-                  const archivedByAgent = (agents ?? []).find((candidate) => candidate.id === issue.archivedByAgentId);
-                  return archivedByAgent
-                    ? <AgentIcon icon={archivedByAgent.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                    : null;
-                })()}
-                <span className="min-w-0 truncate">
-                  Archived by {agentName(issue.archivedByAgentId)}
-                </span>
-                <span className="shrink-0 text-xs text-muted-foreground">· {timeAgo(issue.archivedAt)}</span>
-              </span>
-              <button
-                type="button"
-                className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground disabled:opacity-50"
-                onClick={() => unarchiveFromInbox.mutate()}
-                disabled={unarchiveFromInbox.isPending}
-              >
-                <ArchiveRestore className="h-3 w-3" />
-                {unarchiveFromInbox.isPending ? "Unarchiving…" : "Unarchive"}
-              </button>
-            </div>
-          </PropertyRow>
+          (() => {
+            const archivedByAgent = (agents ?? []).find((candidate) => candidate.id === issue.archivedByAgentId);
+            const archivedByName = agentName(issue.archivedByAgentId);
+            return (
+              <PropertyRow label="Archived">
+                <div className="flex min-w-0 max-w-full flex-col items-start gap-1">
+                  {/* The row label already reads "Archived", so the value shows just
+                      the attributing agent (icon + name) — this gives the name the
+                      full ~164px value column at the real 320px pane width, where an
+                      "Archived by …" prefix would clip even short names. The full
+                      phrasing + timestamp live in the tooltip so any residual
+                      truncation on genuinely long names is recoverable (PAP-14182). */}
+                  <span
+                    className="flex min-w-0 max-w-full items-center gap-1.5 text-sm"
+                    title={`Archived by ${archivedByName} · ${formatDateTime(issue.archivedAt)}`}
+                  >
+                    {archivedByAgent
+                      ? <AgentIcon icon={archivedByAgent.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                      : null}
+                    <span className="min-w-0 truncate">
+                      {archivedByName}
+                    </span>
+                  </span>
+                  <div className="flex min-w-0 max-w-full items-center gap-2">
+                    <span className="shrink-0 text-xs text-muted-foreground">{timeAgo(issue.archivedAt)}</span>
+                    <button
+                      type="button"
+                      className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground disabled:opacity-50"
+                      onClick={() => unarchiveFromInbox.mutate()}
+                      disabled={unarchiveFromInbox.isPending}
+                    >
+                      <ArchiveRestore className="h-3 w-3" />
+                      {unarchiveFromInbox.isPending ? "Unarchiving…" : "Unarchive"}
+                    </button>
+                  </div>
+                </div>
+              </PropertyRow>
+            );
+          })()
         ) : null}
         {issue.requestDepth > 0 && (
           <PropertyRow label="Depth">

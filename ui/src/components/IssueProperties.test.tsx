@@ -2412,11 +2412,20 @@ describe("IssueProperties", () => {
 
     await waitForAssertion(() => {
       expect(container.textContent).toContain("Archived");
-      expect(container.textContent).toContain("Archived by Gardener");
+      // The value shows just the agent name (the row label already says
+      // "Archived"), giving the name the full column width at 320px.
+      expect(container.textContent).toContain("Gardener");
       const unarchive = Array.from(container.querySelectorAll("button"))
         .find((button) => button.textContent?.includes("Unarchive"));
       expect(unarchive).toBeTruthy();
     });
+
+    // The tooltip must carry the full "Archived by <name> · <time>" phrasing so
+    // the attribution is recoverable if a long name truncates at the 320px pane
+    // width (PAP-14182 review fix).
+    const attribution = Array.from(container.querySelectorAll("span"))
+      .find((span) => span.getAttribute("title")?.startsWith("Archived by Gardener"));
+    expect(attribution).toBeTruthy();
 
     const unarchiveButton = Array.from(container.querySelectorAll("button"))
       .find((button) => button.textContent?.includes("Unarchive"))!;
