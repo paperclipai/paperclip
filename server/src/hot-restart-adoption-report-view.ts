@@ -10,7 +10,7 @@ const DEFAULT_MAX_REPORT_AGE_MS = 15 * 60 * 1000;
 
 /**
  * Read-only view over the completed hot-restart report written on boot by the
- * adoption pass (server/src/hot-restart-report.ts, produced by the P3 backend).
+ * startup adoption pass.
  * Kept decoupled from the writer so the operator UX degrades
  * gracefully to `null` when no report file exists yet — an ordinary boot, or a
  * build where the report backend has not landed.

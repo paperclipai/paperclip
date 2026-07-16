@@ -17105,6 +17105,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     prepareHotRestartShutdown,
     reconcileHotRestartAdoption,
+    adoptAwaitingRuns,
     reapOrphanedRuns,
     // Override-aware scheduling-suppression check (honors the worktree
     // run-execution experimental setting). Callers outside the service that
