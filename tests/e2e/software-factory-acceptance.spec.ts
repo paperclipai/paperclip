@@ -220,9 +220,9 @@ test.describe("software factory browser acceptance", () => {
       "agent creation response",
     );
     const agentId = String(agent.id);
-    expect(agent.adapterConfig.authToken).toBe("***REDACTED***");
-    expect(agent.adapterConfig.devicePrivateKeyPem).toBe("***REDACTED***");
-    expect(agent.runtimeConfig.sessionCookie).toBe("***REDACTED***");
+    expect(agent.adapterConfig).not.toHaveProperty("authToken");
+    expect(agent.adapterConfig).not.toHaveProperty("devicePrivateKeyPem");
+    expect(agent.runtimeConfig).not.toHaveProperty("sessionCookie");
     const pausedAgent = await expectOk(
       await board.patch(`/api/agents/${agentId}`, { data: { status: "paused" } }),
       "fixture agent pause",
@@ -293,14 +293,14 @@ test.describe("software factory browser acceptance", () => {
     );
     const listedAgent = list.find((candidate: { id: string }) => candidate.id === fixture.agentId);
     expect(listedAgent).toBeTruthy();
-    expect(listedAgent.adapterConfig.authToken).toBe("***REDACTED***");
+    expect(listedAgent.adapterConfig).not.toHaveProperty("authToken");
 
     const detail = await expectOk(
       await fixture.board.get(`/api/agents/${fixture.agentId}`),
       "agent detail projection",
     );
-    expect(detail.adapterConfig.devicePrivateKeyPem).toBe("***REDACTED***");
-    expect(detail.runtimeConfig.sessionCookie).toBe("***REDACTED***");
+    expect(detail.adapterConfig).not.toHaveProperty("devicePrivateKeyPem");
+    expect(detail.runtimeConfig).not.toHaveProperty("sessionCookie");
 
     await assertNoBrowserLeaks(page, monitor);
   });
@@ -369,7 +369,7 @@ test.describe("software factory browser acceptance", () => {
       "agent error transition",
     );
     expect(erroredAgent.status).toBe("error");
-    expect(erroredAgent.adapterConfig.authToken).toBe("***REDACTED***");
+    expect(erroredAgent.adapterConfig).not.toHaveProperty("authToken");
 
     await page.goto(`/${fixture.prefix}/agents/error`);
     await expect(page.getByText(WORKER_NAME).first()).toBeVisible();
