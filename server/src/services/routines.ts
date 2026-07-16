@@ -81,6 +81,8 @@ const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"];
 const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
 const MAX_CATCH_UP_RUNS = 25;
 const MAX_ROUTINE_REVISIONS = 100;
+const EXECUTION_ISSUE_TRANSIENT_FAILURE_CODE = "execution_issue_status";
+const EXECUTION_ISSUE_TRANSIENT_FAILURE_STATUSES = ["blocked", "cancelled"] as const;
 const ACTIVITY_GATE_IGNORED_ACTIONS = [
   "issue.read_marked",
   "issue.read_unmarked",
@@ -96,6 +98,29 @@ const WEEKDAY_INDEX: Record<string, number> = {
   Fri: 5,
   Sat: 6,
 };
+
+type ExecutionIssueTransientFailureStatus = (typeof EXECUTION_ISSUE_TRANSIENT_FAILURE_STATUSES)[number];
+
+function executionIssueTransientFailureReason(status: ExecutionIssueTransientFailureStatus) {
+  return `Execution issue moved to ${status}`;
+}
+
+function executionIssueTransientFailureStatusFromPayload(payload: unknown): ExecutionIssueTransientFailureStatus | null {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+  const transientFailure = (payload as Record<string, unknown>).transientFailure;
+  if (!transientFailure || typeof transientFailure !== "object" || Array.isArray(transientFailure)) return null;
+  const record = transientFailure as Record<string, unknown>;
+  if (record.code !== EXECUTION_ISSUE_TRANSIENT_FAILURE_CODE) return null;
+  return EXECUTION_ISSUE_TRANSIENT_FAILURE_STATUSES.find((status) => record.status === status) ?? null;
+}
+
+function legacyExecutionIssueTransientFailureStatus(
+  failureReason: string | null,
+): ExecutionIssueTransientFailureStatus | null {
+  return EXECUTION_ISSUE_TRANSIENT_FAILURE_STATUSES.find(
+    (status) => failureReason === executionIssueTransientFailureReason(status),
+  ) ?? null;
+}
 
 async function resolveCompanyDefaultResponsibleUserId(db: Db, companyId: string) {
   const company = await db
@@ -3055,17 +3080,20 @@ export function routineService(
         .then((rows) => rows[0] ?? null);
       if (!run) return null;
       if (issue.status === "done") {
-        const transientFailureReason = run.status === "failed" ? run.failureReason : null;
+        const transientFailureStatus = executionIssueTransientFailureStatusFromPayload(run.triggerPayload)
+          ?? legacyExecutionIssueTransientFailureStatus(run.failureReason);
         return finalizeRun(issue.originRunId, {
           status: "completed",
           failureReason: null,
           completedAt: new Date(),
-          ...(transientFailureReason
+          ...(transientFailureStatus
             ? {
               triggerPayload: {
                 ...(run.triggerPayload ?? {}),
                 transientFailure: {
-                  reason: transientFailureReason,
+                  code: EXECUTION_ISSUE_TRANSIENT_FAILURE_CODE,
+                  status: transientFailureStatus,
+                  reason: executionIssueTransientFailureReason(transientFailureStatus),
                   clearedAt: new Date().toISOString(),
                 },
               },
@@ -3074,17 +3102,38 @@ export function routineService(
         });
       }
       if (issue.status === "blocked" || issue.status === "cancelled") {
+        const failureReason = executionIssueTransientFailureReason(issue.status);
         return finalizeRun(issue.originRunId, {
           status: "failed",
-          failureReason: `Execution issue moved to ${issue.status}`,
+          failureReason,
           completedAt: new Date(),
+          triggerPayload: {
+            ...(run.triggerPayload ?? {}),
+            transientFailure: {
+              code: EXECUTION_ISSUE_TRANSIENT_FAILURE_CODE,
+              status: issue.status,
+              reason: failureReason,
+              recordedAt: new Date().toISOString(),
+            },
+          },
         });
       }
-      if (run.status === "failed" && run.failureReason?.startsWith("Execution issue moved to")) {
+      const transientFailureStatus = executionIssueTransientFailureStatusFromPayload(run.triggerPayload)
+        ?? legacyExecutionIssueTransientFailureStatus(run.failureReason);
+      if (run.status === "failed" && transientFailureStatus) {
         return finalizeRun(issue.originRunId, {
           status: "issue_created",
           failureReason: null,
           completedAt: null,
+          triggerPayload: {
+            ...(run.triggerPayload ?? {}),
+            transientFailure: {
+              code: EXECUTION_ISSUE_TRANSIENT_FAILURE_CODE,
+              status: transientFailureStatus,
+              reason: executionIssueTransientFailureReason(transientFailureStatus),
+              clearedAt: new Date().toISOString(),
+            },
+          },
         });
       }
       return null;
