@@ -1,5 +1,5 @@
 import { Buffer } from "node:buffer";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { and, asc, desc, eq, gt, gte, inArray, isNull, like, lt, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -6372,6 +6372,7 @@ export function issueService(db: Db, options: IssueServiceOptions = {}) {
         throw forbidden("Only a board user can weaken or remove the Linear completion evidence gate");
       }
 
+      let validatedLinearEvidenceIssueVersion: Date | null = null;
       if (issueData.status === "done" && existing.status !== "done") {
         // A caller cannot remove the gate and complete in the same mutation.
         // Board operators may deliberately remove it in a separate audited
@@ -6383,6 +6384,10 @@ export function issueService(db: Db, options: IssueServiceOptions = {}) {
             policy: linearEvidencePolicy,
             bridge: options.linearEvidenceBridge,
           });
+          // Bind the eventual Done write to the exact version validated above.
+          // A concurrent mutation that advances updatedAt must win without
+          // letting its newer version inherit evidence published for this one.
+          validatedLinearEvidenceIssueVersion = existing.updatedAt;
         }
       }
 
@@ -6519,12 +6524,35 @@ export function issueService(db: Db, options: IssueServiceOptions = {}) {
           projectGoalId: nextProjectGoalId,
           defaultGoalId: defaultCompanyGoal?.id ?? null,
         });
+        const updateCondition = validatedLinearEvidenceIssueVersion
+          ? and(
+              eq(issues.id, id),
+              // postgres-js materializes Date values at millisecond precision,
+              // while PostgreSQL may retain microseconds from defaultNow().
+              // Evidence versions are ISO strings from that materialized Date.
+              sql<boolean>`date_trunc('milliseconds', ${issues.updatedAt}) = ${validatedLinearEvidenceIssueVersion.toISOString()}::timestamptz`,
+            )
+          : eq(issues.id, id);
         const updated = await tx
           .update(issues)
           .set(patch)
-          .where(eq(issues.id, id))
+          .where(updateCondition)
           .returning()
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
+        if (!updated && validatedLinearEvidenceIssueVersion) {
+          const latest = await tx
+            .select({ updatedAt: issues.updatedAt })
+            .from(issues)
+            .where(eq(issues.id, id))
+            .then((rows: Array<{ updatedAt: Date }>) => rows[0] ?? null);
+          if (latest) {
+            throw conflict("Issue changed after Linear completion evidence validation", {
+              code: "linear_evidence_issue_version_changed",
+              expectedUpdatedAt: validatedLinearEvidenceIssueVersion.toISOString(),
+              actualUpdatedAt: latest.updatedAt.toISOString(),
+            });
+          }
+        }
         if (!updated) return null;
         if (nextLabelIds !== undefined) {
           await syncIssueLabels(updated.id, existing.companyId, nextLabelIds, tx);

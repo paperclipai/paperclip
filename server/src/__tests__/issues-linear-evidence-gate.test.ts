@@ -161,4 +161,43 @@ describeEmbeddedPostgres("issueService Linear completion evidence gate", () => {
       mappingKey: linearEvidenceMappingKey(companyId, issueId),
     });
   });
+
+  it("does not authorize a newer issue version with evidence validated for the prior version", async () => {
+    const { companyId, issueId } = await seedIssue();
+    const current = await db.select({ updatedAt: issues.updatedAt }).from(issues).where(eq(issues.id, issueId));
+    const versionOne = current[0]!.updatedAt;
+    const versionTwo = new Date(versionOne.getTime() + 1_000);
+    const bridge: LinearEvidenceBridgeReader = {
+      getCompletionSnapshot: vi.fn(async () => {
+        const snapshot = publishedSnapshot(companyId, issueId, versionOne.toISOString());
+        await db
+          .update(issues)
+          .set({ title: "Concurrent V2 mutation", updatedAt: versionTwo })
+          .where(eq(issues.id, issueId));
+        return snapshot;
+      }),
+    };
+
+    await expect(
+      issueService(db, { linearEvidenceBridge: bridge }).update(issueId, { status: "done" }),
+    ).rejects.toMatchObject({
+      status: 409,
+      details: {
+        code: "linear_evidence_issue_version_changed",
+        expectedUpdatedAt: versionOne.toISOString(),
+        actualUpdatedAt: versionTwo.toISOString(),
+      },
+    });
+
+    const persisted = await db
+      .select({ status: issues.status, title: issues.title, updatedAt: issues.updatedAt })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(persisted).toEqual({
+      status: "todo",
+      title: "Concurrent V2 mutation",
+      updatedAt: versionTwo,
+    });
+  });
 });

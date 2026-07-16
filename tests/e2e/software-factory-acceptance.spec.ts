@@ -59,6 +59,12 @@ function findCanary(value: string): string | null {
   return SECRET_CANARIES.find((canary) => value.includes(canary)) ?? null;
 }
 
+function isLoopbackBrowserUrl(value: string): boolean {
+  const url = new URL(value);
+  if (!["http:", "https:", "ws:", "wss:"].includes(url.protocol)) return true;
+  return url.hostname === "127.0.0.1";
+}
+
 function assertResponseSafe(label: string, value: unknown) {
   const serialized = JSON.stringify(value);
   const leaked = findCanary(serialized);
@@ -83,7 +89,7 @@ async function installBrowserLeakMonitor(page: Page): Promise<BrowserLeakMonitor
 
   await page.route("**/*", async (route) => {
     const url = new URL(route.request().url());
-    if ((url.protocol === "http:" || url.protocol === "https:") && url.hostname !== "127.0.0.1") {
+    if (!isLoopbackBrowserUrl(url.toString())) {
       monitor.externalRequests.push(url.toString());
       await route.abort("blockedbyclient");
       return;
@@ -115,6 +121,18 @@ async function installBrowserLeakMonitor(page: Page): Promise<BrowserLeakMonitor
     monitor.responseChecks.push(check);
   });
 
+  page.on("websocket", (webSocket) => {
+    if (!isLoopbackBrowserUrl(webSocket.url())) {
+      monitor.externalRequests.push(webSocket.url());
+    }
+    const inspectFrame = (direction: "sent" | "received", payload: string | Buffer) => {
+      const leaked = findCanary(payload.toString());
+      if (leaked) monitor.leakFindings.push(`websocket frame ${direction} ${webSocket.url()} leaked ${leaked}`);
+    };
+    webSocket.on("framesent", ({ payload }) => inspectFrame("sent", payload));
+    webSocket.on("framereceived", ({ payload }) => inspectFrame("received", payload));
+  });
+
   page.on("console", (message) => {
     const leaked = findCanary(message.text());
     if (leaked) monitor.leakFindings.push(`console ${message.type()} leaked ${leaked}`);
@@ -135,6 +153,27 @@ async function assertNoBrowserLeaks(page: Page, monitor: BrowserLeakMonitor) {
   expect(monitor.externalRequests, "browser attempted non-loopback network access").toEqual([]);
   expect(monitor.leakFindings, "secret canaries appeared in browser artifacts").toEqual([]);
 }
+
+test("loopback monitor classifies HTTP and WebSocket transports", () => {
+  expect(isLoopbackBrowserUrl("http://127.0.0.1:3199/api/health")).toBe(true);
+  expect(isLoopbackBrowserUrl("https://127.0.0.1:3199/api/health")).toBe(true);
+  expect(isLoopbackBrowserUrl("ws://127.0.0.1:3199/api/live")).toBe(true);
+  expect(isLoopbackBrowserUrl("wss://127.0.0.1:3199/api/live")).toBe(true);
+  expect(isLoopbackBrowserUrl("ws://example.com/socket")).toBe(false);
+  expect(isLoopbackBrowserUrl("wss://example.com/socket")).toBe(false);
+});
+
+test("loopback monitor records WebSocket attempts outside the dedicated host", async ({ page }) => {
+  const monitor = await installBrowserLeakMonitor(page);
+  const socketUrl = `ws://localhost:${PORT}/api/live`;
+
+  await page.goto("data:text/html,<title>websocket monitor probe</title>");
+  await page.evaluate((url) => {
+    new WebSocket(url);
+  }, socketUrl);
+
+  await expect.poll(() => monitor.externalRequests).toContain(socketUrl);
+});
 
 test.describe("software factory browser acceptance", () => {
   test.describe.configure({ mode: "serial" });
