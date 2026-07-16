@@ -1314,36 +1314,6 @@ function myLastTouchAtExpr(companyId: string, userId: string) {
   `;
 }
 
-function lastExternalCommentAtExpr(companyId: string, userId: string) {
-  return sql<Date | null>`
-    (
-      SELECT MAX(${issueComments.createdAt})
-      FROM ${issueComments}
-      WHERE ${issueComments.issueId} = ${issues.id}
-        AND ${issueComments.companyId} = ${companyId}
-        AND (
-          ${issueComments.authorUserId} IS NULL
-          OR ${issueComments.authorUserId} <> ${userId}
-        )
-    )
-  `;
-}
-
-function issueLastActivityAtExpr(companyId: string, userId: string) {
-  const lastExternalCommentAt = lastExternalCommentAtExpr(companyId, userId);
-  const myLastTouchAt = myLastTouchAtExpr(companyId, userId);
-  return sql<Date>`
-    GREATEST(
-      COALESCE(${lastExternalCommentAt}, to_timestamp(0)),
-      CASE
-        WHEN ${issues.updatedAt} > COALESCE(${myLastTouchAt}, to_timestamp(0))
-        THEN ${issues.updatedAt}
-        ELSE to_timestamp(0)
-      END
-    )
-  `;
-}
-
 const ISSUE_LOCAL_INBOX_ACTIVITY_ACTIONS = [
   "issue.read_marked",
   "issue.read_unmarked",
@@ -1412,7 +1382,6 @@ function unreadForUserCondition(companyId: string, userId: string) {
 }
 
 function inboxVisibleForUserCondition(companyId: string, userId: string) {
-  const issueLastActivityAt = issueLastActivityAtExpr(companyId, userId);
   return sql<boolean>`
     NOT EXISTS (
       SELECT 1
@@ -1420,7 +1389,49 @@ function inboxVisibleForUserCondition(companyId: string, userId: string) {
       WHERE ${issueInboxArchives.issueId} = ${issues.id}
         AND ${issueInboxArchives.companyId} = ${companyId}
         AND ${issueInboxArchives.userId} = ${userId}
-        AND ${issueInboxArchives.archivedAt} >= ${issueLastActivityAt}
+        AND NOT (
+          EXISTS (
+            SELECT 1
+            FROM ${issueThreadInteractions}
+            WHERE ${issueThreadInteractions.issueId} = ${issues.id}
+              AND ${issueThreadInteractions.companyId} = ${companyId}
+              AND ${issueThreadInteractions.kind} IN (
+                'suggest_tasks',
+                'ask_user_questions',
+                'request_confirmation'
+              )
+              AND ${issueThreadInteractions.createdAt} > ${issueInboxArchives.archivedAt}
+          )
+          OR EXISTS (
+            SELECT 1
+            FROM ${activityLog}
+            WHERE ${activityLog.companyId} = ${companyId}
+              AND ${activityLog.entityType} = 'issue'
+              AND ${activityLog.entityId} = ${issues.id}::text
+              AND ${activityLog.action} = 'issue.updated'
+              AND ${activityLog.createdAt} > ${issueInboxArchives.archivedAt}
+              AND ${activityLog.details}->>'status' IN ('in_review', 'blocked', 'done')
+              AND ${activityLog.details}->'_previous'->>'status'
+                IS DISTINCT FROM ${activityLog.details}->>'status'
+          )
+          OR EXISTS (
+            SELECT 1
+            FROM ${issueComments}
+            WHERE ${issueComments.issueId} = ${issues.id}
+              AND ${issueComments.companyId} = ${companyId}
+              AND ${issueComments.createdAt} > ${issueInboxArchives.archivedAt}
+              AND ${issueComments.deletedAt} IS NULL
+              AND (
+                (
+                  ${issueComments.authorUserId} IS NOT NULL
+                  AND ${issueComments.authorUserId} <> ${userId}
+                  AND ${issueComments.authorAgentId} IS NULL
+                  AND ${issueComments.derivedAuthorAgentId} IS NULL
+                )
+                OR POSITION(${`](user://${userId})`} IN ${issueComments.body}) > 0
+              )
+          )
+        )
     )
   `;
 }
