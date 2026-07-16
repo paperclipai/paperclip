@@ -6969,6 +6969,7 @@ export function issueRoutes(
       ...createBody,
       ...(taskBridgeOriginForActor(req) ?? {}),
       id: issueId,
+      originRunId: createBody.originRunId ?? actor.runId,
       executionPolicy,
       ...(sourceTrust ? { sourceTrust } : {}),
       createdByAgentId: actor.agentId,
@@ -6978,6 +6979,17 @@ export function issueRoutes(
       trustExplicitResponsibleUserId: actor.actorType === "user",
       watchdogActorRunId: actor.runId,
     });
+    if (issue.id !== issueId) {
+      const referenceSummary = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
+      res.status(200).json({
+        ...issue,
+        deduplicated: true,
+        deduplicationReason: createBody.idempotencyKey ? "idempotency_key" : "recent_open_title",
+        relatedWork: referenceSummary,
+        referencedIssueIdentifiers: referenceSummary.outbound.map((item) => item.issue.identifier ?? item.issue.id),
+      });
+      return;
+    }
     await issueReferencesSvc.syncIssue(issue.id);
     await externalObjectsSvc.syncIssueSafely(issue.id);
     const referenceSummary = await issueReferencesSvc.listIssueReferenceSummary(issue.id);

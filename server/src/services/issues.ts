@@ -19,6 +19,7 @@ import {
   executionWorkspaces,
   issueApprovals,
   issueAttachments,
+  issueCreateIdempotencyKeys,
   issueInboxArchives,
   issueLabels,
   issueWatchdogs,
@@ -575,6 +576,8 @@ type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
   actorRunId?: string | null;
   actorResponsibleUserId?: string | null;
   trustExplicitResponsibleUserId?: boolean;
+  idempotencyKey?: string | null;
+  allowDuplicate?: boolean;
 };
 type IssueChildCreateInput = IssueCreateInput & {
   acceptanceCriteria?: string[];
@@ -3636,6 +3639,10 @@ export function issueService(db: Db) {
   const instanceSettings = instanceSettingsService(db);
   const treeControlSvc = issueTreeControlService(db);
 
+  function normalizeCreateIssueTitle(title: string) {
+    return title.trim().replace(/\s+/g, " ").toLocaleLowerCase();
+  }
+
   async function getIssueByUuid(id: string) {
     const row = await db
       .select()
@@ -5987,6 +5994,8 @@ export function issueService(db: Db) {
         actorRunId,
         actorResponsibleUserId,
         trustExplicitResponsibleUserId,
+        idempotencyKey: rawIdempotencyKey,
+        allowDuplicate,
         ...issueData
       } = data;
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
@@ -6008,6 +6017,46 @@ export function issueService(db: Db) {
         throw unprocessable("in_progress issues require an assignee");
       }
       return db.transaction(async (tx) => {
+        const idempotencyKey = rawIdempotencyKey?.trim() || null;
+        const normalizedTitle = normalizeCreateIssueTitle(issueData.title);
+        const duplicateGuardKey = idempotencyKey
+          ? `issue-create:idempotency:${companyId}:${idempotencyKey}`
+          : `issue-create:title:${companyId}:${issueData.parentId ?? "root"}:${normalizedTitle}`;
+        await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${duplicateGuardKey}, 0))`);
+
+        let existingIssue: typeof issues.$inferSelect | undefined;
+        if (idempotencyKey) {
+          [existingIssue] = await tx
+            .select()
+            .from(issueCreateIdempotencyKeys)
+            .innerJoin(issues, eq(issueCreateIdempotencyKeys.issueId, issues.id))
+            .where(and(
+              eq(issueCreateIdempotencyKeys.companyId, companyId),
+              eq(issueCreateIdempotencyKeys.idempotencyKey, idempotencyKey),
+            ))
+            .limit(1)
+            .then((rows) => rows.map((row) => row.issues));
+        } else if (!allowDuplicate) {
+          [existingIssue] = await tx
+            .select()
+            .from(issues)
+            .where(and(
+              eq(issues.companyId, companyId),
+              issueData.parentId ? eq(issues.parentId, issueData.parentId) : isNull(issues.parentId),
+              isNull(issues.hiddenAt),
+              notInArray(issues.status, ["done", "cancelled"]),
+              gte(issues.createdAt, new Date(Date.now() - 48 * 60 * 60 * 1000)),
+              sql`lower(regexp_replace(btrim(${issues.title}), '\\s+', ' ', 'g')) = ${normalizedTitle}`,
+            ))
+            .orderBy(asc(issues.createdAt), asc(issues.id))
+            .limit(1);
+        }
+        if (existingIssue) {
+          const [enriched] = await withIssueLabels(tx, [existingIssue]);
+          const [withRelations] = await withIssueRelationSummaries(companyId, [enriched], tx);
+          return withRelations;
+        }
+
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
         let projectWorkspaceId = issueData.projectWorkspaceId ?? null;
         let executionWorkspaceId = issueData.executionWorkspaceId ?? null;
@@ -6193,6 +6242,13 @@ export function issueService(db: Db) {
         );
 
         const [issue] = await tx.insert(issues).values(values).returning();
+        if (idempotencyKey) {
+          await tx.insert(issueCreateIdempotencyKeys).values({
+            companyId,
+            idempotencyKey,
+            issueId: issue.id,
+          });
+        }
         if (watchdog) {
           await upsertIssueWatchdogForIssue(tx, companyId, issue.id, {
             agentId: watchdog.agentId,
