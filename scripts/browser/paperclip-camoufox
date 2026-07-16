@@ -3,6 +3,7 @@ import argparse
 import json
 import os
 import re
+import sys
 import urllib.request
 from pathlib import Path
 
@@ -18,20 +19,41 @@ parser.add_argument("url")
 parser.add_argument("--screenshot")
 args = parser.parse_args()
 
-api_url = os.environ.get("PAPERCLIP_API_URL", "").rstrip("/")
-api_key = os.environ.get("PAPERCLIP_API_KEY", "")
-run_id = os.environ.get("PAPERCLIP_RUN_ID", "")
-if api_url and api_key and run_id:
+def mark_browser_activity() -> bool:
+    """Tell Paperclip to expose this run in the live browser UI.
+
+    The public Paperclip endpoint can sit behind Cloudflare. Its default rule
+    rejects urllib's ``Python-urllib/...`` user agent, which previously made a
+    successful Camoufox navigation invisible in both the issue and Browsers
+    page because the exception was swallowed here.
+    """
+    api_url = os.environ.get("PAPERCLIP_API_URL", "").rstrip("/")
+    api_key = os.environ.get("PAPERCLIP_API_KEY", "")
+    run_id = os.environ.get("PAPERCLIP_RUN_ID", "")
+    if not (api_url and api_key and run_id):
+        return False
     try:
         request = urllib.request.Request(
             f"{api_url}/api/heartbeat-runs/{run_id}/browser-activity",
             data=b"",
             method="POST",
-            headers={"Authorization": f"Bearer {api_key}", "X-Paperclip-Run-Id": run_id},
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "X-Paperclip-Run-Id": run_id,
+                "User-Agent": "Paperclip-Camoufox/1.0",
+            },
         )
-        urllib.request.urlopen(request, timeout=3).close()
-    except Exception:
-        pass
+        with urllib.request.urlopen(request, timeout=3):
+            return True
+    except Exception as error:
+        print(
+            f"[paperclip-browser] failed to publish live browser activity: {type(error).__name__}: {error}",
+            file=sys.stderr,
+        )
+        return False
+
+
+activity_marked = mark_browser_activity()
 
 profile = safe(os.environ.get("AGENT_BROWSER_SESSION_NAME", "paperclip-default"))
 scope = safe(os.environ.get("PAPERCLIP_BROWSER_SCOPE_ID", os.environ.get("PAPERCLIP_RUN_ID", "manual")))
@@ -54,6 +76,10 @@ with Camoufox(headless="virtual", humanize=True, persistent_context=False) as br
     page.screenshot(path=str(temporary_screenshot), type="jpeg", quality=78, full_page=False)
     temporary_screenshot.replace(screenshot_path)
     screenshot_path.chmod(0o600)
+    # A transient proxy/startup failure must not leave a usable frame hidden
+    # from the issue UI. Retry once after the first observable frame exists.
+    if not activity_marked:
+        mark_browser_activity()
     temporary_state = state_path.with_suffix(".tmp")
     context.storage_state(path=str(temporary_state))
     temporary_state.replace(state_path)

@@ -25,6 +25,7 @@ _MARKED = False
 _MARK_LOCK = threading.Lock()
 _LATEST_PAGE: Any = None
 _LATEST_PAGE_LOCK = threading.Lock()
+_ACTIVITY_FAILURE_REPORTED = False
 
 
 def _safe(value: str) -> str:
@@ -47,7 +48,7 @@ def _atomic_text(path: Path, value: str) -> None:
 
 
 def _mark_activity() -> None:
-    global _MARKED
+    global _MARKED, _ACTIVITY_FAILURE_REPORTED
     if _MARKED:
         return
     with _MARK_LOCK:
@@ -69,11 +70,25 @@ def _mark_activity() -> None:
                     f"{api_url}/api/heartbeat-runs/{run_id}/browser-activity",
                     data=b"",
                     method="POST",
-                    headers={"Authorization": f"Bearer {api_key}", "X-Paperclip-Run-Id": run_id},
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "X-Paperclip-Run-Id": run_id,
+                        # Cloudflare rejects urllib's default Python user
+                        # agent, which otherwise makes successful browser
+                        # actions invisible in Paperclip's live UI.
+                        "User-Agent": "Paperclip-Camoufox/1.0",
+                    },
                 )
                 urllib.request.urlopen(request, timeout=3).close()
-            except Exception:
-                pass
+            except Exception as error:
+                if not _ACTIVITY_FAILURE_REPORTED:
+                    _ACTIVITY_FAILURE_REPORTED = True
+                    print(
+                        f"[paperclip-browser] failed to publish live browser activity: "
+                        f"{type(error).__name__}: {error}",
+                        file=sys.stderr,
+                    )
+                return
         _MARKED = True
 
 

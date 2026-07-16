@@ -52,7 +52,13 @@ describe("managed browser provider routing", () => {
   it("starts every managed URL in Camoufox", async () => {
     const bin = await fakeBrowserPath();
     const result = await execFileAsync("/bin/sh", [launcher, "https://example.com"], {
-      env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}` },
+      env: {
+        ...process.env,
+        PATH: `${bin}:${process.env.PATH ?? ""}`,
+        PAPERCLIP_API_URL: "",
+        PAPERCLIP_API_KEY: "",
+        PAPERCLIP_RUN_ID: "",
+      },
     });
     expect(result.stdout).toContain("camoufox:https://example.com");
     expect(result.stderr).toContain("provider=camoufox (agent-browser disabled)");
@@ -65,6 +71,9 @@ describe("managed browser provider routing", () => {
         ...process.env,
         PATH: `${bin}:${process.env.PATH ?? ""}`,
         PAPERCLIP_BROWSER_PROVIDER: "agent-browser",
+        PAPERCLIP_API_URL: "",
+        PAPERCLIP_API_KEY: "",
+        PAPERCLIP_RUN_ID: "",
       },
     });
     expect(result.stdout).toContain("camoufox:https://example.com");
