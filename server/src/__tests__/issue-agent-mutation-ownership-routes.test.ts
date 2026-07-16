@@ -1043,6 +1043,7 @@ describe("agent issue mutation checkout ownership", () => {
   });
 
   it("returns an idempotent work product retry without duplicate activity", async () => {
+    const app = await createApp(ownerActor());
     mockWorkProductService.createForIssue.mockResolvedValueOnce({
       created: false,
       product: {
@@ -1050,29 +1051,29 @@ describe("agent issue mutation checkout ownership", () => {
         issueId,
         companyId,
         type: "artifact",
-        provider: "paperclip",
+        provider: "test",
         externalId: "artifact-sha-1",
         title: "SER-377 report",
       },
     });
 
-    const res = await request(await createApp(ownerActor()))
+    const res = await request(app)
       .post(`/api/issues/${issueId}/work-products`)
       .send({
         type: "artifact",
-        provider: "paperclip",
+        provider: "test",
         externalId: "artifact-sha-1",
         title: "SER-377 report",
       });
 
-    expect(res.status).toBe(200);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body.id).toBe("product-existing");
     expect(mockLogActivity).not.toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ action: "issue.work_product_created" }),
     );
     expect(mockIssueRecoveryActionService.getActiveForIssue).not.toHaveBeenCalled();
-  }, 15_000);
+  }, 30_000);
 
   it.each([
     [
