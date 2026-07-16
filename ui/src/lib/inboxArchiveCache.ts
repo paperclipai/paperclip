@@ -18,6 +18,18 @@ type InboxArchiveGuardState = {
 
 const inboxArchiveGuards = new Map<string, InboxArchiveGuardState>();
 
+function pruneInboxArchiveGuard(companyId: string, state: InboxArchiveGuardState) {
+  if (
+    state.issueIds.size === 0
+    && state.listeners.size === 0
+    && state.confirmationTimers.size === 0
+    && state.maximumTimers.size === 0
+    && inboxArchiveGuards.get(companyId) === state
+  ) {
+    inboxArchiveGuards.delete(companyId);
+  }
+}
+
 function getInboxArchiveGuard(companyId: string): InboxArchiveGuardState {
   const existing = inboxArchiveGuards.get(companyId);
   if (existing) return existing;
@@ -57,8 +69,8 @@ export function beginLocalInboxArchive(companyId: string, issueId: string) {
 }
 
 export function boundLocalInboxArchive(companyId: string, issueId: string) {
-  const state = getInboxArchiveGuard(companyId);
-  if (!state.issueIds.has(issueId)) return;
+  const state = inboxArchiveGuards.get(companyId);
+  if (!state?.issueIds.has(issueId)) return;
 
   clearArchiveGuardTimer(state.maximumTimers, issueId);
   state.maximumTimers.set(issueId, setTimeout(() => {
@@ -67,8 +79,8 @@ export function boundLocalInboxArchive(companyId: string, issueId: string) {
 }
 
 export function confirmLocalInboxArchive(companyId: string, issueId: string) {
-  const state = getInboxArchiveGuard(companyId);
-  if (!state.issueIds.has(issueId)) return;
+  const state = inboxArchiveGuards.get(companyId);
+  if (!state?.issueIds.has(issueId)) return;
 
   clearArchiveGuardTimer(state.confirmationTimers, issueId);
   state.confirmationTimers.set(issueId, setTimeout(() => {
@@ -77,14 +89,19 @@ export function confirmLocalInboxArchive(companyId: string, issueId: string) {
 }
 
 export function clearLocalInboxArchive(companyId: string, issueId: string) {
-  const state = getInboxArchiveGuard(companyId);
+  const state = inboxArchiveGuards.get(companyId);
+  if (!state) return;
   clearArchiveGuardTimer(state.confirmationTimers, issueId);
   clearArchiveGuardTimer(state.maximumTimers, issueId);
-  if (!state.issueIds.has(issueId)) return;
+  if (!state.issueIds.has(issueId)) {
+    pruneInboxArchiveGuard(companyId, state);
+    return;
+  }
 
   const issueIds = new Set(state.issueIds);
   issueIds.delete(issueId);
   publishInboxArchiveGuard(state, issueIds);
+  pruneInboxArchiveGuard(companyId, state);
 }
 
 export function getLocalInboxArchiveIssueIds(companyId: string | null | undefined): ReadonlySet<string> {
@@ -98,7 +115,10 @@ export function useLocalInboxArchiveIssueIds(companyId: string | null | undefine
       if (!companyId) return () => undefined;
       const state = getInboxArchiveGuard(companyId);
       state.listeners.add(listener);
-      return () => state.listeners.delete(listener);
+      return () => {
+        state.listeners.delete(listener);
+        pruneInboxArchiveGuard(companyId, state);
+      };
     },
     () => getLocalInboxArchiveIssueIds(companyId),
     () => EMPTY_ARCHIVED_ISSUE_IDS,
@@ -214,17 +234,20 @@ export function invalidateInboxIssueQueries(queryClient: QueryClient, companyId:
   ]);
 }
 
-export function isIssueAbsentFromActiveInboxCaches(
+export function getIssuePresenceInActiveInboxCaches(
   queryClient: QueryClient,
   companyId: string,
   issueId: string,
-) {
+): "absent" | "present" | "unknown" {
   const activeQueries = inboxIssueQueryPrefixes(companyId).flatMap((queryKey) =>
     queryClient.getQueryCache().findAll({ queryKey })
       .filter((query) => query.getObserversCount() > 0),
   );
-  return activeQueries.length > 0 && activeQueries.every((query) => {
+  if (activeQueries.length === 0) return "unknown";
+
+  const isPresent = activeQueries.some((query) => {
     const data = query.state.data;
-    return !Array.isArray(data) || !data.some((issue) => (issue as Issue).id === issueId);
+    return Array.isArray(data) && data.some((issue) => (issue as Issue).id === issueId);
   });
+  return isPresent ? "present" : "absent";
 }

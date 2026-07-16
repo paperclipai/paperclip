@@ -1,5 +1,5 @@
 import { QueryClient } from "@tanstack/react-query";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   beginLocalInboxArchive,
   clearLocalInboxArchive,
@@ -7,6 +7,10 @@ import {
 import { applySharedPollingResult } from "./useSharedPolling";
 
 describe("applySharedPollingResult", () => {
+  afterEach(() => {
+    clearLocalInboxArchive("company-1", "issue-archived");
+  });
+
   it("drops result messages that are older than local query state", () => {
     const queryClient = new QueryClient();
     const queryKey = ["live-runs", "company-1"];
@@ -61,6 +65,5 @@ describe("applySharedPollingResult", () => {
 
     expect(applied).toBe(true);
     expect(queryClient.getQueryData(queryKey)).toEqual([{ id: "issue-visible" }]);
-    clearLocalInboxArchive("company-1", "issue-archived");
   });
 });
