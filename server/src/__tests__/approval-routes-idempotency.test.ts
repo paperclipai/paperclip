@@ -288,6 +288,29 @@ describe("approval routes idempotent retries", () => {
     expect(mockLogActivity).not.toHaveBeenCalled();
   });
 
+  it("fails closed for local implicit board self-approval", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-local-self",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "pending",
+      payload: {},
+      requestedByUserId: "board",
+      requestedByAgentId: null,
+    });
+
+    const res = await request(
+      await createApp({ userId: undefined, source: "local_implicit", companyIds: undefined }),
+    )
+      .post("/api/approvals/approval-local-self/approve")
+      .send({ decisionNote: "implicit self approval" });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Approval requester cannot approve their own request");
+    expect(mockApprovalService.approve).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
   it("derives approval attribution from the authenticated actor on reject", async () => {
     mockApprovalService.getById.mockResolvedValue({
       id: "approval-5",
