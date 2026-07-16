@@ -4179,6 +4179,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const result = await heartbeat.reconcileStrandedAssignedIssues();
 
     expect(result.continuationRequeued).toBe(0);
+    expect(result.waitingOnReviewResolved).toBe(0);
     expect(result.escalated).toBe(1);
     expect(result.issueIds).toContain(issueId);
 
