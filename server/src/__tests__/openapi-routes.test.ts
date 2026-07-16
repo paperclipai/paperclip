@@ -155,6 +155,14 @@ describe("openapi routes", () => {
       AgentBearerAuth: { type: "http", scheme: "bearer" },
     });
     expect(res.body.paths["/api/health"].get.security).toEqual([]);
+    expect(res.body.paths["/api/health/dev-database-source"].get).toMatchObject({
+      summary: "Get the source database URL for a local shadow server",
+      security: [],
+      responses: {
+        200: expect.any(Object),
+        404: expect.any(Object),
+      },
+    });
     expect(res.body.paths["/mcp/gateways/{gatewayPublicId}"].post.security).toEqual([]);
     expect(res.body.paths["/api/mcp/gateways/{gatewayPublicId}"]).toBeUndefined();
     expect(res.body.paths["/api/companies"].post.responses["201"]).toBeDefined();

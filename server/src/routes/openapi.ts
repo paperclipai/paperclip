@@ -663,6 +663,7 @@ const AUTHENTICATED_SECURITY: Array<Record<string, string[]>> = [
 
 const PUBLIC_OPERATIONS = new Set([
   "GET /api/health",
+  "GET /api/health/dev-database-source",
   "GET /api/openapi.json",
   "GET /api/board-claim/{token}",
   "POST /api/cli-auth/challenges",
@@ -1080,6 +1081,19 @@ registry.registerPath({
       }).strict().optional(),
     })),
     503: { description: "Service unavailable", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/health/dev-database-source",
+  tags: ["health"],
+  summary: "Get the source database URL for a local shadow server",
+  responses: {
+    200: r.ok(z.object({
+      databaseUrl: z.string().url(),
+    })),
+    404: r.notFound,
   },
 });
 
