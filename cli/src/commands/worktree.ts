@@ -16,6 +16,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { createServer } from "node:net";
+import { randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
 import * as p from "@clack/prompts";
 import pc from "picocolors";
@@ -1354,6 +1355,7 @@ export async function resetSeededWorktreeRunExecutionActivation(connectionString
         ...experimental,
         enableWorktreeRunExecution: false,
         worktreeRunExecutionInstanceNonce: null,
+        worktreeRunExecutionSeedEpoch: randomUUID(),
         worktreeRunExecutionActivatedAt: null,
         worktreeRunExecutionActivationInstanceId: null,
       };
