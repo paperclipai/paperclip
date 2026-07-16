@@ -1,6 +1,6 @@
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { issueRecoveryActions } from "@paperclipai/db";
+import { issueRecoveryActions, issues } from "@paperclipai/db";
 import type {
   IssueRecoveryAction,
   IssueRecoveryActionKind,
@@ -97,34 +97,12 @@ function isUniqueRecoveryActionConflict(error: unknown) {
 }
 
 export function issueRecoveryActionService(db: Db) {
-  const upsertQueues = new Map<string, Promise<void>>();
-
-  async function runExclusiveUpsert<T>(
-    input: UpsertIssueRecoveryActionInput,
-    task: () => Promise<T>,
-  ): Promise<T> {
-    const key = `${input.companyId}:${input.sourceIssueId}`;
-    const previous = upsertQueues.get(key) ?? Promise.resolve();
-    let release: () => void = () => {};
-    const current = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const next = previous.catch(() => undefined).then(() => current);
-    upsertQueues.set(key, next);
-
-    await previous.catch(() => undefined);
-    try {
-      return await task();
-    } finally {
-      release();
-      if (upsertQueues.get(key) === next) {
-        upsertQueues.delete(key);
-      }
-    }
-  }
-
-  async function getActiveForIssue(companyId: string, sourceIssueId: string): Promise<IssueRecoveryAction | null> {
-    const row = await db
+  async function getActiveForIssue(
+    companyId: string,
+    sourceIssueId: string,
+    dbOrTx: DbOrTransaction = db,
+  ): Promise<IssueRecoveryAction | null> {
+    const row = await dbOrTx
       .select()
       .from(issueRecoveryActions)
       .where(
@@ -137,6 +115,27 @@ export function issueRecoveryActionService(db: Db) {
       .orderBy(desc(issueRecoveryActions.updatedAt))
       .limit(1)
       .then((rows) => rows[0] ?? null);
+    return row ? toReadModel(row) : null;
+  }
+
+  async function lockActiveForIssue(
+    companyId: string,
+    sourceIssueId: string,
+    tx: DbTransaction,
+  ): Promise<IssueRecoveryAction | null> {
+    const [row] = await tx
+      .select()
+      .from(issueRecoveryActions)
+      .where(
+        and(
+          eq(issueRecoveryActions.companyId, companyId),
+          eq(issueRecoveryActions.sourceIssueId, sourceIssueId),
+          inArray(issueRecoveryActions.status, [...ACTIVE_RECOVERY_ACTION_STATUSES]),
+        ),
+      )
+      .orderBy(desc(issueRecoveryActions.updatedAt), desc(issueRecoveryActions.createdAt))
+      .limit(1)
+      .for("update");
     return row ? toReadModel(row) : null;
   }
 
@@ -164,6 +163,7 @@ export function issueRecoveryActionService(db: Db) {
     input: UpsertIssueRecoveryActionInput,
     retryCount: number,
     error?: unknown,
+    dbOrTx: DbOrTransaction = db,
   ): Promise<IssueRecoveryAction> {
     if (retryCount >= MAX_UPSERT_RETRIES) {
       if (error) throw error;
@@ -171,18 +171,29 @@ export function issueRecoveryActionService(db: Db) {
         `Failed to upsert active recovery action for issue ${input.sourceIssueId} after ${MAX_UPSERT_RETRIES} retries`,
       );
     }
-    return upsertSourceScopedUnlocked(input, retryCount + 1);
+    return upsertSourceScopedUnlocked(input, retryCount + 1, dbOrTx);
   }
 
   async function upsertSourceScopedUnlocked(
     input: UpsertIssueRecoveryActionInput,
     retryCount = 0,
+    dbOrTx: DbOrTransaction = db,
   ): Promise<IssueRecoveryAction> {
-    const existing = await getActiveForIssue(input.companyId, input.sourceIssueId);
+    const existing = await getActiveForIssue(input.companyId, input.sourceIssueId, dbOrTx);
     const now = new Date();
     const ownerType = input.ownerType ?? (input.ownerAgentId ? "agent" : "board");
     if (existing) {
-      const [updated] = await db
+      // A failed terminal workspace finalization is the authoritative fail-closed
+      // state for the issue. Ordinary recovery producers must not erase it while
+      // racing the finalize projection. A later successful finalize resolves the
+      // terminal action explicitly before another producer can replace it.
+      if (
+        existing.cause === "workspace_finalize_failed" &&
+        input.cause !== "workspace_finalize_failed"
+      ) {
+        return existing;
+      }
+      const [updated] = await dbOrTx
         .update(issueRecoveryActions)
         .set({
           recoveryIssueId: input.recoveryIssueId ?? null,
@@ -216,13 +227,13 @@ export function issueRecoveryActionService(db: Db) {
         )
         .returning();
       if (!updated) {
-        return retryUpsertSourceScoped(input, retryCount);
+        return retryUpsertSourceScoped(input, retryCount, undefined, dbOrTx);
       }
       return toReadModel(updated!);
     }
 
     try {
-      const [created] = await db
+      const [created] = await dbOrTx
         .insert(issueRecoveryActions)
         .values({
           companyId: input.companyId,
@@ -250,56 +261,91 @@ export function issueRecoveryActionService(db: Db) {
       return toReadModel(created!);
     } catch (error) {
       if (!isUniqueRecoveryActionConflict(error)) throw error;
-      return retryUpsertSourceScoped(input, retryCount, error);
+      return retryUpsertSourceScoped(input, retryCount, error, dbOrTx);
     }
   }
 
   async function upsertSourceScoped(
     input: UpsertIssueRecoveryActionInput,
+    dbOrTx: DbOrTransaction = db,
   ): Promise<IssueRecoveryAction> {
-    return runExclusiveUpsert(input, () => upsertSourceScopedUnlocked(input));
+    const upsertWithSourceLock = async (tx: DbTransaction) => {
+      await tx.execute(sql`
+        select ${issues.id}
+        from ${issues}
+        where ${issues.companyId} = ${input.companyId}
+          and ${issues.id} = ${input.sourceIssueId}
+        for update
+      `);
+      return upsertSourceScopedUnlocked(input, 0, tx);
+    };
+
+    // One database lock order covers process-local and cross-process callers:
+    // source issue first, recovery row second. A transaction-bound terminal
+    // promotion may already own this lock; reacquiring it in the same transaction
+    // is safe and avoids mixing a JavaScript queue with PostgreSQL row locks.
+    if (dbOrTx !== db) {
+      return upsertWithSourceLock(dbOrTx as DbTransaction);
+    }
+    return db.transaction(upsertWithSourceLock);
   }
 
   async function resolveActiveForIssue(
     input: ResolveIssueRecoveryActionInput,
     dbOrTx: DbOrTransaction = db,
   ): Promise<IssueRecoveryAction | null> {
-    const now = new Date();
-    const predicates = [
-      eq(issueRecoveryActions.companyId, input.companyId),
-      eq(issueRecoveryActions.sourceIssueId, input.sourceIssueId),
-      inArray(issueRecoveryActions.status, [...ACTIVE_RECOVERY_ACTION_STATUSES]),
-    ];
-    if (input.actionId) {
-      predicates.push(eq(issueRecoveryActions.id, input.actionId));
-    }
-    if (input.kind) {
-      predicates.push(eq(issueRecoveryActions.kind, input.kind));
-    }
-    if (input.cause) {
-      predicates.push(eq(issueRecoveryActions.cause, input.cause));
-    }
-    if (input.fingerprint) {
-      predicates.push(eq(issueRecoveryActions.fingerprint, input.fingerprint));
-    }
+    const resolveWithSourceLock = async (tx: DbTransaction) => {
+      await tx.execute(sql`
+        select ${issues.id}
+        from ${issues}
+        where ${issues.companyId} = ${input.companyId}
+          and ${issues.id} = ${input.sourceIssueId}
+        for update
+      `);
 
-    const [updated] = await dbOrTx
-      .update(issueRecoveryActions)
-      .set({
-        status: input.status,
-        outcome: input.outcome,
-        resolutionNote: input.resolutionNote ?? null,
-        resolvedAt: now,
-        updatedAt: now,
-      })
-      .where(and(...predicates))
-      .returning();
+      const now = new Date();
+      const predicates = [
+        eq(issueRecoveryActions.companyId, input.companyId),
+        eq(issueRecoveryActions.sourceIssueId, input.sourceIssueId),
+        inArray(issueRecoveryActions.status, [...ACTIVE_RECOVERY_ACTION_STATUSES]),
+      ];
+      if (input.actionId) {
+        predicates.push(eq(issueRecoveryActions.id, input.actionId));
+      }
+      if (input.kind) {
+        predicates.push(eq(issueRecoveryActions.kind, input.kind));
+      }
+      if (input.cause) {
+        predicates.push(eq(issueRecoveryActions.cause, input.cause));
+      }
+      if (input.fingerprint) {
+        predicates.push(eq(issueRecoveryActions.fingerprint, input.fingerprint));
+      }
 
-    return updated ? toReadModel(updated) : null;
+      const [updated] = await tx
+        .update(issueRecoveryActions)
+        .set({
+          status: input.status,
+          outcome: input.outcome,
+          resolutionNote: input.resolutionNote ?? null,
+          resolvedAt: now,
+          updatedAt: now,
+        })
+        .where(and(...predicates))
+        .returning();
+
+      return updated ? toReadModel(updated) : null;
+    };
+
+    if (dbOrTx !== db) {
+      return resolveWithSourceLock(dbOrTx as DbTransaction);
+    }
+    return db.transaction(resolveWithSourceLock);
   }
 
   return {
     getActiveForIssue,
+    lockActiveForIssue,
     listActiveForIssues,
     resolveActiveForIssue,
     upsertSourceScoped,

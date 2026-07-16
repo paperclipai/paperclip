@@ -12965,6 +12965,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           "local agent jwt secret missing or invalid; running without injected PAPERCLIP_API_KEY",
         );
       }
+      // Persist the terminal-finalize intent before adapter execution. If the
+      // process dies after the agent marks the issue done but before finalization
+      // can complete, this durable row remains as stale `running` evidence for
+      // bounded startup/periodic reconciliation.
+      const terminalFinalizeOperation = await workspaceOperationRecorder.beginOperation({
+        phase: "workspace_finalize",
+        terminalBarrier: Boolean(issueRef),
+        cwd: executionWorkspace.cwd,
+        metadata: {
+          adapterType: agent.adapterType,
+          executionTargetKind: executionTarget?.kind ?? "local",
+          terminalBarrier: true,
+        },
+      });
       let adapterFinalizeOutcome: "succeeded" | "failed" | null = null;
       const inspectFinalizeWorkspaceBranch = async () => {
         const workspaceRecord = persistedExecutionWorkspace?.id
@@ -13044,9 +13058,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                   initial: initialManagedGitWorktreeBranch,
                   reason: repairErr instanceof Error ? repairErr.message : String(repairErr),
                 };
-                await workspaceOperationRecorder.recordOperation({
-                  phase: "workspace_finalize",
-                  cwd: executionWorkspace.cwd,
+                await terminalFinalizeOperation.finish({
+                  status: "failed",
+                  stderr: `Managed git worktree branch check failed: ${repairErr instanceof Error ? repairErr.message : String(repairErr)}\n`,
                   metadata: {
                     adapterType: agent.adapterType,
                     executionTargetKind: executionTarget?.kind ?? "local",
@@ -13057,10 +13071,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                       ? { workspaceValidation: workspaceValidationFailure.resultJson.workspaceValidation ?? workspaceValidationFailure.resultJson }
                       : {}),
                   },
-                  run: async () => ({
-                    status: "failed",
-                    stderr: `Managed git worktree branch check failed: ${repairErr instanceof Error ? repairErr.message : String(repairErr)}\n`,
-                  }),
                 });
                 adapterFinalizeOutcome = "failed";
                 throw repairErr;
@@ -13091,9 +13101,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 executionWorkspaceId: branchInspection.workspaceRecord.id,
                 inspection: managedGitWorktreeBranch,
               });
-              await workspaceOperationRecorder.recordOperation({
-                phase: "workspace_finalize",
-                cwd: executionWorkspace.cwd,
+              await terminalFinalizeOperation.finish({
+                status: "failed",
+                stderr: `Managed git worktree branch check failed: ${inspection.reason ?? "unknown branch mismatch"}\n`,
                 metadata: {
                   adapterType: agent.adapterType,
                   executionTargetKind: executionTarget?.kind ?? "local",
@@ -13101,10 +13111,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                   managedGitWorktreeBranch: finalizeBranchMetadata,
                   ...(finalizeBranchRepairMetadata ? { managedGitWorktreeBranchRepair: finalizeBranchRepairMetadata } : {}),
                 },
-                run: async () => ({
-                  status: "failed",
-                  stderr: `Managed git worktree branch check failed: ${inspection.reason ?? "unknown branch mismatch"}\n`,
-                }),
               });
               adapterFinalizeOutcome = "failed";
               throw new WorkspaceValidationFailure(
@@ -13125,9 +13131,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             }
           }
         }
-        await workspaceOperationRecorder.recordOperation({
-          phase: "workspace_finalize",
-          cwd: executionWorkspace.cwd,
+        await terminalFinalizeOperation.finish({
+          status,
           metadata: {
             adapterType: agent.adapterType,
             executionTargetKind: executionTarget?.kind ?? "local",
@@ -13135,7 +13140,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             ...(finalizeBranchMetadata ? { managedGitWorktreeBranch: finalizeBranchMetadata } : {}),
             ...(finalizeBranchRepairMetadata ? { managedGitWorktreeBranchRepair: finalizeBranchRepairMetadata } : {}),
           },
-          run: async () => ({ status }),
         });
         // Only mark the outcome after the row landed, so a transient write
         // failure on the succeeded path can still be recovered by recording
@@ -13955,6 +13959,45 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       ? await resolveSessionBeforeForWakeup(recoveryAgent, taskKey)
       : null;
     const recoveryAgentNameKey = normalizeAgentNameKey(recoveryAgent?.name);
+    // Owner selection touches agents, budgets, and instance settings. Resolve it
+    // before the issue-locking promotion transaction so a pool at capacity cannot
+    // deadlock on nested base-pool acquisition.
+    const terminalRecoveryIssue = contextIssueId
+      ? await db
+        .select()
+        .from(issues)
+        .where(and(eq(issues.companyId, run.companyId), eq(issues.id, contextIssueId)))
+        .limit(1)
+        .then((rows) => rows[0] ?? null)
+      : null;
+    const failedTerminalFinalize = terminalRecoveryIssue
+      ? await db
+        .select({ id: workspaceOperations.id })
+        .from(workspaceOperations)
+        .where(
+          and(
+            eq(workspaceOperations.companyId, terminalRecoveryIssue.companyId),
+            eq(workspaceOperations.heartbeatRunId, run.id),
+              eq(workspaceOperations.issueId, terminalRecoveryIssue.id),
+              eq(workspaceOperations.phase, "workspace_finalize"),
+              eq(workspaceOperations.terminalBarrier, true),
+              eq(workspaceOperations.status, "failed"),
+          ),
+        )
+        .orderBy(
+          desc(workspaceOperations.startedAt),
+          desc(workspaceOperations.createdAt),
+          desc(workspaceOperations.id),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null)
+      : null;
+    const terminalRecoveryRouting = failedTerminalFinalize && terminalRecoveryIssue
+      ? await recovery.resolveFailedTerminalWorkspaceFinalizeRouting(terminalRecoveryIssue, run)
+      : null;
+    const terminalResolution = {
+      value: null as Parameters<typeof recovery.recordResolvedTerminalWorkspaceFinalize>[0] | null,
+    };
 
     const promotionResult = await db.transaction(async (tx) => {
       // Lock the context issue (if any) AND every issue that still references this run.
@@ -14055,6 +14098,103 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       if (!issue) return null;
       if (issue.executionRunId && issue.executionRunId !== run.id) return null;
+
+      // A terminal adapter run can mark its issue done before the managed
+      // workspace finalizer runs. Keep the issue's product disposition, but
+      // surface (or clear) recovery metadata only when this run still owns the
+      // latest issue-attributed finalization result. The latest-operation guard
+      // prevents a replayed older run from hiding or recreating recovery after
+      // a newer finalization has already completed.
+      if (issue.status === "done") {
+        const currentFinalize = await tx
+          .select({
+            id: workspaceOperations.id,
+            status: workspaceOperations.status,
+          })
+          .from(workspaceOperations)
+          .where(
+            and(
+              eq(workspaceOperations.companyId, issue.companyId),
+              eq(workspaceOperations.heartbeatRunId, run.id),
+              eq(workspaceOperations.issueId, issue.id),
+              eq(workspaceOperations.phase, "workspace_finalize"),
+              eq(workspaceOperations.terminalBarrier, true),
+            ),
+          )
+          .orderBy(
+            desc(workspaceOperations.startedAt),
+            desc(workspaceOperations.createdAt),
+            desc(workspaceOperations.id),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+
+        if (currentFinalize) {
+          const latestFinalize = await tx
+            .select({ id: workspaceOperations.id })
+            .from(workspaceOperations)
+            .where(
+              and(
+                eq(workspaceOperations.companyId, issue.companyId),
+                eq(workspaceOperations.issueId, issue.id),
+                eq(workspaceOperations.phase, "workspace_finalize"),
+                eq(workspaceOperations.terminalBarrier, true),
+              ),
+            )
+            .orderBy(
+              desc(workspaceOperations.startedAt),
+              desc(workspaceOperations.createdAt),
+              desc(workspaceOperations.id),
+            )
+            .limit(1)
+            .then((rows) => rows[0] ?? null);
+
+          if (latestFinalize?.id === currentFinalize.id) {
+            if (currentFinalize.status === "failed") {
+              if (
+                !terminalRecoveryIssue ||
+                issue.assigneeAgentId !== terminalRecoveryIssue.assigneeAgentId ||
+                issue.createdByAgentId !== terminalRecoveryIssue.createdByAgentId ||
+                issue.projectId !== terminalRecoveryIssue.projectId ||
+                issue.parentId !== terminalRecoveryIssue.parentId ||
+                issue.goalId !== terminalRecoveryIssue.goalId
+              ) {
+                // Routing inputs changed after the pool-safe pre-read. Leave the
+                // durable operation unreconciled; the bounded reconciler will
+                // resolve routing from the fresh snapshot outside its lock and retry.
+                return { kind: "released" as const };
+              }
+              const recoveryAction = await recovery.ensureFailedTerminalWorkspaceFinalizeRecovery({
+                issue,
+                latestRun: run,
+                operationId: currentFinalize.id,
+                recoveryRouting: terminalRecoveryRouting!,
+              }, tx);
+              await tx
+                .update(workspaceOperations)
+                .set({ reconciledAt: new Date(), updatedAt: new Date() })
+                .where(eq(workspaceOperations.id, currentFinalize.id));
+              return { kind: "failed_terminal_workspace_finalize" as const, issue, recoveryAction };
+            }
+            if (currentFinalize.status === "succeeded") {
+              const resolved = await recovery.resolveFailedTerminalWorkspaceFinalize({
+                issue,
+                runId: run.id,
+              }, tx);
+              if (resolved) {
+                terminalResolution.value = { issue, runId: run.id, resolved };
+              }
+              await tx
+                .update(workspaceOperations)
+                .set({ reconciledAt: new Date(), updatedAt: new Date() })
+                .where(eq(workspaceOperations.id, currentFinalize.id));
+            }
+            if (currentFinalize.status !== "succeeded") {
+              return { kind: "released" as const };
+            }
+          }
+        }
+      }
 
       // Workspace-validation recovery: if the finalizing run failed workspace
       // validation, surface the primary issue for the blocked-recovery comment path.
@@ -14654,6 +14794,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         run: queuedRun,
       };
     });
+
+    if (terminalResolution.value) {
+      await recovery.recordResolvedTerminalWorkspaceFinalize(terminalResolution.value);
+    }
+
+    if (promotionResult?.kind === "failed_terminal_workspace_finalize") {
+      await recovery.surfaceFailedTerminalWorkspaceFinalize({
+        issue: promotionResult.issue,
+        latestRun: run,
+        recoveryAction: promotionResult.recoveryAction,
+      });
+      return;
+    }
 
     if (promotionResult?.kind === "blocked") {
       await recovery.escalateStrandedAssignedIssue({

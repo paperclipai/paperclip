@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
@@ -16,6 +16,7 @@ import {
   issueRecoveryActions,
   issueRelations,
   issues,
+  workspaceOperations,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -84,8 +85,9 @@ describe("issueRecoveryActionService", () => {
       },
     });
 
-    const fakeDb = {
+    const fakeDb: Record<string, unknown> = {
       select: vi.fn(() => makeSelectQuery(selectResults.shift() ?? [])),
+      execute: vi.fn(async () => []),
       update: vi.fn(() => ({
         set: vi.fn(() => ({
           where: vi.fn(() => ({
@@ -99,6 +101,7 @@ describe("issueRecoveryActionService", () => {
         })),
       })),
     };
+    fakeDb.transaction = vi.fn(async (callback: (tx: unknown) => Promise<unknown>) => callback(fakeDb));
 
     const result = await issueRecoveryActionService(fakeDb as never).upsertSourceScoped({
       companyId: "company-1",
@@ -1084,6 +1087,343 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       trigger: "read_projection",
       recoveryActionId: action.id,
     });
+  });
+
+  it("keeps terminal workspace-finalize recovery visible through read and repair dispatch", async () => {
+    const { companyId, managerId, sourceIssueId } = await seedCompany();
+    const recoveryActionSvc = issueRecoveryActionService(db);
+    const action = await recoveryActionSvc.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "workspace_validation",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      cause: "workspace_finalize_failed",
+      fingerprint: "workspace-validation:terminal-finalize",
+      evidence: { sourceRunId: "failed-finalize-run" },
+      nextAction: "Repair and re-finalize the source workspace.",
+      wakePolicy: { type: "manual_repair_required" },
+    });
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, sourceIssueId));
+    const app = createApp();
+
+    const detail = await request(app).get(`/api/issues/${sourceIssueId}`).expect(200);
+    expect(detail.body).toMatchObject({
+      id: sourceIssueId,
+      status: "done",
+      activeRecoveryAction: { id: action.id, cause: "workspace_finalize_failed" },
+    });
+
+    const reopened = await request(app)
+      .patch(`/api/issues/${sourceIssueId}`)
+      .send({ status: "todo" })
+      .expect(200);
+    expect(reopened.body).toMatchObject({
+      id: sourceIssueId,
+      status: "todo",
+      activeRecoveryAction: { id: action.id, cause: "workspace_finalize_failed" },
+    });
+    await expect(recoveryActionSvc.getActiveForIssue(companyId, sourceIssueId)).resolves.toMatchObject({
+      id: action.id,
+      status: "active",
+    });
+  });
+
+  it("rejects restored done resolution while the latest issue finalize is failed", async () => {
+    const { companyId, managerId, sourceIssueId } = await seedCompany();
+    const recoveryActionSvc = issueRecoveryActionService(db);
+    const action = await recoveryActionSvc.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "workspace_validation",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      cause: "workspace_finalize_failed",
+      fingerprint: "workspace-validation:failed-latest-manual-resolution",
+      evidence: { sourceRunId: "failed-finalize-run" },
+      nextAction: "Repair and re-finalize the source workspace.",
+      wakePolicy: { type: "manual_repair_required" },
+    });
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, sourceIssueId));
+    await db.insert(workspaceOperations).values({
+      companyId,
+      issueId: sourceIssueId,
+      phase: "workspace_finalize",
+      terminalBarrier: true,
+      status: "failed",
+      startedAt: new Date("2026-07-15T19:13:00.000Z"),
+    });
+    const app = createApp();
+
+    const rejected = await request(app)
+      .post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`)
+      .send({
+        actionId: action.id,
+        outcome: "restored",
+        sourceIssueStatus: "done",
+        resolutionNote: "The source issue was already marked done.",
+      })
+      .expect(422);
+
+    expect(rejected.body.error).toContain("newer successful workspace finalization");
+    await expect(recoveryActionSvc.getActiveForIssue(companyId, sourceIssueId)).resolves.toMatchObject({
+      id: action.id,
+      status: "active",
+      cause: "workspace_finalize_failed",
+    });
+  });
+
+  it("allows restored done resolution after a newer issue finalize succeeds", async () => {
+    const { companyId, managerId, sourceIssueId } = await seedCompany();
+    const recoveryActionSvc = issueRecoveryActionService(db);
+    const action = await recoveryActionSvc.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "workspace_validation",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      cause: "workspace_finalize_failed",
+      fingerprint: "workspace-validation:succeeded-latest-manual-resolution",
+      evidence: { sourceRunId: "failed-finalize-run" },
+      nextAction: "Repair and re-finalize the source workspace.",
+      wakePolicy: { type: "manual_repair_required" },
+    });
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, sourceIssueId));
+    await db.insert(workspaceOperations).values([
+      {
+        companyId,
+        issueId: sourceIssueId,
+        phase: "workspace_finalize",
+        terminalBarrier: true,
+        status: "failed",
+        startedAt: new Date("2026-07-15T19:13:00.000Z"),
+      },
+      {
+        companyId,
+        issueId: sourceIssueId,
+        phase: "workspace_finalize",
+        terminalBarrier: true,
+        status: "succeeded",
+        startedAt: new Date("2026-07-15T19:15:00.000Z"),
+      },
+    ]);
+    const app = createApp();
+
+    const resolved = await request(app)
+      .post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`)
+      .send({
+        actionId: action.id,
+        outcome: "restored",
+        sourceIssueStatus: "done",
+        resolutionNote: "The repaired workspace finalized successfully.",
+      })
+      .expect(200);
+
+    expect(resolved.body.issue).toMatchObject({
+      id: sourceIssueId,
+      status: "done",
+      activeRecoveryAction: null,
+    });
+    expect(resolved.body.recoveryAction).toMatchObject({
+      id: action.id,
+      status: "resolved",
+      outcome: "owner_completed",
+    });
+    await expect(recoveryActionSvc.getActiveForIssue(companyId, sourceIssueId)).resolves.toBeNull();
+  });
+
+  it("returns conflict instead of resolving a replacement action authorized to a different owner", async () => {
+    const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
+    await db.update(issues).set({ assigneeAgentId: null }).where(eq(issues.id, sourceIssueId));
+    const recoveryActionSvc = issueRecoveryActionService(db);
+    const authorizedAction = await recoveryActionSvc.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "issue_graph_liveness",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      cause: "owner-a-recovery",
+      fingerprint: "owner-a-recovery",
+      nextAction: "Owner A may resolve this action.",
+    });
+    const app = createApp({
+      type: "agent",
+      agentId: managerId,
+      companyId,
+      runId: randomUUID(),
+      source: "agent_key",
+    });
+    let resolutionRequest!: Promise<any>;
+
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`select ${issues.id} from ${issues} where ${issues.id} = ${sourceIssueId} for update`);
+      resolutionRequest = request(app)
+        .post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`)
+        .send({
+          actionId: authorizedAction.id,
+          outcome: "restored",
+          sourceIssueStatus: "todo",
+        })
+        .then((response) => response);
+      const lockDeadline = Date.now() + 2_000;
+      while (true) {
+        const blocked = await db.execute(sql`
+          select 1
+          from pg_locks
+          where granted = false
+          limit 1
+        `);
+        if (blocked.length > 0) break;
+        if (Date.now() >= lockDeadline) {
+          throw new Error("resolution request never reached the locked replacement barrier");
+        }
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      await recoveryActionSvc.upsertSourceScoped({
+        companyId,
+        sourceIssueId,
+        kind: "issue_graph_liveness",
+        ownerType: "agent",
+        ownerAgentId: coderId,
+        cause: "owner-b-replacement",
+        fingerprint: "owner-b-replacement",
+        nextAction: "Only owner B may resolve this replacement.",
+      }, tx);
+    });
+
+    const rejected = await resolutionRequest;
+    expect(rejected.status).toBe(409);
+    expect(rejected.body.error).toContain("Recovery action ownership changed");
+    await expect(recoveryActionSvc.getActiveForIssue(companyId, sourceIssueId)).resolves.toMatchObject({
+      id: authorizedAction.id,
+      ownerAgentId: coderId,
+      cause: "owner-b-replacement",
+      status: "active",
+    });
+  });
+
+  it("re-mediates manager override after revocation while the source issue is locked", async () => {
+    const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
+    await db.update(issues).set({ assigneeAgentId: null }).where(eq(issues.id, sourceIssueId));
+    const recoveryActionSvc = issueRecoveryActionService(db);
+    const action = await recoveryActionSvc.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "issue_graph_liveness",
+      ownerType: "agent",
+      ownerAgentId: coderId,
+      cause: "manager-revocation-race",
+      fingerprint: "manager-revocation-race",
+      nextAction: "Only current authority may resolve this action.",
+    });
+    const app = createApp({
+      type: "agent",
+      agentId: managerId,
+      companyId,
+      runId: randomUUID(),
+      source: "agent_key",
+    });
+    let resolutionRequest!: Promise<any>;
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`select ${issues.id} from ${issues} where ${issues.id} = ${sourceIssueId} for update`);
+      resolutionRequest = request(app)
+        .post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`)
+        .send({
+          actionId: action.id,
+          outcome: "restored",
+          sourceIssueStatus: "todo",
+        })
+        .then((response) => response);
+      const barrier = (async () => {
+        const lockDeadline = Date.now() + 2_000;
+        while (true) {
+          const blocked = await db.execute(sql`select 1 from pg_locks where granted = false limit 1`);
+          if (blocked.length > 0) return { kind: "blocked" as const };
+          if (Date.now() >= lockDeadline) return { kind: "timeout" as const };
+          await new Promise((resolve) => setTimeout(resolve, 5));
+        }
+      })();
+      const interleaving = await Promise.race([
+        barrier,
+        resolutionRequest.then((response) => ({ kind: "response" as const, response })),
+      ]);
+      if (interleaving.kind !== "blocked") {
+        throw new Error(interleaving.kind === "response"
+          ? `resolution returned before lock barrier: ${interleaving.response.status} ${JSON.stringify(interleaving.response.body)}`
+          : "resolution request never reached authority barrier");
+      }
+      await tx.update(agents).set({ reportsTo: null, updatedAt: new Date() }).where(eq(agents.id, coderId));
+    });
+
+    const rejected = await resolutionRequest;
+    expect(rejected.status).toBe(403);
+    expect(rejected.body.error).toContain("authority changed");
+    await expect(recoveryActionSvc.getActiveForIssue(companyId, sourceIssueId)).resolves.toMatchObject({
+      id: action.id,
+      status: "active",
+      ownerAgentId: coderId,
+    });
+  });
+
+  it("completes terminal recovery while a normal upsert waits on the source issue lock", async () => {
+    const { companyId, managerId, sourceIssueId } = await seedCompany();
+    const recoveryActionSvc = issueRecoveryActionService(db);
+    let normalTransactionStarted!: () => void;
+    const normalEnteredTransaction = new Promise<void>((resolve) => {
+      normalTransactionStarted = resolve;
+    });
+    const originalTransaction = db.transaction.bind(db);
+    let transactionCount = 0;
+    const transactionSpy = vi.spyOn(db, "transaction").mockImplementation(((callback, config) =>
+      originalTransaction(async (tx) => {
+        transactionCount += 1;
+        if (transactionCount === 2) normalTransactionStarted();
+        return callback(tx);
+      }, config)) as typeof db.transaction);
+    let normalUpsert!: ReturnType<typeof recoveryActionSvc.upsertSourceScoped>;
+
+    try {
+      const terminalPromotion = db.transaction(async (tx) => {
+        await tx.execute(sql`select ${issues.id} from ${issues} where ${issues.id} = ${sourceIssueId} for update`);
+        normalUpsert = recoveryActionSvc.upsertSourceScoped({
+          companyId,
+          sourceIssueId,
+          kind: "issue_graph_liveness",
+          ownerType: "agent",
+          ownerAgentId: managerId,
+          cause: "issue_graph_liveness",
+          fingerprint: "normal-upsert-waiting-on-issue-lock",
+          nextAction: "Restore a live path.",
+        });
+        await normalEnteredTransaction;
+        return recoveryActionSvc.upsertSourceScoped({
+          companyId,
+          sourceIssueId,
+          kind: "workspace_validation",
+          ownerType: "agent",
+          ownerAgentId: managerId,
+          cause: "workspace_finalize_failed",
+          fingerprint: "workspace-validation:terminal-finalize-lock",
+          evidence: { sourceRunId: "failed-finalize-run" },
+          nextAction: "Repair and re-finalize.",
+        }, tx);
+      });
+
+      const [terminalAction, normalAction] = await Promise.race([
+        terminalPromotion.then(async (action) => [action, await normalUpsert] as const),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("mixed recovery upserts deadlocked")), 2_000)),
+      ]);
+
+      expect(terminalAction).toMatchObject({ cause: "workspace_finalize_failed", status: "active" });
+      expect(normalAction).toMatchObject({ id: terminalAction.id, cause: "workspace_finalize_failed", status: "active" });
+      await expect(recoveryActionSvc.getActiveForIssue(companyId, sourceIssueId)).resolves.toMatchObject({
+        id: terminalAction.id,
+        cause: "workspace_finalize_failed",
+        attemptCount: 1,
+      });
+    } finally {
+      transactionSpy.mockRestore();
+    }
   });
 
   it("keeps active recovery visible when a plain comment does not create a live path", async () => {

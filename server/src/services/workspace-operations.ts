@@ -54,8 +54,27 @@ function combineMetadata(
 
 export interface WorkspaceOperationRecorder {
   attachExecutionWorkspaceId(executionWorkspaceId: string | null): Promise<void>;
+  beginOperation(input: {
+    phase: WorkspaceOperationPhase;
+    terminalBarrier?: boolean;
+    command?: string | null;
+    cwd?: string | null;
+    metadata?: Record<string, unknown> | null;
+  }): Promise<{
+    id: string;
+    finish(result: {
+      status?: WorkspaceOperationStatus;
+      exitCode?: number | null;
+      stdout?: string | null;
+      stderr?: string | null;
+      system?: string | null;
+      metadata?: Record<string, unknown> | null;
+    }): Promise<WorkspaceOperation>;
+    fail(error: unknown, metadata?: Record<string, unknown> | null): Promise<WorkspaceOperation>;
+  }>;
   recordOperation(input: {
     phase: WorkspaceOperationPhase;
+    terminalBarrier?: boolean;
     command?: string | null;
     cwd?: string | null;
     metadata?: Record<string, unknown> | null;
@@ -108,7 +127,7 @@ export function workspaceOperationService(db: Db) {
             .where(inArray(workspaceOperations.id, createdIds));
         },
 
-        async recordOperation(recordInput) {
+        async beginOperation(recordInput) {
           const currentUserRedactionOptions = {
             enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
           };
@@ -140,6 +159,7 @@ export function workspaceOperationService(db: Db) {
             heartbeatRunId: input.heartbeatRunId ?? null,
             issueId: input.issueId ?? null,
             phase: recordInput.phase,
+            terminalBarrier: recordInput.terminalBarrier ?? false,
             command: recordInput.command ?? null,
             cwd: recordInput.cwd ?? null,
             status: "running",
@@ -153,8 +173,20 @@ export function workspaceOperationService(db: Db) {
           });
           createdIds.push(id);
 
-          try {
-            const result = await recordInput.run();
+          let completed = false;
+          const finish = async (result: {
+            status?: WorkspaceOperationStatus;
+            exitCode?: number | null;
+            stdout?: string | null;
+            stderr?: string | null;
+            system?: string | null;
+            metadata?: Record<string, unknown> | null;
+          }) => {
+            if (completed) {
+              const existing = await getById(id);
+              if (!existing) throw notFound("Workspace operation not found");
+              return existing;
+            }
             await append("system", result.system ?? null);
             await append("stdout", result.stdout ?? null);
             await append("stderr", result.stderr ?? null);
@@ -182,12 +214,23 @@ export function workspaceOperationService(db: Db) {
               .returning()
               .then((rows) => rows[0] ?? null);
             if (!row) throw notFound("Workspace operation not found");
+            completed = true;
             return toWorkspaceOperation(row);
-          } catch (error) {
-            await append("stderr", error instanceof Error ? error.message : String(error));
+          };
+
+          const fail = async (
+            error: unknown,
+            metadata?: Record<string, unknown> | null,
+          ) => {
+            if (completed) {
+              const existing = await getById(id);
+              if (!existing) throw notFound("Workspace operation not found");
+              return existing;
+            }
+            await append("stderr", error instanceof Error ? error.message : String(error)).catch(() => undefined);
             const finalized = await logStore.finalize(handle).catch(() => null);
             const finishedAt = new Date();
-            await db
+            const row = await db
               .update(workspaceOperations)
               .set({
                 executionWorkspaceId,
@@ -197,10 +240,30 @@ export function workspaceOperationService(db: Db) {
                 logBytes: finalized?.bytes ?? null,
                 logSha256: finalized?.sha256 ?? null,
                 logCompressed: finalized?.compressed ?? false,
+                metadata: redactCurrentUserValue(
+                  combineMetadata(recordInput.metadata, metadata),
+                  currentUserRedactionOptions,
+                ) as Record<string, unknown> | null,
                 finishedAt,
                 updatedAt: finishedAt,
               })
-              .where(eq(workspaceOperations.id, id));
+              .where(eq(workspaceOperations.id, id))
+              .returning()
+              .then((rows) => rows[0] ?? null);
+            if (!row) throw notFound("Workspace operation not found");
+            completed = true;
+            return toWorkspaceOperation(row);
+          };
+
+          return { id, finish, fail };
+        },
+
+        async recordOperation(recordInput) {
+          const operation = await this.beginOperation(recordInput);
+          try {
+            return await operation.finish(await recordInput.run());
+          } catch (error) {
+            await operation.fail(error);
             throw error;
           }
         },

@@ -30,6 +30,7 @@ import {
   mergeExecutionWorkspaceConfig,
   readExecutionWorkspaceConfig,
 } from "../services/execution-workspaces.ts";
+import { issueRecoveryActionService } from "../services/issue-recovery-actions.ts";
 import {
   startRuntimeServicesForWorkspaceControl,
   stopRuntimeServicesForExecutionWorkspace,
@@ -561,32 +562,55 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       branchName: "feature/recorded",
       baseRef: "main",
     });
-    await db.insert(issueRecoveryActions).values({
-      companyId,
-      sourceIssueId: issueId,
-      kind: "workspace_validation",
-      status: "active",
-      ownerType: "board",
-      cause: "workspace_validation_failed",
-      fingerprint,
-      evidence: {
-        workspaceValidation: {
-          fingerprint,
+    const twoConnectionDb = createDb(tempDb!.connectionString, { max: 2 });
+    const twoConnectionSvc = executionWorkspaceService(twoConnectionDb);
+    const twoConnectionRecoverySvc = issueRecoveryActionService(twoConnectionDb);
+    let reconcileRequest!: Promise<Awaited<ReturnType<typeof twoConnectionSvc.reconcileExecutionWorkspaceBranch>>>;
+    await twoConnectionDb.transaction(async (producerTx) => {
+      await producerTx.execute(sql`select ${issues.id} from ${issues} where ${issues.id} = ${issueId} for update`);
+      reconcileRequest = twoConnectionSvc.reconcileExecutionWorkspaceBranch(executionWorkspaceId, {
+        mode: "forward",
+        reason: null,
+        actor: {
+          actorType: "user",
+          actorId: "local-board",
+          agentId: null,
+          runId: null,
         },
-      },
-      nextAction: "Repair the source issue workspace link.",
+      });
+
+      const lockDeadline = Date.now() + 2_000;
+      while (true) {
+        const blocked = await db.execute(sql`
+          select 1
+          from pg_locks
+          where granted = false
+          limit 1
+        `);
+        if (blocked.length > 0) break;
+        if (Date.now() >= lockDeadline) {
+          throw new Error("branch reconciliation never reached the source-issue lock barrier");
+        }
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+
+      await twoConnectionRecoverySvc.upsertSourceScoped({
+        companyId,
+        sourceIssueId: issueId,
+        kind: "workspace_validation",
+        ownerType: "board",
+        cause: "workspace_validation_failed",
+        fingerprint,
+        evidence: {
+          workspaceValidation: {
+            fingerprint,
+          },
+        },
+        nextAction: "Repair the source issue workspace link.",
+      }, producerTx);
     });
 
-    const result = await svc.reconcileExecutionWorkspaceBranch(executionWorkspaceId, {
-      mode: "forward",
-      reason: null,
-      actor: {
-        actorType: "user",
-        actorId: "local-board",
-        agentId: null,
-        runId: null,
-      },
-    });
+    const result = await reconcileRequest;
 
     expect(result.workspace.branchName).toBe("feature/current");
     expect(result.workspace.name).toBe("feature/current");

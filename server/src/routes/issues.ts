@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import { z } from "zod";
-import { and, asc, desc, eq, inArray, isNull, notInArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -21,6 +21,7 @@ import {
   pipelineStages,
   pipelines,
   projectWorkspaces,
+  workspaceOperations,
 } from "@paperclipai/db";
 import {
   addIssueCommentSchema,
@@ -2876,6 +2877,7 @@ export function issueRoutes(
 
   async function classifySourceRecoveryRevalidation(input: {
     issue: IssueRouteSnapshot;
+    activeRecoveryCause?: string | null;
     trigger: RecoveryRevalidationTrigger;
     statusChanged?: boolean;
     assigneeChanged?: boolean;
@@ -2889,6 +2891,9 @@ export function issueRoutes(
     blockedToTodoRecovery?: boolean;
   }): Promise<string | null> {
     const { issue } = input;
+    if (issue.status !== "cancelled" && input.activeRecoveryCause === "workspace_finalize_failed") {
+      return null;
+    }
     if (issue.status === "done" || issue.status === "cancelled") {
       return `Recovery action became stale because the source issue reached ${issue.status}.`;
     }
@@ -2985,7 +2990,10 @@ export function issueRoutes(
         : input.activeRecoveryAction;
     if (!activeRecoveryAction) return null;
 
-    const resolutionNote = await classifySourceRecoveryRevalidation(input);
+    const resolutionNote = await classifySourceRecoveryRevalidation({
+      ...input,
+      activeRecoveryCause: activeRecoveryAction.cause,
+    });
     if (!resolutionNote) return activeRecoveryAction;
 
     const resolved = await recoveryActionsSvc.resolveActiveForIssue({
@@ -3478,8 +3486,9 @@ export function issueRoutes(
     actorAgentId: string,
     companyId: string,
     assigneeAgentId: string,
+    accessEvaluator = access,
   ) {
-    const decision = await access.decide({
+    const decision = await accessEvaluator.decide({
       actor: { type: "agent", agentId: actorAgentId, companyId },
       action: "tasks:manage_active_checkouts",
       resource: { type: "issue", companyId, assigneeAgentId },
@@ -4165,27 +4174,12 @@ export function issueRoutes(
     activeRecoveryAction: Awaited<ReturnType<typeof recoveryActionsSvc.getActiveForIssue>>,
     input: { source: "issue_update" | "recovery_action_resolution" },
   ) {
-    if (req.actor.type !== "agent") return true;
     if (!activeRecoveryAction) return true;
-
-    const actorAgentId = req.actor.agentId;
+    if (await canResolveRecoveryAction(req.actor, issue, activeRecoveryAction)) return true;
+    const actorAgentId = req.actor.type === "agent" ? req.actor.agentId : null;
     if (!actorAgentId) {
       res.status(403).json({ error: "Agent authentication required" });
       return false;
-    }
-    if (issue.assigneeAgentId === actorAgentId) return true;
-    if (
-      issue.assigneeAgentId &&
-      await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, issue.assigneeAgentId)
-    ) {
-      return true;
-    }
-    if (activeRecoveryAction.ownerAgentId === actorAgentId) return true;
-    if (
-      activeRecoveryAction.ownerAgentId &&
-      await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, activeRecoveryAction.ownerAgentId)
-    ) {
-      return true;
     }
 
     res.status(403).json({
@@ -4200,6 +4194,39 @@ export function issueRoutes(
         securityPrinciples: ["Least Privilege", "Complete Mediation", "Secure Defaults"],
       },
     });
+    return false;
+  }
+
+  async function canResolveRecoveryAction(
+    actor: Request["actor"],
+    issue: { id: string; companyId: string; assigneeAgentId: string | null },
+    activeRecoveryAction: Awaited<ReturnType<typeof recoveryActionsSvc.getActiveForIssue>>,
+    accessEvaluator = access,
+  ) {
+    if (actor.type !== "agent" || !activeRecoveryAction) return true;
+    const recoveryAction = activeRecoveryAction;
+    const actorAgentId = actor.agentId;
+    if (!actorAgentId) return false;
+    if (issue.assigneeAgentId === actorAgentId) return true;
+    if (
+      issue.assigneeAgentId &&
+      await hasActiveCheckoutManagementOverride(
+        actorAgentId,
+        issue.companyId,
+        issue.assigneeAgentId,
+        accessEvaluator,
+      )
+    ) return true;
+    if (recoveryAction.ownerAgentId === actorAgentId) return true;
+    if (
+      recoveryAction.ownerAgentId &&
+      await hasActiveCheckoutManagementOverride(
+        actorAgentId,
+        issue.companyId,
+        recoveryAction.ownerAgentId,
+        accessEvaluator,
+      )
+    ) return true;
     return false;
   }
 
@@ -5499,7 +5526,11 @@ export function issueRoutes(
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
     if (!existing) return;
     if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+    const { actionId, outcome, sourceIssueStatus, resolutionNote } = req.body;
     const activeRecoveryAction = await recoveryActionsSvc.getActiveForIssue(existing.companyId, existing.id);
+    if (activeRecoveryAction && activeRecoveryAction.id !== actionId) {
+      throw conflict("Recovery action changed; reload the issue and retry with the active action id");
+    }
     if (
       !(await assertRecoveryActionAuthority(
         req,
@@ -5512,7 +5543,6 @@ export function issueRoutes(
       return;
     }
 
-    const { actionId, outcome, sourceIssueStatus, resolutionNote } = req.body;
     if (outcome === "false_positive" || outcome === "cancelled") {
       assertBoard(req);
     }
@@ -5535,6 +5565,71 @@ export function issueRoutes(
 
     const actionStatus = outcome === "cancelled" ? "cancelled" : "resolved";
     const result = await db.transaction(async (tx) => {
+      const lockedIssue = await tx
+        .select()
+        .from(issueRows)
+        .where(
+          and(
+            eq(issueRows.companyId, existing.companyId),
+            eq(issueRows.id, existing.id),
+          ),
+        )
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      if (!lockedIssue) throw notFound("Issue not found");
+
+      const lockedRecoveryAction = await recoveryActionsSvc.lockActiveForIssue(
+        existing.companyId,
+        existing.id,
+        tx,
+      );
+      if (!lockedRecoveryAction || lockedRecoveryAction.id !== actionId) {
+        throw conflict("Recovery action changed; reload the issue and retry with the active action id");
+      }
+      if (
+        lockedIssue.assigneeAgentId !== existing.assigneeAgentId ||
+        lockedRecoveryAction.ownerType !== activeRecoveryAction?.ownerType ||
+        lockedRecoveryAction.ownerAgentId !== activeRecoveryAction?.ownerAgentId ||
+        lockedRecoveryAction.ownerUserId !== activeRecoveryAction?.ownerUserId
+      ) {
+        throw conflict("Recovery action ownership changed; reload the issue and retry");
+      }
+      if (
+        !(await canResolveRecoveryAction(
+          req.actor,
+          lockedIssue,
+          lockedRecoveryAction,
+          accessService(tx as unknown as Db),
+        ))
+      ) {
+        throw forbidden("Recovery action authority changed; reload the issue and retry");
+      }
+      if (lockedRecoveryAction?.cause === "workspace_finalize_failed" && actionStatus !== "cancelled") {
+        const latestFinalize = await tx
+          .select({ status: workspaceOperations.status })
+          .from(workspaceOperations)
+          .where(
+            and(
+              eq(workspaceOperations.companyId, existing.companyId),
+              eq(workspaceOperations.issueId, existing.id),
+              eq(workspaceOperations.phase, "workspace_finalize"),
+              eq(workspaceOperations.terminalBarrier, true),
+            ),
+          )
+          .orderBy(
+            desc(workspaceOperations.startedAt),
+            desc(workspaceOperations.createdAt),
+            desc(workspaceOperations.id),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+        if (latestFinalize?.status !== "succeeded") {
+          throw unprocessable(
+            "Workspace finalization recovery requires a newer successful workspace finalization before resolution",
+          );
+        }
+      }
+
       let issue = existing;
       if (outcome === "blocked") {
         const unresolvedBlockers = await tx
@@ -5585,6 +5680,7 @@ export function issueRoutes(
 
       return { issue, recoveryAction };
     });
+    if (!result) return;
 
     await routinesSvc.syncRunStatusForIssue(result.issue.id);
 
@@ -8013,10 +8109,10 @@ export function issueRoutes(
       reopened,
       blockedToTodoRecovery: statusChangedFromBlockedToTodo,
     });
-    if (activeRecoveryActionBeforeUpdate && !revalidatedRecoveryAction) {
+    if (activeRecoveryActionBeforeUpdate) {
       issueResponse = {
         ...issueResponse,
-        activeRecoveryAction: null,
+        activeRecoveryAction: revalidatedRecoveryAction,
       };
     }
     await logActivity(db, {

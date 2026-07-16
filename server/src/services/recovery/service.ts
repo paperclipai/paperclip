@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, gte, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
@@ -23,6 +23,7 @@ import {
   issueRelations,
   issueThreadInteractions,
   issues,
+  workspaceOperations,
 } from "@paperclipai/db";
 import { parseObject, asBoolean, asNumber } from "../../adapters/utils.js";
 import { runningProcesses } from "../../adapters/index.js";
@@ -70,6 +71,9 @@ import {
 } from "./model-profile-hint.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
 
+type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
+type DbOrTransaction = Db | DbTransaction;
+
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["interrupted", "failed", "cancelled", "timed_out"] as const;
 export const ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS = 60 * 60 * 1000;
@@ -81,6 +85,7 @@ const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiv
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON = "execution_review_participant_recovery";
 const RESOLVED_DEPENDENCY_WAKE_BACKSTOP_CANDIDATE_LIMIT = 500;
+const TERMINAL_FINALIZE_RECONCILIATION_BATCH_SIZE = 100;
 const SESSIONED_LOCAL_ADAPTERS = new Set([
   "claude_local",
   "codex_local",
@@ -144,11 +149,12 @@ type StrandedRecoveryCause =
   | "provider_quota"
   | "codex_output_inactivity_monitor"
   | "workspace_validation_failed"
+  | "workspace_finalize_failed"
   | "configuration_incomplete"
   | "execution_review_participant_recovery"
   | typeof SUCCESSFUL_RUN_MISSING_STATE_REASON;
 
-type StrandedPreviousStatus = "todo" | "in_progress" | "in_review";
+type StrandedPreviousStatus = "todo" | "in_progress" | "in_review" | "done";
 
 type SuccessfulRunHandoffRecoveryEvidence = {
   sourceRunId: string | null;
@@ -2563,7 +2569,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   function strandedRecoveryActionKind(cause: StrandedRecoveryCause) {
     return cause === SUCCESSFUL_RUN_MISSING_STATE_REASON
       ? "missing_disposition" as const
-      : cause === "workspace_validation_failed"
+      : cause === "workspace_validation_failed" || cause === "workspace_finalize_failed"
         ? "workspace_validation" as const
       : cause === "configuration_incomplete"
         ? "configuration_validation" as const
@@ -2575,7 +2581,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     recoveryCause: StrandedRecoveryCause;
     latestRun: LatestIssueRun;
   }) {
-    if (input.recoveryCause === "workspace_validation_failed") {
+    if (
+      input.recoveryCause === "workspace_validation_failed" ||
+      input.recoveryCause === "workspace_finalize_failed"
+    ) {
       const workspaceFingerprint = readWorkspaceValidationFingerprint(input.latestRun);
       if (workspaceFingerprint) {
         return [
@@ -2603,7 +2612,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
   }) {
     const context = parseObject(input.latestRun?.contextSnapshot);
-    const workspaceValidation = input.recoveryCause === "workspace_validation_failed"
+    const workspaceValidation =
+      input.recoveryCause === "workspace_validation_failed" || input.recoveryCause === "workspace_finalize_failed"
       ? readWorkspaceValidationPayload(input.latestRun)
       : null;
     return {
@@ -2631,15 +2641,17 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     previousStatus: StrandedPreviousStatus;
     recoveryCause?: StrandedRecoveryCause;
     recoveryOwnerAgentId?: string | null;
+    preparedRecoveryRouting?: Awaited<ReturnType<typeof resolveStrandedRecoveryRouting>>;
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
-  }) {
+    workspaceFinalizeOperationId?: string | null;
+  }, dbOrTx: DbOrTransaction = db) {
     const recoveryCause = resolveStrandedRecoveryCause(input.latestRun, input.recoveryCause);
-    const routing = await resolveStrandedRecoveryRouting({
-      issue: input.issue,
-      latestRun: input.latestRun,
-      recoveryCause,
-      preferredOwnerAgentId: input.recoveryOwnerAgentId,
-    });
+    const routing = input.preparedRecoveryRouting ?? await resolveStrandedRecoveryRouting({
+        issue: input.issue,
+        latestRun: input.latestRun,
+        recoveryCause,
+        preferredOwnerAgentId: input.recoveryOwnerAgentId,
+      });
     const ownerAgentId = routing.ownerAgentId;
     const now = new Date();
     const action = await recoveryActionsSvc.upsertSourceScoped({
@@ -2651,11 +2663,19 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       previousOwnerAgentId: input.issue.assigneeAgentId,
       returnOwnerAgentId: routing.returnOwnerAgentId,
       cause: recoveryCause,
-      fingerprint: strandedRecoveryActionFingerprint({
-        issue: input.issue,
-        recoveryCause,
-        latestRun: input.latestRun,
-      }),
+      fingerprint: recoveryCause === "workspace_finalize_failed" && input.workspaceFinalizeOperationId
+        ? [
+          "source_scoped_recovery",
+          input.issue.companyId,
+          input.issue.id,
+          recoveryCause,
+          input.workspaceFinalizeOperationId,
+        ].join(":")
+        : strandedRecoveryActionFingerprint({
+          issue: input.issue,
+          recoveryCause,
+          latestRun: input.latestRun,
+        }),
       evidence: {
         ...buildStrandedRecoveryActionEvidence({
           issue: input.issue,
@@ -2666,9 +2686,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         }),
         failureSummary: summarizeRunFailureForIssueComment(input.latestRun)?.trim() ?? null,
         routingFallbackReason: routing.routingFallbackReason,
+        workspaceFinalizeOperationId: input.workspaceFinalizeOperationId ?? null,
       },
       nextAction: recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON
         ? "Choose and record a valid issue disposition without copying transcript content."
+        : recoveryCause === "workspace_finalize_failed"
+          ? "Repair the terminal workspace finalization failure, then re-finalize the source issue workspace before consuming its output."
         : recoveryCause === "process_lost"
           ? "Retry the original assignee from durable progress without redoing completed steps."
         : recoveryCause === "provider_quota"
@@ -2689,7 +2712,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           type: "monitor_only",
           reason: recoveryCause,
         }
-        : recoveryCause === "configuration_incomplete"
+        : recoveryCause === "workspace_finalize_failed" ||
+          recoveryCause === "configuration_incomplete"
         ? {
           type: "manual_repair_required",
           reason: recoveryCause,
@@ -2710,7 +2734,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         : null,
       maxAttempts: null,
       lastAttemptAt: now,
-    });
+    }, dbOrTx);
 
     return action;
   }
@@ -2721,6 +2745,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     latestRun: LatestIssueRun;
     recoveryCause: StrandedRecoveryCause;
   }) {
+    if (input.recoveryCause === "workspace_finalize_failed") return;
     if (input.recoveryCause === "provider_quota" && !input.action.ownerAgentId) return;
     if (input.recoveryCause === "configuration_incomplete") return;
     if (!input.action.ownerAgentId) return;
@@ -3204,7 +3229,359 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return updated;
   }
 
+  async function ensureFailedTerminalWorkspaceFinalizeRecovery(input: {
+    issue: typeof issues.$inferSelect;
+    latestRun: LatestIssueRun;
+    operationId: string;
+    recoveryRouting: Awaited<ReturnType<typeof resolveStrandedRecoveryRouting>>;
+  }, dbOrTx: DbOrTransaction) {
+    return ensureSourceScopedStrandedRecoveryAction({
+      issue: input.issue,
+      previousStatus: "done",
+      latestRun: input.latestRun,
+      recoveryCause: "workspace_finalize_failed",
+      workspaceFinalizeOperationId: input.operationId,
+      preparedRecoveryRouting: input.recoveryRouting,
+    }, dbOrTx);
+  }
+
+  async function resolveFailedTerminalWorkspaceFinalizeRouting(
+    issue: typeof issues.$inferSelect,
+    latestRun: LatestIssueRun,
+  ) {
+    return resolveStrandedRecoveryRouting({
+      issue,
+      latestRun,
+      recoveryCause: "workspace_finalize_failed",
+    });
+  }
+
+  async function surfaceFailedTerminalWorkspaceFinalize(input: {
+    issue: typeof issues.$inferSelect;
+    latestRun: LatestIssueRun;
+    recoveryAction: Awaited<ReturnType<typeof ensureFailedTerminalWorkspaceFinalizeRecovery>>;
+  }) {
+    const { recoveryAction } = input;
+
+    if (recoveryAction.attemptCount === 1) {
+      await issuesSvc.addComment(
+        input.issue.id,
+        [
+          "Paperclip kept this issue in `done`, but its terminal workspace finalization failed.",
+          "",
+          `- Recovery action: \`${recoveryAction.id}\``,
+          "- Dependency safety: downstream issues remain blocked until a later workspace finalization succeeds.",
+          `- Next action: ${recoveryAction.nextAction}`,
+        ].join("\n"),
+        {},
+        { authorType: "system" },
+      );
+    }
+
+    await logActivity(db, {
+      companyId: input.issue.companyId,
+      actorType: "system",
+      actorId: "system",
+      agentId: recoveryAction.ownerAgentId,
+      runId: input.latestRun?.id ?? null,
+      action: "issue.workspace_finalize_recovery_opened",
+      entityType: "issue",
+      entityId: input.issue.id,
+      details: {
+        identifier: input.issue.identifier,
+        status: input.issue.status,
+        recoveryActionId: recoveryAction.id,
+        recoveryCause: recoveryAction.cause,
+        latestRunId: input.latestRun?.id ?? null,
+        latestRunStatus: input.latestRun?.status ?? null,
+      },
+    });
+
+    return recoveryAction;
+  }
+
+  async function resolveFailedTerminalWorkspaceFinalize(input: {
+    issue: typeof issues.$inferSelect;
+    runId: string;
+  }, dbOrTx: DbOrTransaction) {
+    const activeRecoveryAction = await recoveryActionsSvc.getActiveForIssue(
+      input.issue.companyId,
+      input.issue.id,
+      dbOrTx,
+    );
+    if (activeRecoveryAction?.cause !== "workspace_finalize_failed") return null;
+
+    return recoveryActionsSvc.resolveActiveForIssue({
+      companyId: input.issue.companyId,
+      sourceIssueId: input.issue.id,
+      actionId: activeRecoveryAction.id,
+      status: "resolved",
+      outcome: "restored",
+      resolutionNote: `Workspace finalization succeeded on heartbeat run ${input.runId}.`,
+    }, dbOrTx);
+  }
+
+  async function recordResolvedTerminalWorkspaceFinalize(input: {
+    issue: typeof issues.$inferSelect;
+    runId: string;
+    resolved: NonNullable<Awaited<ReturnType<typeof resolveFailedTerminalWorkspaceFinalize>>>;
+  }) {
+    const { resolved } = input;
+
+    await logActivity(db, {
+      companyId: input.issue.companyId,
+      actorType: "system",
+      actorId: "system",
+      agentId: resolved.ownerAgentId,
+      runId: input.runId,
+      action: "issue.workspace_finalize_recovery_resolved",
+      entityType: "issue",
+      entityId: input.issue.id,
+      details: {
+        identifier: input.issue.identifier,
+        status: input.issue.status,
+        recoveryActionId: resolved.id,
+        recoveryCause: resolved.cause,
+        resolutionRunId: input.runId,
+      },
+    });
+  }
+
+  async function reconcileTerminalWorkspaceFinalizations() {
+    const candidates = await db
+      .select({
+        companyId: workspaceOperations.companyId,
+        issueId: workspaceOperations.issueId,
+        operationId: workspaceOperations.id,
+        heartbeatRunId: workspaceOperations.heartbeatRunId,
+      })
+      .from(workspaceOperations)
+      .innerJoin(
+        issues,
+        and(
+          eq(issues.companyId, workspaceOperations.companyId),
+          eq(issues.id, workspaceOperations.issueId),
+        ),
+      )
+      .leftJoin(
+        heartbeatRuns,
+        eq(heartbeatRuns.id, workspaceOperations.heartbeatRunId),
+      )
+      .where(
+        and(
+          eq(issues.status, "done"),
+          eq(workspaceOperations.phase, "workspace_finalize"),
+          eq(workspaceOperations.terminalBarrier, true),
+          isNull(workspaceOperations.reconciledAt),
+          isNotNull(workspaceOperations.issueId),
+          sql`not exists (
+            select 1
+            from workspace_operations newer
+            where newer.company_id = ${workspaceOperations.companyId}
+              and newer.issue_id = ${workspaceOperations.issueId}
+              and newer.phase = 'workspace_finalize'
+              and newer.terminal_barrier = true
+              and (newer.started_at, newer.created_at, newer.id) >
+                  (${workspaceOperations.startedAt}, ${workspaceOperations.createdAt}, ${workspaceOperations.id})
+          )`,
+          or(
+            eq(workspaceOperations.status, "failed"),
+            and(
+              eq(workspaceOperations.status, "running"),
+              or(
+                isNull(heartbeatRuns.id),
+                inArray(heartbeatRuns.status, [...TERMINAL_HEARTBEAT_RUN_STATUSES]),
+              ),
+            ),
+            eq(workspaceOperations.status, "succeeded"),
+          ),
+        ),
+      )
+      .orderBy(
+        asc(workspaceOperations.startedAt),
+        asc(workspaceOperations.id),
+      )
+      .limit(TERMINAL_FINALIZE_RECONCILIATION_BATCH_SIZE);
+
+    const result = {
+      terminalFinalizeRecoveryOpened: 0,
+      terminalFinalizeRecoveryResolved: 0,
+      issueIds: [] as string[],
+    };
+
+    for (const candidate of candidates) {
+      if (!candidate.issueId) continue;
+      let projection: Awaited<ReturnType<typeof projectTerminalFinalizeCandidate>> = null;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const issueSnapshot = await db
+          .select()
+          .from(issues)
+          .where(
+            and(
+              eq(issues.companyId, candidate.companyId),
+              eq(issues.id, candidate.issueId),
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+        if (!issueSnapshot) break;
+        const latestRunSnapshot = candidate.heartbeatRunId
+          ? await db
+            .select()
+            .from(heartbeatRuns)
+            .where(eq(heartbeatRuns.id, candidate.heartbeatRunId))
+            .limit(1)
+            .then((rows) => rows[0] ?? null)
+          : null;
+        const recoveryRouting = await resolveFailedTerminalWorkspaceFinalizeRouting(issueSnapshot, latestRunSnapshot);
+        projection = await projectTerminalFinalizeCandidate({
+          candidate: { ...candidate, issueId: candidate.issueId! },
+          issueSnapshot,
+          latestRunSnapshot,
+          recoveryRouting,
+        });
+        if (projection?.kind !== "retry_routing") break;
+      }
+
+      if (projection?.kind === "opened") {
+        await surfaceFailedTerminalWorkspaceFinalize({
+          issue: projection.issue,
+          latestRun: projection.latestRun,
+          recoveryAction: projection.recoveryAction,
+        });
+        result.terminalFinalizeRecoveryOpened += 1;
+        result.issueIds.push(projection.issue.id);
+      } else if (projection?.kind === "resolved") {
+        await recordResolvedTerminalWorkspaceFinalize({
+          issue: projection.issue,
+          runId: projection.runId,
+          resolved: projection.resolved,
+        });
+        result.terminalFinalizeRecoveryResolved += 1;
+        result.issueIds.push(projection.issue.id);
+      }
+    }
+
+    return result;
+
+    async function projectTerminalFinalizeCandidate(input: {
+      candidate: { companyId: string; issueId: string; operationId: string; heartbeatRunId: string | null };
+      issueSnapshot: typeof issues.$inferSelect;
+      latestRunSnapshot: LatestIssueRun;
+      recoveryRouting: Awaited<ReturnType<typeof resolveFailedTerminalWorkspaceFinalizeRouting>>;
+    }) {
+      return db.transaction(async (tx) => {
+        const issue = await tx
+          .select()
+          .from(issues)
+          .where(
+            and(
+              eq(issues.companyId, input.candidate.companyId),
+              eq(issues.id, input.candidate.issueId),
+            ),
+          )
+          .for("update")
+          .then((rows) => rows[0] ?? null);
+        if (!issue || issue.status !== "done") return null;
+        if (
+          issue.updatedAt.getTime() !== input.issueSnapshot.updatedAt.getTime() ||
+          issue.assigneeAgentId !== input.issueSnapshot.assigneeAgentId ||
+          issue.createdByAgentId !== input.issueSnapshot.createdByAgentId ||
+          issue.projectId !== input.issueSnapshot.projectId ||
+          issue.parentId !== input.issueSnapshot.parentId ||
+          issue.goalId !== input.issueSnapshot.goalId
+        ) {
+          return { kind: "retry_routing" as const };
+        }
+
+        const latestFinalize = await tx
+          .select()
+          .from(workspaceOperations)
+          .where(
+            and(
+              eq(workspaceOperations.companyId, issue.companyId),
+              eq(workspaceOperations.issueId, issue.id),
+              eq(workspaceOperations.phase, "workspace_finalize"),
+              eq(workspaceOperations.terminalBarrier, true),
+            ),
+          )
+          .orderBy(
+            desc(workspaceOperations.startedAt),
+            desc(workspaceOperations.createdAt),
+            desc(workspaceOperations.id),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+        if (!latestFinalize) return null;
+        if (latestFinalize.id !== input.candidate.operationId) return null;
+
+        const latestRun = latestFinalize.heartbeatRunId
+          ? await tx
+            .select()
+            .from(heartbeatRuns)
+            .where(eq(heartbeatRuns.id, latestFinalize.heartbeatRunId))
+            .limit(1)
+            .then((rows) => rows[0] ?? null)
+          : null;
+
+        const effectiveStatus = latestFinalize.status === "running" &&
+          (!latestRun || TERMINAL_HEARTBEAT_RUN_STATUSES.has(latestRun.status))
+          ? "failed"
+          : latestFinalize.status;
+        if (effectiveStatus === "failed" && latestFinalize.status === "running") {
+          await tx
+            .update(workspaceOperations)
+            .set({ status: "failed", finishedAt: new Date(), updatedAt: new Date() })
+            .where(eq(workspaceOperations.id, latestFinalize.id));
+        }
+
+        if (effectiveStatus === "failed") {
+          const active = await recoveryActionsSvc.getActiveForIssue(issue.companyId, issue.id, tx);
+          const activeEvidence = parseObject(active?.evidence);
+          if (
+            active?.cause === "workspace_finalize_failed" &&
+            activeEvidence.workspaceFinalizeOperationId === latestFinalize.id
+          ) {
+            await tx
+              .update(workspaceOperations)
+              .set({ reconciledAt: new Date(), updatedAt: new Date() })
+              .where(eq(workspaceOperations.id, latestFinalize.id));
+            return null;
+          }
+          const recoveryAction = await ensureFailedTerminalWorkspaceFinalizeRecovery({
+            issue,
+            latestRun,
+            operationId: latestFinalize.id,
+            recoveryRouting: input.recoveryRouting,
+          }, tx);
+          await tx
+            .update(workspaceOperations)
+            .set({ reconciledAt: new Date(), updatedAt: new Date() })
+            .where(eq(workspaceOperations.id, latestFinalize.id));
+          return { kind: "opened" as const, issue, latestRun, recoveryAction };
+        }
+
+        if (effectiveStatus === "succeeded") {
+          const resolved = await resolveFailedTerminalWorkspaceFinalize({
+            issue,
+            runId: latestFinalize.heartbeatRunId ?? "workspace-finalize-reconciler",
+          }, tx);
+          await tx
+            .update(workspaceOperations)
+            .set({ reconciledAt: new Date(), updatedAt: new Date() })
+            .where(eq(workspaceOperations.id, latestFinalize.id));
+          return resolved
+            ? { kind: "resolved" as const, issue, runId: latestFinalize.heartbeatRunId ?? "workspace-finalize-reconciler", resolved }
+            : null;
+        }
+
+        return null;
+      });
+    }
+  }
+
   async function reconcileStrandedAssignedIssues(opts?: { issueCreatedAtGte?: Date | null }) {
+    const terminalFinalizeProjection = await reconcileTerminalWorkspaceFinalizations();
     const candidates = await db
       .select()
       .from(issues)
@@ -3233,7 +3610,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       waitingOnReviewResolved: 0,
       recentProgressExempted: 0,
       skipped: 0,
-      issueIds: [] as string[],
+      terminalFinalizeRecoveryOpened: terminalFinalizeProjection.terminalFinalizeRecoveryOpened,
+      terminalFinalizeRecoveryResolved: terminalFinalizeProjection.terminalFinalizeRecoveryResolved,
+      issueIds: [...terminalFinalizeProjection.issueIds],
     };
 
     for (const issue of candidates) {
@@ -4963,6 +5342,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     buildRunOutputSilence,
     escalateStrandedRecoveryIssueInPlace,
     escalateStrandedAssignedIssue,
+    ensureFailedTerminalWorkspaceFinalizeRecovery,
+    resolveFailedTerminalWorkspaceFinalizeRouting,
+    surfaceFailedTerminalWorkspaceFinalize,
+    resolveFailedTerminalWorkspaceFinalize,
+    recordResolvedTerminalWorkspaceFinalize,
     recordWatchdogDecision,
     scanSilentActiveRuns,
     reconcileStrandedAssignedIssues,
