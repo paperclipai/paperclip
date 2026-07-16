@@ -439,7 +439,7 @@ describe("Inbox toolbar", () => {
     });
   });
 
-  it("does not double-indent unread rows: the mark-read dot replaces the leading spacer", async () => {
+  it("does not indent unread rows: the mark-read dot sits in a reserved leading slot present on every row", async () => {
     routerMock.location.pathname = "/inbox/mine";
     // Two sibling leaf rows, one unread and one read, so their leading columns
     // are directly comparable.
@@ -477,23 +477,36 @@ describe("Inbox toolbar", () => {
     const rows = Array.from(container.querySelectorAll("[data-inbox-item]"));
     const rowFor = (text: string) => rows.find((row) => row.textContent?.includes(text));
     const linkOf = (row: Element) => row.querySelector<HTMLAnchorElement>("a[data-inbox-issue-link]");
-    const hasMarkReadDot = (row: Element) => !!row.querySelector('button[aria-label="Mark as read"]');
-    // The empty spacer that reserves the chevron column on read rows. Excludes
-    // the tree-guide span (`.self-stretch`), which only renders on nested rows.
+    const markReadButton = (row: Element) => row.querySelector('button[aria-label="Mark as read"]');
+    // The empty spacer that reserves the chevron column on every leaf row.
+    // Excludes the tree-guide span (`.self-stretch`), which only renders on
+    // nested rows.
     const hasLeadingSpacer = (row: Element) =>
       !!linkOf(row)?.querySelector("span.hidden.w-4.shrink-0.sm\\:block:not(.self-stretch)");
+    // The reserved leading dot slot, present on read AND unread rows.
+    const dotSlot = (row: Element) =>
+      linkOf(row)?.querySelector('[data-testid="issue-row-unread-slot"]') ?? null;
 
     const unreadRow = rowFor("Unread inbox row")!;
     const readRow = rowFor("Read inbox row")!;
 
-    // Unread rows carry the mark-read dot in the chevron column; rendering the
-    // spacer too would push the status icon + title one column further right
-    // than read rows (the bug this fix addresses).
-    expect(hasMarkReadDot(unreadRow)).toBe(true);
-    expect(hasLeadingSpacer(unreadRow)).toBe(false);
+    // The dot lives in a fixed leading slot that is reserved on every inbox row
+    // (in flow, NOT an absolute overlay). Because read and unread rows both
+    // reserve it — and both keep the chevron spacer — their status icon + title
+    // land at the same x (the bug this fix addresses: an unread-only dot column
+    // used to push unread rows right).
+    const unreadSlot = dotSlot(unreadRow);
+    const readSlot = dotSlot(readRow);
+    expect(unreadSlot).not.toBeNull();
+    expect(readSlot).not.toBeNull();
+    // In flow, not an absolute overlay.
+    expect(unreadSlot?.className).not.toContain("absolute");
+    // Only the unread row carries the dot button; the read slot is empty.
+    expect(markReadButton(unreadSlot!)).not.toBeNull();
+    expect(readSlot?.querySelector('button[aria-label="Mark as read"]')).toBeNull();
+    expect(hasLeadingSpacer(unreadRow)).toBe(true);
 
-    // Read rows have no dot, so they keep the spacer to hold that same column.
-    expect(hasMarkReadDot(readRow)).toBe(false);
+    // Read rows keep the same spacer, so both rows line up.
     expect(hasLeadingSpacer(readRow)).toBe(true);
 
     act(() => {
