@@ -8,6 +8,7 @@ import { issuesApi } from "@/api/issues";
 import { projectsApi } from "@/api/projects";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
+import { useToastActions } from "@/context/ToastContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -125,7 +126,7 @@ export function TrainingLibrary() {
 
       {recordsQuery.isLoading ? <p className="text-sm text-muted-foreground">Loading training examples…</p> : null}
       {recordsQuery.isError ? <p className="text-sm text-destructive">Could not load training examples.</p> : null}
-      {!recordsQuery.isLoading && records.length === 0 ? <p className="py-12 text-center text-sm text-muted-foreground">No training examples match these filters.</p> : null}
+      {!recordsQuery.isLoading && !recordsQuery.isError && records.length === 0 ? <p className="py-12 text-center text-sm text-muted-foreground">No training examples match these filters.</p> : null}
 
       <div className="overflow-hidden rounded-lg border border-border">
         <div className="hidden grid-cols-6 gap-4 bg-muted/40 px-4 py-2 text-xs font-medium text-muted-foreground md:grid">
@@ -170,6 +171,7 @@ export function TrainingInspector() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const { pushToast } = useToastActions();
   const [notes, setNotes] = useState("");
   const [editing, setEditing] = useState(false);
   const recordQuery = useQuery({ queryKey: queryKeys.decisionTraining.detail(id), queryFn: ({ signal }) => decisionTrainingApi.get(id, { signal }), enabled: Boolean(id) });
@@ -184,7 +186,15 @@ export function TrainingInspector() {
     onSuccess: (updated) => {
       queryClient.setQueryData(queryKeys.decisionTraining.detail(id), updated);
       queryClient.invalidateQueries({ queryKey: queryKeys.decisionTraining.list(updated.companyId) });
+      pushToast({ title: "Notes updated", tone: "success" });
       setEditing(false);
+    },
+    onError: (error) => {
+      pushToast({
+        title: "Could not update notes",
+        body: error instanceof Error ? error.message : "Please try again.",
+        tone: "error",
+      });
     },
   });
 
@@ -195,7 +205,7 @@ export function TrainingInspector() {
     <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-6 sm:px-6">
       <header className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between"><div className="min-w-0"><Button variant="ghost" size="sm" className="mb-2 -ml-2" onClick={() => navigate("/training")}><ArrowLeft className="size-4" /> Training</Button><h1 className="truncate text-xl font-bold">{decisionTitle(example)}</h1><p className="mt-1 text-sm text-muted-foreground">{issueIdentifier} · {outcomeLabel(example.decisionOutcome)} · cutoff {formatDateTime(example.cutoffAt)}</p></div><Button variant="outline" onClick={() => downloadExport(example.companyId)}><Download className="size-4" /> Export JSONL</Button></header>
       <div className="grid gap-8 lg:grid-cols-2">
-        <section><div className="mb-3 flex items-center justify-between"><div><h2 className="text-sm font-semibold">Training notes</h2><p className="mt-1 text-xs text-muted-foreground">Last edited {formatDateTime(example.updatedAt)} · edits are versioned</p></div>{!editing ? <Button variant="ghost" size="sm" onClick={() => setEditing(true)}>Edit</Button> : null}</div>{editing ? <div className="space-y-3"><Textarea value={notes} onChange={(event) => setNotes(event.target.value)} className="min-h-72" /><div className="flex justify-end gap-2"><Button variant="ghost" onClick={() => { setNotes(example.notes); setEditing(false); }}>Cancel</Button><Button onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending || notes === example.notes}>Save notes</Button></div>{saveMutation.isError ? <p className="text-xs text-destructive">Could not save notes.</p> : null}</div> : <p className="whitespace-pre-wrap text-sm leading-relaxed">{example.notes || "No notes recorded."}</p>}</section>
+        <section><div className="mb-3 flex items-center justify-between"><div><h2 className="text-sm font-semibold">Training notes</h2><p className="mt-1 text-xs text-muted-foreground">Last edited {formatDateTime(example.updatedAt)} · edits are versioned</p></div>{!editing ? <Button variant="ghost" size="sm" onClick={() => setEditing(true)}>Edit</Button> : null}</div>{editing ? <div className="space-y-3"><Textarea value={notes} onChange={(event) => setNotes(event.target.value)} className="min-h-72" /><div className="flex justify-end gap-2"><Button variant="ghost" onClick={() => { setNotes(example.notes); setEditing(false); }}>Cancel</Button><Button onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending || notes === example.notes}>Save notes</Button></div></div> : <p className="whitespace-pre-wrap text-sm leading-relaxed">{example.notes || "No notes recorded."}</p>}</section>
         <section className="min-w-0"><div className="mb-3 flex items-center justify-between"><h2 className="text-sm font-semibold">Frozen state</h2><span className="font-mono text-xs text-muted-foreground">read-only</span></div><Tabs defaultValue="thread"><TabsList variant="line" className="w-full justify-start overflow-x-auto"><TabsTrigger value="thread">Thread</TabsTrigger><TabsTrigger value="issue">Issue</TabsTrigger><TabsTrigger value="runs">Runs</TabsTrigger><TabsTrigger value="code">Code</TabsTrigger><TabsTrigger value="decision">Decision</TabsTrigger></TabsList><TabsContent value="thread"><TrainingThreadPanel example={example} liveComments={commentsQuery.data ?? []} /></TabsContent><TabsContent value="issue"><JsonPanel value={example.snapshot.issue} /></TabsContent><TabsContent value="runs"><JsonPanel value={example.snapshot.runs} /></TabsContent><TabsContent value="code"><JsonPanel value={example.snapshot.code} /></TabsContent><TabsContent value="decision"><JsonPanel value={example.snapshot.decision} /></TabsContent></Tabs></section>
       </div>
     </div>
