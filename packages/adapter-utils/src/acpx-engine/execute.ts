@@ -724,6 +724,44 @@ function normalizeRequestedThinkingEffort(config: Record<string, unknown>): stri
   ).trim();
 }
 
+function buildCodexStartupConfig(input: {
+  existingConfig: string | undefined;
+  requestedModel: string;
+  requestedThinkingEffort: string;
+  fastMode: boolean;
+}): string | null {
+  const hasRuntimeConfig = Boolean(
+    input.requestedModel || input.requestedThinkingEffort || input.fastMode,
+  );
+  if (!hasRuntimeConfig) return null;
+
+  let existing: Record<string, unknown> = {};
+  if (input.existingConfig) {
+    try {
+      existing = parseObject(JSON.parse(input.existingConfig));
+    } catch {
+      existing = {};
+    }
+  }
+
+  return JSON.stringify({
+    ...existing,
+    ...(input.requestedModel ? { model: input.requestedModel } : {}),
+    ...(input.requestedThinkingEffort
+      ? { model_reasoning_effort: input.requestedThinkingEffort }
+      : {}),
+    ...(input.fastMode
+      ? {
+          service_tier: "fast",
+          features: {
+            ...parseObject(existing.features),
+            fast_mode: true,
+          },
+        }
+      : {}),
+  });
+}
+
 function isCompatibleSession(
   params: Record<string, unknown>,
   runtime: Pick<AcpxPreparedRuntime, "fingerprint" | "sessionKey" | "cwd" | "mode" | "acpxAgent" | "remoteExecutionIdentity">,
@@ -1074,6 +1112,15 @@ async function buildRuntime(input: {
   if (requestedModel && acpxAgent === "claude" && !env.ANTHROPIC_MODEL) {
     env.ANTHROPIC_MODEL = requestedModel;
   }
+  if (acpxAgent === "codex") {
+    const codexStartupConfig = buildCodexStartupConfig({
+      existingConfig: env.CODEX_CONFIG,
+      requestedModel,
+      requestedThinkingEffort,
+      fastMode,
+    });
+    if (codexStartupConfig) env.CODEX_CONFIG = codexStartupConfig;
+  }
 
   let skillPromptInstructions = "";
   let skillsIdentity: Record<string, unknown> = { mode: "unsupported" };
@@ -1289,19 +1336,23 @@ async function buildRuntime(input: {
 
 function sessionConfigOptions(prepared: AcpxPreparedRuntime): Array<{ key: string; value: string }> {
   const options: Array<{ key: string; value: string }> = [];
-  // Model for the claude agent is pre-set via ANTHROPIC_MODEL env var at
-  // startup; skip set_config_option to avoid ACP-server model-name validation
-  // that rejects bare IDs like "claude-opus-4-7" in some runtime versions.
-  if (prepared.requestedModel && prepared.acpxAgent !== "claude") {
+  // Claude and Codex runtime config is pre-set via startup env vars; skip
+  // set_config_option to avoid ACP-server picker validation rejecting valid
+  // backend model IDs that are not advertised by the local ACP server.
+  if (
+    prepared.requestedModel &&
+    prepared.acpxAgent !== "claude" &&
+    prepared.acpxAgent !== "codex"
+  ) {
     options.push({ key: "model", value: prepared.requestedModel });
   }
-  if (prepared.requestedThinkingEffort) {
+  if (prepared.requestedThinkingEffort && prepared.acpxAgent !== "codex") {
     options.push({
-      key: prepared.acpxAgent === "codex" ? "reasoning_effort" : "effort",
+      key: "effort",
       value: prepared.requestedThinkingEffort,
     });
   }
-  if (prepared.fastMode) {
+  if (prepared.fastMode && prepared.acpxAgent !== "codex") {
     options.push(
       { key: "service_tier", value: "fast" },
       { key: "features.fast_mode", value: "true" },
@@ -2059,6 +2110,8 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             ? [
                 prepared.acpxAgent === "claude"
                   ? `Requested ACPX model: ${prepared.requestedModel} (set via ANTHROPIC_MODEL env at startup).`
+                  : prepared.acpxAgent === "codex"
+                    ? `Requested ACPX model: ${prepared.requestedModel} (set via CODEX_CONFIG at startup).`
                   : `Requested ACPX model: ${prepared.requestedModel}.`,
               ]
             : []),
