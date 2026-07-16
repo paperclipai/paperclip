@@ -10,11 +10,11 @@ export async function coordinateHeartbeatSchedulerShutdown<
   waitForHeartbeatSchedulerIdle: () => Promise<void>;
 }): Promise<{
   hotRestart: TPreparation | null;
-  preparationError: unknown | null;
+  preparationError: unknown;
   waitedForSchedulerIdle: boolean;
 }> {
   let hotRestart: TPreparation | null = null;
-  let preparationError: unknown | null = null;
+  let preparationError: unknown = null;
 
   if (input.prepareHotRestartShutdown) {
     try {

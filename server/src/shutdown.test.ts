@@ -55,6 +55,23 @@ describe("coordinateHeartbeatSchedulerShutdown", () => {
     });
   });
 
+  it("waits for scheduler idle when hot-restart preparation is unavailable", async () => {
+    const waitForHeartbeatSchedulerIdle = vi.fn(async () => undefined);
+
+    const result = await coordinateHeartbeatSchedulerShutdown({
+      signal: "SIGTERM",
+      prepareHotRestartShutdown: null,
+      waitForHeartbeatSchedulerIdle,
+    });
+
+    expect(waitForHeartbeatSchedulerIdle).toHaveBeenCalledOnce();
+    expect(result).toEqual({
+      hotRestart: null,
+      preparationError: null,
+      waitedForSchedulerIdle: true,
+    });
+  });
+
   it("falls back to the scheduler idle wait when hot-restart preparation fails", async () => {
     const preparationError = new Error("snapshot failed");
     const waitForHeartbeatSchedulerIdle = vi.fn(async () => undefined);
