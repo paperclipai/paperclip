@@ -1743,6 +1743,7 @@ export function authorizationService(db: Db) {
       }
 
       if (targetUserId !== responsibleUserId) {
+        // Cross-user grants are board-admin overrides; user policies only govern responsible-user default access.
         const grant = await findGrant(companyId, "agent", actorAgentId, "inbox:manage");
         if (!grant) {
           return deny({

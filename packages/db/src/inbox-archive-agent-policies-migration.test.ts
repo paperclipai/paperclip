@@ -49,6 +49,7 @@ describeEmbeddedPostgres("inbox archive agent policy migration", () => {
       const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
       const companyId = randomUUID();
       const agentId = randomUUID();
+      const deletedAgentId = randomUUID();
       const issueId = randomUUID();
       const runId = randomUUID();
       const legacyArchiveId = randomUUID();
@@ -72,6 +73,10 @@ describeEmbeddedPostgres("inbox archive agent policy migration", () => {
         await sql`
           INSERT INTO "agents" ("id", "company_id", "name", "role", "adapter_type", "adapter_config")
           VALUES (${agentId}, ${companyId}, 'Inbox agent', 'engineer', 'process', '{}'::jsonb)
+        `;
+        await sql`
+          INSERT INTO "agents" ("id", "company_id", "name", "role", "adapter_type", "adapter_config")
+          VALUES (${deletedAgentId}, ${companyId}, 'Deleted inbox agent', 'engineer', 'process', '{}'::jsonb)
         `;
         await sql`
           INSERT INTO "issues" ("id", "company_id", "title", "identifier")
@@ -147,7 +152,7 @@ describeEmbeddedPostgres("inbox archive agent policy migration", () => {
             "mode",
             "allowed_agent_ids"
           )
-          VALUES (${companyId}, 'agent-managed-user', 'allowlist', ${verifySql.json([agentId])})
+          VALUES (${companyId}, 'agent-managed-user', 'allowlist', ${verifySql.json([agentId, deletedAgentId])})
         `;
         const policies = await verifySql<{
           mode: string;
@@ -158,7 +163,21 @@ describeEmbeddedPostgres("inbox archive agent policy migration", () => {
           WHERE "company_id" = ${companyId}
             AND "user_id" = 'agent-managed-user'
         `;
-        expect(policies).toEqual([{ mode: "allowlist", allowed_agent_ids: [agentId] }]);
+        expect(policies).toEqual([{
+          mode: "allowlist",
+          allowed_agent_ids: [agentId, deletedAgentId],
+        }]);
+
+        await verifySql`DELETE FROM "agents" WHERE "id" = ${deletedAgentId}`;
+        const policiesAfterAgentDeletion = await verifySql<{
+          allowed_agent_ids: string[];
+        }[]>`
+          SELECT "allowed_agent_ids"
+          FROM "user_inbox_agent_policies"
+          WHERE "company_id" = ${companyId}
+            AND "user_id" = 'agent-managed-user'
+        `;
+        expect(policiesAfterAgentDeletion).toEqual([{ allowed_agent_ids: [agentId] }]);
 
         await expect(verifySql`
           INSERT INTO "user_inbox_agent_policies" ("company_id", "user_id", "mode")
