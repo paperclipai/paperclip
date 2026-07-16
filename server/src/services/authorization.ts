@@ -1765,7 +1765,6 @@ export function authorizationService(db: Db) {
       const isLegacyCreator = canCreateAgentsLegacy(actorAgent);
       if (
         input.action === "issue:comment" &&
-        resource?.assigneeAgentId &&
         // Legacy agent creators are intentionally company-wide; manager grants are hierarchy-scoped.
         (isLegacyCreator || await isManagerOf(companyId, actorAgentId, resource.assigneeAgentId))
       ) {
