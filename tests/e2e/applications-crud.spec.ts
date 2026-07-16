@@ -1,4 +1,6 @@
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
+import { createServer, type Server } from "node:http";
+import { listenOnFetchAllowedPort } from "./fetch-allowed-port";
 
 // Current Apps lifecycle coverage. The legacy Tools -> Applications CRUD table
 // was retired; old links now redirect to /apps. Keep this harness focused on
@@ -9,8 +11,55 @@ type SeedResult = {
   prefix: string;
 };
 
+type MockMcpServer = {
+  url: string;
+  close: () => Promise<void>;
+};
+
 const SCREENSHOT_DIR = "test-results";
 const APP_PREFIX = `QA 10820 ${Date.now().toString(36)}`;
+
+async function startMockMcp(): Promise<MockMcpServer> {
+  const server: Server = createServer(async (req, res) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) chunks.push(chunk as Buffer);
+
+    let payload: { id?: string | number; method?: string } = {};
+    try {
+      payload = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+    } catch {
+      // Ignore non-JSON requests from the connect wizard probes.
+    }
+
+    if (payload.method === "tools/list") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        jsonrpc: "2.0",
+        id: payload.id ?? null,
+        result: {
+          tools: [
+            {
+              name: "list_widgets",
+              title: "List widgets",
+              description: "Read-only listing of widgets.",
+              inputSchema: { type: "object", properties: {}, additionalProperties: false },
+            },
+          ],
+        },
+      }));
+      return;
+    }
+
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ jsonrpc: "2.0", id: payload.id ?? null, result: {} }));
+  });
+
+  const port = await listenOnFetchAllowedPort(server);
+  return {
+    url: `http://127.0.0.1:${port}`,
+    close: () => new Promise((resolve) => server.close(() => resolve())),
+  };
+}
 
 async function discoverCompany(request: APIRequestContext): Promise<SeedResult> {
   const res = await request.post("/api/companies", {
@@ -41,19 +90,27 @@ async function createApplication(
 async function createConnection(
   request: APIRequestContext,
   companyId: string,
-  data: { applicationName?: string; applicationId?: string; name: string; transport?: string; config?: object },
+  mock: MockMcpServer,
+  data: { name: string },
 ): Promise<{ id: string; applicationId: string; name: string }> {
-  const res = await request.post(`/api/companies/${companyId}/tools/connections`, {
+  const res = await request.post(`/api/companies/${companyId}/tools/apps/connect`, {
     data: {
-      transport: "remote_http",
-      config: { url: "https://fixture.example/mcp" },
-      enabled: true,
-      status: "active",
+      link: mock.url,
+      credentialValues: { "credentials.authorization": "qa-token" },
       ...data,
     },
   });
   if (!res.ok()) throw new Error(`create connection failed ${res.status()}: ${await res.text()}`);
-  return res.json();
+  const body = await res.json();
+  const activate = await request.patch(`/api/tool-connections/${body.connectionId as string}`, {
+    data: { enabled: true, status: "active" },
+  });
+  if (!activate.ok()) throw new Error(`activate connection failed ${activate.status()}: ${await activate.text()}`);
+  return {
+    id: body.connectionId as string,
+    applicationId: body.application.id as string,
+    name: body.application.name as string,
+  };
 }
 
 async function gotoApps(page: Page, prefix: string) {
@@ -63,12 +120,15 @@ async function gotoApps(page: Page, prefix: string) {
 
 test.describe.serial("applications lifecycle", () => {
   let seed: SeedResult;
+  let mock: MockMcpServer;
 
   test.beforeAll(async ({ request }) => {
+    mock = await startMockMcp();
     seed = await discoverCompany(request);
   });
 
   test.afterAll(async ({ request }) => {
+    await mock?.close();
     if (!seed?.companyId) return;
     await request.delete(`/api/companies/${seed.companyId}`).catch(() => undefined);
   });
@@ -76,8 +136,7 @@ test.describe.serial("applications lifecycle", () => {
   test("Connections list surfaces connected and not-connected apps", async ({ page, request }) => {
     const connectedName = `${APP_PREFIX}-connected`;
     const notConnectedName = `${APP_PREFIX}-not-connected`;
-    const connected = await createConnection(request, seed.companyId, {
-      applicationName: connectedName,
+    const connected = await createConnection(request, seed.companyId, mock, {
       name: connectedName,
     });
     const notConnected = await createApplication(request, seed.companyId, { name: notConnectedName });
@@ -106,8 +165,7 @@ test.describe.serial("applications lifecycle", () => {
   test("connected app detail supports pause, rename, and removal", async ({ page, request }) => {
     const appName = `${APP_PREFIX}-detail-app`;
     const renamed = `${APP_PREFIX}-renamed-app`;
-    const connection = await createConnection(request, seed.companyId, {
-      applicationName: appName,
+    const connection = await createConnection(request, seed.companyId, mock, {
       name: appName,
     });
 
