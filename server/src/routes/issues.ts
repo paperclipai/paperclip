@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import { z } from "zod";
-import { and, asc, desc, eq, inArray, isNull, notInArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -21,6 +21,7 @@ import {
   pipelineStages,
   pipelines,
   projectWorkspaces,
+  workspaceOperations,
 } from "@paperclipai/db";
 import {
   addIssueCommentSchema,
@@ -5529,6 +5530,44 @@ export function issueRoutes(
 
     const actionStatus = outcome === "cancelled" ? "cancelled" : "resolved";
     const result = await db.transaction(async (tx) => {
+      await tx.execute(sql`
+        select ${issueRows.id}
+        from ${issueRows}
+        where ${issueRows.companyId} = ${existing.companyId}
+          and ${issueRows.id} = ${existing.id}
+        for update
+      `);
+
+      const lockedRecoveryAction = await recoveryActionsSvc.getActiveForIssue(
+        existing.companyId,
+        existing.id,
+        tx,
+      );
+      if (lockedRecoveryAction?.cause === "workspace_finalize_failed" && actionStatus !== "cancelled") {
+        const latestFinalize = await tx
+          .select({ status: workspaceOperations.status })
+          .from(workspaceOperations)
+          .where(
+            and(
+              eq(workspaceOperations.companyId, existing.companyId),
+              eq(workspaceOperations.issueId, existing.id),
+              eq(workspaceOperations.phase, "workspace_finalize"),
+            ),
+          )
+          .orderBy(
+            desc(workspaceOperations.startedAt),
+            desc(workspaceOperations.createdAt),
+            desc(workspaceOperations.id),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+        if (latestFinalize?.status !== "succeeded") {
+          throw unprocessable(
+            "Workspace finalization recovery requires a newer successful workspace finalization before resolution",
+          );
+        }
+      }
+
       let issue = existing;
       if (outcome === "blocked") {
         const unresolvedBlockers = await tx

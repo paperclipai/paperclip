@@ -16,6 +16,7 @@ import {
   issueRecoveryActions,
   issueRelations,
   issues,
+  workspaceOperations,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -858,6 +859,106 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       id: action.id,
       status: "active",
     });
+  });
+
+  it("rejects restored done resolution while the latest issue finalize is failed", async () => {
+    const { companyId, managerId, sourceIssueId } = await seedCompany();
+    const recoveryActionSvc = issueRecoveryActionService(db);
+    const action = await recoveryActionSvc.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "workspace_validation",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      cause: "workspace_finalize_failed",
+      fingerprint: "workspace-validation:failed-latest-manual-resolution",
+      evidence: { sourceRunId: "failed-finalize-run" },
+      nextAction: "Repair and re-finalize the source workspace.",
+      wakePolicy: { type: "manual_repair_required" },
+    });
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, sourceIssueId));
+    await db.insert(workspaceOperations).values({
+      companyId,
+      issueId: sourceIssueId,
+      phase: "workspace_finalize",
+      status: "failed",
+      startedAt: new Date("2026-07-15T19:13:00.000Z"),
+    });
+    const app = createApp();
+
+    const rejected = await request(app)
+      .post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`)
+      .send({
+        actionId: action.id,
+        outcome: "restored",
+        sourceIssueStatus: "done",
+        resolutionNote: "The source issue was already marked done.",
+      })
+      .expect(422);
+
+    expect(rejected.body.error).toContain("newer successful workspace finalization");
+    await expect(recoveryActionSvc.getActiveForIssue(companyId, sourceIssueId)).resolves.toMatchObject({
+      id: action.id,
+      status: "active",
+      cause: "workspace_finalize_failed",
+    });
+  });
+
+  it("allows restored done resolution after a newer issue finalize succeeds", async () => {
+    const { companyId, managerId, sourceIssueId } = await seedCompany();
+    const recoveryActionSvc = issueRecoveryActionService(db);
+    const action = await recoveryActionSvc.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "workspace_validation",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      cause: "workspace_finalize_failed",
+      fingerprint: "workspace-validation:succeeded-latest-manual-resolution",
+      evidence: { sourceRunId: "failed-finalize-run" },
+      nextAction: "Repair and re-finalize the source workspace.",
+      wakePolicy: { type: "manual_repair_required" },
+    });
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, sourceIssueId));
+    await db.insert(workspaceOperations).values([
+      {
+        companyId,
+        issueId: sourceIssueId,
+        phase: "workspace_finalize",
+        status: "failed",
+        startedAt: new Date("2026-07-15T19:13:00.000Z"),
+      },
+      {
+        companyId,
+        issueId: sourceIssueId,
+        phase: "workspace_finalize",
+        status: "succeeded",
+        startedAt: new Date("2026-07-15T19:15:00.000Z"),
+      },
+    ]);
+    const app = createApp();
+
+    const resolved = await request(app)
+      .post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`)
+      .send({
+        actionId: action.id,
+        outcome: "restored",
+        sourceIssueStatus: "done",
+        resolutionNote: "The repaired workspace finalized successfully.",
+      })
+      .expect(200);
+
+    expect(resolved.body.issue).toMatchObject({
+      id: sourceIssueId,
+      status: "done",
+      activeRecoveryAction: null,
+    });
+    expect(resolved.body.recoveryAction).toMatchObject({
+      id: action.id,
+      status: "resolved",
+      outcome: "restored",
+    });
+    await expect(recoveryActionSvc.getActiveForIssue(companyId, sourceIssueId)).resolves.toBeNull();
   });
 
   it("completes terminal recovery while a normal upsert waits on the source issue lock", async () => {
