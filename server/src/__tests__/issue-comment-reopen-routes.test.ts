@@ -325,6 +325,7 @@ describe.sequential("issue comment reopen routes", () => {
       blockerIssueIds: [],
       unresolvedBlockerIssueIds: [],
       unresolvedBlockerCount: 0,
+      pendingFinalizeBlockerIssueIds: [],
       allBlockersDone: true,
       isDependencyReady: true,
     });
@@ -853,6 +854,60 @@ describe.sequential("issue comment reopen routes", () => {
     ));
   });
 
+  it("moves blocked issues with only pending-finalize done blockers back to todo via POST human comments", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("blocked"));
+    mockIssueService.getDependencyReadiness.mockResolvedValue({
+      issueId: "11111111-1111-4111-8111-111111111111",
+      blockerIssueIds: ["33333333-3333-4333-8333-333333333333"],
+      unresolvedBlockerIssueIds: ["33333333-3333-4333-8333-333333333333"],
+      unresolvedBlockerCount: 1,
+      pendingFinalizeBlockerIssueIds: ["33333333-3333-4333-8333-333333333333"],
+      allBlockersDone: false,
+      isDependencyReady: false,
+    });
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue("blocked"),
+      ...patch,
+    }));
+
+    const res = await request(await installActor(createApp()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "please continue while finalization recovers" });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      { status: "todo" },
+    );
+    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      "22222222-2222-4222-8222-222222222222",
+      expect.objectContaining({ reason: "issue_reopened_via_comment" }),
+    ));
+  });
+
+  it("does not move assigned blocked issues to todo via POST agent comments", async () => {
+    const assigneeAgentId = "22222222-2222-4222-8222-222222222222";
+    mockIssueService.getById.mockResolvedValue(makeIssue("blocked"));
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-1",
+      issueId: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      body: "agent progress note",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      authorAgentId: assigneeAgentId,
+      authorUserId: null,
+    });
+
+    const res = await request(await installActor(createApp(), agentActor(assigneeAgentId)))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "agent progress note" });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.getDependencyReadiness).not.toHaveBeenCalled();
+  });
+
   it("moves in-progress issues with a scheduled retry back to todo via POST human comments", async () => {
     const issue = {
       ...makeIssue("in_progress"),
@@ -1245,6 +1300,41 @@ describe.sequential("issue comment reopen routes", () => {
           mutation: "comment",
         }),
       }),
+    ));
+  });
+
+  it("moves blocked issues with only pending-finalize done blockers back to todo via PATCH human comments", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("blocked"));
+    mockIssueService.getDependencyReadiness.mockResolvedValue({
+      issueId: "11111111-1111-4111-8111-111111111111",
+      blockerIssueIds: ["33333333-3333-4333-8333-333333333333"],
+      unresolvedBlockerIssueIds: ["33333333-3333-4333-8333-333333333333"],
+      unresolvedBlockerCount: 1,
+      pendingFinalizeBlockerIssueIds: ["33333333-3333-4333-8333-333333333333"],
+      allBlockersDone: false,
+      isDependencyReady: false,
+    });
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue("blocked"),
+      ...patch,
+    }));
+
+    const res = await request(await installActor(createApp()))
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ comment: "please continue while finalization recovers" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({
+        status: "todo",
+        actorAgentId: null,
+        actorUserId: "local-board",
+      }),
+    );
+    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      "22222222-2222-4222-8222-222222222222",
+      expect.objectContaining({ reason: "issue_reopened_via_comment" }),
     ));
   });
 
