@@ -30,6 +30,7 @@ export const workspaceOperations = pgTable(
       onDelete: "set null",
     }),
     phase: text("phase").notNull(),
+    terminalBarrier: boolean("terminal_barrier").notNull().default(false),
     command: text("command"),
     cwd: text("cwd"),
     status: text("status").notNull().default("running"),
@@ -46,6 +47,7 @@ export const workspaceOperations = pgTable(
     finishedAt: timestamp("finished_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    reconciledAt: timestamp("reconciled_at", { withTimezone: true }),
   },
   (table) => ({
     companyRunStartedIdx: index("workspace_operations_company_run_started_idx").on(
@@ -73,5 +75,13 @@ export const workspaceOperations = pgTable(
         table.id.desc(),
       )
       .where(sql`${table.phase} = 'workspace_finalize' and ${table.issueId} is not null`),
+    terminalFinalizeReconcileIdx: index("workspace_operations_terminal_finalize_reconcile_idx")
+      .on(
+        table.startedAt,
+        table.id,
+        table.companyId,
+        table.issueId,
+      )
+      .where(sql`${table.terminalBarrier} = true and ${table.reconciledAt} is null and ${table.issueId} is not null`),
   }),
 );

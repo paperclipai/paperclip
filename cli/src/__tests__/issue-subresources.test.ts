@@ -101,6 +101,14 @@ describe("issue subresource commands", () => {
     ]);
   });
 
+  it("requires an explicit recovery action identity before resolving", async () => {
+    await expect(run([
+      "issue", "recovery:resolve", ISSUE_ID,
+      "--outcome", "restored",
+      "--source-issue-status", "todo",
+    ])).rejects.toMatchObject({ code: "commander.missingMandatoryOptionValue" });
+  });
+
   it("wraps document and work product endpoints", async () => {
     const fetchMock = vi
       .fn()

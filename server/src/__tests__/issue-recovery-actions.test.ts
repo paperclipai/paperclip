@@ -1149,6 +1149,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       companyId,
       issueId: sourceIssueId,
       phase: "workspace_finalize",
+      terminalBarrier: true,
       status: "failed",
       startedAt: new Date("2026-07-15T19:13:00.000Z"),
     });
@@ -1193,6 +1194,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
         companyId,
         issueId: sourceIssueId,
         phase: "workspace_finalize",
+        terminalBarrier: true,
         status: "failed",
         startedAt: new Date("2026-07-15T19:13:00.000Z"),
       },
@@ -1200,6 +1202,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
         companyId,
         issueId: sourceIssueId,
         phase: "workspace_finalize",
+        terminalBarrier: true,
         status: "succeeded",
         startedAt: new Date("2026-07-15T19:15:00.000Z"),
       },
@@ -1262,7 +1265,20 @@ describeEmbeddedPostgres("issue recovery actions", () => {
           sourceIssueStatus: "todo",
         })
         .then((response) => response);
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      const lockDeadline = Date.now() + 2_000;
+      while (true) {
+        const blocked = await db.execute(sql`
+          select 1
+          from pg_locks
+          where granted = false
+          limit 1
+        `);
+        if (blocked.length > 0) break;
+        if (Date.now() >= lockDeadline) {
+          throw new Error("resolution request never reached the locked replacement barrier");
+        }
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
       await recoveryActionSvc.upsertSourceScoped({
         companyId,
         sourceIssueId,
@@ -1283,6 +1299,69 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       ownerAgentId: coderId,
       cause: "owner-b-replacement",
       status: "active",
+    });
+  });
+
+  it("re-mediates manager override after revocation while the source issue is locked", async () => {
+    const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
+    await db.update(issues).set({ assigneeAgentId: null }).where(eq(issues.id, sourceIssueId));
+    const recoveryActionSvc = issueRecoveryActionService(db);
+    const action = await recoveryActionSvc.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "issue_graph_liveness",
+      ownerType: "agent",
+      ownerAgentId: coderId,
+      cause: "manager-revocation-race",
+      fingerprint: "manager-revocation-race",
+      nextAction: "Only current authority may resolve this action.",
+    });
+    const app = createApp({
+      type: "agent",
+      agentId: managerId,
+      companyId,
+      runId: randomUUID(),
+      source: "agent_key",
+    });
+    let resolutionRequest!: Promise<any>;
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`select ${issues.id} from ${issues} where ${issues.id} = ${sourceIssueId} for update`);
+      resolutionRequest = request(app)
+        .post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`)
+        .send({
+          actionId: action.id,
+          outcome: "restored",
+          sourceIssueStatus: "todo",
+        })
+        .then((response) => response);
+      const barrier = (async () => {
+        const lockDeadline = Date.now() + 2_000;
+        while (true) {
+          const blocked = await db.execute(sql`select 1 from pg_locks where granted = false limit 1`);
+          if (blocked.length > 0) return { kind: "blocked" as const };
+          if (Date.now() >= lockDeadline) return { kind: "timeout" as const };
+          await new Promise((resolve) => setTimeout(resolve, 5));
+        }
+      })();
+      const interleaving = await Promise.race([
+        barrier,
+        resolutionRequest.then((response) => ({ kind: "response" as const, response })),
+      ]);
+      if (interleaving.kind !== "blocked") {
+        throw new Error(interleaving.kind === "response"
+          ? `resolution returned before lock barrier: ${interleaving.response.status} ${JSON.stringify(interleaving.response.body)}`
+          : "resolution request never reached authority barrier");
+      }
+      await tx.update(agents).set({ reportsTo: null, updatedAt: new Date() }).where(eq(agents.id, coderId));
+    });
+
+    const rejected = await resolutionRequest;
+    expect(rejected.status).toBe(403);
+    expect(rejected.body.error).toContain("authority changed");
+    await expect(recoveryActionSvc.getActiveForIssue(companyId, sourceIssueId)).resolves.toMatchObject({
+      id: action.id,
+      status: "active",
+      ownerAgentId: coderId,
     });
   });
 

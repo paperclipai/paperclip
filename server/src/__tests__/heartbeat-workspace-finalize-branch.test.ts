@@ -341,6 +341,7 @@ async function seedTerminalFinalizeResult(
     heartbeatRunId: runId,
     issueId: input.issueId,
     phase: "workspace_finalize",
+    terminalBarrier: true,
     status: input.status,
     startedAt: input.startedAt,
     finishedAt: input.startedAt,
@@ -412,6 +413,57 @@ describeEmbeddedPostgres("heartbeat workspace finalization branch guard", () => 
   afterAll(async () => {
     await db.$client.end();
     await tempDb?.cleanup();
+  });
+
+  it("persists terminal-finalize intent before the adapter can mark its issue done", async () => {
+    const repoRoot = await createGitRepo();
+    tempRoots.push(repoRoot);
+    const { agentId, issueId } = await seedRunTarget(db, repoRoot);
+    let adapterEntered!: () => void;
+    const adapterEntry = new Promise<void>((resolve) => {
+      adapterEntered = resolve;
+    });
+    let releaseAdapter!: () => void;
+    const adapterRelease = new Promise<void>((resolve) => {
+      releaseAdapter = resolve;
+    });
+    adapterExecute.mockImplementationOnce(async () => {
+      await db.update(issues).set({ status: "done", updatedAt: new Date() }).where(eq(issues.id, issueId));
+      adapterEntered();
+      await adapterRelease;
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        summary: "Adapter completed after durable finalize intent inspection.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+
+    const heartbeat = heartbeatService(db);
+    const run = await wakeIssue(heartbeat, agentId, issueId);
+    expect(run).not.toBeNull();
+    await adapterEntry;
+    await expect(db
+      .select({
+        status: workspaceOperations.status,
+        terminalBarrier: workspaceOperations.terminalBarrier,
+        issueId: workspaceOperations.issueId,
+      })
+      .from(workspaceOperations)
+      .where(and(
+        eq(workspaceOperations.heartbeatRunId, run!.id),
+        eq(workspaceOperations.phase, "workspace_finalize"),
+      )))
+      .resolves.toEqual([{
+        status: "running",
+        terminalBarrier: true,
+        issueId,
+      }]);
+
+    releaseAdapter();
+    await expect(waitForRunToFinish(heartbeat, run!.id)).resolves.toMatchObject({ status: "succeeded" });
   });
 
   it("repairs clean unrecorded branch drift before recording workspace finalization", async () => {
@@ -986,6 +1038,7 @@ describeEmbeddedPostgres("heartbeat workspace finalization branch guard", () => 
       heartbeatRunId: succeededRunId,
       issueId,
       phase: "workspace_finalize",
+      terminalBarrier: true,
       status: "succeeded",
       startedAt: new Date("2026-07-15T21:01:00.000Z"),
       finishedAt: new Date("2026-07-15T21:01:00.000Z"),
@@ -1015,6 +1068,139 @@ describeEmbeddedPostgres("heartbeat workspace finalization branch guard", () => 
       status: "resolved",
       outcome: "restored",
     });
+  });
+
+  it("projects stale-running crash evidence once and keeps replay idempotent after run cleanup", async () => {
+    const repoRoot = await createGitRepo();
+    tempRoots.push(repoRoot);
+    const { companyId, agentId, issueId } = await seedRunTarget(db, repoRoot);
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, issueId));
+    const runId = randomUUID();
+    const operationId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "automation",
+      status: "failed",
+      responsibleUserId: "responsible-user",
+      contextSnapshot: { issueId },
+    });
+    await db.insert(workspaceOperations).values({
+      id: operationId,
+      companyId,
+      heartbeatRunId: runId,
+      issueId,
+      phase: "workspace_finalize",
+      terminalBarrier: true,
+      status: "running",
+      startedAt: new Date("2026-07-15T21:30:00.000Z"),
+    });
+
+    const heartbeat = heartbeatService(db);
+    await expect(heartbeat.reconcileStrandedAssignedIssues()).resolves.toMatchObject({
+      terminalFinalizeRecoveryOpened: 1,
+      issueIds: [issueId],
+    });
+    const active = await waitForRecoveryAction(db, issueId, "active");
+    expect(active).toMatchObject({
+      cause: "workspace_finalize_failed",
+      attemptCount: 1,
+      evidence: { workspaceFinalizeOperationId: operationId },
+    });
+    await expect(db.select({ status: workspaceOperations.status }).from(workspaceOperations).where(eq(workspaceOperations.id, operationId)))
+      .resolves.toEqual([{ status: "failed" }]);
+
+    await deleteHeartbeatRowsAfterActivityLogDrains(db);
+    await db
+      .update(workspaceOperations)
+      .set({ reconciledAt: null })
+      .where(eq(workspaceOperations.id, operationId));
+    await expect(heartbeat.reconcileStrandedAssignedIssues()).resolves.toMatchObject({
+      terminalFinalizeRecoveryOpened: 0,
+      terminalFinalizeRecoveryResolved: 0,
+      issueIds: [],
+    });
+    await expect(waitForRecoveryAction(db, issueId, "active")).resolves.toMatchObject({
+      id: active?.id,
+      attemptCount: 1,
+      evidence: { workspaceFinalizeOperationId: operationId },
+    });
+    const [replayedOperation] = await db
+      .select({
+        heartbeatRunId: workspaceOperations.heartbeatRunId,
+        reconciledAt: workspaceOperations.reconciledAt,
+      })
+      .from(workspaceOperations)
+      .where(eq(workspaceOperations.id, operationId));
+    expect(replayedOperation?.heartbeatRunId).toBeNull();
+    expect(replayedOperation?.reconciledAt).toBeInstanceOf(Date);
+  });
+
+  it("pages only unreconciled terminal-finalize deltas through the bounded recovery index", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Finalize scale company",
+      issuePrefix: "FSC",
+      requireBoardApprovalForNewAgents: false,
+    });
+    const issueRows = Array.from({ length: 105 }, (_, index) => ({
+      id: randomUUID(),
+      companyId,
+      title: `Completed issue ${index}`,
+      status: "done" as const,
+      priority: "medium" as const,
+      issueNumber: index + 1,
+      identifier: `FSC-${index + 1}`,
+    }));
+    await db.insert(issues).values(issueRows);
+    await db.insert(workspaceOperations).values(issueRows.map((issue, index) => ({
+      companyId,
+      issueId: issue.id,
+      phase: "workspace_finalize",
+      terminalBarrier: true,
+      status: "succeeded",
+      startedAt: new Date(Date.UTC(2026, 6, 15, 22, 0, index)),
+      finishedAt: new Date(Date.UTC(2026, 6, 15, 22, 0, index)),
+    })));
+
+    const explainPlan = await db.transaction(async (tx) => {
+      await tx.execute(sql`set local enable_seqscan = off`);
+      return tx.execute(sql`
+        explain
+        select id
+        from workspace_operations
+        where terminal_barrier = true
+          and reconciled_at is null
+          and issue_id is not null
+        order by started_at, id
+        limit 100
+      `);
+    });
+    expect(JSON.stringify(explainPlan)).toContain("workspace_operations_terminal_finalize_reconcile_idx");
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.reconcileStrandedAssignedIssues();
+    await expect(db.execute(sql`
+      select count(*)::int as count
+      from workspace_operations
+      where company_id = ${companyId} and reconciled_at is not null
+    `)).resolves.toEqual([{ count: 100 }]);
+
+    await heartbeat.reconcileStrandedAssignedIssues();
+    await expect(db.execute(sql`
+      select count(*)::int as count
+      from workspace_operations
+      where company_id = ${companyId} and reconciled_at is not null
+    `)).resolves.toEqual([{ count: 105 }]);
+
+    await heartbeat.reconcileStrandedAssignedIssues();
+    await expect(db.execute(sql`
+      select count(*)::int as count
+      from workspace_operations
+      where company_id = ${companyId} and reconciled_at is null
+    `)).resolves.toEqual([{ count: 0 }]);
   });
 
   it("keeps terminal failure sticky when production promotion races an ordinary recovery upsert", async () => {

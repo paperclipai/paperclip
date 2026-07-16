@@ -289,46 +289,67 @@ function createWorkspaceOperationRecorderDouble() {
   }> = [];
   let executionWorkspaceId: string | null = null;
 
+  const completeOperation = async (
+    input: {
+      phase: WorkspaceOperation["phase"];
+      command?: string | null;
+      cwd?: string | null;
+      metadata?: Record<string, unknown> | null;
+    },
+    result: (typeof operations)[number]["result"],
+  ): Promise<WorkspaceOperation> => {
+    operations.push({
+      phase: input.phase,
+      command: input.command ?? null,
+      cwd: input.cwd ?? null,
+      metadata: {
+        ...(input.metadata ?? {}),
+        ...(executionWorkspaceId ? { executionWorkspaceId } : {}),
+      },
+      result,
+    });
+    return {
+      id: `op-${operations.length}`,
+      companyId: "company-1",
+      executionWorkspaceId,
+      heartbeatRunId: "run-1",
+      issueId: null,
+      phase: input.phase,
+      command: input.command ?? null,
+      cwd: input.cwd ?? null,
+      status: (result.status ?? "succeeded") as WorkspaceOperation["status"],
+      exitCode: result.exitCode ?? null,
+      logStore: "local_file",
+      logRef: `op-${operations.length}.ndjson`,
+      logBytes: 0,
+      logSha256: null,
+      logCompressed: false,
+      stdoutExcerpt: result.stdout ?? null,
+      stderrExcerpt: result.stderr ?? null,
+      metadata: input.metadata ?? null,
+      startedAt: new Date(),
+      finishedAt: new Date(),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+  };
+
   const recorder: WorkspaceOperationRecorder = {
     attachExecutionWorkspaceId: async (nextExecutionWorkspaceId) => {
       executionWorkspaceId = nextExecutionWorkspaceId;
     },
+    beginOperation: async (input) => ({
+      id: `op-${operations.length + 1}`,
+      finish: async (result) => completeOperation(input, result),
+      fail: async (error, metadata) => completeOperation(input, {
+        status: "failed",
+        stderr: error instanceof Error ? error.message : String(error),
+        metadata,
+      }),
+    }),
     recordOperation: async (input) => {
       const result = await input.run();
-      operations.push({
-        phase: input.phase,
-        command: input.command ?? null,
-        cwd: input.cwd ?? null,
-        metadata: {
-          ...(input.metadata ?? {}),
-          ...(executionWorkspaceId ? { executionWorkspaceId } : {}),
-        },
-        result,
-      });
-      return {
-        id: `op-${operations.length}`,
-        companyId: "company-1",
-        executionWorkspaceId,
-        heartbeatRunId: "run-1",
-        issueId: null,
-        phase: input.phase,
-        command: input.command ?? null,
-        cwd: input.cwd ?? null,
-        status: (result.status ?? "succeeded") as WorkspaceOperation["status"],
-        exitCode: result.exitCode ?? null,
-        logStore: "local_file",
-        logRef: `op-${operations.length}.ndjson`,
-        logBytes: 0,
-        logSha256: null,
-        logCompressed: false,
-        stdoutExcerpt: result.stdout ?? null,
-        stderrExcerpt: result.stderr ?? null,
-        metadata: input.metadata ?? null,
-        startedAt: new Date(),
-        finishedAt: new Date(),
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      };
+      return completeOperation(input, result);
     },
   };
 
