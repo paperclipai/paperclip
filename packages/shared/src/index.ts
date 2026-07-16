@@ -1896,6 +1896,7 @@ export {
   companySkillCommentUpdateSchema,
   companySkillForkSchema,
   companySkillRenameSchema,
+  companySkillRenameResultSchema,
   companySkillUpdateSchema,
   companySkillUpdateStatusSchema,
   companySkillAuditFindingSchema,

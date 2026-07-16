@@ -96,6 +96,8 @@ import {
   companySkillImportSchema,
   companySkillProjectScanRequestSchema,
   companySkillProjectScanResultSchema,
+  companySkillRenameResultSchema,
+  companySkillRenameSchema,
   companySkillTestInputCreateSchema,
   companySkillTestInputUpdateSchema,
   companySkillTestRunCreateSchema,
@@ -3780,6 +3782,26 @@ registry.registerPath({
   summary: "List skill files",
   request: { params: z.object({ companyId: z.string(), skillId: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/skills/{skillId}/rename",
+  tags: ["skills"],
+  summary: "Rename a managed company skill",
+  request: {
+    params: z.object({ companyId: z.string(), skillId: z.string() }),
+    body: jsonBody(companySkillRenameSchema),
+  },
+  responses: {
+    200: r.ok(companySkillRenameResultSchema),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
 });
 
 registry.registerPath({
