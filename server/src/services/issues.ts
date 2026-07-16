@@ -3087,7 +3087,10 @@ async function listIssueBlockedInboxAttentionMap(
       : dbOrTx
           .select({
             companyId: heartbeatRuns.companyId,
-            issueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`,
+            issueId: sql<string | null>`coalesce(
+              ${heartbeatRuns.contextSnapshot} ->> 'issueId',
+              ${heartbeatRuns.contextSnapshot} ->> 'taskId'
+            )`,
             agentId: heartbeatRuns.agentId,
             status: heartbeatRuns.status,
           })
@@ -3095,7 +3098,10 @@ async function listIssueBlockedInboxAttentionMap(
           .where(and(
             eq(heartbeatRuns.companyId, companyId),
             eq(heartbeatRuns.status, "scheduled_retry"),
-            inArray(sql<string>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`, graphIssueIds),
+            inArray(sql<string>`coalesce(
+              ${heartbeatRuns.contextSnapshot} ->> 'issueId',
+              ${heartbeatRuns.contextSnapshot} ->> 'taskId'
+            )`, graphIssueIds),
           )),
     graphIssueIds.length === 0
       ? Promise.resolve([])
