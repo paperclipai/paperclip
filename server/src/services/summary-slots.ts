@@ -35,6 +35,7 @@ export const SUMMARIZER_BUILT_IN_KEY = "summarizer";
 const TERMINAL_ISSUE_STATUSES = new Set<IssueStatus>(["done", "cancelled"]);
 
 const DEFAULT_SUMMARY_FORMAT = "markdown";
+const SUMMARY_SLOT_REVISION_LIMIT = 20;
 const SUMMARY_SNAPSHOT_GROUP_LIMIT = 12;
 const SUMMARY_SNAPSHOT_INITIAL_LOOKBACK_MS = 7 * 24 * 60 * 60 * 1_000;
 
@@ -260,7 +261,8 @@ export function summarySlotService(db: Db) {
           eq(documentRevisions.companyId, sel.companyId),
         ),
       )
-      .orderBy(desc(documentRevisions.revisionNumber));
+      .orderBy(desc(documentRevisions.revisionNumber))
+      .limit(SUMMARY_SLOT_REVISION_LIMIT);
     return { slot: mapSlot(slotRow), revisions: revisions.map(mapRevision) };
   }
 
@@ -268,17 +270,8 @@ export function summarySlotService(db: Db) {
     sel: ResolvedSelector,
     patch: Partial<typeof summarySlots.$inferInsert>,
   ): Promise<SummarySlotRow> {
-    const existing = await findSlotRow(sel);
     const now = new Date();
-    if (existing) {
-      const [updated] = await db
-        .update(summarySlots)
-        .set({ ...patch, updatedAt: now })
-        .where(eq(summarySlots.id, existing.id))
-        .returning();
-      return updated ?? existing;
-    }
-    const [created] = await db
+    const [slot] = await db
       .insert(summarySlots)
       .values({
         companyId: sel.companyId,
@@ -290,8 +283,17 @@ export function summarySlotService(db: Db) {
         updatedAt: now,
         ...patch,
       })
+      .onConflictDoUpdate({
+        target: [
+          summarySlots.companyId,
+          summarySlots.scopeKind,
+          summarySlots.scopeId,
+          summarySlots.slotKey,
+        ],
+        set: { ...patch, updatedAt: now },
+      })
       .returning();
-    return created;
+    return slot;
   }
 
   async function resolveGenerationTargetProject(sel: ResolvedSelector): Promise<{
@@ -361,7 +363,10 @@ export function summarySlotService(db: Db) {
       ...(rows.length > 0
         ? rows.map((row) => {
             const identifier = row.identifier ?? "Unnumbered issue";
-            const issueLink = row.identifier ? `[${identifier}](/PAP/issues/${identifier})` : identifier;
+            const companyPrefix = row.identifier?.split("-", 1)[0];
+            const issueLink = companyPrefix
+              ? `[${identifier}](/${companyPrefix}/issues/${identifier})`
+              : identifier;
             return `- ${issueLink} — ${row.title} (${row.priority}; updated ${row.updatedAt.toISOString()})`;
           })
         : ["- None."]),
@@ -462,6 +467,8 @@ export function summarySlotService(db: Db) {
     const { projectId, projectWorkspaceId } = await resolveGenerationTargetProject(sel);
     const scopeSnapshot = await buildScopeSnapshot(sel, existing?.lastGeneratedAt ?? null);
     const createdAt = new Date();
+    const generationVersion = existing?.generatingIssueId ?? existing?.updatedAt.toISOString() ?? "initial";
+    let issueDeduplicated = false;
     const created = await issuesSvc.create(sel.companyId, {
       projectId,
       projectWorkspaceId,
@@ -473,6 +480,16 @@ export function summarySlotService(db: Db) {
       createdByAgentId: actor.agentId ?? null,
       createdByUserId: actor.userId ?? null,
       hiddenAt: createdAt,
+      idempotencyKey: [
+        "summary-slot-generation",
+        sel.scopeKind,
+        sel.scopeId ?? "global",
+        sel.slotKey,
+        generationVersion,
+      ].join(":"),
+      onDeduplicated: (reason) => {
+        issueDeduplicated = reason === "idempotency_key";
+      },
     });
     const generationIssue = (
       await issuesSvc.update(created.id, {
@@ -495,7 +512,7 @@ export function summarySlotService(db: Db) {
         status: generationIssue.status as IssueStatus,
         assigneeAgentId: generationIssue.assigneeAgentId ?? null,
       },
-      alreadyGenerating: false,
+      alreadyGenerating: issueDeduplicated,
     };
   }
 

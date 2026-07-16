@@ -265,21 +265,24 @@ describeEmbeddedPostgres("summary slot service", () => {
       expect(issueRow.description).toContain("Implement summary cards");
       expect(issueRow.description).toContain("### Recently done");
       expect(issueRow.description).toContain("Ship the previous summary");
+      expect(issueRow.description).toContain(`/${issuePrefix(companyId)}/issues/`);
+      expect(issueRow.description).not.toContain("/PAP/issues/");
       expect(issueRow.description).not.toContain("Other project issue");
     });
 
-    it("dedupes duplicate generate clicks while a generation is active", async () => {
+    it("dedupes concurrent generate clicks without creating an orphan task", async () => {
       const companyId = await seedCompany();
       const projectId = await seedProject(companyId);
       await seedSummarizer(companyId);
       const svc = summarySlotService(db);
 
-      const first = await svc.generate(projectSelector(companyId, projectId), { userId: "board-user" });
-      const second = await svc.generate(projectSelector(companyId, projectId), { userId: "board-user" });
+      const [first, second] = await Promise.all([
+        svc.generate(projectSelector(companyId, projectId), { userId: "board-user" }),
+        svc.generate(projectSelector(companyId, projectId), { userId: "board-user" }),
+      ]);
 
-      expect(first.alreadyGenerating).toBe(false);
-      expect(second.alreadyGenerating).toBe(true);
       expect(second.generatingIssue.id).toBe(first.generatingIssue.id);
+      expect([first.alreadyGenerating, second.alreadyGenerating].sort()).toEqual([false, true]);
 
       const issueRows = await db.select().from(issues).where(eq(issues.companyId, companyId));
       expect(issueRows).toHaveLength(1);
@@ -393,6 +396,31 @@ describeEmbeddedPostgres("summary slot service", () => {
       expect(revisions.revisions[0]!.id).toBe(written.revision.id);
       expect(revisions.revisions[1]!.id).toBe(initial.revision.id);
       expect(revisions.revisions[1]!.body).toContain("First summary for this scope.");
+    });
+
+    it("returns only the 20 most recent summary revisions", async () => {
+      const companyId = await seedCompany();
+      const projectId = await seedProject(companyId);
+      const summarizerAgentId = await seedSummarizer(companyId);
+      const { svc, generationIssueId, runId } = await startGeneration(companyId, projectId, summarizerAgentId);
+      const written = await svc.write(
+        { ...projectSelector(companyId, projectId), markdown: "# Summary v1", generationIssueId },
+        { agentId: summarizerAgentId, runId },
+      );
+
+      await db.insert(documentRevisions).values(
+        Array.from({ length: 24 }, (_, index) => ({
+          companyId,
+          documentId: written.document.id,
+          revisionNumber: index + 2,
+          body: `# Summary v${index + 2}`,
+        })),
+      );
+
+      const revisions = await svc.listRevisions(projectSelector(companyId, projectId));
+      expect(revisions.revisions).toHaveLength(20);
+      expect(revisions.revisions[0]!.revisionNumber).toBe(25);
+      expect(revisions.revisions.at(-1)!.revisionNumber).toBe(6);
     });
 
     it("appends further revisions and enforces optimistic baseRevisionId", async () => {

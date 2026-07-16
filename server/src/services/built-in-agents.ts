@@ -1661,10 +1661,10 @@ export function builtInAgentService(db: Db) {
   ): Promise<BuiltInAgentProvisionResult> {
     const definition = requireBuiltInAgentDefinition(key);
     const company = await ensureCompany(companyId);
-    await assertKnownBuiltInAgentModel(definition, input);
     if (!company.requireBoardApprovalForNewAgents) {
       return { state: await ensure(companyId, key, input), approval: null };
     }
+    await assertKnownBuiltInAgentModel(definition, input);
 
     const existing = await findSingleAgent(companyId, definition);
     if (existing) {
