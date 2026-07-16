@@ -378,6 +378,64 @@ describe("DiscoveryGrid Studio entry points", () => {
 
     expect(onOpenCard).not.toHaveBeenCalled();
   });
+
+  it("does not offer move actions for skills in the bundled folder", async () => {
+    const card = {
+      key: "bundled-skill",
+      skillId: "skill-1",
+      folderId: "bundled-folder",
+      catalogRef: null,
+      name: "Bundled Skill",
+      slug: "bundled-skill",
+      author: "Paperclip",
+      version: null,
+      tagline: null,
+      description: null,
+      categories: [],
+      iconUrl: null,
+      color: null,
+      starCount: 0,
+      agentCount: 0,
+      forkCount: 0,
+      installed: true,
+      required: false,
+      forkedFrom: false,
+      updatedAt: 0,
+    };
+    const node = await renderDiscoveryGrid({
+      cards: [card],
+      totalCount: 1,
+      selectMode: true,
+      folderResult: {
+        kind: "skill",
+        folders: [{
+          id: "bundled-folder",
+          companyId: "company-1",
+          kind: "skill",
+          parentId: null,
+          name: "Bundled",
+          slug: "bundled",
+          systemKey: "bundled",
+          path: "bundled",
+          depth: 1,
+          color: null,
+          position: 0,
+          createdAt: new Date("2026-01-01T00:00:00Z"),
+          updatedAt: new Date("2026-01-01T00:00:00Z"),
+          itemCount: 1,
+        }],
+        allCount: 1,
+        unfiledCount: 0,
+      },
+      onMoveCard: vi.fn(),
+      onCreateFolderAndMoveCard: vi.fn(),
+      onOpenMoveCard: vi.fn(),
+    });
+
+    expect(node.querySelector('[aria-label="More actions for Bundled Skill"]')).toBeNull();
+    expect(node.querySelector('input[type="checkbox"]')).toBeNull();
+    expect(node.textContent).not.toContain("Move to folder");
+  });
 });
 
 describe("skills discovery tab routing", () => {

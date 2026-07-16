@@ -110,6 +110,7 @@ import {
   SkillFolderRail,
   folderBreadcrumbTrail,
   reservedRootLabel,
+  isBundledFolder,
   skillFolderDisplayPath,
   skillFolderPathDisplayFallback,
   subtreeFolderIds,
@@ -824,6 +825,10 @@ function SkillCard({
   const badgeFolder = showFolderBadge && card.installed
     ? (card.folderId ? folders?.find((folder) => folder.id === card.folderId) ?? null : null)
     : undefined;
+  const cardFolder = card.folderId ? folders?.find((folder) => folder.id === card.folderId) ?? null : null;
+  const canMove = card.installed
+    && !card.required
+    && !(cardFolder && isBundledFolder(cardFolder));
   return (
     <div
       onClick={() => onOpen(card)}
@@ -844,7 +849,7 @@ function SkillCard({
       )}
     >
       <div className="flex items-start gap-3">
-        {selectMode && card.installed ? (
+        {selectMode && canMove ? (
           <input
             type="checkbox"
             className="mt-1 h-4 w-4 rounded border-border"
@@ -877,7 +882,7 @@ function SkillCard({
             </span>
           );
         })()}
-        {card.installed && folders && onMove && onCreateFolderAndMove ? (
+        {canMove && folders && onMove && onCreateFolderAndMove ? (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button
