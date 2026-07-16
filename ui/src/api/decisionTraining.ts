@@ -42,7 +42,7 @@ export const decisionTrainingApi = {
     api.get<DecisionTrainingExample>(`/decision-training/${id}`, options),
   /**
    * Preview the state a new example would freeze, without persisting it. Powers
-   * the create drawer's "state frozen with this example" panel (PAP-14299).
+   * the create drawer's "state frozen with this example" panel.
    */
   preview: (companyId: string, target: DecisionTrainingTarget) =>
     api.post<DecisionTrainingPreview>(`/companies/${companyId}/decision-training/preview`, target),

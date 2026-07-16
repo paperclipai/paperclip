@@ -607,7 +607,7 @@ export function attentionService(db: Db) {
           updatedAt: approvals.updatedAt,
           // The issue this approval is anchored to (if any). Surfaced so the
           // Decisions row can offer decision-training capture, which anchors to
-          // the durable (approval + issue) pair (PAP-14299).
+          // the durable approval + issue pair.
           issueId: issueApprovals.issueId,
         })
         .from(approvals)

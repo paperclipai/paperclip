@@ -55,7 +55,7 @@ interface DecisionTrainingDrawerProps {
 
 /**
  * Right-hand drawer for capturing a decision-training example from a Decisions
- * row (PAP-14299). Renders a create state (immutable snapshot preview + notes)
+ * row. Renders a create state (immutable snapshot preview + notes)
  * for untrained decisions and a saved state (provenance, editable notes,
  * read-only snapshot, delete) once an example exists. Write affordances are
  * only ever mounted for human users — agents never see this drawer.

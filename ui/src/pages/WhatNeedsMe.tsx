@@ -84,7 +84,7 @@ export function WhatNeedsMe() {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [selectedAttentionId, setSelectedAttentionId] = useState<string | null>(null);
   const [autoExpandDone, setAutoExpandDone] = useState(false);
-  // Decision-training drawer target (PAP-14299). `null` when closed.
+  // Decision-training drawer target. `null` when closed.
   const [trainingItem, setTrainingItem] = useState<AttentionItem | null>(null);
 
   // Toolbar preferences (persisted to localStorage, Inbox pattern).

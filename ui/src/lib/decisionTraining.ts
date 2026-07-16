@@ -6,7 +6,7 @@ import type { DecisionTrainingTarget } from "../api/decisionTraining";
  * against, or `null` when the row is not trainable.
  *
  * v1 trains two source kinds — board approvals and issue-thread interactions —
- * and always anchors to the owning issue (board decisions, PAP-14236). An
+ * and always anchors to the owning issue. An
  * approval that is not linked to any issue has no durable anchor, so it is not
  * trainable and returns `null`.
  */

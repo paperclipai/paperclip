@@ -130,7 +130,7 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
   // header/thumbnail click somewhere to go. Non-inline, image-less rows keep the
   // explicit Open button and never toggle on a stray click.
   const expandable = inline || (!isHidden && hasImages);
-  // Decision training (PAP-14299): any issue-anchored approval or interaction is
+  // Any issue-anchored approval or interaction is
   // trainable at any time (pending or resolved). Trained/untrained renders
   // purely from the feed's `trainingExampleId` — no per-row fetch.
   const trainable = !isHidden && !!onTrain && isTrainable(item);
