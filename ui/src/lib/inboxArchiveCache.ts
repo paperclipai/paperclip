@@ -1,8 +1,135 @@
+import { useSyncExternalStore } from "react";
 import type { QueryClient, QueryKey } from "@tanstack/react-query";
 import type { Issue } from "@paperclipai/shared";
 import { queryKeys } from "./queryKeys";
 
 export type InboxIssueCacheSnapshot = Array<readonly [QueryKey, Issue[] | undefined]>;
+
+const INBOX_ARCHIVE_CONFIRMATION_GRACE_MS = 5_000;
+const INBOX_ARCHIVE_MAX_GUARD_MS = 30_000;
+const EMPTY_ARCHIVED_ISSUE_IDS: ReadonlySet<string> = new Set();
+
+type InboxArchiveGuardState = {
+  issueIds: ReadonlySet<string>;
+  listeners: Set<() => void>;
+  confirmationTimers: Map<string, ReturnType<typeof setTimeout>>;
+  maximumTimers: Map<string, ReturnType<typeof setTimeout>>;
+};
+
+const inboxArchiveGuards = new Map<string, InboxArchiveGuardState>();
+
+function getInboxArchiveGuard(companyId: string): InboxArchiveGuardState {
+  const existing = inboxArchiveGuards.get(companyId);
+  if (existing) return existing;
+
+  const created: InboxArchiveGuardState = {
+    issueIds: EMPTY_ARCHIVED_ISSUE_IDS,
+    listeners: new Set(),
+    confirmationTimers: new Map(),
+    maximumTimers: new Map(),
+  };
+  inboxArchiveGuards.set(companyId, created);
+  return created;
+}
+
+function publishInboxArchiveGuard(state: InboxArchiveGuardState, issueIds: Set<string>) {
+  state.issueIds = issueIds.size > 0 ? issueIds : EMPTY_ARCHIVED_ISSUE_IDS;
+  for (const listener of state.listeners) listener();
+}
+
+function clearArchiveGuardTimer(
+  timers: Map<string, ReturnType<typeof setTimeout>>,
+  issueId: string,
+) {
+  const timer = timers.get(issueId);
+  if (timer) clearTimeout(timer);
+  timers.delete(issueId);
+}
+
+export function beginLocalInboxArchive(companyId: string, issueId: string) {
+  const state = getInboxArchiveGuard(companyId);
+  clearArchiveGuardTimer(state.confirmationTimers, issueId);
+  clearArchiveGuardTimer(state.maximumTimers, issueId);
+
+  const issueIds = new Set(state.issueIds);
+  issueIds.add(issueId);
+  publishInboxArchiveGuard(state, issueIds);
+}
+
+export function boundLocalInboxArchive(companyId: string, issueId: string) {
+  const state = getInboxArchiveGuard(companyId);
+  if (!state.issueIds.has(issueId)) return;
+
+  clearArchiveGuardTimer(state.maximumTimers, issueId);
+  state.maximumTimers.set(issueId, setTimeout(() => {
+    clearLocalInboxArchive(companyId, issueId);
+  }, INBOX_ARCHIVE_MAX_GUARD_MS));
+}
+
+export function confirmLocalInboxArchive(companyId: string, issueId: string) {
+  const state = getInboxArchiveGuard(companyId);
+  if (!state.issueIds.has(issueId)) return;
+
+  clearArchiveGuardTimer(state.confirmationTimers, issueId);
+  state.confirmationTimers.set(issueId, setTimeout(() => {
+    clearLocalInboxArchive(companyId, issueId);
+  }, INBOX_ARCHIVE_CONFIRMATION_GRACE_MS));
+}
+
+export function clearLocalInboxArchive(companyId: string, issueId: string) {
+  const state = getInboxArchiveGuard(companyId);
+  clearArchiveGuardTimer(state.confirmationTimers, issueId);
+  clearArchiveGuardTimer(state.maximumTimers, issueId);
+  if (!state.issueIds.has(issueId)) return;
+
+  const issueIds = new Set(state.issueIds);
+  issueIds.delete(issueId);
+  publishInboxArchiveGuard(state, issueIds);
+}
+
+export function getLocalInboxArchiveIssueIds(companyId: string | null | undefined): ReadonlySet<string> {
+  if (!companyId) return EMPTY_ARCHIVED_ISSUE_IDS;
+  return inboxArchiveGuards.get(companyId)?.issueIds ?? EMPTY_ARCHIVED_ISSUE_IDS;
+}
+
+export function useLocalInboxArchiveIssueIds(companyId: string | null | undefined): ReadonlySet<string> {
+  return useSyncExternalStore(
+    (listener) => {
+      if (!companyId) return () => undefined;
+      const state = getInboxArchiveGuard(companyId);
+      state.listeners.add(listener);
+      return () => state.listeners.delete(listener);
+    },
+    () => getLocalInboxArchiveIssueIds(companyId),
+    () => EMPTY_ARCHIVED_ISSUE_IDS,
+  );
+}
+
+export function filterLocalInboxArchivedIssues(
+  companyId: string | null | undefined,
+  issues: Issue[],
+): Issue[] {
+  const issueIds = getLocalInboxArchiveIssueIds(companyId);
+  if (issueIds.size === 0) return issues;
+  return issues.filter((issue) => !issueIds.has(issue.id));
+}
+
+function inboxIssueCompanyIdFromQueryKey(queryKey: QueryKey): string | null {
+  if (
+    queryKey[0] !== "issues"
+    || typeof queryKey[1] !== "string"
+    || !["mine-by-me", "touched-by-me", "unread-touched-by-me"].includes(String(queryKey[2]))
+  ) {
+    return null;
+  }
+  return queryKey[1];
+}
+
+export function filterLocalInboxArchivedQueryData<TData>(queryKey: QueryKey, data: TData): TData {
+  const companyId = inboxIssueCompanyIdFromQueryKey(queryKey);
+  if (!companyId || !Array.isArray(data)) return data;
+  return filterLocalInboxArchivedIssues(companyId, data as Issue[]) as TData;
+}
 
 function inboxIssueQueryPrefixes(companyId: string) {
   return [
@@ -79,8 +206,25 @@ export function restoreIssueToInboxCaches(
 }
 
 export function invalidateInboxIssueQueries(queryClient: QueryClient, companyId: string) {
-  for (const queryKey of inboxIssueQueryPrefixes(companyId)) {
-    queryClient.invalidateQueries({ queryKey });
-  }
-  queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(companyId) });
+  return Promise.all([
+    ...inboxIssueQueryPrefixes(companyId).map((queryKey) =>
+      queryClient.invalidateQueries({ queryKey }),
+    ),
+    queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(companyId) }),
+  ]);
+}
+
+export function isIssueAbsentFromActiveInboxCaches(
+  queryClient: QueryClient,
+  companyId: string,
+  issueId: string,
+) {
+  const activeQueries = inboxIssueQueryPrefixes(companyId).flatMap((queryKey) =>
+    queryClient.getQueryCache().findAll({ queryKey })
+      .filter((query) => query.getObserversCount() > 0),
+  );
+  return activeQueries.length > 0 && activeQueries.every((query) => {
+    const data = query.state.data;
+    return !Array.isArray(data) || !data.some((issue) => (issue as Issue).id === issueId);
+  });
 }
