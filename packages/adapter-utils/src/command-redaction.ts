@@ -74,3 +74,54 @@ export function redactCredentialText(
   }
   return redacted;
 }
+
+export interface CredentialTextRedactor {
+  redact: (chunk: string) => string;
+  flush: () => string;
+}
+
+export function createCredentialTextRedactor(
+  env: Record<string, string> = {},
+  redactedValue = REDACTED_COMMAND_TEXT_VALUE,
+): CredentialTextRedactor {
+  const sensitiveValues = Object.entries(env)
+    .filter(([key, value]) => SECRET_ENV_NAME_RE.test(key) && value.length >= 4)
+    .map(([, value]) => value)
+    .sort((left, right) => right.length - left.length);
+  const overlap = Math.max(0, ...sensitiveValues.map((value) => value.length - 1));
+  let pending = "";
+
+  return {
+    redact(chunk: string): string {
+      if (overlap === 0) return redactCredentialText(chunk, env, redactedValue);
+
+      const combined = pending + chunk;
+      const safeEnd = Math.max(0, combined.length - overlap);
+      let cursor = 0;
+      let plainStart = 0;
+      let redacted = "";
+
+      while (cursor < safeEnd) {
+        const sensitiveValue = sensitiveValues.find((value) => combined.startsWith(value, cursor));
+        if (!sensitiveValue) {
+          cursor += 1;
+          continue;
+        }
+
+        redacted += redactCommandText(combined.slice(plainStart, cursor), redactedValue);
+        redacted += redactedValue;
+        cursor += sensitiveValue.length;
+        plainStart = cursor;
+      }
+
+      redacted += redactCommandText(combined.slice(plainStart, cursor), redactedValue);
+      pending = combined.slice(cursor);
+      return redacted;
+    },
+    flush(): string {
+      const redacted = redactCredentialText(pending, env, redactedValue);
+      pending = "";
+      return redacted;
+    },
+  };
+}

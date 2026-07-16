@@ -22,15 +22,19 @@ the existing SSH stdin channel. A POSIX shell bootstrap reads and exports the
 values, clears its temporary variables, and then `exec`s the requested command.
 Only the fixed bootstrap and requested command remain in the SSH argv.
 
-As defense in depth, command diagnostics and streamed run-log chunks redact both
+As defense in depth, command diagnostics and run-log ingestion redact both
 credential-shaped text and values associated with credential-shaped environment
-names.
+names. The stream redactor retains enough overlap between chunks to catch a
+configured secret even when the process splits it across writes.
 
 ## Consequences
 
 - SSH launches with injected environment now use a pipe for stdin, even when the
   requested command has no input. The pipe is closed after the environment
   prelude, preserving the prior EOF behavior.
+- The environment prelude is written immediately after spawn; user stdin still
+  waits for process metadata persistence. This keeps launch latency independent
+  of the metadata callback without changing the user-stdin ordering contract.
 - No remote secret payload file is created, so there is no cleanup residue.
 - The remote shell must support POSIX `read -r`, `printf`, `export`, and `unset`.
 - Values still exist in the launched process environment, as required by the
