@@ -63,6 +63,12 @@ export type {
   AttentionSubjectKind,
   AttentionWorkspaceRef,
 } from "./types/attention.js";
+export type {
+  DecisionTrainingExample,
+  DecisionTrainingNotesHistoryEntry,
+  DecisionTrainingSnapshotV1,
+  DecisionTrainingSourceKind,
+} from "./types/decision-training.js";
 
 export type {
   PipelineAutomationRetryBlocker,

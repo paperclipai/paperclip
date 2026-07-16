@@ -5,6 +5,7 @@ import {
   approvals,
   assets,
   companies,
+  decisionTrainingExamples,
   heartbeatRunEvents,
   heartbeatRuns,
   inboxDismissals,
@@ -310,7 +311,7 @@ function decisionVerbs(...verbs: AttentionDecisionVerb[]): AttentionDecisionVerb
   return verbs;
 }
 
-type CreateAttentionItemInput = Omit<AttentionItem, "id" | "dismissalKey" | "rank" | "dismissal" | "project" | "workspace" | "detail"> & {
+type CreateAttentionItemInput = Omit<AttentionItem, "id" | "dismissalKey" | "rank" | "dismissal" | "project" | "workspace" | "detail" | "trainingExampleId"> & {
   project?: AttentionProjectRef | null;
   workspace?: AttentionWorkspaceRef | null;
   detail?: AttentionItemDetail | null;
@@ -325,6 +326,7 @@ function createItem(input: CreateAttentionItemInput): AttentionItem {
     project: input.project ?? null,
     workspace: input.workspace ?? null,
     detail: input.detail ?? null,
+    trainingExampleId: null,
     rank: 0,
   };
 }
@@ -1238,6 +1240,42 @@ export function attentionService(db: Db) {
       const items = [...deduped.values()]
         .sort(compareAttentionItems)
         .map((item, index) => ({ ...item, rank: index + 1 }));
+      if (options.userId) {
+        const trainable: Array<{ sourceKind: "approval" | "interaction"; sourceId: string }> = [];
+        for (const item of items) {
+          if (item.sourceKind === "approval") {
+            trainable.push({ sourceKind: "approval", sourceId: item.subject.id });
+          }
+          if (item.sourceKind === "issue_thread_interaction") {
+            trainable.push({ sourceKind: "interaction", sourceId: item.subject.id });
+          }
+        }
+        if (trainable.length > 0) {
+          const examples = await db
+            .select({
+              id: decisionTrainingExamples.id,
+              sourceKind: decisionTrainingExamples.sourceKind,
+              sourceId: decisionTrainingExamples.sourceId,
+            })
+            .from(decisionTrainingExamples)
+            .where(and(
+              eq(decisionTrainingExamples.companyId, companyId),
+              eq(decisionTrainingExamples.createdByUserId, options.userId),
+              inArray(decisionTrainingExamples.sourceId, trainable.map((item) => item.sourceId)),
+            ));
+          const exampleBySource = new Map(examples.map((row) => [`${row.sourceKind}:${row.sourceId}`, row.id]));
+          for (const item of items) {
+            const sourceKind = item.sourceKind === "approval"
+              ? "approval"
+              : item.sourceKind === "issue_thread_interaction"
+                ? "interaction"
+                : null;
+            item.trainingExampleId = sourceKind
+              ? exampleBySource.get(`${sourceKind}:${item.subject.id}`) ?? null
+              : null;
+          }
+        }
+      }
       const countsBySourceKind = emptyCounts();
       for (const item of items) countsBySourceKind[item.sourceKind] += 1;
 
