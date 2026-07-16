@@ -406,6 +406,35 @@ describe("issue graph liveness classifier", () => {
     expect(findings).toEqual([]);
   });
 
+  it("does not escalate an errored blocker assignee while its retry is actively running", () => {
+    const findings = classifyIssueGraphLiveness({
+      issues: [
+        issue(),
+        issue({
+          id: blockerId,
+          identifier: "PAP-1704",
+          title: "Retry already moving the unblock work",
+          status: "in_progress",
+          assigneeAgentId: "blocker-agent",
+        }),
+      ],
+      relations: blocks,
+      agents: [
+        agent(),
+        manager,
+        agent({ id: "blocker-agent", name: "Retrying Agent", status: "error" }),
+      ],
+      activeRuns: [{
+        companyId,
+        issueId: blockerId,
+        agentId: "blocker-agent",
+        status: "running",
+      }],
+    });
+
+    expect(findings).toEqual([]);
+  });
+
   it("detects cancelled blockers and uninvokable blocker assignees deterministically", () => {
     const cancelled = classifyIssueGraphLiveness({
       issues: [
@@ -489,6 +518,28 @@ describe("issue graph liveness classifier", () => {
       state: "blocked_by_uninvokable_assignee",
       recoveryIssueId: blockedId,
     });
+  });
+
+  it("does not escalate an errored review owner while its retry is actively running", () => {
+    const findings = classifyIssueGraphLiveness({
+      issues: [issue({
+        status: "in_review",
+        assigneeAgentId: "retrying-reviewer",
+      })],
+      relations: [],
+      agents: [
+        agent({ id: "retrying-reviewer", name: "Retrying Reviewer", status: "error" }),
+        manager,
+      ],
+      activeRuns: [{
+        companyId,
+        issueId: blockedId,
+        agentId: "retrying-reviewer",
+        status: "running",
+      }],
+    });
+
+    expect(findings).toEqual([]);
   });
 
   it("detects invalid in_review execution participant", () => {

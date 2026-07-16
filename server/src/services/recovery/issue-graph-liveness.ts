@@ -143,7 +143,17 @@ function hasActiveExecutionPath(
   activeRuns: IssueLivenessExecutionPathInput[],
   queuedWakeRequests: IssueLivenessExecutionPathInput[],
 ) {
-  return [...activeRuns, ...queuedWakeRequests].some(
+  return hasActiveRun(companyId, issueId, activeRuns) || queuedWakeRequests.some(
+    (entry) => entry.companyId === companyId && entry.issueId === issueId,
+  );
+}
+
+function hasActiveRun(
+  companyId: string,
+  issueId: string,
+  activeRuns: IssueLivenessExecutionPathInput[],
+) {
+  return activeRuns.some(
     (entry) => entry.companyId === companyId && entry.issueId === issueId,
   );
 }
@@ -528,6 +538,10 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
     dependencyPath: IssueLivenessIssueInput[],
   ): IssueLivenessFinding | null {
     if (reviewIssue.status !== "in_review") return null;
+    // A live run is stronger evidence of forward progress than the agent's
+    // denormalized status. During retry handoff the preceding failed run can
+    // briefly leave the agent in error even though its replacement is active.
+    if (hasActiveRun(reviewIssue.companyId, reviewIssue.id, activeRuns)) return null;
     if (reviewIssue.assigneeAgentId) {
       const reviewAssignee = agentsById.get(reviewIssue.assigneeAgentId);
       if (
@@ -637,6 +651,11 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
         blockerIssueId: blocker.id,
       });
     }
+
+    // Prefer the issue-scoped execution heartbeat over the agent status. The
+    // latter can transiently reflect a failed predecessor while a retry is
+    // already running, which must not create a liveness recovery incident.
+    if (hasActiveRun(blocker.companyId, blocker.id, activeRuns)) return null;
 
     if (blocker.assigneeAgentId) {
       const blockerAgent = agentsById.get(blocker.assigneeAgentId);
