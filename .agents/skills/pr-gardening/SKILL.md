@@ -63,6 +63,19 @@ For every candidate, the script re-fetches the current head SHA and records:
 
 Verdicts are `ready`, `needs_gardening`, or `report_only` for drafts. Always rerun this stage after any wake or claim that a PR was fixed. Never trust issue comments as proof of readiness.
 
+## Follow-up Create-PR Task Deduplication
+
+If gardening decides a branch needs a follow-up task to create a single pull request, deduplicate before creating anything.
+
+For each branch, process one branch at a time and do this serially:
+
+1. Search open Paperclip issues for the exact branch name with statuses `backlog`, `todo`, `in_progress`, `in_review`, and `blocked`.
+2. Inspect matching issue titles, descriptions, and recent comments for an equivalent open "create PR from this branch" task for the same branch.
+3. If an equivalent open task exists, reuse it: add a concise comment with the current PR/head/reason context and link it from the gardening issue or blocker list. Do not create another task.
+4. Only if no equivalent open task exists, create exactly one follow-up task for that branch.
+
+Never fan out follow-up task creation in parallel. Do not issue concurrent `POST /api/companies/:companyId/issues` calls for create-PR tasks. After P1's issue-create idempotency support is available, every create-PR follow-up task creation must include `idempotencyKey: "pr-gardening:create-pr:{branch}"`, where `{branch}` is the exact branch name.
+
 ## Stage C — Comment on Originating Issues
 
 Skip this stage in `--dry-run` mode and for `ready` or `report_only` entries.
