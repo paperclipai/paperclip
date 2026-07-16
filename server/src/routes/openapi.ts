@@ -2927,6 +2927,21 @@ registry.registerPath({
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
 
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/recovery-observability",
+  tags: ["dashboard"],
+  summary: "Get recovery observability report",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: z.object({
+      weeks: z.string().optional(),
+      threshold: z.string().optional(),
+    }),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
 // ─── Sidebar ─────────────────────────────────────────────────────────────────
 
 registry.registerPath({
