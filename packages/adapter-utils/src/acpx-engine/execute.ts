@@ -1117,6 +1117,9 @@ async function buildRuntime(input: {
   if (requestedModel && acpxAgent === "claude" && !env.ANTHROPIC_MODEL) {
     env.ANTHROPIC_MODEL = requestedModel;
   }
+  if (acpxAgent === "claude" && !env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS) {
+    env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS = "1";
+  }
   if (acpxAgent === "codex") {
     const codexStartupConfig = buildCodexStartupConfig({
       existingConfig: env.CODEX_CONFIG,

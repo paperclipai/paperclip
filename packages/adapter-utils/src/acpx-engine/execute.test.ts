@@ -41,6 +41,13 @@ async function onlyChildDir(parent: string): Promise<string> {
   return path.join(parent, entries[0]!);
 }
 
+async function readSingleWrapperEnv(stateDir: string): Promise<string> {
+  const wrappers = await fs.readdir(path.join(stateDir, "wrappers"));
+  const envFileName = wrappers.find((name) => name.endsWith(".env"));
+  expect(envFileName).toBeTypeOf("string");
+  return fs.readFile(path.join(stateDir, "wrappers", envFileName!), "utf8");
+}
+
 async function createSkill(root: string, name: string, body = `---\nrequired: false\n---\n# ${name}\n`) {
   const skillDir = path.join(root, name);
   await fs.mkdir(skillDir, { recursive: true });
@@ -694,6 +701,46 @@ describe("shared ACPX engine runtime behavior", () => {
     // Runtime PAPERCLIP_TASK_ID (from the wake context) wins over config.
     expect(env).toContain("PAPERCLIP_TASK_ID='issue-real'");
     expect(env).not.toContain("attacker-issue");
+  });
+
+  it("injects CLAUDE_CODE_DISABLE_BACKGROUND_TASKS for Claude ACP runs", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const cwd = path.join(root, "worktree");
+    await fs.mkdir(cwd, { recursive: true });
+
+    await runExecutor({ agent: "claude", stateDir, cwd });
+
+    const env = await readSingleWrapperEnv(stateDir);
+    expect(env).toContain("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS='1'");
+  });
+
+  it("preserves an explicit CLAUDE_CODE_DISABLE_BACKGROUND_TASKS value for Claude ACP runs", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const cwd = path.join(root, "worktree");
+    await fs.mkdir(cwd, { recursive: true });
+
+    await runExecutor({
+      agent: "claude",
+      stateDir,
+      cwd,
+      env: { CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "0" },
+    });
+
+    const env = await readSingleWrapperEnv(stateDir);
+    expect(env).toContain("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS='0'");
+    expect(env).not.toContain("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS='1'");
+  });
+
+  it("does not inject CLAUDE_CODE_DISABLE_BACKGROUND_TASKS for non-Claude ACP runs", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+
+    await runExecutor({ agent: "codex", agentCommand: "node ./fake-acp.js", stateDir });
+
+    const env = await readSingleWrapperEnv(stateDir);
+    expect(env).not.toContain("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=");
   });
 
   it("busts the session fingerprint when resolved adapter env changes but not across wakes", async () => {
