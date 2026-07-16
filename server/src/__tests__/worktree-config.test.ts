@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   applyRuntimePortSelectionToConfig,
   maybePersistWorktreeRuntimePorts,
@@ -21,6 +21,7 @@ beforeEach(() => {
       delete process.env[key];
     }
   }
+  process.env.PAPERCLIP_INSTANCE_ID = "default";
 });
 
 afterEach(() => {
@@ -89,6 +90,21 @@ function buildLegacyConfig(sharedRoot: string, publicBaseUrl = "http://127.0.0.1
       localEncrypted: {
         keyFilePath: path.join(sharedRoot, "secrets", "master.key"),
       },
+    },
+  };
+}
+
+function buildIsolatedConfig(instanceRoot: string, serverPort: number, databasePort: number) {
+  const config = buildLegacyConfig(instanceRoot, `http://127.0.0.1:${serverPort}`);
+  return {
+    ...config,
+    database: {
+      ...config.database,
+      embeddedPostgresPort: databasePort,
+    },
+    server: {
+      ...config.server,
+      port: serverPort,
     },
   };
 }
@@ -358,6 +374,88 @@ describe("worktree config repair", () => {
     expect(result.repairedConfig).toBe(true);
     expect(repairedConfig.server.port).toBe(3102);
     expect(repairedConfig.database.embeddedPostgresPort).toBe(54331);
+  });
+
+  it("serializes and persists cross-repo worktree port reservations", async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-port-registry-"));
+    const isolatedHome = path.join(tempRoot, ".paperclip-worktrees");
+    const firstWorktreeRoot = path.join(tempRoot, "repo-one", "PAP-14013-import-bulk-skills");
+    const secondWorktreeRoot = path.join(tempRoot, "repo-two", "PAP-14069-port-conflicts");
+    const firstConfigPath = path.join(firstWorktreeRoot, ".paperclip", "config.json");
+    const secondConfigPath = path.join(secondWorktreeRoot, ".paperclip", "config.json");
+
+    const writeWorktree = async (worktreeRoot: string, name: string) => {
+      const paperclipDir = path.join(worktreeRoot, ".paperclip");
+      const instanceRoot = path.join(isolatedHome, "instances", name.toLowerCase());
+      await fs.mkdir(paperclipDir, { recursive: true });
+      await fs.writeFile(
+        path.join(paperclipDir, "config.json"),
+        `${JSON.stringify(buildIsolatedConfig(instanceRoot, 45439, 55439), null, 2)}\n`,
+        "utf8",
+      );
+      await fs.writeFile(
+        path.join(paperclipDir, ".env"),
+        [
+          "# Paperclip environment variables",
+          "PAPERCLIP_IN_WORKTREE=true",
+          `PAPERCLIP_WORKTREE_NAME=${name}`,
+          `PAPERCLIP_HOME=${JSON.stringify(isolatedHome)}`,
+          `PAPERCLIP_INSTANCE_ID=${name.toLowerCase()}`,
+          `PAPERCLIP_CONFIG=${JSON.stringify(path.join(paperclipDir, "config.json"))}`,
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+    };
+
+    const activateWorktree = (worktreeRoot: string, name: string) => {
+      process.chdir(worktreeRoot);
+      process.env.PAPERCLIP_IN_WORKTREE = "true";
+      process.env.PAPERCLIP_WORKTREE_NAME = name;
+      process.env.PAPERCLIP_WORKTREES_DIR = isolatedHome;
+      process.env.PAPERCLIP_HOME = isolatedHome;
+      process.env.PAPERCLIP_INSTANCE_ID = name.toLowerCase();
+      process.env.PAPERCLIP_CONFIG = path.join(worktreeRoot, ".paperclip", "config.json");
+      delete process.env.PORT;
+      delete process.env.DATABASE_URL;
+    };
+
+    await writeWorktree(firstWorktreeRoot, "PAP-14013-import-bulk-skills");
+    await writeWorktree(secondWorktreeRoot, "PAP-14069-port-conflicts");
+    const staleLockPath = path.join(isolatedHome, ".worktree-port-reservations.lock");
+    await fs.mkdir(staleLockPath, { recursive: true });
+    const staleLockTime = new Date(Date.now() - 6_000);
+    await fs.utimes(staleLockPath, staleLockTime, staleLockTime);
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    activateWorktree(firstWorktreeRoot, "PAP-14013-import-bulk-skills");
+    expect(maybeRepairLegacyWorktreeConfigAndEnvFiles().repairedConfig).toBe(false);
+    await expect(fs.stat(staleLockPath)).rejects.toMatchObject({ code: "ENOENT" });
+
+    activateWorktree(secondWorktreeRoot, "PAP-14069-port-conflicts");
+    expect(maybeRepairLegacyWorktreeConfigAndEnvFiles().repairedConfig).toBe(true);
+
+    const firstConfig = JSON.parse(await fs.readFile(firstConfigPath, "utf8"));
+    const secondConfig = JSON.parse(await fs.readFile(secondConfigPath, "utf8"));
+    const registry = JSON.parse(
+      await fs.readFile(path.join(isolatedHome, "worktree-port-reservations.json"), "utf8"),
+    );
+
+    expect(firstConfig.server.port).toBe(45439);
+    expect(firstConfig.database.embeddedPostgresPort).toBe(55439);
+    expect(secondConfig.server.port).toBe(45440);
+    expect(secondConfig.database.embeddedPostgresPort).toBe(55440);
+    expect(secondConfig.auth.publicBaseUrl).toBe("http://127.0.0.1:45440/");
+    expect(registry.configPaths).toEqual([firstConfigPath, secondConfigPath].sort());
+    expect(warning).toHaveBeenCalledWith(expect.stringContaining("Worktree port conflict detected"));
+    expect(warning).toHaveBeenCalledWith(expect.stringContaining("server: 45439 -> 45440"));
+
+    warning.mockClear();
+    expect(maybeRepairLegacyWorktreeConfigAndEnvFiles().repairedConfig).toBe(false);
+    const persistedConfig = JSON.parse(await fs.readFile(secondConfigPath, "utf8"));
+    expect(persistedConfig.server.port).toBe(45440);
+    expect(persistedConfig.database.embeddedPostgresPort).toBe(55440);
+    expect(warning).not.toHaveBeenCalled();
   });
 
   it("ignores stale migrated env paths when the dev runner resolved the local config", async () => {

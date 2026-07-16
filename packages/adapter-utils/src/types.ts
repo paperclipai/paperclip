@@ -65,7 +65,13 @@ export interface AdapterRuntimeServiceReport {
   healthStatus?: "unknown" | "healthy" | "unhealthy";
 }
 
-export type AdapterExecutionErrorFamily = "transient_upstream" | "provider_quota" | "model_refusal";
+export type AdapterExecutionErrorFamily =
+  | "transient_upstream"
+  | "provider_quota"
+  | "model_refusal"
+  | "refresh_token_reused"
+  | "refresh_token_expired"
+  | "refresh_token_invalidated";
 
 export interface AdapterExecutionResult {
   exitCode: number | null;
@@ -138,6 +144,15 @@ export interface AdapterRuntimeMcpAccess {
   getServers(): AdapterRuntimeMcpServer[];
 }
 
+export interface AdapterRuntimeEvent {
+  eventType: string;
+  stream?: "system" | "stdout" | "stderr";
+  level?: "info" | "warn" | "error";
+  color?: string;
+  message?: string;
+  payload?: Record<string, unknown>;
+}
+
 export interface AdapterExecutionContext {
   runId: string;
   agent: AdapterAgent;
@@ -156,6 +171,7 @@ export interface AdapterExecutionContext {
   runtimeMcp?: AdapterRuntimeMcpAccess;
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   onMeta?: (meta: AdapterInvocationMeta) => Promise<void>;
+  onEvent?: (event: AdapterRuntimeEvent) => Promise<void>;
   onRuntimeProgress?: RuntimeStatusSink;
   onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
   authToken?: string;
@@ -317,6 +333,8 @@ export interface ProviderQuotaResult {
   source?: string | null;
   /** true when the fetch succeeded and windows is populated */
   ok: boolean;
+  /** machine-readable error family when ok is false */
+  errorFamily?: AdapterExecutionErrorFamily | null;
   /** error message when ok is false */
   error?: string;
   windows: QuotaWindow[];

@@ -502,4 +502,117 @@ describe("AttentionQueueRow", () => {
     );
     expect(container?.querySelector('[role="button"][aria-expanded]')).toBeNull();
   });
+
+  it("makes a non-inline row with images expandable", () => {
+    const onToggleExpand = vi.fn();
+    render(
+      <AttentionQueueRow
+        item={buildItem({
+          sourceKind: "review" as AttentionSourceKind,
+          inlineResolvable: false,
+          detail: {
+            kind: "generic",
+            summaryExcerpt: "3 files changed",
+            images: [
+              { assetId: "img-1", alt: "one" },
+              { assetId: "img-2", alt: "two" },
+            ],
+          },
+        })}
+        companyId="c1"
+        expanded={false}
+        onToggleExpand={onToggleExpand}
+        onDismiss={noop}
+      />,
+    );
+    const header = container?.querySelector('[role="button"][aria-expanded]');
+    expect(header).not.toBeNull();
+    act(() => (header as HTMLElement).click());
+    expect(onToggleExpand).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows a larger gallery with an n-more link to the issue when expanded", () => {
+    render(
+      <AttentionQueueRow
+        item={buildItem({
+          sourceKind: "review" as AttentionSourceKind,
+          inlineResolvable: false,
+          relatedIssue: {
+            kind: "issue",
+            id: "issue-1",
+            companyId: "c1",
+            title: "Ship it",
+            identifier: "PAP-42",
+            status: "in_progress",
+            href: "/PAP/issues/PAP-42",
+            metadata: {},
+          },
+          detail: {
+            kind: "generic",
+            summaryExcerpt: "5 screenshots",
+            images: [
+              { assetId: "img-1", alt: "one" },
+              { assetId: "img-2", alt: "two" },
+              { assetId: "img-3", alt: "three" },
+              { assetId: "img-4", alt: "four" },
+              { assetId: "img-5", alt: "five" },
+            ],
+          },
+        })}
+        companyId="c1"
+        expanded
+        onToggleExpand={noop}
+        onDismiss={noop}
+      />,
+    );
+    const gallery = container?.querySelector('[data-attention-expanded-images="true"]');
+    expect(gallery).not.toBeNull();
+    // First three images render at the larger size.
+    expect(gallery?.querySelectorAll("img")).toHaveLength(3);
+    // "n more" link points at the related issue (5 images − 3 shown = 2 more).
+    const moreLink = Array.from(gallery?.querySelectorAll("a") ?? []).find((a) =>
+      a.textContent?.includes("2 more"),
+    );
+    expect(moreLink).toBeDefined();
+    expect(moreLink?.getAttribute("href")).toBe("/PAP/issues/PAP-42");
+  });
+
+  it("shows the remaining image count when no issue link is available", () => {
+    render(
+      <AttentionQueueRow
+        item={buildItem({
+          sourceKind: "review" as AttentionSourceKind,
+          inlineResolvable: false,
+          subject: {
+            kind: "issue",
+            id: "issue-1",
+            companyId: "c1",
+            title: "Unlinked review",
+            identifier: null,
+            status: "in_review",
+            href: null,
+            metadata: {},
+          },
+          detail: {
+            kind: "generic",
+            summaryExcerpt: "4 screenshots",
+            images: [
+              { assetId: "img-1", alt: "one" },
+              { assetId: "img-2", alt: "two" },
+              { assetId: "img-3", alt: "three" },
+              { assetId: "img-4", alt: "four" },
+            ],
+          },
+        })}
+        companyId="c1"
+        expanded
+        onToggleExpand={noop}
+        onDismiss={noop}
+      />,
+    );
+
+    const gallery = container?.querySelector('[data-attention-expanded-images="true"]');
+    expect(gallery?.textContent).toContain("1 more");
+    expect(gallery?.querySelectorAll("a")).toHaveLength(0);
+  });
 });

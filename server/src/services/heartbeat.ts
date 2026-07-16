@@ -9,6 +9,7 @@ import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
   MODEL_PROFILE_KEYS,
+  PROVIDER_QUOTA_MONITOR_SERVICE_NAME,
   envBindingSchema,
   isEnvironmentDriverSupportedForAdapter,
   type BillingType,
@@ -76,6 +77,7 @@ import type {
   AdapterExecutionResult,
   AdapterInvocationMeta,
   AdapterModelProfileDefinition,
+  AdapterRuntimeEvent,
   AdapterRuntimeMcpAccess,
   AdapterRuntimeMcpServer,
   AdapterSessionCodec,
@@ -196,6 +198,7 @@ import {
   decideSuccessfulRunHandoff,
   findExistingFinishSuccessfulRunHandoffWake,
   findExistingRunLivenessContinuationWake,
+  isSuccessfulRunHandoffValidPathSkip,
   SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY,
   readContinuationAttempt,
 } from "./recovery/index.js";
@@ -206,6 +209,7 @@ import {
 } from "./recovery/model-profile-hint.js";
 import { recoveryService } from "./recovery/service.js";
 import { productivityReviewService } from "./productivity-review.js";
+import { resolveRequiredSuccessfulRunHandoffOnValidPath } from "./successful-run-handoff-state.js";
 import { taskWatchdogService } from "./task-watchdogs.js";
 import { withAgentStartLock } from "./agent-start-lock.js";
 import {
@@ -255,6 +259,15 @@ import {
   touchHeartbeatRunRuntimeStatus,
 } from "./heartbeat-run-runtime-status.js";
 import {
+  readHotRestartIntent,
+  removeHotRestartIntent,
+  shouldHonorHotRestartIntentForProcess,
+  writeHotRestartReport,
+  writeHotRestartShutdownSnapshot,
+  type HotRestartIntentRun,
+  type HotRestartReportRun,
+} from "./hot-restart.js";
+import {
   assertLowTrustRuntimeServicesAllowed,
   assertLowTrustWorkspaceIsolation,
 } from "./low-trust-runtime-containment.js";
@@ -267,6 +280,7 @@ import {
   type EffectiveRunConfigSecretManifestEntry,
 } from "./effective-run-config-fingerprints.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+import { serverVersion } from "../version.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
@@ -4553,9 +4567,45 @@ export async function buildPaperclipWakePayload(input: {
     })
     : null;
   const payloadTruncated = truncated || planReviewContext?.truncated === true;
+  const recoveryActionId = readNonEmptyString(input.contextSnapshot.recoveryActionId);
+  const recoveryCause = readNonEmptyString(input.contextSnapshot.recoveryCause);
+  const recoveryAction = recoveryActionId
+    ? await input.db
+      .select()
+      .from(issueRecoveryActions)
+      .where(and(
+        eq(issueRecoveryActions.id, recoveryActionId),
+        eq(issueRecoveryActions.companyId, input.companyId),
+      ))
+      .then((rows) => rows[0] ?? null)
+    : null;
+  const recoveryEvidence = parseObject(recoveryAction?.evidence);
+  const originalAssigneeId = recoveryAction?.returnOwnerAgentId ?? recoveryAction?.previousOwnerAgentId ?? null;
+  const originalAssignee = originalAssigneeId
+    ? await input.db
+      .select({ id: agents.id, name: agents.name })
+      .from(agents)
+      .where(and(eq(agents.id, originalAssigneeId), eq(agents.companyId, input.companyId)))
+      .then((rows) => rows[0] ?? null)
+    : null;
 
   return {
     reason: readNonEmptyString(input.contextSnapshot.wakeReason),
+    recovery: recoveryAction || recoveryCause
+      ? {
+          cause: recoveryAction?.cause ?? recoveryCause,
+          failureSummary: readNonEmptyString(recoveryEvidence.failureSummary),
+          originalAssignee: originalAssignee
+            ? { id: originalAssignee.id, name: originalAssignee.name }
+            : originalAssigneeId
+              ? { id: originalAssigneeId, name: null }
+              : null,
+          attemptCount: recoveryAction?.attemptCount ?? null,
+          maxAttempts: recoveryAction?.maxAttempts ?? null,
+          nextAction: recoveryAction?.nextAction ?? null,
+          routingFallbackReason: readNonEmptyString(recoveryEvidence.routingFallbackReason),
+        }
+      : null,
     issue: issueSummary
       ? {
           id: issueSummary.id,
@@ -5037,6 +5087,43 @@ function buildProcessLossMessage(run: {
     return `Process lost -- process group ${run.processGroupId} is no longer running`;
   }
   return "Process lost -- server may have restarted";
+}
+
+function readHotRestartAdoptionMetadata(resultJson: Record<string, unknown> | null | undefined) {
+  const result = parseObject(resultJson);
+  const hotRestart = parseObject(result.hotRestart);
+  if (hotRestart.adopted !== true || typeof hotRestart.adoptedAt !== "string") return null;
+  return hotRestart;
+}
+
+function mergeHotRestartAdoptionResultJson(
+  resultJson: Record<string, unknown> | null | undefined,
+  input: {
+    adoptedAt: Date;
+    previousServerPid: number;
+    newServerPid: number;
+    previousServerVersion: string | null;
+    newServerVersion: string;
+    processPid: number | null;
+    processGroupId: number | null;
+  },
+) {
+  const result = parseObject(resultJson);
+  const existing = parseObject(result.hotRestart);
+  return {
+    ...result,
+    hotRestart: {
+      ...existing,
+      adopted: true,
+      adoptedAt: input.adoptedAt.toISOString(),
+      previousServerPid: input.previousServerPid,
+      newServerPid: input.newServerPid,
+      previousServerVersion: input.previousServerVersion,
+      newServerVersion: input.newServerVersion,
+      processPid: input.processPid,
+      processGroupId: input.processGroupId,
+    },
+  };
 }
 
 function truncateDisplayId(value: string | null | undefined, max = 128) {
@@ -6533,6 +6620,35 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       maxAttempts: monitor?.maxAttempts ?? null,
       recoveryPolicy: monitor?.recoveryPolicy ?? null,
     };
+    const executionState = claimed.status === "in_review"
+      ? parseIssueExecutionState(claimed.executionState)
+      : null;
+    const currentParticipant = executionState?.status === "pending"
+      ? executionState.currentParticipant
+      : null;
+    const reviewParticipantAgentId = currentParticipant?.type === "agent"
+      ? currentParticipant.agentId
+      : null;
+    const isProviderQuotaReviewMonitor = monitor?.serviceName === PROVIDER_QUOTA_MONITOR_SERVICE_NAME &&
+      Boolean(reviewParticipantAgentId);
+    const targetAgentId = isProviderQuotaReviewMonitor
+      ? reviewParticipantAgentId
+      : claimed.assigneeAgentId;
+    if (!targetAgentId) {
+      throw conflict("Issue monitor has no agent target");
+    }
+    const wakeReason = isProviderQuotaReviewMonitor
+      ? EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON
+      : input.wakeReason;
+    const reviewRecoveryContext = isProviderQuotaReviewMonitor
+      ? {
+          retryReason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON,
+          currentStageId: executionState?.currentStageId ?? null,
+          currentStageType: executionState?.currentStageType ?? null,
+          reviewRecoveryInstruction:
+            "The previous reviewer run reached provider quota. Resume this execution-review stage now that the quota wait has elapsed.",
+        }
+      : {};
 
     if (clearReason) {
       return clearIssueMonitorAndRecover({
@@ -6553,10 +6669,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     try {
-      await enqueueWakeup(claimed.assigneeAgentId, {
+      await enqueueWakeup(targetAgentId, {
         source: input.source,
         triggerDetail: input.triggerDetail,
-        reason: input.wakeReason,
+        reason: wakeReason,
         idempotencyKey: `issue-monitor:${claimed.id}:${scheduledAtIso}`,
         payload: {
           issueId: claimed.id,
@@ -6564,18 +6680,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           monitorAttemptCount: nextAttemptCount,
           monitorNotes: claimed.monitorNotes ?? null,
           ...monitorMetadata,
+          ...reviewRecoveryContext,
           source: input.activitySource,
         },
         requestedByActorType: input.actorType,
         requestedByActorId: input.actorId,
         contextSnapshot: {
           issueId: claimed.id,
-          source: "issue.monitor",
-          wakeReason: input.wakeReason,
+          source: isProviderQuotaReviewMonitor ? "issue.execution_review_recovery" : "issue.monitor",
+          wakeReason,
           nextCheckAt: scheduledAtIso,
           monitorAttemptCount: nextAttemptCount,
           monitorNotes: claimed.monitorNotes ?? null,
           ...monitorMetadata,
+          ...reviewRecoveryContext,
           manualTrigger: input.activitySource === "manual",
         },
       });
@@ -7973,6 +8091,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       idempotentWakeExists: Boolean(existingWake),
     });
 
+    if (isSuccessfulRunHandoffValidPathSkip(decision) && issue) {
+      await resolveRequiredSuccessfulRunHandoffOnValidPath(db, {
+        companyId: issue.companyId,
+        issueId: issue.id,
+        issueIdentifier: issue.identifier,
+        agentId: run.agentId,
+        runId: run.id,
+        skipReason: decision.reason,
+      });
+    }
+
     if (decision.kind !== "enqueue" || !issue) return;
 
     if (hasUnmanagedBackgroundTaskEvidence(parseObject(run.resultJson))) {
@@ -7986,7 +8115,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .where(eq(heartbeatRuns.id, run.id));
     }
 
-    const handoffRun = await enqueueWakeup(run.agentId, {
+    const handoffRun = await enqueueWakeup(decision.targetAgentId, {
       source: "automation",
       triggerDetail: "system",
       reason: FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
@@ -8508,13 +8637,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const contextSnapshot = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(contextSnapshot.issueId);
+    const retryReason = readNonEmptyString(contextSnapshot.wakeReason) === "issue_monitor_due"
+      ? "issue_continuation_needed"
+      : "process_lost";
     const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
     const sessionBefore = await resolveSessionBeforeForWakeup(agent, taskKey);
     const retryContextSnapshot = withRecoveryModelProfileHint({
       ...contextSnapshot,
       retryOfRunId: run.id,
       wakeReason: "process_lost_retry",
-      retryReason: "process_lost",
+      retryReason,
     }, "normal_model");
     const responsibleUserId = await resolveResponsibleUserIdForRunContext(run, retryContextSnapshot);
 
@@ -8605,6 +8737,287 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     });
 
     return queued;
+  }
+
+  function toHotRestartIntentRun(input: {
+    run: typeof heartbeatRuns.$inferSelect;
+    adapterType: string;
+  }): HotRestartIntentRun {
+    const context = parseObject(input.run.contextSnapshot);
+    return {
+      runId: input.run.id,
+      companyId: input.run.companyId,
+      agentId: input.run.agentId,
+      adapterType: input.adapterType,
+      status: input.run.status,
+      processPid: input.run.processPid ?? null,
+      processGroupId: input.run.processGroupId ?? null,
+      issueId: readNonEmptyString(context.issueId),
+    };
+  }
+
+  async function prepareHotRestartShutdown(signal: "SIGINT" | "SIGTERM", now = new Date()) {
+    let intent: Awaited<ReturnType<typeof readHotRestartIntent>>;
+    try {
+      intent = await readHotRestartIntent();
+    } catch (err) {
+      logger.warn({ err }, "failed to read hot-restart intent; falling back to normal shutdown drain");
+      return { mode: "read_error" as const, skipDrain: false as const, activeRunIds: [] as string[] };
+    }
+
+    if (!intent) return { mode: "not_requested" as const, skipDrain: false as const, activeRunIds: [] as string[] };
+    if (intent.drainRequired) return { mode: "drain_required" as const, skipDrain: false as const, activeRunIds: [] as string[] };
+    if (!shouldHonorHotRestartIntentForProcess(intent)) {
+      logger.warn(
+        { expectedPid: intent.previousServerPid, currentPid: process.pid },
+        "hot-restart intent targets a different server pid; falling back to normal shutdown drain",
+      );
+      return { mode: "pid_mismatch" as const, skipDrain: false as const, activeRunIds: [] as string[] };
+    }
+
+    const activeRuns = await db
+      .select({
+        run: heartbeatRuns,
+        adapterType: agents.adapterType,
+      })
+      .from(heartbeatRuns)
+      .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
+      .where(eq(heartbeatRuns.status, "running"));
+    const snapshotRuns = activeRuns.map(toHotRestartIntentRun);
+    const intentWithVersion = {
+      ...intent,
+      previousServerVersion: intent.previousServerVersion ?? serverVersion,
+    };
+
+    await writeHotRestartShutdownSnapshot({
+      intent: intentWithVersion,
+      signal,
+      activeRuns: snapshotRuns,
+      capturedAt: now,
+    });
+
+    for (const { run } of activeRuns) {
+      await appendRunEvent(run, await nextRunEventSeq(run.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "info",
+        message: "Hot restart requested; leaving child process alive for startup adoption",
+        payload: {
+          signal,
+          previousServerPid: intent.previousServerPid,
+          previousServerVersion: intentWithVersion.previousServerVersion,
+          processPid: run.processPid ?? null,
+          processGroupId: run.processGroupId ?? null,
+        },
+      });
+    }
+
+    logger.info(
+      { signal, previousServerPid: intent.previousServerPid, activeRunIds: snapshotRuns.map((run) => run.runId) },
+      "hot-restart shutdown snapshot captured; skipping graceful run drain",
+    );
+
+    return {
+      mode: "hot_restart" as const,
+      skipDrain: true as const,
+      activeRunIds: snapshotRuns.map((run) => run.runId),
+    };
+  }
+
+  async function reconcileHotRestartAdoption(now = new Date()) {
+    let intent: Awaited<ReturnType<typeof readHotRestartIntent>>;
+    try {
+      intent = await readHotRestartIntent();
+    } catch (err) {
+      logger.warn({ err }, "failed to read hot-restart intent on startup; skipping adoption");
+      return {
+        mode: "read_error" as const,
+        adoptedRunIds: [] as string[],
+        finalizedWhileDownRunIds: [] as string[],
+        lostRunIds: [] as string[],
+        skippedRunIds: [] as string[],
+      };
+    }
+    if (!intent) {
+      return {
+        mode: "not_requested" as const,
+        adoptedRunIds: [] as string[],
+        finalizedWhileDownRunIds: [] as string[],
+        lostRunIds: [] as string[],
+        skippedRunIds: [] as string[],
+      };
+    }
+
+    if (!intent.shutdownSnapshot) {
+      logger.warn(
+        { previousServerPid: intent.previousServerPid },
+        "hot-restart intent present but shutdown snapshot is missing; no runs can be adopted",
+      );
+    }
+    const candidates = intent.shutdownSnapshot?.activeRuns ?? [];
+    const currentRows = candidates.length > 0
+      ? await db
+        .select({
+          run: heartbeatRuns,
+          adapterType: agents.adapterType,
+        })
+        .from(heartbeatRuns)
+        .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
+        .where(inArray(heartbeatRuns.id, candidates.map((run) => run.runId)))
+      : [];
+    const currentByRunId = new Map(currentRows.map((row) => [row.run.id, row]));
+
+    const reportRuns: HotRestartReportRun[] = [];
+    const adoptedRunIds: string[] = [];
+    const finalizedWhileDownRunIds: string[] = [];
+    const lostRunIds: string[] = [];
+    const skippedRunIds: string[] = [];
+
+    const classify = (
+      candidate: HotRestartIntentRun,
+      classification: HotRestartReportRun["classification"],
+      reason: string,
+      patch?: Partial<HotRestartIntentRun>,
+    ) => {
+      const run = { ...candidate, ...patch, classification, reason } satisfies HotRestartReportRun;
+      reportRuns.push(run);
+      if (classification === "adopted") adoptedRunIds.push(candidate.runId);
+      else if (classification === "finalized_while_down") finalizedWhileDownRunIds.push(candidate.runId);
+      else if (classification === "lost") lostRunIds.push(candidate.runId);
+      else skippedRunIds.push(candidate.runId);
+    };
+
+    for (const candidate of candidates) {
+      const current = currentByRunId.get(candidate.runId);
+      if (!current) {
+        classify(candidate, "finalized_while_down", "run_row_missing");
+        continue;
+      }
+
+      const { run, adapterType } = current;
+      const patch = {
+        adapterType,
+        status: run.status,
+        processPid: run.processPid ?? candidate.processPid,
+        processGroupId: run.processGroupId ?? candidate.processGroupId,
+      };
+
+      if (run.status !== "running") {
+        classify(candidate, "finalized_while_down", `run_status_${run.status}`, patch);
+        continue;
+      }
+
+      if (intent.drainRequired) {
+        classify(candidate, "skipped", "drain_required", patch);
+        continue;
+      }
+
+      if (!isTrackedLocalChildProcessAdapter(adapterType)) {
+        classify(candidate, "skipped", "adapter_not_local_child_process", patch);
+        continue;
+      }
+
+      const processPid = run.processPid ?? candidate.processPid;
+      const processGroupId = run.processGroupId ?? candidate.processGroupId;
+      const processPidAlive = isProcessAlive(processPid);
+      const processGroupAlive = isProcessGroupAlive(processGroupId);
+      if (!processPid && !processGroupId) {
+        classify(candidate, "lost", "missing_process_metadata", patch);
+        continue;
+      }
+      if (!processPidAlive && !processGroupAlive) {
+        classify(candidate, "lost", "process_not_alive", patch);
+        continue;
+      }
+
+      const resultJson = mergeHotRestartAdoptionResultJson(parseObject(run.resultJson), {
+        adoptedAt: now,
+        previousServerPid: intent.previousServerPid,
+        newServerPid: process.pid,
+        previousServerVersion: intent.previousServerVersion,
+        newServerVersion: serverVersion,
+        processPid,
+        processGroupId,
+      });
+      const updated = await db
+        .update(heartbeatRuns)
+        .set({
+          resultJson,
+          error: run.errorCode === DETACHED_PROCESS_ERROR_CODE ? null : run.error,
+          errorCode: run.errorCode === DETACHED_PROCESS_ERROR_CODE ? null : run.errorCode,
+          updatedAt: now,
+        })
+        .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "running")))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+
+      if (!updated) {
+        const latest = await db
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, run.id))
+          .then((rows) => rows[0] ?? null);
+        if (latest && latest.status !== "running") {
+          classify(candidate, "finalized_while_down", `run_status_${latest.status}`, patch);
+        } else {
+          classify(candidate, "lost", "adoption_update_not_applied", patch);
+        }
+        continue;
+      }
+
+      await appendRunEvent(updated, await nextRunEventSeq(run.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "info",
+        message: "Adopted live child process after hot restart",
+        payload: {
+          previousServerPid: intent.previousServerPid,
+          newServerPid: process.pid,
+          previousServerVersion: intent.previousServerVersion,
+          newServerVersion: serverVersion,
+          processPid,
+          processGroupId,
+        },
+      });
+      classify(candidate, "adopted", processPidAlive ? "process_pid_alive" : "process_group_alive", patch);
+    }
+
+    const report = await writeHotRestartReport({
+      version: 1,
+      requestedAt: intent.requestedAt,
+      completedAt: now.toISOString(),
+      drainRequired: intent.drainRequired,
+      previousServerPid: intent.previousServerPid,
+      newServerPid: process.pid,
+      previousServerVersion: intent.previousServerVersion,
+      newServerVersion: serverVersion,
+      adoptedRunIds,
+      finalizedWhileDownRunIds,
+      lostRunIds,
+      skippedRunIds,
+      runs: reportRuns,
+    });
+    await removeHotRestartIntent();
+
+    logger.info(
+      {
+        previousServerPid: report.previousServerPid,
+        newServerPid: report.newServerPid,
+        adoptedRunIds,
+        finalizedWhileDownRunIds,
+        lostRunIds,
+        skippedRunIds,
+      },
+      "hot-restart adoption report written",
+    );
+
+    return {
+      mode: "reported" as const,
+      adoptedRunIds,
+      finalizedWhileDownRunIds,
+      lostRunIds,
+      skippedRunIds,
+    };
   }
 
   async function drainRunningRunsForShutdown(signal: "SIGINT" | "SIGTERM", now = new Date()) {
@@ -10465,10 +10878,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const resumeIntent = context.resumeIntent === true || context.followUpRequested === true;
     const wakeReason = readNonEmptyString(context.wakeReason);
     const retryReason = readNonEmptyString(context.retryReason) ?? run.scheduledRetryReason ?? null;
+    const interactionResolvedAt = readNonEmptyString(context.interactionResolvedAt);
+    const hasResolvedInteractionEvidence = interactionResolvedAt !== null && !Number.isNaN(Date.parse(interactionResolvedAt));
 
     if (
       issue.status === "in_progress" &&
       !wakeCommentId &&
+      !hasResolvedInteractionEvidence &&
       (wakeReason === "issue_continuation_needed" || retryReason === "issue_continuation_needed")
     ) {
       const queuedWake = parseObject(context.paperclipWake);
@@ -10495,7 +10911,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
     }
 
-    if (issue.assigneeAgentId !== run.agentId && !isInteractionWake) {
+    const reviewExecutionState = issue.status === "in_review"
+      ? parseIssueExecutionState(issue.executionState)
+      : null;
+    const reviewParticipant = reviewExecutionState?.currentParticipant ?? null;
+    const isCurrentReviewParticipant = reviewParticipant?.type === "agent" &&
+      reviewParticipant.agentId === run.agentId;
+
+    if (issue.assigneeAgentId !== run.agentId && !isInteractionWake && !isCurrentReviewParticipant) {
       return {
         stale: true,
         errorCode: "issue_assignee_changed",
@@ -10544,8 +10967,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     if (issue.status === "in_review") {
-      const executionState = parseIssueExecutionState(issue.executionState);
-      const currentParticipant = executionState?.currentParticipant ?? null;
+      const currentParticipant = reviewExecutionState?.currentParticipant ?? null;
       if (currentParticipant) {
         const participantMatches =
           currentParticipant.type === "agent" && currentParticipant.agentId === run.agentId;
@@ -10557,7 +10979,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               "Cancelled because the in-review participant changed before the queued run could start; the current participant will be woken instead",
             details: {
               issueId,
-              currentStageType: executionState?.currentStageType ?? null,
+              currentStageType: reviewExecutionState?.currentStageType ?? null,
               currentParticipant,
             },
           };
@@ -10919,6 +11341,29 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
       .where(eq(heartbeatRuns.status, "running"));
 
+    const monitorIssueIds = [...new Set(activeRuns.flatMap(({ run }) => {
+      const runContext = parseObject(run.contextSnapshot);
+      if (readNonEmptyString(runContext.wakeReason) !== "issue_monitor_due") return [];
+      const issueId = readNonEmptyString(runContext.issueId);
+      return issueId ? [issueId] : [];
+    }))];
+    const monitorIssues = monitorIssueIds.length > 0
+      ? await db
+        .select({
+          id: issues.id,
+          companyId: issues.companyId,
+          monitorNextCheckAt: issues.monitorNextCheckAt,
+        })
+        .from(issues)
+        .where(inArray(issues.id, monitorIssueIds))
+      : [];
+    const monitorNextCheckAtByIssue = new Map(
+      monitorIssues.map((issue) => [
+        `${issue.companyId}:${issue.id}`,
+        issue.monitorNextCheckAt,
+      ]),
+    );
+
     const reaped: string[] = [];
 
     for (const { run, adapterType, adapterConfig } of activeRuns) {
@@ -10933,6 +11378,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const tracksLocalChild = isTrackedLocalChildProcessAdapter(adapterType);
       const processPidAlive = tracksLocalChild && run.processPid && isProcessAlive(run.processPid);
       const processGroupAlive = tracksLocalChild && run.processGroupId && isProcessGroupAlive(run.processGroupId);
+      if (
+        (processPidAlive || processGroupAlive) &&
+        readHotRestartAdoptionMetadata(parseObject(run.resultJson))
+      ) {
+        continue;
+      }
       if (processPidAlive) {
         if (run.errorCode !== DETACHED_PROCESS_ERROR_CODE) {
           const detachedMessage = `Lost in-memory process handle, but child pid ${run.processPid} is still alive`;
@@ -10964,7 +11415,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         });
       }
 
-      const shouldRetry = tracksLocalChild && (!!run.processPid || !!run.processGroupId) && (run.processLossRetryCount ?? 0) < 1;
+      const runContext = parseObject(run.contextSnapshot);
+      const monitorIssueId = readNonEmptyString(runContext.issueId);
+      const monitorNextCheckAt = monitorIssueId
+        ? monitorNextCheckAtByIssue.get(`${run.companyId}:${monitorIssueId}`)
+        : undefined;
+      const monitorDispatchLostWithoutFutureWake =
+        readNonEmptyString(runContext.wakeReason) === "issue_monitor_due" &&
+        monitorNextCheckAt !== undefined &&
+        (!monitorNextCheckAt || monitorNextCheckAt.getTime() <= now.getTime());
+      const shouldRetry = (run.processLossRetryCount ?? 0) < 1 && (
+        (tracksLocalChild && (!!run.processPid || !!run.processGroupId)) ||
+        monitorDispatchLostWithoutFutureWake
+      );
       const baseMessage = buildProcessLossMessage(run, descendantOnlyCleanup ? { descendantOnly: true } : undefined);
       const unmanagedBackgroundTaskEvidence = descendantOnlyCleanup
         ? {
@@ -11128,6 +11591,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     runId?: string | null;
     force?: boolean;
     lookbackHours?: number;
+    now?: Date;
+    reescalationCooldownMs?: number;
   }) {
     return recovery.reconcileIssueGraphLiveness({ ...opts, issueCreatedAtGte: await getWorktreeExecutionCutoff() });
   }
@@ -12851,6 +13316,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         });
       };
 
+      const onAdapterEvent = async (event: AdapterRuntimeEvent) => {
+        const eventType = event.eventType.trim();
+        if (!eventType) return;
+        await appendRunEvent(currentRun, seq++, {
+          eventType: eventType.slice(0, 120),
+          stream: event.stream,
+          level: event.level,
+          color: event.color,
+          message: event.message,
+          payload: event.payload,
+        });
+      };
+
       const adapter = getServerAdapter(agent.adapterType);
       const localAgentJwtScope =
         issueRef?.workMode === "skill_test"
@@ -13089,6 +13567,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           runtimeMcp,
           onLog,
           onMeta: onAdapterMeta,
+          onEvent: onAdapterEvent,
           onRuntimeProgress: async (progress) => {
             await recordCurrentHeartbeatRunRuntimeProgress(run, progress, issueId);
           },
@@ -16413,6 +16892,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     reportRunActivity: clearDetachedRunWarning,
 
+    prepareHotRestartShutdown,
+    reconcileHotRestartAdoption,
     reapOrphanedRuns,
     // Override-aware scheduling-suppression check (honors the worktree
     // run-execution experimental setting). Callers outside the service that

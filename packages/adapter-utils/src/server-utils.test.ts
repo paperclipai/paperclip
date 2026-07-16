@@ -774,10 +774,73 @@ describe("renderPaperclipWakePrompt", () => {
     ]) {
       expect(prompt).toContain("Execution contract: take concrete action in this heartbeat");
       expect(prompt).toContain("clear final disposition");
+      expect(prompt).toContain("Immediately before returning, verify that Paperclip records one of those dispositions");
+      expect(prompt).toContain("a successful process exit or final response is not sufficient");
+      expect(prompt).toContain("If no valid disposition is recorded, record it now and do not end the run");
       expect(prompt).toContain("evidence, not valid liveness paths by themselves");
       expect(prompt).toContain("Use child issues for long or parallel delegated work instead of polling");
       expect(prompt).toContain("named unblock owner/action");
     }
+  });
+
+  it.each([
+    [
+      "process_lost",
+      "Try again — resume from durable progress; don't redo completed steps.",
+    ],
+    [
+      "successful_run_missing_state",
+      "Your run completed but left no final disposition.",
+    ],
+    [
+      "provider_quota",
+      "Verify or create the wait-recovery monitor for the provider quota reset",
+    ],
+    [
+      "codex_output_inactivity_monitor",
+      "Your run was killed by the output-inactivity monitor",
+    ],
+    [
+      "workspace_validation_failed",
+      "Recover/fix the workspace (worktree, branch, workspace link)",
+    ],
+    [
+      "stranded_assigned_issue",
+      "Fix the underlying problem (auth, config, adapter, budget…)",
+    ],
+  ])("replaces the generic execution contract for %s recovery wakes", (cause, instruction) => {
+    const prompt = renderPaperclipWakePrompt({
+      reason: "source_scoped_recovery_action",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-14092",
+        title: "Recover work",
+        status: "blocked",
+      },
+      recovery: {
+        cause,
+        failureSummary: "adapter stopped",
+        originalAssignee: { id: "agent-1", name: "Coder" },
+        attemptCount: 2,
+        maxAttempts: 3,
+        nextAction: "Restore the execution path.",
+      },
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      comments: [],
+      fallbackFetchNeeded: false,
+    }, { includeExecutionContract: true });
+
+    expect(prompt).toContain(
+      "Recovery contract: your job is to RECOVER this task, not to do the work. Do not produce the deliverable yourself.",
+    );
+    expect(prompt).toContain(instruction);
+    expect(prompt).toContain("Fallback preference order: (1) send back to Coder");
+    expect(prompt).toContain(`- recovery cause: ${cause}`);
+    expect(prompt).toContain("- failure summary: adapter stopped");
+    expect(prompt).toContain("- original assignee: Coder");
+    expect(prompt).toContain("- recovery attempt: 2/3");
+    expect(prompt).toContain("- next action: Restore the execution path.");
+    expect(prompt).not.toContain("Execution contract: take concrete action");
   });
 
   it("keeps exactly one execution contract in a composed fresh heartbeat prompt", () => {
@@ -2052,6 +2115,50 @@ describe("refreshPaperclipWorkspaceEnvForExecution", () => {
         workspaceId: "workspace-2",
       },
     ]);
+  });
+
+  it("forwards resolved adapter env but never overrides Paperclip runtime env", () => {
+    const env: Record<string, string> = {
+      PAPERCLIP_RUN_ID: "run-1",
+      PAPERCLIP_TASK_ID: "issue-1",
+      PAPERCLIP_API_URL: "http://runtime:3100",
+    };
+
+    refreshPaperclipWorkspaceEnvForExecution({
+      env,
+      envConfig: {
+        // Plain non-PAPERCLIP key.
+        OOGA_BOOGA_123: "plain-value",
+        // Server-resolved secret_ref value arrives as a plain string here.
+        OPENROUTER_API_KEY: "resolved-secret-value",
+        // Reserved-namespace keys must not clobber runtime identity/wake vars.
+        PAPERCLIP_TASK_ID: "attacker-issue",
+        PAPERCLIP_API_URL: "http://evil:9999",
+      },
+      workspaceCwd: null,
+    });
+
+    expect(env.OOGA_BOOGA_123).toBe("plain-value");
+    expect(env.OPENROUTER_API_KEY).toBe("resolved-secret-value");
+    expect(env.PAPERCLIP_TASK_ID).toBe("issue-1");
+    expect(env.PAPERCLIP_API_URL).toBe("http://runtime:3100");
+  });
+
+  it("applies a configured PAPERCLIP_* key only when Paperclip has not set it", () => {
+    const env: Record<string, string> = {};
+
+    refreshPaperclipWorkspaceEnvForExecution({
+      env,
+      envConfig: {
+        PAPERCLIP_API_KEY: "explicit-key",
+      },
+      workspaceCwd: null,
+    });
+
+    // Paperclip did not assign PAPERCLIP_API_KEY before the merge, so an
+    // explicitly configured value is allowed through (adapters apply the run
+    // token here only when no explicit key was configured).
+    expect(env.PAPERCLIP_API_KEY).toBe("explicit-key");
   });
 });
 

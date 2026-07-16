@@ -1177,6 +1177,34 @@
       "when": 1783953536660,
       "tag": "0169_tool_gateway_protocol_rate_limit_counters",
       "breakpoints": true
+    },
+    {
+      "idx": 170,
+      "version": "7",
+      "when": 1784037600000,
+      "tag": "0170_company_skill_policies",
+      "breakpoints": true
+    },
+    {
+      "idx": 171,
+      "version": "7",
+      "when": 1784160000000,
+      "tag": "0171_issue_create_idempotency_keys",
+      "breakpoints": true
+    },
+    {
+      "idx": 172,
+      "version": "7",
+      "when": 1784169959628,
+      "tag": "0172_inbox_archive_agent_policies",
+      "breakpoints": true
+    },
+    {
+      "idx": 173,
+      "version": "7",
+      "when": 1784210753027,
+      "tag": "0173_inbox_policy_agent_cleanup",
+      "breakpoints": true
     }
   ]
 }

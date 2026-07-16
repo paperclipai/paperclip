@@ -2047,7 +2047,7 @@ describeEmbeddedPostgres("tool access service", () => {
       .expect(403);
   });
 
-  it("returns 403 for cross-company profile routes and 404 for missing profiles", async () => {
+  it("returns 404 for cross-company profile reads, 403 for mutations, and 404 for missing profiles", async () => {
     const allowedCompany = await createCompany(db);
     const otherCompany = await createCompany(db);
     const profile = await toolAccessService(db).createProfile(otherCompany.id, {
@@ -2072,7 +2072,7 @@ describeEmbeddedPostgres("tool access service", () => {
       source: "session",
     });
 
-    await request(app).get(`/api/tool-profiles/${profile.id}/new-tools`).expect(403);
+    await request(app).get(`/api/tool-profiles/${profile.id}/new-tools`).expect(404);
     await request(app)
       .post(`/api/tool-profiles/${profile.id}/duplicate`)
       .send({ name: "Forbidden copy", includeAssignments: false })

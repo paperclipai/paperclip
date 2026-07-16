@@ -295,6 +295,12 @@ function setTextareaValue(textarea: HTMLTextAreaElement, value: string) {
   textarea.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
+function setSelectValue(select: HTMLSelectElement, value: string) {
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, "value")?.set;
+  setter?.call(select, value);
+  select.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
 async function openAwsVaultDialog() {
   const vaultTabButton = [...document.querySelectorAll("button")].find(
     (button) => button.textContent?.includes("Provider vaults"),
@@ -845,6 +851,131 @@ describe("Secrets page layout", () => {
     expect(secretValueTextarea?.className).toContain("min-w-0");
     expect(secretValueTextarea?.className).toContain("overflow-x-hidden");
     expect(secretValueTextarea?.className).toContain("break-all");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("explains AWS managed secret creation failures with actionable safe details", async () => {
+    const rawProviderMessage =
+      "AccessDeniedException: arn:aws:sts::123456789012:assumed-role/prod/Paperclip is not authorized";
+    mockSecretsApi.create.mockRejectedValueOnce(
+      new ApiError("AWS Secrets Manager denied the request. Check IAM permissions for this provider vault.", 403, {
+        details: {
+          code: "access_denied",
+          provider: "aws_secrets_manager",
+          operation: "secret.create",
+          providerConfigId: "vault-aws",
+          region: "us-east-1",
+          credentialPath: "Paperclip server runtime/provider credential path",
+          requiredCapability: "secretsmanager:CreateSecret",
+          actionableMessage:
+            "AWS managed secret creation needs secretsmanager:CreateSecret in the selected region for this provider vault.",
+          safeAlternative:
+            "If the secret already exists in AWS, link it as an external reference instead of creating a Paperclip-managed value.",
+        },
+      }),
+    );
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <QueryClientProvider client={queryClient}>
+            <Secrets />
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const newSecretButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("New secret"),
+    ) as HTMLButtonElement | undefined;
+    await act(async () => {
+      newSecretButton?.click();
+    });
+    await flushReact();
+
+    await act(async () => {
+      setInputValue(document.getElementById("new-secret-name") as HTMLInputElement, "AWS test token");
+      setSelectValue(document.getElementById("new-secret-provider") as HTMLSelectElement, "aws_secrets_manager");
+      setTextareaValue(document.getElementById("new-secret-value") as HTMLTextAreaElement, "secret-value");
+    });
+    await flushReact();
+
+    const createButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Create secret",
+    ) as HTMLButtonElement | undefined;
+    await act(async () => {
+      createButton?.click();
+    });
+    await flushReact();
+    await flushReact();
+
+    const errorBanner = document.querySelector('[data-testid="secret-create-error"]');
+    expect(errorBanner?.textContent).toContain("AWS secret creation needs CreateSecret permission");
+    expect(errorBanner?.textContent).toContain("secretsmanager:CreateSecret");
+    expect(errorBanner?.textContent).toContain("us-east-1");
+    expect(errorBanner?.textContent).toContain("link it as an external reference");
+    expect(errorBanner?.textContent).toContain("vault-aws");
+    expect(errorBanner?.textContent).not.toContain(rawProviderMessage);
+    expect(errorBanner?.textContent).not.toContain("123456789012");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("renders generic secret creation failures with a stable selector", async () => {
+    mockSecretsApi.create.mockRejectedValueOnce(new ApiError("Secret creation failed", 500, null));
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <QueryClientProvider client={queryClient}>
+            <Secrets />
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const newSecretButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("New secret"),
+    ) as HTMLButtonElement | undefined;
+    await act(async () => {
+      newSecretButton?.click();
+    });
+    await flushReact();
+
+    await act(async () => {
+      setInputValue(document.getElementById("new-secret-name") as HTMLInputElement, "Failed token");
+      setTextareaValue(document.getElementById("new-secret-value") as HTMLTextAreaElement, "secret-value");
+    });
+    await flushReact();
+
+    const createButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Create secret",
+    ) as HTMLButtonElement | undefined;
+    await act(async () => {
+      createButton?.click();
+    });
+    await flushReact();
+    await flushReact();
+
+    const errorBanner = document.querySelector('[data-testid="secret-create-error"]');
+    expect(errorBanner?.textContent).toBe("Secret creation failed");
 
     await act(async () => {
       root.unmount();
