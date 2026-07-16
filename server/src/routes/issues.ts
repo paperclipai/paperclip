@@ -5196,7 +5196,7 @@ export function issueRoutes(
           }
         : null,
       planReviewContext,
-      currentExecutionWorkspace,
+      currentExecutionWorkspace: compactIssueExecutionWorkspace(currentExecutionWorkspace),
     });
   });
 
