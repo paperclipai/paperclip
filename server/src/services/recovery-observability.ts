@@ -7,6 +7,10 @@ import { heartbeatRuns, issueRecoveryActions, issues } from "@paperclipai/db";
 // PAP-14080 (Phase 3) and the retrospective on PAP-14098.
 export const DEFAULT_RECOVERY_RATE_THRESHOLD_PERCENT = 2;
 const DEFAULT_WINDOW_WEEKS = 8;
+// Upper bound on the reporting window. Caps the per-week array allocation so an
+// attacker-supplied `weeks` query param can't trigger an unbounded allocation
+// (~2 years of weekly buckets is far beyond any real dashboard use).
+export const MAX_WINDOW_WEEKS = 104;
 
 // Weeks are ISO/Monday-anchored to match the retrospective table (2026-06-01 is
 // a Monday). Postgres `date_trunc('week', ...)` is Monday-based, so this keeps
@@ -162,7 +166,10 @@ export function recoveryObservabilityService(db: Db) {
     opts?: { now?: Date; weeks?: number; thresholdPercent?: number },
   ): Promise<RecoveryObservabilityReport> {
     const now = opts?.now ?? new Date();
-    const weeks = Math.max(1, Math.floor(opts?.weeks ?? DEFAULT_WINDOW_WEEKS));
+    const weeks = Math.min(
+      MAX_WINDOW_WEEKS,
+      Math.max(1, Math.floor(opts?.weeks ?? DEFAULT_WINDOW_WEEKS)),
+    );
     const thresholdPercent = opts?.thresholdPercent ?? DEFAULT_RECOVERY_RATE_THRESHOLD_PERCENT;
     const since = utcWeekStart(now, weeks - 1);
     const sinceIso = since.toISOString();

@@ -15,6 +15,7 @@ import {
 import {
   classifyRecoveryHandoff,
   evaluateRecoveryRateAlert,
+  MAX_WINDOW_WEEKS,
   recoveryObservabilityService,
   type WeeklyRecoveryRate,
 } from "../services/recovery-observability.ts";
@@ -357,5 +358,17 @@ describeEmbeddedPostgres("recovery observability report", () => {
     );
     expect(strandedRouting?.ownerCompleted).toBe(2);
     expect(strandedRouting?.handedBack).toBe(2);
+  });
+
+  it("caps the reporting window so a huge `weeks` value can't over-allocate", async () => {
+    const { companyId } = await seedBaseline();
+
+    const report = await recoveryObservabilityService(db).report(companyId, {
+      now,
+      weeks: 100_000,
+    });
+
+    expect(report.window.weeks).toBe(MAX_WINDOW_WEEKS);
+    expect(report.weekly).toHaveLength(MAX_WINDOW_WEEKS);
   });
 });
