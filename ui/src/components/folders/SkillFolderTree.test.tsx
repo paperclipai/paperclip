@@ -33,18 +33,36 @@ const result: FolderListResult = {
       createdAt: new Date("2026-07-16T00:00:00.000Z"),
       updatedAt: new Date("2026-07-16T00:00:00.000Z"),
     },
+    {
+      id: "personal-root",
+      companyId: "company-1",
+      kind: "skill",
+      parentId: "my-root",
+      name: "Ada",
+      slug: "ada",
+      systemKey: "my:user-1",
+      path: "my/ada",
+      depth: 2,
+      color: null,
+      position: 0,
+      itemCount: 4,
+      createdAt: new Date("2026-07-16T00:00:00.000Z"),
+      updatedAt: new Date("2026-07-16T00:00:00.000Z"),
+    },
   ],
 };
 
 describe("SkillFolderRail", () => {
   let container: HTMLDivElement;
   let root: Root;
+  const onSelect = vi.fn<(selection: string) => void>();
 
   beforeEach(() => {
     window.localStorage.clear();
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
+    onSelect.mockClear();
     flushSync(() => {
       root.render(
         <SkillFolderRail
@@ -52,11 +70,12 @@ describe("SkillFolderRail", () => {
           selection="all"
           tags={[]}
           activeTag={null}
-          onSelect={vi.fn()}
+          onSelect={onSelect}
           onSelectTag={vi.fn()}
           onCreateFolder={vi.fn()}
           onRenameFolder={vi.fn()}
           onEditFolder={vi.fn()}
+          onMoveFolder={vi.fn()}
           onDeleteFolder={vi.fn()}
         />,
       );
@@ -72,11 +91,11 @@ describe("SkillFolderRail", () => {
   it("uses the wider default and persists drag resizing", () => {
     const rail = container.firstElementChild as HTMLDivElement;
     const separator = container.querySelector('[role="separator"]') as HTMLDivElement;
-    expect(rail.style.width).toBe("256px");
+    expect(rail.style.width).toBe("288px");
     separator.setPointerCapture = vi.fn();
 
     flushSync(() => {
-      separator.dispatchEvent(pointerEvent("pointerdown", 256));
+      separator.dispatchEvent(pointerEvent("pointerdown", 288));
       separator.dispatchEvent(pointerEvent("pointermove", 320));
       separator.dispatchEvent(pointerEvent("pointerup", 320));
     });
@@ -96,5 +115,17 @@ describe("SkillFolderRail", () => {
     expect(myRow?.className).toContain("grid-cols-(--gtc-folder-row-actions)");
     expect(allRow?.querySelector(".tabular-nums")?.textContent).toBe("12");
     expect(myRow?.querySelector(".tabular-nums")?.textContent).toBe("4");
+  });
+
+  it("selects and toggles a folder when its row label is clicked", () => {
+    const myLabel = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("My Skills"));
+
+    expect(container.textContent).not.toContain("Ada");
+    flushSync(() => myLabel?.click());
+
+    expect(onSelect).toHaveBeenCalledWith("my-root");
+    expect(container.textContent).toContain("Ada");
+    expect(container.querySelector('[aria-label="Collapse folder"]')).not.toBeNull();
   });
 });

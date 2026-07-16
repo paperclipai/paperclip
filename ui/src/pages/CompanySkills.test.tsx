@@ -3,7 +3,7 @@
 import type { ComponentProps, ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
-import type { CompanySkillDetail, CompanySkillVersion } from "@paperclipai/shared";
+import type { CompanySkillDetail, CompanySkillVersion, FolderListResult } from "@paperclipai/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DiscoveryGrid,
@@ -11,6 +11,7 @@ import {
   getSkillVersionDiffSelection,
   resolveDiscoveryTab,
   withDiscoveryTab,
+  skillDetailBreadcrumbs,
 } from "./CompanySkills";
 import { skillStudioNewRoute } from "../lib/company-skill-routes";
 
@@ -391,6 +392,57 @@ describe("skills discovery tab routing", () => {
 
     const installedParams = withDiscoveryTab(new URLSearchParams("tab=all&folder=my"), "installed");
     expect(installedParams.toString()).toBe("folder=my");
+  });
+});
+
+describe("skill detail breadcrumbs", () => {
+  it("links each folder ancestor back to the installed folder view", () => {
+    const folders: FolderListResult = {
+      kind: "skill",
+      allCount: 1,
+      unfiledCount: 0,
+      folders: [
+        {
+          id: "my-root",
+          companyId: "company-1",
+          kind: "skill",
+          parentId: null,
+          name: "My Skills",
+          slug: "my",
+          systemKey: "my",
+          path: "my",
+          depth: 1,
+          color: null,
+          position: 0,
+          itemCount: 1,
+          createdAt: new Date("2026-07-16T00:00:00.000Z"),
+          updatedAt: new Date("2026-07-16T00:00:00.000Z"),
+        },
+        {
+          id: "review-folder",
+          companyId: "company-1",
+          kind: "skill",
+          parentId: "my-root",
+          name: "Review",
+          slug: "review",
+          systemKey: null,
+          path: "my/review",
+          depth: 2,
+          color: null,
+          position: 0,
+          itemCount: 1,
+          createdAt: new Date("2026-07-16T00:00:00.000Z"),
+          updatedAt: new Date("2026-07-16T00:00:00.000Z"),
+        },
+      ],
+    };
+
+    expect(skillDetailBreadcrumbs({ name: "Deal with PR", folderId: "review-folder" }, folders)).toEqual([
+      { label: "Skills", href: "/skills" },
+      { label: "My Skills", href: "/skills?folder=my-root" },
+      { label: "Review", href: "/skills?folder=review-folder" },
+      { label: "Deal with PR" },
+    ]);
   });
 });
 

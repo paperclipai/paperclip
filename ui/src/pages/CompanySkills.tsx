@@ -25,7 +25,7 @@ import { companySkillsApi } from "../api/companySkills";
 import { foldersApi } from "../api/folders";
 import { agentsApi } from "../api/agents";
 import { useCompany } from "../context/CompanyContext";
-import { useBreadcrumbs } from "../context/BreadcrumbContext";
+import { useBreadcrumbs, type Breadcrumb } from "../context/BreadcrumbContext";
 import { useToastActions } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
 import { EmptyState } from "../components/EmptyState";
@@ -106,9 +106,10 @@ import {
 } from "../components/folders/FolderControls";
 import {
   FolderBreadcrumb,
-  FolderTiles,
   MoveToFolderDialog,
   SkillFolderRail,
+  folderBreadcrumbTrail,
+  reservedRootLabel,
   skillFolderDisplayPath,
   skillFolderPathDisplayFallback,
   subtreeFolderIds,
@@ -568,6 +569,23 @@ export function withDiscoveryTab(current: URLSearchParams, tab: DiscoveryTab): U
   return params;
 }
 
+export function skillDetailBreadcrumbs(
+  detail: Pick<CompanySkillDetail, "name" | "folderId">,
+  folderResult: FolderListResult | null | undefined,
+): Breadcrumb[] {
+  const trail = detail.folderId
+    ? folderBreadcrumbTrail(treeFromResult(folderResult), detail.folderId)
+    : [];
+  return [
+    { label: "Skills", href: "/skills" },
+    ...trail.map((folder, index) => ({
+      label: index === 0 ? reservedRootLabel(folder) : folder.name,
+      href: `/skills?folder=${encodeURIComponent(folder.id)}`,
+    })),
+    { label: detail.name },
+  ];
+}
+
 type DiscoverySort = "agents" | "stars" | "forks" | "recent" | "alphabetical";
 
 const DISCOVERY_SORT_LABELS: Record<DiscoverySort, string> = {
@@ -1025,6 +1043,7 @@ export function DiscoveryGrid({
   onCreateFolder,
   onRenameFolder,
   onEditFolder,
+  onMoveFolder,
   onDeleteFolder,
   onToggleSelectMode,
   onSelectCard,
@@ -1071,6 +1090,7 @@ export function DiscoveryGrid({
   onCreateFolder?: () => void;
   onRenameFolder?: (folder: FolderListItem, name: string) => void;
   onEditFolder?: (folder: FolderListItem) => void;
+  onMoveFolder?: (folder: FolderListItem, destination: "my" | "company") => void;
   onDeleteFolder?: (folder: FolderListItem) => void;
   onToggleSelectMode?: () => void;
   onSelectCard?: (card: DiscoveryCard, selected: boolean) => void;
@@ -1108,7 +1128,7 @@ export function DiscoveryGrid({
   );
   const sourceFilterActive = sourceBadgeFilter !== "all";
   const folderActionsReady = Boolean(
-    onCreateFolderIn && onRenameFolder && onEditFolder && onDeleteFolder,
+    onCreateFolderIn && onRenameFolder && onEditFolder && onMoveFolder && onDeleteFolder,
   );
   // The nested folder tree owns the left rail whenever folders (reserved roots
   // or user folders) exist for the installed view.
@@ -1132,6 +1152,7 @@ export function DiscoveryGrid({
             onCreateFolder={onCreateFolderIn!}
             onRenameFolder={onRenameFolder!}
             onEditFolder={onEditFolder!}
+            onMoveFolder={onMoveFolder!}
             onDeleteFolder={onDeleteFolder!}
             onEnsureMyFolder={onEnsureMyFolder}
           />
@@ -1330,9 +1351,8 @@ export function DiscoveryGrid({
         <div className="min-h-0 flex-1 overflow-auto p-4">
           {scanStatus ? <p className="mb-3 text-xs text-muted-foreground">{scanStatus}</p> : null}
           {showFolderRail && onFolderSelect ? (
-            <div className="mb-4 space-y-3">
+            <div className="mb-4">
               <FolderBreadcrumb result={folderResult} selection={folderSelection} onSelect={onFolderSelect} />
-              <FolderTiles result={folderResult} selection={folderSelection} onOpen={onFolderSelect} />
             </div>
           ) : null}
           {folderNudgeStorageKey && onCreateFolder && folderResult && folderResult.folders.length === 0 && !loading && cards.length > 0 ? (
@@ -4041,13 +4061,6 @@ export function CompanySkills() {
     setCreateError(null);
   }, [isStudioNew, studioForkFromId]);
 
-  useEffect(() => {
-    setBreadcrumbs([
-      { label: "Skills", href: "/skills" },
-      ...(isStudioNew ? [{ label: studioForkFromId ? "Fork skill" : "New skill" }] : routeSkillToken ? [{ label: "Detail" }] : []),
-    ]);
-  }, [isStudioNew, routeSkillToken, setBreadcrumbs, studioForkFromId]);
-
   // The old split catalog view no longer exists — catalog/bundled skills now open
   // as a regular full page keyed by `?catalog=<ref>`. Strip the legacy `view`
   // param so stale `?view=catalog` deep links land on the new surface (PAP-10907).
@@ -4198,6 +4211,18 @@ export function CompanySkills() {
   }, [selectedSkillId]);
 
   const activeDetail = detailQuery.data ?? displayedDetail;
+  useEffect(() => {
+    setBreadcrumbs([
+      { label: "Skills", href: "/skills" },
+      ...(isStudioNew
+        ? [{ label: studioForkFromId ? "Fork skill" : "New skill" }]
+        : activeDetail
+          ? skillDetailBreadcrumbs(activeDetail, skillFoldersQuery.data).slice(1)
+          : routeSkillToken
+            ? [{ label: "Detail" }]
+            : []),
+    ]);
+  }, [activeDetail, isStudioNew, routeSkillToken, setBreadcrumbs, skillFoldersQuery.data, studioForkFromId]);
   const activeFile = fileQuery.data ?? displayedFile;
 
   function routeForSkill(skill: CompanySkillRouteSubject, path?: string | null) {
@@ -4608,6 +4633,26 @@ export function CompanySkills() {
       });
     },
   });
+  const moveFolder = useMutation({
+    mutationFn: ({ folderId, parentId }: { folderId: string; parentId: string | null }) =>
+      foldersApi.moveFolder(selectedCompanyId!, folderId, { parentId, position: 0 }),
+    onSuccess: async (folder) => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.folders.list(selectedCompanyId!, "skill") });
+      setFolderSelection(folder.id);
+      pushToast({
+        tone: "success",
+        title: "Folder moved",
+        body: skillFolderPathDisplayFallback(folder.path) ?? folder.name,
+      });
+    },
+    onError: (error) => {
+      pushToast({
+        tone: "error",
+        title: "Folder move failed",
+        body: error instanceof Error ? error.message : "Failed to move folder.",
+      });
+    },
+  });
   const deleteFolder = useMutation({
     mutationFn: (folderId: string) => foldersApi.delete(selectedCompanyId!, folderId),
     onSuccess: async (_, folderId) => {
@@ -4697,6 +4742,33 @@ export function CompanySkills() {
       return;
     }
     navigate(skillStudioNewRoute(null, defaultNewSkillFolderId));
+  }
+
+  async function openCreateFolderIn(parentId: string | null) {
+    const parent = parentId ? treeFromResult(skillFoldersQuery.data).byId.get(parentId) : null;
+    if (parent?.systemKey === "my") {
+      try {
+        const personalFolder = await ensureMyFolder.mutateAsync();
+        openCreateFolder([], personalFolder.id);
+      } catch {
+        return;
+      }
+      return;
+    }
+    openCreateFolder([], parentId);
+  }
+
+  async function moveFolderBetweenScopes(folder: FolderListItem, destination: "my" | "company") {
+    if (destination === "company") {
+      moveFolder.mutate({ folderId: folder.id, parentId: null });
+      return;
+    }
+    try {
+      const personalFolder = await ensureMyFolder.mutateAsync();
+      moveFolder.mutate({ folderId: folder.id, parentId: personalFolder.id });
+    } catch {
+      return;
+    }
   }
 
   // Inline folder creation used by the move dialog's "New folder inside…" affordance.
@@ -5239,7 +5311,7 @@ export function CompanySkills() {
           onFolderSelect={showInstalledFolders ? setFolderSelection : undefined}
           onOpenMobileFolders={showInstalledFolders ? () => setMobileFoldersOpen(true) : undefined}
           onCreateFolder={showInstalledFolders ? () => openCreateFolder() : undefined}
-          onCreateFolderIn={showInstalledFolders ? (parentId) => openCreateFolder([], parentId) : undefined}
+          onCreateFolderIn={showInstalledFolders ? (parentId) => void openCreateFolderIn(parentId) : undefined}
           onEnsureMyFolder={showInstalledFolders ? () => ensureMyFolder.mutate() : undefined}
           onOpenMoveCard={showInstalledFolders ? (card) => {
             if (!card.skillId) return;
@@ -5255,6 +5327,7 @@ export function CompanySkills() {
             setFolderDialogTarget(folder);
             setFolderDialogOpen(true);
           } : undefined}
+          onMoveFolder={showInstalledFolders ? (folder, destination) => void moveFolderBetweenScopes(folder, destination) : undefined}
           onDeleteFolder={showInstalledFolders ? setDeleteFolderTarget : undefined}
           onToggleSelectMode={showInstalledFolders ? () => {
             setSelectMode((current) => !current);

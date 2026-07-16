@@ -18,6 +18,7 @@ import {
   Home,
   Layers,
   MoreHorizontal,
+  MoveRight,
   Plus,
   Search,
   Trash2,
@@ -62,6 +63,7 @@ export {
   folderBreadcrumbTrail,
   isBundledFolder,
   isProjectsFolder,
+  reservedRootLabel,
   skillFolderDisplayPath,
   skillFolderPathDisplayFallback,
   subtreeFolderIds,
@@ -74,7 +76,7 @@ export interface TagFacet {
   count: number;
 }
 
-const DEFAULT_FOLDER_RAIL_WIDTH = 256;
+const DEFAULT_FOLDER_RAIL_WIDTH = 288;
 const MIN_FOLDER_RAIL_WIDTH = 224;
 const MAX_FOLDER_RAIL_WIDTH = 400;
 const FOLDER_RAIL_WIDTH_STEP = 16;
@@ -131,6 +133,7 @@ export function SkillFolderRail({
   onCreateFolder,
   onRenameFolder,
   onEditFolder,
+  onMoveFolder,
   onDeleteFolder,
   onEnsureMyFolder,
 }: {
@@ -144,6 +147,7 @@ export function SkillFolderRail({
   onCreateFolder: (parentId: string | null) => void;
   onRenameFolder: (folder: FolderListItem, name: string) => void;
   onEditFolder: (folder: FolderListItem) => void;
+  onMoveFolder: (folder: FolderListItem, destination: "my" | "company") => void;
   onDeleteFolder: (folder: FolderListItem) => void;
   onEnsureMyFolder?: () => void;
 }) {
@@ -288,6 +292,7 @@ export function SkillFolderRail({
               onSelect={onSelect}
               onCreateFolder={onCreateFolder}
               onEditFolder={onEditFolder}
+              onMoveFolder={onMoveFolder}
               onDeleteFolder={onDeleteFolder}
               onStartRename={startRename}
               onRenameDraftChange={setRenameDraft}
@@ -321,6 +326,7 @@ export function SkillFolderRail({
                 onSelect={onSelect}
                 onCreateFolder={onCreateFolder}
                 onEditFolder={onEditFolder}
+                onMoveFolder={onMoveFolder}
                 onDeleteFolder={onDeleteFolder}
                 onStartRename={startRename}
                 onRenameDraftChange={setRenameDraft}
@@ -347,6 +353,7 @@ export function SkillFolderRail({
               onSelect={onSelect}
               onCreateFolder={onCreateFolder}
               onEditFolder={onEditFolder}
+              onMoveFolder={onMoveFolder}
               onDeleteFolder={onDeleteFolder}
               onStartRename={startRename}
               onRenameDraftChange={setRenameDraft}
@@ -380,6 +387,7 @@ export function SkillFolderRail({
               onSelect={onSelect}
               onCreateFolder={onCreateFolder}
               onEditFolder={onEditFolder}
+              onMoveFolder={onMoveFolder}
               onDeleteFolder={onDeleteFolder}
               onStartRename={startRename}
               onRenameDraftChange={setRenameDraft}
@@ -529,6 +537,7 @@ function TreeBranch({
   onSelect,
   onCreateFolder,
   onEditFolder,
+  onMoveFolder,
   onDeleteFolder,
   onStartRename,
   onRenameDraftChange,
@@ -547,6 +556,7 @@ function TreeBranch({
   onSelect: (selection: FolderSelection) => void;
   onCreateFolder: (parentId: string | null) => void;
   onEditFolder: (folder: FolderListItem) => void;
+  onMoveFolder: (folder: FolderListItem, destination: "my" | "company") => void;
   onDeleteFolder: (folder: FolderListItem) => void;
   onStartRename: (folder: FolderListItem) => void;
   onRenameDraftChange: (value: string) => void;
@@ -557,7 +567,8 @@ function TreeBranch({
   const isOpen = expanded.has(folder.id);
   const active = selection === folder.id;
   const editable = folderIsEditable(folder);
-  const canNest = folder.systemKey !== "my" && !isBundledFolder(folder) && !isProjectsFolder(folder) && folder.depth < 4;
+  const canNest = !isBundledFolder(folder) && !isProjectsFolder(folder) && folder.depth < 4;
+  const isInMySkills = folder.path.startsWith("my/");
   const label = rootLabel ?? folder.name;
 
   return (
@@ -584,7 +595,10 @@ function TreeBranch({
           type="button"
           className="flex min-w-0 items-center gap-2 py-1 text-left"
           aria-current={active ? "page" : undefined}
-          onClick={() => onSelect(folder.id)}
+          onClick={() => {
+            onSelect(folder.id);
+            if (children.length > 0) onToggle(folder.id);
+          }}
           onDoubleClick={() => editable && onStartRename(folder)}
         >
           {rootIcon ? (
@@ -633,6 +647,10 @@ function TreeBranch({
                 <>
                   <DropdownMenuItem onSelect={() => onStartRename(folder)}>Rename</DropdownMenuItem>
                   <DropdownMenuItem onSelect={() => onEditFolder(folder)}>Edit color</DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => onMoveFolder(folder, isInMySkills ? "company" : "my")}>
+                    <MoveRight className="h-3.5 w-3.5" />
+                    Move to {isInMySkills ? "Company" : "My Skills"}
+                  </DropdownMenuItem>
                   <DropdownMenuSeparator />
                   <DropdownMenuItem variant="destructive" onSelect={() => onDeleteFolder(folder)}>
                     <Trash2 className="h-3.5 w-3.5" />
@@ -661,6 +679,7 @@ function TreeBranch({
               onSelect={onSelect}
               onCreateFolder={onCreateFolder}
               onEditFolder={onEditFolder}
+              onMoveFolder={onMoveFolder}
               onDeleteFolder={onDeleteFolder}
               onStartRename={onStartRename}
               onRenameDraftChange={onRenameDraftChange}
