@@ -9,6 +9,7 @@ import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
   MODEL_PROFILE_KEYS,
+  PROVIDER_QUOTA_MONITOR_SERVICE_NAME,
   envBindingSchema,
   isEnvironmentDriverSupportedForAdapter,
   type BillingType,
@@ -197,6 +198,7 @@ import {
   decideSuccessfulRunHandoff,
   findExistingFinishSuccessfulRunHandoffWake,
   findExistingRunLivenessContinuationWake,
+  isSuccessfulRunHandoffValidPathSkip,
   SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY,
   readContinuationAttempt,
 } from "./recovery/index.js";
@@ -207,6 +209,7 @@ import {
 } from "./recovery/model-profile-hint.js";
 import { recoveryService } from "./recovery/service.js";
 import { productivityReviewService } from "./productivity-review.js";
+import { resolveRequiredSuccessfulRunHandoffOnValidPath } from "./successful-run-handoff-state.js";
 import { taskWatchdogService } from "./task-watchdogs.js";
 import { withAgentStartLock } from "./agent-start-lock.js";
 import {
@@ -6617,6 +6620,35 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       maxAttempts: monitor?.maxAttempts ?? null,
       recoveryPolicy: monitor?.recoveryPolicy ?? null,
     };
+    const executionState = claimed.status === "in_review"
+      ? parseIssueExecutionState(claimed.executionState)
+      : null;
+    const currentParticipant = executionState?.status === "pending"
+      ? executionState.currentParticipant
+      : null;
+    const reviewParticipantAgentId = currentParticipant?.type === "agent"
+      ? currentParticipant.agentId
+      : null;
+    const isProviderQuotaReviewMonitor = monitor?.serviceName === PROVIDER_QUOTA_MONITOR_SERVICE_NAME &&
+      Boolean(reviewParticipantAgentId);
+    const targetAgentId = isProviderQuotaReviewMonitor
+      ? reviewParticipantAgentId
+      : claimed.assigneeAgentId;
+    if (!targetAgentId) {
+      throw conflict("Issue monitor has no agent target");
+    }
+    const wakeReason = isProviderQuotaReviewMonitor
+      ? EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON
+      : input.wakeReason;
+    const reviewRecoveryContext = isProviderQuotaReviewMonitor
+      ? {
+          retryReason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON,
+          currentStageId: executionState?.currentStageId ?? null,
+          currentStageType: executionState?.currentStageType ?? null,
+          reviewRecoveryInstruction:
+            "The previous reviewer run reached provider quota. Resume this execution-review stage now that the quota wait has elapsed.",
+        }
+      : {};
 
     if (clearReason) {
       return clearIssueMonitorAndRecover({
@@ -6637,10 +6669,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     try {
-      await enqueueWakeup(claimed.assigneeAgentId, {
+      await enqueueWakeup(targetAgentId, {
         source: input.source,
         triggerDetail: input.triggerDetail,
-        reason: input.wakeReason,
+        reason: wakeReason,
         idempotencyKey: `issue-monitor:${claimed.id}:${scheduledAtIso}`,
         payload: {
           issueId: claimed.id,
@@ -6648,18 +6680,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           monitorAttemptCount: nextAttemptCount,
           monitorNotes: claimed.monitorNotes ?? null,
           ...monitorMetadata,
+          ...reviewRecoveryContext,
           source: input.activitySource,
         },
         requestedByActorType: input.actorType,
         requestedByActorId: input.actorId,
         contextSnapshot: {
           issueId: claimed.id,
-          source: "issue.monitor",
-          wakeReason: input.wakeReason,
+          source: isProviderQuotaReviewMonitor ? "issue.execution_review_recovery" : "issue.monitor",
+          wakeReason,
           nextCheckAt: scheduledAtIso,
           monitorAttemptCount: nextAttemptCount,
           monitorNotes: claimed.monitorNotes ?? null,
           ...monitorMetadata,
+          ...reviewRecoveryContext,
           manualTrigger: input.activitySource === "manual",
         },
       });
@@ -8056,6 +8090,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       budgetBlocked: Boolean(budgetBlock),
       idempotentWakeExists: Boolean(existingWake),
     });
+
+    if (isSuccessfulRunHandoffValidPathSkip(decision) && issue) {
+      await resolveRequiredSuccessfulRunHandoffOnValidPath(db, {
+        companyId: issue.companyId,
+        issueId: issue.id,
+        issueIdentifier: issue.identifier,
+        agentId: run.agentId,
+        runId: run.id,
+        skipReason: decision.reason,
+      });
+    }
 
     if (decision.kind !== "enqueue" || !issue) return;
 
@@ -10866,7 +10911,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
     }
 
-    if (issue.assigneeAgentId !== run.agentId && !isInteractionWake) {
+    const reviewExecutionState = issue.status === "in_review"
+      ? parseIssueExecutionState(issue.executionState)
+      : null;
+    const reviewParticipant = reviewExecutionState?.currentParticipant ?? null;
+    const isCurrentReviewParticipant = reviewParticipant?.type === "agent" &&
+      reviewParticipant.agentId === run.agentId;
+
+    if (issue.assigneeAgentId !== run.agentId && !isInteractionWake && !isCurrentReviewParticipant) {
       return {
         stale: true,
         errorCode: "issue_assignee_changed",
@@ -10915,8 +10967,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     if (issue.status === "in_review") {
-      const executionState = parseIssueExecutionState(issue.executionState);
-      const currentParticipant = executionState?.currentParticipant ?? null;
+      const currentParticipant = reviewExecutionState?.currentParticipant ?? null;
       if (currentParticipant) {
         const participantMatches =
           currentParticipant.type === "agent" && currentParticipant.agentId === run.agentId;
@@ -10928,7 +10979,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               "Cancelled because the in-review participant changed before the queued run could start; the current participant will be woken instead",
             details: {
               issueId,
-              currentStageType: executionState?.currentStageType ?? null,
+              currentStageType: reviewExecutionState?.currentStageType ?? null,
               currentParticipant,
             },
           };
@@ -11540,6 +11591,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     runId?: string | null;
     force?: boolean;
     lookbackHours?: number;
+    now?: Date;
+    reescalationCooldownMs?: number;
   }) {
     return recovery.reconcileIssueGraphLiveness({ ...opts, issueCreatedAtGte: await getWorktreeExecutionCutoff() });
   }
