@@ -189,6 +189,7 @@ export async function captureDecisionSnapshot(
         eq(projectWorkspaces.companyId, input.companyId),
         eq(projectWorkspaces.projectId, issue.projectId),
         lte(projectWorkspaces.createdAt, decision.cutoffAt),
+        lte(projectWorkspaces.updatedAt, decision.cutoffAt),
       ))
       .orderBy(desc(projectWorkspaces.isPrimary), desc(projectWorkspaces.updatedAt))
       .limit(1)
@@ -200,6 +201,8 @@ export async function captureDecisionSnapshot(
       eq(executionWorkspaces.companyId, input.companyId),
       eq(executionWorkspaces.sourceIssueId, input.issueId),
       lte(executionWorkspaces.openedAt, decision.cutoffAt),
+      lte(executionWorkspaces.lastUsedAt, decision.cutoffAt),
+      lte(executionWorkspaces.updatedAt, decision.cutoffAt),
     ))
     .orderBy(desc(executionWorkspaces.lastUsedAt), desc(executionWorkspaces.id))
     .limit(1);
