@@ -11313,6 +11313,110 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
   }
 
+  async function reconcileSyntheticWorkspaceFinalizeForDeadRun(
+    run: typeof heartbeatRuns.$inferSelect,
+  ) {
+    const issueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
+    if (!issueId) return false;
+
+    const inserted = await db.transaction(async (tx) => {
+      await tx.execute(
+        sql`SELECT pg_advisory_xact_lock(hashtextextended(${`dead_run_workspace_finalize:${run.companyId}:${run.id}`}, 0))`,
+      );
+
+      const issue = await tx
+        .select({
+          id: issues.id,
+          status: issues.status,
+          executionWorkspaceId: issues.executionWorkspaceId,
+        })
+        .from(issues)
+        .where(and(eq(issues.companyId, run.companyId), eq(issues.id, issueId)))
+        .then((rows) => rows[0] ?? null);
+      if (issue?.status !== "done" || !issue.executionWorkspaceId) return false;
+
+      const existingSyntheticFinalize = await tx
+        .select({ id: workspaceOperations.id })
+        .from(workspaceOperations)
+        .where(and(
+          eq(workspaceOperations.companyId, run.companyId),
+          eq(workspaceOperations.heartbeatRunId, run.id),
+          eq(workspaceOperations.phase, "workspace_finalize"),
+          eq(workspaceOperations.status, "succeeded"),
+          sql`${workspaceOperations.metadata} ->> 'synthetic' = 'true'`,
+        ))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (existingSyntheticFinalize) return false;
+
+      const latestOperation = await tx
+        .select({
+          heartbeatRunId: workspaceOperations.heartbeatRunId,
+          phase: workspaceOperations.phase,
+          status: workspaceOperations.status,
+          cwd: workspaceOperations.cwd,
+        })
+        .from(workspaceOperations)
+        .where(and(
+          eq(workspaceOperations.companyId, run.companyId),
+          eq(workspaceOperations.executionWorkspaceId, issue.executionWorkspaceId),
+        ))
+        .orderBy(
+          desc(workspaceOperations.startedAt),
+          desc(workspaceOperations.createdAt),
+          desc(workspaceOperations.id),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (
+        !latestOperation ||
+        latestOperation.heartbeatRunId !== run.id ||
+        (latestOperation.phase === "workspace_finalize" && latestOperation.status === "succeeded")
+      ) {
+        return false;
+      }
+
+      const finalizedAt = new Date();
+      await tx.insert(workspaceOperations).values({
+        companyId: run.companyId,
+        executionWorkspaceId: issue.executionWorkspaceId,
+        heartbeatRunId: run.id,
+        issueId: issue.id,
+        phase: "workspace_finalize",
+        cwd: latestOperation.cwd,
+        status: "succeeded",
+        metadata: {
+          synthetic: true,
+          reason: "terminal_process_lost_reconciliation",
+          errorCode: run.errorCode ?? "process_lost",
+        },
+        startedAt: finalizedAt,
+        finishedAt: finalizedAt,
+        updatedAt: finalizedAt,
+      });
+      return true;
+    });
+
+    if (inserted) {
+      await logActivity(db, {
+        companyId: run.companyId,
+        actorType: "system",
+        actorId: "heartbeat_process_lost_reaper",
+        agentId: run.agentId,
+        runId: run.id,
+        action: "workspace.finalize_synthesized",
+        entityType: "issue",
+        entityId: issueId,
+        details: {
+          source: "heartbeat.reap_orphaned_runs",
+          errorCode: run.errorCode ?? "process_lost",
+        },
+      });
+    }
+
+    return inserted;
+  }
+
   async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
     const now = new Date();
@@ -11457,6 +11561,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       if (!finalizedRun) finalizedRun = await getRun(run.id);
       if (!finalizedRun) continue;
       finalizedRun = await classifyAndPersistRunLiveness(finalizedRun, parseObject(finalizedRun.resultJson)) ?? finalizedRun;
+      await reconcileSyntheticWorkspaceFinalizeForDeadRun(finalizedRun);
       await releaseEnvironmentLeasesForRun({
         runId: finalizedRun.id,
         companyId: finalizedRun.companyId,
