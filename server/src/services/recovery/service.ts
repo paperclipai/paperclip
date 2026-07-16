@@ -3981,7 +3981,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     }) ?? null;
   }
 
-  async function findRecentTerminalLivenessRecoveryIssue(
+  async function findRecentCompletedLivenessRecoveryIssue(
     finding: IssueLivenessFinding,
     now: Date,
     cooldownMs: number,
@@ -4000,7 +4000,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             eq(issues.originFingerprint, livenessRecoveryLeafFingerprint(finding)),
           ),
           visibleIssueCondition(),
-          inArray(issues.status, ["done", "cancelled"]),
+          eq(issues.status, "done"),
           gte(issues.updatedAt, cutoff),
         ),
       )
@@ -4396,7 +4396,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       });
       return { kind: "existing" as const, escalationIssueId: existing.id };
     }
-    if (await findRecentTerminalLivenessRecoveryIssue(
+    if (await findRecentCompletedLivenessRecoveryIssue(
       input.finding,
       input.now,
       input.reescalationCooldownMs,

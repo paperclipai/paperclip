@@ -321,9 +321,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
   ) {
     const completedReviews = await db
       .select({
-        id: issues.id,
         createdAt: issues.createdAt,
-        updatedAt: issues.updatedAt,
       })
       .from(issues)
       .where(
@@ -354,11 +352,9 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
 
     let streak = 0;
     for (const [index, review] of completedReviews.entries()) {
-      const hasRecordedDuration = review.updatedAt.getTime() > review.createdAt.getTime();
       const nextNewerReviewCreatedAt = completedReviews[index - 1]?.createdAt ?? null;
       const sourceAction = sourceActions.some((activity) => {
         if (activity.createdAt < review.createdAt) return false;
-        if (hasRecordedDuration) return activity.createdAt <= review.updatedAt;
         return !nextNewerReviewCreatedAt || activity.createdAt < nextNewerReviewCreatedAt;
       });
       if (sourceAction) break;

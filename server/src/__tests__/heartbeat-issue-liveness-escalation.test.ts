@@ -1222,6 +1222,41 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     expect(blockers.some((row) => row.blockerIssueId === freshEscalation?.id)).toBe(true);
   });
 
+  it("re-escalates immediately after a matching escalation is cancelled", async () => {
+    await enableAutoRecovery();
+    const { companyId, managerId, blockedIssueId, blockerIssueId } = await seedBlockedChain();
+    const heartbeat = heartbeatService(db);
+    const now = new Date();
+    const incidentKey = [
+      "harness_liveness",
+      companyId,
+      blockedIssueId,
+      "blocked_by_unassigned_issue",
+      blockerIssueId,
+    ].join(":");
+
+    await db.insert(issues).values({
+      id: randomUUID(),
+      companyId,
+      title: "Cancelled escalation",
+      status: "cancelled",
+      priority: "high",
+      parentId: blockedIssueId,
+      assigneeAgentId: managerId,
+      issueNumber: 3,
+      identifier: "CANCELLED-3",
+      originKind: "harness_liveness_escalation",
+      originId: incidentKey,
+      createdAt: new Date(now.getTime() - 30 * 60 * 1000),
+      updatedAt: now,
+    });
+
+    const result = await heartbeat.reconcileIssueGraphLiveness({ now });
+
+    expect(result.escalationsCreated).toBe(1);
+    expect(result.skippedReescalationCooldown).toBe(0);
+  });
+
   it("removes closed liveness escalations from blocker relations during reconciliation", async () => {
     await enableAutoRecovery();
     const { companyId, blockedIssueId, blockerIssueId } = await seedBlockedChain();
