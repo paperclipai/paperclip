@@ -6036,7 +6036,7 @@ export function issueService(db: Db) {
             ))
             .limit(1)
             .then((rows) => rows.map((row) => row.issues));
-        } else if (!allowDuplicate) {
+        } else if (allowDuplicate === false) {
           [existingIssue] = await tx
             .select()
             .from(issues)

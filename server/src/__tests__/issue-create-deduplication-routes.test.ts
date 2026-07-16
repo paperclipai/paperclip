@@ -19,6 +19,7 @@ import {
 import { actorMiddleware } from "../middleware/auth.js";
 import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
+import { issueService } from "../services/issues.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -142,6 +143,27 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
       .expect(201);
 
     expect(duplicate.body.id).not.toBe(first.body.id);
+  });
+
+  it("does not apply the route soft guard to internal service creates", async () => {
+    const companyId = await seedCompany();
+    const parent = await seedParent(companyId);
+    const svc = issueService(db);
+
+    const first = await svc.create(companyId, {
+      parentId: parent.id,
+      title: "System-generated follow-up",
+      status: "todo",
+      priority: "medium",
+    });
+    const second = await svc.create(companyId, {
+      parentId: parent.id,
+      title: "System-generated follow-up",
+      status: "todo",
+      priority: "medium",
+    });
+
+    expect(second.id).not.toBe(first.id);
   });
 
   it("does not let closed or older issues block a recreate", async () => {
