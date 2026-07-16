@@ -57,6 +57,15 @@ import type {
   PluginEnvironmentRealizeWorkspaceResult,
   PluginEnvironmentExecuteParams,
   PluginEnvironmentExecuteResult,
+  PluginEnvironmentStartInteractiveSetupParams,
+  PluginEnvironmentInteractiveSetupSession,
+  PluginEnvironmentGetInteractiveSetupParams,
+  PluginEnvironmentCaptureTemplateParams,
+  PluginEnvironmentCaptureTemplateResult,
+  PluginEnvironmentCancelInteractiveSetupParams,
+  PluginEnvironmentCancelInteractiveSetupResult,
+  PluginEnvironmentDeleteTemplateParams,
+  PluginEnvironmentDeleteTemplateResult,
   PluginPerformActionActorContext,
   PluginPerformActionContext,
 } from "./protocol.js";
@@ -66,7 +75,7 @@ export interface TestHarnessOptions {
   manifest: PaperclipPluginManifestV1;
   /** Optional capability override. Defaults to `manifest.capabilities`. */
   capabilities?: PluginCapability[];
-  /** Initial config returned by `ctx.config.get()`. */
+  /** Initial config returned by `ctx.config.get(companyId)`. */
   config?: Record<string, unknown>;
 }
 
@@ -147,7 +156,12 @@ export interface EnvironmentEventRecord {
     | "releaseLease"
     | "destroyLease"
     | "realizeWorkspace"
-    | "execute";
+    | "execute"
+    | "startInteractiveSetup"
+    | "getInteractiveSetup"
+    | "captureTemplate"
+    | "cancelInteractiveSetup"
+    | "deleteTemplate";
   driverKey: string;
   environmentId: string;
   timestamp: string;
@@ -169,6 +183,11 @@ export interface EnvironmentTestHarnessOptions extends TestHarnessOptions {
     onDestroyLease?: (params: PluginEnvironmentDestroyLeaseParams) => Promise<void>;
     onRealizeWorkspace?: (params: PluginEnvironmentRealizeWorkspaceParams) => Promise<PluginEnvironmentRealizeWorkspaceResult>;
     onExecute?: (params: PluginEnvironmentExecuteParams) => Promise<PluginEnvironmentExecuteResult>;
+    onStartInteractiveSetup?: (params: PluginEnvironmentStartInteractiveSetupParams) => Promise<PluginEnvironmentInteractiveSetupSession>;
+    onGetInteractiveSetup?: (params: PluginEnvironmentGetInteractiveSetupParams) => Promise<PluginEnvironmentInteractiveSetupSession>;
+    onCaptureTemplate?: (params: PluginEnvironmentCaptureTemplateParams) => Promise<PluginEnvironmentCaptureTemplateResult>;
+    onCancelInteractiveSetup?: (params: PluginEnvironmentCancelInteractiveSetupParams) => Promise<PluginEnvironmentCancelInteractiveSetupResult>;
+    onDeleteTemplate?: (params: PluginEnvironmentDeleteTemplateParams) => Promise<PluginEnvironmentDeleteTemplateResult>;
   };
 }
 
@@ -192,6 +211,16 @@ export interface EnvironmentTestHarness extends TestHarness {
   realizeWorkspace(params: PluginEnvironmentRealizeWorkspaceParams): Promise<PluginEnvironmentRealizeWorkspaceResult>;
   /** Invoke the environment driver's execute hook. */
   execute(params: PluginEnvironmentExecuteParams): Promise<PluginEnvironmentExecuteResult>;
+  /** Invoke the environment driver's interactive setup start hook. */
+  startInteractiveSetup(params: PluginEnvironmentStartInteractiveSetupParams): Promise<PluginEnvironmentInteractiveSetupSession>;
+  /** Invoke the environment driver's interactive setup status hook. */
+  getInteractiveSetup(params: PluginEnvironmentGetInteractiveSetupParams): Promise<PluginEnvironmentInteractiveSetupSession>;
+  /** Invoke the environment driver's template capture hook. */
+  captureTemplate(params: PluginEnvironmentCaptureTemplateParams): Promise<PluginEnvironmentCaptureTemplateResult>;
+  /** Invoke the environment driver's interactive setup cancel hook. */
+  cancelInteractiveSetup(params: PluginEnvironmentCancelInteractiveSetupParams): Promise<PluginEnvironmentCancelInteractiveSetupResult>;
+  /** Invoke the environment driver's optional template delete hook. */
+  deleteTemplate(params: PluginEnvironmentDeleteTemplateParams): Promise<PluginEnvironmentDeleteTemplateResult>;
 }
 
 // ---------------------------------------------------------------------------
@@ -1008,6 +1037,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
             leadAgentId: null,
             targetDate: null,
             color: declaration.color ?? null,
+            icon: null,
             env: null,
             pauseReason: null,
             pausedAt: null,
@@ -1176,6 +1206,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
             parentIssueId: null,
             title: declaration.title,
             description: declaration.description ?? null,
+            responsibleUserId: null,
             assigneeAgentId,
             priority: declaration.priority ?? "medium",
             status: declaration.status ?? (assigneeAgentId ? "active" : "paused"),
@@ -1346,6 +1377,20 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
             trustLevel: "markdown_only",
             compatibility: "compatible",
             fileInventory: [{ path: "SKILL.md", kind: "skill" }],
+            iconUrl: null,
+            color: null,
+            tagline: declaration.description?.slice(0, 120) ?? null,
+            authorName: null,
+            homepageUrl: null,
+            categories: [],
+            sharingScope: "company",
+            publicShareToken: null,
+            forkedFromSkillId: null,
+            forkedFromCompanyId: null,
+            starCount: 0,
+            installCount: 1,
+            forkCount: 0,
+            currentVersionId: null,
             metadata: {
               sourceKind: "catalog",
               pluginManagedResource: {
@@ -1402,6 +1447,20 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
             trustLevel: "markdown_only",
             compatibility: "compatible",
             fileInventory: [{ path: "SKILL.md", kind: "skill" }],
+            iconUrl: null,
+            color: null,
+            tagline: declaration.description?.slice(0, 120) ?? null,
+            authorName: null,
+            homepageUrl: null,
+            categories: [],
+            sharingScope: "company",
+            publicShareToken: null,
+            forkedFromSkillId: null,
+            forkedFromCompanyId: null,
+            starCount: existing.skill?.starCount ?? 0,
+            installCount: existing.skill?.installCount ?? 1,
+            forkCount: existing.skill?.forkCount ?? 0,
+            currentVersionId: existing.skill?.currentVersionId ?? null,
             metadata: {
               sourceKind: "catalog",
               pluginManagedResource: {
@@ -1516,6 +1575,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           executionLockedAt: null,
           createdByAgentId: null,
           createdByUserId: null,
+          responsibleUserId: null,
           issueNumber: null,
           identifier: null,
           originKind,
@@ -1607,7 +1667,9 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       async listComments(issueId, companyId) {
         requireCapability(manifest, capabilitySet, "issue.comments.read");
         if (!isInCompany(issues.get(issueId), companyId)) return [];
-        return issueComments.get(issueId) ?? [];
+        return (issueComments.get(issueId) ?? []).map((comment) =>
+          comment.deletedAt ? { ...comment, body: "", presentation: null, metadata: null } : comment
+        );
       },
       async createComment(issueId, body, companyId, options) {
         requireCapability(manifest, capabilitySet, "issue.comments.create");
@@ -1677,6 +1739,9 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       },
       async requestConfirmation(issueId, interaction, companyId, options) {
         return this.createInteraction(issueId, { ...interaction, kind: "request_confirmation" }, companyId, options) as Promise<any>;
+      },
+      async requestCheckboxConfirmation(issueId, interaction, companyId, options) {
+        return this.createInteraction(issueId, { ...interaction, kind: "request_checkbox_confirmation" }, companyId, options) as Promise<any>;
       },
       documents: {
         async list(issueId, companyId) {
@@ -1922,7 +1987,10 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
             spentMonthlyCents: 0,
             pauseReason: null,
             pausedAt: null,
-            permissions: { canCreateAgents: Boolean(declaration.permissions?.canCreateAgents) },
+            permissions: {
+              canCreateAgents: Boolean(declaration.permissions?.canCreateAgents),
+              canCreateSkills: declaration.permissions?.canCreateSkills !== false,
+            },
             lastHeartbeatAt: null,
             metadata: managedAgentMetadata(agentKey),
             createdAt: now,
@@ -1960,7 +2028,10 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
               spentMonthlyCents: 0,
               pauseReason: null,
               pausedAt: null,
-              permissions: { canCreateAgents: Boolean(declaration.permissions?.canCreateAgents) },
+              permissions: {
+                canCreateAgents: Boolean(declaration.permissions?.canCreateAgents),
+                canCreateSkills: declaration.permissions?.canCreateSkills !== false,
+              },
               lastHeartbeatAt: null,
               metadata: managedAgentMetadata(agentKey),
               createdAt: now,
@@ -1981,7 +2052,10 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
             adapterConfig: declaration.adapterConfig ?? {},
             runtimeConfig: declaration.runtimeConfig ?? {},
             budgetMonthlyCents: declaration.budgetMonthlyCents ?? 0,
-            permissions: { canCreateAgents: Boolean(declaration.permissions?.canCreateAgents) },
+            permissions: {
+              canCreateAgents: Boolean(declaration.permissions?.canCreateAgents),
+              canCreateSkills: declaration.permissions?.canCreateSkills !== false,
+            },
             metadata: managedAgentMetadata(agentKey, resolved.agent.metadata),
             updatedAt: new Date(),
           };
@@ -2480,6 +2554,46 @@ export function createEnvironmentTestHarness(options: EnvironmentTestHarnessOpti
     },
     async execute(params) {
       return callHook("execute", driver.onExecute, params, "onExecute");
+    },
+    async startInteractiveSetup(params) {
+      return callHook(
+        "startInteractiveSetup",
+        driver.onStartInteractiveSetup,
+        params,
+        "onStartInteractiveSetup",
+      );
+    },
+    async getInteractiveSetup(params) {
+      return callHook(
+        "getInteractiveSetup",
+        driver.onGetInteractiveSetup,
+        params,
+        "onGetInteractiveSetup",
+      );
+    },
+    async captureTemplate(params) {
+      return callHook(
+        "captureTemplate",
+        driver.onCaptureTemplate,
+        params,
+        "onCaptureTemplate",
+      );
+    },
+    async cancelInteractiveSetup(params) {
+      return callHook(
+        "cancelInteractiveSetup",
+        driver.onCancelInteractiveSetup,
+        params,
+        "onCancelInteractiveSetup",
+      );
+    },
+    async deleteTemplate(params) {
+      return callHook(
+        "deleteTemplate",
+        driver.onDeleteTemplate,
+        params,
+        "onDeleteTemplate",
+      );
     },
   };
 

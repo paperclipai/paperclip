@@ -175,7 +175,7 @@ export function CompanyAccess() {
         title: "Member removed",
         body:
           result.reassignedIssueCount > 0
-            ? `${result.reassignedIssueCount} assigned issue${result.reassignedIssueCount === 1 ? "" : "s"} cleaned up.`
+            ? `${result.reassignedIssueCount} assigned task${result.reassignedIssueCount === 1 ? "" : "s"} cleaned up.`
             : undefined,
         tone: "success",
       });
@@ -249,7 +249,7 @@ export function CompanyAccess() {
       </div>
 
       {access && !access.currentUserRole && (
-        <div className="rounded-xl border border-amber-500/40 px-4 py-3 text-sm text-amber-200">
+        <div className="rounded-xl border border-amber-500/40 px-4 py-3 text-sm text-amber-800 dark:text-amber-200">
           This account can manage access here through instance-admin privileges, but it does not currently hold an active company membership.
         </div>
       )}
@@ -271,7 +271,7 @@ export function CompanyAccess() {
               <div>
                 <h3 className="text-sm font-semibold">Pending human joins</h3>
                 <p className="text-sm text-muted-foreground">
-                  Review human join requests before they become active company members.
+                  Review pending join requests before they become active company members.
                 </p>
               </div>
               <Badge variant="outline">{pendingHumanJoinRequests.length} pending</Badge>
@@ -310,7 +310,7 @@ export function CompanyAccess() {
         ) : null}
 
         <div className="overflow-hidden rounded-xl border border-border">
-          <div className="grid grid-cols-[minmax(0,1.5fr)_120px_120px_180px] gap-3 border-b border-border px-4 py-3 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+          <div className="grid grid-cols-(--gtc-24) gap-3 border-b border-border px-4 py-3 text-xs font-medium uppercase tracking-wide text-muted-foreground">
             <div>User account</div>
             <div>Role</div>
             <div>Status</div>
@@ -325,7 +325,7 @@ export function CompanyAccess() {
               return (
                 <div
                   key={member.id}
-                  className="grid grid-cols-[minmax(0,1.5fr)_120px_120px_180px] gap-3 border-b border-border px-4 py-3 last:border-b-0"
+                  className="grid grid-cols-(--gtc-24) gap-3 border-b border-border px-4 py-3 last:border-b-0"
                 >
                   <div className="min-w-0">
                     <div className="truncate font-medium">{member.user?.name?.trim() || member.user?.email || member.principalId}</div>
@@ -449,14 +449,14 @@ export function CompanyAccess() {
                 <div className="text-sm text-muted-foreground">{removingMember.user?.email || removingMember.principalId}</div>
                 <div className="mt-2 text-sm text-muted-foreground">
                   {assignedIssuesQuery.isLoading
-                    ? "Checking assigned issues..."
-                    : `${assignedIssues.length} open assigned issue${assignedIssues.length === 1 ? "" : "s"}`}
+                    ? "Checking assigned tasks..."
+                    : `${assignedIssues.length} open assigned task${assignedIssues.length === 1 ? "" : "s"}`}
                 </div>
               </div>
 
               {assignedIssues.length > 0 ? (
                 <div className="space-y-2">
-                  <div className="text-sm font-medium">Issue reassignment</div>
+                  <div className="text-sm font-medium">Task reassignment</div>
                   <select
                     className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm"
                     value={reassignmentTarget}
@@ -491,7 +491,7 @@ export function CompanyAccess() {
                     ))}
                     {assignedIssues.length > 6 ? (
                       <div className="px-3 py-2 text-sm text-muted-foreground">
-                        {assignedIssues.length - 6} more issue{assignedIssues.length - 6 === 1 ? "" : "s"}
+                        {assignedIssues.length - 6} more task{assignedIssues.length - 6 === 1 ? "" : "s"}
                       </div>
                     ) : null}
                   </div>

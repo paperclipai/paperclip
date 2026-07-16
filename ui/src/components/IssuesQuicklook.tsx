@@ -1,11 +1,11 @@
 import { useState } from "react";
-import type { Issue } from "@paperclipai/shared";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { createIssueDetailPath, withIssueDetailHeaderSeed } from "../lib/issueDetailBreadcrumb";
+import type { ProjectWorkspaceLinkedIssue } from "../lib/project-workspaces-tab";
 import { IssueQuicklookCard } from "./IssueLinkQuicklook";
 
 interface IssuesQuicklookProps {
-  issue: Issue;
+  issue: ProjectWorkspaceLinkedIssue;
   children: React.ReactNode;
 }
 

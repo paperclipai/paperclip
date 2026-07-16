@@ -12,6 +12,7 @@ import {
   isSuccessfulRunHandoffRequiredNoticeBody,
   noticeMetadataReferencesRecoveryAction,
 } from "./successful-run-handoff.js";
+import { UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON } from "@paperclipai/adapter-utils/server-utils";
 
 const run = {
   id: "run-1",
@@ -49,9 +50,11 @@ function decide(overrides: Partial<Parameters<typeof decideSuccessfulRunHandoff>
     hasActiveExecutionPath: false,
     hasQueuedWake: false,
     hasPendingInteractionOrApproval: false,
+    hasPersistedMonitor: false,
     hasExplicitBlockerPath: false,
     hasOpenRecoveryIssue: false,
     hasPauseHold: false,
+    hasActiveRoutineContinuation: false,
     budgetBlocked: false,
     idempotentWakeExists: false,
     ...overrides,
@@ -59,11 +62,12 @@ function decide(overrides: Partial<Parameters<typeof decideSuccessfulRunHandoff>
 }
 
 describe("successful run handoff decision", () => {
-  it("queues one corrective handoff wake for a successful progress run without a visible next action", () => {
+  it("queues one status-only corrective wake to the original agent when a successful run has no disposition", () => {
     const decision = decide();
 
     expect(decision.kind).toBe("enqueue");
     if (decision.kind !== "enqueue") return;
+    expect(decision.targetAgentId).toBe(run.agentId);
     expect(decision.idempotencyKey).toBe("finish_successful_run_handoff:issue-1:run-1:1");
     expect(decision.payload).toMatchObject({
       issueId: "issue-1",
@@ -88,6 +92,9 @@ describe("successful run handoff decision", () => {
       allowDocumentUpdates: false,
       resumeRequiresNormalModel: true,
     });
+    expect(decision.instruction).toContain(
+      "This is a status-only retry to the original agent. Record a disposition; do not start new work.",
+    );
     expect(decision.instruction).toContain("Resolve the missing disposition before creating or revising any new artifacts");
     expect(decision.instruction).toContain("Choose **exactly one** outcome");
     expect(decision.instruction).toContain("record an explicit continuation path");
@@ -113,9 +120,24 @@ describe("successful run handoff decision", () => {
       kind: "skip",
       reason: "pending interaction or approval owns the next action",
     });
+    expect(decide({ hasPersistedMonitor: true })).toEqual({
+      kind: "skip",
+      reason: "persisted issue monitor owns the next action",
+    });
     expect(decide({ hasActiveExecutionPath: true })).toEqual({
       kind: "skip",
       reason: "issue already has an active execution path",
+    });
+  });
+
+  it("does not treat killed background-task evidence as a missing live path when a durable monitor owns the wait", () => {
+    expect(decide({
+      detectedProgressSummary: UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
+      livenessState: "needs_followup",
+      hasPersistedMonitor: true,
+    })).toEqual({
+      kind: "skip",
+      reason: "persisted issue monitor owns the next action",
     });
   });
 
@@ -124,9 +146,36 @@ describe("successful run handoff decision", () => {
       kind: "skip",
       reason: "issue already has a queued or deferred wake",
     });
+    expect(decide({ hasPersistedMonitor: true })).toEqual({
+      kind: "skip",
+      reason: "persisted issue monitor owns the next action",
+    });
     expect(decide({ hasExplicitBlockerPath: true })).toEqual({
       kind: "skip",
       reason: "explicit blocker path owns the next action",
+    });
+  });
+
+  it("does not queue when the issue is the recurring parent of an active routine", () => {
+    expect(decide({ hasActiveRoutineContinuation: true })).toEqual({
+      kind: "skip",
+      reason: "active routine continuation owns the next action",
+    });
+    expect(decide({
+      hasActiveRoutineContinuation: true,
+      detectedProgressSummary: null,
+      livenessState: null,
+    })).toEqual({
+      kind: "skip",
+      reason: "active routine continuation owns the next action",
+    });
+    expect(decide({
+      hasActiveRoutineContinuation: true,
+      livenessState: "advanced",
+      detectedProgressSummary: "Run produced concrete action evidence: 1 issue comment(s)",
+    })).toEqual({
+      kind: "skip",
+      reason: "active routine continuation owns the next action",
     });
   });
 
@@ -181,6 +230,23 @@ describe("successful run handoff decision", () => {
     })).toEqual({
       kind: "skip",
       reason: "issue monitor run owns its own recovery path",
+    });
+  });
+
+  it("does not queue for successful comment-driven wakes", () => {
+    expect(decide({
+      run: {
+        ...run,
+        contextSnapshot: {
+          issueId: "issue-1",
+          wakeReason: "issue_commented",
+          commentId: "comment-1",
+          wakeCommentIds: ["comment-1"],
+        },
+      } as any,
+    })).toEqual({
+      kind: "skip",
+      reason: "comment-driven wake already owns the next action",
     });
   });
 

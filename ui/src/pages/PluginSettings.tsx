@@ -96,10 +96,14 @@ export function PluginSettings() {
   const configSchema = plugin?.manifestJson?.instanceConfigSchema as JsonSchemaNode | undefined;
   const hasConfigSchema = configSchema && configSchema.properties && Object.keys(configSchema.properties).length > 0;
 
+  const configQueryKey = pluginId && selectedCompanyId
+    ? queryKeys.plugins.config(pluginId, selectedCompanyId)
+    : ["plugins", pluginId ?? "__missing_plugin__", "companies", "__missing_company__", "config"] as const;
+
   const { data: configData, isLoading: configLoading } = useQuery({
-    queryKey: queryKeys.plugins.config(pluginId!),
-    queryFn: () => pluginsApi.getConfig(pluginId!),
-    enabled: !!pluginId && !!hasConfigSchema,
+    queryKey: configQueryKey,
+    queryFn: () => pluginsApi.getConfig(pluginId!, selectedCompanyId!),
+    enabled: !!pluginId && !!hasConfigSchema && !!selectedCompanyId,
   });
 
   const { slots } = usePluginSlots({
@@ -117,8 +121,9 @@ export function PluginSettings() {
   useEffect(() => {
     setBreadcrumbs([
       { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
-      { label: "Settings", href: "/instance/settings/heartbeats" },
-      { label: "Plugins", href: "/instance/settings/plugins" },
+      { label: "Settings", href: "/company/settings" },
+      { label: "Instance settings", href: "/company/settings/instance/general" },
+      { label: "Plugins", href: "/company/settings/instance/plugins" },
       { label: plugin?.manifestJson?.displayName ?? plugin?.packageName ?? "Plugin Details" },
     ]);
   }, [selectedCompany?.name, setBreadcrumbs, companyPrefix, plugin]);
@@ -132,7 +137,7 @@ export function PluginSettings() {
   }
 
   if (!plugin) {
-    return <Navigate to="/instance/settings/plugins" replace />;
+    return <Navigate to="/company/settings/instance/plugins" replace />;
   }
 
   const displayStatus = plugin.status;
@@ -155,7 +160,7 @@ export function PluginSettings() {
   return (
     <div className="space-y-6 max-w-5xl">
       <div className="flex items-center gap-4">
-        <Link to="/instance/settings/plugins">
+        <Link to="/company/settings/instance/plugins">
           <Button variant="outline" size="icon" className="h-8 w-8">
             <ArrowLeft className="h-4 w-4" />
           </Button>
@@ -187,7 +192,7 @@ export function PluginSettings() {
           <div className="space-y-8">
             <section className="space-y-5">
               <h2 className="text-base font-semibold">About</h2>
-              <div className="grid gap-8 lg:grid-cols-[minmax(0,1.4fr)_minmax(220px,0.8fr)]">
+              <div className="grid gap-8 lg:grid-cols-(--gtc-52)">
                 <div className="space-y-2">
                   <h3 className="text-sm font-medium text-muted-foreground">Description</h3>
                   <p className="text-sm leading-6 text-foreground/90">{pluginDescription}</p>
@@ -245,6 +250,7 @@ export function PluginSettings() {
               ) : hasConfigSchema ? (
                 <PluginConfigForm
                   pluginId={pluginId!}
+                  companyId={selectedCompanyId}
                   schema={configSchema!}
                   initialValues={configData?.configJson}
                   isLoading={configLoading}
@@ -253,14 +259,14 @@ export function PluginSettings() {
                 />
               ) : environmentDrivers.length > 0 ? (
                 <div className="rounded-md border border-border/60 bg-muted/20 px-4 py-3 text-sm">
-                  <p className="font-medium text-foreground">Configure this plugin from Company Environments.</p>
+                  <p className="font-medium text-foreground">Configure this plugin from Instance Settings → Environments.</p>
                   <p className="mt-1 text-muted-foreground">
-                    {driverLabel || "This plugin"} registers environment runtime settings there so credentials stay
-                    company-scoped instead of instance-global.
+                    {driverLabel || "This plugin"} registers environment runtime settings there so the execution target
+                    stays instance-scoped while secret bindings still resolve through the selected company context.
                   </p>
                   <div className="mt-3">
-                    <Link to="/company/settings/environments">
-                      <Button variant="outline" size="sm">Open Company Environments</Button>
+                    <Link to="/company/settings/instance/environments">
+                      <Button variant="outline" size="sm">Open Environments</Button>
                     </Link>
                   </div>
                 </div>
@@ -274,7 +280,7 @@ export function PluginSettings() {
         </TabsContent>
 
         <TabsContent value="status" className="space-y-6">
-          <div className="grid gap-6 xl:grid-cols-[minmax(0,1.2fr)_320px]">
+          <div className="grid gap-6 xl:grid-cols-(--gtc-39)">
             <div className="space-y-6">
               <Card>
                 <CardHeader>
@@ -358,7 +364,7 @@ export function PluginSettings() {
                                   <span className="truncate font-mono text-xs" title={run.jobKey ?? run.jobId}>
                                     {run.jobKey ?? run.jobId.slice(0, 8)}
                                   </span>
-                                  <Badge variant="outline" className="px-1 py-0 text-[10px]">
+                                  <Badge variant="outline" className="px-1 py-0 text-(length:--text-nano)">
                                     {run.trigger}
                                   </Badge>
                                 </div>
@@ -444,7 +450,7 @@ export function PluginSettings() {
                           }`}
                         >
                           <span className="shrink-0 text-muted-foreground/50">{new Date(entry.createdAt).toLocaleTimeString()}</span>
-                          <Badge variant="outline" className="h-4 shrink-0 px-1 text-[10px]">{entry.level}</Badge>
+                          <Badge variant="outline" className="h-4 shrink-0 px-1 text-(length:--text-nano)">{entry.level}</Badge>
                           <span className="truncate" title={entry.message}>{entry.message}</span>
                         </div>
                       ))}
@@ -529,7 +535,7 @@ export function PluginSettings() {
                   </div>
                   <div className="flex justify-between gap-3">
                     <span>NPM Package</span>
-                    <span className="max-w-[170px] truncate text-right text-xs" title={plugin.packageName}>
+                    <span className="max-w-(--sz-170px) truncate text-right text-xs" title={plugin.packageName}>
                       {plugin.packageName}
                     </span>
                   </div>
@@ -694,7 +700,7 @@ function PluginLocalFolderRow({ pluginId, companyId, declaration, status }: Plug
         <div className="min-w-0 space-y-1">
           <div className="flex flex-wrap items-center gap-2">
             <h4 className="text-sm font-medium">{declaration.displayName}</h4>
-            <Badge variant="outline" className="font-mono text-[10px]">
+            <Badge variant="outline" className="font-mono text-(length:--text-nano)">
               {declaration.folderKey}
             </Badge>
             <Badge variant={status?.healthy ? "default" : "secondary"}>
@@ -750,7 +756,7 @@ function PluginLocalFolderRow({ pluginId, companyId, declaration, status }: Plug
           <Button
             size="sm"
             onClick={handleSave}
-            disabled={saveMutation.isPending || !isDirty}
+            disabled={saveMutation.isPending || !isDirty || !companyId}
           >
             {saveMutation.isPending ? (
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -862,15 +868,15 @@ function RequirementList({
       <div className="flex items-center justify-between gap-2">
         <span className="text-xs font-medium text-muted-foreground">{title}</span>
         {inspectionUnavailable ? (
-          <Badge variant="secondary" className="text-[10px]">
+          <Badge variant="secondary" className="text-(length:--text-nano)">
             Not inspected
           </Badge>
         ) : missingItems.length > 0 ? (
-          <Badge variant="destructive" className="text-[10px]">
+          <Badge variant="destructive" className="text-(length:--text-nano)">
             {missingItems.length} missing
           </Badge>
         ) : (
-          <Badge variant="outline" className="text-[10px]">Present</Badge>
+          <Badge variant="outline" className="text-(length:--text-nano)">Present</Badge>
         )}
       </div>
       {items.length > 0 ? (
@@ -880,7 +886,7 @@ function RequirementList({
             return (
               <span
                 key={item}
-                className={`rounded border px-1.5 py-0.5 font-mono text-[11px] ${
+                className={`rounded border px-1.5 py-0.5 font-mono text-(length:--text-micro) ${
                   inspectionUnavailable
                     ? "border-amber-300/60 bg-amber-50 text-amber-700 dark:border-amber-800/70 dark:bg-amber-950/30 dark:text-amber-300"
                     : missing
@@ -919,6 +925,7 @@ function isLikelyAbsolutePath(pathValue: string) {
 
 interface PluginConfigFormProps {
   pluginId: string;
+  companyId: string | null;
   schema: JsonSchemaNode;
   initialValues?: Record<string, unknown>;
   isLoading?: boolean;
@@ -935,7 +942,7 @@ interface PluginConfigFormProps {
  * Separated from PluginSettings to isolate re-render scope — only the form
  * re-renders on field changes, not the entire page.
  */
-function PluginConfigForm({ pluginId, schema, initialValues, isLoading, pluginStatus, supportsConfigTest }: PluginConfigFormProps) {
+function PluginConfigForm({ pluginId, companyId, schema, initialValues, isLoading, pluginStatus, supportsConfigTest }: PluginConfigFormProps) {
   const queryClient = useQueryClient();
 
   // Form values: start with saved values, fall back to schema defaults
@@ -948,6 +955,11 @@ function PluginConfigForm({ pluginId, schema, initialValues, isLoading, pluginSt
   // don't overwrite in-progress user edits if the query refetches (e.g. on
   // window focus).
   const hasHydratedRef = useRef(false);
+  useEffect(() => {
+    hasHydratedRef.current = false;
+    setValues(getDefaultValues(schema));
+  }, [companyId, pluginId, schema]);
+
   useEffect(() => {
     if (initialValues && !hasHydratedRef.current) {
       hasHydratedRef.current = true;
@@ -970,12 +982,16 @@ function PluginConfigForm({ pluginId, schema, initialValues, isLoading, pluginSt
 
   // Save mutation
   const saveMutation = useMutation({
-    mutationFn: (configJson: Record<string, unknown>) =>
-      pluginsApi.saveConfig(pluginId, configJson),
+    mutationFn: (configJson: Record<string, unknown>) => {
+      if (!companyId) throw new Error("Select a company before saving plugin configuration.");
+      return pluginsApi.saveConfig(pluginId, companyId, configJson);
+    },
     onSuccess: () => {
       setSaveMessage({ type: "success", text: "Configuration saved." });
       setTestResult(null);
-      queryClient.invalidateQueries({ queryKey: queryKeys.plugins.config(pluginId) });
+      if (companyId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.plugins.config(pluginId, companyId) });
+      }
       // Clear success message after 3s
       setTimeout(() => setSaveMessage(null), 3000);
     },
@@ -986,8 +1002,10 @@ function PluginConfigForm({ pluginId, schema, initialValues, isLoading, pluginSt
 
   // Test configuration mutation
   const testMutation = useMutation({
-    mutationFn: (configJson: Record<string, unknown>) =>
-      pluginsApi.testConfig(pluginId, configJson),
+    mutationFn: (configJson: Record<string, unknown>) => {
+      if (!companyId) throw new Error("Select a company before testing plugin configuration.");
+      return pluginsApi.testConfig(pluginId, companyId, configJson);
+    },
     onSuccess: (result) => {
       if (result.valid) {
         setTestResult({ type: "success", text: "Configuration test passed." });
@@ -1094,7 +1112,7 @@ function PluginConfigForm({ pluginId, schema, initialValues, isLoading, pluginSt
           <Button
             variant="outline"
             onClick={handleTestConnection}
-            disabled={testMutation.isPending}
+            disabled={testMutation.isPending || !companyId}
             size="sm"
           >
             {testMutation.isPending ? (

@@ -286,6 +286,9 @@ describe("ImportFromVaultDialog", () => {
       {
         id: "secret-existing",
         companyId: "company-1",
+        scope: "company",
+        ownerUserId: null,
+        userSecretDefinitionId: null,
         key: "openai_api_key",
         name: "OPENAI_API_KEY",
         provider: "aws_secrets_manager",

@@ -1,15 +1,17 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
+import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { buildProjectMentionHref, buildRoutineMentionHref, buildSkillMentionHref } from "@paperclipai/shared";
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
+import { buildIssueReferenceHref, buildProjectMentionHref, buildRoutineMentionHref, buildSkillMentionHref } from "@paperclipai/shared";
 import {
   computeMentionMenuPosition,
   findClosestAutocompleteAnchor,
   findMentionMatch,
   isSameAutocompleteSession,
+  issueMentionTitle,
   MarkdownEditor,
+  type MentionOption,
   placeCaretAfterMentionAnchor,
   shouldAcceptAutocompleteKey,
 } from "./MarkdownEditor";
@@ -18,6 +20,7 @@ const mdxEditorMockState = vi.hoisted(() => ({
   emitMountEmptyReset: false,
   emitMountParseError: false,
   emitMountSilentEmptyState: false,
+  throwOnRender: false,
   markdownValues: [] as string[],
   suppressHtmlProcessingValues: [] as boolean[],
 }));
@@ -57,6 +60,9 @@ vi.mock("@mdxeditor/editor", async () => {
     },
     forwardedRef: React.ForwardedRef<{ setMarkdown: (value: string) => void; focus: () => void } | null>,
   ) {
+    if (mdxEditorMockState.throwOnRender) {
+      throw new Error("Rich editor render crashed");
+    }
     mdxEditorMockState.markdownValues.push(markdown);
     mdxEditorMockState.suppressHtmlProcessingValues.push(Boolean(suppressHtmlProcessing));
     const [content, setContent] = React.useState(markdown);
@@ -146,6 +152,14 @@ vi.mock("../lib/paste-normalization", () => ({
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
+async function act(callback: () => void | Promise<void>) {
+  let result: void | Promise<void> = undefined;
+  flushSync(() => {
+    result = callback();
+  });
+  await result;
+}
+
 async function flush() {
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -153,15 +167,52 @@ async function flush() {
 }
 
 function createFileDragEvent(type: string) {
-  const event = new Event(type, { bubbles: true, cancelable: true }) as Event & {
+  const event = (
+    typeof DragEvent === "function"
+      ? new DragEvent(type, { bubbles: true, cancelable: true })
+      : new Event(type, { bubbles: true, cancelable: true })
+  ) as Event & {
     dataTransfer: { types: string[]; files: File[]; dropEffect?: string };
   };
-  event.dataTransfer = {
-    types: ["Files"],
-    files: [],
-  };
+  Object.defineProperty(event, "dataTransfer", {
+    configurable: true,
+    value: {
+      types: ["Files"],
+      files: [],
+    },
+  });
   return event;
 }
+
+describe("issueMentionTitle", () => {
+  it("strips the leading identifier from the mention name", () => {
+    expect(
+      issueMentionTitle({
+        id: "issue:1",
+        kind: "issue",
+        name: "PAP-102 @task references",
+        issueIdentifier: "PAP-102",
+      }),
+    ).toBe("@task references");
+  });
+
+  it("returns the full name when there is no separate title", () => {
+    expect(
+      issueMentionTitle({
+        id: "issue:1",
+        kind: "issue",
+        name: "PAP-7",
+        issueIdentifier: "PAP-7",
+      }),
+    ).toBe("");
+  });
+
+  it("falls back to the name when the identifier is missing", () => {
+    expect(
+      issueMentionTitle({ id: "issue:1", kind: "issue", name: "Some task" }),
+    ).toBe("Some task");
+  });
+});
 
 describe("MarkdownEditor", () => {
   let container: HTMLDivElement;
@@ -191,6 +242,7 @@ describe("MarkdownEditor", () => {
     mdxEditorMockState.emitMountEmptyReset = false;
     mdxEditorMockState.emitMountParseError = false;
     mdxEditorMockState.emitMountSilentEmptyState = false;
+    mdxEditorMockState.throwOnRender = false;
     mdxEditorMockState.markdownValues = [];
     mdxEditorMockState.suppressHtmlProcessingValues = [];
   });
@@ -354,6 +406,44 @@ describe("MarkdownEditor", () => {
     });
   });
 
+  it("falls back to a raw textarea when the rich editor crashes during render", async () => {
+    mdxEditorMockState.throwOnRender = true;
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const handleChange = vi.fn();
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <MarkdownEditor
+          value="5. python3 circleback/sync_insights.py --input <tmp> -- writes insights/<group>/*.md"
+          onChange={handleChange}
+          placeholder="Markdown body"
+        />,
+      );
+    });
+
+    await vi.waitFor(() => {
+      expect(container.querySelector("textarea")).not.toBeNull();
+    });
+    const textarea = container.querySelector("textarea");
+    expect(textarea).not.toBeNull();
+    expect(textarea?.value).toBe("5. python3 circleback/sync_insights.py --input <tmp> -- writes insights/<group>/*.md");
+    expect(container.textContent).toContain("Rich editor unavailable for this markdown");
+    expect(consoleError).toHaveBeenCalledWith(
+      "Markdown rich editor failed; falling back to raw textarea",
+      expect.objectContaining({
+        error: expect.any(Error),
+        componentStack: expect.any(String),
+      }),
+    );
+    consoleError.mockRestore();
+    expect(handleChange).not.toHaveBeenCalled();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it("falls back to a raw textarea when the rich editor mounts into the placeholder without callbacks", async () => {
     mdxEditorMockState.emitMountSilentEmptyState = true;
     const handleChange = vi.fn();
@@ -403,16 +493,18 @@ describe("MarkdownEditor", () => {
     const scope = container.querySelector('[data-testid="mdx-editor"]')?.parentElement as HTMLDivElement | null;
     expect(scope).not.toBeNull();
 
-    act(() => {
+    await act(async () => {
       scope?.dispatchEvent(createFileDragEvent("dragenter"));
     });
+    await flush();
 
     expect(scope?.className).toContain("ring-1");
     expect(container.textContent).toContain("Drop image to upload");
 
-    act(() => {
+    await act(async () => {
       scope?.dispatchEvent(createFileDragEvent("dragleave"));
     });
+    await flush();
 
     expect(scope?.className).not.toContain("ring-1");
 
@@ -685,8 +777,8 @@ describe("MarkdownEditor", () => {
   }
 
   async function openMentionMenuFor(
-    handleChange: ReturnType<typeof vi.fn>,
-    mentions = [
+    handleChange: Mock<(value: string) => void>,
+    mentions: MentionOption[] = [
       {
         id: "project:project-123",
         kind: "project" as const,
@@ -695,6 +787,7 @@ describe("MarkdownEditor", () => {
         projectColor: "#336699",
       },
     ],
+    matchText = "Paperclip App",
   ): Promise<{ option: HTMLButtonElement; root: ReturnType<typeof createRoot>; menu: HTMLElement }> {
     const root = createRoot(container);
 
@@ -728,7 +821,7 @@ describe("MarkdownEditor", () => {
     await flush();
 
     const option = Array.from(document.body.querySelectorAll('button[type="button"]'))
-      .find((node) => node.textContent?.includes("Paperclip App")) as HTMLButtonElement | undefined;
+      .find((node) => node.textContent?.includes(matchText)) as HTMLButtonElement | undefined;
     expect(option).toBeTruthy();
     const menu = document.body.querySelector('[data-testid="mention-autocomplete-menu"]') as HTMLElement | null;
     expect(menu).toBeTruthy();
@@ -750,6 +843,64 @@ describe("MarkdownEditor", () => {
     expect(handleChange).toHaveBeenCalledWith(
       `[@Paperclip App](${buildProjectMentionHref("project-123", "#336699")}) `,
     );
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("inserts a compact issue link when an @task reference is selected", async () => {
+    const handleChange = vi.fn();
+    const { option, root } = await openMentionMenuFor(
+      handleChange,
+      [
+        {
+          id: "issue:issue-1",
+          kind: "issue" as const,
+          name: "PAP-102 @task references",
+          issueId: "issue-1",
+          issueIdentifier: "PAP-102",
+        },
+      ],
+      "PAP-102",
+    );
+    const point = { clientX: 100, clientY: 50 };
+
+    act(() => {
+      option.dispatchEvent(createTouchEvent("touchstart", [point]));
+    });
+    act(() => {
+      option.dispatchEvent(createTouchEvent("touchend", [point]));
+    });
+
+    expect(handleChange).toHaveBeenCalledWith(
+      `[PAP-102](${buildIssueReferenceHref("PAP-102")}) `,
+    );
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("renders the task tag and identifier for issue mention options", async () => {
+    const handleChange = vi.fn();
+    const { option, root } = await openMentionMenuFor(
+      handleChange,
+      [
+        {
+          id: "issue:issue-1",
+          kind: "issue" as const,
+          name: "PAP-102 @task references",
+          issueId: "issue-1",
+          issueIdentifier: "PAP-102",
+        },
+      ],
+      "PAP-102",
+    );
+
+    expect(option.textContent).toContain("PAP-102");
+    expect(option.textContent).toContain("@task references");
+    expect(option.textContent).toContain("Task");
 
     await act(async () => {
       root.unmount();
@@ -799,7 +950,7 @@ describe("MarkdownEditor", () => {
 
     const options = Array.from(menu.querySelectorAll('button[type="button"]'));
     expect(options).toHaveLength(12);
-    expect(menu.className).toContain("max-h-[208px]");
+    expect(menu.className).toContain("max-h-(--sz-208px)");
     expect(menu.className).toContain("overflow-y-auto");
     expect(menu.style.touchAction).toBe("pan-y");
 

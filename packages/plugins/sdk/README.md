@@ -238,7 +238,9 @@ Adds a navigation-style entry to the main company sidebar navigation area, rende
 
 #### `routeSidebar`
 
-Replaces the normal company sidebar while the current route is a plugin page route with the same `routePath`. Use this for full-page plugin workspaces that need their own local navigation while keeping the company rail and account footer. Receives `PluginRouteSidebarProps` with `context.companyId` and `context.companyPrefix` set to the active company. Requires the `ui.sidebar.register` capability.
+A contextual sidebar shown while the current route is a plugin page route with the same `routePath`. Use this for full-page plugin workspaces that need their own local navigation. It does **not** replace the app sidebar: the host collapses the main `<Sidebar/>` to its 64px icon rail (still hover/peek-able) and renders your `routeSidebar` in a secondary pane beside it, producing `[ app rail ][ your sidebar ][ content ]`. Receives `PluginRouteSidebarProps` with `context.companyId` and `context.companyPrefix` set to the active company. Requires the `ui.sidebar.register` capability.
+
+Do **not** mount `RequestCollapsedSidebar` (or otherwise try to collapse the app sidebar) from a `routeSidebar` plugin — the host drives the collapse automatically while your route is active and restores the user's preference when they navigate away. The collapse is a hard invariant: a secondary sidebar always forces the app rail collapsed (hiding its expand toggle), overriding any user pin, but it never mutates the user's saved expanded/collapsed preference — that is restored as soon as they leave your route.
 
 #### `sidebarPanel`
 
@@ -339,6 +341,10 @@ Declare in `manifest.capabilities`. Grouped by scope:
 | | `telemetry.track` |
 | | `database.namespace.migrate` |
 | | `database.namespace.write` |
+| | `external.objects.detect` |
+| | `external.objects.read` |
+| | `external.objects.write` |
+| | `external.objects.refresh` |
 | **Instance** | `instance.settings.register` |
 | | `plugin.state.read` |
 | | `plugin.state.write` |
@@ -369,6 +375,42 @@ Declare in `manifest.capabilities`. Grouped by scope:
 | | `ui.action.register` |
 
 Full list in code: import `PLUGIN_CAPABILITIES` from `@paperclipai/plugin-sdk`.
+
+### External Object Reference Providers
+
+Trusted connector plugins can declare generic external object providers in the
+manifest. The host owns URL scanning, sanitized canonical URLs, core storage,
+normalized status rendering, and issue/comment/document write durability. The
+plugin only identifies provider-owned objects and resolves board-safe status
+metadata.
+
+```ts
+objectReferences: [
+  {
+    providerKey: "mocktracker",
+    displayName: "Mock Tracker",
+    objectTypes: ["ticket"],
+    urlPatterns: ["https://mock.example/tickets/:id"],
+    refreshPolicy: { defaultTtlSeconds: 300, staleAfterSeconds: 1800 },
+  },
+],
+capabilities: ["external.objects.detect", "external.objects.read"],
+```
+
+Implement `onDetectExternalObjects()` to map sanitized URL candidates to
+`providerKey`, `objectType`, provider-stable `externalId`, and optional display
+metadata such as `displayKey`/`iconKey`. Implement `onResolveExternalObject()`
+to return a normalized snapshot with `statusCategory`, `statusTone`,
+`statusLabel`, optional `statusIconKey`, board-safe `data`, and freshness
+metadata. Slow or failing plugins are isolated: Paperclip logs the failure and
+continues saving the source issue, comment, or document.
+
+MVP security posture: provider plugins are trusted installs. Manifest
+capabilities gate host APIs and provider invocation paths, but they are not a
+sandbox boundary for untrusted marketplace code. Plugin UI is same-origin
+JavaScript and must not be mounted inline in markdown; inline external-object
+rendering uses host-owned metadata only. Treat untrusted providers as future work
+that requires worker sandboxing plus isolated plugin UI.
 
 ### Restricted Database Namespace
 

@@ -1,3 +1,5 @@
+import type { TrustAuthorizationPolicy } from "../trust-policy.js";
+
 export type ExecutionWorkspaceStrategyType =
   | "project_primary"
   | "git_worktree"
@@ -155,6 +157,7 @@ export interface ProjectExecutionWorkspacePolicy {
   pullRequestPolicy?: Record<string, unknown> | null;
   runtimePolicy?: Record<string, unknown> | null;
   cleanupPolicy?: Record<string, unknown> | null;
+  authorizationPolicy?: TrustAuthorizationPolicy | null;
 }
 
 export interface IssueExecutionWorkspaceSettings {
@@ -168,7 +171,65 @@ export interface ExecutionWorkspaceSummary {
   id: string;
   name: string;
   mode: Exclude<ExecutionWorkspaceMode, "inherit" | "reuse_existing" | "agent_default"> | "adapter_managed" | "cloud_sandbox";
+  status: ExecutionWorkspaceStatus;
+  cwd: string | null;
+  branchName: string | null;
   projectWorkspaceId: string | null;
+  lastUsedAt: Date;
+}
+
+export interface WorkspaceOverviewLinkedIssue {
+  id: string;
+  identifier: string | null;
+  title: string;
+  status: string;
+  priority: string;
+  updatedAt: Date;
+}
+
+export interface WorkspaceOverviewPrimaryService {
+  id: string;
+  serviceName: string;
+  status: WorkspaceRuntimeService["status"];
+  url: string | null;
+  port: number | null;
+  healthStatus: WorkspaceRuntimeService["healthStatus"];
+  updatedAt: Date;
+}
+
+export interface WorkspaceOverviewItem {
+  key: string;
+  kind: "execution_workspace";
+  workspaceId: string;
+  workspaceName: string;
+  projectId: string;
+  projectUrlKey: string;
+  projectName: string;
+  mode: ExecutionWorkspaceSummary["mode"];
+  strategyType: ExecutionWorkspaceStrategyType;
+  cwd: string | null;
+  branchName: string | null;
+  lastUpdatedAt: Date;
+  projectWorkspaceId: string | null;
+  executionWorkspaceId: string;
+  executionWorkspaceStatus: ExecutionWorkspaceStatus;
+  serviceCount: number;
+  runningServiceCount: number;
+  primaryServiceUrl: string | null;
+  primaryServiceUrlRunning: boolean;
+  primaryService: WorkspaceOverviewPrimaryService | null;
+  hasRuntimeConfig: boolean;
+  linkedIssueCount: number;
+  linkedIssues: WorkspaceOverviewLinkedIssue[];
+}
+
+export interface WorkspaceOverviewResponse {
+  items: WorkspaceOverviewItem[];
+  total: number;
+  limit: number;
+  offset: number;
+  hasMore: boolean;
+  nextOffset: number | null;
 }
 
 export interface ExecutionWorkspace {

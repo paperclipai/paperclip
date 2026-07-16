@@ -5,14 +5,20 @@ import type { ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SidebarSection } from "./SidebarSection";
+import { SidebarNavExpandedProvider } from "./SidebarNavItem";
 import { Plus } from "lucide-react";
 
 const sidebarState = vi.hoisted(() => ({
   isMobile: false,
+  collapsed: false,
+  peeking: false,
 }));
 
 vi.mock("@/lib/router", () => ({
   Link: ({ children, to, ...props }: { children: ReactNode; to: string }) => (
+    <a href={to} {...props}>{children}</a>
+  ),
+  NavLink: ({ children, to, ...props }: { children: ReactNode; to: string }) => (
     <a href={to} {...props}>{children}</a>
   ),
 }));
@@ -53,6 +59,8 @@ describe("SidebarSection", () => {
 
   beforeEach(() => {
     sidebarState.isMobile = false;
+    sidebarState.collapsed = false;
+    sidebarState.peeking = false;
     container = document.createElement("div");
     document.body.appendChild(container);
     root = null;
@@ -153,6 +161,30 @@ describe("SidebarSection", () => {
     expect(staticLabelControl?.tagName).toBe("DIV");
     expect(staticLabelControl?.getAttribute("class")).not.toContain("hover:bg-accent/50");
     expect(staticLabelControl?.getAttribute("class")).not.toContain("focus-visible:bg-accent/50");
+  });
+
+  it("keeps section labels visible inside an expanded contextual pane", async () => {
+    sidebarState.collapsed = true;
+    const currentRoot = createRoot(container);
+    root = currentRoot;
+
+    await act(async () => {
+      currentRoot.render(
+        <SidebarNavExpandedProvider>
+          <SidebarSection label="Settings">
+            <a href="/settings">General</a>
+          </SidebarSection>
+        </SidebarNavExpandedProvider>,
+      );
+    });
+    await flushReact();
+
+    const settingsLabel = Array.from(container.querySelectorAll("span"))
+      .find((element) => element.textContent === "Settings");
+
+    expect(settingsLabel).toBeTruthy();
+    expect(settingsLabel?.getAttribute("class")).toContain("uppercase");
+    expect(container.querySelector(".bg-border\\/60")).toBeNull();
   });
 
   it("keeps the header action outside the label menu hit area", async () => {
@@ -257,6 +289,59 @@ describe("SidebarSection", () => {
       reopenedNewProjectItem?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     expect(onAction).toHaveBeenCalledTimes(1);
+  });
+
+  it("replaces the header with a divider and drops the caret in the collapsed rail", async () => {
+    sidebarState.collapsed = true;
+    const currentRoot = createRoot(container);
+    root = currentRoot;
+
+    await act(async () => {
+      currentRoot.render(
+        <SidebarSection
+          label="Projects"
+          collapsible={{ open: true, onOpenChange: vi.fn() }}
+          menu={{
+            ariaLabel: "Projects section actions",
+            actions: [{ type: "item", label: "Browse projects", href: "/projects" }],
+          }}
+        >
+          <a href="/projects">Projects</a>
+        </SidebarSection>,
+      );
+    });
+    await flushReact();
+
+    // The clipped header text is gone; the caret/menu trigger is not rendered.
+    expect(container.querySelector('button[aria-label="Collapse Projects"]')).toBeNull();
+    expect(container.querySelector('button[aria-label="Projects section actions"]')).toBeNull();
+
+    // The label is preserved in the a11y tree (sr-only) and the items still render.
+    const label = Array.from(container.querySelectorAll("span"))
+      .find((element) => element.textContent === "Projects");
+    expect(label?.className).toContain("sr-only");
+    expect(container.querySelector('a[href="/projects"]')).toBeTruthy();
+  });
+
+  it("restores the full header while peeking even when collapsed", async () => {
+    sidebarState.collapsed = true;
+    sidebarState.peeking = true;
+    const currentRoot = createRoot(container);
+    root = currentRoot;
+
+    await act(async () => {
+      currentRoot.render(
+        <SidebarSection label="Projects" collapsible={{ open: true, onOpenChange: vi.fn() }}>
+          <a href="/projects">Projects</a>
+        </SidebarSection>,
+      );
+    });
+    await flushReact();
+
+    const label = Array.from(container.querySelectorAll("span"))
+      .find((element) => element.textContent === "Projects");
+    expect(label?.className).not.toContain("sr-only");
+    expect(container.querySelector('button[aria-label="Collapse Projects"]')).toBeTruthy();
   });
 
   it("keeps section header controls visible on mobile", async () => {

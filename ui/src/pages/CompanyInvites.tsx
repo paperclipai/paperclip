@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Check, ExternalLink, MailPlus } from "lucide-react";
+import { Check, Copy, ExternalLink, MailPlus } from "lucide-react";
 import { accessApi } from "@/api/access";
 import { ApiError } from "@/api/client";
 import { Button } from "@/components/ui/button";
@@ -9,6 +9,7 @@ import { useCompany } from "@/context/CompanyContext";
 import { useToast } from "@/context/ToastContext";
 import { Link } from "@/lib/router";
 import { queryKeys } from "@/lib/queryKeys";
+import { Badge } from "@/components/ui/badge";
 
 const inviteRoleOptions = [
   {
@@ -52,6 +53,7 @@ export function CompanyInvites() {
   const [humanRole, setHumanRole] = useState<"owner" | "admin" | "operator" | "viewer">("operator");
   const [latestInviteUrl, setLatestInviteUrl] = useState<string | null>(null);
   const [latestInviteCopied, setLatestInviteCopied] = useState(false);
+  const latestInviteInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     if (!latestInviteCopied) return;
@@ -61,7 +63,12 @@ export function CompanyInvites() {
     return () => window.clearTimeout(timeout);
   }, [latestInviteCopied]);
 
-  async function copyText(text: string, unavailableBody: string) {
+  function selectLatestInviteUrl() {
+    latestInviteInputRef.current?.focus();
+    latestInviteInputRef.current?.select();
+  }
+
+  async function copyText(text: string, unavailableBody: string, afterFallback?: () => void) {
     try {
       if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
         await navigator.clipboard.writeText(text);
@@ -71,12 +78,43 @@ export function CompanyInvites() {
       // Fall through to the unavailable message below.
     }
 
+    const canUseLegacyCopy =
+      typeof document !== "undefined" &&
+      typeof document.execCommand === "function" &&
+      (typeof document.queryCommandSupported !== "function" || document.queryCommandSupported("copy"));
+    if (canUseLegacyCopy) {
+      const textarea = document.createElement("textarea");
+      textarea.value = text;
+      textarea.setAttribute("readonly", "true");
+      textarea.style.position = "fixed";
+      textarea.style.top = "0";
+      textarea.style.left = "-9999px";
+      document.body.appendChild(textarea);
+      textarea.focus();
+      textarea.select();
+      textarea.setSelectionRange(0, textarea.value.length);
+
+      try {
+        const copied = document.execCommand("copy");
+        document.body.removeChild(textarea);
+        afterFallback?.();
+        if (copied) return true;
+      } catch {
+        document.body.removeChild(textarea);
+      }
+    }
+
+    afterFallback?.();
     pushToast({
       title: "Clipboard unavailable",
       body: unavailableBody,
       tone: "warn",
     });
     return false;
+  }
+
+  async function copyInviteUrl(url: string) {
+    return copyText(url, "The invite URL is selected. Copy it manually from the field.", selectLatestInviteUrl);
   }
 
   useEffect(() => {
@@ -210,9 +248,9 @@ export function CompanyInvites() {
                     <span className="flex flex-wrap items-center gap-2">
                       <span className="text-sm font-medium">{option.label}</span>
                       {option.value === "operator" ? (
-                        <span className="rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground">
+                        <Badge variant="outline" className="border-border text-muted-foreground">
                           Default
-                        </span>
+                        </Badge>
                       ) : null}
                     </span>
                     <span className="block max-w-2xl text-sm text-muted-foreground">{option.description}</span>
@@ -225,7 +263,7 @@ export function CompanyInvites() {
         </fieldset>
 
         <div className="rounded-lg border border-border px-4 py-3 text-sm text-muted-foreground">
-          Each invite link is single-use. The first successful use consumes the link and creates or reuses the matching join request before approval.
+          Each invite link is single-use. Human invitees get the selected role immediately after sign-in; agent invites still create a join request for approval.
         </div>
 
         <div className="flex flex-wrap items-center gap-3">
@@ -251,17 +289,31 @@ export function CompanyInvites() {
                 This URL includes the current Paperclip domain returned by the server.
               </div>
             </div>
-            <button
-              type="button"
-              onClick={async () => {
-                const copied = await copyText(latestInviteUrl, "Copy the invite URL manually from the field below.");
-                setLatestInviteCopied(copied);
-              }}
-              className="w-full rounded-md border border-border bg-muted/60 px-3 py-2 text-left text-sm break-all transition-colors hover:bg-background"
-            >
-              {latestInviteUrl}
-            </button>
+            <label className="block space-y-1">
+              <span className="sr-only">Latest invite URL</span>
+              <input
+                ref={latestInviteInputRef}
+                readOnly
+                value={latestInviteUrl}
+                onFocus={(event) => event.currentTarget.select()}
+                onClick={(event) => event.currentTarget.select()}
+                className="w-full rounded-md border border-border bg-muted/60 px-3 py-2 text-sm text-foreground outline-none transition-colors selection:bg-primary selection:text-primary-foreground focus:border-ring"
+                aria-label="Latest invite URL"
+              />
+            </label>
             <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={async () => {
+                  const copied = await copyInviteUrl(latestInviteUrl);
+                  setLatestInviteCopied(copied);
+                }}
+              >
+                <Copy className="h-4 w-4" />
+                Copy link
+              </Button>
               <Button size="sm" variant="outline" asChild>
                 <a href={latestInviteUrl} target="_blank" rel="noreferrer">
                   <ExternalLink className="h-4 w-4" />
@@ -308,9 +360,9 @@ export function CompanyInvites() {
                   {inviteHistory.map((invite) => (
                     <tr key={invite.id} className="border-b border-border last:border-b-0">
                       <td className="px-5 py-3 align-top">
-                        <span className="inline-flex rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground">
+                        <Badge variant="outline" className="border-border text-muted-foreground">
                           {formatInviteState(invite.state)}
-                        </span>
+                        </Badge>
                       </td>
                       <td className="px-5 py-3 align-top">{formatInviteAudience(invite)}</td>
                       <td className="px-5 py-3 align-top">

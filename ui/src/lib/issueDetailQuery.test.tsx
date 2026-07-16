@@ -33,6 +33,7 @@ function makeIssue(overrides: Partial<Issue> = {}): Issue {
     priority: "medium",
     assigneeAgentId: null,
     assigneeUserId: null,
+    responsibleUserId: null,
     checkoutRunId: null,
     executionRunId: null,
     executionAgentNameKey: null,
@@ -118,7 +119,9 @@ describe("getIssueDetailQueryOptions", () => {
 
     await flush();
 
-    expect(issuesApi.get).toHaveBeenCalledWith("PAP-1442");
+    expect(issuesApi.get).toHaveBeenCalledWith("PAP-1442", {
+      signal: expect.any(AbortSignal),
+    });
     expect(container.textContent).toContain("GitHub Security Advisory body");
 
     await act(async () => {

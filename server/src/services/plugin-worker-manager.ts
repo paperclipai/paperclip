@@ -559,7 +559,9 @@ export function createPluginWorkerHandle(
       (message as { paperclipInvocationId?: unknown }).paperclipInvocationId,
     );
     if (!invocationId) {
-      return activeInvocations.size > 0 ? { invalidInvocationScope: true } : {};
+      const hasActiveInvocation = activeInvocations.size > 0 ||
+        Array.from(pendingRequests.values()).some((pending) => pending.invocationId);
+      return hasActiveInvocation ? { invalidInvocationScope: true } : {};
     }
     const entry = activeInvocations.get(invocationId);
     if (!entry) return { invalidInvocationScope: true };

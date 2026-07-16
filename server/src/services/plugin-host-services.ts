@@ -404,6 +404,14 @@ function sanitiseMeta(meta: Record<string, unknown> | null | undefined): Record<
 interface BufferedLogEntry {
   db: Db;
   pluginId: string;
+  /**
+   * Owning tenant for `plugin_logs.company_id` — populated when the caller
+   * attributes the log/metric to a specific company so the row participates
+   * in the `ON DELETE CASCADE` from `companies`. `null` means instance-scope
+   * (cron jobs / public webhooks without a tenant); those rows survive
+   * company deletes but are still attributable.
+   */
+  companyId: string | null;
   level: string;
   message: string;
   meta: Record<string, unknown> | null;
@@ -436,6 +444,7 @@ export async function flushPluginLogBuffer(): Promise<void> {
   for (const [dbInstance, group] of byDb) {
     const values = group.map((e) => ({
       pluginId: e.pluginId,
+      companyId: e.companyId,
       level: e.level,
       message: e.message,
       meta: e.meta,
@@ -856,19 +865,16 @@ export function buildHostServices(
   };
 
   const INVITE_TOKEN_PREFIX = "pcp_invite_";
-  const INVITE_TOKEN_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789";
-  const INVITE_TOKEN_SUFFIX_LENGTH = 8;
+  // 256 bits of entropy, base64url-encoded. Keep in sync with createInviteToken
+  // in routes/access.ts. The token is public, so it must not be brute-forceable.
+  const INVITE_TOKEN_ENTROPY_BYTES = 32;
   const INVITE_TOKEN_MAX_RETRIES = 5;
   const COMPANY_INVITE_TTL_MS = 72 * 60 * 60 * 1000;
 
   const hashToken = (token: string) => createHash("sha256").update(token).digest("hex");
 
   const createInviteToken = () => {
-    const bytes = randomBytes(INVITE_TOKEN_SUFFIX_LENGTH);
-    let suffix = "";
-    for (let idx = 0; idx < INVITE_TOKEN_SUFFIX_LENGTH; idx += 1) {
-      suffix += INVITE_TOKEN_ALPHABET[bytes[idx]! % INVITE_TOKEN_ALPHABET.length];
-    }
+    const suffix = randomBytes(INVITE_TOKEN_ENTROPY_BYTES).toString("base64url");
     return `${INVITE_TOKEN_PREFIX}${suffix}`;
   };
 
@@ -1053,8 +1059,10 @@ export function buildHostServices(
 
   return {
     config: {
-      async get() {
-        const configRow = await registry.getConfig(pluginId);
+      async get(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const configRow = await registry.getConfig(pluginId, companyId);
         return configRow?.configJson ?? {};
       },
     },
@@ -1230,7 +1238,9 @@ export function buildHostServices(
 
     secrets: {
       async resolve(params) {
-        return secretsHandler.resolve(params);
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return secretsHandler.resolve({ ...params, companyId });
       },
     },
 
@@ -1262,6 +1272,7 @@ export function buildHostServices(
         _logBuffer.push({
           db,
           pluginId,
+          companyId: params.companyId ?? null,
           level: "metric",
           message: safeName,
           meta: sanitiseMeta({ value: params.value, tags: params.tags ?? null }),
@@ -1284,7 +1295,7 @@ export function buildHostServices(
         }
         const telemetryClient = getTelemetryClient();
         if (!telemetryClient) return;
-        telemetryClient.track(`plugin.${pluginKey}.${eventName}`, params.dimensions);
+        telemetryClient.trackDynamic(`plugin.${pluginKey}.${eventName}`, params.dimensions);
       },
     },
 
@@ -1310,6 +1321,7 @@ export function buildHostServices(
         _logBuffer.push({
           db,
           pluginId,
+          companyId: params.companyId ?? null,
           level: level ?? "info",
           message: safeMessage,
           meta: safeMeta,
@@ -1546,6 +1558,8 @@ export function buildHostServices(
           originRunId: params.originRunId ?? actorRunId ?? null,
           createdByAgentId: actorAgentId ?? null,
           createdByUserId: actorUserId ?? null,
+          actorResponsibleUserId: actorUserId ?? null,
+          trustExplicitResponsibleUserId: true,
         })) as Issue;
         await logPluginActivity({
           companyId,
@@ -2631,7 +2645,7 @@ export function buildHostServices(
         // Track the subscription so it can be cleaned up on dispose() if the run
         // never reaches a terminal status (hang, crash, network partition).
         if (notifyWorker) {
-          const TERMINAL_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out"]);
+          const TERMINAL_STATUSES = new Set(["succeeded", "interrupted", "failed", "cancelled", "timed_out"]);
 
           const cleanup = () => {
             unsubscribe();

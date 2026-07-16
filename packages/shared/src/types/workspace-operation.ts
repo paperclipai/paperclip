@@ -1,8 +1,10 @@
 export type WorkspaceOperationPhase =
   | "worktree_prepare"
+  | "workspace_config_freshness"
   | "workspace_provision"
   | "workspace_teardown"
-  | "worktree_cleanup";
+  | "worktree_cleanup"
+  | "workspace_finalize";
 
 export type WorkspaceOperationStatus = "running" | "succeeded" | "failed" | "skipped";
 
@@ -11,6 +13,7 @@ export interface WorkspaceOperation {
   companyId: string;
   executionWorkspaceId: string | null;
   heartbeatRunId: string | null;
+  issueId: string | null;
   phase: WorkspaceOperationPhase;
   command: string | null;
   cwd: string | null;

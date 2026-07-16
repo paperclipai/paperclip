@@ -32,6 +32,10 @@ const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       staleTime: 30_000,
+      // Explicit so cross-tab-published cache entries for resources this tab
+      // isn't observing get collected promptly rather than lingering. Single
+      // tuning point if we need to trim the cache footprint further.
+      gcTime: 5 * 60_000,
       refetchOnWindowFocus: true,
     },
   },

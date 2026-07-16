@@ -19,24 +19,76 @@ export const DEFAULT_BACKUP_RETENTION: BackupRetentionPolicy = {
   monthlyMonths: 1,
 };
 
+/**
+ * Instance-wide execution policy.
+ *
+ * - `"any"` (default / absent): unrestricted — any environment driver (local,
+ *   ssh, sandbox) may run agents. Preserves single-tenant / local-trusted
+ *   behavior.
+ * - `"kubernetes"`: force ALL agent execution onto the Kubernetes
+ *   sandbox-provider environment and REFUSE local/in-process execution. Used by
+ *   shared cloud (cloud_tenant) instances so untrusted tenant agents can never
+ *   run in the server process or on an unsandboxed local/ssh adapter.
+ */
+export type InstanceExecutionMode = "kubernetes" | "any";
+
 export interface InstanceGeneralSettings {
   censorUsernameInLogs: boolean;
   keyboardShortcuts: boolean;
   feedbackDataSharingPreference: FeedbackDataSharingPreference;
   backupRetention: BackupRetentionPolicy;
+  /**
+   * Execution policy. Absent/`"any"` = unrestricted; `"kubernetes"` forces the
+   * Kubernetes sandbox provider and denies local/ssh execution.
+   */
+  executionMode?: InstanceExecutionMode;
 }
 
 export interface InstanceExperimentalSettings {
   enableEnvironments: boolean;
   enableIsolatedWorkspaces: boolean;
+  enableStreamlinedLeftNavigation: boolean;
+  enableApps: boolean;
+  enablePipelines: boolean;
+  enableCases: boolean;
+  enableConferenceRoomChat: boolean;
+  enableTaskWatchdogs: boolean;
+  enableIssuePlanDecompositions: boolean;
+  enableExperimentalFileViewer: boolean;
   enableCloudSync: boolean;
+  enableExternalObjects: boolean;
+  enableSmokeLab: boolean;
+  enableBuiltInAgents: boolean;
+  enableDecisions: boolean;
+  enableGoalsSidebarLink: boolean;
+  enableServerInfoDebugView: boolean;
   autoRestartDevServerWhenIdle: boolean;
   enableIssueGraphLivenessAutoRecovery: boolean;
+  enableWorkspaceBranchReconcileForward: boolean;
+  enableWorkspaceDirtyQuarantineRepair: boolean;
+  /**
+   * Worktree preview instances (`PAPERCLIP_IN_WORKTREE=true`) suppress the
+   * heartbeat run engine by default so previews never self-execute tasks. When
+   * this is enabled the worktree-instance scheduling suppression is lifted so
+   * runs actually execute inside the preview. Ignored outside a worktree.
+   */
+  enableWorktreeRunExecution: boolean;
+  /**
+   * Server-managed cutoff recorded when worktree run execution is enabled in
+   * this instance. Client PATCH payloads must not control this value.
+   */
+  worktreeRunExecutionActivatedAt: string | null;
+  /**
+   * Server-managed instance id captured with the cutoff so copied settings rows
+   * from another instance fail closed.
+   */
+  worktreeRunExecutionActivationInstanceId: string | null;
   issueGraphLivenessAutoRecoveryLookbackHours: number;
 }
 
 export interface InstanceSettings {
   id: string;
+  defaultEnvironmentId: string | null;
   general: InstanceGeneralSettings;
   experimental: InstanceExperimentalSettings;
   createdAt: Date;
