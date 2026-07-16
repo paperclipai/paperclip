@@ -81,6 +81,11 @@ export { decisionTrainingExamples } from "./decision_training_examples.js";
 export { feedbackExports } from "./feedback_exports.js";
 export { issueReadStates } from "./issue_read_states.js";
 export { assets } from "./assets.js";
+export {
+  releaseCandidates,
+  releaseDeployAuthorizations,
+  releaseCandidateAuditEvents,
+} from "./release_candidates.js";
 export { issueAttachments } from "./issue_attachments.js";
 export { documents } from "./documents.js";
 export { documentRevisions } from "./document_revisions.js";
