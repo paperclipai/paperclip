@@ -75,6 +75,7 @@ const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.strandedIssueR
 const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const ISSUE_GRAPH_LIVENESS_RECOVERY_ACTION_OWNER_STATUSES = new Set(["active", "idle", "running"]);
+export const TERMINAL_LIVENESS_RECOVERY_RETRY_COOLDOWN_MS = 15 * 60 * 1000;
 const STRANDED_RECOVERY_ACTION_TIMEOUT_MS = 15 * 60 * 1000;
 const legacyRecoveryReconciliationInFlight = new WeakMap<object, Promise<unknown>>();
 
@@ -2957,12 +2958,10 @@ export function recoveryService(
   }
 
   /**
-   * A liveness escalation is evidence about a stranded leaf, not a disposable
-   * work item. Agents can complete or cancel the recovery ticket without
-   * changing the original leaf. Recreating it every scheduler pass turns that
-   * one unresolved incident into board spam, especially when the classifier
-   * alternates between blocked and in_review. Keep the terminal incident as
-   * the durable suppression record for that stranded leaf.
+   * A terminal liveness escalation suppresses immediate duplicate delivery,
+   * not all future recovery. If the leaf is still stranded after the cooldown,
+   * a new bounded recovery attempt is allowed. This retains anti-spam behavior
+   * without turning a mistaken terminal disposition into permanent abandonment.
    */
   async function findTerminalLivenessEscalationForLeaf(finding: IssueLivenessFinding) {
     const leafIssueId = livenessRecoveryLeafIssueId(finding);
@@ -3767,7 +3766,10 @@ export function recoveryService(
     }
 
     const terminalIncident = await findTerminalLivenessEscalationForLeaf(input.finding);
-    if (terminalIncident) {
+    if (
+      terminalIncident &&
+      Date.now() - terminalIncident.updatedAt.getTime() < TERMINAL_LIVENESS_RECOVERY_RETRY_COOLDOWN_MS
+    ) {
       logger.warn({
         incidentKey: input.finding.incidentKey,
         findingState: input.finding.state,
@@ -3775,7 +3777,10 @@ export function recoveryService(
         recoveryIssueId: recoveryIssue.id,
         terminalEscalationIssueId: terminalIncident.id,
         terminalEscalationStatus: terminalIncident.status,
-      }, "suppressed repeated liveness escalation for an unresolved leaf");
+        retryAfter: new Date(
+          terminalIncident.updatedAt.getTime() + TERMINAL_LIVENESS_RECOVERY_RETRY_COOLDOWN_MS,
+        ).toISOString(),
+      }, "deferred repeated liveness escalation during terminal recovery cooldown");
       return { kind: "suppressed_terminal_incident" as const, escalationIssueId: terminalIncident.id };
     }
 

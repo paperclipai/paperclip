@@ -578,7 +578,22 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
     const participantAgentId = readPrincipalAgentId(participant);
     if (participantAgentId) {
       const participantAgent = agentsById.get(participantAgentId);
-      if (isInvokableAgent(participantAgent) && participantAgent?.companyId === reviewIssue.companyId) return null;
+      if (isInvokableAgent(participantAgent) && participantAgent?.companyId === reviewIssue.companyId) {
+        return finding({
+          issue: source,
+          state: "in_review_without_action_path",
+          reason:
+            `${issueLabel(reviewIssue)} names ${participantAgent.name} as its current review participant, but no active run, queued wake, interaction, approval, user owner, or recovery issue is delivering that review.`,
+          dependencyPath,
+          recoveryIssue: reviewIssue,
+          recommendedOwnerCandidateAgentIds: ownerCandidates.map((candidate) => candidate.agentId),
+          recommendedOwnerCandidates: ownerCandidates,
+          recommendedAction:
+            `Wake ${participantAgent.name} to perform the review, or repair the review participant and assignment so one executable path owns the next action.`,
+          blockerIssueId: reviewIssue.id,
+          participantAgentId,
+        });
+      }
 
       return finding({
         issue: source,
