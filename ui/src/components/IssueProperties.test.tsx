@@ -2438,6 +2438,42 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
+  it("surfaces unarchive failures inline", async () => {
+    mockAgentsApi.list.mockResolvedValue([
+      { id: "agent-9", name: "Gardener", status: "active", adapterType: "codex_local", icon: null },
+    ]);
+    mockIssuesApi.unarchiveFromInbox.mockRejectedValue(new Error("Archive policy denied"));
+    const root = renderProperties(container, {
+      issue: createIssue({
+        archivedAt: new Date("2026-04-06T12:10:00.000Z"),
+        archivedByActorType: "agent",
+        archivedByAgentId: "agent-9",
+        archivedByRunId: "run-1",
+      }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+    });
+    await flush();
+
+    let unarchiveButton: HTMLButtonElement | undefined;
+    await waitForAssertion(() => {
+      unarchiveButton = Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent?.includes("Unarchive"));
+      expect(unarchiveButton).toBeTruthy();
+    });
+    await act(async () => {
+      unarchiveButton!.click();
+    });
+    await flush();
+
+    await waitForAssertion(() => {
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain("Archive policy denied");
+    });
+
+    act(() => root.unmount());
+  });
+
   it("does not render archive attribution for user (manual) archives", async () => {
     const root = renderProperties(container, {
       issue: createIssue({

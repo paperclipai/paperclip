@@ -188,6 +188,7 @@ export function IssueProperties({
   const [monitorServiceInput, setMonitorServiceInput] = useState(issue.executionPolicy?.monitor?.serviceName ?? "");
   const [runtimeActionMessage, setRuntimeActionMessage] = useState<string | null>(null);
   const [runtimeActionErrorMessage, setRuntimeActionErrorMessage] = useState<string | null>(null);
+  const [unarchiveErrorMessage, setUnarchiveErrorMessage] = useState<string | null>(null);
   const [watchdogOpen, setWatchdogOpen] = useState(false);
   const [watchdogAgentInput, setWatchdogAgentInput] = useState(issue.watchdog?.watchdogAgentId ?? "");
   const [watchdogInstructionsInput, setWatchdogInstructionsInput] = useState(issue.watchdog?.instructions ?? "");
@@ -273,12 +274,21 @@ export function IssueProperties({
 
   const unarchiveFromInbox = useMutation({
     mutationFn: () => issuesApi.unarchiveFromInbox(issue.id),
+    onMutate: () => {
+      setUnarchiveErrorMessage(null);
+    },
     onSuccess: () => {
+      setUnarchiveErrorMessage(null);
       queryClient.setQueryData<Issue>(queryKeys.issues.detail(issue.id), (current) =>
         current ? { ...current, archivedAt: null, archivedByActorType: null, archivedByAgentId: null, archivedByRunId: null } : current,
       );
       void queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issue.id) });
       if (companyId) invalidateInboxIssueQueries(queryClient, companyId);
+    },
+    onError: (error) => {
+      setUnarchiveErrorMessage(error instanceof Error && error.message.trim().length > 0
+        ? error.message
+        : "Failed to unarchive this issue. Please try again.");
     },
   });
 
@@ -2350,6 +2360,11 @@ export function IssueProperties({
                       {unarchiveFromInbox.isPending ? "Unarchiving…" : "Unarchive"}
                     </button>
                   </div>
+                  {unarchiveErrorMessage ? (
+                    <p className="text-xs text-destructive" role="alert">
+                      {unarchiveErrorMessage}
+                    </p>
+                  ) : null}
                 </div>
               </PropertyRow>
             );
