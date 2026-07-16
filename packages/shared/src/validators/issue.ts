@@ -583,6 +583,12 @@ export const addIssueCommentSchema = z.object({
 
 export type AddIssueComment = z.infer<typeof addIssueCommentSchema>;
 
+export const addIssueRecoveryActionCommentSchema = z.object({
+  body: multilineTextSchema.pipe(z.string().min(1)),
+  recoveryActionId: z.string().uuid().optional(),
+}).strict();
+
+export type AddIssueRecoveryActionComment = z.infer<typeof addIssueRecoveryActionCommentSchema>;
 export const issueThreadInteractionStatusSchema = z.enum(ISSUE_THREAD_INTERACTION_STATUSES);
 export const issueThreadInteractionKindSchema = z.enum(ISSUE_THREAD_INTERACTION_KINDS);
 export const issueThreadInteractionContinuationPolicySchema = z.enum(

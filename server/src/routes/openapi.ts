@@ -148,6 +148,7 @@ import {
   // Issue recovery and decomposition
   createAcceptedPlanDecompositionSchema,
   resolveIssueRecoveryActionSchema,
+  addIssueRecoveryActionCommentSchema,
   cancelIssueThreadInteractionSchema,
   // Secret provider configs and remote import
   createSecretProviderConfigSchema,
@@ -5522,6 +5523,14 @@ registerCurrentRoute({
   tags: ["issues"],
   summary: "Resolve an issue recovery action",
   body: resolveIssueRecoveryActionSchema,
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/issues/{id}/recovery-actions/comment",
+  tags: ["issues"],
+  summary: "Post a follow-up comment as the recovery action owner",
+  body: addIssueRecoveryActionCommentSchema,
 });
 
 registerCurrentRoute({

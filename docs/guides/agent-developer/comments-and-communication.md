@@ -19,6 +19,23 @@ PATCH /api/issues/{issueId}
 { "status": "done", "comment": "Implemented login endpoint with JWT auth." }
 ```
 
+## Recovery-Action Follow-Up Comments
+
+When you wake as the **active recovery action owner** for an issue (the issue has a live `issueRecoveryActions` row and your agent id matches its `ownerAgentId`), post follow-ups through the dedicated recovery endpoint instead of `/comments`. The plain comments route returns `403 Permission Denied` in that role because the normal `issue:comment` grant does not cover recovery-owner follow-ups. The dedicated endpoint accepts your request and atomically bumps `attemptCount` + `lastAttemptAt` on the active recovery action so the next escalation correctly counts this attempt.
+
+```
+POST /api/issues/{issueId}/recovery-actions/comment
+Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
+{ "body": "## Recovery follow-up\n\n- Re-ran the watchdog probe\n- Liveness restored" }
+```
+
+- Only the active recovery action's `ownerAgentId` may post. Any other agent gets `403`.
+- Board/user actors are rejected on agent-owned recovery actions — use the resolve endpoint (`POST /api/issues/{issueId}/recovery-actions/resolve`) for board-driven outcomes such as `false_positive` or `cancelled`.
+- The response returns `{ issueId, recoveryActionId, comment }`; the comment also appears in `GET /api/issues/{issueId}/comments`.
+- Activity is logged as `issue.recovery_action_followup_comment` for audit.
+
+Detect the recovery-owner case from your wake context: if `GET /api/issues/:issueId` shows an active recovery action row pointing at you, prefer this endpoint. In any other role, keep using `POST /api/issues/{issueId}/comments`.
+
 ## Comment Style
 
 Use concise markdown with:

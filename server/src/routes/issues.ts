@@ -13,6 +13,7 @@ import {
   issueComments,
   issueDocuments,
   issueExecutionDecisions,
+  issueRecoveryActions,
   issueRelations,
   issues as issueRows,
   issueWorkProducts,
@@ -24,6 +25,7 @@ import {
 } from "@paperclipai/db";
 import {
   addIssueCommentSchema,
+  addIssueRecoveryActionCommentSchema,
   acceptIssueThreadInteractionSchema,
   attachmentArtifactWorkProductMetadataSchema,
   cancelIssueThreadInteractionSchema,
@@ -5492,6 +5494,119 @@ export function issueRoutes(
       active,
       actions: active ? [active] : [],
     });
+  });
+
+  router.post("/issues/:id/recovery-actions/comment", validate(addIssueRecoveryActionCommentSchema), async (req, res) => {
+    const id = req.params.id as string;
+    const issue = await svc.getById(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    assertCompanyAccess(req, issue.companyId);
+    const activeRecoveryAction = await recoveryActionsSvc.getActiveForIssue(issue.companyId, issue.id);
+    if (!activeRecoveryAction) {
+      res.status(404).json({ error: "Active recovery action not found" });
+      return;
+    }
+    if (req.body.recoveryActionId && req.body.recoveryActionId !== activeRecoveryAction.id) {
+      res.status(409).json({
+        error: "Recovery action mismatch: the requested recovery action is not the active action on this issue",
+        details: {
+          issueId: issue.id,
+          requestedRecoveryActionId: req.body.recoveryActionId,
+          activeRecoveryActionId: activeRecoveryAction.id,
+        },
+      });
+      return;
+    }
+    if (req.actor.type === "agent") {
+      const actorAgentId = req.actor.agentId;
+      if (!actorAgentId) {
+        res.status(403).json({ error: "Agent authentication required" });
+        return;
+      }
+      if (activeRecoveryAction.ownerAgentId !== actorAgentId) {
+        res.status(403).json({
+          error: "Agent is not the owner of this recovery action",
+        });
+        return;
+      }
+    } else {
+      // Agent-only endpoint: it exists solely to give recovery-action owner
+      // agents a scoped path around the agent mutation boundary. User/board
+      // actors are not subject to that boundary and must use
+      // POST /api/issues/:id/comments instead.
+      res.status(403).json({
+        error: "Recovery-action follow-up comments are agent-only; use POST /api/issues/:id/comments",
+      });
+      return;
+    }
+
+    const actor = getActorInfo(req);
+    // Sentinel thrown inside the transaction so a concurrently
+    // resolved/cancelled recovery action rolls back the comment insert
+    // instead of committing a comment whose attempt was never counted.
+    const concurrentlyResolved = Symbol("recovery-action-concurrently-resolved");
+    try {
+      const result = await db.transaction(async (tx) => {
+        const comment = await svc.addComment(
+          issue.id,
+          req.body.body,
+          {
+            agentId: actor.agentId ?? undefined,
+            userId: actor.actorType === "user" ? actor.actorId : undefined,
+            runId: actor.runId,
+          },
+          undefined,
+          tx,
+        );
+        const updatedAction = await recoveryActionsSvc.bumpFollowupAttempt(
+          {
+            companyId: issue.companyId,
+            sourceIssueId: issue.id,
+            actionId: activeRecoveryAction.id,
+          },
+          tx,
+        );
+        if (!updatedAction) {
+          throw concurrentlyResolved;
+        }
+        return { comment, action: updatedAction };
+      });
+
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.recovery_action_followup_comment",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          identifier: issue.identifier,
+          recoveryActionId: result.action.id,
+          commentId: result.comment.id,
+        },
+      });
+
+      res.status(201).json({
+        issueId: issue.id,
+        recoveryActionId: result.action.id,
+        comment: result.comment,
+      });
+    } catch (err) {
+      if (err !== concurrentlyResolved) throw err;
+      res.status(409).json({
+        error:
+          "Recovery action was resolved or cancelled concurrently; follow-up comment was not recorded",
+        details: {
+          issueId: issue.id,
+          recoveryActionId: activeRecoveryAction.id,
+        },
+      });
+    }
   });
 
   router.post("/issues/:id/recovery-actions/resolve", validate(resolveIssueRecoveryActionSchema), async (req, res) => {
