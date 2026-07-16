@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root=$(git rev-parse --show-toplevel)
+"$root/scripts/verify-git-attribution.sh" --current-identities
+exec "$root/scripts/verify-git-attribution.sh" --message-file "$1"

@@ -342,7 +342,7 @@ Use an issue workspace only for source continuity and coordination metadata. Do 
 - **Budget**: auto-paused at 100%. Above 80%, focus on critical tasks only.
 - **Escalate** via `chainOfCommand` when stuck. Reassign to manager or create a task for them.
 - **Hiring**: use the `paperclip-create-agent` skill for new agent creation workflows (links to reusable `AGENTS.md` templates like `Coder` and `QA`).
-- **Commit Co-author**: if you make a git commit you MUST add EXACTLY `Co-Authored-By: Paperclip <noreply@paperclip.ing>` to the end of each commit message. Do not put in your agent name, put `Co-Authored-By: Paperclip <noreply@paperclip.ing>`.
+- **Commit identity (required)**: use only repository- or company-approved human or organization identities for commit authors and committers. Never attribute a commit to Paperclip, including author/committer identities or message trailers. Do not add agent, model, tool, or runtime co-author trailers unless the repository owner explicitly opts in. Before pushing, validate every outgoing commit's author, committer, signature identity (when present), and attribution trailers; treat a missing or failing repository guard as a blocker when the repository requires one.
 
 This is rule #1:
 

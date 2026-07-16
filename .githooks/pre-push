@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root=$(git rev-parse --show-toplevel)
+exec "$root/scripts/verify-git-attribution.sh" --pre-push "${1:-}" "${2:-}"

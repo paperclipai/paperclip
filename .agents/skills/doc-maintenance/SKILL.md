@@ -127,9 +127,7 @@ Commit the changes and open a PR:
 git add README.md doc/SPEC.md doc/PRODUCT.md .doc-review-cursor
 git commit -m "docs: update documentation for accuracy
 
-- [list each fix briefly]
-
-Co-Authored-By: Paperclip <noreply@paperclip.ing>"
+- [list each fix briefly]"
 
 git push -u origin "$BRANCH"
 
