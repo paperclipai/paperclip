@@ -686,22 +686,22 @@ export function environmentRoutes(
   });
 
   router.get("/environments/:id", async (req, res) => {
+    assertCanReadInstanceEnvironments(req);
     const environment = await svc.getById(req.params.id as string);
     if (!environment) {
       res.status(404).json({ error: "Environment not found" });
       return;
     }
-    assertCanReadInstanceEnvironments(req);
     res.json(presentEnvironmentForRead(req, environment));
   });
 
   router.get("/environments/:id/leases", async (req, res) => {
+    assertCanReadInstanceEnvironments(req);
     const environment = await svc.getById(req.params.id as string);
     if (!environment) {
       res.status(404).json({ error: "Environment not found" });
       return;
     }
-    assertCanReadInstanceEnvironments(req);
     const leases = await svc.listLeases(environment.id, {
       status: req.query.status as string | undefined,
     });
@@ -709,22 +709,22 @@ export function environmentRoutes(
   });
 
   router.get("/environment-leases/:leaseId", async (req, res) => {
+    assertCanReadInstanceEnvironments(req);
     const lease = await svc.getLeaseById(req.params.leaseId as string);
     if (!lease) {
       res.status(404).json({ error: "Environment lease not found" });
       return;
     }
-    assertCanReadInstanceEnvironments(req);
     res.json(lease);
   });
 
   router.patch("/environments/:id", validate(updateEnvironmentSchema), async (req, res) => {
+    assertCanAccessInstanceEnvironments(req);
     const existing = await svc.getById(req.params.id as string);
     if (!existing) {
       res.status(404).json({ error: "Environment not found" });
       return;
     }
-    assertCanAccessInstanceEnvironments(req);
     const actor = getActorInfo(req);
     const nextDriver = req.body.driver ?? existing.driver;
     const nextName = req.body.name ?? existing.name;
@@ -815,12 +815,12 @@ export function environmentRoutes(
   });
 
   router.delete("/environments/:id", async (req, res) => {
+    assertCanAccessInstanceEnvironments(req);
     const existing = await svc.getById(req.params.id as string);
     if (!existing) {
       res.status(404).json({ error: "Environment not found" });
       return;
     }
-    assertCanAccessInstanceEnvironments(req);
     const actor = getActorInfo(req);
     const impact = await svc.getDeleteBlastRadius(existing.id);
     if (!impact) {
@@ -877,12 +877,12 @@ export function environmentRoutes(
   });
 
   router.post("/environments/:id/probe", async (req, res) => {
+    assertCanAccessInstanceEnvironments(req);
     const environment = await svc.getById(req.params.id as string);
     if (!environment) {
       res.status(404).json({ error: "Environment not found" });
       return;
     }
-    assertCanAccessInstanceEnvironments(req);
     const actor = getActorInfo(req);
     const companyIdForSecrets = await resolveEnvironmentSecretContextCompanyId(req, environment.id, { required: false });
     const companyIdForProbe = companyIdForSecrets

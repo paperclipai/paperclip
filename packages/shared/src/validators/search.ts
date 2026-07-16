@@ -1,13 +1,22 @@
 import { z } from "zod";
 import { ISSUE_PRIORITIES, ISSUE_STATUSES } from "../constants.js";
 import { isUuidLike } from "../agent-url-key.js";
-import { COMPANY_SEARCH_SCOPES, COMPANY_SEARCH_SORTS } from "../types/search.js";
+import {
+  COMPANY_SEARCH_EXTRACT_KINDS,
+  COMPANY_SEARCH_EXTRACT_SCOPES,
+  COMPANY_SEARCH_SCOPES,
+  COMPANY_SEARCH_SORTS,
+} from "../types/search.js";
 
 export const COMPANY_SEARCH_MAX_QUERY_LENGTH = 200;
 export const COMPANY_SEARCH_MAX_TOKENS = 8;
 export const COMPANY_SEARCH_DEFAULT_LIMIT = 20;
 export const COMPANY_SEARCH_MAX_LIMIT = 50;
 export const COMPANY_SEARCH_MAX_OFFSET = 200;
+export const COMPANY_SEARCH_EXTRACT_DEFAULT_LIMIT = 100;
+export const COMPANY_SEARCH_EXTRACT_MAX_LIMIT = 200;
+export const COMPANY_SEARCH_EXTRACT_MAX_OFFSET = 5_000;
+export const COMPANY_SEARCH_EXTRACT_MAX_MATCHES_PER_ISSUE = 20;
 
 const UPDATED_WITHIN_RE = /^[1-9]\d{0,2}(h|d|w|m)$/;
 
@@ -180,3 +189,71 @@ export const companySearchQuerySchema = z.object({
 });
 
 export type CompanySearchQuery = z.infer<typeof companySearchQuerySchema>;
+
+export const companySearchExtractQuerySchema = z.object({
+  contains: z.unknown().transform((value, ctx) => {
+    const normalized = parseOptionalString(value, ctx, "contains");
+    if (!normalized || normalized.length < 2) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "contains must be at least 2 characters" });
+      return "";
+    }
+    if (normalized.length > COMPANY_SEARCH_MAX_QUERY_LENGTH) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `contains must be at most ${COMPANY_SEARCH_MAX_QUERY_LENGTH} characters`,
+      });
+    }
+    return normalized.slice(0, COMPANY_SEARCH_MAX_QUERY_LENGTH);
+  }),
+  kind: z.unknown()
+    .optional()
+    .transform((value, ctx) => {
+      const normalized = parseOptionalString(value, ctx, "kind") ?? "literal";
+      if (!(COMPANY_SEARCH_EXTRACT_KINDS as readonly string[]).includes(normalized)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "kind must be literal or url" });
+        return "literal";
+      }
+      return normalized as (typeof COMPANY_SEARCH_EXTRACT_KINDS)[number];
+    }),
+  scope: z.unknown()
+    .optional()
+    .transform((value, ctx) => {
+      const normalized = parseOptionalString(value, ctx, "scope") ?? "all";
+      if (!(COMPANY_SEARCH_EXTRACT_SCOPES as readonly string[]).includes(normalized)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "scope must be all, issues, comments, or documents" });
+        return "all";
+      }
+      return normalized as (typeof COMPANY_SEARCH_EXTRACT_SCOPES)[number];
+    }),
+  limit: z.unknown()
+    .optional()
+    .transform((value, ctx) => parseIntegerQuery(
+      value,
+      ctx,
+      "limit",
+      COMPANY_SEARCH_EXTRACT_DEFAULT_LIMIT,
+      1,
+      COMPANY_SEARCH_EXTRACT_MAX_LIMIT,
+    )),
+  offset: z.unknown()
+    .optional()
+    .transform((value, ctx) => parseIntegerQuery(value, ctx, "offset", 0, 0, COMPANY_SEARCH_EXTRACT_MAX_OFFSET)),
+  status: z.unknown()
+    .optional()
+    .transform((value, ctx) => parseEnumList(value, ctx, "status", ISSUE_STATUSES)),
+  updatedWithin: z.unknown()
+    .optional()
+    .transform((value, ctx) => parseUpdatedWithin(value, ctx)),
+  updatedAfter: z.unknown()
+    .optional()
+    .transform((value, ctx) => parseUpdatedAfter(value, ctx)),
+}).superRefine((value, ctx) => {
+  if (value.updatedWithin && value.updatedAfter) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "updatedWithin and updatedAfter cannot be used together",
+    });
+  }
+});
+
+export type CompanySearchExtractQuery = z.infer<typeof companySearchExtractQuerySchema>;

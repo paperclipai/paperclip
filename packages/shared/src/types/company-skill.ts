@@ -313,11 +313,34 @@ export interface CompanySkillImportResult {
 export interface CompanySkillProjectScanRequest {
   projectIds?: string[];
   workspaceIds?: string[];
+  mode?: "import" | "preview";
+  selection?: Array<{
+    workspaceId: string;
+    path: string;
+    slug?: string;
+  }>;
+}
+
+export type CompanySkillProjectScanCandidateStatus = "new" | "already_imported" | "conflict" | "skipped";
+
+export interface CompanySkillProjectScanCandidate {
+  slug: string;
+  name: string;
+  description: string | null;
+  workspaceId: string;
+  workspaceName: string;
+  projectId: string;
+  projectName: string;
+  directoryRoot: string;
+  relativePath: string;
+  status: CompanySkillProjectScanCandidateStatus;
+  existingSkillId?: string;
+  reason?: string;
 }
 
 export interface CompanySkillProjectScanSkipped {
-  projectId: string;
-  projectName: string;
+  projectId: string | null;
+  projectName: string | null;
   workspaceId: string | null;
   workspaceName: string | null;
   path: string | null;
@@ -346,6 +369,7 @@ export interface CompanySkillProjectScanResult {
   updated: CompanySkill[];
   skipped: CompanySkillProjectScanSkipped[];
   conflicts: CompanySkillProjectScanConflict[];
+  candidates: CompanySkillProjectScanCandidate[];
   warnings: string[];
 }
 

@@ -96,10 +96,14 @@ export function PluginSettings() {
   const configSchema = plugin?.manifestJson?.instanceConfigSchema as JsonSchemaNode | undefined;
   const hasConfigSchema = configSchema && configSchema.properties && Object.keys(configSchema.properties).length > 0;
 
+  const configQueryKey = pluginId && selectedCompanyId
+    ? queryKeys.plugins.config(pluginId, selectedCompanyId)
+    : ["plugins", pluginId ?? "__missing_plugin__", "companies", "__missing_company__", "config"] as const;
+
   const { data: configData, isLoading: configLoading } = useQuery({
-    queryKey: queryKeys.plugins.config(pluginId!),
-    queryFn: () => pluginsApi.getConfig(pluginId!),
-    enabled: !!pluginId && !!hasConfigSchema,
+    queryKey: configQueryKey,
+    queryFn: () => pluginsApi.getConfig(pluginId!, selectedCompanyId!),
+    enabled: !!pluginId && !!hasConfigSchema && !!selectedCompanyId,
   });
 
   const { slots } = usePluginSlots({
@@ -246,6 +250,7 @@ export function PluginSettings() {
               ) : hasConfigSchema ? (
                 <PluginConfigForm
                   pluginId={pluginId!}
+                  companyId={selectedCompanyId}
                   schema={configSchema!}
                   initialValues={configData?.configJson}
                   isLoading={configLoading}
@@ -751,7 +756,7 @@ function PluginLocalFolderRow({ pluginId, companyId, declaration, status }: Plug
           <Button
             size="sm"
             onClick={handleSave}
-            disabled={saveMutation.isPending || !isDirty}
+            disabled={saveMutation.isPending || !isDirty || !companyId}
           >
             {saveMutation.isPending ? (
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -920,6 +925,7 @@ function isLikelyAbsolutePath(pathValue: string) {
 
 interface PluginConfigFormProps {
   pluginId: string;
+  companyId: string | null;
   schema: JsonSchemaNode;
   initialValues?: Record<string, unknown>;
   isLoading?: boolean;
@@ -936,7 +942,7 @@ interface PluginConfigFormProps {
  * Separated from PluginSettings to isolate re-render scope — only the form
  * re-renders on field changes, not the entire page.
  */
-function PluginConfigForm({ pluginId, schema, initialValues, isLoading, pluginStatus, supportsConfigTest }: PluginConfigFormProps) {
+function PluginConfigForm({ pluginId, companyId, schema, initialValues, isLoading, pluginStatus, supportsConfigTest }: PluginConfigFormProps) {
   const queryClient = useQueryClient();
 
   // Form values: start with saved values, fall back to schema defaults
@@ -949,6 +955,11 @@ function PluginConfigForm({ pluginId, schema, initialValues, isLoading, pluginSt
   // don't overwrite in-progress user edits if the query refetches (e.g. on
   // window focus).
   const hasHydratedRef = useRef(false);
+  useEffect(() => {
+    hasHydratedRef.current = false;
+    setValues(getDefaultValues(schema));
+  }, [companyId, pluginId, schema]);
+
   useEffect(() => {
     if (initialValues && !hasHydratedRef.current) {
       hasHydratedRef.current = true;
@@ -971,12 +982,16 @@ function PluginConfigForm({ pluginId, schema, initialValues, isLoading, pluginSt
 
   // Save mutation
   const saveMutation = useMutation({
-    mutationFn: (configJson: Record<string, unknown>) =>
-      pluginsApi.saveConfig(pluginId, configJson),
+    mutationFn: (configJson: Record<string, unknown>) => {
+      if (!companyId) throw new Error("Select a company before saving plugin configuration.");
+      return pluginsApi.saveConfig(pluginId, companyId, configJson);
+    },
     onSuccess: () => {
       setSaveMessage({ type: "success", text: "Configuration saved." });
       setTestResult(null);
-      queryClient.invalidateQueries({ queryKey: queryKeys.plugins.config(pluginId) });
+      if (companyId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.plugins.config(pluginId, companyId) });
+      }
       // Clear success message after 3s
       setTimeout(() => setSaveMessage(null), 3000);
     },
@@ -987,8 +1002,10 @@ function PluginConfigForm({ pluginId, schema, initialValues, isLoading, pluginSt
 
   // Test configuration mutation
   const testMutation = useMutation({
-    mutationFn: (configJson: Record<string, unknown>) =>
-      pluginsApi.testConfig(pluginId, configJson),
+    mutationFn: (configJson: Record<string, unknown>) => {
+      if (!companyId) throw new Error("Select a company before testing plugin configuration.");
+      return pluginsApi.testConfig(pluginId, companyId, configJson);
+    },
     onSuccess: (result) => {
       if (result.valid) {
         setTestResult({ type: "success", text: "Configuration test passed." });
@@ -1095,7 +1112,7 @@ function PluginConfigForm({ pluginId, schema, initialValues, isLoading, pluginSt
           <Button
             variant="outline"
             onClick={handleTestConnection}
-            disabled={testMutation.isPending}
+            disabled={testMutation.isPending || !companyId}
             size="sm"
           >
             {testMutation.isPending ? (

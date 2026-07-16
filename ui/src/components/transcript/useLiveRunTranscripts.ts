@@ -8,8 +8,16 @@ import { buildTranscript, getUIAdapter, onAdapterChange, type RunLogChunk, type 
 import { queryKeys } from "../../lib/queryKeys";
 import { buildSameOriginWebSocketUrl } from "../../lib/websocket-url";
 
+// TODO(perf): this whole hook polls the log/runs endpoints on an interval. The
+// durable fix is server push (SSE/websocket) for transcript deltas so idle tabs
+// do no periodic work at all; the constants below only reduce the churn of the
+// current polling approach.
 const LOG_POLL_INTERVAL_MS = 2000;
 const LOG_READ_LIMIT_BYTES = 256_000;
+// When realtime websocket updates are enabled, the frequent log poll is
+// redundant with the live stream; keep only a slow safety-net poll to cover
+// gaps and reconnects instead of polling every couple of seconds.
+const REALTIME_FALLBACK_POLL_INTERVAL_MS = 30_000;
 const EMPTY_RUN_LOG_CHUNKS: RunLogChunk[] = [];
 
 export interface RunTranscriptSource {
@@ -315,17 +323,23 @@ export function useLiveRunTranscripts({
 
     void readAll();
     const activeRuns = normalizedRuns.filter((run) => !isTerminalStatus(run.status));
-    const interval = activeRuns.length > 0 && logPollIntervalMs > 0
+    // The realtime websocket is the primary live source when enabled, so the
+    // recurring poll only needs to run as a slow fallback rather than doubling
+    // the live update work every couple of seconds.
+    const effectivePollMs = enableRealtimeUpdates
+      ? Math.max(logPollIntervalMs, REALTIME_FALLBACK_POLL_INTERVAL_MS)
+      : logPollIntervalMs;
+    const interval = activeRuns.length > 0 && effectivePollMs > 0
       ? window.setInterval(() => {
           void Promise.all(activeRuns.map((run) => readRunLog(run)));
-        }, logPollIntervalMs)
+        }, effectivePollMs)
       : null;
 
     return () => {
       cancelled = true;
       if (interval !== null) window.clearInterval(interval);
     };
-  }, [logPollIntervalMs, logReadLimitBytes, normalizedRuns, runIdsKey]);
+  }, [enableRealtimeUpdates, logPollIntervalMs, logReadLimitBytes, normalizedRuns, runIdsKey]);
 
   useEffect(() => {
     if (!enableRealtimeUpdates) return;

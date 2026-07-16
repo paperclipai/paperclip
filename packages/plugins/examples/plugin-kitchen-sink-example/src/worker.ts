@@ -8,6 +8,7 @@ import {
   definePlugin,
   runWorker,
   type PaperclipPlugin,
+  type EnvSecretRefBinding,
   type PluginContext,
   type PluginEntityQuery,
   type PluginEvent,
@@ -41,7 +42,7 @@ type KitchenSinkConfig = {
   showCommentContextMenuItem?: boolean;
   enableWorkspaceDemos?: boolean;
   enableProcessDemos?: boolean;
-  secretRefExample?: string;
+  secretRefExample?: string | EnvSecretRefBinding;
   httpDemoUrl?: string;
   allowedCommands?: string[];
   workspaceScratchFile?: string;
@@ -91,12 +92,18 @@ function pushRecord(record: Omit<DemoRecord, "id" | "createdAt">): DemoRecord {
   return next;
 }
 
-async function getConfig(ctx: PluginContext): Promise<KitchenSinkConfig> {
-  const config = await ctx.config.get();
+async function getConfig(ctx: PluginContext, companyId?: string): Promise<KitchenSinkConfig> {
+  const config = await ctx.config.get(companyId);
   return {
     ...DEFAULT_CONFIG,
     ...(config as KitchenSinkConfig),
   };
+}
+
+function isSecretRefBinding(value: unknown): value is EnvSecretRefBinding {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    && (value as { type?: unknown }).type === "secret_ref"
+    && typeof (value as { secretId?: unknown }).secretId === "string";
 }
 
 async function writeInstanceState(ctx: PluginContext, stateKey: string, value: unknown): Promise<void> {
@@ -248,13 +255,14 @@ function runtimeLaunchersSnapshot(): PluginLauncherRegistration[] {
 }
 
 async function registerDataHandlers(ctx: PluginContext): Promise<void> {
-  ctx.data.register("plugin-config", async () => {
-    return await getConfig(ctx);
+  ctx.data.register("plugin-config", async (params) => {
+    const companyId = typeof params.companyId === "string" ? params.companyId : undefined;
+    return await getConfig(ctx, companyId);
   });
 
   ctx.data.register("overview", async (params) => {
     const companyId = typeof params.companyId === "string" ? params.companyId : "";
-    const config = await getConfig(ctx);
+    const config = companyId ? await getConfig(ctx, companyId) : DEFAULT_CONFIG;
     const companies = await ctx.companies.list({ limit: 200, offset: 0 });
     const projects = companyId ? await ctx.projects.list({ companyId, limit: 200, offset: 0 }) : [];
     const issues = companyId ? await listIssuesForCompany(ctx, companyId, 200) : [];
@@ -583,7 +591,8 @@ async function registerActionHandlers(ctx: PluginContext): Promise<void> {
   });
 
   ctx.actions.register("http-fetch", async (params) => {
-    const config = await getConfig(ctx);
+    const companyId = getCurrentCompanyId(params);
+    const config = await getConfig(ctx, companyId);
     const url = typeof params.url === "string" && params.url.length > 0
       ? params.url
       : config.httpDemoUrl || DEFAULT_CONFIG.httpDemoUrl;
@@ -607,29 +616,32 @@ async function registerActionHandlers(ctx: PluginContext): Promise<void> {
   });
 
   ctx.actions.register("resolve-secret", async (params) => {
-    const config = await getConfig(ctx);
-    const secretRef = typeof params.secretRef === "string" && params.secretRef.length > 0
+    const companyId = getCurrentCompanyId(params);
+    const config = await getConfig(ctx, companyId);
+    const secretRef = isSecretRefBinding(params.secretRef)
       ? params.secretRef
-      : config.secretRefExample || "";
+      : isSecretRefBinding(config.secretRefExample)
+        ? config.secretRefExample
+        : null;
     if (!secretRef) {
       throw new Error("No secret reference configured");
     }
-    const resolved = await ctx.secrets.resolve(secretRef);
+    const resolved = await ctx.secrets.resolve(secretRef, { companyId, configPath: "secretRefExample" });
     pushRecord({
       level: "info",
       source: "secrets",
-      message: `Resolved secret reference ${secretRef}`,
+      message: `Resolved secret reference ${secretRef.secretId}`,
     });
     return {
-      secretRef,
+      secretRef: secretRef.secretId,
       resolvedLength: resolved.length,
       preview: resolved.length > 0 ? `${resolved.slice(0, 2)}***` : "",
     };
   });
 
   ctx.actions.register("run-process", async (params) => {
-    const config = await getConfig(ctx);
     const companyId = getCurrentCompanyId(params);
+    const config = await getConfig(ctx, companyId);
     const projectId = typeof params.projectId === "string" ? params.projectId : "";
     const workspaceId = typeof params.workspaceId === "string" && params.workspaceId.length > 0 ? params.workspaceId : undefined;
     const commandKey = typeof params.commandKey === "string" ? params.commandKey : "pwd";
@@ -638,11 +650,11 @@ async function registerActionHandlers(ctx: PluginContext): Promise<void> {
   });
 
   ctx.actions.register("read-workspace-file", async (params) => {
-    const config = await getConfig(ctx);
+    const companyId = getCurrentCompanyId(params);
+    const config = await getConfig(ctx, companyId);
     if (!config.enableWorkspaceDemos) {
       throw new Error("Workspace demos are disabled in plugin settings");
     }
-    const companyId = getCurrentCompanyId(params);
     const projectId = typeof params.projectId === "string" ? params.projectId : "";
     const workspaceId = typeof params.workspaceId === "string" && params.workspaceId.length > 0 ? params.workspaceId : undefined;
     const relativePath = typeof params.relativePath === "string" && params.relativePath.length > 0
@@ -660,11 +672,11 @@ async function registerActionHandlers(ctx: PluginContext): Promise<void> {
   });
 
   ctx.actions.register("write-workspace-scratch", async (params) => {
-    const config = await getConfig(ctx);
+    const companyId = getCurrentCompanyId(params);
+    const config = await getConfig(ctx, companyId);
     if (!config.enableWorkspaceDemos) {
       throw new Error("Workspace demos are disabled in plugin settings");
     }
-    const companyId = getCurrentCompanyId(params);
     const projectId = typeof params.projectId === "string" ? params.projectId : "";
     const workspaceId = typeof params.workspaceId === "string" && params.workspaceId.length > 0 ? params.workspaceId : undefined;
     const relativePath = typeof params.relativePath === "string" && params.relativePath.length > 0
@@ -965,8 +977,7 @@ const plugin: PaperclipPlugin = definePlugin({
   },
 
   async onHealth(): Promise<PluginHealthDiagnostics> {
-    const ctx = currentContext;
-    const config = ctx ? await getConfig(ctx) : DEFAULT_CONFIG;
+    const config: KitchenSinkConfig = DEFAULT_CONFIG;
     return {
       status: "ok",
       message: "Kitchen Sink plugin ready",

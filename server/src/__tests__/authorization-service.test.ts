@@ -386,6 +386,101 @@ describeEmbeddedPostgres("authorization service", () => {
     });
   });
 
+  it("allows board users with direct skills:create grants to mutate company skills", async () => {
+    const company = await createCompany(db, "BoardUserSkillGrant");
+    const userId = await createUser(db);
+    await grantUserPermission(db, company.id, userId, "skills:create");
+
+    const decision = await authorizationService(db).decide({
+      actor: {
+        type: "board",
+        userId,
+        companyIds: [company.id],
+        source: "session",
+      },
+      action: "skill_config:update",
+      resource: { type: "company", companyId: company.id },
+    });
+
+    expect(decision).toMatchObject({
+      allowed: true,
+      reason: "allow_direct_change",
+      grant: {
+        principalType: "user",
+        principalId: userId,
+        permissionKey: "skills:create",
+      },
+    });
+  });
+
+  it("allows responsible-user JWT agents with direct skills:create grants to mutate company skills", async () => {
+    const company = await createCompany(db, "ResponsibleUserSkillGrant");
+    const actorAgent = await createAgent(db, company.id);
+    const responsibleUserId = await createUser(db);
+    await grantAgentPermission(db, company.id, actorAgent.id, "skills:create");
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: responsibleUserId,
+      status: "active",
+      membershipRole: "operator",
+    });
+
+    const decision = await authorizationService(db).decide({
+      actor: {
+        type: "agent",
+        agentId: actorAgent.id,
+        companyId: company.id,
+        onBehalfOfUserId: responsibleUserId,
+        source: "agent_jwt",
+      },
+      action: "skill_config:update",
+      resource: { type: "company", companyId: company.id },
+    });
+
+    expect(decision).toMatchObject({
+      allowed: true,
+      reason: "allow_direct_change",
+      grant: {
+        principalType: "agent",
+        principalId: actorAgent.id,
+        permissionKey: "skills:create",
+      },
+    });
+  });
+
+  it("keeps responsible-user skill mutations denied for viewer memberships", async () => {
+    const company = await createCompany(db, "ResponsibleUserSkillViewerDenied");
+    const actorAgent = await createAgent(db, company.id);
+    const responsibleUserId = await createUser(db);
+    await grantAgentPermission(db, company.id, actorAgent.id, "skills:create");
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: responsibleUserId,
+      status: "active",
+      membershipRole: "viewer",
+    });
+
+    const decision = await authorizationService(db).decide({
+      actor: {
+        type: "agent",
+        agentId: actorAgent.id,
+        companyId: company.id,
+        onBehalfOfUserId: responsibleUserId,
+        source: "agent_jwt",
+      },
+      action: "skill_config:update",
+      resource: { type: "company", companyId: company.id },
+    });
+
+    expect(decision).toMatchObject({
+      allowed: false,
+      code: "RESPONSIBLE_USER_UNAUTHORIZED",
+    });
+    expect(decision.explanation).toContain(`Responsible user ${responsibleUserId} is not authorized`);
+  });
+
   it("denies cross-company agent decisions before grant evaluation", async () => {
     const sourceCompany = await createCompany(db, "Source");
     const targetCompany = await createCompany(db, "Target");

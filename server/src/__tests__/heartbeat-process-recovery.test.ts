@@ -1005,6 +1005,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
     if (input.cause === "execution_review_participant_recovery") {
       expect(action.nextAction).toContain("failed review participant path");
+    } else if (input.cause === "process_lost") {
+      expect(action.nextAction).toContain("Retry the original assignee from durable progress");
     } else {
       expect(action.nextAction).toContain(
         input.kind === "missing_disposition" ? "valid issue disposition" : "Restore a live execution path",
@@ -1301,6 +1303,107 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     );
     // Terminal run cleanup releases the checkout lock so future checkout 409s only mean a live owner exists.
     expect(checkoutReleasedIssue?.checkoutRunId).toBeNull();
+  });
+
+  it("restores one lost monitor dispatch before escalating a second process loss", async () => {
+    const { companyId, agentId, runId, issueId } = await seedRunFixture({
+      adapterType: "openclaw_gateway",
+      agentStatus: "idle",
+      processPid: null,
+      processGroupId: null,
+      contextSnapshot: {
+        wakeReason: "issue_monitor_due",
+        nextCheckAt: "2026-03-19T00:00:00.000Z",
+      },
+    });
+    const heartbeat = heartbeatService(db);
+
+    const firstLoss = await heartbeat.reapOrphanedRuns();
+    expect(firstLoss).toEqual({ reaped: 1, runIds: [runId] });
+
+    const firstRetry = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.retryOfRunId, runId)))
+      .then((rows) => rows[0] ?? null);
+    expect(firstRetry).toMatchObject({ processLossRetryCount: 1 });
+    expect(firstRetry?.contextSnapshot).toMatchObject({
+      wakeReason: "process_lost_retry",
+      retryReason: "issue_continuation_needed",
+      retryOfRunId: runId,
+    });
+
+    const secondAttempt = await seedRunFixture({
+      adapterType: "openclaw_gateway",
+      agentStatus: "idle",
+      processPid: null,
+      processGroupId: null,
+      processLossRetryCount: 1,
+      contextSnapshot: {
+        wakeReason: "process_lost_retry",
+        retryReason: "issue_continuation_needed",
+        retryOfRunId: runId,
+      },
+    });
+
+    const secondLoss = await heartbeat.reapOrphanedRuns();
+    expect(secondLoss).toEqual({ reaped: 1, runIds: [secondAttempt.runId] });
+
+    const secondAttemptRuns = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, secondAttempt.agentId));
+    expect(secondAttemptRuns.find((run) => run.id === secondAttempt.runId)).toMatchObject({
+      id: secondAttempt.runId,
+      status: "failed",
+      errorCode: "process_lost",
+      processLossRetryCount: 1,
+    });
+    expect(secondAttemptRuns.some((run) => run.processLossRetryCount > 1)).toBe(false);
+
+    const issue = await waitForValue(async () =>
+      db.select().from(issues).where(eq(issues.id, secondAttempt.issueId)).then((rows) => {
+        const row = rows[0] ?? null;
+        return row?.status === "blocked" ? row : null;
+      })
+    );
+    expect(issue?.monitorNextCheckAt).toBeNull();
+
+    await expectSourceScopedStrandedRecoveryAction({
+      companyId: secondAttempt.companyId,
+      agentId: secondAttempt.agentId,
+      issueId: secondAttempt.issueId,
+      runId: secondAttempt.runId,
+      previousStatus: "in_progress",
+      retryReason: "issue_continuation_needed",
+      cause: "process_lost",
+    });
+  });
+
+  it("does not retry a lost monitor dispatch while another monitor wake remains scheduled", async () => {
+    const { companyId, runId, issueId } = await seedRunFixture({
+      adapterType: "openclaw_gateway",
+      agentStatus: "idle",
+      processPid: null,
+      processGroupId: null,
+      contextSnapshot: {
+        wakeReason: "issue_monitor_due",
+      },
+    });
+    await db
+      .update(issues)
+      .set({ monitorNextCheckAt: new Date("2099-03-19T00:00:00.000Z") })
+      .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)));
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reapOrphanedRuns();
+
+    expect(result).toEqual({ reaped: 1, runIds: [runId] });
+    const retries = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.retryOfRunId, runId)));
+    expect(retries).toHaveLength(0);
   });
 
   it("interrupts running runs on graceful shutdown and queues restart recovery without recording a failure", async () => {
@@ -4328,6 +4431,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       runId,
       previousStatus: "todo",
       retryReason: "assignment_recovery",
+      cause: "process_lost",
     });
     expect(JSON.stringify(recoveryAction.evidence)).not.toContain("sk-test-recovery-secret");
 
@@ -4727,6 +4831,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       runId,
       previousStatus: "in_progress",
       retryReason: "issue_continuation_needed",
+      cause: "process_lost",
     });
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));

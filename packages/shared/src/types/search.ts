@@ -108,3 +108,45 @@ export interface CompanySearchResponse {
   zeroResults: CompanySearchZeroResults | null;
   hasMore: boolean;
 }
+
+export const COMPANY_SEARCH_EXTRACT_SCOPES = ["all", "issues", "comments", "documents"] as const;
+export type CompanySearchExtractScope = (typeof COMPANY_SEARCH_EXTRACT_SCOPES)[number];
+
+export const COMPANY_SEARCH_EXTRACT_KINDS = ["literal", "url"] as const;
+export type CompanySearchExtractKind = (typeof COMPANY_SEARCH_EXTRACT_KINDS)[number];
+
+export type CompanySearchExtractSourceRef =
+  | { type: "issue"; issueId: string }
+  | { type: "comment"; commentId: string }
+  | { type: "document"; documentId: string; documentKey: string };
+
+export interface CompanySearchExtractMatch {
+  value: string;
+  field: "title" | "description" | "comment" | "document_title" | "document_body";
+  label: string;
+  excerpt: string;
+  excerptTruncated: boolean;
+  source: CompanySearchExtractSourceRef;
+}
+
+export interface CompanySearchExtractIssueResult {
+  issueId: string;
+  identifier: string | null;
+  title: string;
+  status: IssueStatus;
+  assigneeAgentId: string | null;
+  updatedAt: string;
+  matches: CompanySearchExtractMatch[];
+  matchesTruncated: boolean;
+}
+
+export interface CompanySearchExtractResponse {
+  contains: string;
+  kind: CompanySearchExtractKind;
+  scope: CompanySearchExtractScope;
+  limit: number;
+  offset: number;
+  results: CompanySearchExtractIssueResult[];
+  hasMore: boolean;
+  truncated: boolean;
+}

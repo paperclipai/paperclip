@@ -60,6 +60,10 @@ import {
   routineRevisions,
   routineRuns,
   routines,
+  toolMcpGateways,
+  toolMcpGatewayTokens,
+  toolConnections,
+  toolProfiles,
   workspaceOperations,
 } from "@paperclipai/db";
 import { conflict, HttpError, notFound } from "../errors.js";
@@ -72,6 +76,9 @@ import type {
   AdapterExecutionResult,
   AdapterInvocationMeta,
   AdapterModelProfileDefinition,
+  AdapterRuntimeEvent,
+  AdapterRuntimeMcpAccess,
+  AdapterRuntimeMcpServer,
   AdapterSessionCodec,
   UsageSummary,
 } from "../adapters/index.js";
@@ -125,10 +132,10 @@ import {
   sanitizeRuntimeServiceBaseEnv,
 } from "./workspace-runtime.js";
 import { issueService } from "./issues.js";
+import { createToolGatewayService } from "./tool-gateway.js";
+import { toolAccessService } from "./tool-access.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
-import {
-  ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
-} from "./issue-dependency-wakeups.js";
+import { ISSUE_BLOCKERS_RESOLVED_WAKE_REASON } from "./issue-dependency-wakeups.js";
 import {
   buildIssueMonitorClearedPatch,
   buildIssueMonitorTriggeredPatch,
@@ -2073,6 +2080,269 @@ export function prioritizeProjectWorkspaceCandidatesForRun<T extends ProjectWork
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+type ManagedMcpGatewayRunConfig = {
+  version: 1;
+  managedMcpOnly: boolean;
+  gateways: Array<{
+    id: string;
+    name: string;
+    endpointPath: string;
+    bearerToken: string;
+    tokenPrefix: string;
+  }>;
+};
+
+function paperclipApiBaseUrl(): string {
+  const configured = readNonEmptyString(process.env.PAPERCLIP_API_URL);
+  if (!configured) {
+    throw new Error("PAPERCLIP_API_URL is required to deliver managed runtime MCP servers");
+  }
+  return configured.replace(/\/+$/, "").replace(/\/api$/, "");
+}
+
+export async function revokeHeartbeatRunGatewayTokens(input: {
+  db: Db;
+  companyId: string;
+  runId: string;
+}): Promise<void> {
+  const now = new Date();
+  await input.db
+    .update(toolMcpGatewayTokens)
+    .set({ revokedAt: now, updatedAt: now })
+    .where(and(
+      eq(toolMcpGatewayTokens.companyId, input.companyId),
+      eq(toolMcpGatewayTokens.subjectType, "heartbeat_run"),
+      eq(toolMcpGatewayTokens.subjectId, input.runId),
+      isNull(toolMcpGatewayTokens.revokedAt),
+    ));
+}
+
+export async function buildPaperclipRuntimeMcpServers(input: {
+  db: Db;
+  agent: Pick<typeof agents.$inferSelect, "id" | "companyId" | "name">;
+  runId: string;
+}): Promise<AdapterRuntimeMcpServer[]> {
+  const effective = await toolAccessService(input.db).getEffectiveProfilesForAgent(
+    input.agent.companyId,
+    input.agent.id,
+  );
+  const permittedConnectionIds = new Set([
+    ...effective.entries
+      .filter((entry) => entry.effect === "include" && entry.connectionId)
+      .map((entry) => entry.connectionId!),
+    ...effective.allowedTools.map((tool) => tool.connectionId),
+  ]);
+  const installedConnectionIds = new Set(effective.installedConnections.map((connection) => connection.id));
+  const permittedConnections = permittedConnectionIds.size > 0
+    ? await input.db
+      .select({
+        id: toolConnections.id,
+        name: toolConnections.name,
+        transport: toolConnections.transport,
+      })
+      .from(toolConnections)
+      .where(and(
+        eq(toolConnections.companyId, input.agent.companyId),
+        inArray(toolConnections.id, [...permittedConnectionIds]),
+      ))
+    : [];
+  const permittedNotInstalledConnections = permittedConnections
+    .filter((connection) => connection.transport === "remote_http" && !installedConnectionIds.has(connection.id))
+    .map(({ id, name }) => ({ id, name }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  const uniqueConnections = effective.installedConnections.filter((connection) =>
+    permittedConnectionIds.has(connection.id)
+    && connection.status === "active"
+    && connection.enabled
+    && connection.transport === "remote_http"
+  );
+  const service = createToolGatewayService(input.db);
+  if (uniqueConnections.length === 0) {
+    await service.recordRuntimeMcpDeliveryDiagnostic({
+      companyId: input.agent.companyId,
+      agentId: input.agent.id,
+      runId: input.runId,
+      permittedNotInstalledConnections,
+    });
+    return [];
+  }
+  const servers: AdapterRuntimeMcpServer[] = [];
+  for (const connection of uniqueConnections) {
+    const profileKey = `app:${connection.id}`;
+    const [profile] = await input.db
+      .select()
+      .from(toolProfiles)
+      .where(and(eq(toolProfiles.companyId, connection.companyId), eq(toolProfiles.profileKey, profileKey)))
+      .limit(1);
+    if (!profile) continue;
+    const existingGateways = await input.db
+      .select()
+      .from(toolMcpGateways)
+      .where(and(
+        eq(toolMcpGateways.companyId, connection.companyId),
+        eq(toolMcpGateways.status, "active"),
+        isNull(toolMcpGateways.archivedAt),
+      ));
+    let gateway = existingGateways.find((candidate) =>
+      candidate.metadata?.managedRuntimeConnectionId === connection.id
+    );
+    if (!gateway) {
+      const slug = `runtime-${connection.id.replaceAll("-", "")}`;
+      try {
+        const created = await service.createNamedGateway({
+          companyId: connection.companyId,
+          body: {
+            name: `Runtime ${connection.name} ${connection.id.slice(0, 8)}`,
+            slug,
+            description: `Paperclip-managed runtime gateway for ${connection.name}.`,
+            profileId: profile.id,
+            defaultProfileMode: "gateway_only",
+            metadata: { managedRuntimeConnectionId: connection.id },
+          },
+          actor: { agentId: input.agent.id },
+        });
+        gateway = await input.db
+          .select()
+          .from(toolMcpGateways)
+          .where(eq(toolMcpGateways.id, created.id))
+          .then((rows) => rows[0]);
+      } catch (error) {
+        [gateway] = await input.db
+          .select()
+          .from(toolMcpGateways)
+          .where(and(eq(toolMcpGateways.companyId, connection.companyId), eq(toolMcpGateways.slug, slug)))
+          .limit(1);
+        if (!gateway) throw error;
+      }
+    }
+    if (!gateway) continue;
+    const token = await service.createNamedGatewayToken({
+      companyId: connection.companyId,
+      gatewayId: gateway.id,
+      body: {
+        name: `Run ${input.runId.slice(0, 8)} ${connection.name}`,
+        subjectType: "heartbeat_run",
+        subjectId: input.runId,
+        clientLabel: `${input.agent.name} heartbeat run`,
+        ownerNote: `Short-lived runtime MCP token for heartbeat run ${input.runId}.`,
+        allowedActions: ["tools/list", "tools/call"],
+        expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+      },
+      actor: { agentId: input.agent.id },
+    });
+    servers.push({
+      name: connection.name,
+      url: `${paperclipApiBaseUrl()}/api/tool-gateway/gateways/${gateway.id}/mcp`,
+      token: token.token,
+      connectionId: connection.id,
+    });
+  }
+  if (servers.length === 0) {
+    await service.recordRuntimeMcpDeliveryDiagnostic({
+      companyId: input.agent.companyId,
+      agentId: input.agent.id,
+      runId: input.runId,
+      permittedNotInstalledConnections,
+    });
+  }
+  return servers;
+}
+
+function createAdapterRuntimeMcpAccess(
+  servers: AdapterRuntimeMcpServer[],
+): AdapterRuntimeMcpAccess | undefined {
+  if (servers.length === 0) return undefined;
+  const snapshot = servers.map((server) => Object.freeze({ ...server }));
+  return Object.freeze({
+    getServers: () => snapshot.map((server) => ({ ...server })),
+  });
+}
+
+const MANAGED_MCP_LOCAL_ADAPTERS = new Set(["codex_local"]);
+
+function adapterSupportsManagedMcpConfig(adapterType: string): boolean {
+  return MANAGED_MCP_LOCAL_ADAPTERS.has(adapterType);
+}
+
+function gatewayAppliesToRun(input: {
+  gateway: typeof toolMcpGateways.$inferSelect;
+  agentId: string;
+  projectId: string | null;
+  issueId: string | null;
+}): boolean {
+  const { gateway, agentId, projectId, issueId } = input;
+  if (gateway.agentId && gateway.agentId !== agentId) return false;
+  if (gateway.projectId && gateway.projectId !== projectId) return false;
+  if (gateway.issueId && gateway.issueId !== issueId) return false;
+  if (gateway.contextScopeType === "agent" && gateway.contextScopeId && gateway.contextScopeId !== agentId) return false;
+  if (gateway.contextScopeType === "project" && gateway.contextScopeId && gateway.contextScopeId !== projectId) return false;
+  if (gateway.contextScopeType === "issue" && gateway.contextScopeId && gateway.contextScopeId !== issueId) return false;
+  return true;
+}
+
+async function createManagedMcpRunConfig(input: {
+  db: Db;
+  agent: Pick<typeof agents.$inferSelect, "id" | "companyId" | "name" | "adapterType">;
+  runId: string;
+  config: Record<string, unknown>;
+  projectId: string | null;
+  issueId: string | null;
+}): Promise<ManagedMcpGatewayRunConfig | null> {
+  if (!adapterSupportsManagedMcpConfig(input.agent.adapterType)) return null;
+  if (input.config.managedMcpOnly === false) return null;
+
+  const rows = await input.db
+    .select()
+    .from(toolMcpGateways)
+    .where(and(
+      eq(toolMcpGateways.companyId, input.agent.companyId),
+      eq(toolMcpGateways.status, "active"),
+      isNull(toolMcpGateways.archivedAt),
+    ))
+    .orderBy(asc(toolMcpGateways.name));
+
+  const gateways = rows.filter((gateway) => gatewayAppliesToRun({
+    gateway,
+    agentId: input.agent.id,
+    projectId: input.projectId,
+    issueId: input.issueId,
+  }));
+  if (gateways.length === 0) return null;
+
+  const service = createToolGatewayService(input.db);
+  const expiresAt = new Date(Date.now() + 60 * 60 * 1000);
+  const managedGateways: ManagedMcpGatewayRunConfig["gateways"] = [];
+  for (const gateway of gateways) {
+    const token = await service.createNamedGatewayToken({
+      companyId: input.agent.companyId,
+      gatewayId: gateway.id,
+      body: {
+        name: `Managed ${input.agent.name} ${input.runId.slice(0, 8)}`,
+        subjectType: "heartbeat_run",
+        subjectId: input.runId,
+        clientLabel: `${input.agent.name} managed local adapter`,
+        ownerNote: `Short-lived Paperclip-managed MCP token for heartbeat run ${input.runId}.`,
+        allowedActions: ["tools/list", "tools/call"],
+        expiresAt,
+      },
+      actor: { agentId: input.agent.id },
+    });
+    managedGateways.push({
+      id: gateway.id,
+      name: gateway.name,
+      endpointPath: `/api/tool-gateway/gateways/${gateway.id}/mcp`,
+      bearerToken: token.token,
+      tokenPrefix: token.tokenPrefix,
+    });
+  }
+
+  return {
+    version: 1,
+    managedMcpOnly: true,
+    gateways: managedGateways,
+  };
 }
 
 function readModelProfileKey(value: unknown): ModelProfileKey | null {
@@ -4284,9 +4554,45 @@ export async function buildPaperclipWakePayload(input: {
     })
     : null;
   const payloadTruncated = truncated || planReviewContext?.truncated === true;
+  const recoveryActionId = readNonEmptyString(input.contextSnapshot.recoveryActionId);
+  const recoveryCause = readNonEmptyString(input.contextSnapshot.recoveryCause);
+  const recoveryAction = recoveryActionId
+    ? await input.db
+      .select()
+      .from(issueRecoveryActions)
+      .where(and(
+        eq(issueRecoveryActions.id, recoveryActionId),
+        eq(issueRecoveryActions.companyId, input.companyId),
+      ))
+      .then((rows) => rows[0] ?? null)
+    : null;
+  const recoveryEvidence = parseObject(recoveryAction?.evidence);
+  const originalAssigneeId = recoveryAction?.returnOwnerAgentId ?? recoveryAction?.previousOwnerAgentId ?? null;
+  const originalAssignee = originalAssigneeId
+    ? await input.db
+      .select({ id: agents.id, name: agents.name })
+      .from(agents)
+      .where(and(eq(agents.id, originalAssigneeId), eq(agents.companyId, input.companyId)))
+      .then((rows) => rows[0] ?? null)
+    : null;
 
   return {
     reason: readNonEmptyString(input.contextSnapshot.wakeReason),
+    recovery: recoveryAction || recoveryCause
+      ? {
+          cause: recoveryAction?.cause ?? recoveryCause,
+          failureSummary: readNonEmptyString(recoveryEvidence.failureSummary),
+          originalAssignee: originalAssignee
+            ? { id: originalAssignee.id, name: originalAssignee.name }
+            : originalAssigneeId
+              ? { id: originalAssigneeId, name: null }
+              : null,
+          attemptCount: recoveryAction?.attemptCount ?? null,
+          maxAttempts: recoveryAction?.maxAttempts ?? null,
+          nextAction: recoveryAction?.nextAction ?? null,
+          routingFallbackReason: readNonEmptyString(recoveryEvidence.routingFallbackReason),
+        }
+      : null,
     issue: issueSummary
       ? {
           id: issueSummary.id,
@@ -7717,7 +8023,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .where(eq(heartbeatRuns.id, run.id));
     }
 
-    const handoffRun = await enqueueWakeup(run.agentId, {
+    const handoffRun = await enqueueWakeup(decision.targetAgentId, {
       source: "automation",
       triggerDetail: "system",
       reason: FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
@@ -8239,13 +8545,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const contextSnapshot = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(contextSnapshot.issueId);
+    const retryReason = readNonEmptyString(contextSnapshot.wakeReason) === "issue_monitor_due"
+      ? "issue_continuation_needed"
+      : "process_lost";
     const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
     const sessionBefore = await resolveSessionBeforeForWakeup(agent, taskKey);
     const retryContextSnapshot = withRecoveryModelProfileHint({
       ...contextSnapshot,
       retryOfRunId: run.id,
       wakeReason: "process_lost_retry",
-      retryReason: "process_lost",
+      retryReason,
     }, "normal_model");
     const responsibleUserId = await resolveResponsibleUserIdForRunContext(run, retryContextSnapshot);
 
@@ -10650,6 +10959,29 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
       .where(eq(heartbeatRuns.status, "running"));
 
+    const monitorIssueIds = [...new Set(activeRuns.flatMap(({ run }) => {
+      const runContext = parseObject(run.contextSnapshot);
+      if (readNonEmptyString(runContext.wakeReason) !== "issue_monitor_due") return [];
+      const issueId = readNonEmptyString(runContext.issueId);
+      return issueId ? [issueId] : [];
+    }))];
+    const monitorIssues = monitorIssueIds.length > 0
+      ? await db
+        .select({
+          id: issues.id,
+          companyId: issues.companyId,
+          monitorNextCheckAt: issues.monitorNextCheckAt,
+        })
+        .from(issues)
+        .where(inArray(issues.id, monitorIssueIds))
+      : [];
+    const monitorNextCheckAtByIssue = new Map(
+      monitorIssues.map((issue) => [
+        `${issue.companyId}:${issue.id}`,
+        issue.monitorNextCheckAt,
+      ]),
+    );
+
     const reaped: string[] = [];
 
     for (const { run, adapterType, adapterConfig } of activeRuns) {
@@ -10695,7 +11027,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         });
       }
 
-      const shouldRetry = tracksLocalChild && (!!run.processPid || !!run.processGroupId) && (run.processLossRetryCount ?? 0) < 1;
+      const runContext = parseObject(run.contextSnapshot);
+      const monitorIssueId = readNonEmptyString(runContext.issueId);
+      const monitorNextCheckAt = monitorIssueId
+        ? monitorNextCheckAtByIssue.get(`${run.companyId}:${monitorIssueId}`)
+        : undefined;
+      const monitorDispatchLostWithoutFutureWake =
+        readNonEmptyString(runContext.wakeReason) === "issue_monitor_due" &&
+        monitorNextCheckAt !== undefined &&
+        (!monitorNextCheckAt || monitorNextCheckAt.getTime() <= now.getTime());
+      const shouldRetry = (run.processLossRetryCount ?? 0) < 1 && (
+        (tracksLocalChild && (!!run.processPid || !!run.processGroupId)) ||
+        monitorDispatchLostWithoutFutureWake
+      );
       const baseMessage = buildProcessLossMessage(run, descendantOnlyCleanup ? { descendantOnly: true } : undefined);
       const unmanagedBackgroundTaskEvidence = descendantOnlyCleanup
         ? {
@@ -12582,6 +12926,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         });
       };
 
+      const onAdapterEvent = async (event: AdapterRuntimeEvent) => {
+        const eventType = event.eventType.trim();
+        if (!eventType) return;
+        await appendRunEvent(currentRun, seq++, {
+          eventType: eventType.slice(0, 120),
+          stream: event.stream,
+          level: event.level,
+          color: event.color,
+          message: event.message,
+          payload: event.payload,
+        });
+      };
+
       const adapter = getServerAdapter(agent.adapterType);
       const localAgentJwtScope =
         issueRef?.workMode === "skill_test"
@@ -12788,19 +13145,39 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       let adapterResult: Awaited<ReturnType<typeof adapter.execute>>;
       try {
+        const adapterContext = { ...context };
+        const runtimeMcpServers = await buildPaperclipRuntimeMcpServers({
+          db,
+          agent,
+          runId: run.id,
+        });
+        const runtimeMcp = createAdapterRuntimeMcpAccess(runtimeMcpServers);
+        const managedMcpConfig = await createManagedMcpRunConfig({
+          db,
+          agent,
+          runId: run.id,
+          config: runtimeConfig,
+          projectId: issueRef?.projectId ?? null,
+          issueId: issueRef?.id ?? null,
+        });
+        if (managedMcpConfig) {
+          adapterContext.paperclipManagedMcp = managedMcpConfig;
+        }
         adapterResult = await adapter.execute({
           runId: run.id,
           agent,
           runtime: runtimeForAdapter,
           config: runtimeConfig,
-          context,
+          context: adapterContext,
           runtimeCommandSpec: adapter.getRuntimeCommandSpec?.(runtimeConfig) ?? null,
           executionTarget,
           executionTransport: remoteExecution
             ? { remoteExecution: remoteExecution as unknown as Record<string, unknown> }
             : undefined,
+          runtimeMcp,
           onLog,
           onMeta: onAdapterMeta,
+          onEvent: onAdapterEvent,
           onRuntimeProgress: async (progress) => {
             await recordCurrentHeartbeatRunRuntimeProgress(run, progress, issueId);
           },
@@ -12840,6 +13217,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           );
         }
         throw adapterErr;
+      } finally {
+        try {
+          await revokeHeartbeatRunGatewayTokens({
+            db,
+            companyId: agent.companyId,
+            runId: run.id,
+          });
+        } catch (revokeErr) {
+          logger.warn(
+            { err: revokeErr, runId: run.id, companyId: agent.companyId },
+            "failed to revoke heartbeat-run MCP gateway tokens",
+          );
+        }
       }
       const adapterManagedRuntimeServices = adapterResult.runtimeServices
         ? await persistAdapterManagedRuntimeServices({

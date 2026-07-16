@@ -34,6 +34,8 @@ const mockSecretService = vi.hoisted(() => ({
   removeCurrentUserSecretValue: vi.fn(),
   previewRemoteImport: vi.fn(),
   importRemoteSecrets: vi.fn(),
+  listBindingReferences: vi.fn(),
+  listAccessEvents: vi.fn(),
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn());
 
@@ -837,6 +839,112 @@ describe("secret routes", () => {
     );
     expect(mockLogActivity).not.toHaveBeenCalled();
     expect(JSON.stringify(mockLogActivity.mock.calls)).not.toContain("shared/repointed");
+  });
+
+  it("returns 404 for cross-tenant GET /secrets/:id/usage without leaking existence", async () => {
+    mockSecretService.getById.mockResolvedValue({
+      id: "44444444-4444-4444-8444-444444444444",
+      companyId: "company-2",
+      name: "Other tenant secret",
+      key: "other-secret",
+      provider: "aws_secrets_manager",
+      managedMode: "paperclip_managed",
+    });
+
+    const crossTenantApp = createApp({
+      type: "board",
+      userId: "mallory",
+      source: "session",
+      companyIds: ["company-1"],
+      memberships: [{ companyId: "company-1", status: "active", membershipRole: "admin" }],
+      isInstanceAdmin: false,
+    });
+
+    const res = await request(crossTenantApp).get(
+      "/api/secrets/44444444-4444-4444-8444-444444444444/usage",
+    );
+
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: "Secret not found" });
+    expect(mockSecretService.listBindingReferences).not.toHaveBeenCalled();
+  });
+
+  it("returns 404 for missing GET /secrets/:id/usage with identical response shape", async () => {
+    mockSecretService.getById.mockResolvedValue(null);
+
+    const res = await request(createApp()).get(
+      "/api/secrets/55555555-5555-4555-8555-555555555555/usage",
+    );
+
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: "Secret not found" });
+    expect(mockSecretService.listBindingReferences).not.toHaveBeenCalled();
+  });
+
+  it("returns 404 for cross-tenant GET /secrets/:id/access-events without leaking existence", async () => {
+    mockSecretService.getById.mockResolvedValue({
+      id: "66666666-6666-4666-8666-666666666666",
+      companyId: "company-2",
+      name: "Other tenant secret",
+      key: "other-secret",
+      provider: "aws_secrets_manager",
+      managedMode: "paperclip_managed",
+    });
+
+    const crossTenantApp = createApp({
+      type: "board",
+      userId: "mallory",
+      source: "session",
+      companyIds: ["company-1"],
+      memberships: [{ companyId: "company-1", status: "active", membershipRole: "admin" }],
+      isInstanceAdmin: false,
+    });
+
+    const res = await request(crossTenantApp).get(
+      "/api/secrets/66666666-6666-4666-8666-666666666666/access-events",
+    );
+
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: "Secret not found" });
+    expect(mockSecretService.listAccessEvents).not.toHaveBeenCalled();
+  });
+
+  it("returns 404 for missing GET /secrets/:id/access-events with identical response shape", async () => {
+    mockSecretService.getById.mockResolvedValue(null);
+
+    const res = await request(createApp()).get(
+      "/api/secrets/77777777-7777-4777-8777-777777777777/access-events",
+    );
+
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: "Secret not found" });
+    expect(mockSecretService.listAccessEvents).not.toHaveBeenCalled();
+  });
+
+  it("returns usage bindings for in-tenant GET /secrets/:id/usage", async () => {
+    mockSecretService.getById.mockResolvedValue({
+      id: "88888888-8888-4888-8888-888888888888",
+      companyId: "company-1",
+      name: "OpenAI",
+      key: "openai",
+      provider: "aws_secrets_manager",
+      managedMode: "paperclip_managed",
+    });
+    mockSecretService.listBindingReferences.mockResolvedValue([]);
+
+    const res = await request(createApp()).get(
+      "/api/secrets/88888888-8888-4888-8888-888888888888/usage",
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      secretId: "88888888-8888-4888-8888-888888888888",
+      bindings: [],
+    });
+    expect(mockSecretService.listBindingReferences).toHaveBeenCalledWith(
+      "company-1",
+      "88888888-8888-4888-8888-888888888888",
+    );
   });
 
   it("allows DELETE to retry cleanup for already soft-deleted secrets", async () => {

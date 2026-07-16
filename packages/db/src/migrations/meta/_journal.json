@@ -1023,6 +1023,167 @@
       "when": 1783953514660,
       "tag": "0147_cost_event_status",
       "breakpoints": true
+    },
+    {
+      "idx": 148,
+      "version": "7",
+      "when": 1783953515660,
+      "tag": "0148_tool_access_mcp_connections",
+      "breakpoints": true
+    },
+    {
+      "idx": 149,
+      "version": "7",
+      "when": 1783953516660,
+      "tag": "0149_agent_access_phase2_contracts",
+      "breakpoints": true
+    },
+    {
+      "idx": 150,
+      "version": "7",
+      "when": 1783953517660,
+      "tag": "0150_tool_invocation_catalog_snapshots",
+      "breakpoints": true
+    },
+    {
+      "idx": 151,
+      "version": "7",
+      "when": 1783953518660,
+      "tag": "0151_tool_gateway_sessions",
+      "breakpoints": true
+    },
+    {
+      "idx": 152,
+      "version": "7",
+      "when": 1783953519660,
+      "tag": "0152_tool_connection_application_no_cascade",
+      "breakpoints": true
+    },
+    {
+      "idx": 153,
+      "version": "7",
+      "when": 1783953520660,
+      "tag": "0153_tool_stdio_command_templates",
+      "breakpoints": true
+    },
+    {
+      "idx": 154,
+      "version": "7",
+      "when": 1783953521660,
+      "tag": "0154_tool_oauth_states",
+      "breakpoints": true
+    },
+    {
+      "idx": 155,
+      "version": "7",
+      "when": 1783953522660,
+      "tag": "0155_tool_oauth_state_actor_binding",
+      "breakpoints": true
+    },
+    {
+      "idx": 156,
+      "version": "7",
+      "when": 1783953523660,
+      "tag": "0156_tool_oauth_state_session_binding",
+      "breakpoints": true
+    },
+    {
+      "idx": 157,
+      "version": "7",
+      "when": 1783953524660,
+      "tag": "0157_tool_profile_new_tools_review",
+      "breakpoints": true
+    },
+    {
+      "idx": 158,
+      "version": "7",
+      "when": 1783953525660,
+      "tag": "0158_tool_invocation_connected_mcp_metadata",
+      "breakpoints": true
+    },
+    {
+      "idx": 159,
+      "version": "7",
+      "when": 1783953526660,
+      "tag": "0159_named_mcp_gateways",
+      "breakpoints": true
+    },
+    {
+      "idx": 160,
+      "version": "7",
+      "when": 1783953527660,
+      "tag": "0160_mcp_gateway_contract_expansion",
+      "breakpoints": true
+    },
+    {
+      "idx": 161,
+      "version": "7",
+      "when": 1783953528660,
+      "tag": "0161_environment_custom_image_company_scope_repair",
+      "breakpoints": true
+    },
+    {
+      "idx": 162,
+      "version": "7",
+      "when": 1783953529660,
+      "tag": "0162_tool_runtime_metric_counters",
+      "breakpoints": true
+    },
+    {
+      "idx": 163,
+      "version": "7",
+      "when": 1783953530660,
+      "tag": "0163_secret_binding_projection_class",
+      "breakpoints": true
+    },
+    {
+      "idx": 164,
+      "version": "7",
+      "when": 1783953531660,
+      "tag": "0164_plugin_config_company_scope",
+      "breakpoints": true
+    },
+    {
+      "idx": 165,
+      "version": "7",
+      "when": 1783953532660,
+      "tag": "0165_connection_token_issuances",
+      "breakpoints": true
+    },
+    {
+      "idx": 166,
+      "version": "7",
+      "when": 1783953533660,
+      "tag": "0166_smoke_lab_results",
+      "breakpoints": true
+    },
+    {
+      "idx": 167,
+      "version": "7",
+      "when": 1783953534660,
+      "tag": "0167_environment_custom_image_instance_scope_cleanup",
+      "breakpoints": true
+    },
+    {
+      "idx": 168,
+      "version": "7",
+      "when": 1783953535660,
+      "tag": "0168_tool_connection_installs",
+      "breakpoints": true
+    },
+    {
+      "idx": 169,
+      "version": "7",
+      "when": 1783953536660,
+      "tag": "0169_tool_gateway_protocol_rate_limit_counters",
+      "breakpoints": true
+    },
+    {
+      "idx": 170,
+      "version": "7",
+      "when": 1784037600000,
+      "tag": "0170_company_skill_policies",
+      "breakpoints": true
     }
   ]
 }
