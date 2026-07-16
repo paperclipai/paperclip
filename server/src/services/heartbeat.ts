@@ -8744,7 +8744,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   async function reconcileHotRestartAdoption(now = new Date()) {
-    const intent = await readHotRestartIntent();
+    let intent: Awaited<ReturnType<typeof readHotRestartIntent>>;
+    try {
+      intent = await readHotRestartIntent();
+    } catch (err) {
+      logger.warn({ err }, "failed to read hot-restart intent on startup; skipping adoption");
+      return {
+        mode: "read_error" as const,
+        adoptedRunIds: [] as string[],
+        finalizedWhileDownRunIds: [] as string[],
+        lostRunIds: [] as string[],
+        skippedRunIds: [] as string[],
+      };
+    }
     if (!intent) {
       return {
         mode: "not_requested" as const,
@@ -8755,6 +8767,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       };
     }
 
+    if (!intent.shutdownSnapshot) {
+      logger.warn(
+        { previousServerPid: intent.previousServerPid },
+        "hot-restart intent present but shutdown snapshot is missing; no runs can be adopted",
+      );
+    }
     const candidates = intent.shutdownSnapshot?.activeRuns ?? [];
     const currentRows = candidates.length > 0
       ? await db
