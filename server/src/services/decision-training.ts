@@ -174,6 +174,7 @@ export async function captureDecisionSnapshot(
       eq(heartbeatRuns.companyId, input.companyId),
       isNotNull(heartbeatRuns.startedAt),
       lte(heartbeatRuns.startedAt, decision.cutoffAt),
+      lte(heartbeatRuns.updatedAt, decision.cutoffAt),
       or(
         sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${input.issueId}`,
         sql`${heartbeatRuns.contextSnapshot} ->> 'taskId' = ${input.issueId}`,
