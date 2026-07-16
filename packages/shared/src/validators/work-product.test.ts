@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { attachmentArtifactWorkProductMetadataSchema } from "./work-product.js";
+import {
+  attachmentArtifactWorkProductMetadataSchema,
+  createIssueWorkProductSchema,
+} from "./work-product.js";
 
 describe("attachmentArtifactWorkProductMetadataSchema", () => {
   it("accepts the attachment-backed artifact metadata contract", () => {
@@ -37,5 +40,25 @@ describe("attachmentArtifactWorkProductMetadataSchema", () => {
       "openPath",
       "downloadPath",
     ]);
+const validInput = {
+  type: "artifact",
+  provider: "paperclip",
+  title: "SER-377 report",
+};
+
+describe("work product validators", () => {
+  it.each(["", "   "])("rejects blank externalId %j", (externalId) => {
+    expect(
+      createIssueWorkProductSchema.safeParse({ ...validInput, externalId }).success,
+    ).toBe(false);
+  });
+
+  it("trims a non-empty externalId", () => {
+    const parsed = createIssueWorkProductSchema.parse({
+      ...validInput,
+      externalId: "  ser377-sha-95d0653d  ",
+    });
+
+    expect(parsed.externalId).toBe("ser377-sha-95d0653d");
   });
 });

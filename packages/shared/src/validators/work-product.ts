@@ -83,7 +83,7 @@ export const createIssueWorkProductSchema = z.object({
   runtimeServiceId: z.string().uuid().optional().nullable(),
   type: issueWorkProductTypeSchema,
   provider: z.string().min(1),
-  externalId: z.string().optional().nullable(),
+  externalId: z.string().trim().min(1).optional().nullable(),
   title: z.string().min(1),
   url: z.string().url().optional().nullable(),
   status: issueWorkProductStatusSchema.default("active"),
