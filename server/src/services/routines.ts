@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lte, ne, not, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, lte, ne, not, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -56,6 +56,7 @@ import {
 } from "@paperclipai/shared";
 import { trackRoutineRun } from "@paperclipai/shared/telemetry";
 import { conflict, forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
+import { computeRoutineHealth, type RoutineHealthReport } from "./routine-health.js";
 import { logger } from "../middleware/logger.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
@@ -2912,6 +2913,74 @@ export function routineService(
       }));
     },
 
+    getHealth: async (
+      routineId: string,
+      options?: { days?: number; now?: Date },
+    ): Promise<RoutineHealthReport | null> => {
+      const routine = await getRoutineById(routineId);
+      if (!routine) return null;
+      const now = options?.now ?? new Date();
+      const requestedDays = Math.max(1, Math.min(options?.days ?? 7, 31));
+      const triggers = await db
+        .select({
+          id: routineTriggers.id,
+          enabled: routineTriggers.enabled,
+          cronExpression: routineTriggers.cronExpression,
+          timezone: routineTriggers.timezone,
+        })
+        .from(routineTriggers)
+        .where(and(eq(routineTriggers.routineId, routineId), eq(routineTriggers.kind, "schedule")));
+      // Fetch slightly past the window start so a run that fired just before the first
+      // expected tick's match window is still available for matching.
+      const fetchStart = new Date(now.getTime() - (requestedDays * 24 * 60 * 60 * 1000) - 60 * 60 * 1000);
+      const runs = await db
+        .select({
+          id: routineRuns.id,
+          triggerId: routineRuns.triggerId,
+          source: routineRuns.source,
+          status: routineRuns.status,
+          triggeredAt: routineRuns.triggeredAt,
+          failureReason: routineRuns.failureReason,
+          triggerPayload: routineRuns.triggerPayload,
+          coalescedIntoRunId: routineRuns.coalescedIntoRunId,
+          issueId: issues.id,
+          issueIdentifier: issues.identifier,
+          issueTitle: issues.title,
+          issueStatus: issues.status,
+          issueCompletedAt: issues.completedAt,
+        })
+        .from(routineRuns)
+        .leftJoin(issues, eq(routineRuns.linkedIssueId, issues.id))
+        .where(and(eq(routineRuns.routineId, routineId), gte(routineRuns.triggeredAt, fetchStart)))
+        .orderBy(asc(routineRuns.triggeredAt));
+
+      return computeRoutineHealth({
+        routineId,
+        now,
+        days: requestedDays,
+        triggers,
+        runs: runs.map((row) => ({
+          id: row.id,
+          triggerId: row.triggerId,
+          source: row.source,
+          status: row.status,
+          triggeredAt: row.triggeredAt,
+          failureReason: row.failureReason,
+          triggerPayload: row.triggerPayload as Record<string, unknown> | null,
+          coalescedIntoRunId: row.coalescedIntoRunId,
+          linkedIssue: row.issueId
+            ? {
+              id: row.issueId,
+              identifier: row.issueIdentifier,
+              title: row.issueTitle,
+              status: row.issueStatus ?? "todo",
+              completedAt: row.issueCompletedAt,
+            }
+            : null,
+        })),
+      });
+    },
+
     tickScheduledTriggers: async (now: Date = new Date()) => {
       const worktreeActivation = isTruthyRuntimeEnvValue(runtimeEnv.PAPERCLIP_IN_WORKTREE)
         ? await resolveWorktreeRunExecutionActivationState({
@@ -3043,10 +3112,38 @@ export function routineService(
         .where(eq(issues.id, issueId))
         .then((rows) => rows[0] ?? null);
       if (!issue || issue.originKind !== "routine_execution" || !issue.originRunId) return null;
+      const run = await db
+        .select({
+          id: routineRuns.id,
+          status: routineRuns.status,
+          failureReason: routineRuns.failureReason,
+          triggerPayload: routineRuns.triggerPayload,
+        })
+        .from(routineRuns)
+        .where(eq(routineRuns.id, issue.originRunId))
+        .then((rows) => rows[0] ?? null);
+      if (!run) return null;
       if (issue.status === "done") {
+        // A completed run must report exactly one terminal result. If the issue was
+        // temporarily blocked/cancelled along the way, move that earlier failure text
+        // into transientFailure context instead of leaving the run looking both
+        // completed and failed.
+        const transientFailureReason = run.status === "failed" ? run.failureReason : null;
         return finalizeRun(issue.originRunId, {
           status: "completed",
+          failureReason: null,
           completedAt: new Date(),
+          ...(transientFailureReason
+            ? {
+              triggerPayload: {
+                ...(run.triggerPayload ?? {}),
+                transientFailure: {
+                  reason: transientFailureReason,
+                  clearedAt: new Date().toISOString(),
+                },
+              },
+            }
+            : {}),
         });
       }
       if (issue.status === "blocked" || issue.status === "cancelled") {
@@ -3054,6 +3151,16 @@ export function routineService(
           status: "failed",
           failureReason: `Execution issue moved to ${issue.status}`,
           completedAt: new Date(),
+        });
+      }
+      // Issue resumed active work (todo/in_progress/in_review) after a transient
+      // blocked/cancelled sync: restore the live run state so operators don't see a
+      // failed run for an issue that is progressing again.
+      if (run.status === "failed" && run.failureReason?.startsWith("Execution issue moved to")) {
+        return finalizeRun(issue.originRunId, {
+          status: "issue_created",
+          failureReason: null,
+          completedAt: null,
         });
       }
       return null;

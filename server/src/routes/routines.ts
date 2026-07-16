@@ -453,6 +453,18 @@ export function routineRoutes(
     res.json(result);
   });
 
+  router.get("/routines/:id/health", async (req, res) => {
+    const routine = await getAccessibleResource(req, res, svc.get(req.params.id as string), "Routine not found");
+    if (!routine) return;
+    const days = Number(req.query.days ?? 7);
+    const report = await svc.getHealth(routine.id, { days: Number.isFinite(days) ? days : 7 });
+    if (!report) {
+      res.status(404).json({ error: "Routine not found" });
+      return;
+    }
+    res.json(report);
+  });
+
   router.post("/routines/:id/triggers", validate(createRoutineTriggerSchema), async (req, res) => {
     const routine = await assertCanManageExistingRoutine(req, req.params.id as string);
     if (!routine) {
