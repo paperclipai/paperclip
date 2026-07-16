@@ -13,13 +13,18 @@ function asRecord(value: unknown): UnknownRecord | null {
     : null;
 }
 
-function copyAllowed(source: UnknownRecord, keys: readonly string[]): UnknownRecord {
+function copyStringFields(source: UnknownRecord, keys: readonly string[]): UnknownRecord {
   const result: UnknownRecord = {};
   for (const key of keys) {
-    const value = source[key];
-    if (value !== undefined) result[key] = value;
+    if (typeof source[key] === "string") result[key] = source[key];
   }
   return result;
+}
+
+function copyNumberFields(source: UnknownRecord, result: UnknownRecord, keys: readonly string[]): void {
+  for (const key of keys) {
+    if (typeof source[key] === "number" && Number.isFinite(source[key])) result[key] = source[key];
+  }
 }
 
 function projectStringArray(value: unknown): string[] | undefined {
@@ -37,7 +42,7 @@ function projectDesiredSkills(value: unknown): unknown[] | undefined {
     }
     const source = asRecord(entry);
     if (!source) continue;
-    const projected = copyAllowed(source, ["key", "slug", "name", "version"]);
+    const projected = copyStringFields(source, ["key", "slug", "name", "version", "versionId"]);
     if (Object.keys(projected).length > 0) result.push(projected);
   }
   return result;
@@ -46,7 +51,7 @@ function projectDesiredSkills(value: unknown): unknown[] | undefined {
 function projectHireConfigurationSnapshot(value: unknown): UnknownRecord | undefined {
   const source = asRecord(value);
   if (!source) return undefined;
-  const result = copyAllowed(source, [
+  const result = copyStringFields(source, [
     "name",
     "role",
     "title",
@@ -57,6 +62,7 @@ function projectHireConfigurationSnapshot(value: unknown): UnknownRecord | undef
     "defaultEnvironmentId",
     "budgetMonthlyCents",
   ]);
+  copyNumberFields(source, result, ["budgetMonthlyCents"]);
   if (source.adapterConfig !== undefined) result.adapterConfig = projectAgentAdapterConfig(source.adapterConfig);
   if (source.runtimeConfig !== undefined) result.runtimeConfig = projectAgentRuntimeConfig(source.runtimeConfig);
   if (source.permissions !== undefined) result.permissions = projectAgentPermissions(source.permissions);
@@ -66,7 +72,7 @@ function projectHireConfigurationSnapshot(value: unknown): UnknownRecord | undef
 }
 
 function projectHirePayload(source: UnknownRecord): UnknownRecord {
-  const result = copyAllowed(source, [
+  const result = copyStringFields(source, [
     "name",
     "role",
     "title",
@@ -83,6 +89,7 @@ function projectHirePayload(source: UnknownRecord): UnknownRecord {
     "sourcePluginKey",
     "managedResourceKey",
   ]);
+  copyNumberFields(source, result, ["budgetMonthlyCents"]);
   if (source.adapterConfig !== undefined) result.adapterConfig = projectAgentAdapterConfig(source.adapterConfig);
   if (source.runtimeConfig !== undefined) result.runtimeConfig = projectAgentRuntimeConfig(source.runtimeConfig);
   if (source.permissions !== undefined) result.permissions = projectAgentPermissions(source.permissions);
@@ -106,20 +113,23 @@ const CEO_STRATEGY_FIELDS = [
   "nextActionOnApproval",
 ] as const;
 
-const BUDGET_FIELDS = [
+const BUDGET_STRING_FIELDS = [
   "scopeType",
   "scopeId",
   "scopeName",
   "metric",
   "windowKind",
   "thresholdType",
-  "budgetAmount",
-  "observedAmount",
-  "warnPercent",
   "windowStart",
   "windowEnd",
   "policyId",
   "guidance",
+] as const;
+
+const BUDGET_NUMBER_FIELDS = [
+  "budgetAmount",
+  "observedAmount",
+  "warnPercent",
 ] as const;
 
 const BOARD_APPROVAL_FIELDS = [
@@ -146,11 +156,14 @@ function projectApprovalPayload(type: unknown, payload: unknown): UnknownRecord 
     case "hire_agent":
       return projectHirePayload(source);
     case "approve_ceo_strategy":
-      return copyAllowed(source, CEO_STRATEGY_FIELDS);
-    case "budget_override_required":
-      return copyAllowed(source, BUDGET_FIELDS);
+      return copyStringFields(source, CEO_STRATEGY_FIELDS);
+    case "budget_override_required": {
+      const result = copyStringFields(source, BUDGET_STRING_FIELDS);
+      copyNumberFields(source, result, BUDGET_NUMBER_FIELDS);
+      return result;
+    }
     case "request_board_approval": {
-      const result = copyAllowed(source, BOARD_APPROVAL_FIELDS);
+      const result = copyStringFields(source, BOARD_APPROVAL_FIELDS);
       const risks = projectStringArray(source.risks);
       if (risks) result.risks = risks;
       return result;

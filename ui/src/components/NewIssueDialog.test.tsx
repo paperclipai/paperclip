@@ -497,12 +497,8 @@ describe("NewIssueDialog", () => {
         name: "CodexCoder",
         status: "active",
         adapterType: "codex_local",
-        adapterConfig: {
-          env: {
-            AGENT_TOKEN: { type: "user_secret_ref", key: "agent_token", required: true },
-            OPTIONAL_TOKEN: { type: "user_secret_ref", key: "optional_token", required: false },
-          },
-        },
+        adapterConfig: {},
+        requiredUserSecretKeys: ["agent_token"],
         runtimeConfig: {},
         permissions: {},
       },

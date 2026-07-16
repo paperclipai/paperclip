@@ -19,7 +19,12 @@ function materializedAgent() {
     adapterConfig: {
       provider: "openai-codex",
       promptTemplate: "Preserve this human-authored prompt exactly.",
-      env: { PAPERCLIP_API_KEY: SECRET, NESTED: { value: SECRET } },
+      env: {
+        PAPERCLIP_API_KEY: SECRET,
+        NESTED: { value: SECRET },
+        USER_TOKEN: { type: "user_secret_ref", key: "agent_token", required: true, secretRef: SECRET },
+        OPTIONAL_TOKEN: { type: "user_secret_ref", key: "optional_token", required: false },
+      },
       apiKey: SECRET,
       headers: { authorization: `Bearer ${SECRET}` },
       unknownPluginConfig: { credential: SECRET },
@@ -68,6 +73,7 @@ describe("projectAgentResponse", () => {
       id: "11111111-1111-4111-8111-111111111111",
       name: "Human-reviewed agent",
       capabilities: "Describe authentication-token handling without changing human-authored text.",
+      requiredUserSecretKeys: ["agent_token"],
       adapterConfig: {
         provider: "openai-codex",
         promptTemplate: "Preserve this human-authored prompt exactly.",

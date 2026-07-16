@@ -1130,12 +1130,12 @@ export function NewIssueDialog() {
   const neededUserSecretKeys = useMemo(
     () => {
       if (!shouldWarnAboutRunUserSecrets(status, selectedAssigneeAgentId)) return [];
-      return uniqueRequiredUserSecretKeys([
-        isRecord(currentAssignee?.adapterConfig) ? currentAssignee.adapterConfig.env as Record<string, unknown> : null,
-        currentProject?.env ?? null,
-      ]);
+      return [...new Set([
+        ...(currentAssignee?.requiredUserSecretKeys ?? []),
+        ...uniqueRequiredUserSecretKeys([currentProject?.env ?? null]),
+      ])];
     },
-    [currentAssignee?.adapterConfig, currentProject?.env, selectedAssigneeAgentId, status],
+    [currentAssignee?.requiredUserSecretKeys, currentProject?.env, selectedAssigneeAgentId, status],
   );
   const currentProjectExecutionWorkspacePolicy =
     experimentalSettings?.enableIsolatedWorkspaces === true

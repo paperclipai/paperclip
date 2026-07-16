@@ -52,6 +52,18 @@ const SAFE_ADAPTER_SCALAR_FIELDS = [
   "instructionsFilePath",
   "promptTemplate",
   "bootstrapPromptTemplate",
+  "repoUrl",
+  "repoStartingRef",
+  "repoPullRequestUrl",
+  "runtimeEnvType",
+  "runtimeEnvName",
+  "workOnCurrentBranch",
+  "autoCreatePR",
+  "skipReviewerRequest",
+  "apiBaseUrl",
+  "dangerouslyAllowInsecureRemoteHttp",
+  "sessionKey",
+  "sandbox",
 ] as const;
 
 const SAFE_ADAPTER_STRING_ARRAY_FIELDS = [
@@ -99,15 +111,33 @@ function projectSelectedFields(source: UnknownRecord | null, keys: readonly stri
 function projectWorkspaceStrategy(value: unknown): UnknownRecord | undefined {
   const source = asRecord(value);
   if (!source) return undefined;
-  const result = projectSelectedFields(source, ["type", "baseRef"]);
+  const result = projectSelectedFields(source, ["type", "baseRef", "branchTemplate", "worktreeParentDir"]);
   return Object.keys(result).length > 0 ? result : undefined;
+}
+
+function projectDesiredSkillEntries(value: unknown): Array<string | { key: string; versionId: string | null }> | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const result: Array<string | { key: string; versionId: string | null }> = [];
+  for (const entry of value) {
+    if (typeof entry === "string") {
+      result.push(entry);
+      continue;
+    }
+    const source = asRecord(entry);
+    if (!source || typeof source.key !== "string") continue;
+    result.push({
+      key: source.key,
+      versionId: typeof source.versionId === "string" ? source.versionId : null,
+    });
+  }
+  return result;
 }
 
 function projectPaperclipSkillSync(value: unknown): UnknownRecord | undefined {
   const source = asRecord(value);
   if (!source) return undefined;
   const result: UnknownRecord = {};
-  const desiredSkills = projectStringArray(source.desiredSkills);
+  const desiredSkills = projectDesiredSkillEntries(source.desiredSkills);
   if (desiredSkills) result.desiredSkills = desiredSkills;
   return Object.keys(result).length > 0 ? result : undefined;
 }
@@ -284,6 +314,23 @@ function projectOrgChainHealth(input: unknown): AgentOrgChainHealth | undefined 
   };
 }
 
+function projectRequiredUserSecretKeys(adapterConfig: unknown): string[] | undefined {
+  const env = asRecord(asRecord(adapterConfig)?.env);
+  if (!env) return undefined;
+  const keys = new Set<string>();
+  for (const binding of Object.values(env)) {
+    const source = asRecord(binding);
+    if (
+      source?.type === "user_secret_ref"
+      && typeof source.key === "string"
+      && source.key.trim().length > 0
+      && source.required !== false
+      && source.allowMissingOverride !== true
+    ) keys.add(source.key.trim());
+  }
+  return keys.size > 0 ? [...keys] : undefined;
+}
+
 /** Positive, response-safe projection for persisted/materialized agent rows. */
 export function projectAgentResponse(agent: UnknownRecord): AgentResponse {
   const projected: AgentResponse = {
@@ -312,6 +359,8 @@ export function projectAgentResponse(agent: UnknownRecord): AgentResponse {
     createdAt: agent.createdAt as Date,
     updatedAt: agent.updatedAt as Date,
   };
+  const requiredUserSecretKeys = projectRequiredUserSecretKeys(agent.adapterConfig);
+  if (requiredUserSecretKeys) projected.requiredUserSecretKeys = requiredUserSecretKeys;
   const orgChainHealth = projectOrgChainHealth(agent.orgChainHealth);
   if (orgChainHealth) projected.orgChainHealth = orgChainHealth;
   return projected;

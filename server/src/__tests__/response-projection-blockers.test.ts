@@ -24,7 +24,29 @@ describe("response projection review blockers", () => {
       nonInteractivePermissions: "deny",
       dangerouslyBypassApprovalsAndSandbox: false,
       instructionsFilePath: "/workspace/AGENTS.md",
-      workspaceStrategy: { type: "git_worktree", baseRef: "main", secret: SECRET },
+      repoUrl: "https://github.com/paperclipai/paperclip.git",
+      repoStartingRef: "main",
+      runtimeEnvType: "cloud",
+      workOnCurrentBranch: true,
+      autoCreatePR: true,
+      skipReviewerRequest: false,
+      apiBaseUrl: "https://gateway.example.test",
+      dangerouslyAllowInsecureRemoteHttp: false,
+      sessionKey: "paperclip-fixed",
+      sandbox: true,
+      workspaceStrategy: {
+        type: "git_worktree",
+        baseRef: "main",
+        branchTemplate: "agent/{{issue.key}}",
+        worktreeParentDir: "/worktrees",
+        secret: SECRET,
+      },
+      paperclipSkillSync: {
+        desiredSkills: ["review", { key: "qa", versionId: "version-1", secret: SECRET }],
+        secret: SECRET,
+      },
+      payloadTemplate: { agentId: "remote-agent", unknownCredential: SECRET },
+      workspaceRuntime: { services: [{ name: "preview", token: SECRET }] },
       env: { TOKEN: SECRET },
       headers: { authorization: SECRET },
       apiKey: SECRET,
@@ -45,7 +67,25 @@ describe("response projection review blockers", () => {
       nonInteractivePermissions: "deny",
       dangerouslyBypassApprovalsAndSandbox: false,
       instructionsFilePath: "/workspace/AGENTS.md",
-      workspaceStrategy: { type: "git_worktree", baseRef: "main" },
+      repoUrl: "https://github.com/paperclipai/paperclip.git",
+      repoStartingRef: "main",
+      runtimeEnvType: "cloud",
+      workOnCurrentBranch: true,
+      autoCreatePR: true,
+      skipReviewerRequest: false,
+      apiBaseUrl: "https://gateway.example.test",
+      dangerouslyAllowInsecureRemoteHttp: false,
+      sessionKey: "paperclip-fixed",
+      sandbox: true,
+      workspaceStrategy: {
+        type: "git_worktree",
+        baseRef: "main",
+        branchTemplate: "agent/{{issue.key}}",
+        worktreeParentDir: "/worktrees",
+      },
+      paperclipSkillSync: {
+        desiredSkills: ["review", { key: "qa", versionId: "version-1" }],
+      },
     });
   });
 
@@ -124,6 +164,24 @@ describe("response projection review blockers", () => {
     expect(JSON.stringify(result)).not.toContain(SECRET);
   });
 
+  it("rejects type-confused values even when the approval field name is public", () => {
+    const result = projectApprovalResponse({
+      id: "a",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "pending",
+      payload: {
+        title: { nestedSecret: SECRET },
+        summary: "Safe summary",
+        risk: 42,
+        risks: ["visible risk", { nestedSecret: SECRET }],
+        argumentsHash: "sha256:safe",
+      },
+    });
+    expect(result.payload).toEqual({ summary: "Safe summary", argumentsHash: "sha256:safe" });
+    expect(JSON.stringify(result)).not.toContain(SECRET);
+  });
+
   it("deeply projects hire snapshots and excludes unknown fields", () => {
     const result = projectApprovalResponse({
       id: "a",
@@ -139,7 +197,7 @@ describe("response projection review blockers", () => {
           adapterType: "codex_local",
           adapterConfig: { model: "gpt-5", env: { TOKEN: SECRET } },
           runtimeConfig: { heartbeat: { intervalSec: 60, token: SECRET } },
-          desiredSkills: ["review"],
+          desiredSkills: ["review", { key: "qa", versionId: "version-2", secret: SECRET }],
           unknown: SECRET,
         },
         unknownPayload: SECRET,
@@ -155,7 +213,7 @@ describe("response projection review blockers", () => {
         adapterType: "codex_local",
         adapterConfig: { model: "gpt-5" },
         runtimeConfig: { heartbeat: { intervalSec: 60 } },
-        desiredSkills: ["review"],
+        desiredSkills: ["review", { key: "qa", versionId: "version-2" }],
       },
     });
     expect(JSON.stringify(result)).not.toContain(SECRET);

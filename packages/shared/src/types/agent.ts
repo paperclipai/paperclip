@@ -24,12 +24,66 @@ export interface AgentPermissions extends Record<string, unknown> {
 }
 
 /** Explicit public response contract; persistence-only permission fields are omitted. */
-export interface AgentResponsePermissions extends AgentPermissions {
+export type AgentResponsePermissions = {
   canCreateAgents: boolean;
   canCreateSkills?: boolean;
   trustPreset?: TrustPreset;
   authorizationPolicy?: TrustAuthorizationPolicy;
-}
+};
+
+export type AgentResponseConfigScalar = string | number | boolean | null;
+
+export type AgentResponseAdapterScalarKey =
+  | "provider" | "model" | "modelReasoningEffort" | "reasoningEffort"
+  | "thinkingEffort" | "thinking" | "variant" | "effort" | "engine" | "mode"
+  | "permissionMode" | "nonInteractivePermissions" | "warmHandleIdleMs" | "timeoutSec"
+  | "graceSec" | "maxTurnsPerRun" | "persistSession" | "worktreeMode" | "checkpoints"
+  | "quiet" | "verbose" | "fastMode" | "search" | "chrome"
+  | "dangerouslyBypassApprovalsAndSandbox" | "dangerouslySkipPermissions"
+  | "sessionKeyStrategy" | "eventReconnectMs" | "waitTimeoutMs" | "disableDeviceAuth"
+  | "autoPairOnFirstConnect" | "role" | "paperclipApiUrl" | "url" | "agentId"
+  | "command" | "agentCommand" | "hermesCommand" | "stateDir" | "cwd" | "instructions"
+  | "instructionsFilePath" | "promptTemplate" | "bootstrapPromptTemplate"
+  | "repoUrl" | "repoStartingRef" | "repoPullRequestUrl" | "runtimeEnvType"
+  | "runtimeEnvName" | "workOnCurrentBranch" | "autoCreatePR" | "skipReviewerRequest"
+  | "apiBaseUrl" | "dangerouslyAllowInsecureRemoteHttp" | "sessionKey" | "sandbox";
+
+export type AgentResponseDesiredSkill = string | { key: string; versionId: string | null };
+
+export type AgentResponseAdapterConfig = Partial<Record<AgentResponseAdapterScalarKey, AgentResponseConfigScalar>> & {
+  toolsets?: string | string[];
+  enabledToolsets?: string[];
+  extraArgs?: string[];
+  args?: string[];
+  scopes?: string[];
+  workspaceStrategy?: {
+    type?: AgentResponseConfigScalar;
+    baseRef?: AgentResponseConfigScalar;
+    branchTemplate?: AgentResponseConfigScalar;
+    worktreeParentDir?: AgentResponseConfigScalar;
+  };
+  paperclipSkillSync?: { desiredSkills?: AgentResponseDesiredSkill[] };
+};
+
+export type AgentResponseRuntimeConfig = {
+  heartbeat?: {
+    enabled?: AgentResponseConfigScalar;
+    intervalSec?: AgentResponseConfigScalar;
+    wakeOnDemand?: AgentResponseConfigScalar;
+    cooldownSec?: AgentResponseConfigScalar;
+    maxConcurrentRuns?: AgentResponseConfigScalar;
+    maxTurnContinuation?: {
+      enabled?: AgentResponseConfigScalar;
+      maxAttempts?: AgentResponseConfigScalar;
+      delayMs?: AgentResponseConfigScalar;
+    };
+  };
+  modelProfiles?: Partial<Record<ModelProfileKey, {
+    enabled?: boolean;
+    label?: string;
+    adapterConfig: AgentResponseAdapterConfig;
+  }>>;
+};
 
 export interface AgentModelProfileConfig {
   enabled?: boolean;
@@ -116,7 +170,11 @@ export interface Agent {
 }
 
 /** Public agent DTO returned by API response projections. */
-export interface AgentResponse extends Agent {
+export interface AgentResponse extends Omit<Agent, "adapterConfig" | "runtimeConfig" | "metadata" | "permissions"> {
+  adapterConfig: AgentResponseAdapterConfig;
+  runtimeConfig: AgentResponseRuntimeConfig;
+  /** Safe summary used by issue-run warnings; no binding IDs, refs, or values. */
+  requiredUserSecretKeys?: string[];
   /** Persistence metadata is deliberately withheld from API responses. */
   metadata: null;
   permissions: AgentResponsePermissions;
