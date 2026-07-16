@@ -314,12 +314,16 @@ async function resolveCreatedFromIssueIdForCreate(
   }
 
   if (!input.actorRunId) return null;
-  return reader
+  const runDerivedSourceIssueId = await reader
     .select({ id: issues.id })
     .from(issues)
     .where(and(eq(issues.companyId, companyId), eq(issues.checkoutRunId, input.actorRunId)))
     .limit(1)
     .then((rows) => rows[0]?.id ?? null);
+  if (runDerivedSourceIssueId === input.issueId) {
+    throw unprocessable("Issue cannot be its own originating issue");
+  }
+  return runDerivedSourceIssueId;
 }
 
 function buildReusedExecutionWorkspaceConfigPatchFromIssueSettings(
