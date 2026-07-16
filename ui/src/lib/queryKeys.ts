@@ -304,6 +304,9 @@ export const queryKeys = {
   auth: {
     session: ["auth", "session"] as const,
   },
+  inboxAgentPolicy: {
+    mine: (companyId: string) => ["inbox-agent-policy", companyId, "me"] as const,
+  },
   sidebarPreferences: {
     companyOrder: (userId: string) => ["sidebar-preferences", "company-order", userId] as const,
     projectOrder: (companyId: string, userId: string) =>
