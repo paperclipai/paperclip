@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="375" height="320" viewBox="0 0 375 320"
+     font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5">
+  <rect x="0" y="0" width="375" height="320" />
+
+  <!-- ===== header ===== -->
+  <g transform="translate(24, 32)">
+    <text x="0" y="10" font-size="12" letter-spacing="2" stroke="none" fill="#666">EXECUTION WORKSPACE</text>
+    <text x="0" y="38" font-size="20" font-weight="700" stroke="none" fill="#000">PAP-14025-skills-need-…</text>
+  </g>
+
+  <!-- ===== control card: two fixed rows ===== -->
+  <g transform="translate(24, 96)">
+    <rect width="328" height="88" rx="6" />
+    <!-- row 1: status + actions -->
+    <circle cx="20" cy="24" r="5" fill="#000" />
+    <text x="36" y="29" font-size="14" font-weight="600" stroke="none" fill="#000">Running</text>
+    <g transform="translate(248, 8)">
+      <rect width="32" height="32" rx="4" />
+      <rect x="10" y="10" width="12" height="12" fill="#000" stroke="none" />
+    </g>
+    <g transform="translate(288, 8)">
+      <rect width="32" height="32" rx="4" />
+      <path d="M 11 16 a 6 6 0 1 1 2 4.5" fill="none" />
+      <polygon points="8,17 14,17 11,11" fill="#000" stroke="none" />
+    </g>
+    <line x1="8" y1="48" x2="320" y2="48" stroke="#666" />
+    <!-- row 2: url + copy + open -->
+    <text x="16" y="72" font-size="12" stroke="none" fill="#000">paperclip-dev:45439</text>
+    <g transform="translate(260, 58)">
+      <rect x="3" y="3" width="9" height="11" rx="1" />
+      <rect x="0" y="0" width="9" height="11" rx="1" />
+    </g>
+    <g transform="translate(296, 60)">
+      <rect width="12" height="12" rx="2" />
+      <line x1="6" y1="6" x2="13" y2="-1" />
+      <polyline points="8,-1 13,-1 13,4" fill="none" />
+    </g>
+  </g>
+
+  <!-- ===== tab bar ===== -->
+  <g transform="translate(24, 216)">
+    <line x1="0" y1="32" x2="328" y2="32" />
+    <text x="0" y="20" font-size="14" font-weight="600" stroke="none" fill="#000">Tasks</text>
+    <line x1="0" y1="32" x2="44" y2="32" stroke-width="3" />
+    <text x="72" y="20" font-size="14" stroke="none" fill="#666">Services</text>
+    <text x="160" y="20" font-size="14" stroke="none" fill="#666">Config</text>
+    <text x="232" y="20" font-size="14" stroke="none" fill="#666">Logs</text>
+  </g>
+
+  <!-- ===== annotation layer ===== -->
+  <g data-region="annotations">
+    <rect x="16" y="88" width="344" height="104" fill="none" stroke="#d33" stroke-dasharray="6 3" />
+    <g transform="translate(16, 80)">
+      <circle cx="0" cy="0" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2" />
+      <text x="0" y="4" font-size="12" font-weight="700" text-anchor="middle" stroke="none" fill="#d33">1</text>
+    </g>
+  </g>
+
+  <g transform="translate(24, 280)">
+    <text x="0" y="12" font-size="12" stroke="none" fill="#666">1 — card stacks status/actions and URL as two</text>
+    <text x="0" y="28" font-size="12" stroke="none" fill="#666">fixed rows; no wrapping, no reflow across states</text>
+  </g>
+</svg>

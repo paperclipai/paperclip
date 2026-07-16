@@ -1,0 +1,132 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="480" viewBox="0 0 1280 480"
+     font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5">
+  <rect x="0" y="0" width="1280" height="480" />
+
+  <!-- ===== page header ===== -->
+  <g transform="translate(48, 40)">
+    <text x="0" y="12" font-size="12" letter-spacing="2" stroke="none" fill="#666">EXECUTION WORKSPACE</text>
+    <text x="0" y="48" font-size="28" font-weight="700" stroke="none" fill="#000">PAP-14233-execution-work…</text>
+  </g>
+
+  <!-- ===== aggregate control bar (3 services) ===== -->
+  <g transform="translate(688, 48)">
+    <rect width="544" height="40" rx="6" />
+    <!-- aggregate status segment doubles as the popover trigger -->
+    <circle cx="20" cy="20" r="5" fill="#000" />
+    <text x="36" y="25" font-size="14" font-weight="600" stroke="none" fill="#000">2/3 running</text>
+    <polyline points="122,17 128,23 134,17" fill="none" />
+    <line x1="148" y1="8" x2="148" y2="32" stroke="#666" />
+    <!-- primary service url -->
+    <text x="164" y="25" font-size="14" stroke="none" fill="#000">web · paperclip-dev:45439</text>
+    <g transform="translate(384, 14)">
+      <rect width="12" height="12" rx="2" />
+      <line x1="6" y1="6" x2="13" y2="-1" />
+      <polyline points="8,-1 13,-1 13,4" fill="none" />
+    </g>
+    <line x1="424" y1="8" x2="424" y2="32" stroke="#666" />
+    <!-- aggregate actions (act on all services) -->
+    <g transform="translate(436, 4)">
+      <rect width="32" height="32" rx="4" />
+      <rect x="10" y="10" width="12" height="12" fill="#000" stroke="none" />
+    </g>
+    <g transform="translate(476, 4)">
+      <rect width="32" height="32" rx="4" />
+      <path d="M 11 16 a 6 6 0 1 1 2 4.5" fill="none" />
+      <polygon points="8,17 14,17 11,11" fill="#000" stroke="none" />
+    </g>
+  </g>
+
+  <!-- ===== popover: per-service rows ===== -->
+  <g transform="translate(720, 104)">
+    <rect width="512" height="264" rx="8" />
+    <text x="16" y="30" font-size="12" letter-spacing="1" stroke="none" fill="#666">SERVICES · 3</text>
+    <line x1="0" y1="44" x2="512" y2="44" stroke="#666" />
+
+    <!-- row: web (running) -->
+    <g transform="translate(0, 44)">
+      <circle cx="20" cy="28" r="5" fill="#000" />
+      <text x="36" y="24" font-size="14" font-weight="600" stroke="none" fill="#000">web</text>
+      <text x="36" y="42" font-size="12" stroke="none" fill="#666">paperclip-dev:45439</text>
+      <g transform="translate(200, 22)">
+        <rect x="3" y="3" width="9" height="11" rx="1" />
+        <rect x="0" y="0" width="9" height="11" rx="1" />
+      </g>
+      <g transform="translate(232, 23)">
+        <rect width="12" height="12" rx="2" />
+        <line x1="6" y1="6" x2="13" y2="-1" />
+        <polyline points="8,-1 13,-1 13,4" fill="none" />
+      </g>
+      <g transform="translate(416, 12)">
+        <rect width="32" height="32" rx="4" />
+        <rect x="10" y="10" width="12" height="12" fill="#000" stroke="none" />
+      </g>
+      <g transform="translate(456, 12)">
+        <rect width="32" height="32" rx="4" />
+        <path d="M 11 16 a 6 6 0 1 1 2 4.5" fill="none" />
+        <polygon points="8,17 14,17 11,11" fill="#000" stroke="none" />
+      </g>
+    </g>
+    <line x1="16" y1="100" x2="496" y2="100" stroke="#666" />
+
+    <!-- row: api (starting) -->
+    <g transform="translate(0, 100)">
+      <path d="M 25 28 A 5 5 0 1 1 17.5 23.67" fill="none" />
+      <text x="36" y="24" font-size="14" font-weight="600" stroke="none" fill="#000">api</text>
+      <text x="36" y="42" font-size="12" stroke="none" fill="#666">starting on :8080…</text>
+      <g transform="translate(416, 12)" stroke="#666">
+        <rect width="32" height="32" rx="4" />
+        <rect x="10" y="10" width="12" height="12" fill="#666" stroke="none" />
+      </g>
+      <g transform="translate(456, 12)" stroke="#666">
+        <rect width="32" height="32" rx="4" />
+        <path d="M 11 16 a 6 6 0 1 1 2 4.5" fill="none" />
+        <polygon points="8,17 14,17 11,11" fill="#666" stroke="none" />
+      </g>
+    </g>
+    <line x1="16" y1="156" x2="496" y2="156" stroke="#666" />
+
+    <!-- row: worker (stopped) -->
+    <g transform="translate(0, 156)">
+      <circle cx="20" cy="28" r="5" fill="#fff" />
+      <text x="36" y="24" font-size="14" font-weight="600" stroke="none" fill="#000">worker</text>
+      <text x="36" y="42" font-size="12" stroke="none" fill="#666">stopped · no port</text>
+      <g transform="translate(416, 12)">
+        <rect width="72" height="32" rx="4" fill="#000" stroke="none" />
+        <polygon points="12,10 12,22 22,16" fill="#fff" stroke="none" />
+        <text x="28" y="21" font-size="12" font-weight="600" stroke="none" fill="#fff">Start</text>
+      </g>
+    </g>
+    <line x1="0" y1="212" x2="512" y2="212" stroke="#666" />
+
+    <!-- footer: bulk actions -->
+    <g transform="translate(0, 212)">
+      <text x="16" y="32" font-size="12" font-weight="600" stroke="none" fill="#000">Start all</text>
+      <text x="88" y="32" font-size="12" font-weight="600" stroke="none" fill="#000">Stop all</text>
+      <text x="152" y="32" font-size="12" font-weight="600" stroke="none" fill="#000">Restart all</text>
+      <text x="496" y="32" font-size="12" text-anchor="end" stroke="none" fill="#666">Manage in Services tab →</text>
+    </g>
+  </g>
+
+  <!-- ===== annotation layer ===== -->
+  <g data-region="annotations">
+    <rect x="696" y="44" width="152" height="48" fill="none" stroke="#d33" stroke-dasharray="6 3" />
+    <g transform="translate(688, 36)">
+      <circle cx="0" cy="0" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2" />
+      <text x="0" y="4" font-size="12" font-weight="700" text-anchor="middle" stroke="none" fill="#d33">1</text>
+    </g>
+    <rect x="712" y="96" width="528" height="280" fill="none" stroke="#d33" stroke-dasharray="6 3" />
+    <g transform="translate(704, 388)">
+      <circle cx="0" cy="0" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2" />
+      <text x="0" y="4" font-size="12" font-weight="700" text-anchor="middle" stroke="none" fill="#d33">2</text>
+    </g>
+    <rect x="1128" y="150" width="96" height="164" fill="none" stroke="#d33" stroke-dasharray="6 3" />
+    <g transform="translate(1120, 328)">
+      <circle cx="0" cy="0" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2" />
+      <text x="0" y="4" font-size="12" font-weight="700" text-anchor="middle" stroke="none" fill="#d33">3</text>
+    </g>
+  </g>
+
+  <g transform="translate(48, 432)">
+    <text x="0" y="12" font-size="12" stroke="none" fill="#666">1 — aggregate status is the popover trigger (chevron) · 2 — one row per service, each reusing the exact single-service anatomy · 3 — per-row actions; bulk actions in the footer</text>
+  </g>
+</svg>

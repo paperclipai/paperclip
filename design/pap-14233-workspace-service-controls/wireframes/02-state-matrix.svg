@@ -1,0 +1,217 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="672" viewBox="0 0 1280 672"
+     font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5">
+  <rect x="0" y="0" width="1280" height="672" />
+
+  <g transform="translate(48, 40)">
+    <text x="0" y="16" font-size="20" font-weight="700" stroke="none" fill="#000">Service control bar — state matrix</text>
+    <text x="0" y="40" font-size="12" stroke="none" fill="#666">Same 544×40 bar in every state. Only the status segment changes; the URL and action slots never move.</text>
+  </g>
+
+  <!-- column headers -->
+  <text x="48" y="100" font-size="12" letter-spacing="1" stroke="none" fill="#666">STATE</text>
+  <text x="224" y="100" font-size="12" letter-spacing="1" stroke="none" fill="#666">CONTROL BAR</text>
+  <text x="800" y="100" font-size="12" letter-spacing="1" stroke="none" fill="#666">NOTES</text>
+
+  <!-- ===== row 1 · Stopped ===== -->
+  <text x="48" y="137" font-size="14" font-weight="600" stroke="none" fill="#000">Stopped</text>
+  <g transform="translate(224, 112)">
+    <rect width="544" height="40" rx="6" />
+    <circle cx="20" cy="20" r="5" fill="#fff" />
+    <text x="36" y="25" font-size="14" font-weight="600" stroke="none" fill="#000">Stopped</text>
+    <line x1="128" y1="8" x2="128" y2="32" stroke="#666" />
+    <text x="144" y="25" font-size="14" stroke="none" fill="#666">paperclip-dev:45439</text>
+    <line x1="424" y1="8" x2="424" y2="32" stroke="#666" />
+    <g transform="translate(436, 4)">
+      <rect width="72" height="32" rx="4" fill="#000" stroke="none" />
+      <polygon points="12,10 12,22 22,16" fill="#fff" stroke="none" />
+      <text x="28" y="21" font-size="12" font-weight="600" stroke="none" fill="#fff">Start</text>
+    </g>
+  </g>
+  <text x="800" y="128" font-size="12" stroke="none" fill="#666">Idle. URL dimmed (not a link), copy/open hidden.</text>
+  <text x="800" y="144" font-size="12" stroke="none" fill="#666">Start fills both action slots — same outer box.</text>
+
+  <!-- ===== row 2 · Starting ===== -->
+  <text x="48" y="201" font-size="14" font-weight="600" stroke="none" fill="#000">Starting</text>
+  <g transform="translate(224, 176)">
+    <rect width="544" height="40" rx="6" />
+    <path d="M 25 20 A 5 5 0 1 1 17.5 15.67" fill="none" />
+    <text x="36" y="25" font-size="14" font-weight="600" stroke="none" fill="#000">Starting…</text>
+    <line x1="128" y1="8" x2="128" y2="32" stroke="#666" />
+    <text x="144" y="25" font-size="14" stroke="none" fill="#666">paperclip-dev:45439</text>
+    <line x1="424" y1="8" x2="424" y2="32" stroke="#666" />
+    <g transform="translate(436, 4)" stroke="#666">
+      <rect width="32" height="32" rx="4" />
+      <rect x="10" y="10" width="12" height="12" fill="#666" stroke="none" />
+    </g>
+    <g transform="translate(476, 4)" stroke="#666">
+      <rect width="32" height="32" rx="4" />
+      <path d="M 11 16 a 6 6 0 1 1 2 4.5" fill="none" />
+      <polygon points="8,17 14,17 11,11" fill="#666" stroke="none" />
+    </g>
+  </g>
+  <text x="800" y="192" font-size="12" stroke="none" fill="#666">Dot becomes a spinner; label announces the</text>
+  <text x="800" y="208" font-size="12" stroke="none" fill="#666">transition. Actions disabled — geometry frozen.</text>
+
+  <!-- ===== row 3 · Running ===== -->
+  <text x="48" y="265" font-size="14" font-weight="600" stroke="none" fill="#000">Running</text>
+  <g transform="translate(224, 240)">
+    <rect width="544" height="40" rx="6" />
+    <circle cx="20" cy="20" r="5" fill="#000" />
+    <text x="36" y="25" font-size="14" font-weight="600" stroke="none" fill="#000">Running</text>
+    <line x1="128" y1="8" x2="128" y2="32" stroke="#666" />
+    <text x="144" y="25" font-size="14" stroke="none" fill="#000">paperclip-dev:45439</text>
+    <g transform="translate(344, 13)">
+      <rect x="3" y="3" width="9" height="11" rx="1" />
+      <rect x="0" y="0" width="9" height="11" rx="1" />
+    </g>
+    <g transform="translate(384, 14)">
+      <rect width="12" height="12" rx="2" />
+      <line x1="6" y1="6" x2="13" y2="-1" />
+      <polyline points="8,-1 13,-1 13,4" fill="none" />
+    </g>
+    <line x1="424" y1="8" x2="424" y2="32" stroke="#666" />
+    <g transform="translate(436, 4)">
+      <rect width="32" height="32" rx="4" />
+      <rect x="10" y="10" width="12" height="12" fill="#000" stroke="none" />
+    </g>
+    <g transform="translate(476, 4)">
+      <rect width="32" height="32" rx="4" />
+      <path d="M 11 16 a 6 6 0 1 1 2 4.5" fill="none" />
+      <polygon points="8,17 14,17 11,11" fill="#000" stroke="none" />
+    </g>
+  </g>
+  <text x="800" y="256" font-size="12" stroke="none" fill="#666">Happy path. URL is a live link with copy + open-</text>
+  <text x="800" y="272" font-size="12" stroke="none" fill="#666">in-new-tab. Stop / Restart are quiet icon buttons.</text>
+
+  <!-- ===== row 4 · Running, unhealthy ===== -->
+  <text x="48" y="329" font-size="14" font-weight="600" stroke="none" fill="#000">Unhealthy</text>
+  <g transform="translate(224, 304)">
+    <rect width="544" height="40" rx="6" />
+    <circle cx="20" cy="20" r="5" fill="#000" />
+    <circle cx="20" cy="20" r="8" fill="none" stroke-dasharray="3 2" />
+    <text x="36" y="25" font-size="14" font-weight="600" stroke="none" fill="#000">Unhealthy</text>
+    <line x1="128" y1="8" x2="128" y2="32" stroke="#666" />
+    <text x="144" y="25" font-size="14" stroke="none" fill="#000">paperclip-dev:45439</text>
+    <g transform="translate(344, 13)">
+      <rect x="3" y="3" width="9" height="11" rx="1" />
+      <rect x="0" y="0" width="9" height="11" rx="1" />
+    </g>
+    <g transform="translate(384, 14)">
+      <rect width="12" height="12" rx="2" />
+      <line x1="6" y1="6" x2="13" y2="-1" />
+      <polyline points="8,-1 13,-1 13,4" fill="none" />
+    </g>
+    <line x1="424" y1="8" x2="424" y2="32" stroke="#666" />
+    <g transform="translate(436, 4)">
+      <rect width="32" height="32" rx="4" />
+      <rect x="10" y="10" width="12" height="12" fill="#000" stroke="none" />
+    </g>
+    <g transform="translate(476, 4)">
+      <rect width="32" height="32" rx="4" />
+      <path d="M 11 16 a 6 6 0 1 1 2 4.5" fill="none" />
+      <polygon points="8,17 14,17 11,11" fill="#000" stroke="none" />
+    </g>
+  </g>
+  <text x="800" y="320" font-size="12" stroke="none" fill="#666">Process up, health probe failing (status token:</text>
+  <text x="800" y="336" font-size="12" stroke="none" fill="#666">warning hue). Controls identical to Running.</text>
+
+  <!-- ===== row 5 · Stopping ===== -->
+  <text x="48" y="393" font-size="14" font-weight="600" stroke="none" fill="#000">Stopping</text>
+  <g transform="translate(224, 368)">
+    <rect width="544" height="40" rx="6" />
+    <path d="M 25 20 A 5 5 0 1 1 17.5 15.67" fill="none" />
+    <text x="36" y="25" font-size="14" font-weight="600" stroke="none" fill="#000">Stopping…</text>
+    <line x1="128" y1="8" x2="128" y2="32" stroke="#666" />
+    <text x="144" y="25" font-size="14" stroke="none" fill="#666">paperclip-dev:45439</text>
+    <line x1="424" y1="8" x2="424" y2="32" stroke="#666" />
+    <g transform="translate(436, 4)" stroke="#666">
+      <rect width="32" height="32" rx="4" />
+      <rect x="10" y="10" width="12" height="12" fill="#666" stroke="none" />
+    </g>
+    <g transform="translate(476, 4)" stroke="#666">
+      <rect width="32" height="32" rx="4" />
+      <path d="M 11 16 a 6 6 0 1 1 2 4.5" fill="none" />
+      <polygon points="8,17 14,17 11,11" fill="#666" stroke="none" />
+    </g>
+  </g>
+  <text x="800" y="384" font-size="12" stroke="none" fill="#666">URL immediately dims to signal it is going away.</text>
+  <text x="800" y="400" font-size="12" stroke="none" fill="#666">No layout change from Running.</text>
+
+  <!-- ===== row 6 · Restarting ===== -->
+  <text x="48" y="457" font-size="14" font-weight="600" stroke="none" fill="#000">Restarting</text>
+  <g transform="translate(224, 432)">
+    <rect width="544" height="40" rx="6" />
+    <path d="M 25 20 A 5 5 0 1 1 17.5 15.67" fill="none" />
+    <text x="36" y="25" font-size="14" font-weight="600" stroke="none" fill="#000">Restarting…</text>
+    <line x1="128" y1="8" x2="128" y2="32" stroke="#666" />
+    <text x="144" y="25" font-size="14" stroke="none" fill="#666">paperclip-dev:45439</text>
+    <line x1="424" y1="8" x2="424" y2="32" stroke="#666" />
+    <g transform="translate(436, 4)" stroke="#666">
+      <rect width="32" height="32" rx="4" />
+      <rect x="10" y="10" width="12" height="12" fill="#666" stroke="none" />
+    </g>
+    <g transform="translate(476, 4)" stroke="#666">
+      <rect width="32" height="32" rx="4" />
+      <path d="M 11 16 a 6 6 0 1 1 2 4.5" fill="none" />
+      <polygon points="8,17 14,17 11,11" fill="#666" stroke="none" />
+    </g>
+  </g>
+  <text x="800" y="448" font-size="12" stroke="none" fill="#666">Restart = one state, not a stop-then-start flicker.</text>
+  <text x="800" y="464" font-size="12" stroke="none" fill="#666">Resolves to Running or Failed.</text>
+
+  <!-- ===== row 7 · Failed ===== -->
+  <text x="48" y="521" font-size="14" font-weight="600" stroke="none" fill="#000">Failed</text>
+  <g transform="translate(224, 496)">
+    <rect width="544" height="40" rx="6" />
+    <circle cx="20" cy="20" r="7" fill="#000" />
+    <text x="20" y="24" font-size="11" font-weight="700" text-anchor="middle" stroke="none" fill="#fff">!</text>
+    <text x="36" y="25" font-size="14" font-weight="600" stroke="none" fill="#000">Failed</text>
+    <line x1="128" y1="8" x2="128" y2="32" stroke="#666" />
+    <text x="144" y="25" font-size="14" stroke="none" fill="#666">paperclip-dev:45439</text>
+    <line x1="424" y1="8" x2="424" y2="32" stroke="#666" />
+    <g transform="translate(436, 4)">
+      <rect width="32" height="32" rx="4" fill="#000" stroke="none" />
+      <polygon points="12,10 12,22 22,16" fill="#fff" stroke="none" />
+    </g>
+    <g transform="translate(476, 4)">
+      <rect width="32" height="32" rx="4" />
+      <path d="M 11 16 a 6 6 0 1 1 2 4.5" fill="none" />
+      <polygon points="8,17 14,17 11,11" fill="#000" stroke="none" />
+    </g>
+  </g>
+  <text x="800" y="512" font-size="12" stroke="none" fill="#666">Start becomes the filled primary again; Restart</text>
+  <text x="800" y="528" font-size="12" stroke="none" fill="#666">stays. Error detail renders under the bar (screen 4).</text>
+
+  <!-- ===== row 8 · No services ===== -->
+  <text x="48" y="585" font-size="14" font-weight="600" stroke="none" fill="#000">No services</text>
+  <g transform="translate(224, 560)">
+    <rect width="544" height="40" rx="6" stroke="#666" stroke-dasharray="6 3" />
+    <text x="272" y="25" font-size="12" text-anchor="middle" stroke="none" fill="#666">No services configured — bar not rendered</text>
+  </g>
+  <text x="800" y="576" font-size="12" stroke="none" fill="#666">Header shows nothing; the Services tab offers</text>
+  <text x="800" y="592" font-size="12" stroke="none" fill="#666">the add-a-service path.</text>
+
+  <!-- ===== annotation layer (on Running row) ===== -->
+  <g data-region="annotations">
+    <g transform="translate(200, 260)">
+      <circle cx="0" cy="0" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2" />
+      <text x="0" y="4" font-size="12" font-weight="700" text-anchor="middle" stroke="none" fill="#d33">1</text>
+    </g>
+    <rect x="228" y="244" width="120" height="32" fill="none" stroke="#d33" stroke-dasharray="6 3" />
+    <g transform="translate(368, 224)">
+      <circle cx="0" cy="0" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2" />
+      <text x="0" y="4" font-size="12" font-weight="700" text-anchor="middle" stroke="none" fill="#d33">2</text>
+    </g>
+    <rect x="352" y="244" width="296" height="32" fill="none" stroke="#d33" stroke-dasharray="6 3" />
+    <g transform="translate(672, 224)">
+      <circle cx="0" cy="0" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2" />
+      <text x="0" y="4" font-size="12" font-weight="700" text-anchor="middle" stroke="none" fill="#d33">3</text>
+    </g>
+    <rect x="656" y="244" width="108" height="32" fill="none" stroke="#d33" stroke-dasharray="6 3" />
+  </g>
+
+  <!-- legend -->
+  <g transform="translate(48, 632)">
+    <text x="0" y="12" font-size="12" stroke="none" fill="#666">1 — status segment (dot/spinner + label) · 2 — URL segment (mono link + copy + open) · 3 — action slots (fixed width in every state)</text>
+  </g>
+</svg>
