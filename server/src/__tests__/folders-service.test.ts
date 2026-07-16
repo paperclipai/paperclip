@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import {
   folderSlugSchema,
 } from "@paperclipai/shared";
@@ -386,5 +386,62 @@ describeEmbeddedPostgres("folder service", () => {
       path: "bundled/software-development",
       systemKey: null,
     });
+  });
+
+  it("serializes concurrent system folder ensures", async () => {
+    const companyId = await seedCompany();
+    const svc = folderService(db);
+    await db.insert(folders).values({
+      companyId,
+      kind: "skill",
+      name: "Squatted My",
+      slug: "my",
+      position: 0,
+    });
+
+    const personalFolders = await Promise.all(
+      Array.from({ length: 8 }, () => svc.ensureMyFolder(companyId, "user-123", "Ada Lovelace")),
+    );
+
+    expect(new Set(personalFolders.map((folder) => folder.id)).size).toBe(1);
+    const rows = await db.select().from(folders).where(eq(folders.companyId, companyId));
+    expect(rows.filter((row) => row.systemKey === "my")).toHaveLength(1);
+    expect(rows.filter((row) => row.systemKey === "my:user-123")).toHaveLength(1);
+    expect(rows.find((row) => row.systemKey === null)).toMatchObject({ name: "Squatted My" });
+  });
+
+  it("rechecks nested folders after waiting for the company mutation lock", async () => {
+    const companyId = await seedCompany();
+    const svc = folderService(db);
+    const parent = await svc.create(companyId, { kind: "routine", name: "Parent" });
+    let releaseLock!: () => void;
+    let markLockAcquired!: () => void;
+    const lockAcquired = new Promise<void>((resolve) => { markLockAcquired = resolve; });
+    const holdLock = new Promise<void>((resolve) => { releaseLock = resolve; });
+    const lockKey = `paperclip:folders:${companyId}`;
+    const blocker = db.transaction(async (tx) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`);
+      markLockAcquired();
+      await holdLock;
+    });
+    await lockAcquired;
+
+    const deletion = svc.deleteFolder(companyId, parent.id);
+    await db.insert(folders).values({
+      companyId,
+      kind: "routine",
+      parentId: parent.id,
+      name: "Child",
+      slug: "child",
+      position: 0,
+    });
+    releaseLock();
+    await blocker;
+
+    await expect(deletion).rejects.toMatchObject({
+      status: 409,
+      message: "Move or delete nested folders first",
+    });
+    await expect(svc.getFolder(companyId, parent.id)).resolves.toMatchObject({ id: parent.id });
   });
 });

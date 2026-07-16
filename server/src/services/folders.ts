@@ -18,6 +18,10 @@ const RESERVED_CHILD_ROOT_SYSTEM_KEYS = new Set(["my", "projects"]);
 
 type FolderRow = typeof folders.$inferSelect;
 
+function isPostgresError(error: unknown, code: string) {
+  return typeof error === "object" && error !== null && "code" in error && error.code === code;
+}
+
 function normalizeName(name: string) {
   return name.trim();
 }
@@ -69,7 +73,15 @@ function buildFolderViews(rows: FolderRow[]) {
   return views;
 }
 
-export function folderService(db: Db) {
+export function folderService(db: Db, mutationLockHeld = false) {
+  async function withCompanyFolderLock<T>(companyId: string, operation: (lockedDb: Db) => Promise<T>) {
+    if (mutationLockHeld) return operation(db);
+    return db.transaction(async (tx) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`paperclip:folders:${companyId}`}, 0))`);
+      return operation(tx as unknown as Db);
+    });
+  }
+
   async function getRows(companyId: string, kind: FolderKind) {
     return db
       .select()
@@ -201,6 +213,9 @@ export function folderService(db: Db) {
   }
 
   async function create(companyId: string, input: CreateFolder): Promise<Folder> {
+    if (!mutationLockHeld) {
+      return withCompanyFolderLock(companyId, (lockedDb) => folderService(lockedDb, true).create(companyId, input));
+    }
     const parentId = input.parentId ?? null;
     const parent = await validateParent(companyId, input.kind, parentId);
     if ((parent?.depth ?? 0) + 1 > MAX_FOLDER_DEPTH) {
@@ -213,15 +228,24 @@ export function folderService(db: Db) {
     }
     await assertNoSlugConflict(companyId, input.kind, parentId, slug);
     const position = input.position ?? await nextPosition(companyId, input.kind, parentId);
-    const row = await db
-      .insert(folders)
-      .values({ companyId, kind: input.kind, parentId, name, slug, color: normalizeColor(input.color) ?? null, position })
-      .returning()
-      .then((rows) => rows[0]!);
+    let row: FolderRow;
+    try {
+      row = await db
+        .insert(folders)
+        .values({ companyId, kind: input.kind, parentId, name, slug, color: normalizeColor(input.color) ?? null, position })
+        .returning()
+        .then((rows) => rows[0]!);
+    } catch (error) {
+      if (isPostgresError(error, "23505")) throw conflict("Folder slug already exists under this parent");
+      throw error;
+    }
     return (await getFolder(companyId, row.id))!;
   }
 
   async function update(companyId: string, folderId: string, patch: UpdateFolder): Promise<Folder | null> {
+    if (!mutationLockHeld) {
+      return withCompanyFolderLock(companyId, (lockedDb) => folderService(lockedDb, true).update(companyId, folderId, patch));
+    }
     const existing = await getFolder(companyId, folderId);
     if (!existing) return null;
     await assertMutableFolder(companyId, existing);
@@ -231,16 +255,21 @@ export function folderService(db: Db) {
       throw forbidden("Reserved skill folders are system-managed");
     }
     await assertNoSlugConflict(companyId, existing.kind, existing.parentId, slug, existing.id);
-    await db
-      .update(folders)
-      .set({
-        name,
-        slug,
-        color: patch.color === undefined ? existing.color : normalizeColor(patch.color),
-        position: patch.position ?? existing.position,
-        updatedAt: new Date(),
-      })
-      .where(and(eq(folders.companyId, companyId), eq(folders.id, folderId)));
+    try {
+      await db
+        .update(folders)
+        .set({
+          name,
+          slug,
+          color: patch.color === undefined ? existing.color : normalizeColor(patch.color),
+          position: patch.position ?? existing.position,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(folders.companyId, companyId), eq(folders.id, folderId)));
+    } catch (error) {
+      if (isPostgresError(error, "23505")) throw conflict("Folder slug already exists under this parent");
+      throw error;
+    }
     return getFolder(companyId, folderId);
   }
 
@@ -269,6 +298,9 @@ export function folderService(db: Db) {
   }
 
   async function moveFolder(companyId: string, folderId: string, input: MoveFolder): Promise<Folder | null> {
+    if (!mutationLockHeld) {
+      return withCompanyFolderLock(companyId, (lockedDb) => folderService(lockedDb, true).moveFolder(companyId, folderId, input));
+    }
     const existing = await getFolder(companyId, folderId);
     if (!existing) return null;
     await assertMutableFolder(companyId, existing);
@@ -287,14 +319,23 @@ export function folderService(db: Db) {
       throw forbidden("Reserved skill folders are system-managed");
     }
     await assertNoSlugConflict(companyId, existing.kind, parentId, existing.slug, existing.id);
-    await db
-      .update(folders)
-      .set({ parentId, position: input.position, updatedAt: new Date() })
-      .where(and(eq(folders.companyId, companyId), eq(folders.id, folderId)));
+    try {
+      await db
+        .update(folders)
+        .set({ parentId, position: input.position, updatedAt: new Date() })
+        .where(and(eq(folders.companyId, companyId), eq(folders.id, folderId)));
+    } catch (error) {
+      if (isPostgresError(error, "23505")) throw conflict("Folder slug already exists under this parent");
+      if (isPostgresError(error, "23503")) throw conflict("Parent folder changed during move");
+      throw error;
+    }
     return getFolder(companyId, folderId);
   }
 
   async function deleteFolder(companyId: string, folderId: string): Promise<Folder | null> {
+    if (!mutationLockHeld) {
+      return withCompanyFolderLock(companyId, (lockedDb) => folderService(lockedDb, true).deleteFolder(companyId, folderId));
+    }
     const existing = await getFolder(companyId, folderId);
     if (!existing) return null;
     await assertMutableFolder(companyId, existing);
@@ -304,7 +345,12 @@ export function folderService(db: Db) {
       .where(and(eq(folders.companyId, companyId), eq(folders.parentId, folderId)))
       .then((rows) => rows[0] ?? null);
     if (child) throw conflict("Move or delete nested folders first");
-    await db.delete(folders).where(and(eq(folders.companyId, companyId), eq(folders.id, folderId)));
+    try {
+      await db.delete(folders).where(and(eq(folders.companyId, companyId), eq(folders.id, folderId)));
+    } catch (error) {
+      if (isPostgresError(error, "23503")) throw conflict("Move or delete nested folders first");
+      throw error;
+    }
     return existing;
   }
 
@@ -456,7 +502,10 @@ export function folderService(db: Db) {
     };
   }
 
-  async function ensureMyFolder(companyId: string, userId: string, userName: string | null, requestedSlug?: string | null) {
+  async function ensureMyFolder(companyId: string, userId: string, userName: string | null, requestedSlug?: string | null): Promise<Folder> {
+    if (!mutationLockHeld) {
+      return withCompanyFolderLock(companyId, (lockedDb) => folderService(lockedDb, true).ensureMyFolder(companyId, userId, userName, requestedSlug));
+    }
     const parent = await ensureContainer(companyId, "my", "My Skills");
     const systemKey = `my:${userId}`;
     for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -474,7 +523,10 @@ export function folderService(db: Db) {
     throw conflict("Could not create personal skill folder");
   }
 
-  async function ensureProjectFolder(companyId: string, projectId: string, projectName: string) {
+  async function ensureProjectFolder(companyId: string, projectId: string, projectName: string): Promise<Folder> {
+    if (!mutationLockHeld) {
+      return withCompanyFolderLock(companyId, (lockedDb) => folderService(lockedDb, true).ensureProjectFolder(companyId, projectId, projectName));
+    }
     const parent = await ensureContainer(companyId, "projects", "Projects");
     const systemKey = `project:${projectId}`;
     for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -492,7 +544,10 @@ export function folderService(db: Db) {
     throw conflict("Could not create project skill folder");
   }
 
-  async function ensureBundledCategory(companyId: string, category: string) {
+  async function ensureBundledCategory(companyId: string, category: string): Promise<Folder> {
+    if (!mutationLockHeld) {
+      return withCompanyFolderLock(companyId, (lockedDb) => folderService(lockedDb, true).ensureBundledCategory(companyId, category));
+    }
     const root = await ensureContainer(companyId, "bundled", "Bundled");
     const name = normalizeName(category);
     const slug = normalizeFolderSlug(category);
@@ -521,7 +576,10 @@ export function folderService(db: Db) {
     throw conflict("Could not create bundled skill folder");
   }
 
-  async function pruneEmptyBundledCategories(companyId: string, retainedCategories: string[]) {
+  async function pruneEmptyBundledCategories(companyId: string, retainedCategories: string[]): Promise<void> {
+    if (!mutationLockHeld) {
+      return withCompanyFolderLock(companyId, (lockedDb) => folderService(lockedDb, true).pruneEmptyBundledCategories(companyId, retainedCategories));
+    }
     const root = await findSystemFolder(companyId, "bundled");
     if (!root) return;
     const rows = await getRows(companyId, "skill");
