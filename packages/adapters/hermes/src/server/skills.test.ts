@@ -62,6 +62,36 @@ describe("Hermes skill sync", () => {
     expect(skillsHome).toBe(path.join("/tmp/hermes-home", "profiles", "paco-studio", "skills"));
   });
 
+  test.each([
+    ["separate long option", ["--profile", "paco-studio"]],
+    ["separate short option", ["-p", "paco_studio"]],
+    ["equals long option", ["--profile=paco-studio"]],
+    ["equals short option", ["-p=paco_studio"]],
+    ["combined long option", ["--profile paco-studio"]],
+  ])("accepts a valid Hermes profile from the %s form", (_label, extraArgs) => {
+    expect(
+      resolveHermesSkillsHome({
+        env: { HERMES_HOME: "/tmp/hermes-home" },
+        extraArgs,
+      }),
+    ).toMatch(/^\/tmp\/hermes-home\/profiles\/paco[-_]studio\/skills$/);
+  });
+
+  test.each([
+    ["separate long option", ["--profile", "../../outside"]],
+    ["separate short option", ["-p", "../outside"]],
+    ["equals long option", ["--profile=/tmp/outside"]],
+    ["equals short option", ["-p=paco/studio"]],
+    ["combined long option", ["--profile paco\\studio"]],
+  ])("rejects an unsafe Hermes profile from the %s form", (_label, extraArgs) => {
+    expect(() =>
+      resolveHermesSkillsHome({
+        env: { HERMES_HOME: "/tmp/hermes-home" },
+        extraArgs,
+      }),
+    ).toThrow("Invalid Hermes profile name");
+  });
+
   test("copies selected Paperclip skills into the active Hermes profile skills directory", async () => {
     const sourceRoot = path.join(tempRoot, "paperclip-runtime-skills");
     const hermesHome = path.join(tempRoot, "Hermes");

@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const PAPERCLIP_MANAGED_SKILLS_MANIFEST = ".paperclip-managed-skills.json";
+const HERMES_PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -79,6 +80,11 @@ export function resolveHermesSkillsHome(config: Record<string, unknown>): string
     ? path.resolve(configuredHermesHome)
     : path.join(configuredHome ? path.resolve(configuredHome) : os.homedir(), ".hermes");
   const profile = extractProfileFromArgs(config.extraArgs);
+  if (profile && !HERMES_PROFILE_NAME_RE.test(profile)) {
+    throw new Error(
+      `Invalid Hermes profile name ${JSON.stringify(profile)}. Expected [a-z0-9][a-z0-9_-]{0,63}.`,
+    );
+  }
   return profile
     ? path.join(hermesHome, "profiles", profile, "skills")
     : path.join(hermesHome, "skills");
