@@ -575,10 +575,10 @@ describe("worktree helpers", () => {
         .update(instanceSettings)
         .set({
           experimental: {
-          enableWorktreeRunExecution: true,
-          worktreeRunExecutionActivatedAt: "2026-07-16T12:00:00.000Z",
-          worktreeRunExecutionActivationInstanceId: "source-instance",
-          enableSmokeLab: true,
+            enableWorktreeRunExecution: true,
+            worktreeRunExecutionActivatedAt: "2026-07-16T12:00:00.000Z",
+            worktreeRunExecutionActivationInstanceId: "source-instance",
+            enableSmokeLab: true,
           },
         })
         .where(eq(instanceSettings.singletonKey, "default"));
