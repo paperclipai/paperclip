@@ -15118,6 +15118,73 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const agent = await getAgent(agentId);
     if (!agent) throw notFound("Agent not found");
 
+    // A human commenting on (or otherwise updating) an issue whose run is
+    // parked in scheduled_retry expects the agent to respond now, not when
+    // the backoff expires. Comment wakes are enqueued with source
+    // "automation", so absorbing them into the parked run merges the new
+    // wakeCommentId into its context but keeps the original schedule: the
+    // message becomes a silent no-op until the retry fires, which can be
+    // hours away. Pull the retry forward and promote it through the standard
+    // gate instead, mirroring retryScheduledRetryNow. Agent- and
+    // system-initiated wakes still coalesce without promotion so bounded
+    // retry backoff keeps protecting against wake storms.
+    const promoteScheduledRetryForHumanWake = async (
+      run: typeof heartbeatRuns.$inferSelect,
+    ): Promise<typeof heartbeatRuns.$inferSelect | null> => {
+      if (opts.requestedByActorType !== "user" || run.status !== "scheduled_retry") return null;
+      const promoteNow = new Date();
+      const pulled = await db
+        .update(heartbeatRuns)
+        .set({
+          scheduledRetryAt: promoteNow,
+          contextSnapshot: {
+            ...parseObject(run.contextSnapshot),
+            scheduledRetryAt: promoteNow.toISOString(),
+            retryNowRequestedAt: promoteNow.toISOString(),
+            retryNowRequestedByActorType: opts.requestedByActorType ?? null,
+            retryNowRequestedByActorId: opts.requestedByActorId ?? null,
+          },
+          updatedAt: promoteNow,
+        })
+        .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "scheduled_retry")))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      const rereadRun = () =>
+        db
+          .select()
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, run.id))
+          .then((rows) => rows[0] ?? null);
+      if (!pulled) {
+        // Lost the race with the scheduler or a concurrent wake; re-read so
+        // the caller reports the run's real status, not the parked snapshot.
+        return rereadRun();
+      }
+      await appendRunEvent(pulled, await nextRunEventSeq(pulled.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "info",
+        message: "Scheduled retry was promoted by a human-initiated wake",
+        payload: {
+          scheduledRetryAttempt: pulled.scheduledRetryAttempt,
+          scheduledRetryAt: pulled.scheduledRetryAt ? new Date(pulled.scheduledRetryAt).toISOString() : null,
+          scheduledRetryReason: pulled.scheduledRetryReason,
+          wakeSource: source,
+          wakeReason: reason,
+          requestedByActorType: opts.requestedByActorType ?? null,
+          requestedByActorId: opts.requestedByActorId ?? null,
+        },
+      });
+      // Fresh timestamp: a concurrent wake may have re-pulled scheduledRetryAt
+      // a few ms later than promoteNow, and promotion's lte(scheduledRetryAt,
+      // now) guard must still see the retry as due. Callers own the
+      // startNextQueuedRunForAgent kick after this returns.
+      const promotion = await promoteScheduledRetryRun(pulled, new Date());
+      if (promotion.outcome === "promoted") return promotion.run;
+      if (promotion.run) return promotion.run;
+      return rereadRun();
+    };
+
     const writeSkippedRequest = async (
       skipReason: string,
       patch: Partial<typeof agentWakeupRequests.$inferInsert> = {},
@@ -16154,8 +16221,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       if (outcome.kind === "deferred" || outcome.kind === "skipped") return null;
       if (outcome.kind === "coalesced") {
+        const promotedRun = await promoteScheduledRetryForHumanWake(outcome.run);
         await startNextQueuedRunForAgent(agent.id);
-        return outcome.run;
+        return promotedRun ?? outcome.run;
       }
 
       const newRun = outcome.run;
@@ -16234,6 +16302,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         runId: mergedRun.id,
         finishedAt: new Date(),
       });
+
+      const promotedRun = await promoteScheduledRetryForHumanWake(mergedRun);
+      if (promotedRun) {
+        await startNextQueuedRunForAgent(agent.id);
+        return promotedRun;
+      }
       return mergedRun;
     }
 
