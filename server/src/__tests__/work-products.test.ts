@@ -58,7 +58,8 @@ describe("workProductService", () => {
     expect(transaction).toHaveBeenCalledTimes(1);
     expect(txUpdate).toHaveBeenCalledTimes(1);
     expect(txInsert).toHaveBeenCalledTimes(1);
-    expect(result?.id).toBe("work-product-1");
+    expect(result?.created).toBe(true);
+    expect(result?.product.id).toBe("work-product-1");
   });
 
   it("uses a transaction when promoting an existing work product to primary", async () => {
@@ -138,7 +139,8 @@ describe("workProductService", () => {
     );
 
     expect(stored).toHaveLength(1);
-    expect(new Set(results.map((result) => result?.id))).toEqual(new Set(["work-product-1"]));
+    expect(results.filter((result) => result?.created)).toHaveLength(1);
+    expect(new Set(results.map((result) => result?.product.id))).toEqual(new Set(["work-product-1"]));
   });
 
   it("releases the dedupe lock after failure so a retry can recover", async () => {
@@ -175,8 +177,8 @@ describe("workProductService", () => {
       "injected insert failure",
     );
     await expect(svc.createForIssue("issue-1", "company-1", input)).resolves.toMatchObject({
-      id: "work-product-1",
-      externalId: "artifact-sha-recovery",
+      created: true,
+      product: { id: "work-product-1", externalId: "artifact-sha-recovery" },
     });
     expect(stored).toHaveLength(1);
   });

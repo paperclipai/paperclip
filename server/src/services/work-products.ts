@@ -68,7 +68,7 @@ export function workProductService(db: Db) {
               ),
             )
             .then((rows) => rows[0] ?? null);
-          if (existing) return existing;
+          if (existing) return { row: existing, created: false };
         }
         if (data.isPrimary) {
           await tx
@@ -82,7 +82,7 @@ export function workProductService(db: Db) {
               ),
             );
         }
-        return await tx
+        const inserted = await tx
           .insert(issueWorkProducts)
           .values({
             ...data,
@@ -91,8 +91,9 @@ export function workProductService(db: Db) {
           })
           .returning()
           .then((rows) => rows[0] ?? null);
+        return inserted ? { row: inserted, created: true } : null;
       });
-      return row ? toIssueWorkProduct(row) : null;
+      return row ? { product: toIssueWorkProduct(row.row), created: row.created } : null;
     },
 
     update: async (id: string, patch: Partial<typeof issueWorkProducts.$inferInsert>) => {
