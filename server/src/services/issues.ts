@@ -134,6 +134,9 @@ const ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_LOG_BYTES = 2_000_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_CHUNK_BYTES = 256_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_END_SLACK_MS = 60_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_PARALLEL_READS = 8;
+export const ISSUE_CREATE_IDEMPOTENCY_KEY_RETENTION_DAYS = 7;
+const ISSUE_CREATE_IDEMPOTENCY_KEY_RETENTION_MS = ISSUE_CREATE_IDEMPOTENCY_KEY_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+const ISSUE_CREATE_IDEMPOTENCY_KEY_CLEANUP_BATCH_SIZE = 500;
 const DELETED_ISSUE_COMMENT_BODY = "";
 const ISSUE_WAKE_DIAGNOSTICS_ACTIVITY_ACTIONS = ["issue.tree_hold_wakeup_deferred"] as const;
 
@@ -6071,6 +6074,19 @@ export function issueService(db: Db) {
         let existingIssue: typeof issues.$inferSelect | undefined;
         let deduplicationReason: "idempotency_key" | "recent_open_title" | null = null;
         if (idempotencyKey) {
+          const idempotencyKeyRetentionCutoff = new Date(Date.now() - ISSUE_CREATE_IDEMPOTENCY_KEY_RETENTION_MS);
+          await tx.execute(sql`
+            delete from ${issueCreateIdempotencyKeys}
+            where ${issueCreateIdempotencyKeys.id} in (
+              select ${issueCreateIdempotencyKeys.id}
+              from ${issueCreateIdempotencyKeys}
+              where ${issueCreateIdempotencyKeys.companyId} = ${companyId}
+                and ${issueCreateIdempotencyKeys.createdAt} < ${idempotencyKeyRetentionCutoff.toISOString()}::timestamptz
+              order by ${issueCreateIdempotencyKeys.createdAt} asc, ${issueCreateIdempotencyKeys.id} asc
+              limit ${ISSUE_CREATE_IDEMPOTENCY_KEY_CLEANUP_BATCH_SIZE}
+            )
+          `);
+
           [existingIssue] = await tx
             .select()
             .from(issueCreateIdempotencyKeys)
