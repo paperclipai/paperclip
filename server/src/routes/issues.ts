@@ -6731,11 +6731,10 @@ export function issueRoutes(
   ) {
     if (req.actor.type === "board") {
       if (!req.actor.userId) throw forbidden("Board user context required", { code: "inbox_target_user_unresolved" });
-      const policy = await inboxAgentPolicyService(db).get(issue.companyId, req.actor.userId);
       return {
         userId: req.actor.userId,
         targetResolvedFrom: "responsible_user" as const,
-        policyMode: policy.mode,
+        policyMode: null,
       };
     }
     if (req.actor.type !== "agent") throw unauthorized("Authentication required");
@@ -6797,7 +6796,7 @@ export function issueRoutes(
         userId: target.userId,
         archivedAt: archiveState.archivedAt,
         targetResolvedFrom: target.targetResolvedFrom,
-        policyMode: target.policyMode,
+        ...(target.policyMode ? { policyMode: target.policyMode } : {}),
       },
     });
     res.json(archiveState);
@@ -6822,7 +6821,7 @@ export function issueRoutes(
       details: {
         userId: target.userId,
         targetResolvedFrom: target.targetResolvedFrom,
-        policyMode: target.policyMode,
+        ...(target.policyMode ? { policyMode: target.policyMode } : {}),
       },
     });
     res.json(removed ?? { ok: true, userId: target.userId });
