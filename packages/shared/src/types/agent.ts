@@ -190,7 +190,7 @@ export interface AgentDetail extends Agent {
   access: AgentAccessState;
 }
 
-export type ClearAgentErrorResponse = Agent;
+export type ClearAgentErrorResponse = AgentResponse;
 
 export interface AgentKeyCreated {
   id: string;

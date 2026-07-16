@@ -1,5 +1,5 @@
 import type {
-  Approval,
+  ApprovalResponse as Approval,
   DashboardSummary,
   HeartbeatRun,
   InboxDismissal,

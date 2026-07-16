@@ -11,7 +11,7 @@ import {
   typeLabel,
 } from "./ApprovalPayload";
 import { timeAgo } from "../lib/timeAgo";
-import type { Approval, Agent } from "@paperclipai/shared";
+import type { ApprovalResponse, Agent } from "@paperclipai/shared";
 import { cn } from "@/lib/utils";
 import { Card } from "@/components/ui/card";
 
@@ -33,8 +33,8 @@ export function ApprovalCard({
   isPending = false,
   pendingAction = null,
 }: {
-  approval: Approval;
-  requesterAgent: Agent | null;
+  approval: ApprovalResponse;
+  requesterAgent: Pick<Agent, "id" | "name" | "icon" | "role" | "title"> | null;
   onApprove?: () => void;
   onReject?: () => void;
   onOpen?: () => void;
@@ -97,7 +97,7 @@ export function ApprovalCard({
       <div className="mt-4 border-t border-border/60 pt-4">
         <ApprovalPayloadRenderer
           type={approval.type}
-          payload={approval.payload}
+          payload={approval.payload as unknown as Record<string, unknown>}
           hidePrimaryTitle={Boolean(subject)}
         />
       </div>

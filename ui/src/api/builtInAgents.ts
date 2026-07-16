@@ -1,4 +1,4 @@
-import type { Agent, Approval } from "@paperclipai/shared";
+import type { AgentResponse, ApprovalResponse } from "@paperclipai/shared";
 import { api } from "./client";
 
 /**
@@ -97,12 +97,12 @@ export interface BuiltInAgentState {
   definition: BuiltInAgentDefinition;
   status: BuiltInAgentStatus;
   agentId: string | null;
-  agent: Agent | null;
+  agent: AgentResponse | null;
   pauseReason: string | null;
   /** Per-resource drift/readiness for bundle-backed built-ins (may be empty). */
   resources?: BuiltInManagedResourceState[];
   /** Present when provisioning queued a board hire approval (HTTP 202). */
-  approval?: Approval | null;
+  approval?: ApprovalResponse | null;
 }
 
 export interface BuiltInAgentProvisionInput {
