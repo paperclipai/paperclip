@@ -1037,6 +1037,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                 const logLine =
                   `[paperclip] adapter.invoke ${message}; ` +
                   `timeoutMs=${monitorResolution.timeoutMs} elapsedSinceLastEventMs=${monitorElapsedMs} ` +
+                  `outputChunkCount=${state.outputChunkCount} outputBytes=${state.outputBytes} ` +
                   `parsedEvents=${state.parsedEventCount} (timeout=${timeoutSecLabel}s elapsed=${elapsedSec}s); ` +
                   `terminating codex child via SIGTERM (5s grace, then SIGKILL).\n`;
                 // Issue the log without awaiting on the kill hot path, but capture
@@ -1078,8 +1079,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           onSpawn: wrappedOnSpawn,
           onRuntimeProgress: ctx.onRuntimeProgress,
           onLog: async (stream, chunk) => {
+            monitor?.noteOutputChunk(stream, chunk);
             if (stream === "stdout") {
-              monitor?.noteStdoutChunk(chunk);
               await onLog(stream, chunk);
               return;
             }

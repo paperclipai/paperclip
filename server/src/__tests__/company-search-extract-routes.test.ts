@@ -17,6 +17,7 @@ function extractResponse(query: CompanySearchExtractQuery): CompanySearchExtract
     scope: query.scope,
     limit: query.limit,
     offset: query.offset,
+    matchesPerIssue: query.matchesPerIssue,
     results: [],
     hasMore: false,
     truncated: false,
@@ -57,7 +58,13 @@ describe("company extract-search route", () => {
 
     const response = await request(app)
       .get("/api/companies/company-1/search/extract")
-      .query({ contains: "github.com/example/repo/pull", kind: "url", scope: "comments", limit: "200" })
+      .query({
+        contains: "github.com/example/repo/pull",
+        kind: "url",
+        scope: "comments",
+        limit: "200",
+        matchesPerIssue: "200",
+      })
       .expect(200);
 
     expect(extract).toHaveBeenCalledWith("company-1", expect.objectContaining({
@@ -65,6 +72,7 @@ describe("company extract-search route", () => {
       kind: "url",
       scope: "comments",
       limit: 200,
+      matchesPerIssue: 200,
     }));
     expect(response.body).toMatchObject({ kind: "url", scope: "comments", truncated: false });
   });

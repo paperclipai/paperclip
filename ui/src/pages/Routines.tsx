@@ -56,7 +56,7 @@ const concurrencyPolicyDescriptions: Record<string, string> = {
 };
 const catchUpPolicyDescriptions: Record<string, string> = {
   skip_missed: "Ignore windows that were missed while the scheduler or routine was paused.",
-  enqueue_missed_with_cap: "Catch up missed schedule windows in capped batches after recovery.",
+  enqueue_missed_with_cap: "Catch up missed schedule windows after recovery; sub-hourly schedules are combined into one catch-up run, slower schedules replay each missed window up to a cap.",
 };
 
 function autoResizeTextarea(element: HTMLTextAreaElement | null) {

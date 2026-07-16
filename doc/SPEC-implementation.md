@@ -928,8 +928,8 @@ The current app also exposes V1-supporting surfaces for:
 - issue approvals, issue references/search, labels, read state, inbox/archive state, and work products
 - company search through `GET /companies/:companyId/search` plus agent-oriented bulk extraction through
   `GET /companies/:companyId/search/extract`; extraction accepts a server-escaped literal `contains`, optional
-  server-owned URL expansion, issue/comment/document scopes, status/date filters, issue-level pagination, and
-  explicit issue/match truncation flags
+  server-owned URL expansion, issue/comment/document scopes, status/date filters, issue-level pagination, a
+  bounded `matchesPerIssue` override for machine consumers, and explicit issue/match truncation flags
 - execution workspaces, project workspaces, workspace runtime services, and workspace operations
 - task watchdog configuration and reusable watchdog issue orchestration for explicitly watched issue subtrees
 - routines and scheduled/API/webhook triggers

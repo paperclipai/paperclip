@@ -1,9 +1,10 @@
-import { execFileSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 
 export const GREEN_CHECK_CONCLUSIONS = new Set(["SUCCESS", "NEUTRAL", "SKIPPED"]);
 export const GREEN_STATUS_STATES = new Set(["SUCCESS"]);
 export const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
+const GH_JSON_MAX_BUFFER_BYTES = 50 * 1024 * 1024;
 
 export function parseArgs(argv, defaults = {}) {
   const args = { ...defaults };
@@ -33,8 +34,31 @@ export function writeJson(path, value) {
 }
 
 export function ghJson(args) {
-  const output = execFileSync("gh", args, { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] });
-  return JSON.parse(output);
+  const result = spawnSync("gh", args, {
+    encoding: "utf8",
+    maxBuffer: GH_JSON_MAX_BUFFER_BYTES,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  // Surface gh diagnostics (warnings, deprecation/auth notices, error output)
+  // on both success and failure — spawnSync captures stderr in every case.
+  if (result.stderr) process.stderr.write(result.stderr);
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    const error = new Error(`gh ${args.join(" ")} exited with status ${result.status}`);
+    error.stderr = result.stderr;
+    error.status = result.status;
+    throw error;
+  }
+  return JSON.parse(result.stdout);
+}
+
+export function isMissingPullRequestError(error) {
+  const detail = `${error?.message ?? ""}\n${error?.stderr ?? ""}`;
+  // Scope to the exact signals gh emits for a deleted/nonexistent PR: the GraphQL
+  // "Could not resolve to a PullRequest" message and REST "Not Found (HTTP 404)".
+  // A bare "Not Found" would over-match unrelated failures (e.g. "repository not
+  // found"), so we require the HTTP 404 marker for the REST case.
+  return /Could not resolve to a PullRequest|HTTP 404/i.test(detail);
 }
 
 export function normalizeRepository(value) {
