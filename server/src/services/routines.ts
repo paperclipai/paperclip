@@ -240,7 +240,14 @@ export function nextCronTickInTimeZone(expression: string, timeZone: string, aft
 }
 
 function isSubHourlyCronExpression(expression: string) {
-  return parseCron(expression).minutes.length > 1;
+  const cron = parseCron(expression);
+  return (
+    cron.minutes.length > 1 &&
+    cron.hours.length === 24 &&
+    cron.daysOfMonth.length === 31 &&
+    cron.months.length === 12 &&
+    cron.daysOfWeek.length === 7
+  );
 }
 
 function nextResultText(status: string, issueId?: string | null) {
