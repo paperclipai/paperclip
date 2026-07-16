@@ -7,7 +7,8 @@ import type {
   PatchInstanceExperimentalSettings,
 } from "@paperclipai/shared";
 import { instanceSettingsApi } from "@/api/instanceSettings";
-import { getWorktreeInstanceId, isWorktreeRuntime } from "../lib/worktree-branding";
+import { isWorktreeRuntime } from "../lib/worktree-branding";
+import { WorktreeRunEngineBanner } from "@/components/WorktreeRunEngineBanner";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
@@ -32,43 +33,6 @@ function issueHref(identifier: string | null, issueId: string) {
 
 function formatRecoveryState(state: string) {
   return state.replace(/_/g, " ");
-}
-
-type WorktreeRunExecutionDisplayState =
-  | { kind: "off" }
-  | { kind: "armed"; activatedAt: string }
-  | { kind: "fail_closed"; reason: "missing_cutoff" | "missing_instance_id" | "instance_mismatch" };
-
-/**
- * Mirror of the server's `resolveWorktreeRunExecutionActivation` fail-closed
- * ladder (server/src/services/instance-settings.ts) so the card never claims a
- * copied/legacy row is arming execution. The derived fields are display-only —
- * the PATCH the toggle sends still writes just the boolean.
- */
-function resolveWorktreeRunExecutionDisplayState(
-  settings:
-    | Pick<
-        InstanceExperimentalSettings,
-        | "enableWorktreeRunExecution"
-        | "worktreeRunExecutionActivatedAt"
-        | "worktreeRunExecutionActivationInstanceId"
-      >
-    | undefined,
-  currentInstanceId: string | null,
-): WorktreeRunExecutionDisplayState {
-  if (settings?.enableWorktreeRunExecution !== true) return { kind: "off" };
-  if (!settings.worktreeRunExecutionActivatedAt) return { kind: "fail_closed", reason: "missing_cutoff" };
-  if (!currentInstanceId) return { kind: "fail_closed", reason: "missing_instance_id" };
-  if (settings.worktreeRunExecutionActivationInstanceId !== currentInstanceId) {
-    return { kind: "fail_closed", reason: "instance_mismatch" };
-  }
-  return { kind: "armed", activatedAt: settings.worktreeRunExecutionActivatedAt };
-}
-
-function formatActivationTimestamp(iso: string): string {
-  const parsed = new Date(iso);
-  if (Number.isNaN(parsed.getTime())) return iso;
-  return parsed.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 }
 
 // PAP-11233: keep Conference Room code intact, but hide the user-facing opt-in for now.
@@ -214,6 +178,7 @@ export function InstanceExperimentalSettings() {
       queryClient.setQueryData(queryKeys.instance.experimentalSettings, updatedSettings);
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.instance.experimentalSettings }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.instance.worktreeRunEngine }),
         queryClient.invalidateQueries({ queryKey: ["built-in-agents"] }),
         queryClient.invalidateQueries({ queryKey: queryKeys.health }),
       ]);
@@ -278,10 +243,6 @@ export function InstanceExperimentalSettings() {
 
   const inWorktree = isWorktreeRuntime();
   const enableWorktreeRunExecution = experimentalQuery.data?.enableWorktreeRunExecution === true;
-  const worktreeRunExecutionState = resolveWorktreeRunExecutionDisplayState(
-    experimentalQuery.data,
-    getWorktreeInstanceId(),
-  );
   const enableEnvironments = experimentalQuery.data?.enableEnvironments === true;
   const enableIsolatedWorkspaces = experimentalQuery.data?.enableIsolatedWorkspaces === true;
   const enableApps = experimentalQuery.data?.enableApps === true;
@@ -397,33 +358,7 @@ export function InstanceExperimentalSettings() {
               />
             </div>
 
-            {worktreeRunExecutionState.kind === "armed" ? (
-              <div className="flex items-center gap-2 rounded-md border border-emerald-500/30 bg-emerald-500/5 px-3 py-2 text-sm text-foreground">
-                <Play className="h-4 w-4 shrink-0 text-emerald-600" />
-                <span>
-                  Running tasks created after{" "}
-                  <span className="font-medium">
-                    {formatActivationTimestamp(worktreeRunExecutionState.activatedAt)}
-                  </span>
-                  .
-                </span>
-              </div>
-            ) : null}
-
-            {worktreeRunExecutionState.kind === "fail_closed" ? (
-              <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-sm">
-                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-700" />
-                <div className="space-y-0.5">
-                  <p className="font-medium text-foreground">Execution is suppressed — effectively off.</p>
-                  <p className="text-muted-foreground">
-                    {worktreeRunExecutionState.reason === "instance_mismatch"
-                      ? "This setting was armed in a different instance and copied here, so no tasks run automatically."
-                      : "This setting is missing its activation cutoff, so no tasks run automatically."}{" "}
-                    Toggle it off and back on to arm execution for tasks created here.
-                  </p>
-                </div>
-              </div>
-            ) : null}
+            <WorktreeRunEngineBanner variant="detail" />
           </div>
         </Card>
       ) : null}
