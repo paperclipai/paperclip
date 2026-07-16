@@ -2336,7 +2336,7 @@ export function IssueProperties({
                       full ~164px value column at the real 320px pane width, where an
                       "Archived by …" prefix would clip even short names. The full
                       phrasing + timestamp live in the tooltip so any residual
-                      truncation on genuinely long names is recoverable (PAP-14182). */}
+                      truncation on genuinely long names is recoverable. */}
                   <span
                     className="flex min-w-0 max-w-full items-center gap-1.5 text-sm"
                     title={`Archived by ${archivedByName} · ${formatDateTime(issue.archivedAt)}`}

@@ -2,8 +2,8 @@ import type { InboxAgentPolicy, UpdateInboxAgentPolicy } from "@paperclipai/shar
 import { api } from "./client";
 
 /**
- * "Let agents tidy my inbox" policy (PAP-14174 P4). Backed by the per-user
- * endpoints from P3 — `open` lets any of my agents archive from my inbox,
+ * "Let agents tidy my inbox" policy. Backed by per-user endpoints: `open`
+ * lets any of my agents archive from my inbox,
  * `allowlist` restricts to the named agents, `disabled` turns it off.
  */
 export const inboxAgentPolicyApi = {

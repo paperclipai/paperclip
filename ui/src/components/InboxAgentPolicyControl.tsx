@@ -39,9 +39,9 @@ interface Draft {
 }
 
 /**
- * "Let agents tidy my inbox" user-settings control (PAP-14174 P4). A single
+ * "Let agents tidy my inbox" user-settings control. A single
  * three-state policy — `open` / `allowlist` / `disabled` — round-tripped through
- * the per-user P3 endpoints. When `allowlist` is selected the user picks which
+ * the per-user endpoints. When `allowlist` is selected the user picks which
  * of their agents may archive. The one-click Undo/Unarchive affordance and the
  * "Archived by …" attribution live elsewhere (inbox rows / properties pane).
  */

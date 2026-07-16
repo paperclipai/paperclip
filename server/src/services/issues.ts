@@ -1488,7 +1488,7 @@ type InboxArchiveAttributionRow = {
 };
 
 async function inboxArchiveRowsForIssues(
-  dbOrTx: any,
+  dbOrTx: Db,
   companyId: string,
   userId: string,
   issueIds: string[],

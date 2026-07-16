@@ -1,7 +1,7 @@
 import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
 import { updateInboxAgentPolicySchema } from "@paperclipai/shared";
-import { forbidden, unauthorized } from "../errors.js";
+import { forbidden, notFound, unauthorized } from "../errors.js";
 import { validate } from "../middleware/validate.js";
 import { accessService, inboxAgentPolicyService, logActivity } from "../services/index.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
@@ -20,6 +20,7 @@ export function inboxAgentPolicyRoutes(db: Db) {
     assertCompanyAccess(req, companyId);
     if (req.actor.type === "board") {
       if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
+      if (!req.actor.userId) throw unauthorized("Board user context required");
       if (await access.canUser(companyId, req.actor.userId, "users:manage_permissions")) return;
     } else if (
       req.actor.type === "agent"
@@ -31,6 +32,13 @@ export function inboxAgentPolicyRoutes(db: Db) {
     throw forbidden("Inbox agent policy administration authority required", {
       code: "inbox_agent_policy_admin_required",
     });
+  }
+
+  async function assertActiveUserMembership(companyId: string, userId: string) {
+    const membership = await access.getMembership(companyId, "user", userId);
+    if (!membership || membership.status !== "active") {
+      throw notFound("Active company user membership not found");
+    }
   }
 
   async function writePolicy(req: Request, companyId: string, userId: string) {
@@ -74,8 +82,10 @@ export function inboxAgentPolicyRoutes(db: Db) {
 
   router.get("/companies/:companyId/users/:userId/inbox-agent-policy", async (req, res) => {
     const companyId = req.params.companyId as string;
+    const userId = req.params.userId as string;
     await assertAdmin(req, companyId);
-    res.json(await policies.get(companyId, req.params.userId as string));
+    await assertActiveUserMembership(companyId, userId);
+    res.json(await policies.get(companyId, userId));
   });
 
   router.put(
@@ -83,8 +93,10 @@ export function inboxAgentPolicyRoutes(db: Db) {
     validate(updateInboxAgentPolicySchema),
     async (req, res) => {
       const companyId = req.params.companyId as string;
+      const userId = req.params.userId as string;
       await assertAdmin(req, companyId);
-      res.json(await writePolicy(req, companyId, req.params.userId as string));
+      await assertActiveUserMembership(companyId, userId);
+      res.json(await writePolicy(req, companyId, userId));
     },
   );
 

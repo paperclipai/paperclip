@@ -195,6 +195,22 @@ describeEmbeddedPostgres("inbox agent policy routes", () => {
       }));
   });
 
+  it("rejects admin policies for users without an active company membership", async () => {
+    const seeded = await seed();
+    const actor = boardActor(seeded.companyId, seeded.userId);
+    await db.insert(principalPermissionGrants).values({
+      companyId: seeded.companyId,
+      principalType: "user",
+      principalId: seeded.userId,
+      permissionKey: "users:manage_permissions",
+    });
+
+    await request(appFor(actor))
+      .put(`/companies/${seeded.companyId}/users/user-missing/inbox-agent-policy`)
+      .send({ mode: "disabled", allowedAgentIds: [] })
+      .expect(404);
+  });
+
   it("rejects agent IDs outside allowlist mode", async () => {
     const seeded = await seed();
     await request(appFor(boardActor(seeded.companyId, seeded.userId)))
