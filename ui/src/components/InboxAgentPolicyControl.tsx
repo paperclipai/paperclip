@@ -97,16 +97,16 @@ export function InboxAgentPolicyControl({ companyId }: { companyId: string | nul
     draft && policy && policyKey(draft.mode, draft.allowedAgentIds) !== policyKey(policy.mode, policy.allowedAgentIds),
   );
 
-  if (policyQuery.isLoading || !draft) {
-    return <div className="text-sm text-muted-foreground">Loading inbox agent policy…</div>;
-  }
-
   if (policyQuery.error) {
     return (
       <div className="text-sm text-destructive">
         {policyQuery.error instanceof Error ? policyQuery.error.message : "Failed to load inbox agent policy."}
       </div>
     );
+  }
+
+  if (policyQuery.isLoading || !draft) {
+    return <div className="text-sm text-muted-foreground">Loading inbox agent policy…</div>;
   }
 
   const toggleAgent = (agentId: string, checked: boolean) => {

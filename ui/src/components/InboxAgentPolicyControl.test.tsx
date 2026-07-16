@@ -98,6 +98,19 @@ describe("InboxAgentPolicyControl", () => {
     vi.clearAllMocks();
   });
 
+  it("surfaces policy load failures instead of staying on loading", async () => {
+    mockInboxAgentPolicyApi.getMine.mockRejectedValue(new Error("Policy endpoint failed"));
+    const root = render(container);
+    await flush();
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Policy endpoint failed");
+      expect(container.textContent).not.toContain("Loading inbox agent policy");
+    });
+
+    act(() => root.unmount());
+  });
+
   it("renders all three policy states with the persisted mode selected", async () => {
     mockInboxAgentPolicyApi.getMine.mockResolvedValue(policy({ mode: "disabled" }));
     const root = render(container);
