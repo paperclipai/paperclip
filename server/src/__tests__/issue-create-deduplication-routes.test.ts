@@ -133,6 +133,28 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
     });
   });
 
+  it("serializes keyed and title-only creates for the same issue", async () => {
+    const companyId = await seedCompany();
+    const parent = await seedParent(companyId);
+    const app = createApp();
+
+    const [keyed, titleOnly] = await Promise.all([
+      request(app)
+        .post(`/api/companies/${companyId}/issues`)
+        .send({ parentId: parent.id, title: "Coordinate launch", idempotencyKey: "run-2:coordinate-launch" }),
+      request(app)
+        .post(`/api/companies/${companyId}/issues`)
+        .send({ parentId: parent.id, title: "Coordinate launch" }),
+    ]);
+
+    expect([keyed.status, titleOnly.status].sort()).toEqual([200, 201]);
+    expect(keyed.body.id).toBe(titleOnly.body.id);
+    expect(await db.select().from(issues).where(eq(issues.parentId, parent.id))).toHaveLength(1);
+    expect(await db.select().from(issueCreateIdempotencyKeys)).toEqual([
+      expect.objectContaining({ issueId: keyed.body.id, idempotencyKey: "run-2:coordinate-launch" }),
+    ]);
+  });
+
   it("allows an explicit duplicate create", async () => {
     const companyId = await seedCompany();
     const parent = await seedParent(companyId);

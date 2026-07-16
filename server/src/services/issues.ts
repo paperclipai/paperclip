@@ -6019,12 +6019,14 @@ export function issueService(db: Db) {
       return db.transaction(async (tx) => {
         const idempotencyKey = rawIdempotencyKey?.trim() || null;
         const normalizedTitle = normalizeCreateIssueTitle(issueData.title);
-        const shouldDeduplicate = Boolean(idempotencyKey) || allowDuplicate === false;
-        if (shouldDeduplicate) {
-          const duplicateGuardKey = idempotencyKey
-            ? `issue-create:idempotency:${companyId}:${idempotencyKey}`
-            : `issue-create:title:${companyId}:${issueData.parentId ?? "root"}:${normalizedTitle}`;
-          await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${duplicateGuardKey}, 0))`);
+        if (allowDuplicate === false) {
+          const titleGuardKey =
+            `issue-create:title:${companyId}:${issueData.parentId ?? "root"}:${normalizedTitle}`;
+          await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${titleGuardKey}, 0))`);
+        }
+        if (idempotencyKey) {
+          const idempotencyGuardKey = `issue-create:idempotency:${companyId}:${idempotencyKey}`;
+          await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${idempotencyGuardKey}, 0))`);
         }
 
         let existingIssue: typeof issues.$inferSelect | undefined;
@@ -6039,7 +6041,8 @@ export function issueService(db: Db) {
             ))
             .limit(1)
             .then((rows) => rows.map((row) => row.issues));
-        } else if (allowDuplicate === false) {
+        }
+        if (!existingIssue && allowDuplicate === false) {
           [existingIssue] = await tx
             .select()
             .from(issues)
@@ -6055,6 +6058,12 @@ export function issueService(db: Db) {
             .limit(1);
         }
         if (existingIssue) {
+          if (idempotencyKey) {
+            await tx
+              .insert(issueCreateIdempotencyKeys)
+              .values({ companyId, idempotencyKey, issueId: existingIssue.id })
+              .onConflictDoNothing();
+          }
           const [enriched] = await withIssueLabels(tx, [existingIssue]);
           const [withRelations] = await withIssueRelationSummaries(companyId, [enriched], tx);
           return withRelations;
