@@ -3390,7 +3390,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         serviceName: PROVIDER_QUOTA_MONITOR_SERVICE_NAME,
         externalRef: input.latestRun.id,
         timeoutAt: null,
-        maxAttempts: 1,
+        maxAttempts: null,
         recoveryPolicy: "wake_owner" as const,
       },
     };

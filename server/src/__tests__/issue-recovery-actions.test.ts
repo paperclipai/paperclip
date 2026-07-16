@@ -481,7 +481,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       monitor: {
         serviceName: "AI provider quota",
         externalRef: runId,
-        maxAttempts: 1,
+        maxAttempts: null,
         recoveryPolicy: "wake_owner",
       },
     });
@@ -494,6 +494,36 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     const secondResult = await recovery.reconcileStrandedAssignedIssues();
     expect(secondResult).toMatchObject({ providerQuotaMonitored: 0, skipped: 1 });
     expect(await db.select().from(issueRecoveryActions)).toHaveLength(0);
+  });
+
+  it("schedules another provider-quota monitor after a prior quota monitor fired", async () => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    await db.update(issues).set({ monitorAttemptCount: 1 }).where(eq(issues.id, sourceIssueId));
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: coderId,
+      invocationSource: "manual",
+      status: "failed",
+      error: "Provider quota exceeded for this model.",
+      errorCode: "adapter_failed",
+      startedAt: new Date("2026-07-15T21:00:00.000Z"),
+      finishedAt: new Date("2026-07-15T21:01:00.000Z"),
+      contextSnapshot: { issueId: sourceIssueId },
+    });
+    const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+
+    const result = await recovery.reconcileStrandedAssignedIssues();
+
+    expect(result.providerQuotaMonitored).toBe(1);
+    const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(updatedIssue?.executionPolicy).toMatchObject({
+      monitor: {
+        maxAttempts: null,
+        externalRef: runId,
+      },
+    });
   });
 
   it("does not create takeover recovery when a quota monitor cannot be scheduled", async () => {
