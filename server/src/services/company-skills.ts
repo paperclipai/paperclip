@@ -3742,7 +3742,6 @@ export function companySkillService(db: Db) {
     companyId: string,
     skillId: string,
     input: CompanySkillRenameRequest,
-    _actor: SkillActor | null = null,
   ): Promise<CompanySkillRenameResult> {
     await ensureSkillInventoryCurrent(companyId);
     const skill = await getById(companyId, skillId);

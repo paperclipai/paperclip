@@ -1669,7 +1669,6 @@ describe("company skill mutation permissions", () => {
       "company-1",
       "skill-1",
       { name: "Ship PR", slug: "ship-pr" },
-      { type: "user", userId: "user-1" },
     );
     expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       action: "company.skill_renamed",
@@ -1680,6 +1679,31 @@ describe("company skill mutation permissions", () => {
         slug: "ship-pr",
         reassignedAgentIds: ["11111111-1111-4111-8111-111111111111"],
       }),
+    }));
+  });
+
+  it("does not log rename activity for a normalized no-op", async () => {
+    mockCompanySkillService.renameSkill.mockResolvedValueOnce({
+      skill: {
+        id: "skill-1",
+        name: "Review",
+        slug: "review",
+        key: "company/company-1/review",
+      },
+      previousName: "Review",
+      previousSlug: "review",
+      previousKey: "company/company-1/review",
+      reassignments: [],
+    });
+    const app = await createApp({ type: "board", source: "local_implicit", userId: "user-1" });
+
+    await request(app)
+      .post("/api/companies/company-1/skills/skill-1/rename")
+      .send({ name: "Review", slug: "review" })
+      .expect(200);
+
+    expect(mockLogActivity).not.toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "company.skill_renamed",
     }));
   });
 

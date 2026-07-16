@@ -837,27 +837,32 @@ export function companySkillRoutes(db: Db) {
         "skills.edit",
         () => skillPolicyResource({ companyId, skillId }),
       );
-      const result = await svc.renameSkill(companyId, skillId, req.body, skillActor(req));
-      const actor = getActorInfo(req);
-      await logActivity(db, {
-        companyId,
-        actorType: actor.actorType,
-        actorId: actor.actorId,
-        agentId: actor.agentId,
-        runId: actor.runId,
-        action: "company.skill_renamed",
-        entityType: "company_skill",
-        entityId: result.skill.id,
-        details: {
-          previousName: result.previousName,
-          previousSlug: result.previousSlug,
-          previousKey: result.previousKey,
-          name: result.skill.name,
-          slug: result.skill.slug,
-          key: result.skill.key,
-          reassignedAgentIds: result.reassignments.map((entry: { agentId: string }) => entry.agentId),
-        },
-      });
+      const result = await svc.renameSkill(companyId, skillId, req.body);
+      const changed = result.previousName !== result.skill.name
+        || result.previousSlug !== result.skill.slug
+        || result.previousKey !== result.skill.key;
+      if (changed) {
+        const actor = getActorInfo(req);
+        await logActivity(db, {
+          companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "company.skill_renamed",
+          entityType: "company_skill",
+          entityId: result.skill.id,
+          details: {
+            previousName: result.previousName,
+            previousSlug: result.previousSlug,
+            previousKey: result.previousKey,
+            name: result.skill.name,
+            slug: result.skill.slug,
+            key: result.skill.key,
+            reassignedAgentIds: result.reassignments.map((entry: { agentId: string }) => entry.agentId),
+          },
+        });
+      }
       res.json(result);
     },
   );
