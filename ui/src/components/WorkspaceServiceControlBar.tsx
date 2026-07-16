@@ -102,28 +102,40 @@ function StatusIndicator({ entry, className }: { entry: WorkspaceServiceControlE
 }
 
 function CopyUrlButton({ url, disabled }: { url: string; disabled?: boolean }) {
-  const [copied, setCopied] = useState(false);
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => () => {
     if (timeoutRef.current) clearTimeout(timeoutRef.current);
   }, []);
+  const copyLabel = copyState === "copied" ? "URL copied" : copyState === "failed" ? "Copy failed" : "Copy URL";
   return (
     <Button
       variant="ghost"
       size="icon-xs"
       disabled={disabled}
-      aria-label="Copy URL"
-      title="Copy URL"
+      aria-label={copyLabel}
+      title={copyLabel}
       className="text-muted-foreground hover:text-foreground"
-      onClick={() => {
-        void navigator.clipboard?.writeText(url);
-        setCopied(true);
+      onClick={async () => {
+        try {
+          if (!navigator.clipboard) throw new Error("Clipboard API unavailable");
+          await navigator.clipboard.writeText(url);
+          setCopyState("copied");
+        } catch {
+          setCopyState("failed");
+        }
         if (timeoutRef.current) clearTimeout(timeoutRef.current);
-        timeoutRef.current = setTimeout(() => setCopied(false), 1500);
+        timeoutRef.current = setTimeout(() => setCopyState("idle"), 1500);
       }}
     >
-      {copied ? <Check className="size-3" /> : <Copy className="size-3" />}
-      <span className="sr-only">Copy URL</span>
+      {copyState === "copied" ? (
+        <Check className="size-3" />
+      ) : copyState === "failed" ? (
+        <TriangleAlert className="size-3 text-destructive" />
+      ) : (
+        <Copy className="size-3" />
+      )}
+      <span className="sr-only" aria-live="polite">{copyLabel}</span>
     </Button>
   );
 }
@@ -181,11 +193,9 @@ function UrlSegment({ entry, compact }: { entry: WorkspaceServiceControlEntry; c
 function ActionSlots({
   entry,
   onAction,
-  serviceKey,
 }: {
   entry: Pick<WorkspaceServiceControlEntry, "state" | "canStart">;
   onAction: (action: WorkspaceServiceControlAction) => void;
-  serviceKey?: string;
 }) {
   const transitional = isTransitional(entry.state);
   const canStart = entry.canStart ?? true;
