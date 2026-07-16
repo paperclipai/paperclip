@@ -5392,6 +5392,20 @@ export function resolveHeartbeatSchedulingSuppression(
   return { suppressed: false, reason: null };
 }
 
+export function computeAdoptedRunActiveElapsedMs(input: {
+  processStartedAt: Date | null;
+  adoptionDowntimeMs: number | null;
+  now?: Date;
+}) {
+  if (!input.processStartedAt) return 0;
+  return Math.max(
+    0,
+    (input.now?.getTime() ?? Date.now()) -
+      input.processStartedAt.getTime() -
+      Math.max(0, input.adoptionDowntimeMs ?? 0),
+  );
+}
+
 export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) {
   const instanceSettings = instanceSettingsService(db);
   const getCurrentUserRedactionOptions = async () => ({
@@ -13725,14 +13739,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                       adoptExisting: {
                         pid: run.processPid,
                         processGroupId: run.processGroupId,
-                        activeElapsedMs: run.processStartedAt && run.adoptionMarkedAt
-                          ? Math.max(
-                              0,
-                              run.adoptionMarkedAt.getTime() -
-                                run.processStartedAt.getTime() -
-                                (run.adoptionDowntimeMs ?? 0),
-                            )
-                          : 0,
+                        activeElapsedMs: computeAdoptedRunActiveElapsedMs({
+                          processStartedAt: run.processStartedAt,
+                          adoptionDowntimeMs: run.adoptionDowntimeMs,
+                        }),
                       },
                     }
                   : {}),

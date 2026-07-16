@@ -98,6 +98,7 @@ vi.mock("../adapters/index.ts", async () => {
 });
 
 import {
+  computeAdoptedRunActiveElapsedMs,
   INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
   INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
   heartbeatService,
@@ -122,6 +123,33 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+
+describe("computeAdoptedRunActiveElapsedMs", () => {
+  it("subtracts restart downtime once from total process elapsed time", () => {
+    const now = new Date("2026-07-16T12:35:00.000Z");
+
+    expect(computeAdoptedRunActiveElapsedMs({
+      processStartedAt: new Date("2026-07-16T12:00:00.000Z"),
+      adoptionDowntimeMs: 5 * 60 * 1000,
+      now,
+    })).toBe(30 * 60 * 1000);
+  });
+
+  it("clamps missing or excessive elapsed time to zero", () => {
+    const now = new Date("2026-07-16T12:05:00.000Z");
+
+    expect(computeAdoptedRunActiveElapsedMs({
+      processStartedAt: null,
+      adoptionDowntimeMs: 0,
+      now,
+    })).toBe(0);
+    expect(computeAdoptedRunActiveElapsedMs({
+      processStartedAt: new Date("2026-07-16T12:00:00.000Z"),
+      adoptionDowntimeMs: 10 * 60 * 1000,
+      now,
+    })).toBe(0);
+  });
+});
 
 if (!embeddedPostgresSupport.supported) {
   console.warn(
