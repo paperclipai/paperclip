@@ -3374,17 +3374,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     latestRun: NonNullable<LatestIssueRun>;
     classification: Extract<NonNullable<AdapterFailureRecoveryClassification>, { kind: "provider_quota" }>;
   }) {
-    const pendingExecutionState = input.issue.status === "in_review"
-      ? parseIssueExecutionState(input.issue.executionState)
-      : null;
-    const participant = pendingExecutionState?.status === "pending"
-      ? pendingExecutionState.currentParticipant
-      : null;
-    const targetAgentId = input.issue.status === "in_progress"
-      ? input.issue.assigneeAgentId
-      : participant?.type === "agent"
-        ? participant.agentId
-        : null;
+    const targetAgentId = getAdapterFailureRecoveryTargetAgentId(input.issue);
     if (!targetAgentId || input.latestRun.agentId !== targetAgentId) return null;
 
     const previousPolicy = normalizeIssueExecutionPolicy(input.issue.executionPolicy ?? null);
@@ -3440,6 +3430,16 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     });
 
     return updated;
+  }
+
+  function getAdapterFailureRecoveryTargetAgentId(issue: typeof issues.$inferSelect) {
+    if (issue.status !== "in_review") return issue.assigneeAgentId;
+
+    const pendingExecutionState = parseIssueExecutionState(issue.executionState);
+    const participant = pendingExecutionState?.status === "pending"
+      ? pendingExecutionState.currentParticipant
+      : null;
+    return participant?.type === "agent" ? participant.agentId : null;
   }
 
   function hasPendingProviderQuotaRecoveryMonitor(
@@ -3560,6 +3560,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         ? classifyAdapterFailureForRecovery(latestRun, recoveryNow)
         : null;
       if (latestRun && adapterFailureClassification) {
+        const targetAgentId = getAdapterFailureRecoveryTargetAgentId(issue);
+        if (!targetAgentId || latestRun.agentId !== targetAgentId) {
+          result.skipped += 1;
+          continue;
+        }
+
         if (adapterFailureClassification.kind === "provider_quota") {
           const monitored = await scheduleProviderQuotaRecoveryMonitor({
             issue,
