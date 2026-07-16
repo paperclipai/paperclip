@@ -530,6 +530,48 @@ export function buildAttentionFilterOptions(items: AttentionItem[]): AttentionFi
   };
 }
 
+export interface AttentionRenderPlan {
+  /** Rows to render per group key (empty for collapsed groups). */
+  groupRows: Map<string, AttentionItem[]>;
+  snoozedRows: AttentionItem[];
+  dismissedRows: AttentionItem[];
+  /** True when at least one visible row was left unrendered by the budget. */
+  hasMoreRows: boolean;
+}
+
+/**
+ * Allocate a bounded render budget across the queue in document order — active
+ * groups first, then the open curtains (PAP-13784). The feed is uncapped, so
+ * the page renders only `limit` rows and grows the budget as the user scrolls;
+ * collapsed groups and closed curtains cost nothing.
+ */
+export function planAttentionRenderRows(options: {
+  groups: AttentionGroup[];
+  collapsedGroupKeys: ReadonlySet<string>;
+  snoozedItems: AttentionItem[];
+  snoozedOpen: boolean;
+  dismissedItems: AttentionItem[];
+  dismissedOpen: boolean;
+  limit: number;
+}): AttentionRenderPlan {
+  let remaining = options.limit;
+  let truncated = false;
+  const take = (items: AttentionItem[]): AttentionItem[] => {
+    const slice = items.slice(0, Math.max(0, remaining));
+    remaining -= slice.length;
+    if (slice.length < items.length) truncated = true;
+    return slice;
+  };
+  const groupRows = new Map<string, AttentionItem[]>();
+  for (const group of options.groups) {
+    const collapsed = group.label !== null && options.collapsedGroupKeys.has(group.key);
+    groupRows.set(group.key, collapsed ? [] : take(group.items));
+  }
+  const snoozedRows = options.snoozedOpen ? take(options.snoozedItems) : [];
+  const dismissedRows = options.dismissedOpen ? take(options.dismissedItems) : [];
+  return { groupRows, snoozedRows, dismissedRows, hasMoreRows: truncated };
+}
+
 const DATE_BUCKET_ORDER = ["today", "yesterday", "this_week", "earlier"] as const;
 type DateBucket = (typeof DATE_BUCKET_ORDER)[number];
 

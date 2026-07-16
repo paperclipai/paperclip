@@ -7,6 +7,7 @@ import {
   buildCodexAcpConfig,
   createCodexAcpExecutor,
   nodeVersionMeetsCodexAcpMinimum,
+  resolveCodexAcpBillingIdentity,
   resolveCodexExecutionEngine,
   resolveCodexExecutionEngineForRun,
   testCodexAcpEnvironment,
@@ -245,6 +246,41 @@ describe("codex_local ACP lane", () => {
     ).resolves.toEqual({ engine: "acp", explicit: true });
   });
 
+  it("selects the confined CLI lane for local filesystem or network scope", async () => {
+    await expect(
+      resolveCodexExecutionEngineForRun({
+        config: { filesystemScope: "workspace" },
+        executionTarget: null,
+      }),
+    ).resolves.toMatchObject({
+      engine: "cli",
+      explicit: false,
+      fallbackReason: expect.stringContaining("spawn-level confinement"),
+    });
+    await expect(
+      resolveCodexExecutionEngineForRun({
+        config: { engine: "acp", filesystemScope: "workspace" },
+        executionTarget: null,
+      }),
+    ).rejects.toThrow("ACP confinement is not supported");
+    await expect(
+      resolveCodexExecutionEngineForRun({
+        config: { networkScope: "allowlist" },
+        executionTarget: null,
+      }),
+    ).resolves.toMatchObject({
+      engine: "cli",
+      explicit: false,
+      fallbackReason: expect.stringContaining("network scope"),
+    });
+    await expect(
+      resolveCodexExecutionEngineForRun({
+        config: { filesystemScope: "workpace" },
+        executionTarget: null,
+      }),
+    ).rejects.toThrow('filesystemScope must be "workspace"');
+  });
+
   it("uses ACP for bridged sandbox auto runs when the ACP command is configured as a shell command", async () => {
     setNodeVersion("v22.13.0");
     await expect(
@@ -451,6 +487,28 @@ describe("codex_local ACP lane", () => {
     expect(meta[0]?.env?.CODEX_HOME).toBe(path.join(root, "codex-home"));
   });
 
+  it("classifies ACP refresh-token auth failures", async () => {
+    const root = await makeTempRoot("paperclip-codex-acp-refresh-token-");
+    const execute = createCodexAcpExecutor({
+      createRuntime: (options: FakeRuntimeOptions) => new FakeRuntime(
+        options,
+        [],
+        {
+          status: "failed",
+          error: { message: "OAuth failed: refresh_token_invalidated" },
+        } as unknown as FakeRuntimeTurnResult,
+      ) as never,
+    });
+
+    const result = await execute(buildContext(root));
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("refresh_token_invalidated");
+    expect(result.errorFamily).toBe("refresh_token_invalidated");
+    expect(result.resultJson?.errorFamily).toBe("refresh_token_invalidated");
+    expect(result.resultJson).not.toHaveProperty("codexCredentialTelemetry");
+  });
+
   it("resumes compatible ACP sessions on later Codex ACP runs", async () => {
     const root = await makeTempRoot("paperclip-codex-acp-resume-");
     const runtimes: FakeRuntime[] = [];
@@ -475,5 +533,52 @@ describe("codex_local ACP lane", () => {
     expect(second.exitCode).toBe(0);
     expect(runtimes).toHaveLength(2);
     expect(runtimes[1]?.ensureInputs[0]?.resumeSessionId).toBe("acp-1");
+  });
+});
+
+describe("resolveCodexAcpBillingIdentity", () => {
+  const originalOpenAiKey = process.env.OPENAI_API_KEY;
+  const originalOpenRouterKey = process.env.OPENROUTER_API_KEY;
+
+  afterEach(() => {
+    if (originalOpenAiKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = originalOpenAiKey;
+    if (originalOpenRouterKey === undefined) delete process.env.OPENROUTER_API_KEY;
+    else process.env.OPENROUTER_API_KEY = originalOpenRouterKey;
+  });
+
+  it("classifies an adapter-config API key as api billing to openai", () => {
+    delete process.env.OPENROUTER_API_KEY;
+    expect(
+      resolveCodexAcpBillingIdentity({ config: { env: { OPENAI_API_KEY: "sk-test" } } }),
+    ).toEqual({ provider: "openai", biller: "openai", billingType: "api" });
+  });
+
+  it("falls back to chatgpt subscription without an API key", () => {
+    delete process.env.OPENAI_API_KEY;
+    delete process.env.OPENROUTER_API_KEY;
+    expect(resolveCodexAcpBillingIdentity({ config: {} })).toEqual({
+      provider: "openai",
+      biller: "chatgpt",
+      billingType: "subscription",
+    });
+  });
+
+  it("bills OpenRouter-backed runs to openrouter", () => {
+    expect(
+      resolveCodexAcpBillingIdentity({
+        config: { env: { OPENAI_API_KEY: "sk-test", OPENROUTER_API_KEY: "or-test" } },
+      }),
+    ).toEqual({ provider: "openai", biller: "openrouter", billingType: "api" });
+  });
+
+  it("ignores host env for remote execution targets", () => {
+    process.env.OPENAI_API_KEY = "sk-host-only";
+    expect(
+      resolveCodexAcpBillingIdentity({
+        config: {},
+        executionTarget: { kind: "remote", transport: "sandbox", remoteCwd: "/work" },
+      } as never).billingType,
+    ).toBe("subscription");
   });
 });

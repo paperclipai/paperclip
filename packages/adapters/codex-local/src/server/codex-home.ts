@@ -7,7 +7,28 @@ import { resolvePaperclipInstanceRootForAdapter } from "@paperclipai/adapter-uti
 const TRUTHY_ENV_RE = /^(1|true|yes|on)$/i;
 const COPIED_SHARED_FILES = ["config.json", "config.toml", "instructions.md"] as const;
 const SYMLINKED_SHARED_FILES = ["auth.json"] as const;
-const AUTH_CREDENTIAL_KEYS = /(?:openai[_-]?key|api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|session|auth)/i;
+const MANAGED_MCP_BLOCK_START = "# BEGIN PAPERCLIP MANAGED MCP";
+const MANAGED_MCP_BLOCK_END = "# END PAPERCLIP MANAGED MCP";
+
+export type ManagedCodexMcpGateway = {
+  name: string;
+  endpointPath: string;
+  bearerToken: string;
+};
+
+export function mergeManagedCodexMcpGateways(
+  primary: ManagedCodexMcpGateway[],
+  secondary: ManagedCodexMcpGateway[],
+): ManagedCodexMcpGateway[] {
+  const merged = [...primary];
+  const names = new Set(primary.map((gateway) => gateway.name));
+  for (const gateway of secondary) {
+    if (names.has(gateway.name)) continue;
+    merged.push(gateway);
+    names.add(gateway.name);
+  }
+  return merged;
+}
 
 function nonEmpty(value: string | undefined): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
@@ -17,15 +38,30 @@ export async function pathExists(candidate: string): Promise<boolean> {
   return fs.access(candidate).then(() => true).catch(() => false);
 }
 
+// Co-change notice: this function's logic is mirrored by parseAuth in
+// packages/adapter-utils/src/sandbox-managed-runtime.ts (buildCodexAuthMergeDecisionScript).
+// If the auth format changes (new shape, renamed field), update both sites together.
 function hasUsableAuthPayload(authPayload: unknown): boolean {
   if (authPayload === null || typeof authPayload !== "object" || Array.isArray(authPayload)) {
     return false;
   }
 
-  for (const [key, value] of Object.entries(authPayload as Record<string, unknown>)) {
-    if (!AUTH_CREDENTIAL_KEYS.test(key)) continue;
-    if (key.toLowerCase() === "token_type") continue;
-    if (typeof value === "string" && value.trim().length > 0) return true;
+  const parsedPayload = authPayload as Record<string, unknown>;
+  const apiKey = parsedPayload.OPENAI_API_KEY;
+  if (typeof apiKey === "string" && apiKey.trim().length > 0) {
+    return true;
+  }
+
+  const tokens = parsedPayload.tokens;
+  if (tokens !== null && typeof tokens === "object" && !Array.isArray(tokens)) {
+    const parsedTokens = tokens as Record<string, unknown>;
+    const accountId = parsedTokens.account_id;
+    const hasAccountId = typeof accountId === "string" && accountId.trim().length > 0;
+    const hasTokenMaterial = ["id_token", "access_token", "refresh_token"].some((key) => {
+      const value = parsedTokens[key];
+      return typeof value === "string" && value.trim().length > 0;
+    });
+    if (hasAccountId && hasTokenMaterial) return true;
   }
 
   return false;
@@ -177,6 +213,99 @@ async function ensureCopiedFile(target: string, source: string): Promise<void> {
   if (existing) return;
   await ensureParentDir(target);
   await fs.copyFile(source, target);
+}
+
+function tomlString(value: string): string {
+  return JSON.stringify(value);
+}
+
+function sanitizeMcpServerName(value: string, fallback: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80) || fallback;
+}
+
+function stripManagedMcpBlock(config: string): string {
+  const start = config.indexOf(MANAGED_MCP_BLOCK_START);
+  if (start < 0) return config.trimEnd();
+  const end = config.indexOf(MANAGED_MCP_BLOCK_END, start);
+  if (end < 0) return config.slice(0, start).trimEnd();
+  return `${config.slice(0, start)}${config.slice(end + MANAGED_MCP_BLOCK_END.length)}`.trimEnd();
+}
+
+function readCodexMcpServerNames(config: string): Set<string> {
+  const names = new Set<string>();
+  for (const match of config.matchAll(/^\s*\[\s*mcp_servers\s*\.\s*(?:"([^"]+)"|'([^']+)'|([^\]\s#]+))\s*\]/gm)) {
+    const name = match[1] ?? match[2] ?? match[3];
+    if (name) names.add(name.trim());
+  }
+  return names;
+}
+
+function buildManagedMcpBlock(input: {
+  gateways: ManagedCodexMcpGateway[];
+  apiBaseUrl: string;
+  existingNames: Set<string>;
+}): { block: string; warnings: string[] } {
+  const warnings: string[] = [];
+  const usedNames = new Set<string>();
+  const lines = [
+    MANAGED_MCP_BLOCK_START,
+    "# Written by Paperclip for governed MCP gateway access. Do not edit this block by hand.",
+  ];
+  input.gateways.forEach((gateway, index) => {
+    const baseName = sanitizeMcpServerName(gateway.name, `gateway-${index + 1}`);
+    const directOverlap = input.existingNames.has(gateway.name) || input.existingNames.has(baseName);
+    let managedName = directOverlap ? `paperclip-${baseName}` : baseName;
+    let suffix = 2;
+    while (usedNames.has(managedName) || input.existingNames.has(managedName)) {
+      managedName = `paperclip-${baseName}-${suffix}`;
+      suffix += 1;
+    }
+    usedNames.add(managedName);
+    if (directOverlap) {
+      warnings.push(
+        `Found unmanaged Codex MCP server "${gateway.name}" overlapping a Paperclip-governed gateway; leaving the direct entry in place and adding managed gateway "${managedName}". Paperclip cannot enforce policies for that direct entry.`,
+      );
+    }
+    const url = new URL(gateway.endpointPath, input.apiBaseUrl).toString();
+    lines.push(
+      "",
+      `[mcp_servers.${tomlString(managedName)}]`,
+      `url = ${tomlString(url)}`,
+      `headers = { Authorization = ${tomlString(`Bearer ${gateway.bearerToken}`)} }`,
+    );
+  });
+  lines.push(MANAGED_MCP_BLOCK_END);
+  return { block: lines.join("\n"), warnings };
+}
+
+export async function writeManagedCodexMcpConfig(input: {
+  codexHome: string;
+  apiBaseUrl: string;
+  gateways: ManagedCodexMcpGateway[];
+}): Promise<{ configPath: string; warnings: string[] }> {
+  const configPath = path.join(input.codexHome, "config.toml");
+  await fs.mkdir(input.codexHome, { recursive: true });
+  const existing = await fs.readFile(configPath, "utf8").catch((error) => {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return "";
+    throw error;
+  });
+  const unmanagedConfig = stripManagedMcpBlock(existing);
+  const { block, warnings } = buildManagedMcpBlock({
+    gateways: input.gateways,
+    apiBaseUrl: input.apiBaseUrl,
+    existingNames: readCodexMcpServerNames(unmanagedConfig),
+  });
+  const next = input.gateways.length > 0
+    ? `${unmanagedConfig}${unmanagedConfig ? "\n\n" : ""}${block}\n`
+    : `${unmanagedConfig}${unmanagedConfig ? "\n" : ""}`;
+  await fs.writeFile(configPath, next, { mode: 0o600 });
+  await fs.chmod(configPath, 0o600);
+  return { configPath, warnings };
 }
 
 /**

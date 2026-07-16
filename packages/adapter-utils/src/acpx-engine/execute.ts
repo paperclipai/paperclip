@@ -5,7 +5,12 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import type {
+  AdapterBillingType,
+  AdapterExecutionContext,
+  AdapterExecutionResult,
+  UsageSummary,
+} from "@paperclipai/adapter-utils";
 import {
   adapterExecutionTargetSessionIdentity,
   formatAdapterExecutionTimeoutErrorMessage,
@@ -28,6 +33,7 @@ import {
   ensureAbsoluteDirectory,
   ensurePathInEnv,
   ensurePaperclipSkillSymlink,
+  isPaperclipRuntimeEnvKey,
   joinPromptSections,
   materializePaperclipSkillCopy,
   parseObject,
@@ -54,8 +60,11 @@ import {
   type AcpRuntimeEvent,
   type AcpRuntimeHandle,
   type AcpRuntimeOptions,
+  type AcpRuntimeStatus,
   type AcpRuntimeTurn,
   type AcpRuntimeTurnResult,
+  type AcpRuntimeUsageBreakdown,
+  type AcpRuntimeUsageCost,
 } from "acpx/runtime";
 import {
   DEFAULT_ACP_ENGINE_AGENT,
@@ -86,6 +95,12 @@ interface AcpxEngineSettings {
   packageRootDir: string;
 }
 
+export interface AcpxEngineBillingIdentity {
+  provider?: string | null;
+  biller?: string | null;
+  billingType?: AdapterBillingType | null;
+}
+
 export interface AcpxEngineExecutorOptions {
   createRuntime?: AcpxRuntimeFactory;
   now?: () => number;
@@ -93,6 +108,14 @@ export interface AcpxEngineExecutorOptions {
   adapterType?: string;
   moduleDir?: string;
   packageRootDir?: string;
+  /**
+   * Adapter-specific billing classification (provider/biller/billingType) for
+   * cost-ledger attribution. Without it, results fall back to the opaque
+   * "acpx" provider and an "unknown" billing type.
+   */
+  resolveBillingIdentity?: (
+    ctx: AdapterExecutionContext,
+  ) => AcpxEngineBillingIdentity | null | Promise<AcpxEngineBillingIdentity | null>;
 }
 
 interface AcpxPreparedRuntime {
@@ -123,6 +146,8 @@ interface AcpxPreparedRuntime {
   skillsIdentity: Record<string, unknown>;
   childStderrLogPath: string | null;
   paperclipClaudeSettings: PaperclipClaudeSettingsResult | null;
+  mcpServers: NonNullable<AcpRuntimeOptions["mcpServers"]>;
+  mcpIdentity: Array<{ name: string; url: string; connectionId: string }>;
 }
 
 const defaultWarmHandles = new Map<string, RuntimeCacheEntry>();
@@ -733,6 +758,7 @@ function buildSessionParams(input: {
     ...(prepared.requestedThinkingEffort ? { thinkingEffort: prepared.requestedThinkingEffort } : {}),
     ...(prepared.fastMode ? { fastMode: true } : {}),
     skills: prepared.skillsIdentity,
+    mcpServers: prepared.mcpIdentity,
     ...(prepared.workspaceId ? { workspaceId: prepared.workspaceId } : {}),
     ...(prepared.workspaceRepoUrl ? { repoUrl: prepared.workspaceRepoUrl } : {}),
     ...(prepared.workspaceRepoRef ? { repoRef: prepared.workspaceRepoRef } : {}),
@@ -951,6 +977,18 @@ async function buildRuntime(input: {
   const requestedModel = asString(config.model, "").trim();
   const requestedThinkingEffort = normalizeRequestedThinkingEffort(config);
   const fastMode = acpxAgent === "codex" && config.fastMode === true;
+  const runtimeMcpServers = input.ctx.runtimeMcp?.getServers() ?? [];
+  const mcpIdentity = runtimeMcpServers.map(({ name, url, connectionId }) => ({
+    name,
+    url,
+    connectionId,
+  }));
+  const mcpServers: NonNullable<AcpRuntimeOptions["mcpServers"]> = runtimeMcpServers.map((server) => ({
+    type: "http",
+    name: server.name,
+    url: server.url,
+    headers: [{ name: "Authorization", value: `Bearer ${server.token}` }],
+  }));
   // Resolve the wall-clock timeout through the shared execution-target
   // resolver so sandbox-backed runs pick up the 4h backstop default while
   // local/SSH runs keep the historical "0 = no adapter timeout" behavior.
@@ -1007,8 +1045,24 @@ async function buildRuntime(input: {
     executionCwd: shapedWorkspaceEnv.workspaceCwd,
     executionTargetIsRemote,
   });
+  // Resolved adapter env (plain + server-resolved secret_ref values) that we
+  // forward to the spawned agent process. Captured so a stable hash of it can be
+  // folded into the session fingerprint below — a change here must invalidate a
+  // warm/resumable session so the next launch picks up the latest env. Only
+  // user/adapter-configured env flows through this loop; per-wake PAPERCLIP_*
+  // runtime vars (PAPERCLIP_RUN_ID, wake/approval ids, ...) were assigned to
+  // `env` above and are never present in shapedEnvConfig, so they inherently
+  // stay out of the hash and don't reset the session every heartbeat.
+  const resolvedAdapterEnv: Record<string, string> = {};
   for (const [key, value] of Object.entries(shapedEnvConfig)) {
-    if (typeof value === "string") env[key] = value;
+    if (typeof value !== "string") continue;
+    // Runtime PAPERCLIP_* always wins over config: skip a PAPERCLIP_* key that
+    // Paperclip has already assigned this run. A PAPERCLIP_* key Paperclip did
+    // NOT set (e.g. an explicitly configured PAPERCLIP_API_KEY, applied here) is
+    // stable per-run config, so it applies and feeds the fingerprint hash below.
+    if (isPaperclipRuntimeEnvKey(key) && key in env) continue;
+    env[key] = value;
+    resolvedAdapterEnv[key] = value;
   }
   if (!hasExplicitApiKey && authToken) env.PAPERCLIP_API_KEY = authToken;
   // For the claude agent, set model via ANTHROPIC_MODEL at startup rather than
@@ -1178,7 +1232,16 @@ async function buildRuntime(input: {
           defaultMode: paperclipClaudeSettings.defaultMode,
         }
       : null,
+    mcpServers: mcpIdentity,
     secretManifestHash: shortHash(secretManifest),
+    // Fold the resolved adapter env (all applied user-configured values —
+    // plain, secret_ref, and stable PAPERCLIP_* config such as an explicit
+    // PAPERCLIP_API_KEY) into the fingerprint so a change to any forwarded value
+    // invalidates a warm handle / resumable session and forces a fresh launch
+    // that sources the latest env. secretManifestHash alone misses plain-value
+    // edits and same-version secret rotations. Per-wake runtime vars never enter
+    // resolvedAdapterEnv, so they don't churn the fingerprint every heartbeat.
+    adapterEnvHash: shortHash(resolvedAdapterEnv),
   });
   const taskKey = asString(input.ctx.runtime.taskKey, "") || wakeTaskId || workspaceId || "default";
   const sessionKey = `paperclip:${agent.companyId}:${agent.id}:${taskKey}:${fingerprint}`;
@@ -1219,6 +1282,8 @@ async function buildRuntime(input: {
     },
     childStderrLogPath,
     paperclipClaudeSettings,
+    mcpServers,
+    mcpIdentity,
   };
 }
 
@@ -1428,6 +1493,8 @@ async function emitRuntimeEvent(ctx: AdapterExecutionContext, event: AcpRuntimeE
       tag: event.tag,
       used: event.used,
       size: event.size,
+      ...(event.cost ? { cost: event.cost } : {}),
+      ...(event.breakdown ? { breakdown: event.breakdown } : {}),
     });
     return;
   }
@@ -1452,6 +1519,116 @@ async function emitRuntimeEvent(ctx: AdapterExecutionContext, event: AcpRuntimeE
 function resultErrorMessage(result: AcpRuntimeTurnResult): string | null {
   if (result.status !== "failed") return null;
   return result.error.message;
+}
+
+function usageBreakdownsEqual(
+  left: AcpRuntimeUsageBreakdown,
+  right: AcpRuntimeUsageBreakdown,
+): boolean {
+  return (
+    asNumber(left.inputTokens, 0) === asNumber(right.inputTokens, 0) &&
+    asNumber(left.outputTokens, 0) === asNumber(right.outputTokens, 0) &&
+    asNumber(left.cachedReadTokens, 0) === asNumber(right.cachedReadTokens, 0) &&
+    asNumber(left.cachedWriteTokens, 0) === asNumber(right.cachedWriteTokens, 0) &&
+    asNumber(left.thoughtTokens, 0) === asNumber(right.thoughtTokens, 0) &&
+    asNumber(left.totalTokens, 0) === asNumber(right.totalTokens, 0)
+  );
+}
+
+function usdCostAmount(cost: AcpRuntimeUsageCost | null | undefined): number | null {
+  if (!cost || typeof cost.amount !== "number" || !Number.isFinite(cost.amount)) return null;
+  if (cost.currency && cost.currency.trim().toUpperCase() !== "USD") return null;
+  return cost.amount;
+}
+
+async function readRuntimeStatus(
+  runtime: AcpRuntime,
+  handle: AcpRuntimeHandle,
+): Promise<AcpRuntimeStatus | null> {
+  if (!runtime.getStatus) return null;
+  try {
+    return (await runtime.getStatus({ handle })) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Fold the ACP runtime's post-turn usage into the adapter execution result
+ * shape. The runtime persists the latest turn's token breakdown (adapters like
+ * claude-agent-acp report per-turn accumulated usage in the prompt response),
+ * so tokens are per-run. Cost is reported by agents as a cumulative session
+ * amount, so the per-run cost is the delta against the pre-turn snapshot; a
+ * decrease means the agent process restarted and its counter reset, in which
+ * case the post-turn amount alone covers this run.
+ */
+export function summarizeAcpxTurnUsage(input: {
+  preStatus: AcpRuntimeStatus | null;
+  postStatus: AcpRuntimeStatus | null;
+  eventBreakdown: AcpRuntimeUsageBreakdown | null;
+  eventCostUsd: number | null;
+}): {
+  usage: UsageSummary | null;
+  usageDetail: Record<string, number> | null;
+  costUsd: number | null;
+  cumulativeCostUsd: number | null;
+} {
+  // The persisted breakdown is overwritten per turn, so an unchanged value
+  // is stale for this turn. Prefer an in-turn event breakdown when available;
+  // otherwise suppress the stale value so it cannot be double-counted.
+  const preBreakdown = input.preStatus?.usage?.cumulative ?? null;
+  const postBreakdown = input.postStatus?.usage?.cumulative ?? null;
+  const postBreakdownIsStale =
+    preBreakdown != null &&
+    postBreakdown != null &&
+    usageBreakdownsEqual(preBreakdown, postBreakdown);
+  const breakdown = postBreakdownIsStale
+    ? input.eventBreakdown
+    : postBreakdown ?? input.eventBreakdown ?? null;
+  const inputTokens = Math.max(0, Math.floor(asNumber(breakdown?.inputTokens, 0)));
+  const outputTokens = Math.max(0, Math.floor(asNumber(breakdown?.outputTokens, 0)));
+  const cachedReadTokens = Math.max(0, Math.floor(asNumber(breakdown?.cachedReadTokens, 0)));
+  const cachedWriteTokens = Math.max(0, Math.floor(asNumber(breakdown?.cachedWriteTokens, 0)));
+  const hasTokens = inputTokens > 0 || outputTokens > 0 || cachedReadTokens > 0 || cachedWriteTokens > 0;
+  // Cache-write tokens are prompt tokens the provider billed to create cache
+  // entries; UsageSummary has no dedicated field, so count them as input.
+  const usage: UsageSummary | null = hasTokens
+    ? {
+        inputTokens: inputTokens + cachedWriteTokens,
+        outputTokens,
+        cachedInputTokens: cachedReadTokens,
+      }
+    : null;
+  const usageDetail = breakdown
+    ? Object.fromEntries(
+        Object.entries({
+          inputTokens: breakdown.inputTokens,
+          outputTokens: breakdown.outputTokens,
+          cachedReadTokens: breakdown.cachedReadTokens,
+          cachedWriteTokens: breakdown.cachedWriteTokens,
+          thoughtTokens: breakdown.thoughtTokens,
+          totalTokens: breakdown.totalTokens,
+        }).filter((entry): entry is [string, number] => typeof entry[1] === "number"),
+      )
+    : null;
+
+  const previousCostUsd = usdCostAmount(input.preStatus?.usage?.cost);
+  const postCostUsd = usdCostAmount(input.postStatus?.usage?.cost);
+  const postCostIsStale =
+    input.eventCostUsd != null &&
+    previousCostUsd != null &&
+    postCostUsd != null &&
+    postCostUsd === previousCostUsd;
+  const cumulativeCostUsd = postCostIsStale ? input.eventCostUsd : postCostUsd ?? input.eventCostUsd;
+  let costUsd: number | null = null;
+  if (cumulativeCostUsd != null) {
+    costUsd =
+      previousCostUsd != null && cumulativeCostUsd >= previousCostUsd
+        ? cumulativeCostUsd - previousCostUsd
+        : cumulativeCostUsd;
+  }
+
+  return { usage, usageDetail, costUsd, cumulativeCostUsd };
 }
 
 type AcpxExecutionPhase = "ensure_session" | "configure_session" | "turn";
@@ -1695,6 +1872,17 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
   const engine = resolveEngineSettings(deps);
 
   return async function executeAcpxEngine(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
+    let billingIdentity: AcpxEngineBillingIdentity | null = null;
+    try {
+      billingIdentity = (await deps.resolveBillingIdentity?.(ctx)) ?? null;
+    } catch {
+      billingIdentity = null;
+    }
+    const billingFields = {
+      provider: billingIdentity?.provider ?? "acpx",
+      ...(billingIdentity?.biller ? { biller: billingIdentity.biller } : {}),
+      billingType: billingIdentity?.billingType ?? ("unknown" as const),
+    };
     const prepared = await buildRuntime({ ctx, engine });
     // State the effective wall-clock timeout and its source up front so a
     // later timeout is diagnosable from the run log alone. Goes to stderr:
@@ -1717,6 +1905,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       agentRegistry: prepared.agentRegistry,
       permissionMode: prepared.permissionMode,
       nonInteractivePermissions: prepared.nonInteractivePermissions,
+      mcpServers: prepared.mcpServers,
       timeoutMs: prepared.timeoutSec > 0 ? prepared.timeoutSec * 1000 : undefined,
       // Scope ACPX runtime verbose logs to the claude agent only. Codex
       // and custom agents already emit their own per-tool output and don't
@@ -1776,7 +1965,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         timedOut: false,
         errorMessage: message,
         ...classified,
-        provider: "acpx",
+        ...billingFields,
         model: prepared.requestedModel || null,
         clearSession,
         resultJson: { phase: "ensure_session" },
@@ -1792,7 +1981,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         timedOut: false,
         errorMessage: "ACPX did not return a runtime session handle.",
         errorCode: "acpx_runtime_error",
-        provider: "acpx",
+        ...billingFields,
         model: prepared.requestedModel || null,
         resultJson: { phase: "ensure_session" },
         summary: "ACPX did not return a runtime session handle.",
@@ -1830,7 +2019,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         timedOut: false,
         errorMessage: message,
         ...classified,
-        provider: "acpx",
+        ...billingFields,
         model: prepared.requestedModel || null,
         clearSession,
         resultJson: {
@@ -1892,7 +2081,12 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
     let timeout: NodeJS.Timeout | null = null;
     let timedOut = false;
     const textParts: string[] = [];
+    let eventBreakdown: AcpRuntimeUsageBreakdown | null = null;
+    let eventCostUsd: number | null = null;
     try {
+      // Snapshot pre-turn usage so cumulative agent-reported cost can be
+      // attributed to this run alone.
+      const preTurnStatus = await readRuntimeStatus(runtime, sessionHandle);
       const timeoutMs = prepared.timeoutSec > 0 ? prepared.timeoutSec * 1000 : undefined;
       controller = new AbortController();
       if (timeoutMs) {
@@ -1915,10 +2109,22 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       };
       for await (const event of turn.events) {
         if (event.type === "text_delta") textParts.push(event.text);
+        if (event.type === "status" && event.tag === "usage_update") {
+          eventBreakdown = event.breakdown ?? eventBreakdown;
+          eventCostUsd = usdCostAmount(event.cost) ?? eventCostUsd;
+        }
         await emitRuntimeEvent(ctx, event);
       }
       const terminal = await turn.result;
       if (timeout) clearTimeout(timeout);
+      // Read usage before the close/warm-handle paths below can discard state.
+      const postTurnStatus = await readRuntimeStatus(runtime, sessionHandle);
+      const turnUsage = summarizeAcpxTurnUsage({
+        preStatus: preTurnStatus,
+        postStatus: postTurnStatus,
+        eventBreakdown,
+        eventCostUsd,
+      });
       if (terminal.status === "failed" || terminal.status === "cancelled" || timedOut) {
         const existing = warmHandles.get(prepared.sessionKey);
         if (warmHandleMatches(existing, runtime, sessionHandle) && existing) {
@@ -1998,10 +2204,10 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         sessionId: sessionHandle.backendSessionId ?? sessionHandle.runtimeSessionName,
         sessionParams: buildSessionParams({ prepared, handle: sessionHandle }),
         sessionDisplayId: sessionHandle.agentSessionId ?? sessionHandle.backendSessionId ?? sessionHandle.runtimeSessionName,
-        provider: "acpx",
+        ...billingFields,
         model: prepared.requestedModel || null,
-        billingType: "unknown",
-        costUsd: null,
+        ...(turnUsage.usage ? { usage: turnUsage.usage, usageBasis: "per_run" as const } : {}),
+        costUsd: turnUsage.costUsd,
         resultJson: {
           status: terminal.status,
           stopReason: terminalStopReason,
@@ -2010,6 +2216,10 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           requestedModel: prepared.requestedModel || null,
           requestedThinkingEffort: prepared.requestedThinkingEffort || null,
           fastMode: prepared.fastMode,
+          ...(turnUsage.usageDetail ? { usage: turnUsage.usageDetail } : {}),
+          ...(turnUsage.cumulativeCostUsd != null
+            ? { cumulativeCostUsd: turnUsage.cumulativeCostUsd }
+            : {}),
         },
         summary: textParts.join("").trim() || terminalStopReason || terminal.status,
         clearSession,
@@ -2048,7 +2258,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         errorMessage: message,
         errorCode: timedOut ? "acpx_timeout" : classified.errorCode,
         errorMeta: classified.errorMeta,
-        provider: "acpx",
+        ...billingFields,
         model: prepared.requestedModel || null,
         clearSession: clearSession || timedOut,
         resultJson: { phase: "turn" },

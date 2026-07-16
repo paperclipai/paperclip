@@ -253,6 +253,7 @@ async function renderDiscoveryGrid(props: Partial<ComponentProps<typeof Discover
         totalCount={0}
         onCreate={vi.fn()}
         onImport={vi.fn()}
+        onImportFromProject={vi.fn()}
         onBrowseCatalog={vi.fn()}
         onScan={vi.fn()}
         scanPending={false}

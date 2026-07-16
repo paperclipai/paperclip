@@ -1,8 +1,10 @@
 export { companyService } from "./companies.js";
 export { companyArtifactsService } from "./company-artifacts.js";
 export { companySearchService } from "./company-search.js";
+export { companySearchExtractService } from "./company-search-extract.js";
 export { feedbackService } from "./feedback.js";
 export { companySkillService } from "./company-skills.js";
+export { companySkillPolicyService, normalizeSkillPolicySourceType } from "./company-skill-policy.js";
 export { agentService, deduplicateAgentName } from "./agents.js";
 export {
   builtInAgentService,
@@ -70,6 +72,10 @@ export type {
 export { approvalService } from "./approvals.js";
 export { budgetService } from "./budgets.js";
 export { secretService } from "./secrets.js";
+export { googleSheetsRobotEmailFromEnv, toolAccessService } from "./tool-access.js";
+export { smokeLabService } from "./smoke-lab.js";
+export { backfillLegacyToolOAuthTokens } from "./tool-oauth-legacy-backfill.js";
+export { toolAccessPolicyService } from "./tool-access-policy.js";
 export { routineService } from "./routines.js";
 export { costService } from "./costs.js";
 export { financeService } from "./finance.js";

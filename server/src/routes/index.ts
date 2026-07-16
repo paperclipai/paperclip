@@ -1,6 +1,7 @@
 export { healthRoutes } from "./health.js";
 export { companyRoutes } from "./companies.js";
 export { companySkillRoutes } from "./company-skills.js";
+export { companySkillPolicyRoutes } from "./company-skill-policy.js";
 export { builtInAgentRoutes } from "./built-in-agents.js";
 export { teamsCatalogRoutes } from "./teams-catalog.js";
 export { agentRoutes } from "./agents.js";
@@ -12,6 +13,8 @@ export { routineRoutes } from "./routines.js";
 export { goalRoutes } from "./goals.js";
 export { approvalRoutes } from "./approvals.js";
 export { secretRoutes } from "./secrets.js";
+export { toolAccessRoutes } from "./tool-access.js";
+export { smokeLabRoutes } from "./smoke-lab.js";
 export { costRoutes } from "./costs.js";
 export { activityRoutes } from "./activity.js";
 export { dashboardRoutes } from "./dashboard.js";

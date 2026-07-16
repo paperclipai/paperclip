@@ -31,6 +31,8 @@ export interface CodexOutputInactivityMonitorState {
   spawnedAt: number;
   lastEventAt: number;
   firedAt: number | null;
+  outputChunkCount: number;
+  outputBytes: number;
   parsedEventCount: number;
 }
 
@@ -48,7 +50,7 @@ export interface CodexOutputInactivityMonitorOptions {
 }
 
 export interface CodexOutputInactivityMonitorHandle {
-  noteStdoutChunk(chunk: string): void;
+  noteOutputChunk(stream: "stdout" | "stderr", chunk: string): void;
   /** Returns the current state without stopping the timer. */
   state(): CodexOutputInactivityMonitorState;
   /** Cancels any pending timer and returns the final state. */
@@ -80,6 +82,8 @@ export function createCodexOutputInactivityMonitor(
     spawnedAt,
     lastEventAt: spawnedAt,
     firedAt: null,
+    outputChunkCount: 0,
+    outputBytes: 0,
     parsedEventCount: 0,
   };
   let timerHandle: unknown = null;
@@ -102,19 +106,19 @@ export function createCodexOutputInactivityMonitor(
   arm();
 
   return {
-    noteStdoutChunk(chunk: string) {
-      if (stopped || state.fired) return;
-      let sawHeartbeat = false;
-      for (const rawLine of chunk.split(/\r?\n/)) {
-        if (isHeartbeatLine(rawLine)) {
-          sawHeartbeat = true;
-          state.parsedEventCount += 1;
+    noteOutputChunk(stream: "stdout" | "stderr", chunk: string) {
+      if (stopped || state.fired || chunk.length === 0) return;
+      state.outputChunkCount += 1;
+      state.outputBytes += Buffer.byteLength(chunk, "utf8");
+      if (stream === "stdout") {
+        for (const rawLine of chunk.split(/\r?\n/)) {
+          if (isHeartbeatLine(rawLine)) {
+            state.parsedEventCount += 1;
+          }
         }
       }
-      if (sawHeartbeat) {
-        state.lastEventAt = now();
-        arm();
-      }
+      state.lastEventAt = now();
+      arm();
     },
     state() {
       return { ...state };
