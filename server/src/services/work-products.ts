@@ -37,7 +37,7 @@ export function workProductDedupeKey(
   provider: string,
   externalId: string,
 ) {
-  return `${companyId}:${issueId}:${provider}:${externalId}`;
+  return JSON.stringify([companyId, issueId, provider, externalId]);
 }
 
 export function workProductService(db: Db) {

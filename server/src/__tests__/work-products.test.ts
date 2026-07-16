@@ -183,11 +183,15 @@ describe("workProductService", () => {
     expect(stored).toHaveLength(1);
   });
 
-  it("scopes dedupe locks by company, issue, and provider", () => {
+  it("scopes dedupe locks by company, issue, provider, and externalId", () => {
     const base = workProductDedupeKey("company-1", "issue-1", "paperclip", "external-1");
 
     expect(workProductDedupeKey("company-2", "issue-1", "paperclip", "external-1")).not.toBe(base);
     expect(workProductDedupeKey("company-1", "issue-2", "paperclip", "external-1")).not.toBe(base);
     expect(workProductDedupeKey("company-1", "issue-1", "github", "external-1")).not.toBe(base);
+    expect(workProductDedupeKey("company-1", "issue-1", "paperclip", "external-2")).not.toBe(base);
+    expect(workProductDedupeKey("company-1", "issue-1", "a:b", "c")).not.toBe(
+      workProductDedupeKey("company-1", "issue-1", "a", "b:c"),
+    );
   });
 });

@@ -283,7 +283,7 @@ describe("approval routes idempotent retries", () => {
       .send({ decisionNote: "approve my own request" });
 
     expect(res.status).toBe(403);
-    expect(res.body.error).toBe("Approval requester cannot approve their own request");
+    expect(res.body.error).toBe("Approval requester cannot decide their own request");
     expect(mockApprovalService.approve).not.toHaveBeenCalled();
     expect(mockLogActivity).not.toHaveBeenCalled();
   });
@@ -306,7 +306,7 @@ describe("approval routes idempotent retries", () => {
       .send({ decisionNote: "implicit self approval" });
 
     expect(res.status).toBe(403);
-    expect(res.body.error).toBe("Approval requester cannot approve their own request");
+    expect(res.body.error).toBe("Approval requester cannot decide their own request");
     expect(mockApprovalService.approve).not.toHaveBeenCalled();
     expect(mockLogActivity).not.toHaveBeenCalled();
   });
@@ -338,6 +338,27 @@ describe("approval routes idempotent retries", () => {
     expect(mockApprovalService.reject).toHaveBeenCalledWith("approval-5", "user-1", "not now");
   });
 
+  it("fails closed when a requester rejects their own approval", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-self-reject",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "pending",
+      payload: {},
+      requestedByUserId: "user-1",
+      requestedByAgentId: null,
+    });
+
+    const res = await request(await createApp())
+      .post("/api/approvals/approval-self-reject/reject")
+      .send({ decisionNote: "reject my own request" });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Approval requester cannot decide their own request");
+    expect(mockApprovalService.reject).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
   it("derives approval attribution from the authenticated actor on request revision", async () => {
     mockApprovalService.getById.mockResolvedValue({
       id: "approval-6",
@@ -364,6 +385,27 @@ describe("approval routes idempotent retries", () => {
       "user-1",
       "Need changes",
     );
+  });
+
+  it("fails closed when a requester asks revision on their own approval", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-self-revision",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "pending",
+      payload: {},
+      requestedByUserId: "user-1",
+      requestedByAgentId: null,
+    });
+
+    const res = await request(await createApp())
+      .post("/api/approvals/approval-self-revision/request-revision")
+      .send({ decisionNote: "revise my own request" });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Approval requester cannot decide their own request");
+    expect(mockApprovalService.requestRevision).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
   });
 
   it("lets agents create generic issue-linked board approval requests", async () => {
