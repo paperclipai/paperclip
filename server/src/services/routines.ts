@@ -114,6 +114,14 @@ function executionIssueTransientFailureStatusFromPayload(payload: unknown): Exec
   return EXECUTION_ISSUE_TRANSIENT_FAILURE_STATUSES.find((status) => record.status === status) ?? null;
 }
 
+function executionIssueTransientFailureClearedAtFromPayload(payload: unknown): string | null {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+  const transientFailure = (payload as Record<string, unknown>).transientFailure;
+  if (!transientFailure || typeof transientFailure !== "object" || Array.isArray(transientFailure)) return null;
+  const clearedAt = (transientFailure as Record<string, unknown>).clearedAt;
+  return typeof clearedAt === "string" ? clearedAt : null;
+}
+
 function legacyExecutionIssueTransientFailureStatus(
   failureReason: string | null,
 ): ExecutionIssueTransientFailureStatus | null {
@@ -3082,6 +3090,7 @@ export function routineService(
       if (issue.status === "done") {
         const transientFailureStatus = executionIssueTransientFailureStatusFromPayload(run.triggerPayload)
           ?? legacyExecutionIssueTransientFailureStatus(run.failureReason);
+        const transientFailureClearedAt = executionIssueTransientFailureClearedAtFromPayload(run.triggerPayload);
         return finalizeRun(issue.originRunId, {
           status: "completed",
           failureReason: null,
@@ -3094,7 +3103,7 @@ export function routineService(
                   code: EXECUTION_ISSUE_TRANSIENT_FAILURE_CODE,
                   status: transientFailureStatus,
                   reason: executionIssueTransientFailureReason(transientFailureStatus),
-                  clearedAt: new Date().toISOString(),
+                  clearedAt: transientFailureClearedAt ?? new Date().toISOString(),
                 },
               },
             }
