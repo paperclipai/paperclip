@@ -86,6 +86,24 @@ describe("dev shadow resolver", () => {
     ).rejects.toThrow(/Could not connect to PostgreSQL/);
   });
 
+  it("probes IPv6 loopback database URLs without URL brackets", async () => {
+    const probe = createServer();
+    await new Promise<void>((resolve, reject) => {
+      probe.once("error", reject);
+      probe.listen(0, "::1", resolve);
+    });
+    const address = probe.address();
+    if (!address || typeof address === "string") throw new Error("Expected TCP probe address");
+
+    try {
+      await expect(
+        probeDevShadowDatabase(`postgres://paperclip:paperclip@[::1]:${address.port}/paperclip`, 500),
+      ).resolves.toBeUndefined();
+    } finally {
+      await new Promise<void>((resolve, reject) => probe.close((error) => error ? reject(error) : resolve()));
+    }
+  });
+
   it("constructs a guarded shadow environment", () => {
     const env = createDevShadowEnv(
       parseDevShadowArgs([]),

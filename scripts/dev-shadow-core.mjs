@@ -99,12 +99,13 @@ export async function resolveDevShadowDatabaseUrl(options, fetchImpl = fetch) {
 
 export async function probeDevShadowDatabase(databaseUrl, timeoutMs = DATABASE_PROBE_TIMEOUT_MS) {
   const parsed = new URL(normalizeDatabaseUrl(databaseUrl));
+  const hostname = parsed.hostname.replace(/^\[(.*)\]$/, "$1");
   const port = Number.parseInt(parsed.port || "5432", 10);
   await new Promise((resolve, reject) => {
-    const socket = connect({ host: parsed.hostname, port });
+    const socket = connect({ host: hostname, port });
     const timer = setTimeout(() => {
       socket.destroy();
-      reject(new Error(`Timed out connecting to PostgreSQL at ${parsed.hostname}:${port}`));
+      reject(new Error(`Timed out connecting to PostgreSQL at ${hostname}:${port}`));
     }, timeoutMs);
     socket.once("connect", () => {
       clearTimeout(timer);
@@ -113,7 +114,7 @@ export async function probeDevShadowDatabase(databaseUrl, timeoutMs = DATABASE_P
     });
     socket.once("error", (error) => {
       clearTimeout(timer);
-      reject(new Error(`Could not connect to PostgreSQL at ${parsed.hostname}:${port}: ${error.message}`));
+      reject(new Error(`Could not connect to PostgreSQL at ${hostname}:${port}: ${error.message}`));
     });
   });
 }

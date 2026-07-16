@@ -45,12 +45,13 @@ function createApp(
   serverInfo = testServerInfo,
   databaseBackupHealth?: Parameters<typeof healthRoutes>[1]["databaseBackupHealth"],
   devDatabaseSourceUrl?: string,
+  deploymentMode: Parameters<typeof healthRoutes>[1]["deploymentMode"] = "local_trusted",
 ) {
   const app = express();
   app.use(
     "/health",
     healthRoutes(db, {
-      deploymentMode: "local_trusted",
+      deploymentMode,
       deploymentExposure: "private",
       authReady: true,
       companyDeletionEnabled: true,
@@ -127,6 +128,21 @@ describe("GET /health", () => {
     expect(res.body).toEqual({
       databaseUrl: "postgres://paperclip:paperclip@127.0.0.1:54329/paperclip",
     });
+  });
+
+  it("does not expose the active dev database outside local-trusted mode", async () => {
+    const app = createApp(
+      createHealthyDb(),
+      testServerInfo,
+      undefined,
+      "postgres://paperclip:paperclip@127.0.0.1:54329/paperclip",
+      "authenticated",
+    );
+
+    const res = await request(app).get("/health/dev-database-source");
+
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: "dev_database_source_unavailable" });
   });
 
   it("returns safe server info fallbacks when git metadata is unavailable", async () => {
