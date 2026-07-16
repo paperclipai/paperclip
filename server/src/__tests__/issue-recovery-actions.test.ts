@@ -1281,7 +1281,14 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       cause: "workspace_validation_failed",
       ownerAgentId: managerId,
     });
-    expect(enqueueWakeup).not.toHaveBeenCalled();
+    expect(enqueueWakeup).toHaveBeenCalledOnce();
+    expect(enqueueWakeup).toHaveBeenCalledWith(
+      managerId,
+      expect.objectContaining({
+        reason: "source_scoped_recovery_action",
+        payload: expect.objectContaining({ recoveryCause: "workspace_validation_failed" }),
+      }),
+    );
   }, 15_000);
 
   it("escalates when an auto-repair retry fails workspace validation again", async () => {
@@ -1331,11 +1338,18 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       cause: "workspace_validation_failed",
       ownerAgentId: managerId,
     });
-    expect(enqueueWakeup).not.toHaveBeenCalled();
+    expect(enqueueWakeup).toHaveBeenCalledOnce();
+    expect(enqueueWakeup).toHaveBeenCalledWith(
+      managerId,
+      expect.objectContaining({
+        reason: "source_scoped_recovery_action",
+        payload: expect.objectContaining({ recoveryCause: "workspace_validation_failed" }),
+      }),
+    );
   }, 15_000);
 
   it("does not trust run-result repository paths for workspace repair", async () => {
-    const { companyId, coderId, sourceIssue } = await seedCompany();
+    const { companyId, managerId, coderId, sourceIssue } = await seedCompany();
     const repoRoot = await createGitRepo();
     const expectedBranch = "repair/untrusted-expected";
     const actualBranch = "repair/untrusted-actual";
@@ -1381,7 +1395,14 @@ describeEmbeddedPostgres("issue recovery actions", () => {
 
     expect(await runGit(worktreePath, ["branch", "--show-current"]).then((result) => result.stdout.trim())).toBe(actualBranch);
     expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, sourceIssue.id))).toHaveLength(1);
-    expect(enqueueWakeup).not.toHaveBeenCalled();
+    expect(enqueueWakeup).toHaveBeenCalledOnce();
+    expect(enqueueWakeup).toHaveBeenCalledWith(
+      managerId,
+      expect.objectContaining({
+        reason: "source_scoped_recovery_action",
+        payload: expect.objectContaining({ recoveryCause: "workspace_validation_failed" }),
+      }),
+    );
   }, 15_000);
 
   it("never discards dirty work and routes unrecoverable workspace repair to the CTO", async () => {
@@ -1435,7 +1456,14 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       ownerAgentId: managerId,
       nextAction: expect.stringContaining("git worktree branch incoherence"),
     });
-    expect(enqueueWakeup).not.toHaveBeenCalled();
+    expect(enqueueWakeup).toHaveBeenCalledOnce();
+    expect(enqueueWakeup).toHaveBeenCalledWith(
+      managerId,
+      expect.objectContaining({
+        reason: "source_scoped_recovery_action",
+        payload: expect.objectContaining({ recoveryCause: "workspace_validation_failed" }),
+      }),
+    );
   }, 15_000);
 
   it("keeps the source issue blocked when source-scoped wakeup is claimed synchronously", async () => {
