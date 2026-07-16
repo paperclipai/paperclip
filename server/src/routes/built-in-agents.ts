@@ -8,6 +8,7 @@ import { builtInAgentService } from "../services/built-in-agents.js";
 import { authorizationDeniedDetails } from "../services/authorization.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import type { BuiltInAgentState } from "../services/built-in-agents.js";
+import { projectAgentResponse } from "../serializers/agent-response.js";
 
 const WEEKDAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
@@ -29,7 +30,7 @@ function formatScheduleLabel(trigger: { cronExpression: string; timezone: string
   return `Weekly · ${trigger.timezone}`;
 }
 
-function redactBuiltInAgentListState(state: BuiltInAgentState): BuiltInAgentState {
+function projectBuiltInAgentState(state: BuiltInAgentState) {
   const definition = {
     ...state.definition,
     defaultInstructions: state.definition.defaultInstructions ? "[file-backed]" : "",
@@ -61,11 +62,7 @@ function redactBuiltInAgentListState(state: BuiltInAgentState): BuiltInAgentStat
   return {
     ...state,
     definition,
-    agent: {
-      ...state.agent,
-      adapterConfig: {},
-      runtimeConfig: {},
-    },
+    agent: projectAgentResponse(state.agent as unknown as Record<string, unknown>),
   };
 }
 
@@ -150,7 +147,7 @@ export function builtInAgentRoutes(db: Db) {
     assertCompanyAccess(req, companyId);
     await assertBuiltInAgentsEnabled();
     const states = await svc.list(companyId);
-    res.json(states.map(redactBuiltInAgentListState));
+    res.json(states.map(projectBuiltInAgentState));
   });
 
   router.get("/companies/:companyId/built-in-agents/:key/status", async (req, res) => {
@@ -158,7 +155,7 @@ export function builtInAgentRoutes(db: Db) {
     const key = req.params.key as string;
     assertCompanyAccess(req, companyId);
     await assertBuiltInAgentsEnabled();
-    res.json(redactBuiltInAgentListState(await svc.get(companyId, key)));
+    res.json(projectBuiltInAgentState(await svc.get(companyId, key)));
   });
 
   router.post("/companies/:companyId/built-in-agents/:key/reconcile", validate(builtInAgentEmptyMutationSchema), async (req, res) => {
@@ -174,7 +171,7 @@ export function builtInAgentRoutes(db: Db) {
       agentId: state.agentId,
       status: state.status,
     });
-    res.json(redactBuiltInAgentListState(state));
+    res.json(projectBuiltInAgentState(state));
   });
 
   router.post(
@@ -208,7 +205,7 @@ export function builtInAgentRoutes(db: Db) {
           approvalId: approval.id,
         });
       }
-      res.status(approval ? 202 : 200).json(redactBuiltInAgentListState({ ...state, approval }));
+      res.status(approval ? 202 : 200).json(projectBuiltInAgentState({ ...state, approval }));
     },
   );
 
@@ -225,7 +222,7 @@ export function builtInAgentRoutes(db: Db) {
       agentId: state.agentId,
       status: state.status,
     });
-    res.json(redactBuiltInAgentListState(state));
+    res.json(projectBuiltInAgentState(state));
   });
 
   router.post(
@@ -252,7 +249,7 @@ export function builtInAgentRoutes(db: Db) {
         status: state.status,
         routineKey,
       });
-      res.json(redactBuiltInAgentListState(state));
+      res.json(projectBuiltInAgentState(state));
     },
   );
 
@@ -280,7 +277,7 @@ export function builtInAgentRoutes(db: Db) {
         status: state.status,
         routineKey,
       });
-      res.json(redactBuiltInAgentListState(state));
+      res.json(projectBuiltInAgentState(state));
     },
   );
 

@@ -435,20 +435,30 @@ describe.sequential("agent permission routes", () => {
     expect(res.body.runtimeConfig).toEqual({});
   }, 20_000);
 
-  it("keeps board agent detail unredacted for low-trust agents", async () => {
+  it("keeps board agent detail human-reviewable without exposing runtime credentials", async () => {
     mockAgentService.getById.mockResolvedValue({
       ...baseAgent,
+      capabilities: "Keep this human-authored role description.",
       permissions: {
         ...baseAgent.permissions,
         trustPreset: LOW_TRUST_REVIEW_PRESET,
       },
       adapterConfig: {
         command: "pnpm agent:run",
+        provider: "openai-codex",
+        promptTemplate: "Keep this human-authored prompt.",
         env: { PAPERCLIP_API_KEY: "secret-test-key" },
       },
       runtimeConfig: {
         modelProfiles: {
-          default: { enabled: true, adapterConfig: { model: "openai/gpt-5.4-mini" } },
+          cheap: {
+            enabled: true,
+            label: "Cheap profile",
+            adapterConfig: {
+              provider: "openai-codex",
+              env: { OPENAI_API_KEY: "secret-profile-key" },
+            },
+          },
         },
       },
     });
@@ -464,17 +474,71 @@ describe.sequential("agent permission routes", () => {
     const res = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/agents/${agentId}`));
 
     expect(res.status).toBe(200);
-    expect(res.body.adapterConfig).toMatchObject({
-      command: "pnpm agent:run",
-      env: { PAPERCLIP_API_KEY: "secret-test-key" },
+    expect(JSON.stringify(res.body)).not.toContain("secret-test-key");
+    expect(JSON.stringify(res.body)).not.toContain("secret-profile-key");
+    expect(res.body.capabilities).toBe("Keep this human-authored role description.");
+    expect(res.body.adapterConfig).toEqual({
+      provider: "openai-codex",
+      promptTemplate: "Keep this human-authored prompt.",
     });
-    expect(res.body.runtimeConfig).toMatchObject({
+    expect(res.body.runtimeConfig).toEqual({
       modelProfiles: {
-        default: { enabled: true, adapterConfig: { model: "openai/gpt-5.4-mini" } },
+        cheap: {
+          enabled: true,
+          label: "Cheap profile",
+          adapterConfig: { provider: "openai-codex" },
+        },
       },
     });
     expect(res.body.permissions).toMatchObject({ trustPreset: LOW_TRUST_REVIEW_PRESET });
   }, 20_000);
+
+  it.each([
+    ["company list", (app: express.Express) => requestApp(app, (baseUrl) => request(baseUrl).get(`/api/companies/${companyId}/agents`))],
+    ["detail", (app: express.Express) => requestApp(app, (baseUrl) => request(baseUrl).get(`/api/agents/${agentId}`))],
+    ["update", (app: express.Express) => requestApp(app, (baseUrl) => request(baseUrl).patch(`/api/agents/${agentId}`).send({ title: "Reviewed" }))],
+  ])("keeps the %s agent response surface response-safe", async (_surface, issueRequest) => {
+    const secret = "pc_live_FAS119_NEVER_EXPOSE_AUTH_TOKEN";
+    const sensitiveAgent = {
+      ...baseAgent,
+      capabilities: "Human-authored description remains exact.",
+      adapterConfig: {
+        provider: "openai-codex",
+        promptTemplate: "Human-authored prompt remains exact.",
+        env: { PAPERCLIP_API_KEY: secret, nested: { raw: secret } },
+        pluginRuntime: { credential: secret },
+      },
+      runtimeConfig: {
+        modelProfiles: {
+          cheap: {
+            label: "Reviewed profile",
+            adapterConfig: { model: "gpt-5", env: { OPENAI_API_KEY: secret } },
+          },
+        },
+        execution: { token: secret },
+      },
+      metadata: { rawSecret: secret },
+    };
+    mockAgentService.getById.mockResolvedValue(sensitiveAgent);
+    mockAgentService.list.mockResolvedValue([sensitiveAgent]);
+    mockAgentService.update.mockResolvedValue(sensitiveAgent);
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+    const res = await issueRequest(app);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(JSON.stringify(res.body)).not.toContain(secret);
+    const projected = Array.isArray(res.body) ? res.body[0] : res.body;
+    expect(projected.capabilities).toBe("Human-authored description remains exact.");
+    expect(projected.adapterConfig.promptTemplate).toBe("Human-authored prompt remains exact.");
+    expect(projected).not.toHaveProperty("metadata");
+  });
 
   it("redacts company agent list for authenticated company members without agent admin permission", async () => {
     mockAccessService.canUser.mockResolvedValue(false);
@@ -874,6 +938,72 @@ describe.sequential("agent permission routes", () => {
       "agent-admin-user",
     );
     expect(mockBuiltInAgentService.ensureCompanyDefaultAgentGrants).toHaveBeenCalledWith(companyId);
+  });
+
+  it("projects direct-create responses so materialized credentials never leave JSON", async () => {
+    const secret = "pc_live_FAS119_NEVER_EXPOSE_AUTH_TOKEN";
+    const materializedAgent = {
+      ...baseAgent,
+      capabilities: "Keep this human-authored role description unchanged.",
+      adapterType: "hermes_local",
+      adapterConfig: {
+        provider: "openai-codex",
+        promptTemplate: "Keep this human-authored prompt unchanged.",
+        env: { PAPERCLIP_API_KEY: secret, nested: { token: secret } },
+        runtimeCredential: { raw: secret },
+      },
+      runtimeConfig: {
+        modelProfiles: {
+          cheap: {
+            enabled: true,
+            label: "Cheap review profile",
+            adapterConfig: {
+              provider: "openai-codex",
+              env: { OPENAI_API_KEY: secret },
+            },
+          },
+        },
+        execution: { leaseToken: secret },
+      },
+      metadata: { runtimeCredential: secret },
+    };
+    mockAgentService.create.mockResolvedValue(materializedAgent);
+    mockAgentService.update.mockResolvedValue(materializedAgent);
+
+    const app = await createApp({
+      type: "board",
+      userId: "agent-admin-user",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({
+        name: "Builder",
+        role: "engineer",
+        adapterType: "hermes_local",
+        adapterConfig: {},
+      }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(JSON.stringify(res.body)).not.toContain(secret);
+    expect(res.body.capabilities).toBe("Keep this human-authored role description unchanged.");
+    expect(res.body.adapterConfig).toEqual({
+      provider: "openai-codex",
+      promptTemplate: "Keep this human-authored prompt unchanged.",
+    });
+    expect(res.body.runtimeConfig).toEqual({
+      modelProfiles: {
+        cheap: {
+          enabled: true,
+          label: "Cheap review profile",
+          adapterConfig: { provider: "openai-codex" },
+        },
+      },
+    });
+    expect(res.body).not.toHaveProperty("metadata");
   });
 
   it("rejects direct agent creation when new agents require board approval", async () => {

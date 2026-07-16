@@ -103,6 +103,11 @@ import { assertEnvironmentSelectionForCompany } from "./environment-selection.js
 import { recoveryService } from "../services/recovery/service.js";
 import { resolveCoreTrustPreset } from "../services/trust-preset-resolver.js";
 import { readObject } from "../lib/objects.js";
+import {
+  projectAgentAdapterConfig,
+  projectAgentResponse,
+  projectAgentRuntimeConfig,
+} from "../serializers/agent-response.js";
 import { listInvalidOrgChainDescendantIds } from "../services/agent-invokability.js";
 import {
   AGENT_PROFILE_CHANGE_CONSENT_FIELDS,
@@ -662,7 +667,8 @@ export function agentRoutes(
     ]);
 
     return {
-      ...(options?.restricted ? redactForRestrictedAgentView(agent) : agent),
+      ...projectAgentResponse(agent as unknown as Record<string, unknown>),
+      ...(options?.restricted ? { adapterConfig: {}, runtimeConfig: {} } : {}),
       chainOfCommand,
       access: accessState,
     };
@@ -780,8 +786,8 @@ export function agentRoutes(
   async function assertCanReadConfigurations(req: Request, companyId: string) {
     // Reading agent configurations, skills, and config revisions is a
     // read-only operation available to any board (human) member of the
-    // company. Responses go through `redactAgentConfiguration` so secrets
-    // are never exposed. Mutations and environment probes still gate on
+    // company. Responses go through `projectAgentConfiguration`, whose positive
+    // DTO projection omits credentials and unknown persistence fields. Mutations and environment probes still gate on
     // agents:create or agents:configure via the mutating route helpers.
     //
     // For AGENT actors we keep a stricter gate: an agent must have either
@@ -1626,62 +1632,118 @@ export function agentRoutes(
     };
   }
 
-  function redactForRestrictedAgentView(agent: Awaited<ReturnType<typeof svc.getById>>) {
+  function projectRestrictedAgentView(agent: Awaited<ReturnType<typeof svc.getById>>) {
     if (!agent) return null;
     return {
-      ...agent,
+      ...projectAgentResponse(agent as unknown as Record<string, unknown>),
       adapterConfig: {},
       runtimeConfig: {},
     };
   }
 
-  function redactAgentConfiguration(agent: Awaited<ReturnType<typeof svc.getById>>) {
+  function projectAgentConfiguration(agent: Awaited<ReturnType<typeof svc.getById>>) {
     if (!agent) return null;
+    const projected = projectAgentResponse(agent as unknown as Record<string, unknown>);
     return {
-      id: agent.id,
-      companyId: agent.companyId,
-      name: agent.name,
-      role: agent.role,
-      title: agent.title,
-      status: agent.status,
-      reportsTo: agent.reportsTo,
-      adapterType: agent.adapterType,
-      adapterConfig: redactEventPayload(agent.adapterConfig),
-      runtimeConfig: redactEventPayload(agent.runtimeConfig),
-      permissions: agent.permissions,
-      updatedAt: agent.updatedAt,
+      id: projected.id,
+      companyId: projected.companyId,
+      name: projected.name,
+      role: projected.role,
+      title: projected.title,
+      status: projected.status,
+      reportsTo: projected.reportsTo,
+      adapterType: projected.adapterType,
+      adapterConfig: projected.adapterConfig,
+      runtimeConfig: projected.runtimeConfig,
+      permissions: projected.permissions,
+      updatedAt: projected.updatedAt,
     };
   }
 
-  function redactRevisionSnapshot(snapshot: unknown): Record<string, unknown> {
+  function projectHireApproval(approval: Record<string, unknown> | null) {
+    if (!approval) return null;
+    const payload = readObject(approval.payload) ?? {};
+    const requestedSnapshot = readObject(payload.requestedConfigurationSnapshot);
+    const projectedPayload: Record<string, unknown> = {};
+    for (const key of [
+      "name",
+      "role",
+      "title",
+      "icon",
+      "reportsTo",
+      "capabilities",
+      "adapterType",
+      "budgetMonthlyCents",
+      "desiredSkills",
+      "agentId",
+      "requestedByAgentId",
+    ] as const) {
+      if (payload[key] !== undefined) projectedPayload[key] = payload[key];
+    }
+    projectedPayload.adapterConfig = projectAgentAdapterConfig(payload.adapterConfig);
+    projectedPayload.runtimeConfig = projectAgentRuntimeConfig(payload.runtimeConfig);
+    if (requestedSnapshot) {
+      projectedPayload.requestedConfigurationSnapshot = {
+        adapterType: requestedSnapshot.adapterType,
+        adapterConfig: projectAgentAdapterConfig(requestedSnapshot.adapterConfig),
+        runtimeConfig: projectAgentRuntimeConfig(requestedSnapshot.runtimeConfig),
+        desiredSkills: requestedSnapshot.desiredSkills,
+      };
+    }
+    return {
+      id: approval.id,
+      companyId: approval.companyId,
+      type: approval.type,
+      requestedByAgentId: approval.requestedByAgentId,
+      requestedByUserId: approval.requestedByUserId,
+      status: approval.status,
+      payload: projectedPayload,
+      decisionNote: approval.decisionNote,
+      decidedByUserId: approval.decidedByUserId,
+      decidedAt: approval.decidedAt,
+      createdAt: approval.createdAt,
+      updatedAt: approval.updatedAt,
+    };
+  }
+
+  function projectRevisionSnapshot(snapshot: unknown): Record<string, unknown> {
     if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) return {};
     const record = snapshot as Record<string, unknown>;
-    return {
-      ...record,
-      adapterConfig: redactEventPayload(
-        typeof record.adapterConfig === "object" && record.adapterConfig !== null
-          ? (record.adapterConfig as Record<string, unknown>)
-          : {},
-      ),
-      runtimeConfig: redactEventPayload(
-        typeof record.runtimeConfig === "object" && record.runtimeConfig !== null
-          ? (record.runtimeConfig as Record<string, unknown>)
-          : {},
-      ),
-      metadata:
-        typeof record.metadata === "object" && record.metadata !== null
-          ? redactEventPayload(record.metadata as Record<string, unknown>)
-          : record.metadata ?? null,
-    };
+    const result: Record<string, unknown> = {};
+    for (const key of [
+      "name",
+      "role",
+      "title",
+      "icon",
+      "reportsTo",
+      "capabilities",
+      "adapterType",
+      "defaultEnvironmentId",
+      "budgetMonthlyCents",
+      "status",
+    ] as const) {
+      if (record[key] !== undefined) result[key] = record[key];
+    }
+    result.adapterConfig = projectAgentAdapterConfig(record.adapterConfig);
+    result.runtimeConfig = projectAgentRuntimeConfig(record.runtimeConfig);
+    return result;
   }
 
-  function redactConfigRevision(
+  function projectConfigRevision(
     revision: Record<string, unknown> & { beforeConfig: unknown; afterConfig: unknown },
   ) {
     return {
-      ...revision,
-      beforeConfig: redactRevisionSnapshot(revision.beforeConfig),
-      afterConfig: redactRevisionSnapshot(revision.afterConfig),
+      id: revision.id,
+      companyId: revision.companyId,
+      agentId: revision.agentId,
+      createdByAgentId: revision.createdByAgentId,
+      createdByUserId: revision.createdByUserId,
+      source: revision.source,
+      rolledBackFromRevisionId: revision.rolledBackFromRevisionId,
+      changedKeys: revision.changedKeys,
+      beforeConfig: projectRevisionSnapshot(revision.beforeConfig),
+      afterConfig: projectRevisionSnapshot(revision.afterConfig),
+      createdAt: revision.createdAt,
     };
   }
 
@@ -1976,10 +2038,10 @@ export function agentRoutes(
     const result = await filterAgentsForActor(req, await svc.list(companyId));
     const canReadConfigs = await actorCanReadConfigurationsForCompany(req, companyId);
     if (canReadConfigs) {
-      res.json(result);
+      res.json(result.map((agent) => projectAgentResponse(agent as unknown as Record<string, unknown>)));
       return;
     }
-    res.json(result.map((agent) => redactForRestrictedAgentView(agent)));
+    res.json(result.map((agent) => projectRestrictedAgentView(agent)));
   });
 
   router.get("/instance/scheduler-heartbeats", async (req, res) => {
@@ -2081,7 +2143,7 @@ export function agentRoutes(
     const companyId = req.params.companyId as string;
     await assertCanReadConfigurations(req, companyId);
     const rows = await svc.list(companyId);
-    res.json(rows.map((row) => redactAgentConfiguration(row)));
+    res.json(rows.map((row) => projectAgentConfiguration(row)));
   });
 
   router.get("/agents/me", async (req, res) => {
@@ -2220,7 +2282,7 @@ export function agentRoutes(
       return;
     }
     await assertCanReadConfigurations(req, agent.companyId);
-    res.json(redactAgentConfiguration(agent));
+    res.json(projectAgentConfiguration(agent));
   });
 
   router.get("/agents/:id/config-revisions", async (req, res) => {
@@ -2232,7 +2294,7 @@ export function agentRoutes(
     }
     await assertCanReadConfigurations(req, agent.companyId);
     const revisions = await svc.listConfigRevisions(id);
-    res.json(revisions.map((revision) => redactConfigRevision(revision)));
+    res.json(revisions.map((revision) => projectConfigRevision(revision)));
   });
 
   router.get("/agents/:id/config-revisions/:revisionId", async (req, res) => {
@@ -2249,7 +2311,7 @@ export function agentRoutes(
       res.status(404).json({ error: "Revision not found" });
       return;
     }
-    res.json(redactConfigRevision(revision));
+    res.json(projectConfigRevision(revision));
   });
 
   router.post("/agents/:id/config-revisions/:revisionId/rollback", async (req, res) => {
@@ -2281,7 +2343,7 @@ export function agentRoutes(
       details: { revisionId },
     });
 
-    res.json(updated);
+    res.json(projectAgentResponse(updated as unknown as Record<string, unknown>));
   });
 
   router.get("/agents/:id/runtime-state", async (req, res) => {
@@ -2514,7 +2576,10 @@ export function agentRoutes(
       });
     }
 
-    res.status(201).json({ agent, approval });
+    res.status(201).json({
+      agent: projectAgentResponse(agent as unknown as Record<string, unknown>),
+      approval: projectHireApproval(approval),
+    });
   });
 
   router.post("/companies/:companyId/agents", validate(createAgentSchema), async (req, res) => {
@@ -2634,7 +2699,7 @@ export function agentRoutes(
       );
     }
 
-    res.status(201).json(agent);
+    res.status(201).json(projectAgentResponse(agent as unknown as Record<string, unknown>));
   });
 
   router.patch("/agents/:id/permissions", validate(updateAgentPermissionsSchema), async (req, res) => {
@@ -3069,7 +3134,7 @@ export function agentRoutes(
       details: summarizeAgentUpdateDetails(patchData),
     });
 
-    res.json(agent);
+    res.json(projectAgentResponse(agent as unknown as Record<string, unknown>));
   });
 
   router.post("/agents/:id/pause", async (req, res) => {
@@ -3095,7 +3160,7 @@ export function agentRoutes(
       entityId: agent.id,
     });
 
-    res.json(agent);
+    res.json(projectAgentResponse(agent as unknown as Record<string, unknown>));
   });
 
   router.post("/agents/:id/resume", async (req, res) => {
@@ -3126,7 +3191,7 @@ export function agentRoutes(
       entityId: agent.id,
     });
 
-    res.json(agent);
+    res.json(projectAgentResponse(agent as unknown as Record<string, unknown>));
   });
 
   router.post("/agents/:id/clear-error", async (req, res) => {
@@ -3158,7 +3223,7 @@ export function agentRoutes(
       entityId: agent.id,
     });
 
-    res.json(agent);
+    res.json(projectAgentResponse(agent as unknown as Record<string, unknown>));
   });
 
   router.post("/agents/:id/approve", async (req, res) => {
@@ -3212,7 +3277,7 @@ export function agentRoutes(
       details: { source: "agent_detail", approvalId: openApproval?.id ?? null },
     });
 
-    res.json(agent);
+    res.json(projectAgentResponse(agent as unknown as Record<string, unknown>));
   });
 
   router.post("/agents/:id/terminate", async (req, res) => {
@@ -3282,7 +3347,7 @@ export function agentRoutes(
       },
     });
 
-    res.json(agent);
+    res.json(projectAgentResponse(agent as unknown as Record<string, unknown>));
   });
 
   router.delete("/agents/:id", async (req, res) => {
