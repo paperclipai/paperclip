@@ -14057,7 +14057,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             .where(
               and(
                 eq(workspaceOperations.companyId, issue.companyId),
-                eq(workspaceOperations.executionWorkspaceId, currentFinalize.executionWorkspaceId),
                 eq(workspaceOperations.issueId, issue.id),
                 eq(workspaceOperations.phase, "workspace_finalize"),
               ),

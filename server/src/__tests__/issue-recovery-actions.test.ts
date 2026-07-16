@@ -83,8 +83,9 @@ describe("issueRecoveryActionService", () => {
       },
     });
 
-    const fakeDb = {
+    const fakeDb: Record<string, unknown> = {
       select: vi.fn(() => makeSelectQuery(selectResults.shift() ?? [])),
+      execute: vi.fn(async () => []),
       update: vi.fn(() => ({
         set: vi.fn(() => ({
           where: vi.fn(() => ({
@@ -98,6 +99,7 @@ describe("issueRecoveryActionService", () => {
         })),
       })),
     };
+    fakeDb.transaction = vi.fn(async (callback: (tx: unknown) => Promise<unknown>) => callback(fakeDb));
 
     const result = await issueRecoveryActionService(fakeDb as never).upsertSourceScoped({
       companyId: "company-1",
@@ -858,58 +860,65 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     });
   });
 
-  it("serializes terminal-finalize recovery creation and resolution on the source issue lock", async () => {
+  it("completes terminal recovery while a normal upsert waits on the source issue lock", async () => {
     const { companyId, managerId, sourceIssueId } = await seedCompany();
     const recoveryActionSvc = issueRecoveryActionService(db);
-    let releaseFailureLock!: () => void;
-    let failureLockAcquired!: () => void;
-    const holdFailureLock = new Promise<void>((resolve) => {
-      releaseFailureLock = resolve;
+    let normalTransactionStarted!: () => void;
+    const normalEnteredTransaction = new Promise<void>((resolve) => {
+      normalTransactionStarted = resolve;
     });
-    const failureHasLock = new Promise<void>((resolve) => {
-      failureLockAcquired = resolve;
-    });
+    const originalTransaction = db.transaction.bind(db);
+    let transactionCount = 0;
+    const transactionSpy = vi.spyOn(db, "transaction").mockImplementation(((callback, config) =>
+      originalTransaction(async (tx) => {
+        transactionCount += 1;
+        if (transactionCount === 2) normalTransactionStarted();
+        return callback(tx);
+      }, config)) as typeof db.transaction);
+    let normalUpsert!: ReturnType<typeof recoveryActionSvc.upsertSourceScoped>;
 
-    const failedFinalize = db.transaction(async (tx) => {
-      await tx.execute(sql`select ${issues.id} from ${issues} where ${issues.id} = ${sourceIssueId} for update`);
-      const action = await recoveryActionSvc.upsertSourceScoped({
-        companyId,
-        sourceIssueId,
-        kind: "workspace_validation",
-        ownerType: "agent",
-        ownerAgentId: managerId,
-        cause: "workspace_finalize_failed",
-        fingerprint: "workspace-validation:terminal-finalize-lock",
-        evidence: { sourceRunId: "failed-finalize-run" },
-        nextAction: "Repair and re-finalize.",
-      }, tx);
-      failureLockAcquired();
-      await holdFailureLock;
-      return action;
-    });
+    try {
+      const terminalPromotion = db.transaction(async (tx) => {
+        await tx.execute(sql`select ${issues.id} from ${issues} where ${issues.id} = ${sourceIssueId} for update`);
+        normalUpsert = recoveryActionSvc.upsertSourceScoped({
+          companyId,
+          sourceIssueId,
+          kind: "issue_graph_liveness",
+          ownerType: "agent",
+          ownerAgentId: managerId,
+          cause: "issue_graph_liveness",
+          fingerprint: "normal-upsert-waiting-on-issue-lock",
+          nextAction: "Restore a live path.",
+        });
+        await normalEnteredTransaction;
+        return recoveryActionSvc.upsertSourceScoped({
+          companyId,
+          sourceIssueId,
+          kind: "workspace_validation",
+          ownerType: "agent",
+          ownerAgentId: managerId,
+          cause: "workspace_finalize_failed",
+          fingerprint: "workspace-validation:terminal-finalize-lock",
+          evidence: { sourceRunId: "failed-finalize-run" },
+          nextAction: "Repair and re-finalize.",
+        }, tx);
+      });
 
-    await failureHasLock;
-    let successHasLock = false;
-    const newerSuccess = db.transaction(async (tx) => {
-      await tx.execute(sql`select ${issues.id} from ${issues} where ${issues.id} = ${sourceIssueId} for update`);
-      successHasLock = true;
-      return recoveryActionSvc.resolveActiveForIssue({
-        companyId,
-        sourceIssueId,
-        cause: "workspace_finalize_failed",
-        status: "resolved",
-        outcome: "restored",
-        resolutionNote: "A newer finalization succeeded.",
-      }, tx);
-    });
+      const [terminalAction, normalAction] = await Promise.race([
+        terminalPromotion.then(async (action) => [action, await normalUpsert] as const),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("mixed recovery upserts deadlocked")), 2_000)),
+      ]);
 
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    expect(successHasLock).toBe(false);
-    releaseFailureLock();
-
-    const [created, resolved] = await Promise.all([failedFinalize, newerSuccess]);
-    expect(resolved).toMatchObject({ id: created.id, status: "resolved", outcome: "restored" });
-    await expect(recoveryActionSvc.getActiveForIssue(companyId, sourceIssueId)).resolves.toBeNull();
+      expect(terminalAction).toMatchObject({ cause: "workspace_finalize_failed", status: "active" });
+      expect(normalAction).toMatchObject({ id: terminalAction.id, cause: "issue_graph_liveness", status: "active" });
+      await expect(recoveryActionSvc.getActiveForIssue(companyId, sourceIssueId)).resolves.toMatchObject({
+        id: terminalAction.id,
+        cause: "issue_graph_liveness",
+        attemptCount: 2,
+      });
+    } finally {
+      transactionSpy.mockRestore();
+    }
   });
 
   it("keeps active recovery visible when a plain comment does not create a live path", async () => {

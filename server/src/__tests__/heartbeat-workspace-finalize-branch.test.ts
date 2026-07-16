@@ -4,7 +4,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
@@ -293,6 +293,71 @@ async function listRunWorkspaceOperations(db: Db, runId: string) {
     .from(workspaceOperations)
     .where(eq(workspaceOperations.heartbeatRunId, runId))
     .orderBy(asc(workspaceOperations.startedAt), asc(workspaceOperations.createdAt));
+}
+
+async function seedTerminalFinalizeResult(
+  db: Db,
+  input: {
+    companyId: string;
+    projectId: string;
+    issueId: string;
+    agentId: string;
+    status: "failed" | "succeeded";
+    startedAt: Date;
+    workspaceName: string;
+  },
+) {
+  const executionWorkspaceId = randomUUID();
+  const runId = randomUUID();
+  const cwd = `/tmp/${input.workspaceName}`;
+  await db.insert(executionWorkspaces).values({
+    id: executionWorkspaceId,
+    companyId: input.companyId,
+    projectId: input.projectId,
+    sourceIssueId: input.issueId,
+    mode: "isolated_workspace",
+    strategyType: "git_worktree",
+    name: input.workspaceName,
+    status: "active",
+    cwd,
+    baseRef: "origin/master",
+    branchName: input.workspaceName,
+    providerType: "git_worktree",
+    providerRef: cwd,
+  });
+  await db.insert(heartbeatRuns).values({
+    id: runId,
+    companyId: input.companyId,
+    agentId: input.agentId,
+    invocationSource: "automation",
+    status: "running",
+    responsibleUserId: "responsible-user",
+    contextSnapshot: { issueId: input.issueId },
+  });
+  await db.insert(workspaceOperations).values({
+    companyId: input.companyId,
+    executionWorkspaceId,
+    heartbeatRunId: runId,
+    issueId: input.issueId,
+    phase: "workspace_finalize",
+    status: input.status,
+    startedAt: input.startedAt,
+    finishedAt: input.startedAt,
+  });
+  return { executionWorkspaceId, runId };
+}
+
+async function waitForRunStatuses(db: Db, runIds: string[], status: "cancelled", timeoutMs = 2_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const rows = await db
+      .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(inArray(heartbeatRuns.id, runIds));
+    if (rows.length === runIds.length && rows.every((row) => row.status === status)) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`Timed out waiting for runs to reach ${status}`);
 }
 
 describeEmbeddedPostgres("heartbeat workspace finalization branch guard", () => {
@@ -748,4 +813,126 @@ describeEmbeddedPostgres("heartbeat workspace finalization branch guard", () => 
     await expect(db.select({ status: issues.status }).from(issues).where(eq(issues.id, issueId)))
       .resolves.toEqual([{ status: "cancelled" }]);
   }, 20_000);
+
+  it("keeps cancellation authoritative while failed heartbeat promotion is waiting", async () => {
+    const repoRoot = await createGitRepo();
+    tempRoots.push(repoRoot);
+    const { companyId, projectId, agentId, issueId } = await seedRunTarget(db, repoRoot);
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, issueId));
+    const failedFinalize = await seedTerminalFinalizeResult(db, {
+      companyId,
+      projectId,
+      agentId,
+      issueId,
+      status: "failed",
+      startedAt: new Date("2026-07-15T20:00:00.000Z"),
+      workspaceName: "workspace-failed-before-cancellation",
+    });
+
+    const heartbeat = heartbeatService(db);
+    let failedPromotion!: Promise<unknown>;
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`select ${issues.id} from ${issues} where ${issues.id} = ${issueId} for update`);
+      failedPromotion = heartbeat.cancelRun(failedFinalize.runId, "Finalize failed before cancellation");
+      await waitForRunStatuses(db, [failedFinalize.runId], "cancelled");
+      await tx.update(issues).set({ status: "cancelled", updatedAt: new Date() }).where(eq(issues.id, issueId));
+    });
+    await expect(Promise.race([
+      failedPromotion,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("failed promotion timed out")), 2_000)),
+    ])).resolves.toBeTruthy();
+
+    await expect(waitForRecoveryAction(db, issueId, "active", 250)).resolves.toBeNull();
+    await expect(db.select({ status: issues.status }).from(issues).where(eq(issues.id, issueId)))
+      .resolves.toEqual([{ status: "cancelled" }]);
+  });
+
+  it("ignores a stale workspace failure after a newer workspace finalized successfully", async () => {
+    const repoRoot = await createGitRepo();
+    tempRoots.push(repoRoot);
+    const { companyId, projectId, agentId, issueId } = await seedRunTarget(db, repoRoot);
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, issueId));
+    const staleFailure = await seedTerminalFinalizeResult(db, {
+      companyId,
+      projectId,
+      agentId,
+      issueId,
+      status: "failed",
+      startedAt: new Date("2026-07-15T20:00:00.000Z"),
+      workspaceName: "workspace-a-failed",
+    });
+    const newerSuccess = await seedTerminalFinalizeResult(db, {
+      companyId,
+      projectId,
+      agentId,
+      issueId,
+      status: "succeeded",
+      startedAt: new Date("2026-07-15T20:01:00.000Z"),
+      workspaceName: "workspace-b-succeeded",
+    });
+
+    const heartbeat = heartbeatService(db);
+    let overlappingFinalizations!: Promise<unknown[]>;
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`select ${issues.id} from ${issues} where ${issues.id} = ${issueId} for update`);
+      overlappingFinalizations = Promise.all([
+        heartbeat.cancelRun(staleFailure.runId, "Delayed finalize result from workspace A"),
+        heartbeat.cancelRun(newerSuccess.runId, "Finalize workspace B"),
+      ]);
+      await waitForRunStatuses(db, [staleFailure.runId, newerSuccess.runId], "cancelled");
+    });
+    await expect(Promise.race([
+      overlappingFinalizations,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("overlapping finalizations timed out")), 2_000)),
+    ])).resolves.toHaveLength(2);
+
+    await expect(waitForRecoveryAction(db, issueId, "active", 250)).resolves.toBeNull();
+  });
+
+  it("keeps a newer workspace failure active after a stale workspace success arrives", async () => {
+    const repoRoot = await createGitRepo();
+    tempRoots.push(repoRoot);
+    const { companyId, projectId, agentId, issueId } = await seedRunTarget(db, repoRoot);
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, issueId));
+    const staleSuccess = await seedTerminalFinalizeResult(db, {
+      companyId,
+      projectId,
+      agentId,
+      issueId,
+      status: "succeeded",
+      startedAt: new Date("2026-07-15T20:00:00.000Z"),
+      workspaceName: "workspace-a-succeeded",
+    });
+    const newerFailure = await seedTerminalFinalizeResult(db, {
+      companyId,
+      projectId,
+      agentId,
+      issueId,
+      status: "failed",
+      startedAt: new Date("2026-07-15T20:01:00.000Z"),
+      workspaceName: "workspace-b-failed",
+    });
+
+    const heartbeat = heartbeatService(db);
+    let overlappingFinalizations!: Promise<unknown[]>;
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`select ${issues.id} from ${issues} where ${issues.id} = ${issueId} for update`);
+      overlappingFinalizations = Promise.all([
+        heartbeat.cancelRun(staleSuccess.runId, "Delayed finalize result from workspace A"),
+        heartbeat.cancelRun(newerFailure.runId, "Finalize workspace B"),
+      ]);
+      await waitForRunStatuses(db, [staleSuccess.runId, newerFailure.runId], "cancelled");
+    });
+    await expect(Promise.race([
+      overlappingFinalizations,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("overlapping finalizations timed out")), 2_000)),
+    ])).resolves.toHaveLength(2);
+    const activeRecovery = await waitForRecoveryAction(db, issueId, "active");
+
+    await expect(waitForRecoveryAction(db, issueId, "active")).resolves.toMatchObject({
+      id: activeRecovery?.id,
+      cause: "workspace_finalize_failed",
+      status: "active",
+    });
+  });
 });

@@ -1,6 +1,6 @@
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { issueRecoveryActions } from "@paperclipai/db";
+import { issueRecoveryActions, issues } from "@paperclipai/db";
 import type {
   IssueRecoveryAction,
   IssueRecoveryActionKind,
@@ -97,32 +97,6 @@ function isUniqueRecoveryActionConflict(error: unknown) {
 }
 
 export function issueRecoveryActionService(db: Db) {
-  const upsertQueues = new Map<string, Promise<void>>();
-
-  async function runExclusiveUpsert<T>(
-    input: UpsertIssueRecoveryActionInput,
-    task: () => Promise<T>,
-  ): Promise<T> {
-    const key = `${input.companyId}:${input.sourceIssueId}`;
-    const previous = upsertQueues.get(key) ?? Promise.resolve();
-    let release: () => void = () => {};
-    const current = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const next = previous.catch(() => undefined).then(() => current);
-    upsertQueues.set(key, next);
-
-    await previous.catch(() => undefined);
-    try {
-      return await task();
-    } finally {
-      release();
-      if (upsertQueues.get(key) === next) {
-        upsertQueues.delete(key);
-      }
-    }
-  }
-
   async function getActiveForIssue(
     companyId: string,
     sourceIssueId: string,
@@ -264,7 +238,25 @@ export function issueRecoveryActionService(db: Db) {
     input: UpsertIssueRecoveryActionInput,
     dbOrTx: DbOrTransaction = db,
   ): Promise<IssueRecoveryAction> {
-    return runExclusiveUpsert(input, () => upsertSourceScopedUnlocked(input, 0, dbOrTx));
+    const upsertWithSourceLock = async (tx: DbTransaction) => {
+      await tx.execute(sql`
+        select ${issues.id}
+        from ${issues}
+        where ${issues.companyId} = ${input.companyId}
+          and ${issues.id} = ${input.sourceIssueId}
+        for update
+      `);
+      return upsertSourceScopedUnlocked(input, 0, tx);
+    };
+
+    // One database lock order covers process-local and cross-process callers:
+    // source issue first, recovery row second. A transaction-bound terminal
+    // promotion may already own this lock; reacquiring it in the same transaction
+    // is safe and avoids mixing a JavaScript queue with PostgreSQL row locks.
+    if (dbOrTx !== db) {
+      return upsertWithSourceLock(dbOrTx as DbTransaction);
+    }
+    return db.transaction(upsertWithSourceLock);
   }
 
   async function resolveActiveForIssue(
