@@ -92,6 +92,7 @@ import {
 import { trackAgentTaskCompleted } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import type { StorageService } from "../storage/types.js";
+import { requireBoard } from "../middleware/auth.js";
 import { validate } from "../middleware/validate.js";
 import * as serviceIndex from "../services/index.js";
 import {
@@ -4767,6 +4768,9 @@ export function issueRoutes(
       includeBlockedInboxAttention:
         req.query.includeBlockedInboxAttention === "true" || req.query.includeBlockedInboxAttention === "1",
       includeLiveDescendantSummary: includeLiveDescendantSummary === true,
+      includeArchived:
+        requireBoard(req) &&
+        (req.query.includeArchived === "true" || req.query.includeArchived === "1"),
       hasPlanDocument,
       q: req.query.q as string | undefined,
       limit,
@@ -5330,6 +5334,11 @@ export function issueRoutes(
     const id = req.params.id as string;
     const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
     if (!issue) return;
+    // Soft-deleted issues: agents see 404; board retains GET with archived fields.
+    if (issue.archivedAt && !requireBoard(req)) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const inboxArchiveFieldsPromise = req.actor.type === "board" && req.actor.userId
       ? svc.getActiveInboxArchiveFields(issue, req.actor.userId)
@@ -8715,9 +8724,64 @@ export function issueRoutes(
     const id = req.params.id as string;
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
     if (!existing) return;
-    if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
-    const attachments = await svc.listAttachments(id);
+    // ADR-GOV-17 / SAT-8302 + SAT-8309: archive/hard-delete are board-only (allowlist).
+    if (!requireBoard(req)) {
+      res.status(403).json({
+        error: "DELETE /api/issues is restricted to board users (ADR-GOV-17)",
+        details: { issueId: existing.id, securityPrinciples: ["Least Privilege", "Complete Mediation"] },
+      });
+      return;
+    }
 
+    const hard =
+      req.query.hard === "true" ||
+      req.query.hard === "1" ||
+      req.query.mode === "hard";
+    const actor = getActorInfo(req);
+
+    if (!hard) {
+      // Phase 2 soft-delete / archive (idempotent).
+      const archived = await svc.archive(
+        id,
+        {
+          actorType: req.actor.type === "board" ? "board" : actor.actorType,
+          actorId: actor.actorId,
+        },
+        { reason: typeof req.query.reason === "string" ? req.query.reason : null },
+      );
+      if (!archived) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
+      await logActivity(db, {
+        companyId: archived.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.archived",
+        entityType: "issue",
+        entityId: archived.id,
+        details: {
+          identifier: archived.identifier,
+          title: archived.title,
+          restoreManifest: archived.restoreManifest ?? null,
+        },
+      });
+      await queueTaskWatchdogEvaluation(existing, actor.runId);
+      res.json({ archived: true, issue: archived });
+      return;
+    }
+
+    // Hard delete only after prior archive (two-step).
+    if (!existing.archivedAt) {
+      throw conflict("Hard delete requires the issue to be archived first", {
+        issueId: existing.id,
+        securityPrinciples: ["Fail Securely", "Complete Mediation"],
+      });
+    }
+
+    const attachments = await svc.listAttachments(id);
     const issue = await svc.remove(id);
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });
@@ -8732,6 +8796,48 @@ export function issueRoutes(
       }
     }
 
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "issue.hard_deleted",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        id: issue.id,
+        identifier: issue.identifier,
+        title: issue.title,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        archivedAt: existing.archivedAt,
+        timestamp: new Date().toISOString(),
+      },
+    });
+
+    await queueTaskWatchdogEvaluation(existing, actor.runId);
+    res.json(issue);
+  });
+
+  router.post("/issues/:id/restore", async (req, res) => {
+    const id = req.params.id as string;
+    const existing = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    if (!existing) return;
+    if (!requireBoard(req)) {
+      res.status(403).json({
+        error: "POST /api/issues/:id/restore is restricted to board users (ADR-GOV-17)",
+        details: { issueId: existing.id, securityPrinciples: ["Least Privilege", "Complete Mediation"] },
+      });
+      return;
+    }
+
+    const issue = await svc.restore(id);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+
     const actor = getActorInfo(req);
     await logActivity(db, {
       companyId: issue.companyId,
@@ -8739,9 +8845,13 @@ export function issueRoutes(
       actorId: actor.actorId,
       agentId: actor.agentId,
       runId: actor.runId,
-      action: "issue.deleted",
+      action: "issue.restored",
       entityType: "issue",
       entityId: issue.id,
+      details: {
+        identifier: issue.identifier,
+        title: issue.title,
+      },
     });
 
     await queueTaskWatchdogEvaluation(existing, actor.runId);

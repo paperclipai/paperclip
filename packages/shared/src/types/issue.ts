@@ -774,8 +774,19 @@ export interface Issue {
   lastExternalCommentAt?: Date | null;
   lastActivityAt?: Date | null;
   isUnreadForMe?: boolean;
+  /** Soft-delete timestamp (ADR-GOV-17 D2). Also reused by per-user inbox archive overlays. */
   archivedAt?: Date | null;
-  archivedByActorType?: "user" | "agent" | null;
+  archivedByActorType?: "board" | "user" | "agent" | null;
+  archivedByActorId?: string | null;
+  archiveReason?: string | null;
+  restoreManifest?: {
+    blocks?: Array<{
+      relatedIssueId: string;
+      createdByAgentId?: string | null;
+      createdByUserId?: string | null;
+    }>;
+  } | null;
+  /** Per-user inbox archive attribution (overlay; not issue soft-delete). */
   archivedByAgentId?: string | null;
   archivedByRunId?: string | null;
   createdAt: Date;
@@ -830,7 +841,9 @@ export type CompactIssue = Pick<
   lastActivityAt?: Date | null;
   isUnreadForMe?: boolean;
   archivedAt?: Date | null;
-  archivedByActorType?: "user" | "agent" | null;
+  archivedByActorType?: "board" | "user" | "agent" | null;
+  archivedByActorId?: string | null;
+  archiveReason?: string | null;
   archivedByAgentId?: string | null;
   archivedByRunId?: string | null;
   activeRecoveryAction: IssueRecoveryAction | null;
