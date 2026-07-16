@@ -301,6 +301,7 @@ export function InstanceExperimentalSettings() {
   const enableCases = experimentalQuery.data?.enableCases === true;
   const enableServerInfoDebugView = experimentalQuery.data?.enableServerInfoDebugView === true;
   const enableSmokeLab = experimentalQuery.data?.enableSmokeLab === true;
+  const hotRestart = experimentalQuery.data?.hotRestart === true;
   const autoRestartDevServerWhenIdle = experimentalQuery.data?.autoRestartDevServerWhenIdle === true;
   const enableIssueGraphLivenessAutoRecovery =
     experimentalQuery.data?.enableIssueGraphLivenessAutoRecovery === true;
@@ -374,6 +375,34 @@ export function InstanceExperimentalSettings() {
           {actionError}
         </div>
       )}
+
+      <Card className="block p-5">
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-1.5">
+            <div className="flex items-center gap-2">
+              <h2 className="text-sm font-semibold">Hot Restart</h2>
+              <Badge variant="secondary">Experimental</Badge>
+            </div>
+            <p className="max-w-2xl text-sm text-muted-foreground">
+              Adds a separate <span className="font-medium">Hot restart</span> action to the Restart Required
+              banner that rebuilds and restarts the server while your eligible live runs keep running — the new
+              build adopts them on boot. New runs are captured in durable spool files so they can be preserved.
+            </p>
+            <p className="max-w-2xl text-xs text-muted-foreground">
+              A deliberate stop still kills your agents. <code>systemctl stop</code>, a plain restart, and dev
+              Ctrl-C always drain and terminate every run exactly as today. Preservation is opt-in per restart —
+              only the explicit Hot restart action (or the deploy routine) preserves runs, and only while this
+              setting is on. Turning it off returns new runs to the existing pipe capture path.
+            </p>
+          </div>
+          <ToggleSwitch
+            checked={hotRestart}
+            onCheckedChange={() => toggleMutation.mutate({ hotRestart: !hotRestart })}
+            disabled={toggleMutation.isPending}
+            aria-label="Toggle hot restart"
+          />
+        </div>
+      </Card>
 
       {inWorktree ? (
         <Card className="block p-5">

@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import {
   applyPaperclipWorkspaceEnv,
   appendWithByteCap,
+  buildJournalLauncherSpawnTarget,
   buildPersistentSkillSnapshot,
   buildRuntimeMountedSkillSnapshot,
   buildInvocationEnvForLogs,
@@ -25,6 +26,38 @@ import {
   UNMANAGED_BACKGROUND_TASK_STOP_REASON,
   WATCHDOG_DEFAULT_MANDATE,
 } from "./server-utils.js";
+
+describe("buildJournalLauncherSpawnTarget", () => {
+  it("wraps journal launchers in a per-run systemd scope when supported", () => {
+    const target = buildJournalLauncherSpawnTarget({
+      runId: "run-123",
+      launcherConfig: "{}",
+      systemdScopeSupported: true,
+    });
+
+    expect(target.command).toBe("systemd-run");
+    expect(target.args.slice(0, 4)).toEqual([
+      "--scope",
+      "--quiet",
+      "--collect",
+      "--unit=paperclip-run-run-123",
+    ]);
+    expect(target.args[4]).toBe(process.execPath);
+    expect(target.systemdScopeUnit).toBe("paperclip-run-run-123");
+  });
+
+  it("keeps detached direct launch as the fallback", () => {
+    const target = buildJournalLauncherSpawnTarget({
+      runId: "run-123",
+      launcherConfig: "{}",
+      systemdScopeSupported: false,
+    });
+
+    expect(target.command).toBe(process.execPath);
+    expect(target.args[0]).toBe("-e");
+    expect(target.systemdScopeUnit).toBeNull();
+  });
+});
 
 function isPidAlive(pid: number) {
   try {
@@ -440,6 +473,275 @@ describe("runChildProcess", () => {
     expect(result.stdout).toBe("hello from stdin");
     expect(onSpawnCompletedAt).toBeGreaterThanOrEqual(startedAt + spawnDelayMs);
     expect(finishedAt - startedAt).toBeGreaterThanOrEqual(spawnDelayMs);
+  });
+
+  it("keeps the existing pipe path when journaling is not configured", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-pipe-path-"));
+    const spoolDir = path.join(root, "unused-spool");
+    let spawnMetadata: { ioMode?: "pipe" | "journal"; processPreservable?: boolean } | null = null;
+    try {
+      const result = await runChildProcess(
+        randomUUID(),
+        process.execPath,
+        ["-e", "process.stdout.write('pipe-output')"],
+        {
+          cwd: process.cwd(),
+          env: {},
+          timeoutSec: 5,
+          graceSec: 1,
+          onLog: async () => {},
+          onSpawn: async (metadata) => {
+            spawnMetadata = metadata;
+          },
+        },
+      );
+
+      expect(result.stdout).toBe("pipe-output");
+      expect(spawnMetadata).not.toHaveProperty("ioMode");
+      await expect(fs.stat(spoolDir)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("journals stdout and stderr and writes a nonzero exit sentinel", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-run-journal-"));
+    const chunks: string[] = [];
+    let spawnMetadata: { ioMode?: "pipe" | "journal"; processPreservable?: boolean } | null = null;
+    try {
+      const result = await runChildProcess(
+        randomUUID(),
+        process.execPath,
+        ["-e", "process.stdout.write('out');process.stderr.write('err');process.exit(7)"],
+        {
+          cwd: process.cwd(),
+          env: {},
+          timeoutSec: 5,
+          graceSec: 1,
+          onLog: async (stream, chunk) => {
+            chunks.push(`${stream}:${chunk}`);
+          },
+          onSpawn: async (metadata) => {
+            spawnMetadata = metadata;
+          },
+          journal: {
+            spoolDir: root,
+          },
+        },
+      );
+
+      expect(result).toMatchObject({ exitCode: 7, stdout: "out", stderr: "err" });
+      expect(chunks).toEqual(expect.arrayContaining(["stdout:out", "stderr:err"]));
+      expect(spawnMetadata).toMatchObject({ ioMode: "journal", processPreservable: true });
+      await expect(fs.readFile(path.join(root, "stdout.log"), "utf8")).resolves.toBe("out");
+      await expect(fs.readFile(path.join(root, "stderr.log"), "utf8")).resolves.toBe("err");
+      const exitSentinel = JSON.parse(await fs.readFile(path.join(root, "exit.json"), "utf8"));
+      expect(exitSentinel).toMatchObject({ version: 1, code: 7, signal: null });
+      expect(new Date(exitSentinel.finishedAt).getTime()).toBeGreaterThanOrEqual(
+        new Date(exitSentinel.startedAt).getTime(),
+      );
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === "win32")("records payload signal death in exit.json", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-run-journal-signal-"));
+    try {
+      await runChildProcess(
+        randomUUID(),
+        process.execPath,
+        ["-e", "process.kill(process.pid, 'SIGTERM')"],
+        {
+          cwd: process.cwd(),
+          env: {},
+          timeoutSec: 5,
+          graceSec: 1,
+          onLog: async () => {},
+          journal: { spoolDir: root },
+        },
+      );
+
+      const exitSentinel = JSON.parse(await fs.readFile(path.join(root, "exit.json"), "utf8"));
+      expect(exitSentinel).toMatchObject({ code: null, signal: "SIGTERM" });
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("resumes journal tailing from persisted byte offsets without loss or duplication", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-run-journal-offset-"));
+    const offsets = { stdout: 0, stderr: 0 };
+    try {
+      const firstChunks: string[] = [];
+      await runChildProcess(randomUUID(), process.execPath, ["-e", "process.stdout.write('first')"], {
+        cwd: process.cwd(),
+        env: {},
+        timeoutSec: 5,
+        graceSec: 1,
+        onLog: async (_stream, chunk) => {
+          firstChunks.push(chunk);
+        },
+        journal: {
+          spoolDir: root,
+          onOffset: async (stream, endOffset) => {
+            offsets[stream] = endOffset;
+          },
+        },
+      });
+      expect(firstChunks.join("")).toBe("first");
+
+      const resumedChunks: string[] = [];
+      await runChildProcess(randomUUID(), process.execPath, ["-e", "process.stdout.write('second')"], {
+        cwd: process.cwd(),
+        env: {},
+        timeoutSec: 5,
+        graceSec: 1,
+        onLog: async (_stream, chunk) => {
+          resumedChunks.push(chunk);
+        },
+        journal: {
+          spoolDir: root,
+          stdoutOffset: offsets.stdout,
+          stderrOffset: offsets.stderr,
+        },
+      });
+
+      expect(resumedChunks.join("")).toBe("second");
+      await expect(fs.readFile(path.join(root, "stdout.log"), "utf8")).resolves.toBe("firstsecond");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === "win32")("adopts an existing journal process and drains its exit sentinel", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-run-journal-adopt-"));
+    const stdoutPath = path.join(root, "stdout.log");
+    const stderrPath = path.join(root, "stderr.log");
+    await fs.writeFile(stdoutPath, "before-");
+    await fs.writeFile(stderrPath, "");
+    const child = spawn(process.execPath, [
+      "-e",
+      [
+        "const fs = require('node:fs');",
+        `fs.appendFileSync(${JSON.stringify(stdoutPath)}, 'after');`,
+        `fs.writeFileSync(${JSON.stringify(path.join(root, "exit.json"))}, JSON.stringify({ version: 1, code: 0, signal: null, startedAt: new Date().toISOString(), finishedAt: new Date().toISOString() }));`,
+      ].join(" "),
+    ], { detached: true, stdio: "ignore" });
+    if (!child.pid) throw new Error("Expected child pid");
+
+    try {
+      const chunks: string[] = [];
+      const result = await runChildProcess(randomUUID(), process.execPath, ["-e", "throw new Error('must not spawn')"], {
+        cwd: process.cwd(),
+        env: {},
+        timeoutSec: 5,
+        graceSec: 1,
+        onLog: async (_stream, chunk) => {
+          chunks.push(chunk);
+        },
+        journal: {
+          spoolDir: root,
+          stdoutOffset: Buffer.byteLength("before-"),
+          adoptExisting: {
+            pid: child.pid,
+            processGroupId: child.pid,
+            activeElapsedMs: 0,
+          },
+        },
+      });
+
+      expect(chunks.join("")).toBe("after");
+      expect(result).toMatchObject({ exitCode: 0, signal: null, timedOut: false, stdout: "after" });
+    } finally {
+      child.kill("SIGKILL");
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === "win32")("waits for an adopted process to exit before trusting its sentinel", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-run-journal-adopt-sentinel-"));
+    const stdoutPath = path.join(root, "stdout.log");
+    const stderrPath = path.join(root, "stderr.log");
+    await fs.writeFile(stdoutPath, "before-");
+    await fs.writeFile(stderrPath, "");
+    const child = spawn(process.execPath, [
+      "-e",
+      [
+        "const fs = require('node:fs');",
+        `fs.writeFileSync(${JSON.stringify(path.join(root, "exit.json"))}, JSON.stringify({ version: 1, code: 99, signal: null, startedAt: new Date().toISOString(), finishedAt: new Date().toISOString() }));`,
+        `setTimeout(() => fs.appendFileSync(${JSON.stringify(stdoutPath)}, 'after'), 150);`,
+        "setTimeout(() => process.exit(0), 250);",
+      ].join(" "),
+    ], { detached: true, stdio: "ignore" });
+    if (!child.pid) throw new Error("Expected child pid");
+
+    try {
+      const chunks: string[] = [];
+      const result = await runChildProcess(randomUUID(), process.execPath, ["-e", "throw new Error('must not spawn')"], {
+        cwd: process.cwd(),
+        env: {},
+        timeoutSec: 5,
+        graceSec: 1,
+        onLog: async (_stream, chunk) => {
+          chunks.push(chunk);
+        },
+        journal: {
+          spoolDir: root,
+          stdoutOffset: Buffer.byteLength("before-"),
+          adoptExisting: {
+            pid: child.pid,
+            processGroupId: child.pid,
+            activeElapsedMs: 0,
+          },
+        },
+      });
+
+      expect(chunks.join("")).toBe("after");
+      expect(result).toMatchObject({ exitCode: 99, signal: null, timedOut: false, stdout: "after" });
+    } finally {
+      child.kill("SIGKILL");
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("produces the same captured transcript through pipe and journal paths", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-run-journal-parity-"));
+    const args = [
+      "-e",
+      "process.stdout.write('alpha\\n');process.stderr.write('warning\\n');process.stdout.write('omega\\n')",
+    ];
+    try {
+      const pipeTranscript = { stdout: "", stderr: "" };
+      const journalTranscript = { stdout: "", stderr: "" };
+      const pipeResult = await runChildProcess(randomUUID(), process.execPath, args, {
+        cwd: process.cwd(),
+        env: {},
+        timeoutSec: 5,
+        graceSec: 1,
+        onLog: async (stream, chunk) => {
+          pipeTranscript[stream] += chunk;
+        },
+      });
+      const journalResult = await runChildProcess(randomUUID(), process.execPath, args, {
+        cwd: process.cwd(),
+        env: {},
+        timeoutSec: 5,
+        graceSec: 1,
+        onLog: async (stream, chunk) => {
+          journalTranscript[stream] += chunk;
+        },
+        journal: {
+          spoolDir: root,
+        },
+      });
+
+      expect(journalResult.stdout).toBe(pipeResult.stdout);
+      expect(journalResult.stderr).toBe(pipeResult.stderr);
+      expect(journalTranscript).toEqual(pipeTranscript);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
   });
 
   it.skipIf(process.platform === "win32")("kills descendant processes on timeout via the process group", async () => {

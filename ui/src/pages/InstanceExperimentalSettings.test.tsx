@@ -58,6 +58,7 @@ const BUILT_IN_AGENTS_TOGGLE_SELECTOR =
 const APPS_TOGGLE_SELECTOR = 'button[aria-label="Toggle apps experimental setting"]';
 const AUTO_RECOVERY_TOGGLE_SELECTOR =
   'button[aria-label="Toggle task graph liveness auto-recovery"]';
+const HOT_RESTART_TOGGLE_SELECTOR = 'button[aria-label="Toggle hot restart"]';
 
 function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
   return {
@@ -78,6 +79,7 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableCloudSync: false,
     enableServerInfoDebugView: false,
     enableSmokeLab: false,
+    hotRestart: false,
     autoRestartDevServerWhenIdle: false,
     enableIssueGraphLivenessAutoRecovery: false,
     issueGraphLivenessAutoRecoveryLookbackHours: 24,
@@ -88,6 +90,42 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     worktreeRunExecutionActivationInstanceId: null,
   };
 }
+
+describe("InstanceExperimentalSettings — hot restart", () => {
+  let container: HTMLDivElement;
+  let root: Root | null = null;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue(defaultExperimentalSettings());
+    mockInstanceSettingsApi.updateExperimental.mockImplementation(async (patch) => ({
+      ...defaultExperimentalSettings(),
+      ...patch,
+    }));
+    root = createRoot(container);
+    root.render(
+      <QueryClientProvider client={new QueryClient()}>
+        <InstanceExperimentalSettings />
+      </QueryClientProvider>,
+    );
+  });
+
+  afterEach(() => {
+    root?.unmount();
+    container.remove();
+    vi.clearAllMocks();
+  });
+
+  it("persists the hot restart toggle", async () => {
+    await flushReact();
+    const toggle = container.querySelector<HTMLButtonElement>(HOT_RESTART_TOGGLE_SELECTOR);
+    expect(toggle).not.toBeNull();
+    await act(() => toggle?.click());
+    await flushReact();
+    expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledWith({ hotRestart: true });
+  });
+});
 
 function emptyRecoveryPreview(): IssueGraphLivenessAutoRecoveryPreview {
   return {

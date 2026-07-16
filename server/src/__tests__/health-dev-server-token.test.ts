@@ -111,6 +111,9 @@ describe("GET /health dev-server supervisor access", () => {
           activeRunCount: 0,
           waitingForIdle: false,
           lastRestartAt: "2026-03-20T11:30:00.000Z",
+          hotRestartEnabled: false,
+          eligibleLiveRunCount: 0,
+          adoptionReport: null,
         },
       });
     } finally {
@@ -162,6 +165,148 @@ describe("POST /health/dev-server/restart", () => {
         delete process.env.PAPERCLIP_DEV_SERVER_STATUS_FILE;
       } else {
         process.env.PAPERCLIP_DEV_SERVER_STATUS_FILE = previousFile;
+      }
+    }
+  });
+
+  it("rejects a hot restart when the experimental setting is off", async () => {
+    const previousFile = process.env.PAPERCLIP_DEV_SERVER_STATUS_FILE;
+    process.env.PAPERCLIP_DEV_SERVER_STATUS_FILE = createDevServerStatusFile({
+      dirty: true,
+      changedPathCount: 1,
+      changedPathsSample: ["server/src/routes/health.ts"],
+      pendingMigrations: [],
+    });
+
+    const db = {
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({
+          where: vi.fn().mockResolvedValue([
+            { id: "settings-1", general: {}, experimental: { hotRestart: false }, createdAt: new Date(), updatedAt: new Date() },
+          ]),
+        })),
+      })),
+    } as unknown as Db;
+
+    try {
+      const app = express();
+      app.use(express.json());
+      app.use("/health", healthRoutes(db));
+
+      const res = await request(app).post("/health/dev-server/restart").send({ hot: true });
+
+      expect(res.status).toBe(409);
+      expect(res.body).toEqual({ error: "hot_restart_disabled" });
+
+      const requestPath = path.join(
+        path.dirname(process.env.PAPERCLIP_DEV_SERVER_STATUS_FILE),
+        "dev-server-restart-request.json",
+      );
+      // No restart request is written when the hot restart is rejected.
+      expect(existsSync(requestPath)).toBe(false);
+    } finally {
+      if (previousFile === undefined) {
+        delete process.env.PAPERCLIP_DEV_SERVER_STATUS_FILE;
+      } else {
+        process.env.PAPERCLIP_DEV_SERVER_STATUS_FILE = previousFile;
+      }
+    }
+  });
+
+  it("writes the intent marker and a hot-restart request when the setting is on", async () => {
+    const previousFile = process.env.PAPERCLIP_DEV_SERVER_STATUS_FILE;
+    const previousHome = process.env.PAPERCLIP_HOME;
+    const homeDir = mkdtempSync(path.join(os.tmpdir(), "paperclip-hot-restart-home-"));
+    tempDirs.push(homeDir);
+    process.env.PAPERCLIP_HOME = homeDir;
+    process.env.PAPERCLIP_DEV_SERVER_STATUS_FILE = createDevServerStatusFile({
+      dirty: true,
+      changedPathCount: 1,
+      changedPathsSample: ["server/src/routes/health.ts"],
+      pendingMigrations: [],
+    });
+
+    const db = {
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({
+          where: vi.fn().mockResolvedValue([
+            { id: "settings-1", general: {}, experimental: { hotRestart: true }, createdAt: new Date(), updatedAt: new Date() },
+          ]),
+        })),
+      })),
+    } as unknown as Db;
+
+    try {
+      const app = express();
+      app.use(express.json());
+      app.use("/health", healthRoutes(db));
+
+      const res = await request(app).post("/health/dev-server/restart").send({ hot: true });
+
+      expect(res.status).toBe(202);
+      expect(res.body).toEqual({ status: "hot_restart_requested" });
+
+      const requestPath = path.join(
+        path.dirname(process.env.PAPERCLIP_DEV_SERVER_STATUS_FILE),
+        "dev-server-restart-request.json",
+      );
+      expect(JSON.parse(readFileSync(requestPath, "utf8"))).toMatchObject({
+        reason: "hot_restart_intent",
+      });
+      // The one-shot intent marker lands in the paperclip home dir.
+      expect(existsSync(path.join(homeDir, "hot-restart-intent.json"))).toBe(true);
+    } finally {
+      if (previousFile === undefined) {
+        delete process.env.PAPERCLIP_DEV_SERVER_STATUS_FILE;
+      } else {
+        process.env.PAPERCLIP_DEV_SERVER_STATUS_FILE = previousFile;
+      }
+      if (previousHome === undefined) {
+        delete process.env.PAPERCLIP_HOME;
+      } else {
+        process.env.PAPERCLIP_HOME = previousHome;
+      }
+    }
+  });
+
+  it("does not write the intent marker when the restart supervisor is unavailable", async () => {
+    const previousFile = process.env.PAPERCLIP_DEV_SERVER_STATUS_FILE;
+    const previousHome = process.env.PAPERCLIP_HOME;
+    const homeDir = mkdtempSync(path.join(os.tmpdir(), "paperclip-hot-restart-home-"));
+    tempDirs.push(homeDir);
+    delete process.env.PAPERCLIP_DEV_SERVER_STATUS_FILE;
+    process.env.PAPERCLIP_HOME = homeDir;
+
+    const db = {
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({
+          where: vi.fn().mockResolvedValue([
+            { id: "settings-1", general: {}, experimental: { hotRestart: true }, createdAt: new Date(), updatedAt: new Date() },
+          ]),
+        })),
+      })),
+    } as unknown as Db;
+
+    try {
+      const app = express();
+      app.use(express.json());
+      app.use("/health", healthRoutes(db));
+
+      const res = await request(app).post("/health/dev-server/restart").send({ hot: true });
+
+      expect(res.status).toBe(404);
+      expect(res.body).toEqual({ error: "dev_server_supervisor_unavailable" });
+      expect(existsSync(path.join(homeDir, "hot-restart-intent.json"))).toBe(false);
+    } finally {
+      if (previousFile === undefined) {
+        delete process.env.PAPERCLIP_DEV_SERVER_STATUS_FILE;
+      } else {
+        process.env.PAPERCLIP_DEV_SERVER_STATUS_FILE = previousFile;
+      }
+      if (previousHome === undefined) {
+        delete process.env.PAPERCLIP_HOME;
+      } else {
+        process.env.PAPERCLIP_HOME = previousHome;
       }
     }
   });

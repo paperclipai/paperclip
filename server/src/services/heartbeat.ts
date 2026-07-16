@@ -68,6 +68,8 @@ import {
   workspaceOperations,
 } from "@paperclipai/db";
 import { conflict, HttpError, notFound } from "../errors.js";
+import { consumeHotRestartIntent } from "../hot-restart-intent.js";
+import { writeHotRestartPendingReport } from "../hot-restart-report.js";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
 import { normalizeResponsibleUserDenialCode } from "./responsible-user-denial-run-outcomes.js";
@@ -91,7 +93,12 @@ import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
 import { secretService, type MissingRuntimeBinding } from "./secrets.js";
-import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
+import {
+  resolveDefaultAgentWorkspaceDir,
+  resolveManagedProjectWorkspaceDir,
+  resolvePaperclipHomeDir,
+} from "../home-paths.js";
+import { matchesLocalProcessIdentity, readLocalProcessIdentity } from "./process-identity.js";
 import {
   buildHeartbeatRunIssueComment,
   HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS,
@@ -5385,6 +5392,20 @@ export function resolveHeartbeatSchedulingSuppression(
   return { suppressed: false, reason: null };
 }
 
+export function computeAdoptedRunActiveElapsedMs(input: {
+  processStartedAt: Date | null;
+  adoptionDowntimeMs: number | null;
+  now?: Date;
+}) {
+  if (!input.processStartedAt) return 0;
+  return Math.max(
+    0,
+    (input.now?.getTime() ?? Date.now()) -
+      input.processStartedAt.getTime() -
+      Math.max(0, input.adoptionDowntimeMs ?? 0),
+  );
+}
+
 export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) {
   const instanceSettings = instanceSettingsService(db);
   const getCurrentUserRedactionOptions = async () => ({
@@ -7539,9 +7560,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     status: string,
     patch?: Partial<typeof heartbeatRuns.$inferInsert>,
   ) {
+    const lifecyclePatch = isHeartbeatRunTerminalStatus(status)
+      ? { lifecycleState: null, adoptionMarkedAt: null }
+      : {};
     const updated = await db
       .update(heartbeatRuns)
-      .set({ status, ...patch, updatedAt: new Date() })
+      .set({ status, ...lifecyclePatch, ...patch, updatedAt: new Date() })
       .where(eq(heartbeatRuns.id, runId))
       .returning()
       .then((rows) => rows[0] ?? null);
@@ -7576,9 +7600,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     status: string,
     patch?: Partial<typeof heartbeatRuns.$inferInsert>,
   ) {
+    const lifecyclePatch = isHeartbeatRunTerminalStatus(status)
+      ? { lifecycleState: null, adoptionMarkedAt: null }
+      : {};
     const updated = await db
       .update(heartbeatRuns)
-      .set({ status, ...patch, updatedAt: new Date() })
+      .set({ status, ...lifecyclePatch, ...patch, updatedAt: new Date() })
       .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.status, "running")))
       .returning()
       .then((rows) => rows[0] ?? null);
@@ -8245,15 +8272,28 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
   async function persistRunProcessMetadata(
     runId: string,
-    meta: { pid: number; processGroupId: number | null; startedAt: string },
+    meta: {
+      pid: number;
+      processGroupId: number | null;
+      startedAt: string;
+      ioMode?: "pipe" | "journal";
+      processPreservable?: boolean;
+    },
   ) {
     const startedAt = new Date(meta.startedAt);
+    const identity = await readLocalProcessIdentity(meta.pid);
     return db
       .update(heartbeatRuns)
       .set({
         processPid: meta.pid,
         processGroupId: meta.processGroupId,
         processStartedAt: Number.isNaN(startedAt.getTime()) ? new Date() : startedAt,
+        processStartTicks: identity?.runId === runId ? identity.startTicks : null,
+        runIoMode: meta.ioMode ?? "pipe",
+        processPreservable: meta.processPreservable ?? false,
+        lifecycleState: null,
+        adoptionMarkedAt: null,
+        adoptionDowntimeMs: 0,
         updatedAt: new Date(),
       })
       .where(eq(heartbeatRuns.id, runId))
@@ -9021,6 +9061,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   async function drainRunningRunsForShutdown(signal: "SIGINT" | "SIGTERM", now = new Date()) {
+    const intent = consumeHotRestartIntent(now);
+    const experimental = await instanceSettings.getExperimental();
+    const preserveRequested = Boolean(intent && experimental.hotRestart && !intent.drainRequired);
     const activeRuns = await db
       .select({
         run: heartbeatRuns,
@@ -9032,8 +9075,45 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const interruptedRunIds: string[] = [];
     const retryRunIds: string[] = [];
+    const preservedRunIds: string[] = [];
 
     for (const { run, agent } of activeRuns) {
+      if (
+        preserveRequested &&
+        run.runIoMode === "journal" &&
+        run.processPreservable &&
+        run.processPid &&
+        run.processGroupId
+      ) {
+        const identity = await readLocalProcessIdentity(run.processPid);
+        if (identity?.runId === run.id) {
+          await db
+            .update(heartbeatRuns)
+            .set({
+              lifecycleState: "awaiting_adoption",
+              adoptionMarkedAt: now,
+              processStartTicks: identity.startTicks,
+              updatedAt: now,
+            })
+            .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "running")));
+          runningProcesses.delete(run.id);
+          await appendRunEvent(run, await nextRunEventSeq(run.id), {
+            eventType: "lifecycle",
+            stream: "system",
+            level: "info",
+            message: "Run preserved for hot-restart adoption",
+            payload: {
+              signal,
+              processPid: run.processPid,
+              processGroupId: run.processGroupId,
+              processStartTicks: identity.startTicks,
+            },
+          });
+          preservedRunIds.push(run.id);
+          continue;
+        }
+      }
+
       const running = runningProcesses.get(run.id);
       try {
         if (running) {
@@ -9111,7 +9191,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       );
     }
 
+    if (preserveRequested && intent) {
+      try {
+        writeHotRestartPendingReport({
+          version: 1,
+          requestedAt: intent.requestedAt,
+          previousServerPid: intent.serverPid,
+          requestedByRunId: intent.requestedByRunId,
+          preservedRunIds,
+        });
+      } catch (err) {
+        logger.error({ err }, "failed to persist hot restart adoption report request");
+      }
+    }
+
     return {
+      hotRestartRequested: preserveRequested,
+      drainRequired: intent?.drainRequired ?? false,
+      preserved: preservedRunIds.length,
+      preservedRunIds,
       interrupted: interruptedRunIds.length,
       interruptedRunIds,
       retryRunIds,
@@ -11326,6 +11424,86 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
   }
 
+  async function adoptAwaitingRuns(now = new Date()) {
+    const awaiting = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.status, "running"),
+        eq(heartbeatRuns.lifecycleState, "awaiting_adoption"),
+      ));
+    const adoptedRunIds: string[] = [];
+    const finalizedWhileDownRunIds: string[] = [];
+    const rejectedRunIds: string[] = [];
+
+    for (const run of awaiting) {
+      const exitPath = path.join(resolvePaperclipHomeDir(), "run-spool", run.id, "exit.json");
+      const hasExitSentinel = await fs.stat(exitPath).then(() => true).catch(() => false);
+      const identityMatches = Boolean(
+        run.processPid &&
+        run.processStartTicks != null &&
+        await matchesLocalProcessIdentity({
+          pid: run.processPid,
+          startTicks: run.processStartTicks,
+          runId: run.id,
+        }),
+      );
+
+      if (!hasExitSentinel && !identityMatches) {
+        await db
+          .update(heartbeatRuns)
+          .set({
+            lifecycleState: null,
+            adoptionMarkedAt: null,
+            processPid: null,
+            processGroupId: null,
+            processStartTicks: null,
+            updatedAt: now,
+          })
+          .where(eq(heartbeatRuns.id, run.id));
+        rejectedRunIds.push(run.id);
+        continue;
+      }
+
+      const downtimeMs = run.adoptionMarkedAt
+        ? Math.max(0, now.getTime() - run.adoptionMarkedAt.getTime())
+        : 0;
+      await db
+        .update(heartbeatRuns)
+        .set({
+          lifecycleState: "adopted",
+          lastOutputAt: run.lastOutputAt
+            ? new Date(run.lastOutputAt.getTime() + downtimeMs)
+            : run.processStartedAt
+              ? new Date(run.processStartedAt.getTime() + downtimeMs)
+              : run.lastOutputAt,
+          adoptionDowntimeMs: (run.adoptionDowntimeMs ?? 0) + downtimeMs,
+          updatedAt: now,
+        })
+        .where(eq(heartbeatRuns.id, run.id));
+      if (hasExitSentinel) {
+        finalizedWhileDownRunIds.push(run.id);
+      } else {
+        adoptedRunIds.push(run.id);
+      }
+      activeRunExecutions.add(run.id);
+      void executeRun(run.id)
+        .catch((err) => {
+          logger.error({ err, runId: run.id }, "adopted heartbeat execution failed");
+        })
+        .finally(() => activeRunExecutions.delete(run.id));
+    }
+
+    return {
+      adopted: adoptedRunIds.length,
+      adoptedRunIds,
+      finalizedWhileDown: finalizedWhileDownRunIds.length,
+      finalizedWhileDownRunIds,
+      rejected: rejectedRunIds.length,
+      rejectedRunIds,
+    };
+  }
+
   async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
     const now = new Date();
@@ -11384,31 +11562,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       ) {
         continue;
       }
-      if (processPidAlive) {
-        if (run.errorCode !== DETACHED_PROCESS_ERROR_CODE) {
-          const detachedMessage = `Lost in-memory process handle, but child pid ${run.processPid} is still alive`;
-          const detachedRun = await setRunStatus(run.id, "running", {
-            error: detachedMessage,
-            errorCode: DETACHED_PROCESS_ERROR_CODE,
-          });
-          if (detachedRun) {
-            await appendRunEvent(detachedRun, await nextRunEventSeq(detachedRun.id), {
-              eventType: "lifecycle",
-              stream: "system",
-              level: "warn",
-              message: detachedMessage,
-              payload: {
-                processPid: run.processPid,
-              },
-            });
-          }
-        }
-        continue;
-      }
-
-      let descendantOnlyCleanup = false;
-      if (processGroupAlive) {
-        descendantOnlyCleanup = true;
+      const descendantOnlyCleanup = !processPidAlive && Boolean(processGroupAlive);
+      if (processPidAlive || processGroupAlive) {
         await terminateHeartbeatRunProcess({
           pid: run.processPid,
           processGroupId: run.processGroupId,
@@ -13034,6 +13189,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         bytes: number;
       } | null;
     } = { pending: null };
+    let journalStdoutOffset = Number(run.journalStdoutOffset ?? 0);
+    let journalStderrOffset = Number(run.journalStderrOffset ?? 0);
     let persistedLogBytes = Number(run.logBytes ?? 0);
     const flushOutputProgress = async (opts?: { force?: boolean }) => {
       const pendingOutputProgress = outputProgressState.pending;
@@ -13209,6 +13366,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             truncated: payloadChunk.length !== sanitizedChunk.length,
           },
         });
+      };
+      const onJournalOffset = async (
+        stream: "stdout" | "stderr",
+        endOffset: number,
+      ) => {
+        if (stream === "stdout") journalStdoutOffset = endOffset;
+        if (stream === "stderr") journalStderrOffset = endOffset;
+        await db
+          .update(heartbeatRuns)
+          .set({
+            journalStdoutOffset,
+            journalStderrOffset,
+            updatedAt: new Date(),
+          })
+          .where(eq(heartbeatRuns.id, run.id));
       };
       if (runScopedMentionedSkillKeys.length > 0) {
         await onLog(
@@ -13553,6 +13725,29 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         if (managedMcpConfig) {
           adapterContext.paperclipManagedMcp = managedMcpConfig;
         }
+        const processJournal =
+          (resolvedInstanceSettings.experimental.hotRestart || run.lifecycleState === "adopted") &&
+          (!executionTarget || executionTarget.kind === "local")
+            ? {
+                spoolDir: path.join(resolvePaperclipHomeDir(), "run-spool", run.id),
+                stdoutOffset: journalStdoutOffset,
+                stderrOffset: journalStderrOffset,
+                processPreservable: true,
+                onOffset: onJournalOffset,
+                ...(run.lifecycleState === "adopted" && run.processPid
+                  ? {
+                      adoptExisting: {
+                        pid: run.processPid,
+                        processGroupId: run.processGroupId,
+                        activeElapsedMs: computeAdoptedRunActiveElapsedMs({
+                          processStartedAt: run.processStartedAt,
+                          adoptionDowntimeMs: run.adoptionDowntimeMs,
+                        }),
+                      },
+                    }
+                  : {}),
+              }
+            : null;
         adapterResult = await adapter.execute({
           runId: run.id,
           agent,
@@ -13571,6 +13766,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           onRuntimeProgress: async (progress) => {
             await recordCurrentHeartbeatRunRuntimeProgress(run, progress, issueId);
           },
+          processJournal,
           onSpawn: async (meta) => {
             await persistRunProcessMetadata(run.id, {
               pid: meta.pid,
@@ -13579,6 +13775,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                   ? meta.processGroupId
                   : null,
               startedAt: meta.startedAt,
+              ioMode: meta.ioMode,
+              processPreservable: meta.processPreservable,
             });
           },
           authToken: authToken ?? undefined,
@@ -16894,6 +17092,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     prepareHotRestartShutdown,
     reconcileHotRestartAdoption,
+    adoptAwaitingRuns,
     reapOrphanedRuns,
     // Override-aware scheduling-suppression check (honors the worktree
     // run-execution experimental setting). Callers outside the service that

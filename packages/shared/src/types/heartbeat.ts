@@ -94,6 +94,14 @@ export interface HeartbeatRun {
   processPid: number | null;
   processGroupId?: number | null;
   processStartedAt: Date | null;
+  processStartTicks?: number | null;
+  runIoMode?: "pipe" | "journal" | null;
+  journalStdoutOffset?: number;
+  journalStderrOffset?: number;
+  processPreservable?: boolean;
+  lifecycleState?: "awaiting_adoption" | "adopted" | null;
+  adoptionMarkedAt?: Date | null;
+  adoptionDowntimeMs?: number;
   lastOutputAt: Date | null;
   lastOutputSeq: number;
   lastOutputStream: "stdout" | "stderr" | null;

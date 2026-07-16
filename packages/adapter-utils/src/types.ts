@@ -173,7 +173,8 @@ export interface AdapterExecutionContext {
   onMeta?: (meta: AdapterInvocationMeta) => Promise<void>;
   onEvent?: (event: AdapterRuntimeEvent) => Promise<void>;
   onRuntimeProgress?: RuntimeStatusSink;
-  onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
+  onSpawn?: (meta: import("./server-utils.js").RunProcessSpawnMetadata) => Promise<void>;
+  processJournal?: import("./server-utils.js").RunProcessJournalOptions | null;
   authToken?: string;
 }
 

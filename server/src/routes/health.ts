@@ -1,10 +1,12 @@
 import { timingSafeEqual } from "node:crypto";
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
-import { and, count, eq, gt, inArray, isNull, sql } from "drizzle-orm";
+import { and, count, eq, gt, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import { heartbeatRuns, instanceUserRoles, invites } from "@paperclipai/db";
 import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
 import { readPersistedDevServerStatus, toDevServerHealthStatus, writeDevServerRestartRequest } from "../dev-server-status.js";
+import { writeHotRestartIntent } from "../hot-restart-intent.js";
+import { readRecentHotRestartAdoptionReport } from "../hot-restart-adoption-report-view.js";
 import { logger } from "../middleware/logger.js";
 import { getServerInfoSnapshot, type ServerInfoSnapshot } from "../server-info.js";
 import {
@@ -96,16 +98,40 @@ export function healthRoutes(
       return;
     }
 
+    // Hot restart is a strictly separate, opt-in action:
+    // the default "Restart now" path is unchanged. Only when the caller asks for
+    // a hot restart AND the experimental setting is on do we write the one-shot
+    // intent marker that the shutdown handler consumes to preserve live runs.
+    const hotRequested = Boolean((req.body as { hot?: unknown } | undefined)?.hot === true);
+    let hot = false;
+    if (hotRequested) {
+      const instanceSettings = db && typeof (db as { select?: unknown }).select === "function"
+        ? instanceSettingsService(db)
+        : null;
+      const experimental = instanceSettings ? await instanceSettings.getExperimental() : null;
+      if (!experimental?.hotRestart) {
+        res.status(409).json({ error: "hot_restart_disabled" });
+        return;
+      }
+      hot = true;
+    }
+
     const written = writeDevServerRestartRequest({
       requestedAt: new Date().toISOString(),
-      reason: "manual_restart_now",
+      reason: hot ? "hot_restart_intent" : "manual_restart_now",
     });
     if (!written) {
       res.status(404).json({ error: "dev_server_supervisor_unavailable" });
       return;
     }
 
-    res.status(202).json({ status: "restart_requested" });
+    if (hot) {
+      // Write only after the supervisor accepts the restart so an unavailable
+      // supervisor cannot leave a stale intent for an unrelated shutdown.
+      writeHotRestartIntent();
+    }
+
+    res.status(202).json({ status: hot ? "hot_restart_requested" : "restart_requested" });
   });
 
   router.get("/", async (req, res) => {
@@ -185,9 +211,32 @@ export function healthRoutes(
         .where(inArray(heartbeatRuns.status, ["queued", "running"]))
         .then((rows) => Number(rows[0]?.count ?? 0));
 
+      // Runs that today's hot-restart shutdown would actually preserve: running,
+      // journaled I/O, marked preservable, with a live pid/pgid recorded. This is
+      // the "N" in the "Hot restart (keeps N live runs)" action.
+      const eligibleLiveRunCount = experimentalSettings.hotRestart
+        ? await db
+            .select({ count: count() })
+            .from(heartbeatRuns)
+            .where(
+              and(
+                eq(heartbeatRuns.status, "running"),
+                eq(heartbeatRuns.runIoMode, "journal"),
+                eq(heartbeatRuns.processPreservable, true),
+                isNotNull(heartbeatRuns.processPid),
+                isNotNull(heartbeatRuns.processGroupId),
+                isNull(heartbeatRuns.lifecycleState),
+              ),
+            )
+            .then((rows) => Number(rows[0]?.count ?? 0))
+        : 0;
+
       devServer = toDevServerHealthStatus(persistedDevServerStatus, {
         autoRestartEnabled: experimentalSettings.autoRestartDevServerWhenIdle ?? false,
         activeRunCount,
+        hotRestartEnabled: experimentalSettings.hotRestart ?? false,
+        eligibleLiveRunCount,
+        adoptionReport: readRecentHotRestartAdoptionReport(),
       });
     }
 
