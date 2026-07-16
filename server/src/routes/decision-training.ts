@@ -6,6 +6,7 @@ import { decisionTrainingService, logActivity } from "../services/index.js";
 import { assertCompanyAccess, getActorInfo, hasCompanyAccess } from "./authz.js";
 
 const sourceKindSchema = z.enum(["interaction", "approval", "execution_decision"]);
+const exampleIdSchema = z.string().uuid();
 const createSchema = z.object({
   sourceKind: sourceKindSchema,
   sourceId: z.string().uuid(),
@@ -24,6 +25,15 @@ function requireHumanUser(req: Request, res: Response) {
     return null;
   }
   return req.actor.userId;
+}
+
+function parseExampleId(req: Request, res: Response) {
+  const parsed = exampleIdSchema.safeParse(req.params.id);
+  if (!parsed.success) {
+    res.status(404).json({ error: "Decision training example not found" });
+    return null;
+  }
+  return parsed.data;
 }
 
 export function decisionTrainingRoutes(db: Db) {
@@ -98,7 +108,9 @@ export function decisionTrainingRoutes(db: Db) {
   });
 
   router.get("/decision-training/:id", async (req, res) => {
-    const example = await svc.getById(req.params.id as string);
+    const exampleId = parseExampleId(req, res);
+    if (!exampleId) return;
+    const example = await svc.getById(exampleId);
     if (!example || !hasCompanyAccess(req, example.companyId)) {
       res.status(404).json({ error: "Decision training example not found" });
       return;
@@ -107,7 +119,9 @@ export function decisionTrainingRoutes(db: Db) {
   });
 
   router.patch("/decision-training/:id", validate(updateSchema), async (req, res) => {
-    const existing = await svc.getById(req.params.id as string);
+    const exampleId = parseExampleId(req, res);
+    if (!exampleId) return;
+    const existing = await svc.getById(exampleId);
     if (!existing || !hasCompanyAccess(req, existing.companyId)) {
       res.status(404).json({ error: "Decision training example not found" });
       return;
@@ -138,7 +152,9 @@ export function decisionTrainingRoutes(db: Db) {
   });
 
   router.delete("/decision-training/:id", async (req, res) => {
-    const existing = await svc.getById(req.params.id as string);
+    const exampleId = parseExampleId(req, res);
+    if (!exampleId) return;
+    const existing = await svc.getById(exampleId);
     if (!existing || !hasCompanyAccess(req, existing.companyId)) {
       res.status(404).json({ error: "Decision training example not found" });
       return;

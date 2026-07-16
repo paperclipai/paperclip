@@ -304,6 +304,24 @@ describeEmbeddedPostgres("decision training", () => {
     expect(changedLogs).toHaveLength(1);
   });
 
+  it("returns not found for malformed example ids", async () => {
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", userId: "board-user", source: "local_implicit" };
+      next();
+    });
+    app.use("/api", decisionTrainingRoutes(db));
+    app.use(errorHandler);
+
+    await request(app).get("/api/decision-training/not-a-uuid").expect(404);
+    await request(app)
+      .patch("/api/decision-training/not-a-uuid")
+      .send({ notes: "Changed" })
+      .expect(404);
+    await request(app).delete("/api/decision-training/not-a-uuid").expect(404);
+  });
+
   it("rejects agent writes and snapshot mutation", async () => {
     const seeded = await seedResolvedInteraction();
     const app = express();
