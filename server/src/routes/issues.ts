@@ -2551,6 +2551,10 @@ export function issueRoutes(
     searchRateLimiter?: CompanySearchRateLimiter;
     pluginWorkerManager?: PluginWorkerManager;
     taskWatchdogEnqueueWakeup?: TaskWatchdogServiceDeps["enqueueWakeup"] | null;
+    recoveryActionEnqueueWakeup?: (
+      agentId: string,
+      options: Parameters<ReturnType<typeof heartbeatService>["wakeup"]>[1],
+    ) => ReturnType<ReturnType<typeof heartbeatService>["wakeup"]>;
     issueListDiagnostics?: IssueListDiagnostics;
     approveToolActionRequest?: (input: {
       companyId: string;
@@ -2567,6 +2571,7 @@ export function issueRoutes(
   const heartbeat = heartbeatService(db, {
     pluginWorkerManager: opts.pluginWorkerManager,
   });
+  const enqueueRecoveryActionWakeup = opts.recoveryActionEnqueueWakeup ?? heartbeat.wakeup;
   const feedback = feedbackService(db);
   const companiesSvc = companyService(db);
   let searchSvc = opts.searchService ?? null;
@@ -5513,6 +5518,14 @@ export function issueRoutes(
     }
 
     const actor = getActorInfo(req);
+    const handBackAgentId = outcome === "restored" && sourceIssueStatus === "todo"
+      ? activeRecoveryAction?.returnOwnerAgentId ?? null
+      : null;
+    const recordedOutcome = handBackAgentId
+      ? "handed_back"
+      : outcome === "restored" && sourceIssueStatus === "done"
+        ? "owner_completed"
+        : outcome;
     const updateFields = sourceIssueStatus ? { status: sourceIssueStatus } : {};
     await assertAgentInReviewReviewPath({
       existing,
@@ -5547,6 +5560,7 @@ export function issueRoutes(
           id,
           {
             status: sourceIssueStatus,
+            ...(handBackAgentId ? { assigneeAgentId: handBackAgentId } : {}),
             actorAgentId: actor.agentId ?? null,
             actorUserId: actor.actorType === "user" ? actor.actorId : null,
           },
@@ -5562,7 +5576,7 @@ export function issueRoutes(
           sourceIssueId: existing.id,
           actionId: actionId ?? null,
           status: actionStatus,
-          outcome,
+          outcome: recordedOutcome,
           resolutionNote: resolutionNote ?? null,
         },
         tx,
@@ -5617,32 +5631,36 @@ export function issueRoutes(
 
     if (
       sourceIssueStatus === "todo" &&
-      existing.status !== result.issue.status &&
-      result.issue.assigneeAgentId
+      result.issue.assigneeAgentId &&
+      (existing.status !== result.issue.status ||
+        existing.assigneeAgentId !== result.issue.assigneeAgentId)
     ) {
-      void heartbeat.wakeup(result.issue.assigneeAgentId, {
-        source: "automation",
-        triggerDetail: "system",
-        reason: "issue_recovery_action_restored",
-        payload: {
-          issueId: result.issue.id,
-          recoveryActionId: result.recoveryAction.id,
-          mutation: "recovery_action_resolution",
-        },
-        requestedByActorType: actor.actorType,
-        requestedByActorId: actor.actorId,
-        contextSnapshot: {
-          issueId: result.issue.id,
-          taskId: result.issue.id,
-          wakeReason: "issue_recovery_action_restored",
-          source: "issue.recovery_action_resolution",
-          recoveryActionId: result.recoveryAction.id,
-        },
-      }).catch((err) =>
+      try {
+        await enqueueRecoveryActionWakeup(result.issue.assigneeAgentId, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: "issue_recovery_action_restored",
+          payload: {
+            issueId: result.issue.id,
+            recoveryActionId: result.recoveryAction.id,
+            mutation: "recovery_action_resolution",
+          },
+          requestedByActorType: actor.actorType,
+          requestedByActorId: actor.actorId,
+          contextSnapshot: {
+            issueId: result.issue.id,
+            taskId: result.issue.id,
+            wakeReason: "issue_recovery_action_restored",
+            source: "issue.recovery_action_resolution",
+            recoveryActionId: result.recoveryAction.id,
+          },
+        });
+      } catch (err) {
         logger.warn(
           { err, issueId: result.issue.id, agentId: result.issue.assigneeAgentId },
           "failed to wake agent after recovery action restored issue",
-        ));
+        );
+      }
     }
 
     res.json({

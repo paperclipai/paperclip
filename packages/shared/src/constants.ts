@@ -322,6 +322,8 @@ export type IssueRecoveryActionOwnerType = (typeof ISSUE_RECOVERY_ACTION_OWNER_T
 
 export const ISSUE_RECOVERY_ACTION_OUTCOMES = [
   "restored",
+  "handed_back",
+  "owner_completed",
   "delegated",
   "false_positive",
   "blocked",

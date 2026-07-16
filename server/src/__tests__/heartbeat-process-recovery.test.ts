@@ -1005,6 +1005,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
     if (input.cause === "execution_review_participant_recovery") {
       expect(action.nextAction).toContain("failed review participant path");
+    } else if (input.cause === "process_lost") {
+      expect(action.nextAction).toContain("Retry the original assignee from durable progress");
     } else {
       expect(action.nextAction).toContain(
         input.kind === "missing_disposition" ? "valid issue disposition" : "Restore a live execution path",
@@ -1374,6 +1376,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       runId: secondAttempt.runId,
       previousStatus: "in_progress",
       retryReason: "issue_continuation_needed",
+      cause: "process_lost",
     });
   });
 
@@ -4428,6 +4431,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       runId,
       previousStatus: "todo",
       retryReason: "assignment_recovery",
+      cause: "process_lost",
     });
     expect(JSON.stringify(recoveryAction.evidence)).not.toContain("sk-test-recovery-secret");
 
@@ -4827,6 +4831,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       runId,
       previousStatus: "in_progress",
       retryReason: "issue_continuation_needed",
+      cause: "process_lost",
     });
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));

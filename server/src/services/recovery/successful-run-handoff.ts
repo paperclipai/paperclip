@@ -77,6 +77,7 @@ export function noticeMetadataReferencesRecoveryAction(
 export type SuccessfulRunHandoffDecision =
   | {
       kind: "enqueue";
+      targetAgentId: string;
       idempotencyKey: string;
       payload: Record<string, unknown>;
       contextSnapshot: Record<string, unknown>;
@@ -319,6 +320,8 @@ export function buildSuccessfulRunHandoffInstruction(input: {
   return [
     `Your previous run on ${issueLabel} succeeded, but the issue is still in \`in_progress\` and Paperclip cannot identify a valid issue disposition.`,
     "",
+    "This is a status-only retry to the original agent. Record a disposition; do not start new work.",
+    "",
     "Resolve the missing disposition before creating or revising any new artifacts. Choose **exactly one** outcome and perform the matching Paperclip action:",
     "",
     "**Is the issue finished?**",
@@ -423,6 +426,7 @@ export function decideSuccessfulRunHandoff(input: {
 
   return {
     kind: "enqueue",
+    targetAgentId: run.agentId,
     idempotencyKey: buildFinishSuccessfulRunHandoffIdempotencyKey({
       issueId: issue.id,
       sourceRunId: run.id,
