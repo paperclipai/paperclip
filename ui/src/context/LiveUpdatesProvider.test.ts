@@ -1086,7 +1086,6 @@ describe("LiveUpdatesProvider run lifecycle toasts", () => {
   });
 });
 
-<<<<<<< HEAD
 describe("applyRunLifecycleToCompanyLiveRuns", () => {
   function makeClient(initial: Array<{ id: string; status: string }>) {
     const cache = new Map<string, unknown>([
@@ -1135,7 +1134,9 @@ describe("applyRunLifecycleToCompanyLiveRuns", () => {
     );
     expect(patched).toBe(false);
     expect(read()).toEqual([{ id: "run-1", status: "running" }]); // unchanged
-=======
+  });
+});
+
 describe("LiveUpdatesProvider summary slot invalidation", () => {
   it("invalidates the slot and revisions queries on summary_slot.write", () => {
     const invalidations: unknown[] = [];
@@ -1286,6 +1287,5 @@ describe("dispatchLiveEventToSubscribers", () => {
       ),
     ).not.toThrow();
     expect(received).toEqual(["still-called"]);
->>>>>>> 39ffc9f488 (feat(ui): live summary status line + instant finalize (PAP-13984))
   });
 });
