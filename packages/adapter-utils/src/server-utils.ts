@@ -9,7 +9,7 @@ import {
   type LocalProcessSandboxOptions,
 } from "./local-process-sandbox.js";
 import { buildSshSpawnTarget, type SshRemoteExecutionSpec } from "./ssh.js";
-import { redactCommandText } from "./command-redaction.js";
+import { redactCommandText, redactCredentialText } from "./command-redaction.js";
 import type {
   AdapterSkillEntry,
   AdapterSkillSnapshot,
@@ -56,6 +56,7 @@ interface SpawnTarget {
   args: string[];
   cwd?: string;
   env?: Record<string, string | undefined>;
+  stdinPrefix?: string;
   cleanup?: () => Promise<void>;
 }
 
@@ -2176,6 +2177,7 @@ async function resolveSpawnTarget(
       command: sshResolved,
       args: spawnTarget.args,
       cwd: process.cwd(),
+      stdinPrefix: spawnTarget.stdinPrefix,
       cleanup: spawnTarget.cleanup,
     };
   }
@@ -3062,7 +3064,7 @@ export async function runChildProcess(
           env: childEnv,
           detached: process.platform !== "win32",
           shell: false,
-          stdio: [opts.stdin != null ? "pipe" : "ignore", "pipe", "pipe"],
+          stdio: [target.stdinPrefix != null || opts.stdin != null ? "pipe" : "ignore", "pipe", "pipe"],
         }) as ChildProcessWithEvents;
         const startedAt = new Date().toISOString();
         const processGroupId = resolveProcessGroupId(child);
@@ -3154,7 +3156,7 @@ export async function runChildProcess(
           stdout = appendWithCap(stdout, text);
           maybeArmTerminalResultCleanup();
           logChain = logChain
-            .then(() => opts.onLog("stdout", text))
+            .then(() => opts.onLog("stdout", redactCredentialText(text, opts.env, REDACTED_LOG_VALUE)))
             .catch((err) => onLogError(err, runId, "failed to append stdout log chunk"))
             .finally(() => {
               maybeArmTerminalResultCleanup();
@@ -3170,7 +3172,7 @@ export async function runChildProcess(
           stderr = appendWithCap(stderr, text);
           maybeArmTerminalResultCleanup();
           logChain = logChain
-            .then(() => opts.onLog("stderr", text))
+            .then(() => opts.onLog("stderr", redactCredentialText(text, opts.env, REDACTED_LOG_VALUE)))
             .catch((err) => onLogError(err, runId, "failed to append stderr log chunk"))
             .finally(() => {
               maybeArmTerminalResultCleanup();
@@ -3179,10 +3181,11 @@ export async function runChildProcess(
         });
 
         const stdin = child.stdin;
-        if (opts.stdin != null && stdin) {
+        if ((target.stdinPrefix != null || opts.stdin != null) && stdin) {
           void spawnPersistPromise.finally(() => {
             if (child.killed || stdin.destroyed) return;
-            stdin.write(opts.stdin as string);
+            if (target.stdinPrefix) stdin.write(target.stdinPrefix);
+            if (opts.stdin != null) stdin.write(opts.stdin);
             stdin.end();
           });
         }

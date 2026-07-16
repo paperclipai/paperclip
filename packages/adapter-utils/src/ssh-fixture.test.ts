@@ -1,8 +1,9 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { redactCredentialText } from "./command-redaction.js";
 import {
   buildSshSpawnTarget,
   buildSshEnvLabFixtureConfig,
@@ -190,6 +191,52 @@ describe("ssh env-lab fixture", () => {
         },
       }),
     ).rejects.toThrow("Invalid SSH environment variable key: BAD KEY");
+  });
+
+  it("keeps injected environment values out of the local ssh process argv", async () => {
+    if (process.platform !== "linux") return;
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-fixture-"));
+    cleanupDirs.push(rootDir);
+    const statePath = path.join(rootDir, "state.json");
+    const started = await startSshEnvLabFixtureOrSkip(statePath, "SSH argv secret regression test");
+    if (!started) return;
+    const config = await buildSshEnvLabFixtureConfig(started);
+    const secret = "luc1882-secret-not-in-argv";
+    const target = await buildSshSpawnTarget({
+      spec: { ...config, remoteCwd: started.workspaceDir },
+      command: "sh",
+      args: ["-c", 'test -n "$PAPERCLIP_API_KEY" && sleep 1'],
+      env: { PAPERCLIP_API_KEY: secret },
+    });
+
+    try {
+      const child = spawn(target.command, target.args, {
+        stdio: ["pipe", "ignore", "pipe"],
+      });
+      expect(child.pid).toBeTypeOf("number");
+      const cmdline = await readFile(`/proc/${child.pid}/cmdline`, "utf8");
+      expect(cmdline).not.toContain(secret);
+
+      child.stdin.end(target.stdinPrefix);
+      const exitCode = await new Promise<number | null>((resolve, reject) => {
+        child.once("error", reject);
+        child.once("close", resolve);
+      });
+      expect(exitCode).toBe(0);
+    } finally {
+      await target.cleanup();
+    }
+  }, SSH_FIXTURE_TEST_TIMEOUT_MS);
+
+  it("redacts credential-shaped output and configured secret values", () => {
+    const secret = "opaque-runtime-credential";
+    const redacted = redactCredentialText(
+      `diagnostic token=${secret}; raw=${secret}`,
+      { PAPERCLIP_API_KEY: secret },
+    );
+
+    expect(redacted).not.toContain(secret);
+    expect(redacted).toContain("***REDACTED***");
   });
 
   it("syncs a local directory into the remote fixture workspace", async () => {

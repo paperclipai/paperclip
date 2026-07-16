@@ -2,6 +2,7 @@ export const REDACTED_COMMAND_TEXT_VALUE = "***REDACTED***";
 
 const SECRET_NAME_PATTERN =
   String.raw`[A-Za-z0-9_-]*(?:api[-_]?key|(?:access[-_]?|auth[-_]?)?token|token|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)[A-Za-z0-9_-]*`;
+const SECRET_ENV_NAME_RE = new RegExp(`^${SECRET_NAME_PATTERN}$`, "i");
 
 const COMMAND_CLI_SECRET_OPTION_RE = new RegExp(
   String.raw`(\B-{1,2}${SECRET_NAME_PATTERN}(?:\s+|=)(["']?))[^\s"'` + "`" + String.raw`]+(\2)`,
@@ -55,4 +56,21 @@ export function redactCommandText(command: string, redactedValue = REDACTED_COMM
     .replace(COMMAND_OPENAI_KEY_RE, redactedValue)
     .replace(COMMAND_GITHUB_TOKEN_RE, redactedValue)
     .replace(COMMAND_JWT_RE, redactedValue);
+}
+
+export function redactCredentialText(
+  text: string,
+  env: Record<string, string> = {},
+  redactedValue = REDACTED_COMMAND_TEXT_VALUE,
+): string {
+  let redacted = redactCommandText(text, redactedValue);
+  const sensitiveValues = Object.entries(env)
+    .filter(([key, value]) => SECRET_ENV_NAME_RE.test(key) && value.length >= 4)
+    .map(([, value]) => value)
+    .sort((left, right) => right.length - left.length);
+
+  for (const value of sensitiveValues) {
+    redacted = redacted.split(value).join(redactedValue);
+  }
+  return redacted;
 }
