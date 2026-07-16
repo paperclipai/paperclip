@@ -304,6 +304,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
 
   afterEach(async () => {
     await db.delete(issueComments);
+    await db.delete(issueThreadInteractions);
     await db.delete(issueRelations);
     await db.delete(issueDocuments);
     await db.delete(issueInboxArchives);
@@ -1753,10 +1754,11 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     ]));
   });
 
-  it("resurfaces archived issue when status/updatedAt changes after archiving", async () => {
+  it("resurfaces archived issues only for user-attention events", async () => {
     const companyId = randomUUID();
     const userId = "user-1";
     const otherUserId = "user-2";
+    const agentId = randomUUID();
 
     await db.insert(companies).values({
       id: companyId,
@@ -1765,59 +1767,175 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       requireBoardApprovalForNewAgents: false,
     });
 
-    const issueId = randomUUID();
-
-    await db.insert(issues).values({
-      id: issueId,
+    await db.insert(agents).values({
+      id: agentId,
       companyId,
-      title: "Issue with old comment then status change",
+      name: "Worker",
+      role: "engineer",
+      adapterType: "process",
+      adapterConfig: {},
+      runtimeConfig: {},
+    });
+
+    const issueIds = {
+      updatedAt: randomUUID(),
+      agentComment: randomUUID(),
+      derivedAgentComment: randomUUID(),
+      systemComment: randomUUID(),
+      suggestTasks: randomUUID(),
+      askQuestions: randomUUID(),
+      requestConfirmation: randomUUID(),
+      inReview: randomUUID(),
+      blocked: randomUUID(),
+      done: randomUUID(),
+      humanComment: randomUUID(),
+      mention: randomUUID(),
+      unarchived: randomUUID(),
+    };
+
+    await db.insert(issues).values(Object.entries(issueIds).map(([title, id]) => ({
+      id,
+      companyId,
+      title,
       status: "todo",
-      priority: "medium",
+      priority: "medium" as const,
       createdByUserId: userId,
       createdAt: new Date("2026-03-26T10:00:00.000Z"),
       updatedAt: new Date("2026-03-26T10:00:00.000Z"),
-    });
+    })));
 
-    // Old external comment before archiving
-    await db.insert(issueComments).values({
-      companyId,
-      issueId,
-      authorUserId: otherUserId,
-      body: "Old comment before archive",
-      createdAt: new Date("2026-03-26T11:00:00.000Z"),
-      updatedAt: new Date("2026-03-26T11:00:00.000Z"),
-    });
+    const archivedAt = new Date("2026-03-26T12:00:00.000Z");
+    for (const issueId of Object.values(issueIds)) {
+      await svc.archiveInbox(companyId, issueId, userId, archivedAt);
+    }
 
-    // Archive after seeing the comment
-    await svc.archiveInbox(
-      companyId,
-      issueId,
-      userId,
-      new Date("2026-03-26T12:00:00.000Z"),
-    );
-
-    // Verify it's archived
-    const afterArchive = await svc.list(companyId, {
+    const listVisibleIds = async () => new Set((await svc.list(companyId, {
       touchedByUserId: userId,
       inboxArchivedByUserId: userId,
-    });
-    expect(afterArchive.map((i) => i.id)).not.toContain(issueId);
+    })).map((issue) => issue.id));
 
-    // Status/work update changes updatedAt (no new comment)
+    await expect(listVisibleIds()).resolves.toEqual(new Set());
+
     await db
       .update(issues)
-      .set({
-        status: "in_progress",
-        updatedAt: new Date("2026-03-26T13:00:00.000Z"),
-      })
-      .where(eq(issues.id, issueId));
+      .set({ status: "in_progress", updatedAt: new Date("2026-03-26T13:00:00.000Z") })
+      .where(eq(issues.id, issueIds.updatedAt));
 
-    // Should resurface because updatedAt > archivedAt
-    const afterUpdate = await svc.list(companyId, {
-      touchedByUserId: userId,
-      inboxArchivedByUserId: userId,
+    await db.insert(issueComments).values([
+      {
+        companyId,
+        issueId: issueIds.agentComment,
+        authorAgentId: agentId,
+        body: "Agent progress update",
+        createdAt: new Date("2026-03-26T13:00:00.000Z"),
+        updatedAt: new Date("2026-03-26T13:00:00.000Z"),
+      },
+      {
+        companyId,
+        issueId: issueIds.derivedAgentComment,
+        authorUserId: "local-board",
+        derivedAuthorAgentId: agentId,
+        derivedAuthorSource: "run_log_comment_post",
+        body: "Legacy agent-attributed progress update",
+        createdAt: new Date("2026-03-26T13:00:00.000Z"),
+        updatedAt: new Date("2026-03-26T13:00:00.000Z"),
+      },
+      {
+        companyId,
+        issueId: issueIds.systemComment,
+        body: "System lifecycle update",
+        createdAt: new Date("2026-03-26T13:00:00.000Z"),
+        updatedAt: new Date("2026-03-26T13:00:00.000Z"),
+      },
+      {
+        companyId,
+        issueId: issueIds.humanComment,
+        authorUserId: otherUserId,
+        body: "A human needs your attention",
+        createdAt: new Date("2026-03-26T13:00:00.000Z"),
+        updatedAt: new Date("2026-03-26T13:00:00.000Z"),
+      },
+      {
+        companyId,
+        issueId: issueIds.mention,
+        authorAgentId: agentId,
+        body: "Please review this, [Viewer](user://user-1)",
+        createdAt: new Date("2026-03-26T13:00:00.000Z"),
+        updatedAt: new Date("2026-03-26T13:00:00.000Z"),
+      },
+    ]);
+
+    await db.insert(issueThreadInteractions).values({
+      companyId,
+      issueId: issueIds.suggestTasks,
+      kind: "suggest_tasks",
+      payload: { version: 1, tasks: [{ clientKey: "follow-up", title: "Follow up" }] },
+      createdByAgentId: agentId,
+      createdAt: new Date("2026-03-26T13:00:00.000Z"),
+      updatedAt: new Date("2026-03-26T13:00:00.000Z"),
     });
-    expect(afterUpdate.map((i) => i.id)).toContain(issueId);
+    await db.insert(issueThreadInteractions).values({
+      companyId,
+      issueId: issueIds.askQuestions,
+      kind: "ask_user_questions",
+      payload: {
+        version: 1,
+        questions: [{ id: "scope", prompt: "Which scope?", selectionMode: "single", options: [] }],
+      },
+      createdByAgentId: agentId,
+      createdAt: new Date("2026-03-26T13:00:00.000Z"),
+      updatedAt: new Date("2026-03-26T13:00:00.000Z"),
+    });
+    await db.insert(issueThreadInteractions).values({
+      companyId,
+      issueId: issueIds.requestConfirmation,
+      kind: "request_confirmation",
+      payload: { version: 1, prompt: "Proceed?" },
+      createdByAgentId: agentId,
+      createdAt: new Date("2026-03-26T13:00:00.000Z"),
+      updatedAt: new Date("2026-03-26T13:00:00.000Z"),
+    });
+
+    await db.insert(activityLog).values([
+      [issueIds.inReview, "in_review"],
+      [issueIds.blocked, "blocked"],
+      [issueIds.done, "done"],
+    ].map(([issueId, status]) => ({
+      companyId,
+      actorType: "agent",
+      actorId: agentId,
+      agentId,
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: issueId,
+      details: { status, _previous: { status: "in_progress" } },
+      createdAt: new Date("2026-03-26T13:00:00.000Z"),
+    })));
+
+    await svc.unarchiveInbox(companyId, issueIds.unarchived, userId);
+
+    const expectedVisible = new Set([
+      issueIds.suggestTasks,
+      issueIds.askQuestions,
+      issueIds.requestConfirmation,
+      issueIds.inReview,
+      issueIds.blocked,
+      issueIds.done,
+      issueIds.humanComment,
+      issueIds.mention,
+      issueIds.unarchived,
+    ]);
+    await expect(listVisibleIds()).resolves.toEqual(expectedVisible);
+
+    await svc.archiveInbox(
+      companyId,
+      issueIds.humanComment,
+      userId,
+      new Date("2026-03-26T14:00:00.000Z"),
+    );
+    expectedVisible.delete(issueIds.humanComment);
+
+    await expect(listVisibleIds()).resolves.toEqual(expectedVisible);
   });
 
   it("sorts and exposes last activity from comments and non-local issue activity logs", async () => {
