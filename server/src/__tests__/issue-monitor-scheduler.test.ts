@@ -140,6 +140,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     issueStatus?: "in_progress" | "in_review";
     monitorAttemptCount?: number;
     monitor?: Record<string, unknown>;
+    unassigned?: boolean;
   }) {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -191,7 +192,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       title: "Watch external deploy",
       status: input?.issueStatus ?? "in_progress",
       priority: "medium",
-      assigneeAgentId: agentId,
+      assigneeAgentId: input?.unassigned ? null : agentId,
       issueNumber: 1,
       identifier: `${issuePrefix}-1`,
       executionPolicy: {
@@ -268,6 +269,43 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       .where(eq(activityLog.entityId, issueId))
       .then((rows) => rows.map((row) => row.action));
     expect(activity).toContain("issue.monitor_triggered");
+  });
+
+  it("falls back to a board breadcrumb when an assignee-scheduled monitor fires with no agent assignee", async () => {
+    const { issueId } = await seedFixture({ unassigned: true, issueStatus: "in_review" });
+    const heartbeat = heartbeatService(db);
+    const tickAt = new Date("2026-04-11T12:31:00.000Z");
+
+    const result = await heartbeat.tickTimers(tickAt);
+
+    expect(result.enqueued).toBe(1);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
+    expect(issue.monitorNextCheckAt).toBeNull();
+    expect(issue.monitorAttemptCount).toBe(1);
+    expect(issue.monitorLastTriggeredAt?.toISOString()).toBe(tickAt.toISOString());
+    expect(parseIssueExecutionState(issue.executionState)?.monitor).toMatchObject({
+      status: "triggered",
+      lastTriggeredAt: tickAt.toISOString(),
+      attemptCount: 1,
+    });
+
+    const wakeups = await db.select().from(agentWakeupRequests);
+    expect(wakeups).toHaveLength(0);
+
+    const comments = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]!.body).toContain("no agent assignee to wake");
+
+    const activity = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, issueId));
+    const triggerEvent = activity.find((row) => row.action === "issue.monitor_triggered");
+    expect(triggerEvent?.details).toMatchObject({ boardFallback: true, attemptCount: 1 });
   });
 
   it("lets the board trigger a scheduled issue monitor immediately", async () => {
