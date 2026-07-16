@@ -190,7 +190,10 @@ function registerRouteMocks() {
       listIssueVotesForUser: vi.fn(async () => []),
       saveIssueVote: vi.fn(async () => ({ vote: null, consentEnabledNow: false, sharingEnabled: false })),
     }),
-    goalService: () => ({}),
+    goalService: () => ({
+      getDefaultCompanyGoal: vi.fn(async () => null),
+      getById: vi.fn(async () => null),
+    }),
     heartbeatService: () => mockHeartbeatService,
     instanceSettingsService: () => ({
       get: vi.fn(async () => ({
@@ -727,7 +730,6 @@ describe("agent issue mutation checkout ownership", () => {
 
   it.each([
     ["patch", (app: express.Express) => request(app).patch(`/api/issues/${issueId}`).send({ title: "Blocked" })],
-    ["delete", (app: express.Express) => request(app).delete(`/api/issues/${issueId}`)],
     [
       "document upsert",
       (app: express.Express) =>
@@ -1650,6 +1652,133 @@ describe("agent issue mutation checkout ownership", () => {
       }),
     }));
     expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  describe("ADR-GOV-17 board-only DELETE /api/issues/:id (SAT-8302)", () => {
+    const boardOnlyDeleteError = "DELETE /api/issues is restricted to board users (ADR-GOV-17)";
+
+    async function expectAgentDeleteForbidden(app: express.Express) {
+      const res = await request(app).delete(`/api/issues/${issueId}`);
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(res.body.error).toBe(boardOnlyDeleteError);
+      expect(res.body.details).toEqual({
+        issueId,
+        securityPrinciples: ["Least Privilege", "Complete Mediation"],
+      });
+      expect(mockIssueService.remove).not.toHaveBeenCalled();
+      return res;
+    }
+
+    it("rejects agent run-JWT DELETE on an unassigned issue and leaves the issue readable", async () => {
+      const unassigned = makeIssue({ assigneeAgentId: null, executionState: null });
+      mockIssueService.getById.mockResolvedValue(unassigned);
+
+      await expectAgentDeleteForbidden(await createApp(ownerActor()));
+
+      // Hard delete did not run — issue remains fetchable via the service.
+      await expect(mockIssueService.getById(issueId)).resolves.toEqual(
+        expect.objectContaining({ id: issueId, assigneeAgentId: null }),
+      );
+      expect(mockIssueService.remove).not.toHaveBeenCalled();
+    });
+
+    it("rejects agent run-JWT DELETE on an issue assigned to another agent", async () => {
+      mockIssueService.getById.mockResolvedValue(makeIssue({ assigneeAgentId: ownerAgentId }));
+      await expectAgentDeleteForbidden(await createApp(peerActor()));
+    });
+
+    it("rejects agent run-JWT DELETE even with self-created, self-assigned, active checkout", async () => {
+      mockIssueService.getById.mockResolvedValue(
+        makeIssue({
+          assigneeAgentId: ownerAgentId,
+          createdByAgentId: ownerAgentId,
+          executionState: { checkoutAgentId: ownerAgentId, checkoutRunId: ownerRunId },
+        }),
+      );
+      await expectAgentDeleteForbidden(await createApp(ownerActor()));
+    });
+
+    it("rejects agent DELETE even with task-watchdog scope over the subtree", async () => {
+      const watchdogRunId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaab";
+      const watchdogReportIssueId = "cccccccc-cccc-4ccc-8ccc-cccccccccccd";
+      const runRows = [{
+        id: watchdogRunId,
+        companyId,
+        agentId: peerAgentId,
+        contextSnapshot: { taskWatchdog: { watchedIssueId: issueId, stopFingerprint: "task_watchdog_stop:test" } },
+      }];
+      const watchdogRows = [{
+        id: "dddddddd-dddd-4ddd-8ddd-ddddddddddde",
+        companyId,
+        issueId,
+        watchdogAgentId: peerAgentId,
+        watchdogIssueId: watchdogReportIssueId,
+        status: "active",
+      }];
+      const ancestryRows = [{ id: "ancestry", companyId, parentId: null }];
+      const rowsForSelection = (selection: Record<string, unknown>) => {
+        const keys = Object.keys(selection);
+        if (keys.includes("entityId")) return [];
+        if (keys.includes("contextSnapshot")) return runRows;
+        if (keys.includes("watchdogAgentId")) return watchdogRows;
+        if (keys.includes("parentId")) return ancestryRows;
+        if (keys.includes("status")) return [];
+        if (keys.includes("agentCompanyId")) return runRows;
+        return [{ id: peerAgentId, companyId, permissions: {}, role: "engineer", reportsTo: null }];
+      };
+      const buildQuery = (selection: Record<string, unknown>) => {
+        const whereResult = {
+          orderBy: vi.fn(async () => []),
+          then: async (resolve: (rows: unknown[]) => unknown) => resolve(rowsForSelection(selection)),
+        };
+        const query = {
+          innerJoin: vi.fn(() => query),
+          where: vi.fn(() => whereResult),
+        };
+        return query;
+      };
+      const watchdogDb = {
+        transaction: async (callback: (tx: Record<string, never>) => Promise<unknown>) => callback({}),
+        select: vi.fn((selection: Record<string, unknown> = {}) => ({
+          from: vi.fn(() => buildQuery(selection)),
+        })),
+      };
+
+      mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+        allowed: input.action === "company_scope:read" || input.action === "issue:read" || input.action === "tasks:assign",
+        action: input.action,
+        reason:
+          input.action === "company_scope:read" || input.action === "issue:read" || input.action === "tasks:assign"
+            ? "allow_explicit_grant"
+            : "deny_missing_grant",
+        explanation: "Watchdog delete denial boundary.",
+      }));
+      mockIssueService.getById.mockResolvedValue(makeIssue({ assigneeAgentId: ownerAgentId }));
+
+      await expectAgentDeleteForbidden(
+        await createApp(
+          {
+            type: "agent",
+            agentId: peerAgentId,
+            companyId,
+            source: "agent_key",
+            runId: watchdogRunId,
+          },
+          watchdogDb,
+        ),
+      );
+    });
+
+    it("allows board actor DELETE (Phase 1 hard delete)", async () => {
+      mockIssueService.getById.mockResolvedValue(makeIssue());
+      mockIssueService.remove.mockResolvedValue(makeIssue({ status: "cancelled" }));
+
+      const res = await request(await createApp(boardActor())).delete(`/api/issues/${issueId}`);
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockIssueService.remove).toHaveBeenCalledWith(issueId);
+      expect(res.body).toEqual(expect.objectContaining({ id: issueId }));
+    });
   });
 
   describe("task watchdog scope grants", () => {

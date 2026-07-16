@@ -92,6 +92,7 @@ import {
 import { trackAgentTaskCompleted } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import type { StorageService } from "../storage/types.js";
+import { requireBoard } from "../middleware/auth.js";
 import { validate } from "../middleware/validate.js";
 import * as serviceIndex from "../services/index.js";
 import {
@@ -8715,7 +8716,15 @@ export function issueRoutes(
     const id = req.params.id as string;
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
     if (!existing) return;
-    if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+    // ADR-GOV-17 / SAT-8302: hard DELETE is board-only (allowlist). Agents — including
+    // self-owned checkouts and task-watchdog scope — must not hard-delete issues.
+    if (!requireBoard(req)) {
+      res.status(403).json({
+        error: "DELETE /api/issues is restricted to board users (ADR-GOV-17)",
+        details: { issueId: existing.id, securityPrinciples: ["Least Privilege", "Complete Mediation"] },
+      });
+      return;
+    }
     const attachments = await svc.listAttachments(id);
 
     const issue = await svc.remove(id);
