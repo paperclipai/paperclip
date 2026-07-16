@@ -58,6 +58,13 @@ function suppressionCopy(
           "This worktree has not stamped an instance identity yet, so execution fails closed. Toggle off and back on to arm execution.",
         stripLabel: "suppressed — no identity",
       };
+    case "missing_seed_epoch":
+      return {
+        headline: "Execution suppressed — missing seed epoch",
+        detail:
+          "This worktree has no seed epoch stamped yet, so execution fails closed. Toggle off and back on to arm execution.",
+        stripLabel: "suppressed — missing seed epoch",
+      };
     case "instance_id_mismatch":
       return {
         headline: "Toggle inactive — bound to another instance",

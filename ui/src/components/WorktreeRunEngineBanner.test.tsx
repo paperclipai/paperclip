@@ -115,6 +115,12 @@ describe("WorktreeRunEngineBanner", () => {
     expect(container.textContent).toContain("Toggle it off and back on");
   });
 
+  it("explains a missing seed epoch", () => {
+    const container = mount(suppressed("missing_seed_epoch"));
+    expect(container.textContent).toContain("missing seed epoch");
+    expect(container.textContent).toContain("Toggle off and back on");
+  });
+
   it("explains a flag-disabled run engine", () => {
     const container = mount(suppressed("flag_disabled"));
     expect(container.textContent).toContain("Run engine off");
@@ -134,8 +140,8 @@ describe("WorktreeRunEngineBanner", () => {
     expect(strip?.textContent).toContain("5 inherited runs inactive");
   });
 
-  // PAP-14415: the strip supplies its own bold "Run engine" subject, so the
-  // suppressed predicate must not restate it (no "Run engine run engine off").
+  // The strip supplies its own bold "Run engine" subject, so the suppressed
+  // predicate must not restate it (no "Run engine run engine off").
   it("does not stutter the run-engine subject in the suppressed strip", () => {
     const container = mount(suppressed("flag_disabled", { quarantinedRunCount: 4 }), "strip");
     const text = container
