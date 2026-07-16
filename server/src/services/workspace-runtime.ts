@@ -2323,7 +2323,7 @@ export async function attemptMechanicalWorkspaceValidationRepair(input: {
   if (!workspace) {
     return { repaired: false, executionWorkspaceId, reason: "execution workspace no longer exists" };
   }
-  if (workspace.sourceIssueId && workspace.sourceIssueId !== input.issue.id) {
+  if (!workspace.sourceIssueId || workspace.sourceIssueId !== input.issue.id) {
     return { repaired: false, executionWorkspaceId, reason: "execution workspace belongs to another issue" };
   }
 
