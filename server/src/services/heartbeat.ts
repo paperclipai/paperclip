@@ -11548,9 +11548,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       ) {
         continue;
       }
-      let descendantOnlyCleanup = false;
-      if (processGroupAlive) {
-        descendantOnlyCleanup = true;
+      const descendantOnlyCleanup = !processPidAlive && Boolean(processGroupAlive);
+      if (processPidAlive || processGroupAlive) {
         await terminateHeartbeatRunProcess({
           pid: run.processPid,
           processGroupId: run.processGroupId,

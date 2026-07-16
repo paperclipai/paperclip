@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act } from "react-dom/test-utils";
+import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DevRestartBanner } from "./DevRestartBanner";
