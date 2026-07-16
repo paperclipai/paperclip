@@ -208,16 +208,23 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     return { companyId, agentId, issueSvc, projectId, routine, svc, wakeups };
   }
 
-  async function armWorktreeExecution(cutoff: Date, instanceId = "worktree-routines-test") {
-    await db.insert(instanceSettings).values({
-      singletonKey: "default",
-      general: {},
-      experimental: {
-        enableWorktreeRunExecution: true,
-        worktreeRunExecutionActivatedAt: cutoff.toISOString(),
-        worktreeRunExecutionActivationInstanceId: instanceId,
-      },
-    });
+  async function armWorktreeExecution(
+    cutoff: Date,
+    instanceId = "00000000-0000-4000-8000-000000000001",
+  ) {
+    const experimental = {
+      enableWorktreeRunExecution: true,
+      worktreeRunExecutionInstanceNonce: instanceId,
+      worktreeRunExecutionActivatedAt: cutoff.toISOString(),
+      worktreeRunExecutionActivationInstanceId: instanceId,
+    };
+    await db
+      .insert(instanceSettings)
+      .values({ singletonKey: "default", general: {}, experimental })
+      .onConflictDoUpdate({
+        target: instanceSettings.singletonKey,
+        set: { experimental },
+      });
   }
 
   async function insertDispatchedRun(input: {

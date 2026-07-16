@@ -209,6 +209,7 @@ vi.mock("../services/index.js", () => ({
   environmentCustomImageService: environmentCustomImagesServiceFactoryMock,
   heartbeatService: heartbeatServiceFactoryMock,
   instanceSettingsService: vi.fn(() => ({
+    getExperimental: vi.fn(async () => ({})),
     getGeneral: vi.fn(async () => ({
       backupRetention: {
         dailyDays: 7,

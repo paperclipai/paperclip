@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { Db } from "@paperclipai/db";
 import { companies, instanceSettings } from "@paperclipai/db";
 import {
@@ -13,7 +14,7 @@ import {
   type PatchInstanceSettings,
   type PatchInstanceExperimentalSettings,
 } from "@paperclipai/shared";
-import { eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 
 const DEFAULT_SINGLETON_KEY = "default";
 const instanceGeneralSettingsStorageSchema = instanceGeneralSettingsSchema.strip();
@@ -23,6 +24,7 @@ const TRUTHY_RUNTIME_ENV_VALUES = new Set(["1", "true", "yes", "on"]);
 interface InstanceSettingsServiceOptions {
   runtimeEnv?: Record<string, string | undefined>;
   now?: () => Date;
+  generateInstanceNonce?: () => string;
 }
 
 type WorktreeRunExecutionSuppressedReason =
@@ -51,15 +53,11 @@ export function isTruthyRuntimeEnvValue(value: string | undefined) {
   return typeof value === "string" && TRUTHY_RUNTIME_ENV_VALUES.has(value.trim().toLowerCase());
 }
 
-function getRuntimeInstanceId(env: Record<string, string | undefined>) {
-  const instanceId = env.PAPERCLIP_INSTANCE_ID?.trim();
-  return instanceId ? instanceId : null;
-}
-
 function stripServerManagedExperimentalPatchFields(
   patch: PatchInstanceExperimentalSettings | Record<string, unknown>,
 ): PatchInstanceExperimentalSettings {
   const {
+    worktreeRunExecutionInstanceNonce: _ignoredInstanceNonce,
     worktreeRunExecutionActivatedAt: _ignoredActivatedAt,
     worktreeRunExecutionActivationInstanceId: _ignoredActivationInstanceId,
     ...patchable
@@ -107,7 +105,7 @@ export function applyExperimentalSettingsPatch(
   return {
     ...nextExperimental,
     worktreeRunExecutionActivatedAt: (options.now ?? (() => new Date()))().toISOString(),
-    worktreeRunExecutionActivationInstanceId: getRuntimeInstanceId(runtimeEnv),
+    worktreeRunExecutionActivationInstanceId: nextExperimental.worktreeRunExecutionInstanceNonce,
   };
 }
 
@@ -125,7 +123,6 @@ function suppressWorktreeRunExecution(
 
 export function resolveWorktreeRunExecutionActivation(
   experimental: InstanceExperimentalSettings,
-  currentInstanceId: string | null | undefined,
 ): WorktreeRunExecutionActivationState {
   if (experimental.enableWorktreeRunExecution !== true) {
     return suppressWorktreeRunExecution(
@@ -139,13 +136,16 @@ export function resolveWorktreeRunExecutionActivation(
       experimental.worktreeRunExecutionActivationInstanceId,
     );
   }
-  if (!currentInstanceId) {
+  if (!experimental.worktreeRunExecutionInstanceNonce) {
     return suppressWorktreeRunExecution(
       "missing_instance_id",
       experimental.worktreeRunExecutionActivationInstanceId,
     );
   }
-  if (experimental.worktreeRunExecutionActivationInstanceId !== currentInstanceId) {
+  if (
+    experimental.worktreeRunExecutionActivationInstanceId !==
+    experimental.worktreeRunExecutionInstanceNonce
+  ) {
     return suppressWorktreeRunExecution(
       "instance_id_mismatch",
       experimental.worktreeRunExecutionActivationInstanceId,
@@ -154,7 +154,7 @@ export function resolveWorktreeRunExecutionActivation(
   return {
     armed: true,
     cutoff: experimental.worktreeRunExecutionActivatedAt,
-    activationInstanceId: currentInstanceId,
+    activationInstanceId: experimental.worktreeRunExecutionInstanceNonce,
     reason: null,
   };
 }
@@ -168,10 +168,7 @@ export async function resolveWorktreeRunExecutionActivationState(options: {
     return suppressWorktreeRunExecution("not_worktree_runtime");
   }
   try {
-    return resolveWorktreeRunExecutionActivation(
-      await options.getExperimental(),
-      getRuntimeInstanceId(runtimeEnv),
-    );
+    return resolveWorktreeRunExecutionActivation(await options.getExperimental());
   } catch {
     return suppressWorktreeRunExecution("settings_read_error");
   }
@@ -225,6 +222,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
       enableWorkspaceBranchReconcileForward: parsed.data.enableWorkspaceBranchReconcileForward ?? true,
       enableWorkspaceDirtyQuarantineRepair: parsed.data.enableWorkspaceDirtyQuarantineRepair ?? true,
       enableWorktreeRunExecution: parsed.data.enableWorktreeRunExecution ?? false,
+      worktreeRunExecutionInstanceNonce: parsed.data.worktreeRunExecutionInstanceNonce ?? null,
       worktreeRunExecutionActivatedAt: parsed.data.worktreeRunExecutionActivatedAt ?? null,
       worktreeRunExecutionActivationInstanceId:
         parsed.data.worktreeRunExecutionActivationInstanceId ?? null,
@@ -257,6 +255,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
     enableWorkspaceBranchReconcileForward: true,
     enableWorkspaceDirtyQuarantineRepair: true,
     enableWorktreeRunExecution: false,
+    worktreeRunExecutionInstanceNonce: null,
     worktreeRunExecutionActivatedAt: null,
     worktreeRunExecutionActivationInstanceId: null,
     issueGraphLivenessAutoRecoveryLookbackHours:
@@ -276,13 +275,47 @@ function toInstanceSettings(row: typeof instanceSettings.$inferSelect): Instance
 }
 
 export function instanceSettingsService(db: Db, options: InstanceSettingsServiceOptions = {}) {
+  const runtimeEnv = options.runtimeEnv ?? process.env;
+
+  async function ensureWorktreeInstanceNonce(row: typeof instanceSettings.$inferSelect) {
+    if (!isTruthyRuntimeEnvValue(runtimeEnv.PAPERCLIP_IN_WORKTREE)) return row;
+    if (normalizeExperimentalSettings(row.experimental).worktreeRunExecutionInstanceNonce) return row;
+
+    const now = new Date();
+    const instanceNonce = (options.generateInstanceNonce ?? randomUUID)();
+    const experimental = typeof row.experimental === "object" && row.experimental !== null
+      ? row.experimental
+      : {};
+    const [updated] = await db
+      .update(instanceSettings)
+      .set({
+        experimental: {
+          ...experimental,
+          worktreeRunExecutionInstanceNonce: instanceNonce,
+        },
+        updatedAt: now,
+      })
+      .where(and(
+        eq(instanceSettings.id, row.id),
+        sql`${instanceSettings.experimental} ->> 'worktreeRunExecutionInstanceNonce' is null`,
+      ))
+      .returning();
+    if (updated) return updated;
+
+    return await db
+      .select()
+      .from(instanceSettings)
+      .where(eq(instanceSettings.id, row.id))
+      .then((rows) => rows[0] ?? row);
+  }
+
   async function getOrCreateRow() {
     const existing = await db
       .select()
       .from(instanceSettings)
       .where(eq(instanceSettings.singletonKey, DEFAULT_SINGLETON_KEY))
       .then((rows) => rows[0] ?? null);
-    if (existing) return existing;
+    if (existing) return await ensureWorktreeInstanceNonce(existing);
 
     const now = new Date();
     const [created] = await db
@@ -302,14 +335,14 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
       })
       .returning();
 
-    if (created) return created;
+    if (created) return await ensureWorktreeInstanceNonce(created);
 
     const raced = await db
       .select()
       .from(instanceSettings)
       .where(eq(instanceSettings.singletonKey, DEFAULT_SINGLETON_KEY))
       .then((rows) => rows[0] ?? null);
-    if (raced) return raced;
+    if (raced) return await ensureWorktreeInstanceNonce(raced);
 
     throw new Error("Failed to initialize instance settings row");
   }
