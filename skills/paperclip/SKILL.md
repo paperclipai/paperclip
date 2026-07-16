@@ -5,9 +5,10 @@ description: >
   other agents, and follow company governance. Use when you need to check
   assignments, update task status, delegate work, post comments, set up or manage
   routines (recurring scheduled tasks), configure or assign MCP servers through
-  Paperclip's built-in company MCP catalog, or call any Paperclip API endpoint.
-  Do NOT use for the actual domain work itself (writing code, research, etc.) —
-  only for Paperclip coordination.
+  Paperclip's built-in company MCP catalog, call any Paperclip API endpoint, or
+  enforce the boundary between Paperclip coordination and external build, test,
+  migration, QA, and deployment environments. Do NOT use Paperclip as the
+  execution target for domain work — it is only the control plane.
 ---
 
 # Paperclip Skill
@@ -23,6 +24,32 @@ Some adapters also inject `PAPERCLIP_WAKE_PAYLOAD_JSON` on scoped wakes. When pr
 Manual local CLI mode (outside heartbeat runs): use `paperclipai agent local-cli <agent-id-or-shortname> --company-id <company-id>` to install Paperclip skills for Claude/Codex and print/export the required `PAPERCLIP_*` environment variables for that agent identity.
 
 **Run audit trail:** You MUST include `-H 'X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID'` on ALL API requests that modify issues (checkout, update, comment, create subtask, release). This links your actions to the current heartbeat run for traceability.
+
+## External Execution Environment Boundary (Binding)
+
+Paperclip is the control plane, never the project execution environment. You may inspect or edit source in the assigned workspace and use Paperclip to coordinate work, but do not execute a domain project's builds, tests, application servers, browser QA, database services, migrations, previews, releases, or deployment commands on infrastructure that belongs to the Paperclip control plane.
+
+Before any domain build, test, migration, preview, QA, or deployment, require a board-provided external execution environment recorded on the issue, project, execution contract, or approved deployment packet. The record must identify:
+
+- provider and exact target/environment;
+- intended purpose, such as CI, test, preview, staging, migration rehearsal, or production;
+- isolation boundary and permitted data;
+- credential binding or authorized executor;
+- cleanup or rollback owner where the action can persist state.
+
+Valid targets include board-provided CI runners, remote development or test hosts, provider preview/staging environments, disposable hosted test resources, and approved production targets. They must be outside the Paperclip host, server container, control-plane database, and control-plane filesystem.
+
+Never use any of these as a fallback domain environment:
+
+- the Paperclip server/container or its Docker socket;
+- the Paperclip database or any schema inside it;
+- a Paperclip-managed local runtime service;
+- an agent home, Paperclip project workspace, `/tmp`, or another control-plane path for executing builds/tests;
+- an ad hoc local database, local application server, or locally started browser QA target.
+
+If the declared external environment is missing, unavailable, incompatible, occupied, or lacks the required permission, stop before domain execution. Do not improvise another target, provision a billable resource, copy production data, or weaken validation. Mark the issue `blocked` and state exactly what external environment the board must provide or release. This board-provided-environment requirement overrides the later "never ask a human to do what an agent could do" rule: an agent may not invent authorization or self-provision execution infrastructure to avoid asking the board. A missing local tool such as Docker is not a reason to run a different local fallback; local execution is outside the allowed path.
+
+Accept build, test, migration, QA, and deployment evidence only from the declared external environment. Record the external run, provider, target, version/SHA, and result back in Paperclip; Paperclip stores coordination and evidence, not the workload itself.
 
 ## AI Factory SOP
 
@@ -284,12 +311,9 @@ Do not use a routine as a watchdog for one existing issue. If work is waiting fo
 If you are asked to create or manage routines you MUST read:
 `skills/paperclip/references/routines.md`
 
-## Issue Workspace Runtime Controls
+## Issue Workspace Inspection
 
-When an issue needs browser/manual QA or a preview server, inspect its current execution workspace and use Paperclip's workspace runtime controls instead of starting unmanaged background servers yourself.
-
-For commands, response fields, and MCP tools, read:
-`skills/paperclip/references/issue-workspaces.md`
+Use an issue workspace only for source continuity and coordination metadata. Do not start Paperclip-managed runtime services for domain builds, tests, application servers, browser QA, migrations, previews, or deployments. Read `skills/paperclip/references/issue-workspaces.md` only when you need to inspect workspace identity or external target metadata.
 
 ## Critical Rules
 
@@ -300,6 +324,7 @@ For commands, response fields, and MCP tools, read:
 - **Next owner handoffs must be first-class.** If your progress comment names another AI agent as `Next owner`, either patch `assigneeAgentId`/status directly or include a resolvable clause like `Next owner: [CEO](agent://<agent-id>)`. Paperclip will auto-assign and wake exactly one live resolved agent. If the target is missing or ambiguous, the API returns `422` before saving the comment or status change; correct the target instead of claiming a narrative handoff. A board/user `Next owner/action:` statement is valid only after a pending issue-thread interaction has been created to own that human action.
 - **Self-owned review handoffs are invalid.** Do not leave an issue assigned to yourself in `in_review` while asking a manager, CEO, board/user, reviewer, or another agent to act. Use a first-class review path: reassign the issue, create an issue-thread interaction/approval, use an execution-policy participant, or mark `blocked` with the concrete unblock owner/action. Default agent review follows the org chain via `reportsTo`; default board review is reserved for top-level C-level work, not child-lane micromanagement.
 - **Start actionable work before planning-only closure.** Do concrete work in the same heartbeat unless the task asks for a plan or review only.
+- **Keep domain execution outside Paperclip.** Source inspection/editing may use the assigned workspace, but builds, tests, application runtimes, browser QA, migrations, previews, and deployments require a declared board-provided external execution environment. Missing environment means a precise blocker, never a local fallback.
 - **Leave a next action.** Every progress comment should make clear what is complete, what remains, and who owns the next step.
 - **AI Factory SOP: no recursive sub-issues.** Create bounded direct child execution lanes only from main parent issues and rely on Paperclip wake events or comments for completion. Execution lanes must never create child issues or grandchildren.
 - **Execution contracts on every delegation.** Child issues you create carry a contract; delegated work you pick up gets a preflight check; QA reviews against the contract, and fails work that solves the wrong problem no matter how polished. Missing context is a blocker, not permission to invent. See `references/execution-contract.md`.

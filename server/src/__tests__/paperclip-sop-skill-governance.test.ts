@@ -24,4 +24,18 @@ describe("Paperclip SOP skill governance", () => {
     expect(companySkills).toContain("Do not edit an agent's `$CODEX_HOME/skills` entry");
     expect(companySkills).toContain("paperclipSkillTelemetry");
   });
+
+  it("keeps domain execution outside the Paperclip control plane", () => {
+    const rootSkill = readPaperclipSkillFile("SKILL.md");
+    const issueWorkspaces = readPaperclipSkillFile("references/issue-workspaces.md");
+
+    expect(rootSkill).toContain("External Execution Environment Boundary (Binding)");
+    expect(rootSkill).toContain("Paperclip is the control plane, never the project execution environment");
+    expect(rootSkill).toContain("require a board-provided external execution environment");
+    expect(rootSkill).toContain("Missing environment means a precise blocker, never a local fallback");
+    expect(rootSkill).toContain("overrides the later \"never ask a human to do what an agent could do\" rule");
+    expect(issueWorkspaces).toContain("does not authorize local execution");
+    expect(issueWorkspaces).not.toContain("/runtime-services/start");
+    expect(issueWorkspaces).not.toContain("/runtime-services/restart");
+  });
 });

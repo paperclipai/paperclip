@@ -1,6 +1,8 @@
 # Issue Workspace Runtime Controls
 
-Use this reference when an issue has an isolated execution workspace and you need to inspect or run that workspace's services, especially for QA/browser verification.
+Use this reference only to inspect workspace identity and externally provided target metadata. The binding external-execution boundary in `../SKILL.md` forbids agents from using Paperclip-managed local runtime services for a domain project's builds, tests, application servers, browser QA, databases, migrations, previews, or deployments.
+
+Paperclip is the control plane. A project workload must run on a board-provided external environment. The existence of an execution workspace, configured command, port, or runtime-service endpoint does not authorize local execution.
 
 ## Discover the Workspace
 
@@ -20,28 +22,12 @@ Read `currentExecutionWorkspace`:
 
 If `currentExecutionWorkspace` is `null`, the issue does not currently have a realized execution workspace. For child/follow-up work, create the child with `parentId` or use `inheritExecutionWorkspaceFromIssueId` so Paperclip preserves workspace continuity.
 
-## Control Services
+## Runtime Service APIs Are Not Domain Execution Authorization
 
-Prefer Paperclip-managed runtime service controls over manual `pnpm dev &` or ad-hoc background processes. These endpoints keep service state, URLs, logs, and ownership visible to other agents and the board.
+Paperclip exposes runtime-service APIs for control-plane administration and legacy integrations. Domain agents must not invoke `start` or `restart` through these APIs to create a local test, QA, preview, database, migration, or deployment environment. They may read existing service metadata or stop a service when explicitly assigned control-plane cleanup.
 
 ```sh
-# Start all configured services; waits for configured readiness checks.
-curl -sS -X POST \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-  -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
-  -H "Content-Type: application/json" \
-  "$PAPERCLIP_API_URL/api/execution-workspaces/<workspace-id>/runtime-services/start" \
-  -d '{}'
-
-# Restart all configured services.
-curl -sS -X POST \
-  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
-  -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
-  -H "Content-Type: application/json" \
-  "$PAPERCLIP_API_URL/api/execution-workspaces/<workspace-id>/runtime-services/restart" \
-  -d '{}'
-
-# Stop all running services.
+# Explicitly assigned control-plane cleanup only: stop an existing service.
 curl -sS -X POST \
   -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
   -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
@@ -60,21 +46,22 @@ To target a configured service, pass one of:
 
 The response includes an updated `workspace.runtimeServices[]` list and a `workspaceOperation`/`operation` record for logs.
 
-## Read the URL
+## Read External Target Metadata
 
-After `start` or `restart`, read the service URL from:
+Read service and workspace metadata without starting anything. A URL is valid for domain QA only when the issue, project, execution contract, or approved deployment packet identifies it as a board-provided external environment and it resolves outside Paperclip infrastructure.
 
-- response `workspace.runtimeServices[].url`
-- or a fresh `GET /api/issues/:issueId/heartbeat-context` response at `currentExecutionWorkspace.runtimeServices[].url`
+- Read the issue's `heartbeat-context` and approved deployment packet.
+- Confirm provider, exact target, purpose, isolation, credentials/executor, and cleanup/rollback owner.
+- Reject localhost, loopback, Paperclip-container, Paperclip-host, control-plane database, and ad hoc workspace URLs.
 
-For QA/browser checks, use the service whose `status` is `running` and whose `healthStatus` is not `unhealthy`. If multiple services are running, prefer the one named `web`, `preview`, or the configured service the issue mentions.
+If no qualifying external target is present, mark the issue blocked with the exact environment the board must provide. Do not search for or create an alternative target.
 
 ## MCP Tools
 
-When the Paperclip MCP tools are available, prefer these issue-scoped tools:
+When Paperclip MCP tools are available, these tools are read/control surfaces, not authorization to execute domain workloads locally:
 
 - `paperclipGetIssueWorkspaceRuntime` — reads `currentExecutionWorkspace` and service URLs for an issue.
-- `paperclipControlIssueWorkspaceServices` — starts, stops, or restarts the current issue workspace services.
-- `paperclipWaitForIssueWorkspaceService` — waits until a selected service is running and returns its URL when exposed.
+- `paperclipControlIssueWorkspaceServices` — use only for explicitly assigned control-plane cleanup; do not start/restart domain services.
+- `paperclipWaitForIssueWorkspaceService` — do not use to turn a Paperclip-local service into domain QA evidence.
 
-These tools resolve the issue's workspace id for you, so QA agents do not need to know the lower-level execution workspace endpoint first.
+Use the external provider or runner's own API/tooling for builds, tests, migrations, QA, previews, and deployments, then record its evidence in Paperclip.
