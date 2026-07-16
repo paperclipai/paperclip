@@ -48,6 +48,7 @@ import type {
   IssueBlockedInboxIssueRef,
   IssueProductivityReview,
   IssueProductivityReviewTrigger,
+  IssueCreatedFromIssueSummary,
   IssueRelationIssueSummary,
   IssueWatchdogSummary,
   LowTrustBoundary,
@@ -664,6 +665,48 @@ type IssueRelationSummaryMap = {
   blockedBy: IssueRelationIssueSummary[];
   blocks: IssueRelationIssueSummary[];
 };
+
+async function withCreatedFromIssueSummaries<
+  T extends { id: string; createdFromIssueId: string | null },
+>(
+  dbOrTx: DbReader,
+  companyId: string,
+  rows: T[],
+): Promise<Array<T & { createdFromIssue?: IssueCreatedFromIssueSummary | null }>> {
+  const sourceIssueIds = [
+    ...new Set(rows.flatMap((row) => (row.createdFromIssueId ? [row.createdFromIssueId] : []))),
+  ];
+  if (sourceIssueIds.length === 0) {
+    return rows.map((row) => ({ ...row, createdFromIssue: null }));
+  }
+
+  const sourceRows = await dbOrTx
+    .select({
+      id: issues.id,
+      identifier: issues.identifier,
+      title: issues.title,
+      status: issues.status,
+    })
+    .from(issues)
+    .where(and(eq(issues.companyId, companyId), inArray(issues.id, sourceIssueIds)));
+  const sourceById = new Map(
+    sourceRows.map((row) => [
+      row.id,
+      {
+        ...row,
+        status: row.status as IssueCreatedFromIssueSummary["status"],
+      },
+    ]),
+  );
+
+  return rows.map((row) => ({
+    ...row,
+    createdFromIssue: row.createdFromIssueId
+      ? sourceById.get(row.createdFromIssueId) ?? null
+      : null,
+  }));
+}
+
 type IssueBlockerDiagnosticsIssueRow = {
   id: string;
   companyId: string;
@@ -3656,7 +3699,11 @@ async function listBlockedInboxIssues(
       description: decodeDatabaseTextPreview(row.description, ISSUE_LIST_DESCRIPTION_MAX_CHARS),
     }));
   const withLabels = await withIssueLabels(dbOrTx, rows);
-  const withRuns = withActiveRuns(withLabels, await activeRunMapForIssues(dbOrTx, withLabels));
+  const withCreatedFromIssues = await withCreatedFromIssueSummaries(dbOrTx, companyId, withLabels);
+  const withRuns = withActiveRuns(
+    withCreatedFromIssues,
+    await activeRunMapForIssues(dbOrTx, withCreatedFromIssues),
+  );
   if (withRuns.length === 0) return [];
 
   const issueIds = withRuns.map((row) => row.id);
@@ -3807,7 +3854,8 @@ export function issueService(db: Db) {
       .then((rows) => rows[0] ?? null);
     if (!row) return null;
     const [enriched] = await withIssueLabels(db, [row]);
-    return enriched;
+    const [withCreatedFromIssue] = await withCreatedFromIssueSummaries(db, row.companyId, [enriched]);
+    return withCreatedFromIssue;
   }
 
   async function getIssueByIdentifier(identifier: string) {
@@ -3818,7 +3866,8 @@ export function issueService(db: Db) {
       .then((rows) => rows[0] ?? null);
     if (!row) return null;
     const [enriched] = await withIssueLabels(db, [row]);
-    return enriched;
+    const [withCreatedFromIssue] = await withCreatedFromIssueSummaries(db, row.companyId, [enriched]);
+    return withCreatedFromIssue;
   }
 
   async function getCurrentScheduledRetryForIssue(issueId: string, companyId: string): Promise<IssueScheduledRetryRow | null> {
@@ -4924,8 +4973,9 @@ export function issueService(db: Db) {
         description: decodeDatabaseTextPreview(row.description, ISSUE_LIST_DESCRIPTION_MAX_CHARS),
       }));
       const withLabels = await withIssueLabels(db, rows);
-      const runMap = await activeRunMapForIssues(db, withLabels);
-      const withRuns = withActiveRuns(withLabels, runMap);
+      const withCreatedFromIssues = await withCreatedFromIssueSummaries(db, companyId, withLabels);
+      const runMap = await activeRunMapForIssues(db, withCreatedFromIssues);
+      const withRuns = withActiveRuns(withCreatedFromIssues, runMap);
       if (withRuns.length === 0) {
         return withRuns;
       }

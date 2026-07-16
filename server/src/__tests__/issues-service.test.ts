@@ -3479,6 +3479,63 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     })).rejects.toMatchObject({ status: 422 });
   });
 
+  it("expands originating issues for detail and list reads, including null provenance", async () => {
+    const companyId = randomUUID();
+    const sourceIssueId = randomUUID();
+    const derivedIssueId = randomUUID();
+    const standaloneIssueId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values([
+      {
+        id: sourceIssueId,
+        companyId,
+        title: "Originating issue",
+        status: "in_progress",
+        priority: "high",
+      },
+      {
+        id: derivedIssueId,
+        companyId,
+        createdFromIssueId: sourceIssueId,
+        title: "Derived issue",
+        status: "todo",
+        priority: "medium",
+      },
+      {
+        id: standaloneIssueId,
+        companyId,
+        title: "Standalone issue",
+        status: "todo",
+        priority: "medium",
+      },
+    ]);
+
+    const derivedDetail = await svc.getById(derivedIssueId);
+    const standaloneDetail = await svc.getById(standaloneIssueId);
+    const listById = new Map((await svc.list(companyId)).map((issue) => [issue.id, issue]));
+
+    expect(derivedDetail).toMatchObject({
+      createdFromIssueId: sourceIssueId,
+      createdFromIssue: {
+        id: sourceIssueId,
+        identifier: null,
+        title: "Originating issue",
+        status: "in_progress",
+      },
+    });
+    expect(standaloneDetail).toMatchObject({
+      createdFromIssueId: null,
+      createdFromIssue: null,
+    });
+    expect(listById.get(derivedIssueId)?.createdFromIssue).toEqual(derivedDetail?.createdFromIssue);
+    expect(listById.get(standaloneIssueId)?.createdFromIssue).toBeNull();
+  });
+
   it("leaves originating issue null without run or explicit context", async () => {
     const companyId = randomUUID();
     await db.insert(companies).values({
