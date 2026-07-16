@@ -11561,7 +11561,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       if (!finalizedRun) finalizedRun = await getRun(run.id);
       if (!finalizedRun) continue;
       finalizedRun = await classifyAndPersistRunLiveness(finalizedRun, parseObject(finalizedRun.resultJson)) ?? finalizedRun;
-      await reconcileSyntheticWorkspaceFinalizeForDeadRun(finalizedRun);
       await releaseEnvironmentLeasesForRun({
         runId: finalizedRun.id,
         companyId: finalizedRun.companyId,
@@ -11582,6 +11581,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
 
       if (!retriedRun) {
+        await reconcileSyntheticWorkspaceFinalizeForDeadRun(finalizedRun);
         await releaseIssueExecutionAndPromote(finalizedRun);
       }
 

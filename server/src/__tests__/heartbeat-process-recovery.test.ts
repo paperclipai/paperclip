@@ -1840,6 +1840,70 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(lease?.releasedAt).toBeTruthy();
   });
 
+  it("does not synthesize a finalize barrier when the dead run is retried", async () => {
+    const { companyId, runId, issueId } = await seedRunFixture({
+      agentStatus: "idle",
+      processPid: 999_999_999,
+    });
+    const projectId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Retried dead-run project",
+      status: "in_progress",
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      mode: "shared_workspace",
+      strategyType: "local_path",
+      name: "Retried dead-run workspace",
+      status: "active",
+      providerType: "local_fs",
+    });
+    await db
+      .update(issues)
+      .set({
+        projectId,
+        status: "done",
+        executionWorkspaceId,
+        completedAt: new Date("2026-03-19T00:01:00.000Z"),
+      })
+      .where(eq(issues.id, issueId));
+    await db.insert(workspaceOperations).values({
+      companyId,
+      executionWorkspaceId,
+      heartbeatRunId: runId,
+      issueId,
+      phase: "adapter_execute",
+      status: "succeeded",
+      metadata: { qaFixture: "retried-dead-run-finalize" },
+      startedAt: new Date("2026-03-19T00:00:30.000Z"),
+      finishedAt: new Date("2026-03-19T00:00:45.000Z"),
+    });
+
+    await heartbeatService(db).reapOrphanedRuns();
+
+    const retry = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.retryOfRunId, runId))
+      .then((rows) => rows[0] ?? null);
+    expect(retry?.id).toBeTruthy();
+
+    const finalizeRows = await db
+      .select({ id: workspaceOperations.id })
+      .from(workspaceOperations)
+      .where(and(
+        eq(workspaceOperations.heartbeatRunId, runId),
+        eq(workspaceOperations.phase, "workspace_finalize"),
+      ));
+    expect(finalizeRows).toEqual([]);
+  });
+
   it("synthesizes one finalize barrier for a dead done blocker and wakes its dependent", async () => {
     const { companyId, agentId, runId, issueId: blockerIssueId } = await seedRunFixture({
       agentStatus: "idle",
