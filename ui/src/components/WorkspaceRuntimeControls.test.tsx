@@ -543,6 +543,32 @@ describe("buildWorkspaceServiceControlEntries", () => {
     expect(entries[0].state).toBe("stopping");
   });
 
+  it("overlays every service targeted by a bulk mutation", () => {
+    const built = buildWorkspaceRuntimeControlSections({
+      runtimeConfig: {
+        commands: [
+          { id: "web", name: "web", kind: "service", command: "pnpm dev" },
+          { id: "api", name: "api", kind: "service", command: "pnpm api" },
+        ],
+      },
+      runtimeServices: [
+        createRuntimeService({ id: "service-web", serviceName: "web", status: "running" }),
+        createRuntimeService({
+          id: "service-api",
+          serviceName: "api",
+          status: "running",
+          command: "pnpm api",
+        }),
+      ],
+      canStartServices: true,
+    });
+    const pendingRequests = resolveWorkspaceServiceControlRequests(built, "stop", null);
+
+    const entries = buildWorkspaceServiceControlEntries({ sections: built, pendingRequests });
+
+    expect(entries.map((entry) => entry.state)).toEqual(["stopping", "stopping"]);
+  });
+
   it("builds a failure detail line from the stopped runtime service", () => {
     const failed = createRuntimeService({
       id: "service-web",

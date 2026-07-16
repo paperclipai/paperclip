@@ -221,11 +221,13 @@ export function buildWorkspaceServiceControlEntries(input: {
   runtimeServices?: WorkspaceRuntimeService[] | null;
   isPending?: boolean;
   pendingRequest?: WorkspaceRuntimeControlRequest | null;
+  pendingRequests?: WorkspaceRuntimeControlRequest[];
 }): WorkspaceServiceControlEntry[] {
   const runtimeServicesById = new Map(
     (input.runtimeServices ?? []).map((runtimeService) => [runtimeService.id, runtimeService]),
   );
-  const pending = input.isPending ? input.pendingRequest ?? null : null;
+  const pendingRequests = input.pendingRequests
+    ?? (input.isPending && input.pendingRequest ? [input.pendingRequest] : []);
 
   return [...input.sections.services, ...input.sections.otherServices].map((item) => {
     let state: WorkspaceServiceControlEntry["state"] =
@@ -237,13 +239,17 @@ export function buildWorkspaceServiceControlEntries(input: {
             ? "failed"
             : "stopped";
 
-    const pendingTargetsItem = pending
-      && pending.action !== "run"
-      && (pending.workspaceCommandId ?? null) === (item.workspaceCommandId ?? null)
-      && (pending.runtimeServiceId ?? null) === (item.runtimeServiceId ?? null)
-      && (pending.serviceIndex ?? null) === (item.serviceIndex ?? null);
-    if (pendingTargetsItem) {
-      state = pending.action === "stop" ? "stopping" : pending.action === "restart" ? "restarting" : "starting";
+    const pendingRequest = pendingRequests.find((request) =>
+      request.action !== "run"
+      && (request.workspaceCommandId ?? null) === (item.workspaceCommandId ?? null)
+      && (request.runtimeServiceId ?? null) === (item.runtimeServiceId ?? null)
+      && (request.serviceIndex ?? null) === (item.serviceIndex ?? null));
+    if (pendingRequest) {
+      state = pendingRequest.action === "stop"
+        ? "stopping"
+        : pendingRequest.action === "restart"
+          ? "restarting"
+          : "starting";
     }
 
     const runtimeService = item.runtimeServiceId ? runtimeServicesById.get(item.runtimeServiceId) ?? null : null;

@@ -695,6 +695,7 @@ export function ExecutionWorkspaceDetail() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [runtimeActionErrorMessage, setRuntimeActionErrorMessage] = useState<string | null>(null);
   const [runtimeActionMessage, setRuntimeActionMessage] = useState<string | null>(null);
+  const [pendingRuntimeActions, setPendingRuntimeActions] = useState<WorkspaceRuntimeControlRequest[]>([]);
   const activeRouteTab = workspaceId ? resolveExecutionWorkspaceTab(location.pathname, workspaceId) : null;
   const pluginTabFromSearch = useMemo(() => {
     const tab = new URLSearchParams(location.search).get("tab");
@@ -805,6 +806,7 @@ export function ExecutionWorkspaceDetail() {
     setForm(formStateFromWorkspace(workspace));
     setErrorMessage(null);
     setRuntimeActionErrorMessage(null);
+    setPendingRuntimeActions([]);
   }, [workspace]);
 
   useEffect(() => {
@@ -865,6 +867,9 @@ export function ExecutionWorkspaceDetail() {
       setRuntimeActionMessage(null);
       setRuntimeActionErrorMessage(error instanceof Error ? error.message : "Failed to control workspace commands.");
     },
+    onSettled: (_result, _error, request) => {
+      setPendingRuntimeActions((current) => current.filter((pendingRequest) => pendingRequest !== request));
+    },
   });
 
   if (workspaceQuery.isLoading) return <p className="text-sm text-muted-foreground">Loading workspace…</p>;
@@ -889,8 +894,7 @@ export function ExecutionWorkspaceDetail() {
   const serviceControlEntries = buildWorkspaceServiceControlEntries({
     sections: runtimeControlSections,
     runtimeServices: workspace.runtimeServices ?? [],
-    isPending: controlRuntimeServices.isPending,
-    pendingRequest: pendingRuntimeAction,
+    pendingRequests: pendingRuntimeActions,
   });
 
   const pluginSlotContext = {
@@ -932,6 +936,12 @@ export function ExecutionWorkspaceDetail() {
     updateWorkspace.mutate(patch);
   };
 
+  const runRuntimeControlRequests = (requests: WorkspaceRuntimeControlRequest[]) => {
+    if (requests.length === 0) return;
+    setPendingRuntimeActions((current) => [...current, ...requests]);
+    for (const request of requests) controlRuntimeServices.mutate(request);
+  };
+
   return (
     <>
       <div className="space-y-4 overflow-hidden sm:space-y-6">
@@ -945,9 +955,9 @@ export function ExecutionWorkspaceDetail() {
           <WorkspaceServiceControlBar
             services={serviceControlEntries}
             onAction={(action, serviceKey) => {
-              for (const request of resolveWorkspaceServiceControlRequests(runtimeControlSections, action, serviceKey)) {
-                controlRuntimeServices.mutate(request);
-              }
+              runRuntimeControlRequests(
+                resolveWorkspaceServiceControlRequests(runtimeControlSections, action, serviceKey),
+              );
             }}
             onViewLogs={() => handleTabChange("runtime_logs")}
             onManageServices={() => handleTabChange("services")}
@@ -990,7 +1000,7 @@ export function ExecutionWorkspaceDetail() {
                 ? null
                 : "Execution workspaces need a working directory before local commands can run, and services also need runtime config."
             }
-            onAction={(request) => controlRuntimeServices.mutate(request)}
+            onAction={(request) => runRuntimeControlRequests([request])}
           />
         ) : activeTab === "configuration" ? (
           <div className="space-y-4 sm:space-y-6">
