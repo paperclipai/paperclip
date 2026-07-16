@@ -82,10 +82,10 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableIssueGraphLivenessAutoRecovery: false,
     issueGraphLivenessAutoRecoveryLookbackHours: 24,
     enableWorkspaceBranchReconcileForward: true,
-  enableWorkspaceDirtyQuarantineRepair: true,
-  enableWorktreeRunExecution: false,
-  worktreeRunExecutionInstanceNonce: null,
-  worktreeRunExecutionActivatedAt: null,
+    enableWorkspaceDirtyQuarantineRepair: true,
+    enableWorktreeRunExecution: false,
+    worktreeRunExecutionInstanceNonce: null,
+    worktreeRunExecutionActivatedAt: null,
     worktreeRunExecutionActivationInstanceId: null,
   };
 }
