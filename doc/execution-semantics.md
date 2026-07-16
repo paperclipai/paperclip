@@ -425,6 +425,7 @@ The recovery model is intentionally conservative:
 - retry once when the control plane lost execution continuity
 - open an explicit recovery action when the system can identify a bounded recovery owner/action
 - treat an invokable agent review participant as live only when a run, queued wake, or another explicit delivery path exists
+- treat a queued or deferred wake without a corresponding live heartbeat as dispatch evidence for at most five minutes, then create executable recovery if the wake was orphaned
 - defer repeated recovery briefly after a terminal attempt, then retry automatically if the same leaf remains stranded
 - escalate visibly when the system cannot safely keep going
 

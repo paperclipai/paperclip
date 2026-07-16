@@ -1266,6 +1266,83 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     ]));
   });
 
+  it("does not let an orphaned deferred wake mask a stalled agent review", async () => {
+    await enableAutoRecovery();
+    const { companyId, managerId, coderId, blockerIssueId } = await seedBlockedChain();
+    await db
+      .update(agents)
+      .set({ runtimeConfig: { heartbeat: { wakeOnDemand: true } } })
+      .where(inArray(agents.id, [managerId, coderId]));
+    await db
+      .update(issues)
+      .set({
+        status: "in_review",
+        assigneeAgentId: coderId,
+        executionState: {
+          status: "pending",
+          currentStageType: "review",
+          currentParticipant: { type: "agent", agentId: managerId, userId: null },
+        },
+      })
+      .where(eq(issues.id, blockerIssueId));
+    const staleAt = new Date(Date.now() - 6 * 60 * 1000);
+    await db.insert(agentWakeupRequests).values({
+      companyId,
+      agentId: managerId,
+      source: "assignment",
+      reason: "issue_execution_deferred",
+      status: "deferred_issue_execution",
+      payload: { issueId: blockerIssueId },
+      requestedAt: staleAt,
+      createdAt: staleAt,
+      updatedAt: staleAt,
+    });
+
+    const result = await heartbeatService(db).reconcileIssueGraphLiveness();
+
+    expect(result).toMatchObject({ findings: 1, escalationsCreated: 1 });
+    const recoveryIssues = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "harness_liveness_escalation")));
+    expect(recoveryIssues).toHaveLength(1);
+    const recoveryWake = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.companyId, companyId))
+      .then((rows) => rows.find((row) => row.payload?.issueId === recoveryIssues[0]?.id));
+    expect(recoveryWake).toBeTruthy();
+  });
+
+  it("allows a fresh deferred wake its bounded dispatch lease", async () => {
+    await enableAutoRecovery();
+    const { companyId, managerId, coderId, blockerIssueId } = await seedBlockedChain();
+    await db
+      .update(issues)
+      .set({
+        status: "in_review",
+        assigneeAgentId: coderId,
+        executionState: {
+          status: "pending",
+          currentStageType: "review",
+          currentParticipant: { type: "agent", agentId: managerId, userId: null },
+        },
+      })
+      .where(eq(issues.id, blockerIssueId));
+    await db.insert(agentWakeupRequests).values({
+      companyId,
+      agentId: managerId,
+      source: "assignment",
+      reason: "issue_execution_deferred",
+      status: "deferred_issue_execution",
+      payload: { issueId: blockerIssueId },
+    });
+
+    const result = await heartbeatService(db).reconcileIssueGraphLiveness();
+
+    expect(result).toMatchObject({ findings: 0, escalationsCreated: 0 });
+  });
+
   it("parents recovery under the leaf blocker without inheriting dependent or blocker execution state for manager-owned recovery", async () => {
     await enableAutoRecovery();
     await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });

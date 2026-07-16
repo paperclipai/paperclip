@@ -51,6 +51,7 @@ export interface IssueLivenessExecutionPathInput {
   issueId: string | null;
   agentId?: string | null;
   status: string;
+  createdAt?: Date | string | null;
 }
 
 export interface IssueLivenessWaitingPathInput {
@@ -119,6 +120,12 @@ const INVOKABLE_AGENT_STATUSES = new Set(["active", "idle", "running"]);
 // allowed to surface the missing handoff through its normal escalation path.
 export const ISSUE_LIVENESS_PENDING_INTERACTION_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 export const ISSUE_LIVENESS_PENDING_INTERACTION_CLOCK_SKEW_TOLERANCE_MS = 5 * 60 * 1000;
+// A wake row without a live queued/running heartbeat is only short-lived
+// dispatch evidence. Deferred rows are normally promoted when the issue's
+// active run terminates; if that handoff is missed, they must not certify the
+// issue as healthy forever. The periodic harness can recover it after this
+// bounded dispatch lease expires.
+export const ISSUE_LIVENESS_WAKE_DISPATCH_MAX_AGE_MS = 5 * 60 * 1000;
 
 function issueLabel(issue: IssueLivenessIssueInput) {
   return issue.identifier ?? issue.id;
@@ -142,9 +149,17 @@ function hasActiveExecutionPath(
   issueId: string,
   activeRuns: IssueLivenessExecutionPathInput[],
   queuedWakeRequests: IssueLivenessExecutionPathInput[],
+  nowMs: number,
 ) {
   return hasActiveRun(companyId, issueId, activeRuns) || queuedWakeRequests.some(
-    (entry) => entry.companyId === companyId && entry.issueId === issueId,
+    (entry) => {
+      if (entry.companyId !== companyId || entry.issueId !== issueId) return false;
+      const createdAtMs = readDateMs(entry.createdAt);
+      if (createdAtMs === null) return false;
+      const ageMs = nowMs - createdAtMs;
+      return ageMs >= -ISSUE_LIVENESS_PENDING_INTERACTION_CLOCK_SKEW_TOLERANCE_MS &&
+        ageMs <= ISSUE_LIVENESS_WAKE_DISPATCH_MAX_AGE_MS;
+    },
   );
 }
 
@@ -462,7 +477,7 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
   function hasExplicitWaitingPath(issue: IssueLivenessIssueInput) {
     return Boolean(issue.assigneeUserId) ||
       hasScheduledMonitor(issue, nowMs) ||
-      hasActiveExecutionPath(issue.companyId, issue.id, activeRuns, queuedWakeRequests) ||
+      hasActiveExecutionPath(issue.companyId, issue.id, activeRuns, queuedWakeRequests, nowMs) ||
       hasCurrentPendingInteractionPath(issue.companyId, issue.id, pendingInteractions, nowMs) ||
       hasWaitingPath(issue.companyId, issue.id, pendingApprovals) ||
       hasWaitingPath(issue.companyId, issue.id, openRecoveryIssues);

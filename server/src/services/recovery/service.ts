@@ -2776,6 +2776,7 @@ export function recoveryService(
           agentId: agentWakeupRequests.agentId,
           status: agentWakeupRequests.status,
           payload: agentWakeupRequests.payload,
+          createdAt: agentWakeupRequests.createdAt,
         })
         .from(agentWakeupRequests)
         .where(inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution"])),
@@ -2897,6 +2898,7 @@ export function recoveryService(
         agentId: row.agentId,
         status: row.status,
         issueId: issueIdFromWakePayload(row.payload),
+        createdAt: row.createdAt,
       })),
       pendingInteractions: interactionRows,
       pendingApprovals: approvalRows,
