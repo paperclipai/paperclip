@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { activityLog, agentApiKeys, companies, heartbeatRuns, issues } from "@paperclipai/db";
-import { PLUGIN_EVENT_TYPES, type PluginEventType } from "@paperclipai/shared";
+import { isUuidLike, PLUGIN_EVENT_TYPES, type PluginEventType } from "@paperclipai/shared";
 import type { PluginEvent } from "@paperclipai/plugin-sdk";
 import { publishLiveEvent } from "./live-events.js";
 import { redactCurrentUserValue } from "../log-redaction.js";
@@ -70,19 +70,21 @@ function readNonEmptyString(value: unknown) {
 }
 
 export async function resolveResponsibleUserIdForActivity(db: Db, input: LogActivityInput) {
-  if (input.runId) {
+  const runId = readNonEmptyString(input.runId);
+  if (runId && isUuidLike(runId)) {
     const run = await db
       .select({ responsibleUserId: heartbeatRuns.responsibleUserId })
       .from(heartbeatRuns)
-      .where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId)))
+      .where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, runId)))
       .then((rows) => rows[0] ?? null);
     const runResponsibleUserId = readNonEmptyString(run?.responsibleUserId);
     if (runResponsibleUserId) return runResponsibleUserId;
   }
 
-  const issueId = readNonEmptyString(input.issueId)
+  const issueIdCandidate = readNonEmptyString(input.issueId)
     ?? (input.entityType === "issue" ? readNonEmptyString(input.entityId) : null)
     ?? readNonEmptyString(input.details?.issueId);
+  const issueId = isUuidLike(issueIdCandidate) ? issueIdCandidate : null;
   if (issueId) {
     const issue = await db
       .select({
@@ -97,14 +99,16 @@ export async function resolveResponsibleUserIdForActivity(db: Db, input: LogActi
     if (issueResponsibleUserId) return issueResponsibleUserId;
   }
 
-  if (input.agentApiKeyId) {
+  const agentApiKeyId = readNonEmptyString(input.agentApiKeyId);
+  const agentId = readNonEmptyString(input.agentId);
+  if (agentApiKeyId && isUuidLike(agentApiKeyId)) {
     const apiKey = await db
       .select({ responsibleUserId: agentApiKeys.responsibleUserId })
       .from(agentApiKeys)
       .where(and(
         eq(agentApiKeys.companyId, input.companyId),
-        eq(agentApiKeys.id, input.agentApiKeyId),
-        ...(input.agentId ? [eq(agentApiKeys.agentId, input.agentId)] : []),
+        eq(agentApiKeys.id, agentApiKeyId),
+        ...(agentId && isUuidLike(agentId) ? [eq(agentApiKeys.agentId, agentId)] : []),
       ))
       .then((rows) => rows[0] ?? null);
     const apiKeyResponsibleUserId = readNonEmptyString(apiKey?.responsibleUserId);

@@ -23,6 +23,14 @@ import {
 
 type TableRows = Map<unknown, Array<Record<string, unknown>>>;
 
+const companyId = "00000000-0000-4000-8000-000000000001";
+const agentId = "00000000-0000-4000-8000-000000000002";
+const issueId = "00000000-0000-4000-8000-000000000003";
+const runId = "00000000-0000-4000-8000-000000000004";
+const missingRunId = "00000000-0000-4000-8000-000000000005";
+const agentApiKeyId = "00000000-0000-4000-8000-000000000006";
+const missingAgentApiKeyId = "00000000-0000-4000-8000-000000000007";
+
 function createReader(rowsByTable: TableRows) {
   return {
     select: () => ({
@@ -35,13 +43,13 @@ function createReader(rowsByTable: TableRows) {
 
 function activityInput(overrides: Partial<LogActivityInput> = {}): LogActivityInput {
   return {
-    companyId: "company-1",
+    companyId,
     actorType: "agent",
-    actorId: "agent-1",
+    actorId: agentId,
     action: "issue.updated",
     entityType: "issue",
-    entityId: "issue-1",
-    agentId: "agent-1",
+    entityId: issueId,
+    agentId,
     ...overrides,
   };
 }
@@ -56,8 +64,8 @@ describe("resolveResponsibleUserIdForActivity", () => {
     ]));
 
     await expect(resolveResponsibleUserIdForActivity(db, activityInput({
-      runId: "run-1",
-      agentApiKeyId: "key-1",
+      runId,
+      agentApiKeyId,
     }))).resolves.toBe("run-user");
   });
 
@@ -70,8 +78,8 @@ describe("resolveResponsibleUserIdForActivity", () => {
     ]));
 
     await expect(resolveResponsibleUserIdForActivity(db, activityInput({
-      runId: "missing-run",
-      agentApiKeyId: "key-1",
+      runId: missingRunId,
+      agentApiKeyId,
     }))).resolves.toBe("issue-user");
   });
 
@@ -83,8 +91,8 @@ describe("resolveResponsibleUserIdForActivity", () => {
 
     await expect(resolveResponsibleUserIdForActivity(db, activityInput({
       entityType: "agent",
-      entityId: "agent-1",
-      agentApiKeyId: "key-1",
+      entityId: agentId,
+      agentApiKeyId,
     }))).resolves.toBe("key-user");
   });
 
@@ -96,8 +104,8 @@ describe("resolveResponsibleUserIdForActivity", () => {
 
     await expect(resolveResponsibleUserIdForActivity(db, activityInput({
       entityType: "company",
-      entityId: "company-1",
-      agentApiKeyId: "missing-key",
+      entityId: companyId,
+      agentApiKeyId: missingAgentApiKeyId,
     }))).resolves.toBe("default-user");
   });
 
@@ -108,6 +116,21 @@ describe("resolveResponsibleUserIdForActivity", () => {
     ]));
 
     await expect(resolveResponsibleUserIdForActivity(db, activityInput())).resolves.toBe("creator-user");
+  });
+
+  it("ignores malformed UUID-backed identifiers", async () => {
+    const db = createReader(new Map([
+      [heartbeatRuns, [{ responsibleUserId: "run-user" }]],
+      [issues, [{ responsibleUserId: "issue-user", createdByUserId: null }]],
+      [agentApiKeys, [{ responsibleUserId: "key-user" }]],
+      [companies, [{ defaultResponsibleUserId: "default-user" }]],
+    ]));
+
+    await expect(resolveResponsibleUserIdForActivity(db, activityInput({
+      runId: "not-a-run-uuid",
+      entityId: "not-an-issue-uuid",
+      agentApiKeyId: "not-a-key-uuid",
+    }))).resolves.toBe("default-user");
   });
 });
 
