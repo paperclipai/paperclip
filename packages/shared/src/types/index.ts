@@ -251,6 +251,12 @@ export type {
 export type { Project, ProjectBudgetSummary, ProjectCodebase, ProjectCodebaseOrigin, ProjectGoalRef, ProjectManagedByPlugin, ProjectWorkspace } from "./project.js";
 export type {
   CompanySearchCountType,
+  CompanySearchExtractIssueResult,
+  CompanySearchExtractKind,
+  CompanySearchExtractMatch,
+  CompanySearchExtractResponse,
+  CompanySearchExtractScope,
+  CompanySearchExtractSourceRef,
   CompanySearchFilterOptionCounts,
   CompanySearchHighlight,
   CompanySearchArtifactSummary,
@@ -266,7 +272,13 @@ export type {
   CompanySearchZeroResults,
   CompanySearchZeroResultsLoosenSuggestion,
 } from "./search.js";
-export { COMPANY_SEARCH_SCOPES, COMPANY_SEARCH_SORTS, COMPANY_SEARCH_UPDATED_WITHIN_OPTIONS } from "./search.js";
+export {
+  COMPANY_SEARCH_EXTRACT_KINDS,
+  COMPANY_SEARCH_EXTRACT_SCOPES,
+  COMPANY_SEARCH_SCOPES,
+  COMPANY_SEARCH_SORTS,
+  COMPANY_SEARCH_UPDATED_WITHIN_OPTIONS,
+} from "./search.js";
 export type {
   ExecutionWorkspace,
   ExecutionWorkspaceSummary,

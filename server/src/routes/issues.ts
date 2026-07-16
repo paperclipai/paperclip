@@ -27,6 +27,7 @@ import {
   acceptIssueThreadInteractionSchema,
   attachmentArtifactWorkProductMetadataSchema,
   cancelIssueThreadInteractionSchema,
+  companySearchExtractQuerySchema,
   companySearchQuerySchema,
   createIssueAttachmentMetadataSchema,
   createIssueThreadInteractionSchema,
@@ -63,6 +64,8 @@ import {
   isUuidLike,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
   type CompactIssue,
+  type CompanySearchExtractQuery,
+  type CompanySearchExtractResponse,
   type CompanySearchQuery,
   type CompanySearchResponse,
   type ExecutionWorkspace,
@@ -251,6 +254,7 @@ type RecoveryRevalidationTrigger =
   | "work_product"
   | "read_projection";
 type CompanySearchService = {
+  extract(companyId: string, query: CompanySearchExtractQuery): Promise<CompanySearchExtractResponse>;
   search(companyId: string, query: CompanySearchQuery): Promise<CompanySearchResponse>;
 };
 type ActivityIssueRelationSummary = {
@@ -4529,6 +4533,40 @@ export function issueRoutes(
     res.status(400).json({
       error: "Missing companyId in path. Use /api/companies/{companyId}/issues.",
     });
+  });
+
+  router.get("/companies/:companyId/search/extract", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const companyScopeDecision = await access.decide({
+      actor: req.actor,
+      action: "company_scope:read",
+      resource: { type: "company", companyId },
+    });
+    if (!companyScopeDecision.allowed) {
+      res.status(403).json({ error: "Company search is outside this actor's authorization boundary" });
+      return;
+    }
+    const parsedQuery = companySearchExtractQuerySchema.safeParse(req.query);
+    if (!parsedQuery.success) {
+      res.status(400).json({
+        error: parsedQuery.error.issues[0]?.message ?? "Invalid extract search query",
+      });
+      return;
+    }
+    const rateLimit = searchRateLimiter.consume(companySearchRateLimitActor(req, companyId));
+    res.setHeader("X-RateLimit-Limit", String(rateLimit.limit));
+    res.setHeader("X-RateLimit-Remaining", String(rateLimit.remaining));
+    if (!rateLimit.allowed) {
+      res.setHeader("Retry-After", String(rateLimit.retryAfterSeconds));
+      res.status(429).json({
+        error: "Search rate limit exceeded",
+        retryAfterSeconds: rateLimit.retryAfterSeconds,
+      });
+      return;
+    }
+    const result = await getSearchService().extract(companyId, parsedQuery.data);
+    res.json(result);
   });
 
   router.get("/companies/:companyId/search", async (req, res) => {
