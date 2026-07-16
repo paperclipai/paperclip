@@ -54,6 +54,20 @@ test("resolveHermesConfigPath uses configured HERMES_HOME and profile args", () 
   );
 });
 
+test("resolveHermesConfigPath rejects profile path traversal", () => {
+  const config = {
+    env: {
+      HERMES_HOME: "/tmp/hermes-home",
+    },
+  };
+
+  for (const profile of [".", "..", "../outside", "nested/profile", "nested\\profile", "/absolute"]) {
+    expect(() => resolveHermesConfigPath(config, ["--profile", profile])).toThrow(
+      "Hermes profile must be a single directory name",
+    );
+  }
+});
+
 test("testEnvironment accepts config.command when hermesCommand is absent", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "hermes-command-resolution-"));
   const cliPath = path.join(tempDir, "fake-hermes");
