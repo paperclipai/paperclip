@@ -6772,11 +6772,10 @@ export function issueRoutes(
       throw forbidden(decision.explanation, { code, reason: decision.reason });
     }
 
-    const policy = await inboxPoliciesSvc.get(issue.companyId, userId);
     return {
       userId,
       targetResolvedFrom: explicitUserId ? "explicit" as const : "responsible_user" as const,
-      policyMode: policy.mode,
+      policyMode: decision.inboxPolicyMode ?? "open",
     };
   }
 
