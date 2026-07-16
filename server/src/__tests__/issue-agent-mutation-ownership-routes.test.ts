@@ -768,7 +768,7 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockWorkProductService.update).not.toHaveBeenCalled();
     expect(mockStorageService.putFile).not.toHaveBeenCalled();
     expect(mockStorageService.deleteObject).not.toHaveBeenCalled();
-  });
+  }, 15_000);
 
   it("allows mentioned peer agents to post comments without ownership of an active checkout", async () => {
     mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({

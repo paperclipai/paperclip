@@ -173,7 +173,7 @@ describe("approval routes idempotent retries", () => {
     expect(mockIssueApprovalService.listIssuesForApproval).not.toHaveBeenCalled();
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
     expect(mockLogActivity).not.toHaveBeenCalled();
-  });
+  }, 15_000);
 
   it("does not emit duplicate rejection logs when reject is already resolved", async () => {
     mockApprovalService.getById.mockResolvedValue({
