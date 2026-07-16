@@ -117,11 +117,17 @@ export function linearEvidenceConnector(
     );
   }
 
-  async function recordConflict(mappingId: string, key: string, paperclipValue: unknown, linearValue: unknown) {
+  async function recordConflict(
+    mappingId: string,
+    paperclipIssueId: string,
+    key: string,
+    paperclipValue: unknown,
+    linearValue: unknown,
+  ) {
     const fingerprint = linearEvidencePayloadSha256({
       contractVersion: 1,
       mappingKey: key,
-      paperclipIssueId: mappingId,
+      paperclipIssueId,
       paperclipIssueUpdatedAt: "1970-01-01T00:00:00.000Z",
       linearIssueId: String(linearValue),
       implementerId: "connector",
@@ -151,7 +157,7 @@ export function linearEvidenceConnector(
       .where(eq(linearEvidenceMappings.paperclipIssueId, input.paperclipIssueId)).limit(1);
     if (!mapping) throw new LinearEvidenceConnectorError("mapping_conflict");
     if (mapping.companyId !== input.companyId || mapping.mappingKey !== mappingKey || mapping.linearIssueId !== input.linearIssueId) {
-      await recordConflict(mapping.id, "linear_issue_mapping", input.linearIssueId, mapping.linearIssueId);
+      await recordConflict(mapping.id, input.paperclipIssueId, "linear_issue_mapping", input.linearIssueId, mapping.linearIssueId);
       throw new LinearEvidenceConnectorError("mapping_conflict");
     }
     return mapping;
@@ -217,7 +223,7 @@ export function linearEvidenceConnector(
     let [delivery] = await db.select().from(linearEvidenceDeliveries).where(eq(linearEvidenceDeliveries.idempotencyKey, idempotencyKey)).limit(1);
     if (!delivery) throw new LinearEvidenceConnectorError("delivery_ambiguous");
     if (delivery.evidenceSha256 !== evidenceSha256 || delivery.commentBodySha256 !== bodySha) {
-      await recordConflict(mapping.id, "idempotency_collision", evidenceSha256, delivery.evidenceSha256);
+      await recordConflict(mapping.id, input.paperclipIssueId, "idempotency_collision", evidenceSha256, delivery.evidenceSha256);
       throw new LinearEvidenceConnectorError("remote_conflict");
     }
     if (delivery.state !== "published" && !input.dryRun) {
@@ -280,7 +286,7 @@ export function linearEvidenceConnector(
           if (!conflicted) throw new LinearEvidenceConnectorError("delivery_ambiguous");
           // Preserve the exact mismatch as digests, not potentially
           // credential-bearing remote comment text.
-          await recordConflict(mapping.id, "remote_comment", bodySha, textSha256(remote.body));
+          await recordConflict(mapping.id, input.paperclipIssueId, "remote_comment", bodySha, textSha256(remote.body));
           throw new LinearEvidenceConnectorError("remote_conflict");
         }
         const observedIssueVersion = await currentIssueVersion(input);
@@ -304,6 +310,7 @@ export function linearEvidenceConnector(
           // successful completion receipt for it.
           await recordConflict(
             mapping.id,
+            input.paperclipIssueId,
             "paperclip_issue_version",
             input.evidence.paperclipIssueUpdatedAt,
             observedIssueVersion,

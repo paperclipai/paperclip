@@ -107,6 +107,39 @@ describeEmbeddedPostgres("issueService Linear completion evidence gate", () => {
     };
   }
 
+  it("rejects direct done creation explicitly before querying the evidence bridge", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "LIN",
+      requireBoardApprovalForNewAgents: false,
+    });
+    const getCompletionSnapshot = vi.fn();
+
+    await expect(
+      issueService(db, { linearEvidenceBridge: { getCompletionSnapshot } }).create(companyId, {
+        title: "Cannot be born complete",
+        status: "done",
+        executionPolicy: {
+          mode: "normal",
+          commentRequired: true,
+          stages: [],
+          linearEvidence: { required: true, independentQaRequired: true },
+        },
+      }),
+    ).rejects.toMatchObject({
+      status: 422,
+      details: {
+        code: "linear_evidence_gate_failed",
+        reason: "evidence_required_before_completion",
+      },
+    });
+
+    expect(getCompletionSnapshot).not.toHaveBeenCalled();
+    await expect(db.select().from(issues).where(eq(issues.companyId, companyId))).resolves.toEqual([]);
+  });
+
   it("keeps the issue non-terminal when the required bridge is absent", async () => {
     const { issueId } = await seedIssue();
 

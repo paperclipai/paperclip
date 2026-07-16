@@ -399,16 +399,6 @@ importers:
         specifier: ^4.1.8
         version: 4.1.8(@types/node@24.13.3)(jsdom@28.1.0(@noble/hashes@2.2.0))(vite@7.3.1(@types/node@24.13.3)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.23.0))
 
-  packages/linear-evidence-transport:
-    dependencies:
-      '@paperclipai/shared':
-        specifier: workspace:*
-        version: link:../shared
-    devDependencies:
-      '@types/node':
-        specifier: ^22.19.21
-        version: 22.19.21
-
   packages/mcp-server:
     dependencies:
       '@modelcontextprotocol/sdk':
@@ -12121,7 +12111,7 @@ snapshots:
   '@types/body-parser@1.19.6':
     dependencies:
       '@types/connect': 3.4.38
-      '@types/node': 24.13.3
+      '@types/node': 22.19.21
 
   '@types/chai@5.2.3':
     dependencies:
@@ -12130,7 +12120,7 @@ snapshots:
 
   '@types/connect@3.4.38':
     dependencies:
-      '@types/node': 24.13.3
+      '@types/node': 22.19.21
 
   '@types/cookiejar@2.1.5': {}
 
@@ -12267,7 +12257,7 @@ snapshots:
 
   '@types/express-serve-static-core@5.1.1':
     dependencies:
-      '@types/node': 24.13.3
+      '@types/node': 22.19.21
       '@types/qs': 6.14.0
       '@types/range-parser': 1.2.7
       '@types/send': 1.2.1
@@ -12288,7 +12278,7 @@ snapshots:
 
   '@types/jsdom@28.0.0':
     dependencies:
-      '@types/node': 24.13.3
+      '@types/node': 22.19.21
       '@types/tough-cookie': 4.0.5
       parse5: 7.3.0
       undici-types: 7.24.4
@@ -12338,12 +12328,12 @@ snapshots:
 
   '@types/send@1.2.1':
     dependencies:
-      '@types/node': 24.13.3
+      '@types/node': 22.19.21
 
   '@types/serve-static@2.2.0':
     dependencies:
       '@types/http-errors': 2.0.5
-      '@types/node': 24.13.3
+      '@types/node': 22.19.21
 
   '@types/sharp@0.32.0(@types/node@22.19.21)':
     dependencies:
@@ -12355,7 +12345,7 @@ snapshots:
     dependencies:
       '@types/cookiejar': 2.1.5
       '@types/methods': 1.1.4
-      '@types/node': 24.13.3
+      '@types/node': 22.19.21
       form-data: 4.0.5
 
   '@types/supertest@6.0.3':

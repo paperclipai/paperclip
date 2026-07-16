@@ -6005,6 +6005,16 @@ export function issueService(db: Db, options: IssueServiceOptions = {}) {
         onDeduplicated,
         ...issueData
       } = data;
+      const initialExecutionPolicy = normalizeIssueExecutionPolicy(issueData.executionPolicy ?? null);
+      if (issueData.status === "done" && initialExecutionPolicy?.linearEvidence?.required) {
+        throw unprocessable(
+          "Issues requiring Linear evidence must be created before they can be completed",
+          {
+            code: "linear_evidence_gate_failed",
+            reason: "evidence_required_before_completion",
+          },
+        );
+      }
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
       if (!isolatedWorkspacesEnabled) {
         delete issueData.executionWorkspaceId;
@@ -6216,7 +6226,6 @@ export function issueService(db: Db, options: IssueServiceOptions = {}) {
         const issueNumber = company.issueCounter;
         const identifier = `${company.issuePrefix}-${issueNumber}`;
         const issueId = issueData.id ?? randomUUID();
-        const initialExecutionPolicy = normalizeIssueExecutionPolicy(issueData.executionPolicy ?? null);
         const responsibleUserId = await resolveResponsibleUserIdForIssueCreate(tx, companyId, {
           explicitResponsibleUserId: issueData.responsibleUserId ?? null,
           createdByUserId: issueData.createdByUserId ?? null,
@@ -6227,18 +6236,6 @@ export function issueService(db: Db, options: IssueServiceOptions = {}) {
           actorResponsibleUserId: actorResponsibleUserId ?? null,
           trustExplicitResponsibleUserId: trustExplicitResponsibleUserId === true,
         });
-        if (issueData.status === "done" && initialExecutionPolicy?.linearEvidence?.required) {
-          await assertLinearEvidenceCompletion({
-            issue: {
-              id: issueId,
-              companyId,
-              identifier,
-              title: issueData.title,
-            },
-            policy: initialExecutionPolicy.linearEvidence,
-            bridge: options.linearEvidenceBridge,
-          });
-        }
         const values = {
           ...issueData,
           id: issueId,

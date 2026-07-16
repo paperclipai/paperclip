@@ -18,6 +18,7 @@ import {
   buildLinearEvidenceComment,
   linearEvidenceCommentSha256,
   linearEvidenceMappingKey,
+  linearEvidencePayloadSha256,
   type LinearEvidencePayload,
 } from "./linear-evidence-bridge.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
@@ -329,7 +330,28 @@ describePg("linearEvidenceConnector", () => {
       expect.objectContaining({ linearIssueId: input.linearIssueId }),
     ]);
     expect(await db.select().from(linearEvidenceConflicts)).toEqual([
-      expect.objectContaining({ conflictKey: "linear_issue_mapping", resolution: "unresolved" }),
+      expect.objectContaining({
+        conflictKey: "linear_issue_mapping",
+        resolution: "unresolved",
+        fingerprint: linearEvidencePayloadSha256({
+          contractVersion: 1,
+          mappingKey: "linear_issue_mapping",
+          paperclipIssueId: input.paperclipIssueId,
+          paperclipIssueUpdatedAt: "1970-01-01T00:00:00.000Z",
+          linearIssueId: input.linearIssueId,
+          implementerId: "connector",
+          whatChanged: JSON.stringify(conflictingLinearIssueId),
+          artifact: { sha256: "0".repeat(64) },
+          verification: {
+            verifierId: "connector",
+            independent: true,
+            result: "passed",
+            summary: "linear_issue_mapping",
+            testedAt: "1970-01-01T00:00:00.000Z",
+          },
+          recordedAt: "1970-01-01T00:00:00.000Z",
+        }),
+      }),
     ]);
   });
 
