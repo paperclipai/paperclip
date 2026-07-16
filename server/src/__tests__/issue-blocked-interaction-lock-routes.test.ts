@@ -89,6 +89,9 @@ if (!embeddedPostgresSupport.supported) {
   );
 }
 
+const ACTIVE_HEARTBEAT_RUN_STATUSES = new Set(["queued", "running", "scheduled_retry"]);
+const ACTIVE_WAKEUP_REQUEST_STATUSES = new Set(["queued", "deferred_issue_execution", "claimed"]);
+
 async function waitForCondition(fn: () => Promise<boolean>, timeoutMs = 3_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -98,18 +101,24 @@ async function waitForCondition(fn: () => Promise<boolean>, timeoutMs = 3_000) {
   return fn();
 }
 
-async function waitForHeartbeatSideEffectsToSettle(db: ReturnType<typeof createDb>, timeoutMs = 10_000) {
+async function waitForHeartbeatSideEffectsToSettle(db: ReturnType<typeof createDb>, timeoutMs = 20_000) {
   let lastSnapshot: string | null = null;
   let stableSince = 0;
 
   return waitForCondition(async () => {
-    const [runRows, runEventRows, activityRows, commentRows] = await Promise.all([
+    const [runRows, wakeRows, runEventRows, activityRows, commentRows] = await Promise.all([
       db.select({ status: heartbeatRuns.status }).from(heartbeatRuns),
+      db.select({ status: agentWakeupRequests.status }).from(agentWakeupRequests),
       db.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents),
       db.select({ id: activityLog.id }).from(activityLog),
       db.select({ id: issueComments.id }).from(issueComments),
     ]);
-    if (runRows.some((row) => row.status === "queued" || row.status === "running")) {
+    if (runRows.some((row) => ACTIVE_HEARTBEAT_RUN_STATUSES.has(row.status))) {
+      lastSnapshot = null;
+      stableSince = 0;
+      return false;
+    }
+    if (wakeRows.some((row) => ACTIVE_WAKEUP_REQUEST_STATUSES.has(row.status))) {
       lastSnapshot = null;
       stableSince = 0;
       return false;
@@ -117,6 +126,8 @@ async function waitForHeartbeatSideEffectsToSettle(db: ReturnType<typeof createD
 
     const snapshot = [
       runRows.length,
+      wakeRows.length,
+      wakeRows.map((row) => row.status).sort().join(","),
       runEventRows.length,
       activityRows.length,
       commentRows.length,
@@ -159,7 +170,7 @@ describeEmbeddedPostgres("blocked interaction wakes do not claim issue execution
     await db.delete(agents);
     await db.delete(companySkills);
     await db.delete(companies);
-  });
+  }, 30_000);
 
   afterAll(async () => {
     await tempDb?.cleanup();
