@@ -64,6 +64,7 @@ import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-
 import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
 import { initTelemetry, getTelemetryClient } from "./telemetry.js";
 import { conflict } from "./errors.js";
+import { coordinateHeartbeatSchedulerShutdown } from "./shutdown.js";
 import type {
   InstanceDatabaseBackupRunResult,
   InstanceDatabaseBackupTrigger,
@@ -822,6 +823,7 @@ export async function startServer(): Promise<StartedServer> {
   }
 
   let drainHeartbeatRunsForShutdown: ((signal: "SIGINT" | "SIGTERM") => Promise<unknown>) | null = null;
+  let prepareHotRestartShutdown: ((signal: "SIGINT" | "SIGTERM") => Promise<{ skipDrain: boolean }>) | null = null;
   let heartbeatSchedulerStopped = false;
   let heartbeatSchedulerInterval: ReturnType<typeof setInterval> | null = null;
   const heartbeatSchedulerInFlight = new Set<Promise<void>>();
@@ -843,6 +845,7 @@ export async function startServer(): Promise<StartedServer> {
   if (config.heartbeatSchedulerEnabled) {
     const heartbeat = heartbeatService(db as any, { pluginWorkerManager });
     drainHeartbeatRunsForShutdown = heartbeat.drainRunningRunsForShutdown;
+    prepareHotRestartShutdown = heartbeat.prepareHotRestartShutdown;
     const environmentCustomImages = environmentCustomImageService(db as any, { pluginWorkerManager });
     const routines = routineService(db as any, { pluginWorkerManager });
     const tools = toolAccessService(db as any, {
@@ -873,6 +876,21 @@ export async function startServer(): Promise<StartedServer> {
       );
     } else {
       const startupHeartbeatRecovery = (async () => {
+        try {
+          const hotRestart = await heartbeat.reconcileHotRestartAdoption();
+          if (hotRestart.mode === "reported") {
+            logger.info(
+              hotRestart,
+              "startup hot-restart adoption reconciliation complete",
+            );
+          }
+        } catch (err) {
+          logger.error(
+            { err },
+            "startup hot-restart adoption reconciliation failed - orphan reaper will serve as degraded backstop",
+          );
+        }
+
         for (let attempt = 1; attempt <= 2; attempt++) {
           try {
             const result = await heartbeat.reapOrphanedRuns();
@@ -1186,7 +1204,24 @@ export async function startServer(): Promise<StartedServer> {
         clearInterval(heartbeatSchedulerInterval);
         heartbeatSchedulerInterval = null;
       }
-      await waitForHeartbeatSchedulerIdle();
+
+      const heartbeatShutdown = await coordinateHeartbeatSchedulerShutdown({
+        signal,
+        prepareHotRestartShutdown,
+        waitForHeartbeatSchedulerIdle,
+      });
+      const skipHeartbeatDrain = heartbeatShutdown.hotRestart?.skipDrain === true;
+      if (skipHeartbeatDrain) {
+        logger.info(
+          { signal, hotRestart: heartbeatShutdown.hotRestart },
+          "hot-restart shutdown prepared; skipping heartbeat scheduler idle wait and graceful run drain",
+        );
+      } else if (heartbeatShutdown.preparationError) {
+        logger.error(
+          { err: heartbeatShutdown.preparationError, signal },
+          "hot-restart shutdown preparation failed; falling back to graceful heartbeat run drain",
+        );
+      }
 
       const telemetryClient = getTelemetryClient();
       if (telemetryClient) {
@@ -1194,7 +1229,7 @@ export async function startServer(): Promise<StartedServer> {
         await telemetryClient.flush();
       }
 
-      if (drainHeartbeatRunsForShutdown) {
+      if (!skipHeartbeatDrain && drainHeartbeatRunsForShutdown) {
         try {
           const drain = await drainHeartbeatRunsForShutdown(signal);
           logger.info({ signal, drain }, "graceful heartbeat run drain complete");

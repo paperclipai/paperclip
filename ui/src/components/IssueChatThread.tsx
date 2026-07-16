@@ -45,6 +45,7 @@ import type {
 } from "@paperclipai/shared";
 import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
 import { useLiveRunTranscripts } from "./transcript/useLiveRunTranscripts";
+import { useSecondTick } from "../hooks/useSecondTick";
 import { usePaperclipIssueRuntime, type PaperclipIssueRuntimeReassignment } from "../hooks/usePaperclipIssueRuntime";
 import { useOptionalToastActions } from "../context/ToastContext";
 import { copyTextToClipboard } from "../lib/clipboard";
@@ -305,12 +306,10 @@ function findCoTSegmentIndex(
 }
 
 function useLiveElapsed(startMs: number | null | undefined, active: boolean): string | null {
-  const [, rerender] = useState(0);
-  useEffect(() => {
-    if (!active || !startMs) return;
-    const interval = setInterval(() => rerender((n) => n + 1), 1000);
-    return () => clearInterval(interval);
-  }, [active, startMs]);
+  // Drive the 1s refresh from the shared page-wide ticker instead of a
+  // per-instance setInterval, so a thread with many live elements uses one
+  // timer rather than one per element.
+  useSecondTick(Boolean(active && startMs));
   if (!active || !startMs) return null;
   return formatDurationWords(Date.now() - startMs);
 }

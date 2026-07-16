@@ -1085,3 +1085,54 @@ describe("LiveUpdatesProvider run lifecycle toasts", () => {
     });
   });
 });
+
+describe("applyRunLifecycleToCompanyLiveRuns", () => {
+  function makeClient(initial: Array<{ id: string; status: string }>) {
+    const cache = new Map<string, unknown>([
+      [JSON.stringify(queryKeys.liveRuns("company-1")), initial],
+    ]);
+    const client = {
+      getQueryData: (key: unknown) => cache.get(JSON.stringify(key)),
+      setQueryData: (key: unknown, updater: unknown) => {
+        const cacheKey = JSON.stringify(key);
+        const current = cache.get(cacheKey);
+        cache.set(cacheKey, typeof updater === "function" ? updater(current) : updater);
+      },
+    };
+    const read = () => cache.get(JSON.stringify(queryKeys.liveRuns("company-1")));
+    return { client, read };
+  }
+
+  it("removes a run on a terminal status (patched, no refetch needed)", () => {
+    const { client, read } = makeClient([{ id: "run-1", status: "running" }, { id: "run-2", status: "running" }]);
+    const patched = __liveUpdatesTestUtils.applyRunLifecycleToCompanyLiveRuns(
+      client as never,
+      "company-1",
+      { runId: "run-1", status: "succeeded" },
+    );
+    expect(patched).toBe(true);
+    expect(read()).toEqual([{ id: "run-2", status: "running" }]);
+  });
+
+  it("patches status in place for a run already in the list", () => {
+    const { client, read } = makeClient([{ id: "run-1", status: "queued" }]);
+    const patched = __liveUpdatesTestUtils.applyRunLifecycleToCompanyLiveRuns(
+      client as never,
+      "company-1",
+      { runId: "run-1", status: "running" },
+    );
+    expect(patched).toBe(true);
+    expect(read()).toEqual([{ id: "run-1", status: "running" }]);
+  });
+
+  it("reports not-patched for a genuinely new run so the caller refetches", () => {
+    const { client, read } = makeClient([{ id: "run-1", status: "running" }]);
+    const patched = __liveUpdatesTestUtils.applyRunLifecycleToCompanyLiveRuns(
+      client as never,
+      "company-1",
+      { runId: "run-new", status: "running" },
+    );
+    expect(patched).toBe(false);
+    expect(read()).toEqual([{ id: "run-1", status: "running" }]); // unchanged
+  });
+});

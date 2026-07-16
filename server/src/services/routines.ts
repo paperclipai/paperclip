@@ -239,6 +239,22 @@ export function nextCronTickInTimeZone(expression: string, timeZone: string, aft
   return null;
 }
 
+function isSubHourlyCronExpression(expression: string, timeZone: string, after: Date) {
+  const firstTick = nextCronTickInTimeZone(expression, timeZone, after);
+  if (!firstTick) return false;
+
+  const windowEnd = firstTick.getTime() + 24 * 60 * 60 * 1000;
+  let occurrenceCount = 1;
+  let cursor = firstTick;
+  while (occurrenceCount <= 24) {
+    const nextTick = nextCronTickInTimeZone(expression, timeZone, cursor);
+    if (!nextTick || nextTick.getTime() >= windowEnd) return false;
+    occurrenceCount += 1;
+    cursor = nextTick;
+  }
+  return true;
+}
+
 function nextResultText(status: string, issueId?: string | null) {
   if (status === "issue_created" && issueId) return `Created execution issue ${issueId}`;
   if (status === "coalesced") return "Coalesced into an existing live execution issue";
@@ -1594,6 +1610,7 @@ export function routineService(
     executionWorkspacePreference?: string | null;
     executionWorkspaceSettings?: Record<string, unknown> | null;
     descriptionAppendix?: string | null;
+    nextRunAtOverride?: Date | null;
     actor?: Actor;
   }) {
     const projectId = input.projectId ?? input.routine.projectId ?? null;
@@ -1718,9 +1735,11 @@ export function routineService(
         })
         .returning();
 
-      const nextRunAt = input.trigger?.kind === "schedule" && input.trigger.cronExpression && input.trigger.timezone
-        ? nextCronTickInTimeZone(input.trigger.cronExpression, input.trigger.timezone, triggeredAt)
-        : undefined;
+      const nextRunAt = input.nextRunAtOverride !== undefined
+        ? input.nextRunAtOverride
+        : input.trigger?.kind === "schedule" && input.trigger.cronExpression && input.trigger.timezone
+          ? nextCronTickInTimeZone(input.trigger.cronExpression, input.trigger.timezone, triggeredAt)
+          : undefined;
 
       let createdIssue: Awaited<ReturnType<typeof issueSvc.create>> | null = null;
       try {
@@ -2936,12 +2955,16 @@ export function routineService(
         let claimedNextRunAt = nextCronTickInTimeZone(row.trigger.cronExpression, row.trigger.timezone, now);
 
         if (!projectPaused && !worktreeSuppressed && row.routine.catchUpPolicy === "enqueue_missed_with_cap") {
-          let cursor: Date | null = row.trigger.nextRunAt;
-          runCount = 0;
-          while (cursor && cursor <= now && runCount < MAX_CATCH_UP_RUNS) {
-            runCount += 1;
-            claimedNextRunAt = nextCronTickInTimeZone(row.trigger.cronExpression, row.trigger.timezone, cursor);
-            cursor = claimedNextRunAt;
+          if (isSubHourlyCronExpression(row.trigger.cronExpression, row.trigger.timezone, now)) {
+            claimedNextRunAt = nextCronTickInTimeZone(row.trigger.cronExpression, row.trigger.timezone, now);
+          } else {
+            let cursor: Date | null = row.trigger.nextRunAt;
+            runCount = 0;
+            while (cursor && cursor <= now && runCount < MAX_CATCH_UP_RUNS) {
+              runCount += 1;
+              claimedNextRunAt = nextCronTickInTimeZone(row.trigger.cronExpression, row.trigger.timezone, cursor);
+              cursor = claimedNextRunAt;
+            }
           }
         }
 
@@ -2999,6 +3022,7 @@ export function routineService(
             routine: row.routine,
             trigger: row.trigger,
             source: "schedule",
+            nextRunAtOverride: claimedNextRunAt,
           });
           triggered += 1;
         }

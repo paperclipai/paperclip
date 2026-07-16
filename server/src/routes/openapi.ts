@@ -98,12 +98,15 @@ import {
   companySkillFileUpdateSchema,
   companySkillImportSchema,
   companySkillProjectScanRequestSchema,
+  companySkillProjectScanResultSchema,
   companySkillTestInputCreateSchema,
   companySkillTestInputUpdateSchema,
   companySkillTestRunCreateSchema,
   companySkillTestRunListQuerySchema,
   companySkillTestRunTemplateCreateSchema,
   companySkillTestRunTemplateUpdateSchema,
+  evaluateSkillPolicySchema,
+  replaceSkillPolicySchema,
   // Issue tree
   createIssueTreeHoldSchema,
   previewIssueTreeControlSchema,
@@ -2983,6 +2986,21 @@ registry.registerPath({
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
 
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/recovery-observability",
+  tags: ["dashboard"],
+  summary: "Get recovery observability report",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: z.object({
+      weeks: z.string().optional(),
+      threshold: z.string().optional(),
+    }),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
 // ─── Sidebar ─────────────────────────────────────────────────────────────────
 
 registry.registerPath({
@@ -4015,7 +4033,7 @@ registry.registerPath({
     params: z.object({ companyId: z.string() }),
     body: jsonBody(companySkillProjectScanRequestSchema),
   },
-  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+  responses: { 200: r.ok(companySkillProjectScanResultSchema), 400: r.badRequest, 401: r.unauthorized },
 });
 
 registry.registerPath({
@@ -4034,6 +4052,48 @@ registry.registerPath({
   summary: "Delete a company skill",
   request: { params: z.object({ companyId: z.string(), skillId: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/skill-policy",
+  tags: ["skills"],
+  summary: "Get the effective company skill policy",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "put",
+  path: "/api/companies/{companyId}/skill-policy",
+  tags: ["skills"],
+  summary: "Replace the company skill policy",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(replaceSkillPolicySchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 409: r.conflict },
+});
+
+registry.registerPath({
+  method: "delete",
+  path: "/api/companies/{companyId}/skill-policy",
+  tags: ["skills"],
+  summary: "Reset the company skill policy to the open default",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/skill-policy/evaluate",
+  tags: ["skills"],
+  summary: "Evaluate a company skill policy decision",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(evaluateSkillPolicySchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
 });
 
 // ─── Execution workspaces ─────────────────────────────────────────────────────
@@ -5156,6 +5216,7 @@ registerCurrentRoute({
 for (const route of [
   ["get", "/api/companies/import/jobs/{jobId}", "Get company import job status"],
   ["get", "/api/companies/{companyId}/search", "Search company data"],
+  ["get", "/api/companies/{companyId}/search/extract", "Extract company search matches"],
   ["get", "/api/companies/{companyId}/issues/count", "Count issues in a company"],
 ] as const) {
   registerCurrentRoute({

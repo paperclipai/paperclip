@@ -410,11 +410,20 @@ const createIssueBaseSchema = z.object({
   }).strict().optional().nullable(),
 });
 
+const createIssueDuplicateGuardSchema = {
+  idempotencyKey: z.string().trim().min(1).max(255).optional().nullable(),
+  allowDuplicate: z.boolean()
+    .describe("Bypasses recent-title duplicate detection; idempotency keys always replay their original issue")
+    .optional()
+    .default(false),
+};
+
 export const createIssueInputSchema = createIssueBaseSchema.extend({
   status: createIssueBaseSchema.shape.status.optional(),
+  ...createIssueDuplicateGuardSchema,
 });
 
-export const createIssueSchema = withCreateIssueStatusDefault(createIssueBaseSchema);
+export const createIssueSchema = withCreateIssueStatusDefault(createIssueBaseSchema.extend(createIssueDuplicateGuardSchema));
 
 export type CreateIssue = z.infer<typeof createIssueSchema>;
 
