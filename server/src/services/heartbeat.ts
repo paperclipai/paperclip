@@ -13966,9 +13966,33 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .limit(1)
         .then((rows) => rows[0] ?? null)
       : null;
-    const terminalRecoveryRouting = terminalRecoveryIssue
+    const failedTerminalFinalize = terminalRecoveryIssue?.status === "done"
+      ? await db
+        .select({ id: workspaceOperations.id })
+        .from(workspaceOperations)
+        .where(
+          and(
+            eq(workspaceOperations.companyId, terminalRecoveryIssue.companyId),
+            eq(workspaceOperations.heartbeatRunId, run.id),
+            eq(workspaceOperations.issueId, terminalRecoveryIssue.id),
+            eq(workspaceOperations.phase, "workspace_finalize"),
+            eq(workspaceOperations.status, "failed"),
+          ),
+        )
+        .orderBy(
+          desc(workspaceOperations.startedAt),
+          desc(workspaceOperations.createdAt),
+          desc(workspaceOperations.id),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null)
+      : null;
+    const terminalRecoveryRouting = failedTerminalFinalize && terminalRecoveryIssue
       ? await recovery.resolveFailedTerminalWorkspaceFinalizeRouting(terminalRecoveryIssue, run)
       : null;
+    const terminalResolution = {
+      value: null as Parameters<typeof recovery.recordResolvedTerminalWorkspaceFinalize>[0] | null,
+    };
 
     const promotionResult = await db.transaction(async (tx) => {
       // Lock the context issue (if any) AND every issue that still references this run.
@@ -14132,9 +14156,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 issue,
                 runId: run.id,
               }, tx);
-              return { kind: "succeeded_terminal_workspace_finalize" as const, issue, resolved };
+              if (resolved) {
+                terminalResolution.value = { issue, runId: run.id, resolved };
+              }
             }
-            return { kind: "released" as const };
+            if (currentFinalize.status !== "succeeded") {
+              return { kind: "released" as const };
+            }
           }
         }
       }
@@ -14738,23 +14766,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       };
     });
 
+    if (terminalResolution.value) {
+      await recovery.recordResolvedTerminalWorkspaceFinalize(terminalResolution.value);
+    }
+
     if (promotionResult?.kind === "failed_terminal_workspace_finalize") {
       await recovery.surfaceFailedTerminalWorkspaceFinalize({
         issue: promotionResult.issue,
         latestRun: run,
         recoveryAction: promotionResult.recoveryAction,
       });
-      return;
-    }
-
-    if (promotionResult?.kind === "succeeded_terminal_workspace_finalize") {
-      if (promotionResult.resolved) {
-        await recovery.recordResolvedTerminalWorkspaceFinalize({
-          issue: promotionResult.issue,
-          runId: run.id,
-          resolved: promotionResult.resolved,
-        });
-      }
       return;
     }
 
