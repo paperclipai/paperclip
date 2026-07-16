@@ -19,7 +19,14 @@ function shortIdentity(value: string | null | undefined): string {
   return value.length > 8 ? value.slice(0, 8) : value;
 }
 
-type SuppressionCopy = { headline: string; detail: string };
+/**
+ * `headline`/`detail` drive the fuller detail banner. `stripLabel` is the bare
+ * predicate the dense strip appends after its own bold "Run engine" subject —
+ * the detail headlines each restate that subject, so reusing them there stutters
+ * ("Run engine run engine off"). Keeping a dedicated field stops the two copies
+ * from drifting.
+ */
+type SuppressionCopy = { headline: string; detail: string; stripLabel: string };
 
 /**
  * Human-readable copy for each fail-closed reason. `instance_id_mismatch` is
@@ -35,18 +42,21 @@ function suppressionCopy(
         headline: "Run engine off",
         detail:
           "The scheduler will not execute tasks in this worktree. Inherited tasks stay parked. Turn on “Run tasks in this worktree” to arm execution.",
+        stripLabel: "off",
       };
     case "missing_cutoff":
       return {
         headline: "Execution suppressed — missing activation cutoff",
         detail:
           "This setting has no activation cutoff, so no tasks run automatically. Toggle it off and back on to arm execution for tasks created here.",
+        stripLabel: "suppressed — missing cutoff",
       };
     case "missing_instance_id":
       return {
         headline: "Execution suppressed — no instance identity",
         detail:
           "This worktree has not stamped an instance identity yet, so execution fails closed. Toggle off and back on to arm execution.",
+        stripLabel: "suppressed — no identity",
       };
     case "instance_id_mismatch":
       return {
@@ -56,18 +66,21 @@ function suppressionCopy(
         )} and copied here; this boot is ${shortIdentity(
           instanceNonce,
         )}. No tasks run automatically. Toggle off and back on to re-arm execution for this instance.`,
+        stripLabel: "inactive — bound to another instance",
       };
     case "settings_read_error":
       return {
         headline: "Execution suppressed — settings unavailable",
         detail:
           "The run engine could not read its settings, so it fails closed and no tasks run automatically.",
+        stripLabel: "suppressed — settings unavailable",
       };
     case "not_worktree_runtime":
     default:
       return {
         headline: "Execution suppressed",
         detail: "No tasks run automatically in this instance.",
+        stripLabel: "suppressed",
       };
   }
 }
@@ -166,7 +179,7 @@ export function WorktreeRunEngineBanner({
           {armed ? (
             <>armed since {formatActivationTimestamp(activation.cutoff)}</>
           ) : (
-            <>{suppressionCopy(activation, instanceNonce).headline.toLowerCase()}</>
+            <>{suppressionCopy(activation, instanceNonce).stripLabel}</>
           )}
           {quarantinedRunCount > 0 ? (
             <span className="text-muted-foreground">
@@ -191,7 +204,7 @@ export function WorktreeRunEngineBanner({
           <span>
             Run engine armed since{" "}
             <span className="font-medium">{formatActivationTimestamp(activation.cutoff)}</span>. Tasks
-            created after this run automatically.
+            created after this point run automatically.
           </span>
         </div>
         <IdentityLine activation={activation} instanceNonce={instanceNonce} />

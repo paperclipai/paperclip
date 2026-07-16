@@ -131,4 +131,24 @@ describe("WorktreeRunEngineBanner", () => {
     const strip = container.querySelector('[data-testid="worktree-run-engine-strip"]');
     expect(strip?.textContent).toContain("5 inherited runs inactive");
   });
+
+  // PAP-14415: the strip supplies its own bold "Run engine" subject, so the
+  // suppressed predicate must not restate it (no "Run engine run engine off").
+  it("does not stutter the run-engine subject in the suppressed strip", () => {
+    const container = mount(suppressed("flag_disabled", { quarantinedRunCount: 4 }), "strip");
+    const text = container
+      .querySelector('[data-testid="worktree-run-engine-strip"]')
+      ?.textContent?.replace(/\s+/g, " ");
+    expect(text).toContain("Run engine off");
+    expect(text).not.toMatch(/run engine run engine/i);
+  });
+
+  it("uses a bare predicate for a mismatched-identity strip", () => {
+    const container = mount(suppressed("instance_id_mismatch"), "strip");
+    const text = container
+      .querySelector('[data-testid="worktree-run-engine-strip"]')
+      ?.textContent?.replace(/\s+/g, " ");
+    expect(text).toContain("Run engine inactive — bound to another instance");
+    expect(text).not.toMatch(/run engine toggle inactive/i);
+  });
 });
