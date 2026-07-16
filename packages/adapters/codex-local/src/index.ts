@@ -7,7 +7,13 @@ export const SANDBOX_INSTALL_COMMAND = "npm install -g @openai/codex@0.144.1";
 
 export const DEFAULT_CODEX_LOCAL_MODEL = "gpt-5.6-sol";
 export const DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX = true;
-export const CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS = ["gpt-5.4"] as const;
+export const CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS = [
+  "gpt-5.6-sol",
+  "gpt-5.6-terra",
+  "gpt-5.6-luna",
+  "gpt-5.5",
+  "gpt-5.4",
+] as const;
 
 function normalizeModelId(model: string | null | undefined): string {
   return typeof model === "string" ? model.trim() : "";
@@ -73,7 +79,7 @@ Core fields:
 - modelReasoningEffort (string, optional): reasoning effort override (none|minimal|low|medium|high|xhigh|max|ultra) passed via -c model_reasoning_effort=...
 - promptTemplate (string, optional): run prompt template
 - search (boolean, optional): run codex with --search
-- fastMode (boolean, optional): enable Codex Fast mode; supported on GPT-5.4 and passed through for manual model IDs
+- fastMode (boolean, optional): enable Codex Fast mode; supported on GPT-5.6, GPT-5.5, and GPT-5.4 models and passed through for manual model IDs
 - dangerouslyBypassApprovalsAndSandbox (boolean, optional): run with bypass flag
 - command (string, optional): defaults to "codex"
 - extraArgs (string[], optional): additional CLI args
@@ -93,6 +99,6 @@ Notes:
 - Unless explicitly overridden in adapter config, Paperclip runs Codex with a per-company managed CODEX_HOME under the active Paperclip instance and seeds auth/config from the shared Codex home (the CODEX_HOME env var, when set, or ~/.codex).
 - Some model/tool combinations reject certain effort levels (for example minimal with web search enabled).
 - GPT-5.6 Codex models are available as gpt-5.6-sol, gpt-5.6-terra, and gpt-5.6-luna. Max and ultra are Codex reasoning-effort values passed through as model_reasoning_effort, not separate model IDs.
-- Fast mode is supported on GPT-5.4 and manual model IDs. When enabled for those models, Paperclip applies \`service_tier="fast"\` and \`features.fast_mode=true\`.
+- Fast mode is supported on GPT-5.6, GPT-5.5, GPT-5.4, and manual model IDs. When enabled for those models, Paperclip applies \`service_tier="fast"\` and \`features.fast_mode=true\`.
 - When Paperclip realizes a workspace/runtime for a run, it injects PAPERCLIP_WORKSPACE_* and PAPERCLIP_RUNTIME_* env vars for agent-side tooling.
 `;

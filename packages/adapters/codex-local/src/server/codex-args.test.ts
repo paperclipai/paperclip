@@ -19,29 +19,32 @@ describe("buildCodexExecArgs", () => {
     ]);
   });
 
-  it("enables Codex fast mode overrides for GPT-5.4", () => {
-    const result = buildCodexExecArgs({
-      model: "gpt-5.4",
-      search: true,
-      fastMode: true,
-    });
+  it.each(["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4"])(
+    "enables Codex fast mode overrides for %s",
+    (model) => {
+      const result = buildCodexExecArgs({
+        model,
+        search: true,
+        fastMode: true,
+      });
 
-    expect(result.fastModeRequested).toBe(true);
-    expect(result.fastModeApplied).toBe(true);
-    expect(result.fastModeIgnoredReason).toBeNull();
-    expect(result.args).toEqual([
-      "--search",
-      "exec",
-      "--json",
-      "--model",
-      "gpt-5.4",
-      "-c",
-      'service_tier="fast"',
-      "-c",
-      "features.fast_mode=true",
-      "-",
-    ]);
-  });
+      expect(result.fastModeRequested).toBe(true);
+      expect(result.fastModeApplied).toBe(true);
+      expect(result.fastModeIgnoredReason).toBeNull();
+      expect(result.args).toEqual([
+        "--search",
+        "exec",
+        "--json",
+        "--model",
+        model,
+        "-c",
+        'service_tier="fast"',
+        "-c",
+        "features.fast_mode=true",
+        "-",
+      ]);
+    },
+  );
 
   it("enables Codex fast mode overrides for manual models", () => {
     const result = buildCodexExecArgs({
@@ -74,7 +77,7 @@ describe("buildCodexExecArgs", () => {
     expect(result.fastModeRequested).toBe(true);
     expect(result.fastModeApplied).toBe(false);
     expect(result.fastModeIgnoredReason).toContain(
-      "currently only supported on gpt-5.4 or manually configured model IDs",
+      "currently only supported on gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna, gpt-5.5, gpt-5.4 or manually configured model IDs",
     );
     expect(result.args).toEqual([
       "exec",
