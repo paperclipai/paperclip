@@ -231,6 +231,7 @@ function makeIntegratedIssue(): Issue {
     projectWorkspaceId: null,
     goalId: null,
     parentId: null,
+    createdFromIssueId: null,
     title: "Highlighting and comments on documents",
     description: null,
     status: "in_progress",

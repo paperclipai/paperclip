@@ -709,6 +709,7 @@ export function createIssue(overrides: Partial<Issue> = {}): Issue {
     projectWorkspaceId: "workspace-board-ui",
     goalId: "goal-company",
     parentId: null,
+    createdFromIssueId: null,
     title: "Create super-detailed storybooks for the project",
     description: "Set up Storybook and move UX review surfaces into stories.",
     status: "in_progress",
