@@ -7,6 +7,8 @@ CREATE TABLE IF NOT EXISTS "issue_create_idempotency_keys" (
 );--> statement-breakpoint
 CREATE UNIQUE INDEX IF NOT EXISTS "issue_create_idempotency_keys_company_key_uq"
   ON "issue_create_idempotency_keys" USING btree ("company_id", "idempotency_key");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "issue_create_idempotency_keys_issue_idx"
+  ON "issue_create_idempotency_keys" USING btree ("issue_id");--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "issues_open_normalized_title_created_idx"
   ON "issues" USING btree (
     "company_id",

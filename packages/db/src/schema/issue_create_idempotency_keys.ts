@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { index, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { issues } from "./issues.js";
 
@@ -16,5 +16,6 @@ export const issueCreateIdempotencyKeys = pgTable(
       table.companyId,
       table.idempotencyKey,
     ),
+    issueIdx: index("issue_create_idempotency_keys_issue_idx").on(table.issueId),
   }),
 );
