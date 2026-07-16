@@ -271,6 +271,41 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
     expect(runningCount).toBe(0);
   });
 
+  it("terminalizes a foreign-epoch running row without adopting its live pid", async () => {
+    const { companyId, agentId, issueId } = await insertAgentAndIssue();
+    await armWorktreeRunExecution(new Date(Date.now() - 1_000));
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      instanceNonce: randomUUID(),
+      seedEpoch: randomUUID(),
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "running",
+      processPid: process.pid,
+      responsibleUserId: "responsible-user",
+      contextSnapshot: { issueId, wakeReason: "issue_assigned" },
+      startedAt: new Date(),
+    });
+
+    const heartbeat = heartbeatService(db, {
+      runtimeEnv: { PAPERCLIP_IN_WORKTREE: "true" },
+    });
+    const result = await heartbeat.reapOrphanedRuns();
+
+    expect(result).toEqual({ reaped: 1, runIds: [runId] });
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toMatchObject({
+      id: runId,
+      status: "failed",
+      errorCode: "foreign_execution_provenance",
+      processLossRetryCount: 0,
+    });
+  });
+
   it("skips pre-cutoff system wakes but allows user wakes in an armed worktree", async () => {
     const { agentId, issueId } = await insertAgentAndIssue();
     await armWorktreeRunExecution(new Date(Date.now() + 1_000));

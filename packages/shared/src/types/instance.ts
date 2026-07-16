@@ -79,6 +79,8 @@ export interface InstanceExperimentalSettings {
    * clear it so the first boot stamps a fresh value.
    */
   worktreeRunExecutionInstanceNonce: string | null;
+  /** Server-managed identity for the current seed/restore epoch. */
+  worktreeRunExecutionSeedEpoch: string | null;
   /**
    * Server-managed cutoff recorded when worktree run execution is enabled in
    * this instance. Client PATCH payloads must not control this value.

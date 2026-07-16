@@ -5398,14 +5398,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   // Only worktree runtimes ever read the setting; a short TTL keeps the hot-path
   // suppression checks off the DB, and a read failure falls back to prior/default
   // (fail closed to suppression).
-  let cachedWorktreeRunExecutionOverride: { allowed: boolean; cutoff: Date | null; at: number } = {
+  let cachedWorktreeRunExecutionOverride: {
+    allowed: boolean;
+    cutoff: Date | null;
+    instanceNonce: string | null;
+    seedEpoch: string | null;
+    at: number;
+  } = {
     allowed: false,
     cutoff: null,
+    instanceNonce: null,
+    seedEpoch: null,
     at: 0,
   };
   const WORKTREE_RUN_EXECUTION_OVERRIDE_TTL_MS = 3_000;
   const resolveWorktreeRunExecutionOverride = async () => {
-    if (!inWorktreeRuntime) return { allowed: false, cutoff: null };
+    if (!inWorktreeRuntime) {
+      return { allowed: false, cutoff: null, instanceNonce: null, seedEpoch: null };
+    }
     const now = Date.now();
     if (now - cachedWorktreeRunExecutionOverride.at < WORKTREE_RUN_EXECUTION_OVERRIDE_TTL_MS) {
       return cachedWorktreeRunExecutionOverride;
@@ -5418,6 +5428,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       cachedWorktreeRunExecutionOverride = {
         allowed: Boolean(activation.armed && cutoff && !Number.isNaN(cutoff.getTime())),
         cutoff: cutoff && !Number.isNaN(cutoff.getTime()) ? cutoff : null,
+        instanceNonce: activation.armed ? activation.instanceNonce : null,
+        seedEpoch: activation.armed ? activation.seedEpoch : null,
         at: now,
       };
     } catch {
@@ -5435,6 +5447,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   const getWorktreeExecutionCutoff = async () => {
     const override = await resolveWorktreeRunExecutionOverride();
     return override.allowed ? override.cutoff : null;
+  };
+  const getWorktreeExecutionProvenance = async () => {
+    const override = await resolveWorktreeRunExecutionOverride();
+    return override.allowed && override.instanceNonce && override.seedEpoch
+      ? { instanceNonce: override.instanceNonce, seedEpoch: override.seedEpoch }
+      : null;
   };
 
   const runLogStore = getRunLogStore();
@@ -10188,6 +10206,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
   async function promoteDueScheduledRetries(now = new Date()) {
     const cutoff = await getWorktreeExecutionCutoff();
+    const provenance = await getWorktreeExecutionProvenance();
     const dueRuns = await db
       .select()
       .from(heartbeatRuns)
@@ -10196,6 +10215,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           eq(heartbeatRuns.status, "scheduled_retry"),
           lte(heartbeatRuns.scheduledRetryAt, now),
           cutoff ? gte(heartbeatRuns.createdAt, cutoff) : undefined,
+          provenance ? eq(heartbeatRuns.instanceNonce, provenance.instanceNonce) : undefined,
+          provenance ? eq(heartbeatRuns.seedEpoch, provenance.seedEpoch) : undefined,
         ),
       )
       .orderBy(asc(heartbeatRuns.scheduledRetryAt), asc(heartbeatRuns.createdAt), asc(heartbeatRuns.id))
@@ -11330,6 +11351,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
     const now = new Date();
+    const provenance = await getWorktreeExecutionProvenance();
 
     // Find all runs stuck in "running" state (queued runs are legitimately waiting; resumeQueuedRuns handles them)
     const activeRuns = await db
@@ -11369,6 +11391,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     for (const { run, adapterType, adapterConfig } of activeRuns) {
       if (runningProcesses.has(run.id) || activeRunExecutions.has(run.id)) continue;
+
+      if (
+        provenance &&
+        (run.instanceNonce !== provenance.instanceNonce || run.seedEpoch !== provenance.seedEpoch)
+      ) {
+        const message = "Run belongs to a foreign worktree instance or seed epoch";
+        await setRunStatus(run.id, "failed", {
+          error: message,
+          errorCode: "foreign_execution_provenance",
+          finishedAt: now,
+        });
+        await setWakeupStatus(run.wakeupRequestId, "failed", {
+          finishedAt: now,
+          error: message,
+        });
+        runningProcesses.delete(run.id);
+        reaped.push(run.id);
+        continue;
+      }
 
       // Apply staleness threshold to avoid false positives
       if (staleThresholdMs > 0) {
@@ -11524,6 +11565,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   async function resumeQueuedRuns() {
     if ((await getSchedulingSuppression()).suppressed) return;
     const cutoff = await getWorktreeExecutionCutoff();
+    const provenance = await getWorktreeExecutionProvenance();
 
     const queuedRuns = await db
       .select({ agentId: heartbeatRuns.agentId })
@@ -11533,6 +11575,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         eq(heartbeatRuns.status, "queued"),
         eq(companies.status, "active"),
         cutoff ? gte(heartbeatRuns.createdAt, cutoff) : undefined,
+        provenance ? eq(heartbeatRuns.instanceNonce, provenance.instanceNonce) : undefined,
+        provenance ? eq(heartbeatRuns.seedEpoch, provenance.seedEpoch) : undefined,
       ));
 
     const agentIds = [...new Set(queuedRuns.map((r) => r.agentId))];
@@ -11542,7 +11586,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   async function reconcileStrandedAssignedIssues() {
-    return recovery.reconcileStrandedAssignedIssues({ issueCreatedAtGte: await getWorktreeExecutionCutoff() });
+    return recovery.reconcileStrandedAssignedIssues({
+      issueCreatedAtGte: await getWorktreeExecutionCutoff(),
+      executionProvenance: await getWorktreeExecutionProvenance(),
+    });
   }
 
   async function sweepStaleIssueLocks() {
@@ -11663,6 +11710,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   async function startNextQueuedRunForAgent(agentId: string) {
     if ((await getSchedulingSuppression()).suppressed) return [];
     const cutoff = await getWorktreeExecutionCutoff();
+    const provenance = await getWorktreeExecutionProvenance();
 
     return withAgentStartLock(agentId, async () => {
       const agent = await getAgent(agentId);
@@ -11686,6 +11734,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           eq(heartbeatRuns.agentId, agentId),
           eq(heartbeatRuns.status, "queued"),
           cutoff ? gte(heartbeatRuns.createdAt, cutoff) : undefined,
+          provenance ? eq(heartbeatRuns.instanceNonce, provenance.instanceNonce) : undefined,
+          provenance ? eq(heartbeatRuns.seedEpoch, provenance.seedEpoch) : undefined,
         ))
         .orderBy(asc(heartbeatRuns.createdAt));
       if (queuedRuns.length === 0) return [];
