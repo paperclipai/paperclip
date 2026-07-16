@@ -87,6 +87,16 @@ async function installBrowserLeakMonitor(page: Page): Promise<BrowserLeakMonitor
     responseChecks: [],
   };
 
+  await page.routeWebSocket(/.*/, async (webSocket) => {
+    const url = webSocket.url();
+    if (!isLoopbackBrowserUrl(url)) {
+      monitor.externalRequests.push(url);
+      await webSocket.close({ code: 1008, reason: "Browser acceptance permits only 127.0.0.1" });
+      return;
+    }
+    webSocket.connectToServer();
+  });
+
   await page.route("**/*", async (route) => {
     const url = new URL(route.request().url());
     if (!isLoopbackBrowserUrl(url.toString())) {
