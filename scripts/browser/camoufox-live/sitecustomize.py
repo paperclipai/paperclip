@@ -18,6 +18,8 @@ from functools import wraps
 from pathlib import Path
 from typing import Any, Callable
 
+from paperclip_live_capture import configure_virtual_display, start_continuous_capture
+
 
 _SCOPE = os.environ.get("PAPERCLIP_BROWSER_SCOPE_ID", os.environ.get("PAPERCLIP_RUN_ID", "")).strip()
 _PROVIDER = "camoufox"
@@ -236,8 +238,63 @@ def _install_async_patches() -> None:
         _patch_async_method(Mouse, name, lambda _: _fallback_page())
 
 
+def _install_camoufox_capture_patches() -> None:
+    """Capture the virtual display continuously while a Camoufox context lives."""
+
+    selected = _paths()
+    if selected is None:
+        return
+    _, frame_path = selected
+
+    from camoufox.sync_api import Camoufox
+
+    original_enter = Camoufox.__enter__
+    original_exit = Camoufox.__exit__
+    if not getattr(original_enter, "_paperclip_live_patched", False):
+        @wraps(original_enter)
+        def enter(self: Any) -> Any:
+            browser = original_enter(self)
+            self._paperclip_live_capture = start_continuous_capture(frame_path)
+            return browser
+
+        @wraps(original_exit)
+        def exit(self: Any, *args: Any, **kwargs: Any) -> Any:
+            capture = getattr(self, "_paperclip_live_capture", None)
+            if capture is not None:
+                capture.stop()
+            return original_exit(self, *args, **kwargs)
+
+        enter._paperclip_live_patched = True  # type: ignore[attr-defined]
+        Camoufox.__enter__ = enter
+        Camoufox.__exit__ = exit
+
+    from camoufox.async_api import AsyncCamoufox
+
+    original_async_enter = AsyncCamoufox.__aenter__
+    original_async_exit = AsyncCamoufox.__aexit__
+    if not getattr(original_async_enter, "_paperclip_live_patched", False):
+        @wraps(original_async_enter)
+        async def async_enter(self: Any) -> Any:
+            browser = await original_async_enter(self)
+            self._paperclip_live_capture = start_continuous_capture(frame_path)
+            return browser
+
+        @wraps(original_async_exit)
+        async def async_exit(self: Any, *args: Any, **kwargs: Any) -> Any:
+            capture = getattr(self, "_paperclip_live_capture", None)
+            if capture is not None:
+                capture.stop()
+            return await original_async_exit(self, *args, **kwargs)
+
+        async_enter._paperclip_live_patched = True  # type: ignore[attr-defined]
+        AsyncCamoufox.__aenter__ = async_enter
+        AsyncCamoufox.__aexit__ = async_exit
+
+
 if _SCOPE and ("camoufox" in sys.executable.lower() or os.environ.get("PAPERCLIP_CAMOUFOX_FORCE_LIVE") == "1"):
     try:
+        configure_virtual_display()
+        _install_camoufox_capture_patches()
         _install_sync_patches()
         _install_async_patches()
     except Exception as error:

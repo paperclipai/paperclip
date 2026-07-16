@@ -7,7 +7,14 @@ import sys
 import urllib.request
 from pathlib import Path
 
+live_runtime = os.environ.get("PAPERCLIP_CAMOUFOX_LIVE_RUNTIME", "/app/scripts/browser/camoufox-live")
+if live_runtime not in sys.path:
+    sys.path.insert(0, live_runtime)
+
+from paperclip_live_capture import configure_virtual_display, start_continuous_capture
 from camoufox.sync_api import Camoufox
+
+configure_virtual_display()
 
 
 def safe(value: str) -> str:
@@ -68,29 +75,34 @@ provider_path.write_text("camoufox\n")
 provider_path.chmod(0o600)
 
 with Camoufox(headless="virtual", humanize=True, persistent_context=False) as browser:
+    live_capture = start_continuous_capture(screenshot_path)
     context_options = {"storage_state": str(state_path)} if state_path.exists() else {}
-    context = browser.new_context(**context_options)
-    page = context.new_page()
-    page.goto(args.url, wait_until="domcontentloaded", timeout=45_000)
-    temporary_screenshot = screenshot_path.with_suffix(".tmp.jpg")
-    page.screenshot(path=str(temporary_screenshot), type="jpeg", quality=78, full_page=False)
-    temporary_screenshot.replace(screenshot_path)
-    screenshot_path.chmod(0o600)
-    # A transient proxy/startup failure must not leave a usable frame hidden
-    # from the issue UI. Retry once after the first observable frame exists.
-    if not activity_marked:
-        mark_browser_activity()
-    temporary_state = state_path.with_suffix(".tmp")
-    context.storage_state(path=str(temporary_state))
-    temporary_state.replace(state_path)
-    state_path.chmod(0o600)
-    print(json.dumps({
-        "provider": "camoufox",
-        "mode": "virtual-headful",
-        "url": page.url,
-        "title": page.title(),
-        "screenshot": str(screenshot_path),
-        "profile": profile,
-        "scope": scope,
-        "sessionState": "independent",
-    }))
+    try:
+        context = browser.new_context(**context_options)
+        page = context.new_page()
+        page.goto(args.url, wait_until="domcontentloaded", timeout=45_000)
+        temporary_screenshot = screenshot_path.with_suffix(".tmp.jpg")
+        page.screenshot(path=str(temporary_screenshot), type="jpeg", quality=78, full_page=False)
+        temporary_screenshot.replace(screenshot_path)
+        screenshot_path.chmod(0o600)
+        # A transient proxy/startup failure must not leave a usable frame hidden
+        # from the issue UI. Retry once after the first observable frame exists.
+        if not activity_marked:
+            mark_browser_activity()
+        temporary_state = state_path.with_suffix(".tmp")
+        context.storage_state(path=str(temporary_state))
+        temporary_state.replace(state_path)
+        state_path.chmod(0o600)
+        print(json.dumps({
+            "provider": "camoufox",
+            "mode": "virtual-headful",
+            "url": page.url,
+            "title": page.title(),
+            "screenshot": str(screenshot_path),
+            "profile": profile,
+            "scope": scope,
+            "sessionState": "independent",
+        }))
+    finally:
+        if live_capture is not None:
+            live_capture.stop()

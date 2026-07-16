@@ -61,7 +61,7 @@ RUN node --import ./server/node_modules/tsx/dist/loader.mjs -e "import('./packag
 FROM base AS production
 WORKDIR /app
 COPY --from=build /app /app
-RUN apt-get update && apt-get install -y --no-install-recommends gosu postgresql-client bsdextrautils zbar-tools python3 python3-pip python3-venv libgtk-3-0t64 && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends gosu postgresql-client bsdextrautils zbar-tools ffmpeg python3 python3-pip python3-venv libgtk-3-0t64 && rm -rf /var/lib/apt/lists/*
 ARG CLAUDE_CODE_VERSION=2.1.141
 ARG CODEX_VERSION=0.144.1
 ARG AGENT_BROWSER_VERSION=0.27.0
