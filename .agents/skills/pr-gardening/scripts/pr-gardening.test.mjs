@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { confidenceFor, readinessVerdict } from "./check-readiness.mjs";
 import { findCandidates } from "./find-candidates.mjs";
-import { chooseOriginatingIssue, extractPullRequestNumber, normalizeCheck } from "./lib.mjs";
+import { chooseOriginatingIssue, extractPullRequestNumber, isMissingPullRequestError, normalizeCheck } from "./lib.mjs";
 import { renderReport } from "./render-report.mjs";
 
 test("extracts only pull requests from the requested repository", () => {
@@ -38,8 +38,10 @@ test("origin selection prioritizes work products then comment mentions", () => {
 });
 
 test("candidate discovery deduplicates mentions and drops closed PRs", async () => {
+  let extractPath = "";
   const paperclipGet = async (path) => {
     if (path.includes("search/extract")) {
+      extractPath = path;
       return {
         hasMore: false,
         results: [
@@ -55,6 +57,7 @@ test("candidate discovery deduplicates mentions and drops closed PRs", async () 
               { value: "https://github.com/paperclipai/paperclip/pull/1", field: "comment", label: "Comment", source: { type: "comment", commentId: "c1" } },
               { value: "https://github.com/paperclipai/paperclip/pull/1", field: "document_body", label: "Document", source: { type: "document", documentId: "d1", documentKey: "plan" } },
               { value: "https://github.com/paperclipai/paperclip/pull/2", field: "description", label: "Description", source: { type: "issue", issueId: "issue-1" } },
+              { value: "https://github.com/paperclipai/paperclip/pull/3", field: "description", label: "Description", source: { type: "issue", issueId: "issue-1" } },
             ],
           },
         ],
@@ -64,6 +67,7 @@ test("candidate discovery deduplicates mentions and drops closed PRs", async () 
   };
   const ghJson = (args) => {
     const number = Number(args[2]);
+    if (number === 3) throw new Error("GraphQL: Could not resolve to a PullRequest with the number of 3");
     return {
       number,
       url: `https://github.com/paperclipai/paperclip/pull/${number}`,
@@ -83,9 +87,21 @@ test("candidate discovery deduplicates mentions and drops closed PRs", async () 
     gh_json: ghJson,
   });
   assert.deepEqual(result.candidates.map((candidate) => candidate.number), [1]);
+  assert.equal(new URL(`http://paperclip.test${extractPath}`).searchParams.get("matchesPerIssue"), "200");
   assert.equal(result.candidates[0].sourceIssues[0].mentions.length, 2);
   assert.equal(result.candidates[0].originatingIssue.selectionBasis, "pull_request_work_product");
   assert.deepEqual(result.source.droppedClosedPullRequests.map((pullRequest) => pullRequest.number), [2]);
+  assert.deepEqual(result.source.droppedUnavailablePullRequests.map((pullRequest) => pullRequest.number), [3]);
+});
+
+test("missing-PR detection matches only deleted/nonexistent PR signals", () => {
+  // gh's real signals for a deleted/nonexistent PR: GraphQL resolution failure and REST 404.
+  assert.equal(isMissingPullRequestError(new Error("GraphQL: Could not resolve to a PullRequest with the number of 3")), true);
+  assert.equal(isMissingPullRequestError({ stderr: "gh: Not Found (HTTP 404)" }), true);
+  // Unrelated failures that merely contain "not found" must not be treated as skippable.
+  assert.equal(isMissingPullRequestError(new Error("repository not found")), false);
+  assert.equal(isMissingPullRequestError(new Error("could not connect to github.com")), false);
+  assert.equal(isMissingPullRequestError(undefined), false);
 });
 
 test("normalizes check runs and status contexts", () => {

@@ -625,7 +625,7 @@ export function Secrets() {
     provider: "local_encrypted" as SecretProvider,
     providerConfigId: "",
   });
-  const [createError, setCreateError] = useState<string | null>(null);
+  const [createError, setCreateError] = useState<unknown>(null);
   const [rotateOpen, setRotateOpen] = useState(false);
   const [rotateValue, setRotateValue] = useState("");
   const [rotateExternalRef, setRotateExternalRef] = useState("");
@@ -955,7 +955,7 @@ export function Secrets() {
       }
     },
     onError: (error) => {
-      setCreateError(error instanceof ApiError ? error.message : (error as Error).message);
+      setCreateError(error);
     },
   });
 
@@ -2301,7 +2301,13 @@ export function Secrets() {
                 </div>
               </>
             )}
-            {createError ? <p className="text-xs text-destructive">{createError}</p> : null}
+            {createError ? (
+              <SecretCreateError
+                error={createError}
+                provider={createForm.provider}
+                providerConfigId={createForm.providerConfigId || null}
+              />
+            ) : null}
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setCreateOpen(false)}>
@@ -3371,6 +3377,106 @@ function AwsProviderVaultDiscoveryError({
             <div className="mb-1 flex items-center justify-between gap-2">
               <span className="font-medium text-muted-foreground">Safe request/error details</span>
               <Button type="button" variant="ghost" size="sm" onClick={copyDetails}>
+                Copy
+              </Button>
+            </div>
+            <pre className="max-h-36 overflow-auto whitespace-pre-wrap break-words font-mono text-(length:--text-micro) leading-relaxed">
+              {detailsText}
+            </pre>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SecretCreateError({
+  error,
+  provider,
+  providerConfigId,
+}: {
+  error: unknown;
+  provider: SecretProvider;
+  providerConfigId: string | null;
+}) {
+  const details = apiErrorDetails(error);
+  const message = readableErrorMessage(error);
+  const isAwsCreateError =
+    details?.provider === "aws_secrets_manager" && details.operation === "secret.create";
+  const isAccessDenied = isAwsCreateError && details.code === "access_denied";
+  const safeDetails = {
+    message,
+    status: error instanceof ApiError ? error.status : undefined,
+    provider: details?.provider ?? provider,
+    operation: details?.operation ?? "secret.create",
+    providerConfigId: details?.providerConfigId ?? providerConfigId ?? "deployment-default",
+    region: details?.region,
+    code: details?.code,
+    requiredCapability: details?.requiredCapability,
+    credentialPath: details?.credentialPath,
+    safeAlternative: details?.safeAlternative,
+  };
+  const detailsText = JSON.stringify(safeDetails, null, 2);
+
+  if (!isAwsCreateError) {
+    return (
+      <p className="text-xs text-destructive" role="alert" data-testid="secret-create-error">
+        {message}
+      </p>
+    );
+  }
+
+  return (
+    <div
+      className="space-y-2 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-xs text-destructive"
+      role="alert"
+      data-testid="secret-create-error"
+    >
+      <div className="flex items-start gap-2">
+        <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+        <div className="min-w-0 flex-1 space-y-2">
+          <div>
+            <p className="font-medium">
+              {isAccessDenied ? "AWS secret creation needs CreateSecret permission" : "AWS secret creation failed"}
+            </p>
+            <p className="mt-1 leading-relaxed text-destructive/85">
+              {details?.actionableMessage ?? message}
+            </p>
+          </div>
+          {details?.safeAlternative ? (
+            <p className="leading-relaxed text-destructive/85">{details.safeAlternative}</p>
+          ) : null}
+          <dl className="grid gap-1 text-destructive/80 sm:grid-cols-2">
+            {details?.requiredCapability ? (
+              <div>
+                <dt className="font-medium">Required IAM capability</dt>
+                <dd className="font-mono">{details.requiredCapability}</dd>
+              </div>
+            ) : null}
+            {details?.region ? (
+              <div>
+                <dt className="font-medium">Region</dt>
+                <dd>{details.region}</dd>
+              </div>
+            ) : null}
+            <div>
+              <dt className="font-medium">Provider vault</dt>
+              <dd className="break-all">{details?.providerConfigId ?? providerConfigId ?? "Deployment default"}</dd>
+            </div>
+            <div>
+              <dt className="font-medium">Operation</dt>
+              <dd>{details?.operation ?? "secret.create"}</dd>
+            </div>
+          </dl>
+          <div className="rounded-md border border-destructive/20 bg-background/70 p-2 text-foreground">
+            <div className="mb-1 flex items-center justify-between gap-2">
+              <span className="font-medium text-muted-foreground">Safe request/error details</span>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => void navigator.clipboard?.writeText(detailsText)}
+              >
                 Copy
               </Button>
             </div>

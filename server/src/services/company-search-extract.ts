@@ -3,7 +3,6 @@ import type { SQL, SQLWrapper } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { documents, issueComments, issueDocuments, issues } from "@paperclipai/db";
 import {
-  COMPANY_SEARCH_EXTRACT_MAX_MATCHES_PER_ISSUE,
   type CompanySearchExtractIssueResult,
   type CompanySearchExtractMatch,
   type CompanySearchExtractQuery,
@@ -131,7 +130,7 @@ function extractMatches(sources: ExtractSource[], query: CompanySearchExtractQue
       const dedupeKey = occurrence.value.toLowerCase();
       if (seen.has(dedupeKey)) continue;
       seen.add(dedupeKey);
-      if (matches.length >= COMPANY_SEARCH_EXTRACT_MAX_MATCHES_PER_ISSUE) {
+      if (matches.length >= query.matchesPerIssue) {
         matchesTruncated = true;
         continue;
       }
@@ -340,6 +339,7 @@ export function companySearchExtractService(db: Db) {
         scope: query.scope,
         limit: query.limit,
         offset: query.offset,
+        matchesPerIssue: query.matchesPerIssue,
         results,
         hasMore,
         truncated: hasMore || results.some((result) => result.matchesTruncated),
