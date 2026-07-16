@@ -9,6 +9,7 @@ import { instanceSettingsService } from "./instance-settings.js";
 import { getWorkspaceOperationLogStore } from "./workspace-operation-log-store.js";
 
 type WorkspaceOperationRow = typeof workspaceOperations.$inferSelect;
+type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 
 function toWorkspaceOperation(row: WorkspaceOperationRow): WorkspaceOperation {
   return {
@@ -97,7 +98,7 @@ export function workspaceOperationService(db: Db) {
 
       const withReadinessLocks = async <T>(
         nextExecutionWorkspaceId: string | null,
-        mutate: (tx: any) => Promise<T>,
+        mutate: (tx: DbTransaction) => Promise<T>,
       ) =>
         db.transaction(async (tx) => {
           if (input.issueId) {

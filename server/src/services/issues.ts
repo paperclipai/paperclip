@@ -565,6 +565,8 @@ type IssueUserContextInput = {
 };
 type ProjectGoalReader = Pick<Db, "select">;
 type DbReader = Pick<Db, "select">;
+type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
+type DependencyReadinessReader = Pick<DbTransaction, "select" | "execute">;
 type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
   labelIds?: string[];
   blockedByIssueIds?: string[];
@@ -910,56 +912,63 @@ function createIssueDependencyReadiness(issueId: string): IssueDependencyReadine
  * touched them since they were realized).
  */
 export async function listUnfinalizedExecutionWorkspaceIds(
-  dbOrTx: Pick<Db, "select">,
+  dbOrTx: Pick<Db, "execute">,
   companyId: string,
   executionWorkspaceIds: string[],
 ): Promise<Set<string>> {
   const unfinalized = new Set<string>();
   if (executionWorkspaceIds.length === 0) return unfinalized;
 
-  // Pull every workspace op for the candidate workspaces and pick the latest per
-  // workspace in memory. Per-workspace LATERAL queries would be tighter, but the
-  // candidate set is tiny in practice (one workspace per blocker per readiness call).
-  const rows = await dbOrTx
-    .select({
-      executionWorkspaceId: workspaceOperations.executionWorkspaceId,
-      phase: workspaceOperations.phase,
-      status: workspaceOperations.status,
-      startedAt: workspaceOperations.startedAt,
-    })
-    .from(workspaceOperations)
-    .where(
-      and(
-        eq(workspaceOperations.companyId, companyId),
-        inArray(workspaceOperations.executionWorkspaceId, executionWorkspaceIds),
-      ),
-    );
+  const workspaceRows = [...new Set(executionWorkspaceIds)].map((workspaceId) =>
+    sql`(${workspaceId}::uuid)`,
+  );
+  // The LATERAL LIMIT uses workspace_operations_company_workspace_started_idx
+  // to bound each lookup to the newest timestamp group. Within a tied group,
+  // any non-successful-finalize row sorts first so readiness fails closed.
+  const rows = Array.from(await dbOrTx.execute(sql<{
+    executionWorkspaceId: string;
+    phase: string | null;
+    status: string | null;
+  }>`
+    WITH candidate_workspaces(execution_workspace_id) AS (
+      VALUES ${sql.join(workspaceRows, sql`, `)}
+    )
+    SELECT
+      candidate.execution_workspace_id AS "executionWorkspaceId",
+      latest.phase,
+      latest.status
+    FROM candidate_workspaces candidate
+    LEFT JOIN LATERAL (
+      SELECT operation.phase, operation.status
+      FROM workspace_operations operation
+      WHERE operation.company_id = ${companyId}
+        AND operation.execution_workspace_id = candidate.execution_workspace_id
+      ORDER BY
+        operation.started_at DESC,
+        CASE
+          WHEN operation.phase = 'workspace_finalize' AND operation.status = 'succeeded' THEN 1
+          ELSE 0
+        END ASC,
+        operation.id DESC
+      LIMIT 1
+    ) latest ON TRUE
+  `)) as Array<{
+    executionWorkspaceId: string;
+    phase: string | null;
+    status: string | null;
+  }>;
 
-  const latestByWorkspace = new Map<string, { phase: string; status: string; startedAt: Date }>();
   for (const row of rows) {
-    if (!row.executionWorkspaceId) continue;
-    const current = latestByWorkspace.get(row.executionWorkspaceId);
-    if (!current || row.startedAt > current.startedAt) {
-      latestByWorkspace.set(row.executionWorkspaceId, {
-        phase: row.phase,
-        status: row.status,
-        startedAt: row.startedAt,
-      });
-    }
-  }
-
-  for (const workspaceId of executionWorkspaceIds) {
-    const latest = latestByWorkspace.get(workspaceId);
-    if (!latest) continue; // no ops recorded → treat as finalized
-    if (latest.phase === "workspace_finalize" && latest.status === "succeeded") continue;
-    unfinalized.add(workspaceId);
+    if (!row.phase) continue; // no ops recorded -> treat as finalized
+    if (row.phase === "workspace_finalize" && row.status === "succeeded") continue;
+    unfinalized.add(row.executionWorkspaceId);
   }
 
   return unfinalized;
 }
 
 async function listPendingFinalizeBlockerIssueIds(
-  dbOrTx: Pick<Db, "select">,
+  dbOrTx: Pick<Db, "execute">,
   companyId: string,
   blockerWorkspacePairs: Array<{
     blockerIssueId: string;
@@ -968,124 +977,90 @@ async function listPendingFinalizeBlockerIssueIds(
   }>,
 ): Promise<Set<string>> {
   const pending = new Set<string>();
-  const blockerIssueIds = [...new Set(blockerWorkspacePairs.map((pair) => pair.blockerIssueId))];
-  const executionWorkspaceIds = [...new Set(blockerWorkspacePairs.map((pair) => pair.executionWorkspaceId))];
-  if (blockerIssueIds.length === 0 || executionWorkspaceIds.length === 0) return pending;
-  const rows = await dbOrTx
-    .select({
-      issueId: workspaceOperations.issueId,
-      executionWorkspaceId: workspaceOperations.executionWorkspaceId,
-      phase: workspaceOperations.phase,
-      status: workspaceOperations.status,
-      startedAt: workspaceOperations.startedAt,
-    })
-    .from(workspaceOperations)
-    .where(
-      and(
-        eq(workspaceOperations.companyId, companyId),
-        inArray(workspaceOperations.executionWorkspaceId, executionWorkspaceIds),
-        or(inArray(workspaceOperations.issueId, blockerIssueIds), isNull(workspaceOperations.issueId)),
-      ),
-    )
-    .orderBy(
-      asc(workspaceOperations.executionWorkspaceId),
-      asc(workspaceOperations.startedAt),
-      asc(workspaceOperations.id),
-    );
-
-  const blockerWorkspacePairsByKey = new Map(
+  const uniquePairs = [...new Map(
     blockerWorkspacePairs.map((pair) => [
       `${pair.blockerIssueId}:${pair.executionWorkspaceId}`,
       pair,
     ]),
-  );
-  const blockerWorkspacePairsByWorkspace = new Map<string, typeof blockerWorkspacePairs>();
-  for (const pair of blockerWorkspacePairsByKey.values()) {
-    const pairs = blockerWorkspacePairsByWorkspace.get(pair.executionWorkspaceId) ?? [];
-    pairs.push(pair);
-    blockerWorkspacePairsByWorkspace.set(pair.executionWorkspaceId, pairs);
-  }
-
-  const latestAttributedByBlockerWorkspace = new Map<
-    string,
-    { phase: string; status: string; startedAt: Date }
-  >();
-  const unattributedNonFinalizeByWorkspace = new Map<
-    string,
-    Array<{ phase: string; status: string; startedAt: Date }>
-  >();
-  const latestUnattributedFinalizeByWorkspace = new Map<
-    string,
-    { phase: string; status: string; startedAt: Date }
-  >();
+  ).values()];
+  if (uniquePairs.length === 0) return pending;
+  const pairRows = uniquePairs.map((pair) => sql`(
+    ${pair.blockerIssueId}::uuid,
+    ${pair.executionWorkspaceId}::uuid,
+    ${pair.blockerCompletedAt?.toISOString() ?? null}::timestamptz
+  )`);
+  // Two bounded lookups per blocker/workspace pair replace the prior full-history
+  // materialization under readiness locks. Both use
+  // workspace_operations_company_workspace_issue_started_idx: the exact issue
+  // key (or NULL legacy key) plus descending started_at reaches only the newest
+  // timestamp group. Attributed history wins; ties within either class fail closed.
+  const rows = Array.from(await dbOrTx.execute(sql<{
+    blockerIssueId: string;
+    phase: string | null;
+    status: string | null;
+  }>`
+    WITH blocker_workspaces(
+      blocker_issue_id,
+      execution_workspace_id,
+      blocker_completed_at
+    ) AS (
+      VALUES ${sql.join(pairRows, sql`, `)}
+    )
+    SELECT
+      pair.blocker_issue_id AS "blockerIssueId",
+      COALESCE(attributed.phase, unattributed.phase) AS phase,
+      COALESCE(attributed.status, unattributed.status) AS status
+    FROM blocker_workspaces pair
+    LEFT JOIN LATERAL (
+      SELECT operation.phase, operation.status
+      FROM workspace_operations operation
+      WHERE operation.company_id = ${companyId}
+        AND operation.execution_workspace_id = pair.execution_workspace_id
+        AND operation.issue_id = pair.blocker_issue_id
+        AND (
+          operation.phase = 'workspace_finalize'
+          OR pair.blocker_completed_at IS NULL
+          OR operation.started_at <= pair.blocker_completed_at
+        )
+      ORDER BY
+        operation.started_at DESC,
+        CASE
+          WHEN operation.phase = 'workspace_finalize' AND operation.status = 'succeeded' THEN 1
+          ELSE 0
+        END ASC,
+        operation.id DESC
+      LIMIT 1
+    ) attributed ON TRUE
+    LEFT JOIN LATERAL (
+      SELECT operation.phase, operation.status
+      FROM workspace_operations operation
+      WHERE operation.company_id = ${companyId}
+        AND operation.execution_workspace_id = pair.execution_workspace_id
+        AND operation.issue_id IS NULL
+        AND (
+          operation.phase = 'workspace_finalize'
+          OR pair.blocker_completed_at IS NULL
+          OR operation.started_at <= pair.blocker_completed_at
+        )
+      ORDER BY
+        operation.started_at DESC,
+        CASE
+          WHEN operation.phase = 'workspace_finalize' AND operation.status = 'succeeded' THEN 1
+          ELSE 0
+        END ASC,
+        operation.id DESC
+      LIMIT 1
+    ) unattributed ON attributed.phase IS NULL
+  `)) as Array<{
+    blockerIssueId: string;
+    phase: string | null;
+    status: string | null;
+  }>;
 
   for (const row of rows) {
-    if (!row.executionWorkspaceId) continue;
-    if (row.issueId) {
-      const key = `${row.issueId}:${row.executionWorkspaceId}`;
-      const pair = blockerWorkspacePairsByKey.get(key);
-      if (!pair) continue;
-      const relevant = row.phase === "workspace_finalize"
-        || !pair.blockerCompletedAt
-        || row.startedAt <= pair.blockerCompletedAt;
-      if (!relevant) continue;
-      const current = latestAttributedByBlockerWorkspace.get(key);
-      if (!current || row.startedAt > current.startedAt) {
-        latestAttributedByBlockerWorkspace.set(key, row);
-      }
-      continue;
-    }
-
-    if (row.phase === "workspace_finalize") {
-      latestUnattributedFinalizeByWorkspace.set(row.executionWorkspaceId, row);
-      continue;
-    }
-    const workspaceRows = unattributedNonFinalizeByWorkspace.get(row.executionWorkspaceId) ?? [];
-    workspaceRows.push(row);
-    unattributedNonFinalizeByWorkspace.set(row.executionWorkspaceId, workspaceRows);
-  }
-
-  const latestUnattributedByBlockerWorkspace = new Map<
-    string,
-    { phase: string; status: string; startedAt: Date }
-  >();
-  for (const [executionWorkspaceId, pairs] of blockerWorkspacePairsByWorkspace) {
-    const workspaceRows = unattributedNonFinalizeByWorkspace.get(executionWorkspaceId) ?? [];
-    const latestFinalize = latestUnattributedFinalizeByWorkspace.get(executionWorkspaceId) ?? null;
-    let rowIndex = 0;
-    let latestBeforeCompletion: { phase: string; status: string; startedAt: Date } | null = null;
-    for (const pair of pairs) {
-      while (
-        rowIndex < workspaceRows.length
-        && (!pair.blockerCompletedAt || workspaceRows[rowIndex]!.startedAt <= pair.blockerCompletedAt)
-      ) {
-        latestBeforeCompletion = workspaceRows[rowIndex]!;
-        rowIndex += 1;
-      }
-      const latest = latestFinalize && (
-        !latestBeforeCompletion || latestFinalize.startedAt > latestBeforeCompletion.startedAt
-      )
-        ? latestFinalize
-        : latestBeforeCompletion;
-      if (latest) {
-        latestUnattributedByBlockerWorkspace.set(
-          `${pair.blockerIssueId}:${executionWorkspaceId}`,
-          latest,
-        );
-      }
-    }
-  }
-
-  for (const pair of blockerWorkspacePairs) {
-    const key = `${pair.blockerIssueId}:${pair.executionWorkspaceId}`;
-    const latestAttributed = latestAttributedByBlockerWorkspace.get(key) ?? null;
-    const latestUnattributed = latestUnattributedByBlockerWorkspace.get(key) ?? null;
-    // Prefer blocker-attributed history whenever it exists. Unattributed rows are
-    // the compatibility path for legacy operations that predate issue attribution.
-    const latest = latestAttributed ?? latestUnattributed;
-    if (!latest) continue; // no ops recorded -> nothing to finalize for this blocker
-    if (latest.phase === "workspace_finalize" && latest.status === "succeeded") continue;
-    pending.add(pair.blockerIssueId);
+    if (!row.phase) continue;
+    if (row.phase === "workspace_finalize" && row.status === "succeeded") continue;
+    pending.add(row.blockerIssueId);
   }
 
   return pending;
@@ -1104,11 +1079,10 @@ export async function runWorkspaceIsFinalized(
   executionWorkspaceId: string,
   runId: string,
 ): Promise<boolean> {
-  const rows = await dbOrTx
+  const latest = await dbOrTx
     .select({
       phase: workspaceOperations.phase,
       status: workspaceOperations.status,
-      startedAt: workspaceOperations.startedAt,
     })
     .from(workspaceOperations)
     .where(
@@ -1117,19 +1091,25 @@ export async function runWorkspaceIsFinalized(
         eq(workspaceOperations.executionWorkspaceId, executionWorkspaceId),
         eq(workspaceOperations.heartbeatRunId, runId),
       ),
-    );
-
-  let latest: { phase: string; status: string; startedAt: Date } | null = null;
-  for (const row of rows) {
-    if (!latest || row.startedAt > latest.startedAt) latest = row;
-  }
+    )
+    .orderBy(
+      desc(workspaceOperations.startedAt),
+      asc(sql`CASE
+        WHEN ${workspaceOperations.phase} = 'workspace_finalize'
+          AND ${workspaceOperations.status} = 'succeeded' THEN 1
+        ELSE 0
+      END`),
+      desc(workspaceOperations.id),
+    )
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
 
   if (!latest) return true;
   return latest.phase === "workspace_finalize" && latest.status === "succeeded";
 }
 
 async function listIssueDependencyReadinessMap(
-  dbOrTx: Pick<Db, "select">,
+  dbOrTx: DependencyReadinessReader,
   companyId: string,
   issueIds: string[],
   blockerOverride?: { issueId: string; blockerIssueIds: string[] },
@@ -1246,7 +1226,7 @@ async function listIssueDependencyReadinessMap(
 }
 
 async function lockIssueDependencyReadinessRows(
-  dbOrTx: any,
+  dbOrTx: DbTransaction,
   companyId: string,
   issueId: string,
   blockerIssueIdsOverride?: string[],
@@ -1308,7 +1288,7 @@ async function lockIssueDependencyReadinessRows(
 }
 
 async function assertIssueDependencyReadyForInProgress(
-  dbOrTx: any,
+  dbOrTx: DbTransaction,
   companyId: string,
   issueId: string,
   blockerIssueIdsOverride?: string[],
@@ -4454,7 +4434,7 @@ export function issueService(db: Db) {
     companyId: string,
     blockedByIssueIds: string[],
     actor: { agentId?: string | null; userId?: string | null } = {},
-    dbOrTx: any = db,
+    dbOrTx: DbTransaction,
   ) {
     const deduped = [...new Set(blockedByIssueIds)];
     if (deduped.some((candidate) => candidate === issueId)) {
@@ -4508,7 +4488,7 @@ export function issueService(db: Db) {
         companyId,
         issueId: blockerIssueId,
         relatedIssueId: issueId,
-        type: "blocks",
+        type: "blocks" as const,
         createdByAgentId: actor.agentId ?? null,
         createdByUserId: actor.userId ?? null,
       })),
@@ -4670,6 +4650,70 @@ export function issueService(db: Db) {
         .then((rows) => rows[0] ?? null);
 
       return adopted;
+    });
+  }
+
+  async function adoptStaleExecutionRunForCheckout(input: {
+    issueId: string;
+    companyId: string;
+    actorAgentId: string;
+    actorRunId: string;
+    expectedStatuses: string[];
+    expectedExecutionRunId: string;
+  }) {
+    return db.transaction(async (tx) => {
+      await assertIssueDependencyReadyForInProgress(tx, input.companyId, input.issueId);
+      const current = await tx
+        .select({
+          id: issues.id,
+          status: issues.status,
+          assigneeAgentId: issues.assigneeAgentId,
+          executionRunId: issues.executionRunId,
+        })
+        .from(issues)
+        .where(eq(issues.id, input.issueId))
+        .then((rows) => rows[0] ?? null);
+      if (
+        !current ||
+        !input.expectedStatuses.includes(current.status) ||
+        current.executionRunId !== input.expectedExecutionRunId ||
+        (current.assigneeAgentId !== input.actorAgentId && current.assigneeAgentId !== null)
+      ) {
+        return null;
+      }
+
+      await tx.execute(
+        sql`SELECT ${heartbeatRuns.id} FROM ${heartbeatRuns}
+            WHERE ${heartbeatRuns.id} = ${input.expectedExecutionRunId}
+            FOR UPDATE`,
+      );
+      if (!(await isTerminalOrMissingHeartbeatRun(input.expectedExecutionRunId, tx))) {
+        return null;
+      }
+
+      const now = new Date();
+      return tx
+        .update(issues)
+        .set({
+          assigneeAgentId: input.actorAgentId,
+          checkoutRunId: input.actorRunId,
+          executionRunId: input.actorRunId,
+          executionAgentNameKey: null,
+          executionLockedAt: now,
+          status: "in_progress",
+          ...(current.status === "in_progress" ? {} : { startedAt: now }),
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(issues.id, input.issueId),
+            inArray(issues.status, input.expectedStatuses),
+            eq(issues.executionRunId, input.expectedExecutionRunId),
+            or(isNull(issues.assigneeAgentId), eq(issues.assigneeAgentId, input.actorAgentId)),
+          ),
+        )
+        .returning()
+        .then((rows) => rows[0] ?? null);
     });
   }
 
@@ -5811,22 +5855,7 @@ export function issueService(db: Db) {
     createChild: async (
       parentIssueId: string,
       data: IssueChildCreateInput,
-    ) => {
-      const parent = await db
-        .select()
-        .from(issues)
-        .where(eq(issues.id, parentIssueId))
-        .then((rows) => rows[0] ?? null);
-      if (!parent) throw notFound("Parent issue not found");
-
-      const [{ childCount }] = await db
-        .select({ childCount: sql<number>`count(*)::int` })
-        .from(issues)
-        .where(and(eq(issues.companyId, parent.companyId), eq(issues.parentId, parent.id)));
-      if (childCount >= MAX_CHILD_ISSUES_CREATED_BY_HELPER) {
-        throw unprocessable(`Parent issue already has the maximum ${MAX_CHILD_ISSUES_CREATED_BY_HELPER} child issues for this helper`);
-      }
-
+    ) => db.transaction(async (tx) => {
       const {
         acceptanceCriteria,
         blockParentUntilDone,
@@ -5835,6 +5864,21 @@ export function issueService(db: Db) {
         actorUserId,
         ...issueData
       } = data;
+      const parent = await tx
+        .select()
+        .from(issues)
+        .where(eq(issues.id, parentIssueId))
+        .then((rows) => rows[0] ?? null);
+      if (!parent) throw notFound("Parent issue not found");
+
+      const [{ childCount }] = await tx
+        .select({ childCount: sql<number>`count(*)::int` })
+        .from(issues)
+        .where(and(eq(issues.companyId, parent.companyId), eq(issues.parentId, parent.id)));
+      if (childCount >= MAX_CHILD_ISSUES_CREATED_BY_HELPER) {
+        throw unprocessable(`Parent issue already has the maximum ${MAX_CHILD_ISSUES_CREATED_BY_HELPER} child issues for this helper`);
+      }
+
       const inheritStrategyOnly = executionWorkspaceInheritanceMode === "strategy_only";
       const hasExplicitExecutionWorkspaceOverride =
         issueData.executionWorkspaceId !== undefined ||
@@ -5844,7 +5888,7 @@ export function issueService(db: Db) {
         inheritStrategyOnly && !hasExplicitExecutionWorkspaceOverride
           ? buildPreRealizationExecutionWorkspaceSettings(parent.executionWorkspaceSettings)
           : null;
-      let child = await issueService(db).create(parent.companyId, {
+      let child = await issueService(tx as unknown as Db).create(parent.companyId, {
         ...issueData,
         parentId: parent.id,
         projectId: issueData.projectId ?? parent.projectId,
@@ -5865,7 +5909,20 @@ export function issueService(db: Db) {
       });
 
       if (blockParentUntilDone) {
-        const existingBlockers = await db
+        // Parent attachment is part of child creation: lock immediately before
+        // re-reading the set so attachment failure rolls back the child and
+        // concurrent additions cannot replace one another from stale sets.
+        await tx.execute(
+          sql`SELECT pg_advisory_xact_lock(
+            hashtextextended(${`issue-relations:${parent.companyId}`}, 0)
+          )`,
+        );
+        await tx.execute(
+          sql`SELECT pg_advisory_xact_lock(
+            hashtextextended(${`issue-dependency:${parent.companyId}:${parent.id}`}, 0)
+          )`,
+        );
+        const existingBlockers = await tx
           .select({ blockerIssueId: issueRelations.issueId })
           .from(issueRelations)
           .where(and(eq(issueRelations.companyId, parent.companyId), eq(issueRelations.relatedIssueId, parent.id), eq(issueRelations.type, "blocks")));
@@ -5874,15 +5931,16 @@ export function issueService(db: Db) {
           parent.companyId,
           [...new Set([...existingBlockers.map((row) => row.blockerIssueId), child.id])],
           { agentId: actorAgentId ?? null, userId: actorUserId ?? null },
+          tx,
         );
-        [child] = await withIssueRelationSummaries(parent.companyId, [child], db);
+        [child] = await withIssueRelationSummaries(parent.companyId, [child], tx);
       }
 
       return {
         issue: child,
         parentBlockerAdded: Boolean(blockParentUntilDone),
       };
-    },
+    }),
 
     decomposeAcceptedPlan: async (
       sourceIssueId: string,
@@ -6427,7 +6485,7 @@ export function issueService(db: Db) {
         actorAgentId?: string | null;
         actorUserId?: string | null;
       },
-      dbOrTx: any = db,
+      dbOrTx: Db | DbTransaction = db,
     ) => {
       const existing = await dbOrTx
         .select()
@@ -6557,7 +6615,7 @@ export function issueService(db: Db) {
         patch.executionLockedAt = null;
       }
 
-      const runUpdate = async (tx: any) => {
+      const runUpdate = async (tx: DbTransaction) => {
         if (blockedByIssueIds !== undefined) {
           await tx.execute(
             sql`SELECT pg_advisory_xact_lock(
@@ -6678,7 +6736,7 @@ export function issueService(db: Db) {
         return enriched;
       };
 
-      return dbOrTx === db ? db.transaction(runUpdate) : runUpdate(dbOrTx);
+      return dbOrTx === db ? db.transaction(runUpdate) : runUpdate(dbOrTx as DbTransaction);
     },
 
     clearExecutionWorkspaceEnvironmentSelection: async (companyId: string, environmentId: string) => {
@@ -6877,47 +6935,25 @@ export function issueService(db: Db) {
         }
       }
 
-      // Adopt stale executionRunId — if the execution lock points to a terminal/missing run, clear it and proceed.
-      // Only adopts when the caller's expectedStatuses guard still holds; preserves any existing assigneeUserId
-      // and preserves the original startedAt when the issue is already in_progress.
+      // Stale execution adoption is itself an in-progress transition. Re-lock
+      // dependencies and re-read readiness in the same transaction as adoption.
       if (
         checkoutRunId &&
         current.executionRunId &&
         current.executionRunId !== checkoutRunId &&
         (current.assigneeAgentId === agentId || current.assigneeAgentId == null)
       ) {
-        const stale = await isTerminalOrMissingHeartbeatRun(current.executionRunId);
-        if (stale) {
-          const now = new Date();
-          const adoptionSet: Record<string, unknown> = {
-            assigneeAgentId: agentId,
-            checkoutRunId,
-            executionRunId: checkoutRunId,
-            executionAgentNameKey: null,
-            executionLockedAt: now,
-            status: "in_progress",
-            updatedAt: now,
-          };
-          if (current.status !== "in_progress") {
-            adoptionSet.startedAt = now;
-          }
-          const adopted = await db
-            .update(issues)
-            .set(adoptionSet)
-            .where(
-              and(
-                eq(issues.id, id),
-                inArray(issues.status, expectedStatuses),
-                eq(issues.executionRunId, current.executionRunId),
-                or(isNull(issues.assigneeAgentId), eq(issues.assigneeAgentId, agentId)),
-              ),
-            )
-            .returning()
-            .then((rows) => rows[0] ?? null);
-          if (adopted) {
-            const [enriched] = await withIssueLabels(db, [adopted]);
-            return enriched;
-          }
+        const adopted = await adoptStaleExecutionRunForCheckout({
+          issueId: id,
+          companyId: issueCompany.companyId,
+          actorAgentId: agentId,
+          actorRunId: checkoutRunId,
+          expectedStatuses,
+          expectedExecutionRunId: current.executionRunId,
+        });
+        if (adopted) {
+          const [enriched] = await withIssueLabels(db, [adopted]);
+          return enriched;
         }
       }
 
