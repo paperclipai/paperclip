@@ -3640,7 +3640,7 @@ export function issueService(db: Db) {
   const treeControlSvc = issueTreeControlService(db);
 
   function normalizeCreateIssueTitle(title: string) {
-    return title.trim().replace(/\s+/g, " ").toLocaleLowerCase();
+    return title.trim().replace(/\s+/g, " ").toLowerCase();
   }
 
   async function getIssueByUuid(id: string) {
@@ -6019,10 +6019,13 @@ export function issueService(db: Db) {
       return db.transaction(async (tx) => {
         const idempotencyKey = rawIdempotencyKey?.trim() || null;
         const normalizedTitle = normalizeCreateIssueTitle(issueData.title);
-        const duplicateGuardKey = idempotencyKey
-          ? `issue-create:idempotency:${companyId}:${idempotencyKey}`
-          : `issue-create:title:${companyId}:${issueData.parentId ?? "root"}:${normalizedTitle}`;
-        await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${duplicateGuardKey}, 0))`);
+        const shouldDeduplicate = Boolean(idempotencyKey) || allowDuplicate === false;
+        if (shouldDeduplicate) {
+          const duplicateGuardKey = idempotencyKey
+            ? `issue-create:idempotency:${companyId}:${idempotencyKey}`
+            : `issue-create:title:${companyId}:${issueData.parentId ?? "root"}:${normalizedTitle}`;
+          await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${duplicateGuardKey}, 0))`);
+        }
 
         let existingIssue: typeof issues.$inferSelect | undefined;
         if (idempotencyKey) {
