@@ -5331,6 +5331,9 @@ export function issueRoutes(
     const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
+    const inboxArchiveFieldsPromise = req.actor.type === "board" && req.actor.userId
+      ? svc.getActiveInboxArchiveFields(issue, req.actor.userId)
+      : Promise.resolve({});
     const [
       { project, goal },
       ancestors,
@@ -5344,6 +5347,7 @@ export function issueRoutes(
       scheduledRetry,
       activeRecoveryAction,
       linkedCases,
+      inboxArchiveFields,
     ] = await Promise.all([
       resolveIssueProjectAndGoal(issue),
       svc.getAncestors(issue.id),
@@ -5357,6 +5361,7 @@ export function issueRoutes(
       svc.getCurrentScheduledRetry(issue.id),
       recoveryActionsSvc.getActiveForIssue(issue.companyId, issue.id),
       listIssueLinkedCases(db, issue.companyId, issue.id),
+      inboxArchiveFieldsPromise,
     ]);
     const recoveryActionsByRelationIssue = await relationRecoveryActionMap(
       recoveryActionsSvc,
@@ -5382,6 +5387,7 @@ export function issueRoutes(
     const workProducts = await workProductsSvc.listForIssue(issue.id);
     res.json({
       ...issue,
+      ...inboxArchiveFields,
       goalId: goal?.id ?? issue.goalId,
       ancestors,
       ...(blockerAttention ? { blockerAttention } : {}),

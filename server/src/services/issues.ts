@@ -5096,6 +5096,22 @@ export function issueService(db: Db) {
       return row ?? null;
     },
 
+    getActiveInboxArchiveFields: async (
+      issue: Pick<IssueRow, "id" | "companyId" | "updatedAt">,
+      userId: string,
+    ) => {
+      const [[activity], [archive]] = await Promise.all([
+        lastActivityStatsForIssues(db, issue.companyId, [issue.id]),
+        inboxArchiveRowsForIssues(db, issue.companyId, userId, [issue.id]),
+      ]);
+      const lastActivityAt = latestIssueActivityAt(
+        issue.updatedAt,
+        activity?.latestCommentAt ?? null,
+        activity?.latestLogAt ?? null,
+      ) ?? issue.updatedAt;
+      return activeInboxArchiveFields(archive, lastActivityAt);
+    },
+
     getById: async (raw: string) => {
       const id = raw.trim();
       const identifier = normalizeIssueReferenceIdentifier(id);

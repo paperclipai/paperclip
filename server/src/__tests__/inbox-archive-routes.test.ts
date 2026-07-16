@@ -231,6 +231,25 @@ describeEmbeddedPostgres("inbox archive routes", () => {
       archivedByRunId: seeded.runId,
     });
 
+    const boardApp = appFor({
+      type: "board",
+      source: "session",
+      userId: seeded.responsibleUserId,
+      companyIds: [seeded.companyId],
+      memberships: [{ companyId: seeded.companyId, membershipRole: "operator", status: "active" }],
+      isInstanceAdmin: false,
+    });
+    await request(boardApp)
+      .get(`/api/issues/${seeded.issueId}`)
+      .expect(200)
+      .expect(({ body }) => expect(body).toMatchObject({
+        id: seeded.issueId,
+        archivedAt: expect.any(String),
+        archivedByActorType: "agent",
+        archivedByAgentId: seeded.agentId,
+        archivedByRunId: seeded.runId,
+      }));
+
     await db.insert(issueComments).values({
       companyId: seeded.companyId,
       issueId: seeded.issueId,
@@ -248,6 +267,10 @@ describeEmbeddedPostgres("inbox archive routes", () => {
       .expect(200);
     expect(resurfaced.body[0]).toMatchObject({ id: seeded.issueId });
     expect(resurfaced.body[0].archivedByAgentId).toBeUndefined();
+    await request(boardApp)
+      .get(`/api/issues/${seeded.issueId}`)
+      .expect(200)
+      .expect(({ body }) => expect(body.archivedByAgentId).toBeUndefined());
   });
 
   it("returns stable typed denials for unresolved, disabled, allowlist, and low-trust actors", async () => {
