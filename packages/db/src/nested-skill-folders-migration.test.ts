@@ -32,6 +32,8 @@ describeEmbeddedPostgres("nested skill folders migration", () => {
     await sql`DELETE FROM "drizzle"."__drizzle_migrations" WHERE "hash" = ${await migrationHash()}`;
     await sql`DROP INDEX IF EXISTS "folders_company_kind_parent_position_idx"`;
     await sql`DROP INDEX IF EXISTS "folders_company_kind_system_key_uq"`;
+    await sql`DROP INDEX IF EXISTS "folders_company_kind_root_slug_uq"`;
+    await sql`DROP INDEX IF EXISTS "folders_company_kind_parent_slug_uq"`;
     await sql`ALTER TABLE "folders" DROP CONSTRAINT IF EXISTS "folders_company_kind_parent_slug_uq"`;
     await sql`ALTER TABLE "folders" DROP CONSTRAINT IF EXISTS "folders_parent_id_folders_id_fk"`;
     await sql`ALTER TABLE "folders" DROP COLUMN IF EXISTS "system_key"`;
@@ -103,5 +105,19 @@ describeEmbeddedPostgres("nested skill folders migration", () => {
     expect(skills.find((skill) => skill.id === bundledSkillId)).toMatchObject({ folder_slug: "software-development" });
     expect(skills.find((skill) => skill.id === projectSkillId)).toMatchObject({ folder_slug: "agent-platform" });
     expect(skills.find((skill) => skill.id === unfiledSkillId)).toMatchObject({ folder_id: null, folder_slug: null });
+
+    const indexes = await sql<{ indexname: string; indexdef: string }[]>`
+      SELECT "indexname", "indexdef"
+      FROM "pg_indexes"
+      WHERE "tablename" = 'folders'
+        AND "indexname" IN ('folders_company_kind_root_slug_uq', 'folders_company_kind_parent_slug_uq')
+      ORDER BY "indexname"
+    `;
+    expect(indexes).toHaveLength(2);
+    expect(indexes.map((index) => index.indexdef).join("\n")).not.toContain("NULLS NOT DISTINCT");
+    expect(indexes.find((index) => index.indexname === "folders_company_kind_root_slug_uq")?.indexdef)
+      .toContain("WHERE (parent_id IS NULL)");
+    expect(indexes.find((index) => index.indexname === "folders_company_kind_parent_slug_uq")?.indexdef)
+      .toContain("WHERE (parent_id IS NOT NULL)");
   }, 30_000);
 });

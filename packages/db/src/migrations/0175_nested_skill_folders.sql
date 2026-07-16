@@ -42,14 +42,15 @@ DO $$ BEGIN
   END IF;
 END $$;
 --> statement-breakpoint
-DO $$ BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM "pg_constraint" WHERE "conname" = 'folders_company_kind_parent_slug_uq'
-  ) THEN
-    ALTER TABLE "folders" ADD CONSTRAINT "folders_company_kind_parent_slug_uq"
-      UNIQUE NULLS NOT DISTINCT ("company_id", "kind", "parent_id", "slug");
-  END IF;
-END $$;
+ALTER TABLE "folders" DROP CONSTRAINT IF EXISTS "folders_company_kind_parent_slug_uq";
+--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "folders_company_kind_root_slug_uq"
+  ON "folders" USING btree ("company_id", "kind", "slug")
+  WHERE "parent_id" IS NULL;
+--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "folders_company_kind_parent_slug_uq"
+  ON "folders" USING btree ("company_id", "kind", "parent_id", "slug")
+  WHERE "parent_id" IS NOT NULL;
 --> statement-breakpoint
 CREATE UNIQUE INDEX IF NOT EXISTS "folders_company_kind_system_key_uq"
   ON "folders" USING btree ("company_id", "kind", "system_key")

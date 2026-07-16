@@ -6,7 +6,6 @@ import {
   text,
   timestamp,
   uniqueIndex,
-  unique,
   uuid,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
@@ -35,9 +34,12 @@ export const folders = pgTable(
       table.position,
       table.name,
     ),
-    companyKindParentSlugUniqueIdx: unique("folders_company_kind_parent_slug_uq")
+    companyKindRootSlugUniqueIdx: uniqueIndex("folders_company_kind_root_slug_uq")
+      .on(table.companyId, table.kind, table.slug)
+      .where(sql`${table.parentId} is null`),
+    companyKindParentSlugUniqueIdx: uniqueIndex("folders_company_kind_parent_slug_uq")
       .on(table.companyId, table.kind, table.parentId, table.slug)
-      .nullsNotDistinct(),
+      .where(sql`${table.parentId} is not null`),
     companyKindSystemKeyUniqueIdx: uniqueIndex("folders_company_kind_system_key_uq")
       .on(table.companyId, table.kind, table.systemKey)
       .where(sql`${table.systemKey} is not null`),
