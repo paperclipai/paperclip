@@ -80,6 +80,7 @@ const mockIssueApprovalService = vi.hoisted(() => ({
 const mockIssueRecoveryActionService = vi.hoisted(() => ({
   getActiveForIssue: vi.fn(async () => null),
   listActiveForIssues: vi.fn(async () => new Map()),
+  lockActiveForIssue: vi.fn(async () => null),
   resolveActiveForIssue: vi.fn(async () => null),
 }));
 const mockTaskWatchdogService = vi.hoisted(() => ({
@@ -304,6 +305,22 @@ function createRunContextDb(
   };
 }
 
+function createRecoveryResolutionDb(issue: Record<string, unknown>) {
+  const db = createRunContextDb();
+  return {
+    ...db,
+    transaction: async (callback: (tx: unknown) => Promise<unknown>) => callback({
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({
+          where: vi.fn(() => ({
+            for: vi.fn(async () => [issue]),
+          })),
+        })),
+      })),
+    }),
+  };
+}
+
 async function createApp(actor: Record<string, unknown>, db?: unknown) {
   const routeDb = db ?? createRunContextDb(
     {},
@@ -433,6 +450,8 @@ describe("agent issue mutation checkout ownership", () => {
     mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue(null);
     mockIssueRecoveryActionService.listActiveForIssues.mockReset();
     mockIssueRecoveryActionService.listActiveForIssues.mockResolvedValue(new Map());
+    mockIssueRecoveryActionService.lockActiveForIssue.mockReset();
+    mockIssueRecoveryActionService.lockActiveForIssue.mockResolvedValue(null);
     mockIssueRecoveryActionService.resolveActiveForIssue.mockReset();
     mockIssueRecoveryActionService.resolveActiveForIssue.mockResolvedValue({
       id: recoveryActionId,
@@ -1550,19 +1569,24 @@ describe("agent issue mutation checkout ownership", () => {
   });
 
   it("allows the named recovery owner to resolve a board-owned source issue", async () => {
-    mockIssueService.getById.mockResolvedValue(
-      makeIssue({ status: "blocked", assigneeAgentId: null, assigneeUserId: "board-user" }),
-    );
+    const sourceIssue = makeIssue({ status: "blocked", assigneeAgentId: null, assigneeUserId: "board-user" });
+    mockIssueService.getById.mockResolvedValue(sourceIssue);
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
       ...makeIssue({ status: "blocked", assigneeAgentId: null, assigneeUserId: "board-user" }),
       ...patch,
     }));
-    mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue({
+    const activeRecoveryAction = {
       id: recoveryActionId,
+      ownerType: "agent",
       ownerAgentId,
-    });
+      ownerUserId: null,
+      returnOwnerAgentId: null,
+      cause: "issue_graph_liveness",
+    };
+    mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue(activeRecoveryAction);
+    mockIssueRecoveryActionService.lockActiveForIssue.mockResolvedValue(activeRecoveryAction);
 
-    const res = await request(await createApp(ownerActor()))
+    const res = await request(await createApp(ownerActor(), createRecoveryResolutionDb(sourceIssue)))
       .post(`/api/issues/${issueId}/recovery-actions/resolve`)
       .send({
         actionId: recoveryActionId,
@@ -1576,19 +1600,24 @@ describe("agent issue mutation checkout ownership", () => {
   });
 
   it("wakes the assigned agent when recovery resolution restores a source issue to todo", async () => {
-    mockIssueService.getById.mockResolvedValue(
-      makeIssue({ status: "blocked", assigneeAgentId: ownerAgentId }),
-    );
+    const sourceIssue = makeIssue({ status: "blocked", assigneeAgentId: ownerAgentId });
+    mockIssueService.getById.mockResolvedValue(sourceIssue);
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
       ...makeIssue({ status: "blocked", assigneeAgentId: ownerAgentId }),
       ...patch,
     }));
-    mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue({
+    const activeRecoveryAction = {
       id: recoveryActionId,
+      ownerType: "agent",
       ownerAgentId,
-    });
+      ownerUserId: null,
+      returnOwnerAgentId: ownerAgentId,
+      cause: "issue_graph_liveness",
+    };
+    mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue(activeRecoveryAction);
+    mockIssueRecoveryActionService.lockActiveForIssue.mockResolvedValue(activeRecoveryAction);
 
-    const res = await request(await createApp(ownerActor()))
+    const res = await request(await createApp(ownerActor(), createRecoveryResolutionDb(sourceIssue)))
       .post(`/api/issues/${issueId}/recovery-actions/resolve`)
       .send({
         actionId: recoveryActionId,
