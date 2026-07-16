@@ -326,6 +326,11 @@ describeEmbeddedPostgres("inbox archive routes", () => {
       permissionKey: "inbox:manage",
       scope: { userIds: [seeded.targetUserId] },
     });
+    await db.insert(userInboxAgentPolicies).values({
+      companyId: seeded.companyId,
+      userId: seeded.targetUserId,
+      mode: "disabled",
+    });
 
     await request(app)
       .post(`/api/issues/${seeded.issueId}/inbox-archive`)
@@ -348,7 +353,7 @@ describeEmbeddedPostgres("inbox archive routes", () => {
       expect.objectContaining({
         userId: seeded.targetUserId,
         targetResolvedFrom: "explicit",
-        policyMode: "open",
+        policyMode: "grant_override",
       }),
     ]));
   });

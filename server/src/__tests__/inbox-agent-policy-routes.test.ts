@@ -186,13 +186,21 @@ describeEmbeddedPostgres("inbox agent policy routes", () => {
 
     await request(app)
       .put(`/companies/${seeded.companyId}/users/${seeded.otherUserId}/inbox-agent-policy`)
-      .send({ mode: "disabled", allowedAgentIds: [seeded.agentId] })
+      .send({ mode: "disabled", allowedAgentIds: [] })
       .expect(200)
       .expect(({ body }) => expect(body).toMatchObject({
         userId: seeded.otherUserId,
         mode: "disabled",
         allowedAgentIds: [],
       }));
+  });
+
+  it("rejects agent IDs outside allowlist mode", async () => {
+    const seeded = await seed();
+    await request(appFor(boardActor(seeded.companyId, seeded.userId)))
+      .put(`/companies/${seeded.companyId}/users/me/inbox-agent-policy`)
+      .send({ mode: "disabled", allowedAgentIds: [seeded.agentId] })
+      .expect(400);
   });
 
   it("rejects allowlist agents from another company", async () => {

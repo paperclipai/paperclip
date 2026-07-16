@@ -1905,7 +1905,11 @@ describeEmbeddedPostgres("authorization service", () => {
       },
       action: "inbox:manage",
       resource: { type: "company", companyId: company.id },
-    })).resolves.toMatchObject({ allowed: true, reason: "allow_self" });
+    })).resolves.toMatchObject({
+      allowed: true,
+      reason: "allow_self",
+      inboxPolicyMode: "open",
+    });
   });
 
   it("denies responsible-user inbox management when disabled", async () => {
@@ -1968,7 +1972,11 @@ describeEmbeddedPostgres("authorization service", () => {
       resource: { type: "company" as const, companyId: company.id },
     });
 
-    await expect(decideFor(allowedAgent.id)).resolves.toMatchObject({ allowed: true, reason: "allow_self" });
+    await expect(decideFor(allowedAgent.id)).resolves.toMatchObject({
+      allowed: true,
+      reason: "allow_self",
+      inboxPolicyMode: "allowlist",
+    });
     await expect(decideFor(deniedAgent.id)).resolves.toMatchObject({
       allowed: false,
       reason: "inbox_agent_not_allowed",
