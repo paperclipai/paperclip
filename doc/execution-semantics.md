@@ -323,6 +323,7 @@ Recovery rule:
 
 - Paperclip queues one automatic continuation wake
 - if that continuation wake also finishes and the issue is still stranded, Paperclip moves the issue to `blocked` and opens or updates an explicit recovery action when a bounded owner/action is known; the visible comment is evidence, not the recovery path by itself
+- if the issue has unresolved first-class blockers and no active execution path, Paperclip normalizes it to `blocked` while preserving its blocker relations; a genuinely active run wins during handoff races
 
 This is an active-work continuity recovery.
 

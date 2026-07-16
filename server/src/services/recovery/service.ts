@@ -2383,6 +2383,7 @@ export function recoveryService(
       assignmentDispatched: 0,
       dispatchRequeued: 0,
       continuationRequeued: 0,
+      dependencyStatusCorrected: 0,
       productiveContinuationObserved: 0,
       successfulContinuationObserved: 0,
       orphanBlockersAssigned: 0,
@@ -2400,12 +2401,6 @@ export function recoveryService(
         continue;
       }
 
-      const agent = await getAgent(agentId);
-      if (!agent || agent.companyId !== issue.companyId || !isAgentInvokable(agent)) {
-        result.skipped += 1;
-        continue;
-      }
-
       // Typed routine handoffs already have a bounded recovery authority and
       // watchdog. Feeding them through generic assignment recovery would
       // create an unbounded second lane and could overwrite the typed action's
@@ -2415,10 +2410,48 @@ export function recoveryService(
         continue;
       }
 
-      // The heartbeat dependency gate already keeps these issues parked and
-      // wakes them when the last blocker resolves. Re-enqueuing from recovery
-      // would only create a skipped wake on every reconciliation sweep.
+      // The heartbeat dependency gate keeps these issues parked and wakes them
+      // when the last blocker resolves. If an issue was nevertheless left
+      // `in_progress` after its execution disappeared, normalize the workflow
+      // state to `blocked` instead of silently skipping a contradictory state.
+      // A genuinely active run wins during transition races.
       if (dependencyBlockedIssueIds.has(issue.id)) {
+        if (
+          issue.status === "in_progress" &&
+          !await hasActiveExecutionPath(issue.companyId, issue.id)
+        ) {
+          const updated = await issuesSvc.update(issue.id, { status: "blocked" });
+          if (updated) {
+            await logActivity(db, {
+              companyId: issue.companyId,
+              actorType: "system",
+              actorId: "system",
+              agentId: null,
+              runId: null,
+              action: "issue.dependency_wait_status_corrected",
+              entityType: "issue",
+              entityId: issue.id,
+              details: {
+                identifier: issue.identifier,
+                status: "blocked",
+                previousStatus: "in_progress",
+                source: "recovery.reconcile_stranded_assigned_issue",
+                recoveryCause: "in_progress_without_live_execution_while_dependency_blocked",
+              },
+            });
+            result.dependencyStatusCorrected += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
+        } else {
+          result.skipped += 1;
+        }
+        continue;
+      }
+
+      const agent = await getAgent(agentId);
+      if (!agent || agent.companyId !== issue.companyId || !isAgentInvokable(agent)) {
         result.skipped += 1;
         continue;
       }

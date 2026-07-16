@@ -2849,6 +2849,98 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(runs).toHaveLength(0);
   });
 
+  it("corrects dependency-blocked in-progress work with no live execution", async () => {
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+    });
+    const blockerIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: blockerIssueId,
+      companyId,
+      title: "Unresolved review prerequisite",
+      status: "in_review",
+      priority: "medium",
+    });
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerIssueId,
+      relatedIssueId: issueId,
+      type: "blocks",
+    });
+    await db.update(agents).set({ status: "paused" }).where(eq(agents.id, agentId));
+    const heartbeat = heartbeatService(db);
+
+    const first = await heartbeat.reconcileStrandedAssignedIssues();
+    const second = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(first.dependencyStatusCorrected).toBe(1);
+    expect(first.issueIds).toEqual([issueId]);
+    expect(second.dependencyStatusCorrected).toBe(0);
+
+    const corrected = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(corrected?.status).toBe("blocked");
+    await expect(sourceBlockerIssueIds(companyId, issueId)).resolves.toEqual([blockerIssueId]);
+
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs.map((run) => run.id)).toEqual([runId]);
+    const activity = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, issueId));
+    expect(activity).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        action: "issue.dependency_wait_status_corrected",
+        details: expect.objectContaining({
+          previousStatus: "in_progress",
+          status: "blocked",
+          recoveryCause: "in_progress_without_live_execution_while_dependency_blocked",
+        }),
+      }),
+    ]));
+  });
+
+  it("keeps dependency-blocked in-progress work live while execution is active", async () => {
+    const { companyId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+    });
+    const blockerIssueId = randomUUID();
+    await db
+      .update(heartbeatRuns)
+      .set({ status: "running", finishedAt: null })
+      .where(eq(heartbeatRuns.id, runId));
+    await db.insert(issues).values({
+      id: blockerIssueId,
+      companyId,
+      title: "Unresolved prerequisite during transition",
+      status: "in_progress",
+      priority: "medium",
+    });
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerIssueId,
+      relatedIssueId: issueId,
+      type: "blocks",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(result.dependencyStatusCorrected).toBe(0);
+    expect(result.skipped).toBe(1);
+    const liveIssue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(liveIssue?.status).toBe("in_progress");
+  });
+
   it("treats a valid future monitor as an explicit waiting path during recovery", async () => {
     const { agentId, issueId } = await seedStrandedIssueFixture({
       status: "in_progress",
