@@ -29,6 +29,7 @@ export type {
   IssueLivenessState,
 } from "./issue-graph-liveness.js";
 export {
+  hasExplicitNoOpRule,
   recoveryService,
 } from "./service.js";
 export {
