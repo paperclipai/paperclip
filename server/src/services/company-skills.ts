@@ -61,6 +61,8 @@ import type {
   CompanySkillProjectScanRequest,
   CompanySkillProjectScanResult,
   CompanySkillProjectScanSkipped,
+  CompanySkillRenameRequest,
+  CompanySkillRenameResult,
   CompanySkillSharingScope,
   CompanySkillSourceBadge,
   CompanySkillSourceType,
@@ -88,7 +90,7 @@ import type {
   IssueAttachment,
   IssueDocument,
 } from "@paperclipai/shared";
-import { isUuidLike, normalizeAgentUrlKey, parseFrontmatterMarkdown } from "@paperclipai/shared";
+import { isUuidLike, joinFrontmatterBlock, normalizeAgentUrlKey, parseFrontmatterMarkdown, splitFrontmatterBlock } from "@paperclipai/shared";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
@@ -547,6 +549,26 @@ function uniqueImportedSkillKey(companyId: string, baseSlug: string, usedKeys: S
 function buildSkillRuntimeName(key: string, slug: string) {
   if (key.startsWith("paperclipai/paperclip/")) return slug;
   return `${slug}--${hashSkillValue(key)}`;
+}
+
+/**
+ * Rewrite only the top-level `name:` frontmatter field of a SKILL.md document,
+ * leaving the body and every other field byte-identical. Returns the input
+ * unchanged when there is no frontmatter or no `name:` field to update.
+ */
+function rewriteFrontmatterName(markdown: string, newName: string): string {
+  const block = splitFrontmatterBlock(markdown);
+  if (!block.hasFrontmatter) return markdown;
+  let replaced = false;
+  const nextLines = block.frontmatterText.split("\n").map((line) => {
+    if (!replaced && /^name\s*:/.test(line)) {
+      replaced = true;
+      return `name: ${newName}`;
+    }
+    return line;
+  });
+  if (!replaced) return markdown;
+  return joinFrontmatterBlock({ ...block, frontmatterText: nextLines.join("\n") });
 }
 
 function readCanonicalSkillKey(frontmatter: Record<string, unknown>, metadata: Record<string, unknown> | null) {
@@ -2242,6 +2264,27 @@ function resolveManagedSkillsRoot(companyId: string) {
   return path.resolve(resolvePaperclipInstanceRoot(), "skills", companyId);
 }
 
+/**
+ * A rename target must be a true Paperclip-managed local skill: a `local_path`
+ * skill whose `managed_local` source directory lives directly under the
+ * company managed-skills root (e.g. `<managedRoot>/<slug>`). This deliberately
+ * excludes catalog (`__catalog__/...`), runtime (`__runtime__/...`) and other
+ * reserved subtrees, project-scanned skills, unmanaged `local_path` skills, and
+ * all remote source types, which keep their own identity/update semantics.
+ */
+function isPaperclipManagedRenameTarget(skill: CompanySkill): boolean {
+  if (skill.sourceType !== "local_path") return false;
+  if (getSkillMeta(skill).sourceKind !== "managed_local") return false;
+  const skillDir = normalizeSkillDirectory(skill);
+  if (!skillDir) return false;
+  const managedRoot = resolveManagedSkillsRoot(skill.companyId);
+  const relative = path.relative(managedRoot, skillDir);
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) return false;
+  const segments = relative.split(path.sep);
+  // Managed skills are a direct child of the root; reject reserved `__*` dirs.
+  return segments.length === 1 && !segments[0]!.startsWith("__");
+}
+
 function resolveLocalSkillFilePath(skill: CompanySkill, relativePath: string) {
   const normalized = normalizePortablePath(relativePath);
   const skillDir = normalizeSkillDirectory(skill);
@@ -3693,6 +3736,158 @@ export function companySkillService(db: Db) {
       original: summarizeOriginalSkill(source),
       reassignments,
     };
+  }
+
+  async function renameSkill(
+    companyId: string,
+    skillId: string,
+    input: CompanySkillRenameRequest,
+  ): Promise<CompanySkillRenameResult> {
+    await ensureSkillInventoryCurrent(companyId);
+    const skill = await getById(companyId, skillId);
+    if (!skill) throw notFound("Skill not found");
+
+    if (!isPaperclipManagedRenameTarget(skill)) {
+      throw unprocessable(
+        "Only Paperclip-managed skills can be renamed. Catalog, external, project-scanned, and unmanaged local skills are read-only.",
+        { skillId: skill.id, sourceType: skill.sourceType, sourceKind: getSkillMeta(skill).sourceKind ?? null },
+      );
+    }
+
+    const newName = input.name.trim();
+    if (!newName) throw unprocessable("Skill name is required.");
+    const newSlug = normalizeSkillSlug(input.slug ?? null) ?? normalizeSkillSlug(newName);
+    if (!newSlug) {
+      throw unprocessable("Skill name must contain at least one letter or number to derive a slug.");
+    }
+    const newKey = `company/${companyId}/${newSlug}`;
+
+    const previousName = skill.name;
+    const previousSlug = skill.slug;
+    const previousKey = skill.key;
+
+    // Normalized no-op: nothing changes, so skip all filesystem/DB work.
+    if (newName === previousName && newSlug === previousSlug && newKey === previousKey) {
+      return { skill, previousName, previousSlug, previousKey, reassignments: [] };
+    }
+
+    // Authoritative conflict detection against slug and key within the company.
+    if (newSlug !== previousSlug || newKey !== previousKey) {
+      const existing = await listFull(companyId);
+      for (const other of existing) {
+        if (other.id === skill.id) continue;
+        if ((normalizeSkillSlug(other.slug) ?? other.slug) === newSlug) {
+          throw conflict(`A company skill with slug "${newSlug}" already exists.`, {
+            conflict: "slug",
+            slug: newSlug,
+          });
+        }
+        if (other.key === newKey) {
+          throw conflict(`A company skill with key "${newKey}" already exists.`, {
+            conflict: "key",
+            key: newKey,
+          });
+        }
+      }
+    }
+
+    const managedRoot = resolveManagedSkillsRoot(companyId);
+    const oldDir = normalizeSkillDirectory(skill)!;
+    const newDir = path.resolve(managedRoot, newSlug);
+    const directoryMoved = newDir !== oldDir;
+
+    if (directoryMoved && (await statPath(newDir))) {
+      throw conflict(`A managed skill directory already exists at ${newDir}.`, { conflict: "directory" });
+    }
+
+    // Plan agent reassignments from the old key to the new key, preserving each
+    // pinned versionId. Resolve against the pre-rename reference targets so the
+    // old key still maps cleanly.
+    const referenceSkills = await listReferenceTargets(companyId);
+    const agentRows = await agents.list(companyId, { includeTerminated: true });
+    const plannedReassignments: CompanySkillForkReassignment[] = agentRows
+      .filter((agent) =>
+        resolveDesiredSkillEntries(referenceSkills, agent.adapterConfig as Record<string, unknown>)
+          .some((entry) => entry.key === previousKey))
+      .map((agent) => ({ agentId: agent.id, previousSkillKey: previousKey, nextSkillKey: newKey }));
+
+    // Reversible filesystem stage: capture the original SKILL.md so a failed DB
+    // transaction can be rolled back to the pre-rename on-disk state.
+    const originalMarkdown = await fs.readFile(path.join(oldDir, "SKILL.md"), "utf8").catch(() => null);
+    let movedDir = false;
+    try {
+      if (directoryMoved) {
+        await fs.mkdir(path.dirname(newDir), { recursive: true });
+        await fs.rename(oldDir, newDir);
+        movedDir = true;
+      }
+      if (originalMarkdown !== null) {
+        const rewritten = rewriteFrontmatterName(originalMarkdown, newName);
+        if (rewritten !== originalMarkdown) {
+          await fs.writeFile(path.join(newDir, "SKILL.md"), rewritten, "utf8");
+        }
+      }
+
+      await db.transaction(async (tx) => {
+        const updated = await tx
+          .update(companySkills)
+          .set({
+            name: newName,
+            slug: newSlug,
+            key: newKey,
+            sourceLocator: newDir,
+            updatedAt: new Date(),
+          })
+          .where(and(eq(companySkills.id, skill.id), eq(companySkills.companyId, companyId)))
+          .returning({ id: companySkills.id })
+          .then((rows) => rows[0] ?? null);
+        if (!updated) throw notFound("Skill not found");
+
+        for (const item of plannedReassignments) {
+          const row = await tx
+            .select({ id: agentsTable.id, adapterConfig: agentsTable.adapterConfig })
+            .from(agentsTable)
+            .where(and(eq(agentsTable.companyId, companyId), eq(agentsTable.id, item.agentId)))
+            .for("update")
+            .then((rows) => rows[0] ?? null);
+          if (!row) continue;
+          const adapterConfig = row.adapterConfig as Record<string, unknown>;
+          const nextEntries = resolveDesiredSkillEntries(referenceSkills, adapterConfig).map((entry) =>
+            entry.key === previousKey
+              ? { key: newKey, versionId: entry.versionId ?? null }
+              : entry);
+          await tx
+            .update(agentsTable)
+            .set({
+              adapterConfig: writePaperclipSkillSyncPreference(adapterConfig, nextEntries),
+              updatedAt: new Date(),
+            })
+            .where(and(eq(agentsTable.companyId, companyId), eq(agentsTable.id, item.agentId)));
+        }
+      });
+    } catch (error) {
+      // Roll back the filesystem to its pre-rename state.
+      if (originalMarkdown !== null) {
+        await fs
+          .writeFile(path.join(movedDir ? newDir : oldDir, "SKILL.md"), originalMarkdown, "utf8")
+          .catch(() => {});
+      }
+      if (movedDir) {
+        await fs.rename(newDir, oldDir).catch(() => {});
+      }
+      throw error;
+    }
+
+    // Remove the stale runtime materialization so runtime sync recreates it
+    // under the new key/slug.
+    await fs.rm(
+      path.resolve(managedRoot, "__runtime__", buildSkillRuntimeName(previousKey, previousSlug)),
+      { recursive: true, force: true },
+    );
+
+    const renamed = await getById(companyId, skill.id);
+    if (!renamed) throw notFound("Renamed skill not found");
+    return { skill: renamed, previousName, previousSlug, previousKey, reassignments: plannedReassignments };
   }
 
   async function updateStatus(companyId: string, skillId: string): Promise<CompanySkillUpdateStatus | null> {
@@ -6374,6 +6569,7 @@ export function companySkillService(db: Db) {
     updateComment,
     deleteComment,
     forkSkill,
+    renameSkill,
     updateStatus,
     readFile,
     updateSkill,

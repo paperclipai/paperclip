@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { promises as fs } from "node:fs";
@@ -2326,5 +2326,289 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     expect(result.warnings.join("\n")).not.toContain(outsideDir);
     const persisted = await db.select().from(companySkills).where(eq(companySkills.companyId, companyId));
     expect(persisted.filter((skill) => skill.metadata?.sourceKind === "project_scan")).toEqual([]);
+  });
+  async function seedCompany(companyId: string) {
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+  }
+
+  function runtimeSkillName(key: string, slug: string) {
+    if (key.startsWith("paperclipai/paperclip/")) return slug;
+    return `${slug}--${createHash("sha256").update(key).digest("hex").slice(0, 10)}`;
+  }
+
+  it("renames a Paperclip-managed skill, moving the directory and rewriting SKILL.md frontmatter", async () => {
+    const companyId = randomUUID();
+    await seedCompany(companyId);
+    const skill = await svc.createLocalSkill(
+      companyId,
+      { name: "Prepare PR", slug: "prepare-pr", description: "Prep pull requests" },
+      { type: "user", userId: "board" },
+    );
+    const oldDir = skill.sourceLocator!;
+    const managedRoot = path.dirname(oldDir);
+
+    const result = await svc.renameSkill(companyId, skill.id, { name: "Ship PR", slug: "ship-pr" });
+
+    expect(result).toMatchObject({
+      previousName: "Prepare PR",
+      previousSlug: "prepare-pr",
+      previousKey: `company/${companyId}/prepare-pr`,
+      reassignments: [],
+      skill: {
+        id: skill.id,
+        name: "Ship PR",
+        slug: "ship-pr",
+        key: `company/${companyId}/ship-pr`,
+      },
+    });
+
+    const newDir = path.join(managedRoot, "ship-pr");
+    expect(result.skill.sourceLocator).toBe(newDir);
+    await expect(fs.stat(oldDir)).rejects.toMatchObject({ code: "ENOENT" });
+    const renamedMarkdown = await fs.readFile(path.join(newDir, "SKILL.md"), "utf8");
+    expect(renamedMarkdown).toContain("name: Ship PR");
+    expect(renamedMarkdown).not.toContain("name: Prepare PR");
+
+    // Description and version history are preserved.
+    const persisted = await svc.getById(companyId, skill.id);
+    expect(persisted).toMatchObject({ description: "Prep pull requests" });
+    const versions = await svc.listVersions(companyId, skill.id);
+    expect(versions).toHaveLength(1);
+  });
+
+  it("supports a name-only rename that keeps the slug/key and directory", async () => {
+    const companyId = randomUUID();
+    await seedCompany(companyId);
+    const skill = await svc.createLocalSkill(
+      companyId,
+      { name: "Prepare PR", slug: "prepare-pr" },
+      { type: "user", userId: "board" },
+    );
+    const dir = skill.sourceLocator!;
+
+    // Keeping the slug requires passing it explicitly: an omitted slug is
+    // re-derived from the new name.
+    const result = await svc.renameSkill(companyId, skill.id, { name: "Prepare Pull Request", slug: "prepare-pr" });
+    expect(result.skill).toMatchObject({
+      name: "Prepare Pull Request",
+      slug: "prepare-pr",
+      key: `company/${companyId}/prepare-pr`,
+      sourceLocator: dir,
+    });
+    const markdown = await fs.readFile(path.join(dir, "SKILL.md"), "utf8");
+    expect(markdown).toContain("name: Prepare Pull Request");
+  });
+
+  it("returns the unchanged skill for a normalized no-op rename", async () => {
+    const companyId = randomUUID();
+    await seedCompany(companyId);
+    const skill = await svc.createLocalSkill(
+      companyId,
+      { name: "Prepare PR", slug: "prepare-pr" },
+      { type: "user", userId: "board" },
+    );
+
+    const result = await svc.renameSkill(companyId, skill.id, { name: "Prepare PR", slug: "Prepare-PR" });
+    expect(result).toMatchObject({
+      reassignments: [],
+      skill: { id: skill.id, slug: "prepare-pr", key: `company/${companyId}/prepare-pr` },
+    });
+  });
+
+  it("rejects a rename whose slug conflicts with another skill", async () => {
+    const companyId = randomUUID();
+    await seedCompany(companyId);
+    const source = await svc.createLocalSkill(companyId, { name: "Source", slug: "source" });
+    await svc.createLocalSkill(companyId, { name: "Taken", slug: "taken" });
+
+    await expect(svc.renameSkill(companyId, source.id, { name: "Taken", slug: "taken" })).rejects.toMatchObject({
+      status: 409,
+      details: { conflict: "slug", slug: "taken" },
+    });
+  });
+
+  it("rejects a rename whose derived key conflicts with another skill", async () => {
+    const companyId = randomUUID();
+    await seedCompany(companyId);
+    const source = await svc.createLocalSkill(companyId, { name: "Source", slug: "source" });
+    // A sibling whose key already matches the derived target key but whose slug
+    // differs, so only the key-conflict branch fires. It needs a real on-disk
+    // source so inventory reconciliation does not prune it before the check.
+    const squatterDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-key-squatter-"));
+    cleanupDirs.add(squatterDir);
+    await fs.writeFile(path.join(squatterDir, "SKILL.md"), "---\nname: Key Squatter\n---\n# Key Squatter\n", "utf8");
+    await db.insert(companySkills).values({
+      id: randomUUID(),
+      companyId,
+      key: `company/${companyId}/renamed`,
+      slug: "different-slug",
+      name: "Key Squatter",
+      description: null,
+      markdown: "# Key Squatter\n",
+      sourceType: "local_path",
+      sourceLocator: squatterDir,
+      trustLevel: "markdown_only",
+      compatibility: "compatible",
+      fileInventory: [{ path: "SKILL.md", kind: "skill" }],
+      metadata: { sourceKind: "managed_local" },
+    });
+
+    await expect(svc.renameSkill(companyId, source.id, { name: "Renamed", slug: "renamed" })).rejects.toMatchObject({
+      status: 409,
+      details: { conflict: "key", key: `company/${companyId}/renamed` },
+    });
+  });
+
+  it("rejects renaming non Paperclip-managed skill sources with 422", async () => {
+    const companyId = randomUUID();
+    await seedCompany(companyId);
+
+    const unmanagedDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-unmanaged-skill-"));
+    cleanupDirs.add(unmanagedDir);
+    await fs.writeFile(path.join(unmanagedDir, "SKILL.md"), "---\nname: Unmanaged\n---\n# Unmanaged\n", "utf8");
+
+    const rows = [
+      {
+        slug: "github-skill",
+        sourceType: "github" as const,
+        sourceLocator: "https://github.com/acme/github-skill",
+        metadata: { sourceKind: "github", owner: "acme", repo: "github-skill" },
+      },
+      {
+        slug: "url-skill",
+        sourceType: "url" as const,
+        sourceLocator: "https://example.com/url.md",
+        metadata: { sourceKind: "url" },
+      },
+      {
+        slug: "skills-sh-skill",
+        sourceType: "skills_sh" as const,
+        sourceLocator: "https://github.com/acme/skills-sh-skill",
+        metadata: { sourceKind: "skills_sh", owner: "acme", repo: "skills-sh-skill" },
+      },
+      {
+        slug: "catalog-skill",
+        sourceType: "catalog" as const,
+        sourceLocator: null,
+        metadata: { sourceKind: "catalog" },
+      },
+      {
+        slug: "project-scan-skill",
+        sourceType: "local_path" as const,
+        sourceLocator: unmanagedDir,
+        metadata: { sourceKind: "project_scan" },
+      },
+      {
+        slug: "unmanaged-local-skill",
+        sourceType: "local_path" as const,
+        sourceLocator: unmanagedDir,
+        metadata: { sourceKind: "local_path" },
+      },
+    ];
+    const inserted = rows.map((row) => ({ id: randomUUID(), ...row }));
+    await db.insert(companySkills).values(inserted.map((row) => ({
+      id: row.id,
+      companyId,
+      key: `company/${companyId}/${row.slug}`,
+      slug: row.slug,
+      name: row.slug,
+      description: null,
+      markdown: `# ${row.slug}\n`,
+      sourceType: row.sourceType,
+      sourceLocator: row.sourceLocator,
+      trustLevel: "markdown_only" as const,
+      compatibility: "compatible" as const,
+      fileInventory: [{ path: "SKILL.md", kind: "skill" as const }],
+      metadata: row.metadata,
+    })));
+
+    for (const row of inserted) {
+      await expect(svc.renameSkill(companyId, row.id, { name: "Renamed" })).rejects.toMatchObject({
+        status: 422,
+      });
+    }
+  });
+
+  it("rewrites agent desired-skill keys on rename while preserving version pins", async () => {
+    const companyId = randomUUID();
+    await seedCompany(companyId);
+    const skill = await svc.createLocalSkill(companyId, { name: "Shared", slug: "shared" });
+    const pinnedVersionId = randomUUID();
+
+    const pinnedAgentId = randomUUID();
+    const looseAgentId = randomUUID();
+    const otherAgentId = randomUUID();
+    await db.insert(agents).values([
+      {
+        id: pinnedAgentId,
+        companyId,
+        name: "Pinned",
+        role: "engineer",
+        adapterType: "codex_local",
+        adapterConfig: {
+          paperclipSkillSync: {
+            desiredSkills: [{ key: `company/${companyId}/shared`, versionId: pinnedVersionId }],
+          },
+        },
+      },
+      {
+        id: looseAgentId,
+        companyId,
+        name: "Loose",
+        role: "engineer",
+        adapterType: "codex_local",
+        adapterConfig: {
+          paperclipSkillSync: { desiredSkills: [`company/${companyId}/shared`] },
+        },
+      },
+      {
+        id: otherAgentId,
+        companyId,
+        name: "Other",
+        role: "engineer",
+        adapterType: "codex_local",
+        adapterConfig: {
+          paperclipSkillSync: { desiredSkills: [`company/${companyId}/unrelated`] },
+        },
+      },
+    ]);
+
+    const result = await svc.renameSkill(companyId, skill.id, { name: "Shared Renamed", slug: "shared-renamed" });
+    expect(result.reassignments).toEqual(
+      expect.arrayContaining([
+        { agentId: pinnedAgentId, previousSkillKey: `company/${companyId}/shared`, nextSkillKey: `company/${companyId}/shared-renamed` },
+        { agentId: looseAgentId, previousSkillKey: `company/${companyId}/shared`, nextSkillKey: `company/${companyId}/shared-renamed` },
+      ]),
+    );
+    expect(result.reassignments).toHaveLength(2);
+
+    const after = await db.select().from(agents).where(eq(agents.companyId, companyId));
+    const pinned = after.find((agent) => agent.id === pinnedAgentId)!.adapterConfig as Record<string, any>;
+    const loose = after.find((agent) => agent.id === looseAgentId)!.adapterConfig as Record<string, any>;
+    const other = after.find((agent) => agent.id === otherAgentId)!.adapterConfig as Record<string, any>;
+    expect(pinned.paperclipSkillSync.desiredSkills).toEqual([
+      { key: `company/${companyId}/shared-renamed`, versionId: pinnedVersionId },
+    ]);
+    expect(loose.paperclipSkillSync.desiredSkills).toEqual([`company/${companyId}/shared-renamed`]);
+    expect(other.paperclipSkillSync.desiredSkills).toEqual([`company/${companyId}/unrelated`]);
+  });
+
+  it("removes the old runtime materialization when the key/slug changes", async () => {
+    const companyId = randomUUID();
+    await seedCompany(companyId);
+    const skill = await svc.createLocalSkill(companyId, { name: "Runtime Skill", slug: "runtime-skill" });
+    const managedRoot = path.dirname(skill.sourceLocator!);
+    const oldRuntimeDir = path.join(managedRoot, "__runtime__", runtimeSkillName(skill.key, skill.slug));
+    await fs.mkdir(oldRuntimeDir, { recursive: true });
+    await fs.writeFile(path.join(oldRuntimeDir, "SKILL.md"), "# stale\n", "utf8");
+
+    await svc.renameSkill(companyId, skill.id, { name: "Runtime Skill", slug: "runtime-renamed" });
+
+    await expect(fs.stat(oldRuntimeDir)).rejects.toMatchObject({ code: "ENOENT" });
   });
 });
