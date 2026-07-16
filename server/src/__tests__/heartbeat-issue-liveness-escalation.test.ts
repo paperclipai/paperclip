@@ -14,6 +14,7 @@ import {
   heartbeatRuns,
   issueComments,
   issueRelations,
+  issueThreadInteractions,
   issueTreeHolds,
   issues,
   projects,
@@ -779,6 +780,88 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
       .from(issues)
       .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "harness_liveness_escalation")));
     expect(escalations).toHaveLength(1);
+  });
+
+  it("treats pending assignee-continuation interactions as scheduled liveness waiting paths", async () => {
+    await enableAutoRecovery();
+    const { companyId, blockerIssueId } = await seedBlockedChain({
+      blockerStatus: "in_review",
+      blockerAssigneeAgentId: "coder",
+    });
+
+    await db.insert(issueThreadInteractions).values({
+      companyId,
+      issueId: blockerIssueId,
+      kind: "ask_user_questions",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      title: "Need board input",
+      payload: {
+        questions: [
+          {
+            id: "decision",
+            header: "Decision",
+            question: "What should happen next?",
+            options: [
+              { label: "Continue", description: "Resume the assignee after the answer." },
+              { label: "Stop", description: "Do not continue this path." },
+            ],
+          },
+        ],
+      },
+    });
+
+    const result = await heartbeatService(db).reconcileIssueGraphLiveness();
+
+    expect(result.findings).toBe(0);
+    expect(result.escalationsCreated).toBe(0);
+
+    const escalations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "harness_liveness_escalation")));
+    expect(escalations).toHaveLength(0);
+  });
+
+  it("treats non-continuation pending interactions as review liveness waiting paths", async () => {
+    await enableAutoRecovery();
+    const { companyId, blockerIssueId } = await seedBlockedChain({
+      blockerStatus: "in_review",
+      blockerAssigneeAgentId: "coder",
+    });
+
+    await db.insert(issueThreadInteractions).values({
+      companyId,
+      issueId: blockerIssueId,
+      kind: "ask_user_questions",
+      status: "pending",
+      continuationPolicy: "none",
+      title: "Informational question",
+      payload: {
+        questions: [
+          {
+            id: "decision",
+            header: "Decision",
+            question: "What should happen next?",
+            options: [
+              { label: "Continue", description: "Resume manually if needed." },
+              { label: "Stop", description: "Do not continue this path." },
+            ],
+          },
+        ],
+      },
+    });
+
+    const result = await heartbeatService(db).reconcileIssueGraphLiveness();
+
+    expect(result.findings).toBe(0);
+    expect(result.escalationsCreated).toBe(0);
+
+    const escalations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "harness_liveness_escalation")));
+    expect(escalations).toHaveLength(0);
   });
 
   it("keeps active invalid_review_participant recoveries from being retired", async () => {
