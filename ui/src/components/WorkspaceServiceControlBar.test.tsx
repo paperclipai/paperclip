@@ -71,4 +71,38 @@ describe("WorkspaceServiceControlBar", () => {
     expect(copyButton.getAttribute("aria-label")).toBe("Copy failed");
     expect(copyButton.querySelector(".text-destructive")).not.toBeNull();
   });
+
+  it("reserves the desktop URL segment across service states", async () => {
+    const renderService = async (state: "stopped" | "running", url: string | null) => {
+      await act(() => {
+        root.render(
+          <WorkspaceServiceControlBar
+            services={[{
+              key: "web",
+              name: "Web",
+              state,
+              healthStatus: state === "running" ? "healthy" : null,
+              url,
+              port: 3100,
+            }]}
+            onAction={() => {}}
+          />,
+        );
+      });
+
+      const urlText = state === "running"
+        ? container.querySelector<HTMLAnchorElement>('a[href="http://127.0.0.1:3100"]')
+        : Array.from(container.querySelectorAll("span")).find((element) => element.textContent === ":3100");
+      return urlText?.parentElement;
+    };
+
+    const stoppedSegment = await renderService("stopped", null);
+    expect(stoppedSegment).not.toBeNull();
+    expect(stoppedSegment?.classList.contains("w-56")).toBe(true);
+    expect(stoppedSegment?.classList.contains("shrink-0")).toBe(true);
+
+    const runningSegment = await renderService("running", "http://127.0.0.1:3100");
+    expect(runningSegment).not.toBeNull();
+    expect(runningSegment?.className).toBe(stoppedSegment?.className);
+  });
 });

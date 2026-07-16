@@ -321,7 +321,7 @@ function SingleServiceBar({
             <span className="whitespace-nowrap text-xs font-medium text-foreground">{meta.label}</span>
           </div>
           <div className="mx-3 hidden h-5 w-px bg-border sm:block" />
-          <div className="hidden min-w-0 items-center gap-0.5 sm:flex">
+          <div className="hidden w-56 min-w-0 shrink-0 items-center gap-0.5 sm:flex">
             <UrlSegment entry={entry} />
           </div>
           <div className="mx-3 hidden h-5 w-px bg-border sm:block" />
