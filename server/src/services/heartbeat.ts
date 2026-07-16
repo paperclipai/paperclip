@@ -13966,8 +13966,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .limit(1)
         .then((rows) => rows[0] ?? null)
       : null;
-    const terminalRecoveryOwnerAgentId = terminalRecoveryIssue
-      ? await recovery.resolveFailedTerminalWorkspaceFinalizeOwner(terminalRecoveryIssue)
+    const terminalRecoveryRouting = terminalRecoveryIssue
+      ? await recovery.resolveFailedTerminalWorkspaceFinalizeRouting(terminalRecoveryIssue, run)
       : null;
 
     const promotionResult = await db.transaction(async (tx) => {
@@ -14123,7 +14123,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               const recoveryAction = await recovery.ensureFailedTerminalWorkspaceFinalizeRecovery({
                 issue,
                 latestRun: run,
-                recoveryOwnerAgentId: terminalRecoveryOwnerAgentId,
+                recoveryRouting: terminalRecoveryRouting!,
               }, tx);
               return { kind: "failed_terminal_workspace_finalize" as const, issue, recoveryAction };
             }
