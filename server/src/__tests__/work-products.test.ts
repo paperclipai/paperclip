@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { workProductService } from "../services/work-products.ts";
+import { workProductDedupeKey, workProductService } from "../services/work-products.ts";
 
 function createWorkProductRow(overrides: Partial<Record<string, unknown>> = {}) {
   const now = new Date("2026-03-17T00:00:00.000Z");
@@ -181,5 +181,13 @@ describe("workProductService", () => {
       product: { id: "work-product-1", externalId: "artifact-sha-recovery" },
     });
     expect(stored).toHaveLength(1);
+  });
+
+  it("scopes dedupe locks by company, issue, and provider", () => {
+    const base = workProductDedupeKey("company-1", "issue-1", "paperclip", "external-1");
+
+    expect(workProductDedupeKey("company-2", "issue-1", "paperclip", "external-1")).not.toBe(base);
+    expect(workProductDedupeKey("company-1", "issue-2", "paperclip", "external-1")).not.toBe(base);
+    expect(workProductDedupeKey("company-1", "issue-1", "github", "external-1")).not.toBe(base);
   });
 });

@@ -31,6 +31,15 @@ function toIssueWorkProduct(row: IssueWorkProductRow): IssueWorkProduct {
   };
 }
 
+export function workProductDedupeKey(
+  companyId: string,
+  issueId: string,
+  provider: string,
+  externalId: string,
+) {
+  return `${companyId}:${issueId}:${provider}:${externalId}`;
+}
+
 export function workProductService(db: Db) {
   return {
     listForIssue: async (issueId: string) => {
@@ -54,7 +63,12 @@ export function workProductService(db: Db) {
     createForIssue: async (issueId: string, companyId: string, data: Omit<typeof issueWorkProducts.$inferInsert, "issueId" | "companyId">) => {
       const row = await db.transaction(async (tx) => {
         if (data.externalId) {
-          const dedupeKey = `${companyId}:${issueId}:${data.provider}:${data.externalId}`;
+          const dedupeKey = workProductDedupeKey(
+            companyId,
+            issueId,
+            data.provider,
+            data.externalId,
+          );
           await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${dedupeKey}, 0))`);
           const existing = await tx
             .select()
