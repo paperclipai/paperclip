@@ -66,6 +66,32 @@ describe("createDurableRunLogStore", () => {
     expect(handle.store).toBe("local_file");
   });
 
+  it("creates private directories and files even with a permissive umask", async () => {
+    const previous = process.umask(0o000);
+    try {
+      const store = createDurableRunLogStore({ basePath: baseDir });
+      const handle = await store.begin(begin);
+      const fileMode = (await fs.stat(path.join(baseDir, handle.logRef))).mode & 0o777;
+      const directoryMode = (await fs.stat(path.dirname(path.join(baseDir, handle.logRef)))).mode & 0o777;
+      expect(fileMode).toBe(0o600);
+      expect(directoryMode).toBe(0o700);
+    } finally {
+      process.umask(previous);
+    }
+  });
+
+  it("removes both local and mirrored output idempotently", async () => {
+    const { provider, objects } = createMemoryProvider();
+    const store = createDurableRunLogStore({ basePath: baseDir, s3: { provider, keyPrefix: "run-logs" } });
+    const handle = await store.begin(begin);
+    await store.append(handle, { stream: "stdout", chunk: "sensitive output", ts: "t1" });
+    await store.finalize(handle);
+    await store.remove(handle);
+    await store.remove(handle);
+    await expect(store.read(handle)).rejects.toThrow(/not found/i);
+    expect(objects.has(`run-logs/${handle.logRef}`)).toBe(false);
+  });
+
   it("appends locally and reads back during a run WITHOUT hitting S3 (fast live tail)", async () => {
     const { provider, calls } = createMemoryProvider();
     const store = createDurableRunLogStore({ basePath: baseDir, s3: { provider } });

@@ -219,6 +219,7 @@ describe("agent live run routes", () => {
     mockHeartbeatService.getRunLogAccess.mockResolvedValue({
       id: "run-1",
       companyId: "company-1",
+      agentId: routeAgentId,
       logStore: "local_file",
       logRef: "logs/run-1.ndjson",
     });
@@ -352,6 +353,7 @@ describe("agent live run routes", () => {
     expect(mockHeartbeatService.readLog).toHaveBeenCalledWith({
       id: "run-1",
       companyId: "company-1",
+      agentId: routeAgentId,
       logStore: "local_file",
       logRef: "logs/run-1.ndjson",
     }, {

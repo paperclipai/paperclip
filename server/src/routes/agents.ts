@@ -50,6 +50,7 @@ import {
   issueRecoveryActionService,
   issueService,
   logActivity,
+  purgeHeartbeatRunOutput,
   syncInstructionsBundleConfigFromFilePath,
   workspaceOperationService,
 } from "../services/index.js";
@@ -934,6 +935,29 @@ export function agentRoutes(
     if (decision.allowed) return;
 
     throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+  }
+
+  async function hasPrivilegedRunOutputAccess(req: Request, companyId: string) {
+    if (req.actor.type === "board") return true;
+    if (req.actor.type !== "agent") return false;
+    const decision = await access.decide({
+      actor: req.actor,
+      // Reuse the existing explicit supervisory/security grant ladder rather
+      // than treating company membership as permission to inspect transcripts.
+      action: "agent_config:read",
+      resource: { type: "company", companyId },
+    });
+    return decision.allowed;
+  }
+
+  async function assertCanReadHeartbeatRunOutput(
+    req: Request,
+    run: { companyId: string; agentId: string },
+  ) {
+    assertCompanyAccess(req, run.companyId);
+    if (req.actor.type === "board" || req.actor.agentId === run.agentId) return;
+    if (await hasPrivilegedRunOutputAccess(req, run.companyId)) return;
+    throw forbidden("Heartbeat run output is restricted to the owning agent or an authorized supervisor");
   }
 
   function assertKnownAdapterType(type: string | null | undefined): string {
@@ -3575,7 +3599,12 @@ export function agentRoutes(
   router.get("/companies/:companyId/heartbeat-runs", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    const agentId = req.query.agentId as string | undefined;
+    const requestedAgentId = req.query.agentId as string | undefined;
+    const privileged = await hasPrivilegedRunOutputAccess(req, companyId);
+    if (req.actor.type === "agent" && requestedAgentId && requestedAgentId !== req.actor.agentId && !privileged) {
+      throw forbidden("Heartbeat run output is restricted to the owning agent or an authorized supervisor");
+    }
+    const agentId = req.actor.type === "agent" && !privileged ? req.actor.agentId ?? undefined : requestedAgentId;
     const limitParam = req.query.limit as string | undefined;
     const limit = limitParam ? Math.max(1, Math.min(1000, parseInt(limitParam, 10) || 200)) : undefined;
     const summary = req.query.summary === "true" || req.query.summary === "1";
@@ -3586,6 +3615,7 @@ export function agentRoutes(
   router.get("/companies/:companyId/live-runs", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    const privileged = await hasPrivilegedRunOutputAccess(req, companyId);
 
     // `minCount` is a padding floor for callers that want a minimum number of
     // recent runs to render (e.g. dashboard cards). It must default to 0 so
@@ -3631,6 +3661,7 @@ export function agentRoutes(
         and(
           eq(heartbeatRuns.companyId, companyId),
           inArray(heartbeatRuns.status, ["queued", "running"]),
+          req.actor.type === "agent" && !privileged ? eq(heartbeatRuns.agentId, req.actor.agentId ?? "") : undefined,
         ),
       )
       .orderBy(desc(heartbeatRuns.createdAt));
@@ -3649,6 +3680,7 @@ export function agentRoutes(
             eq(heartbeatRuns.companyId, companyId),
             not(inArray(heartbeatRuns.status, ["queued", "running"])),
             ...(activeIds.length > 0 ? [not(inArray(heartbeatRuns.id, activeIds))] : []),
+            req.actor.type === "agent" && !privileged ? eq(heartbeatRuns.agentId, req.actor.agentId ?? "") : undefined,
           ),
         )
         .orderBy(desc(heartbeatRuns.createdAt))
@@ -3672,6 +3704,7 @@ export function agentRoutes(
     const runId = req.params.runId as string;
     const run = await getAccessibleResource(req, res, heartbeat.getRun(runId), "Heartbeat run not found");
     if (!run) return;
+    await assertCanReadHeartbeatRunOutput(req, run);
     const retryExhaustedReason = await heartbeat.getRetryExhaustedReason(runId);
     const decoratedRun = heartbeat.decorateActiveRunStatus(run);
     res.json(
@@ -3702,6 +3735,36 @@ export function agentRoutes(
     }
 
     res.json(run);
+  });
+
+  // Raw run output can contain customer data and credentials even after
+  // redaction. Purge is deliberately board-only and preserves the run's audit
+  // identity/status/usage while removing every content-bearing copy.
+  router.post("/heartbeat-runs/:runId/purge-output", async (req, res) => {
+    assertBoard(req);
+    const runId = req.params.runId as string;
+    const existing = await getAccessibleResource(req, res, heartbeat.getRunLogAccess(runId), "Heartbeat run not found");
+    if (!existing) return;
+
+    const result = await purgeHeartbeatRunOutput(db, runId);
+    if (!result) {
+      res.status(404).json({ error: "Heartbeat run not found" });
+      return;
+    }
+    await logActivity(db, {
+      companyId: result.companyId,
+      actorType: "user",
+      actorId: req.actor.userId ?? "board",
+      runId: result.runId,
+      action: "heartbeat.run_output_purged",
+      entityType: "heartbeat_run",
+      entityId: result.runId,
+      details: {
+        alreadyPurged: result.alreadyPurged,
+        clearedSessionArtifacts: result.clearedSessionArtifacts,
+      },
+    });
+    res.json({ ...result, purged: true });
   });
 
   router.post("/heartbeat-runs/:runId/watchdog-decisions", async (req, res) => {
@@ -3740,6 +3803,7 @@ export function agentRoutes(
     const runId = req.params.runId as string;
     const run = await getAccessibleResource(req, res, heartbeat.getRun(runId), "Heartbeat run not found");
     if (!run) return;
+    await assertCanReadHeartbeatRunOutput(req, run);
 
     const afterSeq = Number(req.query.afterSeq ?? 0);
     const limit = Number(req.query.limit ?? 200);
@@ -3758,6 +3822,7 @@ export function agentRoutes(
     const runId = req.params.runId as string;
     const run = await getAccessibleResource(req, res, heartbeat.getRunLogAccess(runId), "Heartbeat run not found");
     if (!run) return;
+    await assertCanReadHeartbeatRunOutput(req, run);
 
     const offset = Number(req.query.offset ?? 0);
     const limitBytes = readRunLogLimitBytes(req.query.limitBytes);
