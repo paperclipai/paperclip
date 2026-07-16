@@ -918,6 +918,7 @@ export const PERMISSION_KEYS = [
   "tools:view_audit",
   "tools:use",
   "tools:manage_runtime",
+  "inbox:manage",
   "users:invite",
   "users:manage_permissions",
   "tasks:assign",
