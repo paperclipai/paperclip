@@ -7,6 +7,7 @@ import {
 } from "../services/instance-settings.js";
 
 const INSTANCE_NONCE = "9ed115ac-9e93-4fe9-a4f1-eb4ea2b0fb24";
+const SEED_EPOCH = "7fa5921e-241f-4ec1-9f63-fd11266ac7b1";
 
 describe("instance settings service", () => {
   it("ignores retired experimental flags without resetting current settings", () => {
@@ -40,7 +41,6 @@ describe("instance settings service", () => {
       enableExperimentalFileViewer: true,
       enableTaskWatchdogs: true,
       enableCloudSync: true,
-      enableSmokeLab: false,
       enableBuiltInAgents: true,
       enableSummaries: false,
       enableDecisions: false,
@@ -52,6 +52,7 @@ describe("instance settings service", () => {
       enableWorkspaceDirtyQuarantineRepair: false,
       enableWorktreeRunExecution: false,
       worktreeRunExecutionInstanceNonce: null,
+      worktreeRunExecutionSeedEpoch: null,
       worktreeRunExecutionActivatedAt: null,
       worktreeRunExecutionActivationInstanceId: null,
       issueGraphLivenessAutoRecoveryLookbackHours: 48,
@@ -268,6 +269,7 @@ describe("instance settings service", () => {
     const experimental = normalizeExperimentalSettings({
       enableWorktreeRunExecution: true,
       worktreeRunExecutionInstanceNonce: INSTANCE_NONCE,
+      worktreeRunExecutionSeedEpoch: SEED_EPOCH,
       worktreeRunExecutionActivatedAt: "2026-07-10T12:00:00.000Z",
       worktreeRunExecutionActivationInstanceId: INSTANCE_NONCE,
     });
@@ -284,6 +286,8 @@ describe("instance settings service", () => {
       armed: true,
       cutoff: "2026-07-10T12:00:00.000Z",
       activationInstanceId: INSTANCE_NONCE,
+      instanceNonce: INSTANCE_NONCE,
+      seedEpoch: SEED_EPOCH,
       reason: null,
     });
   });
@@ -314,6 +318,7 @@ describe("instance settings service", () => {
     const experimental = normalizeExperimentalSettings({
       enableWorktreeRunExecution: true,
       worktreeRunExecutionInstanceNonce: INSTANCE_NONCE,
+      worktreeRunExecutionSeedEpoch: SEED_EPOCH,
       worktreeRunExecutionActivatedAt: "2026-07-10T12:00:00.000Z",
       worktreeRunExecutionActivationInstanceId: "f6690751-2ed0-4113-9403-241c2cc3ace9",
     });

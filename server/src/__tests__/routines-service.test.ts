@@ -215,6 +215,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     const experimental = {
       enableWorktreeRunExecution: true,
       worktreeRunExecutionInstanceNonce: instanceId,
+      worktreeRunExecutionSeedEpoch: "00000000-0000-4000-8000-000000000002",
       worktreeRunExecutionActivatedAt: cutoff.toISOString(),
       worktreeRunExecutionActivationInstanceId: instanceId,
     };

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
 import type { ComponentProps, ReactNode } from "react";
+import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import type { ActivityEvent, Issue, RunLivenessState } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -30,13 +30,13 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  act(() => root.unmount());
+  flushSync(() => root.unmount());
   container.remove();
   vi.useRealTimers();
 });
 
 function render(ui: ReactNode) {
-  act(() => {
+  flushSync(() => {
     root.render(ui);
   });
 }
@@ -468,7 +468,7 @@ describe("IssueRunLedger", () => {
       (button) => button.textContent?.includes("Continue monitoring"),
     );
     expect(continueButton).not.toBeUndefined();
-    act(() => {
+    flushSync(() => {
       continueButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     expect(onWatchdogDecision).toHaveBeenCalledWith({

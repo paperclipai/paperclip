@@ -29,6 +29,8 @@ function armed(overrides: Partial<WorktreeRunEngineStatus> = {}): WorktreeRunEng
       armed: true,
       cutoff: "2026-07-10T18:34:00.000Z",
       activationInstanceId: "nonce-aaaaaaaa1111",
+      instanceNonce: "nonce-aaaaaaaa1111",
+      seedEpoch: "epoch-bbbbbbbb2222",
       reason: null,
     },
     instanceNonce: "nonce-aaaaaaaa1111",
