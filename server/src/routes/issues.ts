@@ -453,6 +453,7 @@ async function auditAgentIssueCreateAttributionSpoof(input: {
     actorId: actor.actorId,
     agentId: actor.agentId,
     runId: actor.runId,
+    agentApiKeyId: actor.agentApiKeyId,
     action: input.action === "rejected"
       ? "issue.attribution_spoof_rejected"
       : "issue.attribution_spoof_stripped",
@@ -2865,6 +2866,7 @@ export function issueRoutes(
         actorId: input.actor.actorId,
         agentId: input.actor.agentId,
         runId: input.actor.runId,
+        agentApiKeyId: input.actor.agentApiKeyId,
         action: "heartbeat.cancelled",
         entityType: "heartbeat_run",
         entityId: cancelledRunId,
@@ -3244,6 +3246,7 @@ export function issueRoutes(
         actorId: input.actor.actorId,
         agentId: input.actor.agentId,
         runId: input.actor.runId,
+        agentApiKeyId: input.actor.agentApiKeyId,
         action: "issue.thread_interaction_expired",
         entityType: "issue",
         entityId: input.issue.id,
@@ -3809,6 +3812,7 @@ export function issueRoutes(
       actorId: input.actor.actorId,
       agentId: input.actor.agentId,
       runId: input.actor.runId,
+      agentApiKeyId: input.actor.agentApiKeyId,
       action: "issue.task_watchdog_followups_serialized",
       entityType: "issue",
       entityId: watchdogParent.id,
