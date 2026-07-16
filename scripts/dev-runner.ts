@@ -9,6 +9,7 @@ import { createCapturedOutputBuffer, parseJsonResponseWithLimit } from "./dev-ru
 import { collectWatchedSnapshot as collectDevServerWatchedSnapshot, diffSnapshots } from "./dev-runner-snapshot.mjs";
 import { createDevServiceIdentity, repoRoot } from "./dev-service-profile.ts";
 import { shouldBlockMigrationPreflight } from "./dev-runner-migration-policy.mjs";
+import { pluginSdkPreparationArgs } from "./dev-runner-plugin-sdk.mjs";
 import { bootstrapDevRunnerWorktreeEnv } from "../server/src/dev-runner-worktree.ts";
 import {
   findAdoptableLocalService,
@@ -483,9 +484,9 @@ async function maybePreflightMigrations(options: { interactive?: boolean; autoAp
 }
 
 async function buildPluginSdk() {
-  console.log("[paperclip] building plugin sdk...");
+  console.log("[paperclip] ensuring plugin sdk build dependencies...");
   const result = await runPnpm(
-    ["--filter", "@paperclipai/plugin-sdk", "build"],
+    pluginSdkPreparationArgs(),
     { stdio: "inherit" },
   );
   if (result.signal) {
@@ -493,7 +494,7 @@ async function buildPluginSdk() {
     return;
   }
   if (result.code !== 0) {
-    console.error("[paperclip] plugin sdk build failed");
+    console.error("[paperclip] plugin sdk build dependency check failed");
     process.exit(result.code);
   }
 }
