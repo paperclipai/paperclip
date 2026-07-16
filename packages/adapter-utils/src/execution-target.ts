@@ -204,7 +204,7 @@ function resolveBridgeHostApiUrl(input: { explicitHostApiUrl?: string | null | u
   const localCandidate = parseRuntimeApiCandidateUrls(process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON)
     .find(isLoopbackRuntimeUrl);
   if (localCandidate) return localCandidate;
-  if (process.env.PAPERCLIP_LISTEN_HOST?.trim() || process.env.PAPERCLIP_LISTEN_PORT?.trim() || process.env.PORT?.trim()) {
+  if (process.env.PAPERCLIP_LISTEN_HOST?.trim() || process.env.PAPERCLIP_LISTEN_PORT?.trim()) {
     return resolveDefaultPaperclipApiUrl();
   }
   return localCandidate ??
