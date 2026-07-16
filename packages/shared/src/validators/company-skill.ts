@@ -197,7 +197,7 @@ export const companySkillForkPrecheckResultSchema = z.object({
 });
 
 export const companySkillRenameSchema = z.object({
-  name: z.string().min(1),
+  name: z.string().min(1).regex(/^[^\r\n]+$/, "Name must be a single line"),
   slug: z.string().min(1).nullable().optional(),
 });
 

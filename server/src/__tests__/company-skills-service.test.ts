@@ -2352,12 +2352,7 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     const oldDir = skill.sourceLocator!;
     const managedRoot = path.dirname(oldDir);
 
-    const result = await svc.renameSkill(
-      companyId,
-      skill.id,
-      { name: "Ship PR", slug: "ship-pr" },
-      { type: "user", userId: "board" },
-    );
+    const result = await svc.renameSkill(companyId, skill.id, { name: "Ship PR", slug: "ship-pr" });
 
     expect(result).toMatchObject({
       previousName: "Prepare PR",

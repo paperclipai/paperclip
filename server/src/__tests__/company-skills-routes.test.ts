@@ -1717,6 +1717,16 @@ describe("company skill mutation permissions", () => {
     expect(mockCompanySkillService.renameSkill).not.toHaveBeenCalled();
   });
 
+  it("rejects a rename request with a multiline name", async () => {
+    const app = await createApp({ type: "board", source: "local_implicit", userId: "user-1" });
+
+    await request(app)
+      .post("/api/companies/company-1/skills/skill-1/rename")
+      .send({ name: "Ship PR\nslug: injected" })
+      .expect(400);
+    expect(mockCompanySkillService.renameSkill).not.toHaveBeenCalled();
+  });
+
   it("does not synthesize a shared board user id for board actors without user ids", async () => {
     const app = await createApp({ type: "board", source: "local_implicit" });
 
