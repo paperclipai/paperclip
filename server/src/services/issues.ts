@@ -578,6 +578,7 @@ type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
   trustExplicitResponsibleUserId?: boolean;
   idempotencyKey?: string | null;
   allowDuplicate?: boolean;
+  onDeduplicated?: (reason: "idempotency_key" | "recent_open_title") => void;
 };
 type IssueChildCreateInput = IssueCreateInput & {
   acceptanceCriteria?: string[];
@@ -5980,13 +5981,7 @@ export function issueService(db: Db) {
       });
     },
 
-    create: async (
-      companyId: string,
-      data: IssueCreateInput,
-      options?: {
-        onDeduplicated?: (reason: "idempotency_key" | "recent_open_title") => void;
-      },
-    ) => {
+    create: async (companyId: string, data: IssueCreateInput) => {
       const {
         labelIds: inputLabelIds,
         blockedByIssueIds,
@@ -5999,6 +5994,7 @@ export function issueService(db: Db) {
         trustExplicitResponsibleUserId,
         idempotencyKey: rawIdempotencyKey,
         allowDuplicate,
+        onDeduplicated,
         ...issueData
       } = data;
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
@@ -6070,7 +6066,7 @@ export function issueService(db: Db) {
               .values({ companyId, idempotencyKey, issueId: existingIssue.id })
               .onConflictDoNothing();
           }
-          if (deduplicationReason) options?.onDeduplicated?.(deduplicationReason);
+          if (deduplicationReason) onDeduplicated?.(deduplicationReason);
           const [enriched] = await withIssueLabels(tx, [existingIssue]);
           const [withRelations] = await withIssueRelationSummaries(companyId, [enriched], tx);
           return withRelations;

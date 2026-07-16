@@ -6979,13 +6979,11 @@ export function issueRoutes(
       actorResponsibleUserId: authenticatedActorResponsibleUserId(req),
       trustExplicitResponsibleUserId: actor.actorType === "user",
       watchdogActorRunId: actor.runId,
-    }, {
       onDeduplicated: (reason) => {
         deduplicationReason = reason;
       },
     });
-    if (issue.id !== issueId) {
-      if (!deduplicationReason) throw new Error("Deduplicated issue creation did not report a reason");
+    if (deduplicationReason) {
       const referenceSummary = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
       res.status(200).json({
         ...issue,
