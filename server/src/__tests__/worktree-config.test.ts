@@ -422,10 +422,15 @@ describe("worktree config repair", () => {
 
     await writeWorktree(firstWorktreeRoot, "PAP-14013-import-bulk-skills");
     await writeWorktree(secondWorktreeRoot, "PAP-14069-port-conflicts");
+    const staleLockPath = path.join(isolatedHome, ".worktree-port-reservations.lock");
+    await fs.mkdir(staleLockPath, { recursive: true });
+    const staleLockTime = new Date(Date.now() - 6_000);
+    await fs.utimes(staleLockPath, staleLockTime, staleLockTime);
     const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
     activateWorktree(firstWorktreeRoot, "PAP-14013-import-bulk-skills");
     expect(maybeRepairLegacyWorktreeConfigAndEnvFiles().repairedConfig).toBe(false);
+    await expect(fs.stat(staleLockPath)).rejects.toMatchObject({ code: "ENOENT" });
 
     activateWorktree(secondWorktreeRoot, "PAP-14069-port-conflicts");
     expect(maybeRepairLegacyWorktreeConfigAndEnvFiles().repairedConfig).toBe(true);

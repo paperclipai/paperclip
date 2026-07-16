@@ -113,11 +113,12 @@ type WorktreePortRegistry = {
 
 const WORKTREE_PORT_REGISTRY_FILE = "worktree-port-reservations.json";
 const WORKTREE_PORT_REGISTRY_LOCK_DIR = ".worktree-port-reservations.lock";
-const WORKTREE_PORT_REGISTRY_LOCK_STALE_MS = 30_000;
+const WORKTREE_PORT_REGISTRY_LOCK_STALE_MS = 5_000;
 const WORKTREE_PORT_REGISTRY_LOCK_TIMEOUT_MS = 10_000;
+const sleepSyncBuffer = new Int32Array(new SharedArrayBuffer(4));
 
 function sleepSync(durationMs: number): void {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, durationMs);
+  Atomics.wait(sleepSyncBuffer, 0, 0, durationMs);
 }
 
 function withWorktreePortRegistryLock<T>(homeDir: string, run: () => T): T {
