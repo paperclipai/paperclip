@@ -718,6 +718,7 @@ async function listSuccessfulRunHandoffStates(
   db: Db,
   companyId: string,
   issueIds: string[],
+  options?: { hydrateLiveness?: boolean },
 ): Promise<Map<string, SuccessfulRunHandoffState>> {
   if (issueIds.length === 0) return new Map();
   const rows = await db
@@ -744,7 +745,9 @@ async function listSuccessfulRunHandoffStates(
     const state = successfulRunHandoffStateFromActivity(row);
     if (state) states.set(row.entityId, state);
   }
-  return hydrateSuccessfulRunHandoffLiveness(db, companyId, states);
+  return options?.hydrateLiveness === false
+    ? states
+    : hydrateSuccessfulRunHandoffLiveness(db, companyId, states);
 }
 
 type RecoveryActionsLister = {
@@ -8060,7 +8063,7 @@ export function issueRoutes(
     });
 
     if (existing.status === "in_progress" && issue.status !== existing.status && issue.status !== "in_progress") {
-      await listSuccessfulRunHandoffStates(db, issue.companyId, [issue.id])
+      await listSuccessfulRunHandoffStates(db, issue.companyId, [issue.id], { hydrateLiveness: false })
         .then(async (handoffStates) => {
           const handoff = handoffStates.get(issue.id);
           if (handoff?.state !== "required") return;
