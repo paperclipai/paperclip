@@ -95,7 +95,12 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
       .expect(201);
     const replay = await request(app)
       .post(`/api/companies/${companyId}/issues`)
-      .send({ parentId: parent.id, title: "Different retry payload", idempotencyKey: "run-1:prepare-release" })
+      .send({
+        parentId: parent.id,
+        title: "Different retry payload",
+        idempotencyKey: "run-1:prepare-release",
+        allowDuplicate: true,
+      })
       .expect(200);
 
     expect(replay.body).toMatchObject({
