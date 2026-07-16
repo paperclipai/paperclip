@@ -1,5 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { and, eq, or, inArray } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
@@ -100,6 +103,11 @@ import {
   heartbeatService,
   redactDetectedSuccessfulRunProgressSummaryForBoard,
 } from "../services/heartbeat.ts";
+import {
+  readHotRestartIntent,
+  resolveHotRestartReportPath,
+  writeHotRestartIntent,
+} from "../services/hot-restart.ts";
 import { secretService } from "../services/secrets.ts";
 import {
   SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY,
@@ -1401,6 +1409,200 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.retryOfRunId, runId)));
     expect(retries).toHaveLength(0);
+  });
+
+  async function withTempPaperclipHome<T>(fn: (home: string) => Promise<T>): Promise<T> {
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-hot-restart-"));
+    const previousHome = process.env.PAPERCLIP_HOME;
+    process.env.PAPERCLIP_HOME = home;
+    try {
+      return await fn(home);
+    } finally {
+      if (previousHome === undefined) delete process.env.PAPERCLIP_HOME;
+      else process.env.PAPERCLIP_HOME = previousHome;
+      await fs.rm(home, { recursive: true, force: true });
+    }
+  }
+
+  it("captures a hot-restart shutdown snapshot without interrupting running runs", async () => {
+    const child = spawnAliveProcess();
+    childProcesses.add(child);
+    expect(child.pid).toBeGreaterThan(0);
+    const { runId, wakeupRequestId } = await seedRunFixture({
+      agentStatus: "running",
+      processPid: child.pid ?? null,
+      processGroupId: null,
+    });
+
+    await withTempPaperclipHome(async () => {
+      await writeHotRestartIntent({
+        previousServerPid: process.pid,
+        previousServerVersion: "old-version",
+        requestedAt: new Date("2026-03-19T00:05:00.000Z"),
+      });
+      const heartbeat = heartbeatService(db);
+
+      const result = await heartbeat.prepareHotRestartShutdown(
+        "SIGTERM",
+        new Date("2026-03-19T00:06:00.000Z"),
+      );
+
+      expect(result).toEqual({
+        mode: "hot_restart",
+        skipDrain: true,
+        activeRunIds: [runId],
+      });
+      expect(isPidAlive(child.pid)).toBe(true);
+      const run = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      expect(run).toMatchObject({
+        status: "running",
+        errorCode: null,
+      });
+      const wakeup = await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, wakeupRequestId))
+        .then((rows) => rows[0] ?? null);
+      expect(wakeup?.status).toBe("claimed");
+      const intent = await readHotRestartIntent();
+      expect(intent?.shutdownSnapshot).toMatchObject({
+        capturedAt: "2026-03-19T00:06:00.000Z",
+        signal: "SIGTERM",
+        activeRuns: [
+          {
+            runId,
+            adapterType: "codex_local",
+            status: "running",
+            processPid: child.pid,
+          },
+        ],
+      });
+    });
+  });
+
+  it("reports adopted hot-restart runs before startup reap can mark them process_lost", async () => {
+    const child = spawnAliveProcess();
+    childProcesses.add(child);
+    expect(child.pid).toBeGreaterThan(0);
+    const { runId } = await seedRunFixture({
+      agentStatus: "running",
+      processPid: child.pid ?? null,
+      processGroupId: null,
+    });
+
+    await withTempPaperclipHome(async (home) => {
+      const heartbeat = heartbeatService(db);
+      await writeHotRestartIntent({
+        previousServerPid: process.pid,
+        previousServerVersion: "old-version",
+        requestedAt: new Date("2026-03-19T00:05:00.000Z"),
+      });
+      await heartbeat.prepareHotRestartShutdown(
+        "SIGTERM",
+        new Date("2026-03-19T00:06:00.000Z"),
+      );
+
+      const adoption = await heartbeat.reconcileHotRestartAdoption(
+        new Date("2026-03-19T00:07:00.000Z"),
+      );
+      expect(adoption).toMatchObject({
+        mode: "reported",
+        adoptedRunIds: [runId],
+        finalizedWhileDownRunIds: [],
+        lostRunIds: [],
+        skippedRunIds: [],
+      });
+
+      const report = JSON.parse(
+        await fs.readFile(resolveHotRestartReportPath(home), "utf8"),
+      ) as Record<string, unknown>;
+      expect(report).toMatchObject({
+        previousServerPid: process.pid,
+        newServerPid: process.pid,
+        previousServerVersion: "old-version",
+        adoptedRunIds: [runId],
+        finalizedWhileDownRunIds: [],
+        lostRunIds: [],
+      });
+      expect(typeof report.newServerVersion).toBe("string");
+
+      const reap = await heartbeat.reapOrphanedRuns();
+      expect(reap).toEqual({ reaped: 0, runIds: [] });
+      const adopted = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      expect(adopted?.status).toBe("running");
+      expect(adopted?.errorCode).not.toBe("process_lost");
+      expect(adopted?.resultJson).toMatchObject({
+        hotRestart: {
+          adopted: true,
+          adoptedAt: "2026-03-19T00:07:00.000Z",
+          previousServerPid: process.pid,
+          newServerPid: process.pid,
+          previousServerVersion: "old-version",
+          processPid: child.pid,
+        },
+      });
+    });
+  });
+
+  it.skipIf(process.platform === "win32")("keeps process-group-only hot-restart adoptions out of process_lost reaping", async () => {
+    const orphan = await spawnOrphanedProcessGroup();
+    cleanupPids.add(orphan.descendantPid);
+    expect(isPidAlive(orphan.descendantPid)).toBe(true);
+    const { runId } = await seedRunFixture({
+      agentStatus: "running",
+      processPid: orphan.processPid,
+      processGroupId: orphan.processGroupId,
+    });
+
+    await withTempPaperclipHome(async () => {
+      const heartbeat = heartbeatService(db);
+      await writeHotRestartIntent({
+        previousServerPid: process.pid,
+        previousServerVersion: "old-version",
+        requestedAt: new Date("2026-03-19T00:05:00.000Z"),
+      });
+      await heartbeat.prepareHotRestartShutdown(
+        "SIGTERM",
+        new Date("2026-03-19T00:06:00.000Z"),
+      );
+
+      const adoption = await heartbeat.reconcileHotRestartAdoption(
+        new Date("2026-03-19T00:07:00.000Z"),
+      );
+      expect(adoption).toMatchObject({
+        mode: "reported",
+        adoptedRunIds: [runId],
+        finalizedWhileDownRunIds: [],
+        lostRunIds: [],
+        skippedRunIds: [],
+      });
+
+      const reap = await heartbeat.reapOrphanedRuns();
+      expect(reap).toEqual({ reaped: 0, runIds: [] });
+      expect(isPidAlive(orphan.descendantPid)).toBe(true);
+      const adopted = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      expect(adopted?.status).toBe("running");
+      expect(adopted?.errorCode).not.toBe("process_lost");
+      expect(adopted?.resultJson).toMatchObject({
+        hotRestart: {
+          adopted: true,
+          processPid: orphan.processPid,
+          processGroupId: orphan.processGroupId,
+        },
+      });
+    });
   });
 
   it("interrupts running runs on graceful shutdown and queues restart recovery without recording a failure", async () => {
