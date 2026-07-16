@@ -69,7 +69,7 @@
     "tailwind-merge": "^3.6.0"
   },
   "devDependencies": {
-    "@storybook/addon-a11y": "10.5.0",
+    "@storybook/addon-a11y": "10.4.2",
     "@storybook/addon-docs": "10.5.0",
     "@storybook/react-vite": "10.5.0",
     "@tailwindcss/vite": "^4.3.0",
@@ -77,7 +77,7 @@
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^4.3.4",
-    "storybook": "10.5.0",
+    "storybook": "10.4.6",
     "tailwindcss": "^4.3.2",
     "typescript": "^5.7.3",
     "vite": "^6.1.0",
