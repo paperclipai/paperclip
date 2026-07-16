@@ -336,6 +336,20 @@ describeEmbeddedPostgres("recovery observability report", () => {
       finalAssigneeAgentId: coderId,
       finalIssueStatus: "done",
     });
+    // Escalated actions are still active, but they need their own routing counter.
+    await seedRecoveryAction({
+      companyId,
+      n: 6,
+      createdAt: regressionWeek,
+      cause: "stranded_assigned_issue",
+      errorCode: "manual_escalation",
+      status: "escalated",
+      outcome: null,
+      ownerAgentId: managerId,
+      returnOwnerAgentId: coderId,
+      finalAssigneeAgentId: managerId,
+      finalIssueStatus: "in_progress",
+    });
 
     const report = await recoveryObservabilityService(db).report(companyId, { now, weeks: 8 });
 
@@ -358,6 +372,8 @@ describeEmbeddedPostgres("recovery observability report", () => {
     );
     expect(strandedRouting?.ownerCompleted).toBe(2);
     expect(strandedRouting?.handedBack).toBe(2);
+    expect(strandedRouting?.active).toBe(1);
+    expect(strandedRouting?.escalated).toBe(1);
   });
 
   it("caps the reporting window so a huge `weeks` value can't over-allocate", async () => {
@@ -369,6 +385,8 @@ describeEmbeddedPostgres("recovery observability report", () => {
     });
 
     expect(report.window.weeks).toBe(MAX_WINDOW_WEEKS);
+    expect(report.window.since).toBe(report.weekly[0]?.weekStart);
+    expect(report.window.since).not.toContain("T");
     expect(report.weekly).toHaveLength(MAX_WINDOW_WEEKS);
   });
 });

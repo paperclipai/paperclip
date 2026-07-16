@@ -308,6 +308,7 @@ export function recoveryObservabilityService(db: Db) {
 
       if (klass === "active") {
         routing.active += 1;
+        if (row.status === "escalated") routing.escalated += 1;
         if (row.ownerAgentId && row.ownerAgentId !== row.returnOwnerAgentId) {
           handoff.activeTakeovers += 1;
         }
@@ -356,7 +357,7 @@ export function recoveryObservabilityService(db: Db) {
     return {
       companyId,
       generatedAt: now.toISOString(),
-      window: { weeks, since: sinceIso },
+      window: { weeks, since: sinceIso.slice(0, 10) },
       thresholdPercent,
       weekly,
       alert,
