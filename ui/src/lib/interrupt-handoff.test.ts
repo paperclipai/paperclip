@@ -9,6 +9,7 @@ import {
   extractAgentMentionIds,
   findPlainAgentNameCandidate,
   isOperatorInterruptedRun,
+  resolveMentionedAgentAssigneeValue,
   resolveRunStatusPresentation,
   type PauseAffectsIssueLike,
 } from "./interrupt-handoff";
@@ -59,6 +60,22 @@ describe("structured mention vs plain text", () => {
   it("extracts agent ids only from structured agent:// links", () => {
     expect(extractAgentMentionIds(`hey ${qaMention} please look`)).toEqual([QA_ID]);
     expect(bodyHasAgentMention(`hey ${qaMention}`)).toBe(true);
+  });
+
+  it("resolves the first available structured agent mention as the pending assignee", () => {
+    const coderHref = buildAgentMentionHref("agent-coder-2222", null);
+    const available = new Set([`agent:${QA_ID}`, "agent:agent-coder-2222"]);
+    expect(
+      resolveMentionedAgentAssigneeValue(
+        `ask ${qaMention} and [@Coder](${coderHref})`,
+        available,
+      ),
+    ).toBe(`agent:${QA_ID}`);
+  });
+
+  it("does not resolve plain text or unavailable mentioned agents as pending assignees", () => {
+    expect(resolveMentionedAgentAssigneeValue("ask QA to confirm", new Set([`agent:${QA_ID}`]))).toBeNull();
+    expect(resolveMentionedAgentAssigneeValue(`ask ${qaMention}`, new Set(["agent:other"]))).toBeNull();
   });
 
   it("treats a plain QA name as NOT a mention", () => {

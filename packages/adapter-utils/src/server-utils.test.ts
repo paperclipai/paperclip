@@ -722,6 +722,8 @@ describe("renderPaperclipWakePrompt", () => {
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("kind suggest_tasks, ask_user_questions, or request_confirmation");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("confirmation:{issueId}:plan:{revisionId}");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Wait for acceptance before creating implementation subtasks");
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("selected-agent chat turn");
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("evidence checked");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
       "Respect budget, pause/cancel, approval gates, and company boundaries",
     );
@@ -1073,6 +1075,51 @@ describe("renderPaperclipWakePrompt", () => {
         selectedOptions: [],
       },
     });
+  });
+
+  it("adds the selected-agent chat report contract to selected-agent comment wakes", () => {
+    const prompt = renderPaperclipWakePrompt({
+      reason: "issue_commented",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-11116",
+        title: "Selected-agent chat",
+        status: "in_progress",
+        workMode: "standard",
+      },
+      selectedAgentChat: true,
+      targetAgentId: "11111111-1111-4111-8111-111111111111",
+      taskKey: "selected-agent-chat:issue-1:11111111-1111-4111-8111-111111111111",
+      commentWindow: {
+        requestedCount: 1,
+        includedCount: 1,
+        missingCount: 0,
+      },
+      comments: [
+        {
+          id: "comment-1",
+          body: "How is the MCP work going?",
+          author: { type: "user", id: "board-user-1" },
+          createdAt: "2026-06-14T15:30:00.000Z",
+        },
+      ],
+      fallbackFetchNeeded: false,
+    });
+
+    expect(prompt).toContain("selected-agent chat: yes");
+    expect(prompt).toContain("selected target agent id: 11111111-1111-4111-8111-111111111111");
+    expect(prompt).toContain("Conference Room (selected-agent chat) contract");
+    expect(prompt).toContain("discussion thread, not a concierge, relay, or substitute persona");
+    expect(prompt).toContain("Report, What I checked, Recommendation, Options");
+    expect(prompt).toContain("Bounded reporting work is allowed only when it directly improves the answer");
+    expect(prompt).toContain("Do not write feature code, fix bugs, run deploys");
+    expect(prompt).toContain("link it as a blocker of this conversation");
+    expect(prompt).toContain("issues, comments, runs, documents, work products, approvals, dashboard state");
+    expect(prompt).toContain("suggest_tasks");
+    expect(prompt).toContain("request_confirmation");
+    expect(prompt).toContain("ask_user_questions");
+    expect(prompt).toContain("Privacy: never expose API keys");
+    expect(prompt).toContain("Do not end with vague `let me know` or `I will check` prose");
   });
 
   it("preserves Chinese, Japanese, and Hindi issue and comment text in scoped wake prompts", () => {

@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import { z } from "zod";
-import { and, asc, desc, eq, inArray, isNull, notInArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -55,6 +55,7 @@ import {
   restoreIssueDocumentRevisionSchema,
   respondIssueThreadInteractionSchema,
   submitIssueThreadInteractionVerdictsSchema,
+  selectedAgentChatCommentSchema,
   updateIssueWorkProductSchema,
   updateDocumentAnnotationThreadSchema,
   upsertIssueDocumentSchema,
@@ -103,6 +104,7 @@ import {
   executionWorkspaceService,
   goalService,
   heartbeatService,
+  resolveHeartbeatSchedulingSuppression,
   issueApprovalService,
   issueRecoveryActionService,
   issueThreadInteractionService,
@@ -189,6 +191,11 @@ import {
 import { externalObjectService } from "../services/external-objects.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
+const SELECTED_AGENT_CHAT_UNAVAILABLE_STATUSES = new Set([
+  "paused",
+  "pending_approval",
+  "terminated",
+]);
 const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
 });
@@ -1704,6 +1711,20 @@ function summarizeExecutionParticipants(
 
 function isClosedIssueStatus(status: string | null | undefined): status is "done" | "cancelled" {
   return status === "done" || status === "cancelled";
+}
+
+function selectedAgentChatTaskKey(issueId: string, targetAgentId: string) {
+  return `selected-agent-chat:${issueId}:${targetAgentId}`;
+}
+
+const BOARD_CHAT_ORIGIN_KIND = "board_chat";
+const BOARD_CHAT_GENERIC_TITLES = new Set(["New chat", "Board Operations"]);
+
+function deriveSelectedAgentBoardChatTitle(message: string): string {
+  const singleLine = message.replace(/\s+/g, " ").trim();
+  if (!singleLine) return "New chat";
+  if (singleLine.length <= 80) return singleLine;
+  return `${singleLine.slice(0, 77).trimEnd()}...`;
 }
 
 function shouldImplicitlyMoveCommentedIssueToTodo(input: {
@@ -4227,6 +4248,95 @@ export function issueRoutes(
     return runToInterrupt?.status === "running" ? runToInterrupt : null;
   }
 
+  async function resolveActiveIssueRunForAgent(issue: {
+    id: string;
+    executionRunId?: string | null;
+  }, agentId: string) {
+    let run = issue.executionRunId ? await heartbeat.getRun(issue.executionRunId) : null;
+    if (
+      run &&
+      run.status === "running" &&
+      run.agentId === agentId &&
+      run.contextSnapshot &&
+      typeof run.contextSnapshot === "object" &&
+      (run.contextSnapshot as Record<string, unknown>).issueId === issue.id
+    ) {
+      return run;
+    }
+
+    run = await heartbeat.getActiveRunForAgent(agentId);
+    const activeIssueId =
+      run &&
+      run.contextSnapshot &&
+      typeof run.contextSnapshot === "object" &&
+      typeof (run.contextSnapshot as Record<string, unknown>).issueId === "string"
+        ? ((run.contextSnapshot as Record<string, unknown>).issueId as string)
+        : null;
+    return run?.status === "running" && activeIssueId === issue.id ? run : null;
+  }
+
+  async function resolveAnyActiveSelectedAgentChatRun(issue: { id: string; companyId: string }) {
+    return db
+      .select({
+        id: heartbeatRuns.id,
+        agentId: heartbeatRuns.agentId,
+        status: heartbeatRuns.status,
+      })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, issue.companyId),
+          inArray(heartbeatRuns.status, ["queued", "running"]),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
+          sql`${heartbeatRuns.contextSnapshot} ->> 'selectedAgentChat' = 'true'`,
+        ),
+      )
+      .orderBy(desc(heartbeatRuns.createdAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
+  async function assertBoardChatGenericCommentAllowed(
+    req: Request,
+    res: Response,
+    issue: { id: string; originKind?: string | null },
+  ) {
+    if (issue.originKind !== BOARD_CHAT_ORIGIN_KIND) return true;
+    if (req.actor.type !== "agent") {
+      res.status(403).json({
+        error: "Conference Room comments must use selected-agent chat",
+        code: "board_chat_generic_comments_forbidden",
+      });
+      return false;
+    }
+
+    const actorAgentId = req.actor.agentId;
+    if (!actorAgentId) {
+      res.status(403).json({ error: "Agent authentication required" });
+      return false;
+    }
+    const runId = requireAgentRunId(req, res);
+    if (!runId) return false;
+    const run = await heartbeat.getRun(runId);
+    const context =
+      run?.contextSnapshot && typeof run.contextSnapshot === "object"
+        ? (run.contextSnapshot as Record<string, unknown>)
+        : null;
+    const selectedAgentRun =
+      run?.status === "running" &&
+      run.agentId === actorAgentId &&
+      context?.selectedAgentChat === true &&
+      context?.issueId === issue.id &&
+      context?.targetAgentId === actorAgentId;
+    if (selectedAgentRun) return true;
+
+    res.status(403).json({
+      error: "Only the active selected-agent chat target can comment on Conference Room issues",
+      code: "board_chat_selected_agent_run_required",
+    });
+    return false;
+  }
+
   function operatorInterruptCancelOptions(input: { issueId: string; actor: ReturnType<typeof getActorInfo> }) {
     return {
       errorCode: "operator_interrupted",
@@ -4754,6 +4864,8 @@ export function issueRoutes(
         req.query.excludeRoutineExecutions === "true" || req.query.excludeRoutineExecutions === "1",
       includePluginOperations:
         req.query.includePluginOperations === "true" || req.query.includePluginOperations === "1",
+      includeSpecialOrigins:
+        req.query.includeSpecialOrigins === "true" || req.query.includeSpecialOrigins === "1",
       includeBlockedBy: req.query.includeBlockedBy === "true" || req.query.includeBlockedBy === "1",
       includeBlockedInboxAttention:
         req.query.includeBlockedInboxAttention === "true" || req.query.includeBlockedInboxAttention === "1",
@@ -4946,6 +5058,8 @@ export function issueRoutes(
         req.query.excludeRoutineExecutions === "true" || req.query.excludeRoutineExecutions === "1",
       includePluginOperations:
         req.query.includePluginOperations === "true" || req.query.includePluginOperations === "1",
+      includeSpecialOrigins:
+        req.query.includeSpecialOrigins === "true" || req.query.includeSpecialOrigins === "1",
       includeBlockedBy: true,
       includeBlockedInboxAttention: true,
       hasPlanDocument,
@@ -7546,6 +7660,7 @@ export function issueRoutes(
       hiddenAt: hiddenAtRaw,
       ...updateFields
     } = req.body;
+    if (commentBody && !(await assertBoardChatGenericCommentAllowed(req, res, existing))) return;
     const shouldCancelActiveRunForCancelledStatus =
       existing.status !== "cancelled" && updateFields.status === "cancelled";
     if (resumeRequested === true && !commentBody) {
@@ -9315,6 +9430,200 @@ export function issueRoutes(
     res.json(comment);
   });
 
+  router.post(
+    "/issues/:id/selected-agent-chat/comments",
+    validate(selectedAgentChatCommentSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const issue = await svc.getById(id);
+      if (!issue) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
+      assertCompanyAccess(req, issue.companyId);
+      if (!(await assertIssueReadAllowed(req, res, issue))) return;
+      assertBoard(req);
+
+      const requestedTargetAgentId = req.body.targetAgentId ?? null;
+      const targetAgent = requestedTargetAgentId
+        ? await db
+            .select()
+            .from(agents)
+            .where(eq(agents.id, requestedTargetAgentId))
+            .then((rows) => rows[0] ?? null)
+        : await db
+            .select()
+            .from(agents)
+            .where(and(eq(agents.companyId, issue.companyId), eq(agents.role, "ceo"), notInArray(agents.status, ["terminated"])))
+            .orderBy(desc(agents.createdAt))
+            .limit(1)
+            .then((rows) => rows[0] ?? null);
+
+      if (!targetAgent || targetAgent.companyId !== issue.companyId) {
+        throw unprocessable(
+          requestedTargetAgentId
+            ? "targetAgentId must reference an agent in the issue company"
+            : "No CEO agent is available as the default selected-agent chat target",
+          {
+            code: requestedTargetAgentId ? "invalid_target_agent" : "default_target_agent_not_found",
+            targetAgentId: requestedTargetAgentId,
+          },
+        );
+      }
+
+      if (SELECTED_AGENT_CHAT_UNAVAILABLE_STATUSES.has(targetAgent.status)) {
+        throw conflict("Selected-agent chat target is unavailable", {
+          code: "target_agent_unavailable",
+          targetAgentId: targetAgent.id,
+          targetAgentStatus: targetAgent.status,
+        });
+      }
+
+      const actor = getActorInfo(req);
+      const interruptRequested = req.body.interrupt === true;
+      const activeSelectedChatRun = await resolveAnyActiveSelectedAgentChatRun(issue);
+      if (activeSelectedChatRun && activeSelectedChatRun.agentId !== targetAgent.id) {
+        if (!interruptRequested) {
+          throw conflict("Another selected-agent chat target is already running for this issue", {
+            code: "selected_agent_chat_target_active",
+            activeRunId: activeSelectedChatRun.id,
+            activeTargetAgentId: activeSelectedChatRun.agentId,
+            requestedTargetAgentId: targetAgent.id,
+          });
+        }
+        const cancelled = await heartbeat.cancelRun(
+          activeSelectedChatRun.id,
+          "Interrupted by selected-agent chat retarget",
+          operatorInterruptCancelOptions({ issueId: issue.id, actor }),
+        );
+        if (cancelled) {
+          await logActivity(db, {
+            companyId: cancelled.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "heartbeat.cancelled",
+            entityType: "heartbeat_run",
+            entityId: cancelled.id,
+            details: {
+              agentId: cancelled.agentId,
+              source: "selected_agent_chat_retarget",
+              issueId: issue.id,
+              cancellationKind: "operator_interrupted",
+              operatorInterrupted: true,
+              requestedTargetAgentId: targetAgent.id,
+            },
+          });
+        }
+      }
+
+      const sameTargetActiveRun = await resolveActiveIssueRunForAgent(issue, targetAgent.id);
+      const sourceTrust = await sourceTrustForActorWrite(issue, actor);
+      const comment = await svc.addComment(id, req.body.body, {
+        agentId: actor.agentId ?? undefined,
+        userId: actor.actorType === "user" ? actor.actorId : undefined,
+        runId: actor.runId,
+      }, {
+        authorType: req.body.authorType ?? "user",
+        presentation: req.body.presentation ?? null,
+        metadata: req.body.metadata ?? null,
+        sourceTrust,
+      });
+
+      if (issue.originKind === BOARD_CHAT_ORIGIN_KIND) {
+        const boardChatPatch: Partial<typeof issueRows.$inferInsert> = {};
+        if (issue.originId !== targetAgent.id) {
+          boardChatPatch.originId = targetAgent.id;
+        }
+        if (BOARD_CHAT_GENERIC_TITLES.has(issue.title)) {
+          boardChatPatch.title = deriveSelectedAgentBoardChatTitle(req.body.body);
+        }
+        if (Object.keys(boardChatPatch).length > 0) {
+          await svc.update(issue.id, boardChatPatch);
+        }
+      }
+
+      await issueReferencesSvc.syncComment(comment.id);
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.comment_added",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          commentId: comment.id,
+          bodySnippet: comment.body.slice(0, 120),
+          identifier: issue.identifier,
+          issueTitle: issue.title,
+          source: "selected_agent_chat",
+          targetAgentId: targetAgent.id,
+          targetAgentName: targetAgent.name,
+        },
+      });
+
+      const taskKey = selectedAgentChatTaskKey(issue.id, targetAgent.id);
+      void heartbeat
+        .wakeup(targetAgent.id, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: "issue_commented",
+          payload: {
+            issueId: issue.id,
+            taskId: issue.id,
+            taskKey,
+            commentId: comment.id,
+            targetAgentId: targetAgent.id,
+            selectedAgentChat: true,
+            mutation: "selected_agent_chat_comment",
+          },
+          requestedByActorType: actor.actorType,
+          requestedByActorId: actor.actorId,
+          contextSnapshot: {
+            issueId: issue.id,
+            taskId: issue.id,
+            taskKey,
+            commentId: comment.id,
+            wakeCommentId: comment.id,
+            wakeReason: "issue_commented",
+            source: "selected_agent_chat.comment",
+            selectedAgentChat: true,
+            targetAgentId: targetAgent.id,
+            projectId: issue.projectId ?? null,
+            goalId: issue.goalId ?? null,
+            billingCode: issue.billingCode ?? null,
+            ...(sameTargetActiveRun ? { activeRunId: sameTargetActiveRun.id } : {}),
+          },
+        })
+        .catch((err) => logger.warn({
+          err,
+          issueId: issue.id,
+          agentId: targetAgent.id,
+        }, "failed to wake selected-agent chat target on issue comment"));
+
+      // Tell the client whether the wake can actually run here: on worktree
+      // instances scheduling is suppressed, and a silent no-reply chat reads
+      // as "sending did nothing" (PAP-13345).
+      const wakeSuppression = resolveHeartbeatSchedulingSuppression();
+      res.status(201).json({
+        comment,
+        targetAgent: {
+          id: targetAgent.id,
+          name: targetAgent.name,
+          role: targetAgent.role,
+          status: targetAgent.status,
+        },
+        wake: {
+          suppressed: wakeSuppression.suppressed,
+          reason: wakeSuppression.reason,
+        },
+      });
+    },
+  );
+
   router.delete("/issues/:id/comments/:commentId", async (req, res) => {
     const id = req.params.id as string;
     const commentId = req.params.commentId as string;
@@ -9531,6 +9840,7 @@ export function issueRoutes(
     const id = req.params.id as string;
     const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
     if (!issue) return;
+    if (!(await assertBoardChatGenericCommentAllowed(req, res, issue))) return;
     const commentAccessDecision = await assertAgentIssueCommentAllowed(req, res, issue);
     if (!commentAccessDecision) return;
     if (!assertStructuredCommentFieldsAllowed(req, res, {

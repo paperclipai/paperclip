@@ -178,6 +178,32 @@ These browser suites are intended for targeted local verification and CI, not th
 
 For normal issue work, start with the smallest targeted check that proves the change. Reserve repo-wide typecheck/build/test runs for PR-ready handoff or changes broad enough that narrow checks do not cover the risk.
 
+## Selected-Agent Conference Room Verification
+
+The Conference Room is an experimental UI surface, but its transport is ordinary issue work. It is enabled through `Instance Settings > Experimental > Conference Room Chat`, or by patching the experimental instance setting:
+
+```sh
+curl -X PATCH http://localhost:3100/api/instance/settings/experimental \
+  -H 'Content-Type: application/json' \
+  -d '{"enableConferenceRoomChat":true}'
+```
+
+Maintainers should verify the flow as issue-backed selected-agent chat:
+
+1. Open `/board-chat` after enabling the setting.
+2. Confirm the page resolves or creates a `board_chat` issue through `POST /api/board/chat/conversations`.
+3. Send a message. The UI posts to `POST /api/issues/:issueId/selected-agent-chat/comments`.
+4. Confirm the request targets the selected real agent by `targetAgentId`; if omitted, the server defaults to the company CEO.
+5. Confirm history is the issue's comments, live output comes from `/api/issues/:issueId/active-run?targetAgentId=...` and `/api/issues/:issueId/live-runs?targetAgentId=...`, and next-step cards are normal issue-thread interactions.
+
+Targeted regression commands:
+
+```sh
+pnpm vitest run server/src/__tests__/issue-selected-agent-chat-routes.test.ts
+pnpm vitest run server/src/__tests__/board-chat-conversations-routes.test.ts server/src/__tests__/board-chat-route-authz.test.ts
+pnpm vitest run ui/src/components/SelectedAgentChat.test.tsx ui/src/pages/BoardChat.test.tsx
+```
+
 ## One-Command Local Run
 
 For a first-time local install, you can bootstrap and run in one command:

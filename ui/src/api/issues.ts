@@ -32,6 +32,23 @@ export type IssueUpdateResponse = Issue & {
   comment?: IssueComment | null;
 };
 
+export type SelectedAgentChatTarget = {
+  id: string;
+  name: string;
+  role: string;
+  status: string;
+};
+
+export type SelectedAgentChatCommentResponse = {
+  comment: IssueComment;
+  targetAgent: SelectedAgentChatTarget;
+  /** Whether the target-agent wake could be scheduled for this send. */
+  wake?: {
+    suppressed: boolean;
+    reason: "worktree_instance" | "database_restore_in_progress" | null;
+  };
+};
+
 export type ResolveRecoveryActionResponse = {
   issue: Issue;
   recoveryAction: IssueRecoveryAction;
@@ -56,6 +73,7 @@ export type IssueListFilters = {
   originId?: string;
   descendantOf?: string;
   includeRoutineExecutions?: boolean;
+  includeSpecialOrigins?: boolean;
   includeBlockedBy?: boolean;
   includeBlockedInboxAttention?: boolean;
   includeLiveDescendantSummary?: boolean;
@@ -87,6 +105,7 @@ function issueListSearchParams(filters?: IssueListFilters) {
   if (filters?.originId) params.set("originId", filters.originId);
   if (filters?.descendantOf) params.set("descendantOf", filters.descendantOf);
   if (filters?.includeRoutineExecutions) params.set("includeRoutineExecutions", "true");
+  if (filters?.includeSpecialOrigins) params.set("includeSpecialOrigins", "true");
   if (filters?.includeBlockedBy) params.set("includeBlockedBy", "true");
   if (filters?.includeBlockedInboxAttention) params.set("includeBlockedInboxAttention", "true");
   if (filters?.includeLiveDescendantSummary) params.set("includeLiveDescendantSummary", "true");
@@ -291,6 +310,23 @@ export const issuesApi = {
         body,
         ...(reopen === undefined ? {} : { reopen }),
         ...(interrupt === undefined ? {} : { interrupt }),
+      },
+    ),
+  // Selected-agent chat: post a message that wakes a real agent (default: the
+  // company CEO) to reply on this issue. The reply lands as a normal,
+  // real-agent-authored comment and the run is visible via live-runs/active-run
+  // scoped to the same `targetAgentId`. Backend: PAP-11115.
+  addSelectedAgentChatComment: (
+    id: string,
+    body: string,
+    options?: { targetAgentId?: string | null; interrupt?: boolean },
+  ) =>
+    api.post<SelectedAgentChatCommentResponse>(
+      `/issues/${id}/selected-agent-chat/comments`,
+      {
+        body,
+        ...(options?.targetAgentId ? { targetAgentId: options.targetAgentId } : {}),
+        ...(options?.interrupt === undefined ? {} : { interrupt: options.interrupt }),
       },
     ),
   cancelComment: (id: string, commentId: string) =>

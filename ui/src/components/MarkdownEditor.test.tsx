@@ -278,6 +278,79 @@ describe("MarkdownEditor", () => {
     });
   });
 
+  it("defaults to Cmd/Ctrl+Enter submit but can opt into plain Enter submit", async () => {
+    const root = createRoot(container);
+    const onDefaultSubmit = vi.fn();
+    const onEnterSubmit = vi.fn();
+
+    await act(async () => {
+      root.render(
+        <MarkdownEditor
+          value="Ready"
+          onChange={() => {}}
+          onSubmit={onDefaultSubmit}
+        />,
+      );
+    });
+
+    const defaultEditor = container.querySelector('[data-testid="mdx-editor"]') as HTMLDivElement | null;
+    expect(defaultEditor).not.toBeNull();
+
+    await act(async () => {
+      defaultEditor?.dispatchEvent(new KeyboardEvent("keydown", {
+        key: "Enter",
+        bubbles: true,
+        cancelable: true,
+      }));
+    });
+    expect(onDefaultSubmit).not.toHaveBeenCalled();
+
+    await act(async () => {
+      defaultEditor?.dispatchEvent(new KeyboardEvent("keydown", {
+        key: "Enter",
+        metaKey: true,
+        bubbles: true,
+        cancelable: true,
+      }));
+    });
+    expect(onDefaultSubmit).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      root.render(
+        <MarkdownEditor
+          value="Ready"
+          onChange={() => {}}
+          onSubmit={onEnterSubmit}
+          submitKey="enter"
+        />,
+      );
+    });
+
+    const enterEditor = container.querySelector('[data-testid="mdx-editor"]') as HTMLDivElement | null;
+    await act(async () => {
+      enterEditor?.dispatchEvent(new KeyboardEvent("keydown", {
+        key: "Enter",
+        shiftKey: true,
+        bubbles: true,
+        cancelable: true,
+      }));
+    });
+    expect(onEnterSubmit).not.toHaveBeenCalled();
+
+    await act(async () => {
+      enterEditor?.dispatchEvent(new KeyboardEvent("keydown", {
+        key: "Enter",
+        bubbles: true,
+        cancelable: true,
+      }));
+    });
+    expect(onEnterSubmit).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it("keeps the external value when the unfocused editor emits an empty mount reset", async () => {
     mdxEditorMockState.emitMountEmptyReset = true;
     const handleChange = vi.fn();

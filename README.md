@@ -346,6 +346,9 @@ Agent orchestration has subtleties in how you coordinate who has work checked ou
 **Do agents run continuously?**
 By default, agents run on scheduled heartbeats and event-based triggers (task assignment, @-mentions). You can also hook in continuous agents like OpenClaw. You bring your agent and Paperclip coordinates.
 
+**Can I chat with my CEO?**
+Yes, when Conference Room Chat is enabled. It is still issue-backed Paperclip work: the room resolves a `board_chat` issue, posts your message as an issue comment, and wakes a real selected agent by `targetAgentId` with the CEO as the default target.
+
 <br/>
 
 ## Development
@@ -389,7 +392,7 @@ See [doc/DEVELOPING.md](doc/DEVELOPING.md) for the full development guide.
 - ⚪ Work Queues
 - ⚪ Self-Organization
 - ⚪ Automatic Organizational Learning
-- ⚪ CEO Chat
+- ✅ Issue-backed CEO / selected-agent chat
 - ⚪ Cloud deployments
 - ⚪ Desktop App
 

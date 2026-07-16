@@ -158,6 +158,7 @@ export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = [
   "- When you intentionally restart follow-up work on a completed assigned issue, include structured `resume: true` with the POST /api/issues/{issueId}/comments or PATCH /api/issues/{issueId} comment payload. Generic agent comments on closed issues are inert by default.",
   "- For plan approval, update the plan document first, then create request_confirmation targeting the latest plan revision with idempotencyKey confirmation:{issueId}:plan:{revisionId}. Wait for acceptance before creating implementation subtasks, and create a fresh confirmation after superseding board/user comments if approval is still needed.",
   "- If blocked, mark the issue blocked and name the unblock owner and action.",
+  "- If this wake is a selected-agent chat turn, answer as the selected real agent with a concise report, evidence checked, recommendation, and concrete Paperclip next-step options; do not stop at \"I will check\".",
   "- Respect budget, pause/cancel, approval gates, and company boundaries.",
 ].join("\n");
 
@@ -641,6 +642,9 @@ type PaperclipWakePayload = {
   reason: string | null;
   recovery: PaperclipWakeRecovery | null;
   issue: PaperclipWakeIssue | null;
+  selectedAgentChat: boolean;
+  targetAgentId: string | null;
+  taskKey: string | null;
   checkedOutByHarness: boolean;
   dependencyBlockedInteraction: boolean;
   treeHoldInteraction: boolean;
@@ -1262,6 +1266,9 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     reason: asString(payload.reason, "").trim() || null,
     recovery,
     issue: normalizePaperclipWakeIssue(payload.issue),
+    selectedAgentChat: asBoolean(payload.selectedAgentChat, false),
+    targetAgentId: asString(payload.targetAgentId, "").trim() || null,
+    taskKey: asString(payload.taskKey, "").trim() || null,
     checkedOutByHarness: asBoolean(payload.checkedOutByHarness, false),
     dependencyBlockedInteraction: asBoolean(payload.dependencyBlockedInteraction, false),
     treeHoldInteraction: asBoolean(payload.treeHoldInteraction, false),
@@ -1460,6 +1467,29 @@ export function renderPaperclipWakePrompt(
       .join(", ") || "(none)";
     lines.push(`- checkbox selection ids: ${selectedOptionIds}`);
     lines.push(`- checkbox selection options: ${selectedOptions}`);
+  }
+  if (normalized.selectedAgentChat) {
+    lines.push(
+      "- selected-agent chat: yes",
+      `- selected target agent id: ${normalized.targetAgentId ?? "unknown"}`,
+    );
+    if (normalized.taskKey) {
+      lines.push(`- selected-agent task key: ${normalized.taskKey}`);
+    }
+    lines.push(
+      "",
+      "Conference Room (selected-agent chat) contract:",
+      "- You are the selected real agent answering the board/user in a discussion thread, not a concierge, relay, or substitute persona. This surface is for triage, status, delegation, and decisions — not hands-on implementation work in this run.",
+      "- Treat each user message as discussion. Ask focused clarifying questions when scope, owner, or acceptance is ambiguous before committing to a plan or follow-up issue.",
+      "- Give a concise final answer in this shape, compressing when small: Report, What I checked, Recommendation, Options.",
+      "- In `What I checked`, name the Paperclip evidence you used (issues, comments, runs, documents, work products, approvals, dashboard state). If you cannot access something, say that plainly instead of inventing it.",
+      "- Bounded reporting work is allowed only when it directly improves the answer and finishes inside this heartbeat — e.g. read an issue/doc, fetch status, summarize blockers, count approvals. Anything that needs editor/build/test runs, real code changes, bug-fix work, migrations, or multi-minute investigation must NOT be done here.",
+      "- Do not write feature code, fix bugs, run deploys, or perform implementation work in this conversation. If the user asks for that, create a background Paperclip issue with the `paperclip` skill, assign it to the right owner (including yourself when you are the right owner), and link it as a blocker of this conversation so the room wakes when the work completes. Reply with the issue identifier and the next step.",
+      "- In `Options`, propose concrete next steps backed by Paperclip work objects or issue-thread interactions (`suggest_tasks`, `request_confirmation`, `ask_user_questions`) when a real board choice is needed.",
+      "- Privacy: never expose API keys, raw auth tokens or `Authorization` header values, internal tool narration, raw debug output, secrets, or environment variable contents in the answer. Keep raw command transcripts off the visible reply.",
+      "- Do not end with vague `let me know` or `I will check` prose. Either answer from available context, create or suggest real follow-up work, or report the exact blocker, owner, and action.",
+      "",
+    );
   }
   if (normalized.issue?.workMode === "planning" && !normalized.taskWatchdog) {
     const hasWakeComments = normalized.comments.length > 0;

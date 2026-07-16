@@ -157,6 +157,10 @@ export const queryKeys = {
     approvals: (issueId: string) => ["issues", "approvals", issueId] as const,
     liveRuns: (issueId: string) => ["issues", "live-runs", issueId] as const,
     activeRun: (issueId: string) => ["issues", "active-run", issueId] as const,
+    selectedAgentChatLiveRuns: (issueId: string, targetAgentId: string) =>
+      ["issues", "live-runs", issueId, "agent", targetAgentId] as const,
+    selectedAgentChatActiveRun: (issueId: string, targetAgentId: string) =>
+      ["issues", "active-run", issueId, "agent", targetAgentId] as const,
     workProducts: (issueId: string) => ["issues", "work-products", issueId] as const,
     fileResources: (
       issueId: string,

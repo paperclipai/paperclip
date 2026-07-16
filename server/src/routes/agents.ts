@@ -225,6 +225,45 @@ export function agentRoutes(
     return false;
   }
 
+  async function decideIssueRead(req: Request, issue: {
+    id: string;
+    companyId: string;
+    projectId?: string | null;
+    parentId?: string | null;
+    assigneeAgentId?: string | null;
+    assigneeUserId?: string | null;
+    status?: string | null;
+  }) {
+    return access.decide({
+      actor: req.actor,
+      action: "issue:read",
+      resource: {
+        type: "issue",
+        companyId: issue.companyId,
+        issueId: issue.id,
+        projectId: issue.projectId ?? null,
+        parentIssueId: issue.parentId ?? null,
+        assigneeAgentId: issue.assigneeAgentId ?? null,
+        assigneeUserId: issue.assigneeUserId ?? null,
+        status: issue.status ?? null,
+      },
+      scope: {
+        issueId: issue.id,
+        projectId: issue.projectId ?? null,
+        parentIssueId: issue.parentId ?? null,
+        assigneeAgentId: issue.assigneeAgentId ?? null,
+        assigneeUserId: issue.assigneeUserId ?? null,
+      },
+    });
+  }
+
+  async function assertIssueReadAllowed(req: Request, res: Response, issue: Parameters<typeof decideIssueRead>[1]) {
+    const decision = await decideIssueRead(req, issue);
+    if (decision.allowed) return true;
+    res.status(403).json({ error: "Issue is outside this actor's authorization boundary" });
+    return false;
+  }
+
   async function filterAgentsForActor<T extends Record<string, unknown>>(
     req: Request,
     rows: T[],
@@ -3808,6 +3847,15 @@ export function agentRoutes(
       "Issue not found",
     );
     if (!issue) return;
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
+    const targetAgentId =
+      typeof req.query.targetAgentId === "string" && req.query.targetAgentId.trim().length > 0
+        ? req.query.targetAgentId.trim()
+        : null;
+    if (targetAgentId && !isUuidLike(targetAgentId)) {
+      res.status(400).json({ error: "targetAgentId must be a UUID" });
+      return;
+    }
 
     const liveRuns = await db
       .select({
@@ -3842,6 +3890,7 @@ export function agentRoutes(
           eq(heartbeatRuns.companyId, issue.companyId),
           inArray(heartbeatRuns.status, ["queued", "running"]),
           sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
+          ...(targetAgentId ? [eq(heartbeatRuns.agentId, targetAgentId)] : []),
         ),
       )
       .orderBy(desc(heartbeatRuns.createdAt));
@@ -3863,20 +3912,31 @@ export function agentRoutes(
       "Issue not found",
     );
     if (!issue) return;
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
+    const targetAgentId =
+      typeof req.query.targetAgentId === "string" && req.query.targetAgentId.trim().length > 0
+        ? req.query.targetAgentId.trim()
+        : null;
+    if (targetAgentId && !isUuidLike(targetAgentId)) {
+      res.status(400).json({ error: "targetAgentId must be a UUID" });
+      return;
+    }
 
     let run = issue.executionRunId ? await heartbeat.getRunIssueSummary(issue.executionRunId) : null;
     if (
       run &&
       (
         (run.status !== "queued" && run.status !== "running") ||
-        run.issueId !== issue.id
+        run.issueId !== issue.id ||
+        (targetAgentId && run.agentId !== targetAgentId)
       )
     ) {
       run = null;
     }
 
-    if (!run && issue.assigneeAgentId && issue.status === "in_progress") {
-      const candidateRun = await heartbeat.getActiveRunIssueSummaryForAgent(issue.assigneeAgentId);
+    const fallbackAgentId = targetAgentId ?? (issue.status === "in_progress" ? issue.assigneeAgentId : null);
+    if (!run && fallbackAgentId) {
+      const candidateRun = await heartbeat.getActiveRunIssueSummaryForAgent(fallbackAgentId);
       const candidateIssueId = asNonEmptyString(candidateRun?.issueId);
       if (candidateRun && candidateIssueId === issue.id) {
         run = candidateRun;

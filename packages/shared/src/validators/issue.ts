@@ -583,6 +583,12 @@ export const addIssueCommentSchema = z.object({
 
 export type AddIssueComment = z.infer<typeof addIssueCommentSchema>;
 
+export const selectedAgentChatCommentSchema = addIssueCommentSchema.extend({
+  targetAgentId: z.string().uuid().optional().nullable(),
+});
+
+export type SelectedAgentChatComment = z.infer<typeof selectedAgentChatCommentSchema>;
+
 export const issueThreadInteractionStatusSchema = z.enum(ISSUE_THREAD_INTERACTION_STATUSES);
 export const issueThreadInteractionKindSchema = z.enum(ISSUE_THREAD_INTERACTION_KINDS);
 export const issueThreadInteractionContinuationPolicySchema = z.enum(

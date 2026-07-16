@@ -87,6 +87,8 @@ interface MarkdownEditorProps {
   mentions?: MentionOption[];
   /** Called on Cmd/Ctrl+Enter */
   onSubmit?: () => void;
+  /** Controls which Enter gesture submits when onSubmit is provided. */
+  submitKey?: "mod-enter" | "enter";
   /** Render the rich editor without allowing edits. */
   readOnly?: boolean;
 }
@@ -631,6 +633,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   bordered = true,
   mentions,
   onSubmit,
+  submitKey = "mod-enter",
   readOnly = false,
 }: MarkdownEditorProps, forwardedRef) {
   const editorValue = useMemo(() => prepareMarkdownForEditor(value), [value]);
@@ -1171,7 +1174,15 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
           }}
           onBlur={() => onBlur?.()}
           onKeyDown={(event) => {
-            if (onSubmit && event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+            const shouldSubmit =
+              onSubmit
+              && event.key === "Enter"
+              && (
+                submitKey === "enter"
+                  ? !event.shiftKey && !event.metaKey && !event.ctrlKey && !event.altKey
+                  : event.metaKey || event.ctrlKey
+              );
+            if (shouldSubmit) {
               event.preventDefault();
               onSubmit();
             }
@@ -1196,8 +1207,15 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       )}
       onKeyDownCapture={(e) => {
         if (readOnly) return;
-        // Cmd/Ctrl+Enter to submit
-        if (onSubmit && e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+        const shouldSubmit =
+          onSubmit
+          && e.key === "Enter"
+          && (
+            submitKey === "enter"
+              ? !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey
+              : e.metaKey || e.ctrlKey
+          );
+        if (shouldSubmit) {
           e.preventDefault();
           e.stopPropagation();
           onSubmit();

@@ -38,6 +38,8 @@ export type SystemNoticeProps = {
   detailsDefaultOpen?: boolean;
   /** Optional ISO timestamp shown next to the label. */
   timestamp?: string;
+  /** Optional visual override while preserving the tone's accessibility label and color tokens. */
+  iconOverride?: LucideIcon;
   className?: string;
 };
 
@@ -214,10 +216,11 @@ export function SystemNotice({
   metadata,
   detailsDefaultOpen = false,
   timestamp,
+  iconOverride,
   className,
 }: SystemNoticeProps) {
   const tokens = TONE_TOKENS[tone];
-  const ToneIcon = tokens.icon;
+  const ToneIcon = iconOverride ?? tokens.icon;
   const [open, setOpen] = useState(detailsDefaultOpen);
   const detailsId = useId();
   const hasDetails = Boolean(metadata && metadata.length > 0);
