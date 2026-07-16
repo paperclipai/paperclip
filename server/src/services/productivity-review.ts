@@ -8,6 +8,7 @@ import {
   heartbeatRuns,
   issueComments,
   issues,
+  labels,
   projects,
 } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
@@ -23,7 +24,7 @@ import { RECOVERY_ORIGIN_KINDS } from "./recovery/origins.js";
 
 export const PRODUCTIVITY_REVIEW_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.issueProductivityReview;
 export const DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS = 10;
-export const DEFAULT_PRODUCTIVITY_REVIEW_LONG_ACTIVE_HOURS = 6;
+export const DEFAULT_PRODUCTIVITY_REVIEW_LONG_ACTIVE_HOURS = 1;
 export const DEFAULT_PRODUCTIVITY_REVIEW_HIGH_CHURN_HOURLY = 10;
 export const DEFAULT_PRODUCTIVITY_REVIEW_HIGH_CHURN_SIX_HOURS = 30;
 export const DEFAULT_PRODUCTIVITY_REVIEW_RESOLVED_SNOOZE_MS = 6 * 60 * 60 * 1000;
@@ -31,6 +32,9 @@ export const DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS = 60 * 60 * 1000;
 export const DEFAULT_PRODUCTIVITY_REVIEW_MAX_REFRESH_COMMENTS = 3;
 export const DEFAULT_PRODUCTIVITY_REVIEW_CREATION_WINDOW_MS = 24 * 60 * 60 * 1000;
 export const DEFAULT_PRODUCTIVITY_REVIEW_MAX_CREATIONS_PER_WINDOW = 3;
+export const PRODUCTIVITY_REVIEW_OPS_LABEL_NAME = "ops: monitoring alert";
+export const PRODUCTIVITY_REVIEW_OPS_LABEL_COLOR = "#f97316";
+export const PRODUCTIVITY_REVIEW_ROUTE_PERMISSION = "productivityReviewRouting";
 
 const TERMINAL_RUN_STATUSES = ["succeeded", "interrupted", "failed", "cancelled", "timed_out"] as const;
 const ACTIVE_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
@@ -223,6 +227,82 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
 
   function isAgentInvokable(agent: AgentRow | null | undefined) {
     return Boolean(agent && !["paused", "terminated", "pending_approval"].includes(agent.status));
+  }
+
+  function readRecord(value: unknown): Record<string, unknown> {
+    return value && typeof value === "object" && !Array.isArray(value)
+      ? value as Record<string, unknown>
+      : {};
+  }
+
+  function normalizeProductivityRouteText(value: unknown) {
+    return typeof value === "string"
+      ? value.toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim()
+      : "";
+  }
+
+  function productivityReviewRouteScore(agent: AgentRow, sourceIssue: IssueRow) {
+    if (agent.id === sourceIssue.assigneeAgentId) return null;
+
+    const permissions = readRecord(agent.permissions);
+    const routePermission = normalizeProductivityRouteText(permissions[PRODUCTIVITY_REVIEW_ROUTE_PERMISSION]);
+    const legacyForemanFlag = permissions.productivityReviewForeman === true;
+    const opsRouting = readRecord(permissions.opsRouting);
+    const opsProductivityReview = opsRouting.productivityReview === true || opsRouting.productivityReview === "foreman";
+
+    if (legacyForemanFlag || opsProductivityReview || routePermission === "foreman") return 0;
+    if (routePermission === "pi orchestrator" || routePermission === "openclaw coordinator") return 1;
+    return null;
+  }
+
+  async function resolveProductivityReviewRouteAgentId(sourceIssue: IssueRow) {
+    const candidateAgents = await db
+      .select()
+      .from(agents)
+      .where(eq(agents.companyId, sourceIssue.companyId))
+      .orderBy(asc(agents.createdAt), asc(agents.id));
+    const scoredCandidates = candidateAgents
+      .map((agent) => ({ agent, score: productivityReviewRouteScore(agent, sourceIssue) }))
+      .filter((candidate): candidate is { agent: AgentRow; score: number } => candidate.score !== null)
+      .sort((a, b) =>
+        a.score - b.score ||
+        a.agent.createdAt.getTime() - b.agent.createdAt.getTime() ||
+        a.agent.id.localeCompare(b.agent.id)
+      );
+
+    for (const { agent } of scoredCandidates) {
+      if (!isAgentInvokable(agent)) continue;
+      const budgetBlock = await budgets.getInvocationBlock(sourceIssue.companyId, agent.id, {
+        issueId: sourceIssue.id,
+        projectId: sourceIssue.projectId ?? null,
+      });
+      if (!budgetBlock) return agent.id;
+    }
+    return null;
+  }
+
+  async function ensureProductivityReviewOpsLabelIds(companyId: string) {
+    const readLabel = () => db
+      .select({ id: labels.id })
+      .from(labels)
+      .where(and(eq(labels.companyId, companyId), eq(labels.name, PRODUCTIVITY_REVIEW_OPS_LABEL_NAME)))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+
+    const existing = await readLabel();
+    if (existing) return [existing.id];
+
+    await db
+      .insert(labels)
+      .values({
+        companyId,
+        name: PRODUCTIVITY_REVIEW_OPS_LABEL_NAME,
+        color: PRODUCTIVITY_REVIEW_OPS_LABEL_COLOR,
+      })
+      .onConflictDoNothing({ target: [labels.companyId, labels.name] });
+
+    const created = await readLabel();
+    return created ? [created.id] : [];
   }
 
   async function isProductivityReviewDescendant(issue: Pick<IssueRow, "companyId" | "parentId">) {
@@ -524,6 +604,9 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
   }
 
   async function resolveReviewOwnerAgentId(sourceIssue: IssueRow, sourceAgent: AgentRow) {
+    const routeAgentId = await resolveProductivityReviewRouteAgentId(sourceIssue);
+    if (routeAgentId) return routeAgentId;
+
     const candidateIds: string[] = [];
     if (sourceAgent.reportsTo) candidateIds.push(sourceAgent.reportsTo);
     if (sourceIssue.createdByAgentId) candidateIds.push(sourceIssue.createdByAgentId);
@@ -582,6 +665,13 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       `- Trigger reasons: ${evidence.triggerReasons.join("; ")}`,
       `- Generated at: ${evidence.generatedAt.toISOString()}`,
       "",
+      "## Routing and Closure",
+      "",
+      `- Alert type: ${PRODUCTIVITY_REVIEW_OPS_LABEL_NAME}`,
+      "- Route: Foreman/pi-orchestrator ops path for source-issue or handoff investigation when a trusted route owner is configured; otherwise use manager escalation with this ops tag/copy.",
+      "- Required owner action: investigate and fix the source issue, handoff, blocker, or loop that caused this review.",
+      "- Closure requirement: leave a Foreman/pi-orchestrator disposition comment with the source issue outcome before closing this productivity review.",
+      "",
       "## Evidence",
       "",
       `- Total sampled issue-linked runs: ${evidence.totalRunCount}`,
@@ -613,9 +703,9 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       "",
       usage,
       "",
-      "## Manager Decision",
+      "## Foreman / Ops Decision",
       "",
-      "- Close as productive if this pattern is expected.",
+      "- Close as productive only after leaving the required disposition comment if this pattern is expected.",
       "- Continue with a snooze window if the current work should keep running without repeat review spam.",
       "- Request decomposition, reroute, block with an unblock owner, or stop/cancel the source work if the work is inefficient.",
     ].join("\n");
@@ -631,6 +721,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       `- No-comment streak: ${evidence.noCommentStreak}`,
       `- Runs/assignee comments: ${evidence.runCountLastHour}/${evidence.commentCountLastHour} in 1h, ${evidence.runCountLastSixHours}/${evidence.commentCountLastSixHours} in 6h`,
       `- Next action: ${evidence.nextAction ? truncateInline(evidence.nextAction, 300) : "none recorded"}`,
+      "- Closure requirement: Foreman/pi-orchestrator disposition comment required before closing this productivity review.",
     ].join("\n");
   }
 
@@ -679,11 +770,14 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       return { kind: "creation_capped" as const, reviewIssueId: null };
     }
 
-    const ownerAgentId = await resolveReviewOwnerAgentId(evidence.sourceIssue, evidence.sourceAgent);
+    const [ownerAgentId, labelIds] = await Promise.all([
+      resolveReviewOwnerAgentId(evidence.sourceIssue, evidence.sourceAgent),
+      ensureProductivityReviewOpsLabelIds(evidence.sourceIssue.companyId),
+    ]);
     let review: Awaited<ReturnType<typeof issuesSvc.create>>;
     try {
       review = await issuesSvc.create(evidence.sourceIssue.companyId, {
-        title: `Review productivity for ${evidence.sourceIssue.identifier ?? evidence.sourceIssue.title}`,
+        title: `Ops alert: review productivity for ${evidence.sourceIssue.identifier ?? evidence.sourceIssue.title}`,
         description: buildReviewMarkdown(evidence, opts.prefix),
         status: "todo",
         priority: evidence.trigger === "long_active_duration" ? "medium" : "high",
@@ -693,6 +787,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
         billingCode: evidence.sourceIssue.billingCode,
         assigneeAgentId: ownerAgentId,
         assigneeAdapterOverrides: recoveryAssigneeAdapterOverrides("status_only"),
+        labelIds,
         originKind: PRODUCTIVITY_REVIEW_ORIGIN_KIND,
         originId: evidence.sourceIssue.id,
         originFingerprint: productivityReviewFingerprint(evidence.sourceIssue.id),

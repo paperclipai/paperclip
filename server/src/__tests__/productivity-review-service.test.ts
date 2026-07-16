@@ -4,11 +4,15 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
   agents,
+  budgetPolicies,
   companies,
+  costEvents,
   createDb,
   heartbeatRuns,
   issueComments,
+  issueLabels,
   issues,
+  labels,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -16,10 +20,13 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { MAX_ISSUE_REQUEST_DEPTH } from "@paperclipai/shared";
 import {
+  DEFAULT_PRODUCTIVITY_REVIEW_LONG_ACTIVE_HOURS,
   DEFAULT_PRODUCTIVITY_REVIEW_MAX_REFRESH_COMMENTS,
   DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
   DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS,
+  PRODUCTIVITY_REVIEW_OPS_LABEL_NAME,
   PRODUCTIVITY_REVIEW_REFRESH_COMMENT_PREFIX,
+  PRODUCTIVITY_REVIEW_ROUTE_PERMISSION,
   PRODUCTIVITY_REVIEW_ORIGIN_KIND,
   productivityReviewService,
 } from "../services/productivity-review.ts";
@@ -179,6 +186,16 @@ describeEmbeddedPostgres("productivity review service", () => {
       .orderBy(issueComments.createdAt);
   }
 
+  async function listLabelNames(issueId: string) {
+    return db
+      .select({ name: labels.name })
+      .from(issueLabels)
+      .innerJoin(labels, eq(issueLabels.labelId, labels.id))
+      .where(eq(issueLabels.issueId, issueId))
+      .orderBy(labels.name)
+      .then((rows) => rows.map((row) => row.name));
+  }
+
   it("creates exactly one manager-assigned review for a no-comment run streak and rate-limits immediate refresh", async () => {
     const now = new Date("2026-04-28T12:00:00.000Z");
     const seeded = await seedAssignedIssue();
@@ -204,10 +221,213 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(reviews[0]?.assigneeAdapterOverrides).toEqual({ modelProfile: "cheap" });
     expect(reviews[0]?.originId).toBe(seeded.issueId);
     expect(reviews[0]?.originFingerprint).toBe(`productivity-review:${seeded.issueId}`);
+    expect(reviews[0]?.title).toContain("Ops alert: review productivity");
     expect(reviews[0]?.description).toContain("Primary trigger: `no_comment_streak`");
     expect(reviews[0]?.description).toContain("No-comment completed-run streak: 10");
+    expect(reviews[0]?.description).toContain("Foreman/pi-orchestrator ops path");
+    expect(reviews[0]?.description).toContain("disposition comment");
+    expect(await listLabelNames(reviews[0]!.id)).toContain(PRODUCTIVITY_REVIEW_OPS_LABEL_NAME);
 
     expect(await listRefreshComments(reviews[0]!.id)).toHaveLength(0);
+  });
+
+  it("prefers a Foreman/pi-orchestrator route over the source agent manager when available", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    const foremanId = randomUUID();
+    await db.insert(agents).values({
+      id: foremanId,
+      companyId: seeded.companyId,
+      name: "pi-orchestrator",
+      role: "foreman",
+      capabilities: "Dark Factory Foreman / pi-orchestrator routing owner for productivity review alerts.",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: { [PRODUCTIVITY_REVIEW_ROUTE_PERMISSION]: "foreman" },
+    });
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(1);
+    const [review] = await listProductivityReviews(seeded.companyId);
+    expect(review?.assigneeAgentId).toBe(foremanId);
+    expect(review?.assigneeAgentId).not.toBe(seeded.managerId);
+    expect(review?.description).toContain("Required owner action: investigate and fix the source issue, handoff, blocker, or loop");
+    expect(review?.description).toContain("Closure requirement: leave a Foreman/pi-orchestrator disposition comment");
+    expect(await listLabelNames(review!.id)).toContain(PRODUCTIVITY_REVIEW_OPS_LABEL_NAME);
+  });
+
+  it("does not trust spoofed, invalid, cross-company, source-assignee, or budget-blocked Foreman text", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    const spoofedId = randomUUID();
+    const pausedId = randomUUID();
+    const pendingId = randomUUID();
+    const terminatedId = randomUUID();
+    const budgetBlockedId = randomUUID();
+    const otherCompanyId = randomUUID();
+    const otherCompanyForemanId = randomUUID();
+    await db.insert(companies).values({
+      id: otherCompanyId,
+      name: "Other Productivity Review Co",
+      issuePrefix: `PR${otherCompanyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values([
+      {
+        id: spoofedId,
+        companyId: seeded.companyId,
+        name: "pi-orchestrator",
+        role: "foreman",
+        capabilities: "Spoofed Foreman text without trusted permission.",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: pausedId,
+        companyId: seeded.companyId,
+        name: "Paused Foreman",
+        role: "operations",
+        status: "paused",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: { [PRODUCTIVITY_REVIEW_ROUTE_PERMISSION]: "foreman" },
+      },
+      {
+        id: pendingId,
+        companyId: seeded.companyId,
+        name: "Pending Foreman",
+        role: "operations",
+        status: "pending_approval",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: { [PRODUCTIVITY_REVIEW_ROUTE_PERMISSION]: "foreman" },
+      },
+      {
+        id: terminatedId,
+        companyId: seeded.companyId,
+        name: "Terminated Foreman",
+        role: "operations",
+        status: "terminated",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: { [PRODUCTIVITY_REVIEW_ROUTE_PERMISSION]: "foreman" },
+      },
+      {
+        id: budgetBlockedId,
+        companyId: seeded.companyId,
+        name: "Budget Blocked Foreman",
+        role: "operations",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: { [PRODUCTIVITY_REVIEW_ROUTE_PERMISSION]: "foreman" },
+      },
+      {
+        id: otherCompanyForemanId,
+        companyId: otherCompanyId,
+        name: "Other Company Foreman",
+        role: "operations",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: { [PRODUCTIVITY_REVIEW_ROUTE_PERMISSION]: "foreman" },
+      },
+    ]);
+    await db
+      .update(agents)
+      .set({
+        name: "source pi-orchestrator",
+        role: "foreman",
+        capabilities: "Trusted-looking source assignee text and permission.",
+        permissions: { [PRODUCTIVITY_REVIEW_ROUTE_PERMISSION]: "foreman" },
+      })
+      .where(eq(agents.id, seeded.coderId));
+    await db.insert(budgetPolicies).values({
+      companyId: seeded.companyId,
+      scopeType: "agent",
+      scopeId: budgetBlockedId,
+      metric: "billed_cents",
+      windowKind: "lifetime",
+      amount: 1,
+      hardStopEnabled: true,
+      isActive: true,
+    });
+    await db.insert(costEvents).values({
+      companyId: seeded.companyId,
+      agentId: budgetBlockedId,
+      provider: "test",
+      model: "test-model",
+      costCents: 1,
+      occurredAt: now,
+    });
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(1);
+    const [review] = await listProductivityReviews(seeded.companyId);
+    expect(review?.assigneeAgentId).toBe(seeded.managerId);
+    expect(review?.assigneeAgentId).not.toBe(spoofedId);
+    expect(review?.assigneeAgentId).not.toBe(pausedId);
+    expect(review?.assigneeAgentId).not.toBe(pendingId);
+    expect(review?.assigneeAgentId).not.toBe(terminatedId);
+    expect(review?.assigneeAgentId).not.toBe(budgetBlockedId);
+    expect(review?.assigneeAgentId).not.toBe(otherCompanyForemanId);
+    expect(review?.assigneeAgentId).not.toBe(seeded.coderId);
+  });
+
+  it("uses a one-hour long-active default threshold boundary", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const longActiveMs = DEFAULT_PRODUCTIVITY_REVIEW_LONG_ACTIVE_HOURS * 60 * 60 * 1000;
+    const seeded = await seedAssignedIssue({
+      status: "in_progress",
+      startedAt: new Date(now.getTime() - longActiveMs + 1_000),
+    });
+    const service = productivityReviewService(db);
+
+    const justUnder = await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
+    await db
+      .update(issues)
+      .set({ startedAt: new Date(now.getTime() - longActiveMs), updatedAt: seeded.createdAt })
+      .where(eq(issues.id, seeded.issueId));
+    const atThreshold = await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
+
+    expect(DEFAULT_PRODUCTIVITY_REVIEW_LONG_ACTIVE_HOURS).toBe(1);
+    expect(justUnder.created).toBe(0);
+    expect(atThreshold.created).toBe(1);
+    const [review] = await listProductivityReviews(seeded.companyId);
+    expect(review?.description).toContain("Primary trigger: `long_active_duration`");
+    expect(review?.description).toContain("Long active duration: 1h 0m");
   });
 
   it("refreshes open productivity reviews only once per interval and caps refresh comments", async () => {
@@ -385,7 +605,9 @@ describeEmbeddedPostgres("productivity review service", () => {
 
   it("ignores non-assignee comments when evaluating high-churn productivity reviews", async () => {
     const now = new Date("2026-04-28T12:00:00.000Z");
-    const seeded = await seedAssignedIssue();
+    const seeded = await seedAssignedIssue({
+      startedAt: new Date(now.getTime() - 30 * 60 * 1000),
+    });
     await insertRuns({
       companyId: seeded.companyId,
       agentId: seeded.coderId,
