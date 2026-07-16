@@ -238,6 +238,21 @@ describeEmbeddedPostgres("folder service", () => {
     await expect(svc.update(companyId, bundled.id, { name: "Changed" })).rejects.toMatchObject({ status: 403 });
   });
 
+  it("heals legacy bundled category names without changing folder identity", async () => {
+    const companyId = await seedCompany();
+    const svc = folderService(db);
+    const legacy = await svc.ensureBundledCategory(companyId, "software-development");
+
+    const reconciled = await svc.ensureBundledCategory(companyId, "Software Development");
+
+    expect(reconciled).toMatchObject({
+      id: legacy.id,
+      name: "Software Development",
+      path: "bundled/software-development",
+      systemKey: "bundled:software-development",
+    });
+  });
+
   it("creates reserved folders idempotently under concurrent requests", async () => {
     const companyId = await seedCompany();
     const svc = folderService(db);

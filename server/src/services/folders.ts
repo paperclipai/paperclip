@@ -494,15 +494,25 @@ export function folderService(db: Db) {
 
   async function ensureBundledCategory(companyId: string, category: string) {
     const root = await ensureContainer(companyId, "bundled", "Bundled");
+    const name = normalizeName(category);
     const slug = normalizeFolderSlug(category);
     const systemKey = `bundled:${slug}`;
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const resolved = await uniqueSystemSlug(companyId, root.id, slug, systemKey, "bundled");
-      if (resolved.id) return (await getFolder(companyId, resolved.id))!;
+      if (resolved.id) {
+        const existing = await getFolder(companyId, resolved.id);
+        if (!existing) continue;
+        if (existing.name === name) return existing;
+        await db
+          .update(folders)
+          .set({ name, updatedAt: new Date() })
+          .where(and(eq(folders.companyId, companyId), eq(folders.id, existing.id)));
+        return (await getFolder(companyId, existing.id))!;
+      }
       const created = await insertSystemFolder({
         companyId,
         parentId: root.id,
-        name: category,
+        name,
         slug: resolved.slug!,
         systemKey,
       });
