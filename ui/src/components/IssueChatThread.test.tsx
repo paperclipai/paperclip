@@ -13,10 +13,11 @@ import {
   didPrependThreadMessages,
   findLatestBrowserPreviewRun,
   findLatestCommentMessageIndex,
+  mergeIssueChatLiveRuns,
   resolveAssistantMessageFoldedState,
   resolveIssueChatHumanAuthor,
 } from "./IssueChatThread";
-import type { LiveRunForIssue } from "../api/heartbeats";
+import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
 import { ToastProvider } from "../context/ToastContext";
 import { ToastViewport } from "./ToastViewport";
 import type {
@@ -51,6 +52,38 @@ describe("findLatestBrowserPreviewRun", () => {
     ] as LiveRunForIssue[];
 
     expect(findLatestBrowserPreviewRun(runs)?.id).toBe("run-2");
+  });
+});
+
+describe("mergeIssueChatLiveRuns", () => {
+  it("does not drop browser activity when the compact active run replaces the same live run", () => {
+    const liveRun = {
+      id: "run-1",
+      status: "running",
+      invocationSource: "issue",
+      triggerDetail: null,
+      startedAt: "2026-07-16T13:08:11Z",
+      finishedAt: null,
+      createdAt: "2026-07-16T13:08:11Z",
+      agentId: "agent-1",
+      agentName: "Founding Engineer",
+      adapterType: "codex_local",
+      browserActivityAt: "2026-07-16T13:08:55Z",
+    } satisfies LiveRunForIssue;
+    const activeRun = {
+      id: "run-1",
+      status: "running",
+      invocationSource: "issue",
+      triggerDetail: null,
+      startedAt: "2026-07-16T13:08:11Z",
+      finishedAt: null,
+      createdAt: "2026-07-16T13:08:11Z",
+      agentId: "agent-1",
+      agentName: "Founding Engineer",
+      adapterType: "codex_local",
+    } satisfies ActiveRunForIssue;
+
+    expect(mergeIssueChatLiveRuns([liveRun], activeRun)[0]?.browserActivityAt).toBe("2026-07-16T13:08:55Z");
   });
 });
 

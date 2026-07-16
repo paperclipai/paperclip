@@ -809,6 +809,37 @@ function toIsoString(value: string | Date | null | undefined): string | null {
   return typeof value === "string" ? value : value.toISOString();
 }
 
+export function mergeIssueChatLiveRuns(
+  liveRuns: readonly LiveRunForIssue[],
+  activeRun: ActiveRunForIssue | null | undefined,
+) {
+  const deduped = new Map<string, LiveRunForIssue>();
+  for (const run of liveRuns) deduped.set(run.id, run);
+  if (activeRun) {
+    const existingLiveRun = deduped.get(activeRun.id);
+    deduped.set(activeRun.id, {
+      // The active-run endpoint intentionally returns a smaller shape than
+      // the issue live-runs endpoint. Preserve richer fields such as
+      // browserActivityAt so the current transcript keeps its preview.
+      ...existingLiveRun,
+      id: activeRun.id,
+      status: activeRun.status,
+      invocationSource: activeRun.invocationSource,
+      triggerDetail: activeRun.triggerDetail,
+      startedAt: toIsoString(activeRun.startedAt),
+      finishedAt: toIsoString(activeRun.finishedAt),
+      createdAt: toIsoString(activeRun.createdAt) ?? new Date().toISOString(),
+      agentId: activeRun.agentId,
+      agentName: activeRun.agentName,
+      adapterType: activeRun.adapterType,
+      logBytes: activeRun.logBytes,
+      lastOutputBytes: activeRun.lastOutputBytes,
+      browserActivityAt: activeRun.browserActivityAt ?? existingLiveRun?.browserActivityAt ?? null,
+    });
+  }
+  return [...deduped.values()].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+}
+
 function loadDraft(draftKey: string): string {
   try {
     return localStorage.getItem(draftKey) ?? "";
@@ -4360,29 +4391,10 @@ export function IssueChatThread({
   const latestSettleTimeoutsRef = useRef<number[]>([]);
   const latestSettleCleanupRef = useRef<(() => void) | null>(null);
   const [bottomSpacerHeight, setBottomSpacerHeight] = useState(0);
-  const displayLiveRuns = useMemo(() => {
-    const deduped = new Map<string, LiveRunForIssue>();
-    for (const run of liveRuns) {
-      deduped.set(run.id, run);
-    }
-    if (activeRun) {
-      deduped.set(activeRun.id, {
-        id: activeRun.id,
-        status: activeRun.status,
-        invocationSource: activeRun.invocationSource,
-        triggerDetail: activeRun.triggerDetail,
-        startedAt: toIsoString(activeRun.startedAt),
-        finishedAt: toIsoString(activeRun.finishedAt),
-        createdAt: toIsoString(activeRun.createdAt) ?? new Date().toISOString(),
-        agentId: activeRun.agentId,
-        agentName: activeRun.agentName,
-        adapterType: activeRun.adapterType,
-        logBytes: activeRun.logBytes,
-        lastOutputBytes: activeRun.lastOutputBytes,
-      });
-    }
-    return [...deduped.values()].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
-  }, [activeRun, liveRuns]);
+  const displayLiveRuns = useMemo(
+    () => mergeIssueChatLiveRuns(liveRuns, activeRun),
+    [activeRun, liveRuns],
+  );
   const transcriptRuns = useMemo(() => {
     return resolveIssueChatTranscriptRuns({
       linkedRuns,
