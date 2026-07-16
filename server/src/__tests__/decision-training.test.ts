@@ -124,8 +124,32 @@ describeEmbeddedPostgres("decision training", () => {
       name: "Primary workspace",
       repoUrl: "https://github.com/paperclipai/paperclip.git",
       metadata: { commitSha: "abcdef1234567890" },
+      isPrimary: false,
+      createdAt: new Date("2026-07-16T11:00:00.000Z"),
+      updatedAt: new Date("2026-07-16T11:30:00.000Z"),
+    });
+    await db.insert(projectWorkspaces).values({
+      companyId: seeded.companyId,
+      projectId: seeded.projectId,
+      name: "Post-cutoff workspace",
+      repoUrl: "https://github.com/paperclipai/paperclip.git",
+      metadata: { commitSha: "ffffffffffffffff" },
       isPrimary: true,
       createdAt: new Date("2026-07-16T11:00:00.000Z"),
+      updatedAt: new Date("2026-07-16T12:30:00.000Z"),
+    });
+    await db.insert(executionWorkspaces).values({
+      companyId: seeded.companyId,
+      projectId: seeded.projectId,
+      sourceIssueId: seeded.issueId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Post-cutoff execution workspace",
+      providerType: "git_worktree",
+      metadata: { commitSha: "eeeeeeeeeeeeeeee" },
+      openedAt: new Date("2026-07-16T11:00:00.000Z"),
+      lastUsedAt: new Date("2026-07-16T12:30:00.000Z"),
+      updatedAt: new Date("2026-07-16T12:30:00.000Z"),
     });
 
     const captured = await captureDecisionSnapshot(db, {
