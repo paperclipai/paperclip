@@ -9,6 +9,8 @@ interface CodexSubscriptionPanelProps {
 
 const WINDOW_PRIORITY = [
   "5hlimit",
+  "24hlimit",
+  "7dlimit",
   "weeklylimit",
   "credits",
 ] as const;

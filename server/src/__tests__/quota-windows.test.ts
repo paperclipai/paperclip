@@ -724,7 +724,7 @@ describe("fetchCodexQuota", () => {
     });
     const windows = await fetchCodexQuota("token", null);
     expect(windows).toHaveLength(1);
-    expect(windows[0]).toMatchObject({ label: "5h limit", usedPercent: 30, resetsAt: "2026-01-02T00:00:00.000Z" });
+    expect(windows[0]).toMatchObject({ label: "24h limit", usedPercent: 30, resetsAt: "2026-01-02T00:00:00.000Z" });
   });
 
   it("parses secondary_window alongside primary_window", async () => {
@@ -737,7 +737,19 @@ describe("fetchCodexQuota", () => {
     const windows = await fetchCodexQuota("token", null);
     expect(windows).toHaveLength(2);
     expect(windows[0]!.label).toBe("5h limit");
-    expect(windows[1]!.label).toBe("Weekly limit");
+    expect(windows[1]!.label).toBe("7d limit");
+  });
+
+  it("labels a seven-day primary window accurately when Codex omits the 5h window", async () => {
+    mockFetch({
+      rate_limit: {
+        primary_window: { used_percent: 16, limit_window_seconds: 604800 },
+      },
+    });
+    const windows = await fetchCodexQuota("token", null);
+    expect(windows).toEqual([
+      expect.objectContaining({ label: "7d limit", usedPercent: 16 }),
+    ]);
   });
 
   it("includes Credits window when credits present and not unlimited", async () => {
@@ -804,7 +816,7 @@ describe("mapCodexRpcQuota", () => {
         detail: null,
       },
       {
-        label: "Weekly limit",
+        label: "7d limit",
         usedPercent: 27,
         resetsAt: null,
         valueLabel: null,
@@ -818,7 +830,7 @@ describe("mapCodexRpcQuota", () => {
         detail: null,
       },
       {
-        label: "GPT-5.3-Codex-Spark · Weekly limit",
+        label: "GPT-5.3-Codex-Spark · 7d limit",
         usedPercent: 20,
         resetsAt: null,
         valueLabel: null,
@@ -846,6 +858,19 @@ describe("mapCodexRpcQuota", () => {
         valueLabel: "$12.34 remaining",
         detail: null,
       },
+    ]);
+  });
+
+  it("labels a seven-day primary RPC window accurately when Codex removes the 5h window", () => {
+    const snapshot = mapCodexRpcQuota({
+      rateLimits: {
+        limitId: "codex",
+        primary: { usedPercent: 16, windowDurationMins: 10_080 },
+      },
+    });
+
+    expect(snapshot.windows).toEqual([
+      expect.objectContaining({ label: "7d limit", usedPercent: 16 }),
     ]);
   });
 });
