@@ -149,6 +149,14 @@ export function instanceSettingsRoutes(db: Db) {
     },
   );
 
+  router.get("/instance/settings/experimental/worktree-run-engine", async (req, res) => {
+    // Boot-truth for the worktree run engine (PAP-14312). Readable by any
+    // authenticated org member or instance admin so the persistent banner and
+    // inherited-run surfaces render for everyone viewing a preview instance.
+    assertBoardOrgAccess(req);
+    res.json(await svc.getWorktreeRunEngineStatus());
+  });
+
   router.post(
     "/instance/settings/experimental/issue-graph-liveness-auto-recovery/preview",
     validate(issueGraphLivenessAutoRecoveryRequestSchema),

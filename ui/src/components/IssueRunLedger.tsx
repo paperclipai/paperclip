@@ -1,6 +1,10 @@
 import { useMemo, useState, type ReactNode } from "react";
 import type { ActivityEvent, Issue, Agent } from "@paperclipai/shared";
-import { isResponsibleUserDenialCode, responsibleUserLabel } from "@paperclipai/shared";
+import {
+  isResponsibleUserDenialCode,
+  responsibleUserLabel,
+  WORKTREE_SEED_QUARANTINE_ERROR_CODE,
+} from "@paperclipai/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@/lib/router";
 import { accessApi, type CurrentBoardAccess } from "../api/access";
@@ -290,6 +294,15 @@ function statusLabel(status: string) {
 
 function isActiveRun(run: Pick<LedgerRun, "status" | "isLive">) {
   return run.isLive || ACTIVE_RUN_STATUSES.has(run.status);
+}
+
+/**
+ * PAP-14312: runs copied into a worktree seed are quarantined (cancelled +
+ * `worktree_seed_quarantine`) so they never execute in the preview. Render them
+ * as "inherited — inactive" instead of a scary failed/cancelled run.
+ */
+function isInheritedInactiveRun(run: Pick<RunForIssue, "errorCode">) {
+  return run.errorCode === WORKTREE_SEED_QUARANTINE_ERROR_CODE;
 }
 
 function runSummary(run: LedgerRun, agentMap: ReadonlyMap<string, Pick<Agent, "name">>) {
@@ -696,6 +709,7 @@ export function IssueRunLedgerContent({
               return <div key={`activity:${item.id}`}>{renderActivityEvent?.(item.event)}</div>;
             }
             const run = item.run;
+            const inheritedInactive = isInheritedInactiveRun(run);
             const liveness = livenessCopyForRun(run);
             const stopReason = stopReasonLabel(run);
             const duration = formatDuration(run.startedAt, run.finishedAt);
@@ -734,21 +748,31 @@ export function IssueRunLedgerContent({
                   <span className="rounded-md border border-border px-1.5 py-0.5 text-(length:--text-micro) capitalize text-muted-foreground">
                     {statusLabel(run.status)}
                   </span>
+                  {inheritedInactive ? (
+                    <span
+                      className="rounded-md border border-slate-400/40 bg-slate-400/10 px-1.5 py-0.5 text-(length:--text-micro) font-medium text-slate-600 dark:text-slate-300"
+                      title="Copied from another instance when this worktree was seeded. It never executed here."
+                    >
+                      Inherited · inactive
+                    </span>
+                  ) : null}
                   {run.isLive ? (
                     <span className="inline-flex items-center gap-1 rounded-md border border-blue-500/30 bg-blue-500/10 px-1.5 py-0.5 text-(length:--text-micro) text-blue-700 dark:text-blue-300">
                       <span className="h-1.5 w-1.5 rounded-full bg-blue-500" />
                       live
                     </span>
                   ) : null}
-                  <span
-                    className={cn(
-                      "rounded-md border px-1.5 py-0.5 text-(length:--text-micro) font-medium",
-                      liveness.tone,
-                    )}
-                    title={liveness.description}
-                  >
-                    {liveness.label}
-                  </span>
+                  {inheritedInactive ? null : (
+                    <span
+                      className={cn(
+                        "rounded-md border px-1.5 py-0.5 text-(length:--text-micro) font-medium",
+                        liveness.tone,
+                      )}
+                      title={liveness.description}
+                    >
+                      {liveness.label}
+                    </span>
+                  )}
                   {exhausted ? (
                     <span className="rounded-md border border-red-500/30 bg-red-500/10 px-1.5 py-0.5 text-(length:--text-micro) font-medium text-red-700 dark:text-red-300">
                       Exhausted

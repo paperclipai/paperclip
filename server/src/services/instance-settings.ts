@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
 import type { Db } from "@paperclipai/db";
-import { companies, instanceSettings } from "@paperclipai/db";
+import { companies, heartbeatRuns, instanceSettings } from "@paperclipai/db";
 import {
   DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
   DEFAULT_BACKUP_RETENTION,
   DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
+  WORKTREE_SEED_QUARANTINE_ERROR_CODE,
   instanceGeneralSettingsSchema,
   type InstanceGeneralSettings,
   instanceExperimentalSettingsSchema,
@@ -13,6 +14,9 @@ import {
   type InstanceSettings,
   type PatchInstanceSettings,
   type PatchInstanceExperimentalSettings,
+  type WorktreeRunExecutionSuppressedReason,
+  type WorktreeRunExecutionActivationState,
+  type WorktreeRunEngineStatus,
 } from "@paperclipai/shared";
 import { and, eq, sql } from "drizzle-orm";
 
@@ -28,30 +32,10 @@ interface InstanceSettingsServiceOptions {
   generateSeedEpoch?: () => string;
 }
 
-type WorktreeRunExecutionSuppressedReason =
-  | "not_worktree_runtime"
-  | "flag_disabled"
-  | "missing_cutoff"
-  | "missing_instance_id"
-  | "missing_seed_epoch"
-  | "instance_id_mismatch"
-  | "settings_read_error";
-
-export type WorktreeRunExecutionActivationState =
-  | {
-      armed: true;
-      cutoff: string;
-      activationInstanceId: string;
-      instanceNonce: string;
-      seedEpoch: string;
-      reason: null;
-    }
-  | {
-      armed: false;
-      cutoff: null;
-      activationInstanceId: string | null;
-      reason: WorktreeRunExecutionSuppressedReason;
-    };
+export type {
+  WorktreeRunExecutionSuppressedReason,
+  WorktreeRunExecutionActivationState,
+} from "@paperclipai/shared";
 
 export function isTruthyRuntimeEnvValue(value: string | undefined) {
   return typeof value === "string" && TRUTHY_RUNTIME_ENV_VALUES.has(value.trim().toLowerCase());
@@ -427,6 +411,31 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
         .where(eq(instanceSettings.id, current.id))
         .returning();
       return toInstanceSettings(updated ?? current);
+    },
+
+    getWorktreeRunEngineStatus: async (): Promise<WorktreeRunEngineStatus> => {
+      const experimental = normalizeExperimentalSettings((await getOrCreateRow()).experimental);
+      const inWorktree = isTruthyRuntimeEnvValue(runtimeEnv.PAPERCLIP_IN_WORKTREE);
+      const activation = await resolveWorktreeRunExecutionActivationState({
+        getExperimental: async () => experimental,
+        runtimeEnv,
+      });
+      // Only quarantined-run rows survive a seed (P1 deletes the wakeups/monitors
+      // it clears), so this count is the durable evidence of what was neutralized.
+      let quarantinedRunCount = 0;
+      if (inWorktree) {
+        const [row] = await db
+          .select({ count: sql<number>`count(*)::int` })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.errorCode, WORKTREE_SEED_QUARANTINE_ERROR_CODE));
+        quarantinedRunCount = row?.count ?? 0;
+      }
+      return {
+        inWorktree,
+        activation,
+        instanceNonce: experimental.worktreeRunExecutionInstanceNonce,
+        quarantinedRunCount,
+      };
     },
 
     listCompanyIds: async (): Promise<string[]> =>

@@ -607,4 +607,21 @@ describe("IssueRunLedger", () => {
 
     expect(container.querySelector('[data-testid="responsible-user-denial-notice"]')).toBeNull();
   });
+
+  it("marks worktree-seed quarantined runs as inherited and inactive", () => {
+    renderLedger({
+      runs: [
+        createRun({
+          runId: "run-inherited-1",
+          status: "cancelled",
+          livenessState: null,
+          errorCode: "worktree_seed_quarantine",
+        }),
+      ],
+    });
+
+    expect(container.textContent).toContain("Inherited · inactive");
+    // The inherited badge replaces the noisy liveness classification.
+    expect(container.textContent).not.toContain("No liveness data");
+  });
 });
