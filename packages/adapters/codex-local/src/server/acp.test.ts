@@ -477,14 +477,15 @@ describe("codex_local ACP lane", () => {
       mode: "persistent",
       cwd: root,
     });
-    expect(runtimes[0]?.setConfigInputs.map((input) => [input.key, input.value])).toEqual([
-      ["model", "gpt-5.5"],
-      ["reasoning_effort", "high"],
-      ["service_tier", "fast"],
-      ["features.fast_mode", "true"],
-    ]);
+    expect(runtimes[0]?.setConfigInputs).toEqual([]);
     expect(meta[0]?.commandNotes?.join("\n")).toContain("Prepared ACPX Codex skill home");
     expect(meta[0]?.env?.CODEX_HOME).toBe(path.join(root, "codex-home"));
+    expect(JSON.parse(String(meta[0]?.env?.CODEX_CONFIG))).toEqual({
+      model: "gpt-5.5",
+      model_reasoning_effort: "high",
+      service_tier: "fast",
+      features: { fast_mode: true },
+    });
   });
 
   it("classifies ACP refresh-token auth failures", async () => {
