@@ -1764,6 +1764,19 @@ export function authorizationService(db: Db) {
       }
       if (
         input.action === "issue:comment" &&
+        resource?.assigneeAgentId &&
+        (canCreateAgentsLegacy(actorAgent) || await isManagerOf(companyId, actorAgentId, resource.assigneeAgentId))
+      ) {
+        return allow({
+          action: input.action,
+          reason: canCreateAgentsLegacy(actorAgent) ? "allow_legacy_agent_creator" : "allow_manager_chain",
+          explanation: canCreateAgentsLegacy(actorAgent)
+            ? "Allowed by legacy agent creator authority."
+            : "Allowed because the actor manages the issue assignee in the reporting chain.",
+        });
+      }
+      if (
+        input.action === "issue:comment" &&
         resource?.issueId &&
         await agentHasMentionGrantOnIssue({
           action: input.action,
