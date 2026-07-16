@@ -41,6 +41,7 @@ function makeDb(
     atomicAuthorizationConsume?: boolean;
     atomicAuthorizationIssue?: boolean;
     failApprovalUpdate?: boolean;
+    failStagingUpdate?: boolean;
   } = {},
 ) {
   const inserted: unknown[] = [];
@@ -53,12 +54,14 @@ function makeDb(
       transactions.count += 1;
       const insertedCount = inserted.length;
       const updatedCount = updated.length;
+      const previousAuthorizationConsumed = authorizationConsumed;
       const previousIssuedAuthorization = issuedAuthorization;
       try {
         return await callback(db);
       } catch (error) {
         inserted.splice(insertedCount);
         updated.splice(updatedCount);
+        authorizationConsumed = previousAuthorizationConsumed;
         issuedAuthorization = previousIssuedAuthorization;
         throw error;
       }
@@ -105,6 +108,9 @@ function makeDb(
             returning: async () => {
               if (options.failApprovalUpdate && (value as Record<string, unknown>).status === "approved") {
                 throw new Error("candidate approval update failed");
+              }
+              if (options.failStagingUpdate && (value as Record<string, unknown>).status === "staged") {
+                throw new Error("candidate staging update failed");
               }
               if (options.atomicAuthorizationConsume && "leaseIssuedAt" in (value as Record<string, unknown>)) {
                 if (authorizationConsumed) return [];
@@ -501,6 +507,63 @@ describe("release candidate approval relay", () => {
         message: "Deploy authorization token has already been used",
       },
     });
+  });
+
+  it("rolls back token consumption when the candidate staging update fails", async () => {
+    const token = "pcdeploy_staging-rollback";
+    const authorization = {
+      id: "99999999-9999-4999-8999-999999999999",
+      companyId: candidate.companyId,
+      candidateId: candidate.id,
+      approvalInteractionId: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+      tokenHash: createHash("sha256").update(token).digest("hex"),
+      tokenPrefix: "pcdeploy_staging",
+      targetHost: candidate.targetHost,
+      imageDigest: candidate.imageDigest,
+      environment: candidate.environment,
+      sequence: candidate.sequence,
+      expiresAt: new Date(Date.now() + 60_000),
+      usedAt: null,
+      leaseArtifactAssetId: null,
+      leaseSignatureBundleAssetId: null,
+      leaseIssuedAt: null,
+      createdByUserId: "founder",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    const artifact = {
+      imageDigest: candidate.imageDigest,
+      sbomHash: candidate.sbomHash,
+      signatureVerified: true,
+      sbomVerified: true,
+      tarballSha256: "4444444444444444444444444444444444444444444444444444444444444444",
+      signatureBundleSha256: candidate.signatureBundleSha256,
+      tarballBytes: Buffer.from("artifact"),
+      signatureBundleBytes: Buffer.from("signature"),
+    };
+    const options = { atomicAuthorizationConsume: true, failStagingUpdate: true };
+    const { db, updated, transactions } = makeDb(
+      [[authorization], [candidate], [authorization], [candidate]],
+      options,
+    );
+    const service = releaseCandidateService(db);
+    const assetIds = { artifactAssetId: "asset-one", signatureBundleAssetId: "signature-one" };
+
+    await expect(
+      service.stageRelayArtifact(authorization.id, token, artifact, assetIds, {
+        agentId: candidate.createdByAgentId,
+      }),
+    ).rejects.toThrow("candidate staging update failed");
+
+    expect(transactions.count).toBe(1);
+    expect(updated).toHaveLength(0);
+
+    options.failStagingUpdate = false;
+    await expect(
+      service.stageRelayArtifact(authorization.id, token, artifact, assetIds, {
+        agentId: candidate.createdByAgentId,
+      }),
+    ).resolves.toBeTruthy();
   });
 
   it("refuses relay artifacts with wrong digest, wrong SBOM, or missing signature verification", () => {

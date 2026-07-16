@@ -503,54 +503,58 @@ export function releaseCandidateService(db: Db) {
     ) => {
       const { authorization, candidate } = await releaseCandidateService(db).verifyRelayAuthorization(authorizationId, token, artifact);
       const now = new Date();
-      const [updatedAuth] = await db.update(releaseDeployAuthorizations).set({
-        usedAt: now,
-        leaseArtifactAssetId: assetIds.artifactAssetId,
-        leaseSignatureBundleAssetId: assetIds.signatureBundleAssetId,
-        leaseIssuedAt: now,
-        updatedAt: now,
-      }).where(and(
-        eq(releaseDeployAuthorizations.id, authorization.id),
-        eq(releaseDeployAuthorizations.tokenHash, authorization.tokenHash),
-        isNull(releaseDeployAuthorizations.usedAt),
-      )).returning();
-      if (!updatedAuth) {
-        throw conflict("Deploy authorization token has already been used", {
-          code: "release_candidate_token_used",
-        });
-      }
-      const [updatedCandidate] = await db.update(releaseCandidates).set({
-        status: "staged",
-        stagedArtifactAssetId: assetIds.artifactAssetId,
-        stagedArtifactSha256: normalizeSha256(artifact.tarballSha256),
-        stagedSignatureBundleAssetId: assetIds.signatureBundleAssetId,
-        stagedSignatureBundleSha256: normalizeSha256(artifact.signatureBundleSha256),
-        stagedAt: now,
-        updatedAt: now,
-      }).where(eq(releaseCandidates.id, candidate.id)).returning();
-      await appendAudit(db, {
-        candidate: updatedCandidate ?? candidate,
-        actor,
-        authorizationId: authorization.id,
-        eventType: "relay_artifact_staged",
-        payload: {
+      return db.transaction(async (tx) => {
+        const transactionDb = tx as unknown as Db;
+        const [updatedAuth] = await tx.update(releaseDeployAuthorizations).set({
+          usedAt: now,
+          leaseArtifactAssetId: assetIds.artifactAssetId,
+          leaseSignatureBundleAssetId: assetIds.signatureBundleAssetId,
+          leaseIssuedAt: now,
+          updatedAt: now,
+        }).where(and(
+          eq(releaseDeployAuthorizations.id, authorization.id),
+          eq(releaseDeployAuthorizations.tokenHash, authorization.tokenHash),
+          isNull(releaseDeployAuthorizations.usedAt),
+        )).returning();
+        if (!updatedAuth) {
+          throw conflict("Deploy authorization token has already been used", {
+            code: "release_candidate_token_used",
+          });
+        }
+        const [updatedCandidate] = await tx.update(releaseCandidates).set({
+          status: "staged",
+          stagedArtifactAssetId: assetIds.artifactAssetId,
+          stagedArtifactSha256: normalizeSha256(artifact.tarballSha256),
+          stagedSignatureBundleAssetId: assetIds.signatureBundleAssetId,
+          stagedSignatureBundleSha256: normalizeSha256(artifact.signatureBundleSha256),
+          stagedAt: now,
+          updatedAt: now,
+        }).where(eq(releaseCandidates.id, candidate.id)).returning();
+        if (!updatedCandidate) throw conflict("Failed to stage release candidate");
+        await appendAudit(transactionDb, {
+          candidate: updatedCandidate,
+          actor,
           authorizationId: authorization.id,
-          artifactAssetId: assetIds.artifactAssetId,
-          signatureBundleAssetId: assetIds.signatureBundleAssetId,
-          tarballSha256: normalizeSha256(artifact.tarballSha256),
-          signatureBundleSha256: normalizeSha256(artifact.signatureBundleSha256),
-          digest: artifact.imageDigest,
-          sbomHash: artifact.sbomHash,
-        },
-        commentExtra: {
-          authorization_id: authorization.id,
-          artifact_asset_id: assetIds.artifactAssetId,
-          signature_bundle_asset_id: assetIds.signatureBundleAssetId,
-          tarball_sha256: normalizeSha256(artifact.tarballSha256),
-          signature_bundle_sha256: normalizeSha256(artifact.signatureBundleSha256),
-        },
+          eventType: "relay_artifact_staged",
+          payload: {
+            authorizationId: authorization.id,
+            artifactAssetId: assetIds.artifactAssetId,
+            signatureBundleAssetId: assetIds.signatureBundleAssetId,
+            tarballSha256: normalizeSha256(artifact.tarballSha256),
+            signatureBundleSha256: normalizeSha256(artifact.signatureBundleSha256),
+            digest: artifact.imageDigest,
+            sbomHash: artifact.sbomHash,
+          },
+          commentExtra: {
+            authorization_id: authorization.id,
+            artifact_asset_id: assetIds.artifactAssetId,
+            signature_bundle_asset_id: assetIds.signatureBundleAssetId,
+            tarball_sha256: normalizeSha256(artifact.tarballSha256),
+            signature_bundle_sha256: normalizeSha256(artifact.signatureBundleSha256),
+          },
+        });
+        return updatedAuth as AuthorizationRow;
       });
-      return updatedAuth as AuthorizationRow;
     },
 
     recordDeployEvent: async (input: DeployRecordInput, actor: Actor) => {
