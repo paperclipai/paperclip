@@ -114,23 +114,26 @@ export function decisionTrainingRoutes(db: Db) {
     }
     const userId = requireHumanUser(req, res);
     if (!userId) return;
+    const notesChanged = req.body.notes !== existing.notes;
     const updated = await svc.updateNotes(existing.id, userId, req.body.notes);
     if (!updated) {
       res.status(404).json({ error: "Decision training example not found" });
       return;
     }
-    const actor = getActorInfo(req);
-    await logActivity(db, {
-      companyId: existing.companyId,
-      actorType: actor.actorType,
-      actorId: actor.actorId,
-      agentId: actor.agentId,
-      runId: actor.runId,
-      action: "decision_training.notes_updated",
-      entityType: "decision_training_example",
-      entityId: updated.id,
-      details: { issueId: updated.issueId },
-    });
+    if (notesChanged) {
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId: existing.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "decision_training.notes_updated",
+        entityType: "decision_training_example",
+        entityId: updated.id,
+        details: { issueId: updated.issueId },
+      });
+    }
     res.json(updated);
   });
 
