@@ -11548,28 +11548,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       ) {
         continue;
       }
-      if (processPidAlive) {
-        if (run.errorCode !== DETACHED_PROCESS_ERROR_CODE) {
-          const detachedMessage = `Lost in-memory process handle, but child pid ${run.processPid} is still alive`;
-          const detachedRun = await setRunStatus(run.id, "running", {
-            error: detachedMessage,
-            errorCode: DETACHED_PROCESS_ERROR_CODE,
-          });
-          if (detachedRun) {
-            await appendRunEvent(detachedRun, await nextRunEventSeq(detachedRun.id), {
-              eventType: "lifecycle",
-              stream: "system",
-              level: "warn",
-              message: detachedMessage,
-              payload: {
-                processPid: run.processPid,
-              },
-            });
-          }
-        }
-        continue;
-      }
-
       let descendantOnlyCleanup = false;
       if (processGroupAlive) {
         descendantOnlyCleanup = true;

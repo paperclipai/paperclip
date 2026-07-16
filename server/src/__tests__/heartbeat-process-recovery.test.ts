@@ -110,7 +110,7 @@ import {
 } from "../services/hot-restart.ts";
 import { secretService } from "../services/secrets.ts";
 import { instanceSettingsService } from "../services/instance-settings.ts";
-import { writeHotRestartIntent } from "../hot-restart-intent.ts";
+import { writeHotRestartIntent as writeLegacyHotRestartIntent } from "../hot-restart-intent.ts";
 import {
   SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY,
   SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY,
@@ -1702,7 +1702,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         })
         .where(eq(heartbeatRuns.id, runId));
       await instanceSettingsService(db).updateExperimental({ hotRestart: true });
-      writeHotRestartIntent(new Date("2026-03-19T00:05:59.000Z"), process.pid);
+      writeLegacyHotRestartIntent(new Date("2026-03-19T00:05:59.000Z"), process.pid);
 
       const heartbeat = heartbeatService(db);
       const result = await heartbeat.drainRunningRunsForShutdown(
