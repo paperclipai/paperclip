@@ -549,9 +549,24 @@ function formatBytes(bytes: number) {
 // Skills Store discovery grid (PAP-10879)
 // ---------------------------------------------------------------------------
 
-type DiscoveryTab = "all" | "installed" | "catalog" | "bundled";
+export type DiscoveryTab = "all" | "installed" | "catalog" | "bundled";
 
 const DISCOVERY_TABS: DiscoveryTab[] = ["all", "installed", "catalog", "bundled"];
+
+export function resolveDiscoveryTab(tabParam: string | null): DiscoveryTab {
+  return DISCOVERY_TABS.includes(tabParam as DiscoveryTab)
+    ? (tabParam as DiscoveryTab)
+    : "installed";
+}
+
+export function withDiscoveryTab(current: URLSearchParams, tab: DiscoveryTab): URLSearchParams {
+  const params = new URLSearchParams(current);
+  if (tab === "installed") params.delete("tab");
+  else params.set("tab", tab);
+  params.delete("category");
+  if (tab !== "installed") params.delete("folder");
+  return params;
+}
 
 type DiscoverySort = "agents" | "stars" | "forks" | "recent" | "alphabetical";
 
@@ -3947,9 +3962,7 @@ export function CompanySkills() {
     : "all";
   const selectedCatalogRef = searchParams.get("catalog");
   const tabParam = searchParams.get("tab");
-  const discoveryTab: DiscoveryTab = DISCOVERY_TABS.includes(tabParam as DiscoveryTab)
-    ? (tabParam as DiscoveryTab)
-    : "all";
+  const discoveryTab = resolveDiscoveryTab(tabParam);
   const detailTab: SkillDetailTab = (["overview", "files", "versions", "agents"] as SkillDetailTab[]).includes(tabParam as SkillDetailTab)
     ? (tabParam as SkillDetailTab)
     : parsedRoute.hasExplicitFilePath || selectedPath !== "SKILL.md"
@@ -3964,14 +3977,7 @@ export function CompanySkills() {
   const folderSelection = normalizeFolderSelection(searchParams.get("folder"));
 
   function setDiscoveryTab(tab: DiscoveryTab) {
-    setSearchParams((current) => {
-      const params = new URLSearchParams(current);
-      if (tab === "all") params.delete("tab");
-      else params.set("tab", tab);
-      params.delete("category");
-      if (tab !== "installed") params.delete("folder");
-      return params;
-    });
+    setSearchParams((current) => withDiscoveryTab(current, tab));
   }
 
   function setFolderSelection(selection: FolderSelection) {

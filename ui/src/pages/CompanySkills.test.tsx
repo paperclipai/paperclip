@@ -5,7 +5,13 @@ import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import type { CompanySkillDetail, CompanySkillVersion } from "@paperclipai/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { DiscoveryGrid, SkillDetailPage, getSkillVersionDiffSelection } from "./CompanySkills";
+import {
+  DiscoveryGrid,
+  SkillDetailPage,
+  getSkillVersionDiffSelection,
+  resolveDiscoveryTab,
+  withDiscoveryTab,
+} from "./CompanySkills";
 import { skillStudioNewRoute } from "../lib/company-skill-routes";
 
 vi.mock("@/lib/router", () => ({
@@ -370,6 +376,21 @@ describe("DiscoveryGrid Studio entry points", () => {
     });
 
     expect(onOpenCard).not.toHaveBeenCalled();
+  });
+});
+
+describe("skills discovery tab routing", () => {
+  it("opens the folder-first installed view when the URL has no tab", () => {
+    expect(resolveDiscoveryTab(null)).toBe("installed");
+    expect(resolveDiscoveryTab("all")).toBe("all");
+  });
+
+  it("keeps All explicit and makes Installed the canonical default URL", () => {
+    const allParams = withDiscoveryTab(new URLSearchParams("folder=my&category=writing"), "all");
+    expect(allParams.toString()).toBe("tab=all");
+
+    const installedParams = withDiscoveryTab(new URLSearchParams("tab=all&folder=my"), "installed");
+    expect(installedParams.toString()).toBe("folder=my");
   });
 });
 
