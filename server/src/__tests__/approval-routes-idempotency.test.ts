@@ -267,6 +267,27 @@ describe("approval routes idempotent retries", () => {
     expect(mockApprovalService.approve).toHaveBeenCalledWith("approval-4", "user-1", "ship it");
   });
 
+  it("fails closed when a user tries to approve their own request", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-self",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "pending",
+      payload: {},
+      requestedByUserId: "user-1",
+      requestedByAgentId: null,
+    });
+
+    const res = await request(await createApp())
+      .post("/api/approvals/approval-self/approve")
+      .send({ decisionNote: "approve my own request" });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Approval requester cannot approve their own request");
+    expect(mockApprovalService.approve).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
   it("derives approval attribution from the authenticated actor on reject", async () => {
     mockApprovalService.getById.mockResolvedValue({
       id: "approval-5",

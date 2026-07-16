@@ -21,6 +21,7 @@ import {
 import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
 import { redactEventPayload } from "../redaction.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
+import { forbidden } from "../errors.js";
 
 function redactApprovalPayload<T extends { payload: Record<string, unknown> }>(approval: T): T {
   return {
@@ -188,11 +189,15 @@ export function approvalRoutes(
   router.post("/approvals/:id/approve", validate(resolveApprovalSchema), async (req, res) => {
     assertBoard(req);
     const id = req.params.id as string;
-    if (!(await requireApprovalAccess(req, id))) {
+    const existing = await requireApprovalAccess(req, id);
+    if (!existing) {
       res.status(404).json({ error: "Approval not found" });
       return;
     }
     const decidedByUserId = req.actor.userId ?? "board";
+    if (existing.requestedByUserId === decidedByUserId) {
+      throw forbidden("Approval requester cannot approve their own request");
+    }
     const { approval, applied } = await svc.approve(id, decidedByUserId, req.body.decisionNote);
 
     if (applied) {
