@@ -201,6 +201,9 @@ export function WorktreeRunEngineBanner({
   }
 
   const copy = suppressionCopy(activation, instanceNonce);
+  // The identity binding is only meaningful when it's the reason execution is
+  // suppressed; showing a "mismatch" badge on a plainly-off engine reads as noise.
+  const showIdentity = activation.reason === "instance_id_mismatch";
   return (
     <div
       role="status"
@@ -214,7 +217,7 @@ export function WorktreeRunEngineBanner({
           <p className="text-muted-foreground">{copy.detail}</p>
         </div>
       </div>
-      <IdentityLine activation={activation} instanceNonce={instanceNonce} />
+      {showIdentity ? <IdentityLine activation={activation} instanceNonce={instanceNonce} /> : null}
       <QuarantineLine count={quarantinedRunCount} />
     </div>
   );
