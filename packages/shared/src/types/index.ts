@@ -47,7 +47,11 @@ export type {
   BackupRetentionPolicy,
   IssueGraphLivenessAutoRecoveryPreview,
   IssueGraphLivenessAutoRecoveryPreviewItem,
+  WorktreeRunExecutionSuppressedReason,
+  WorktreeRunExecutionActivationState,
+  WorktreeRunEngineStatus,
 } from "./instance.js";
+export { WORKTREE_SEED_QUARANTINE_ERROR_CODE } from "./instance.js";
 export type {
   SmokeLabServiceStatus,
   SmokeRun,

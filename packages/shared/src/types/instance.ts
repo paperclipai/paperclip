@@ -91,6 +91,59 @@ export interface InstanceExperimentalSettings {
   issueGraphLivenessAutoRecoveryLookbackHours: number;
 }
 
+/**
+ * Error code stamped on heartbeat runs that were copied into a worktree seed and
+ * quarantined (cancelled, inert) so they never execute in the preview instance.
+ * Owned by the CLI worktree seed flow (cli/src/commands/worktree.ts) and surfaced
+ * in the UI as "inherited — inactive" runs.
+ */
+export const WORKTREE_SEED_QUARANTINE_ERROR_CODE = "worktree_seed_quarantine";
+
+/**
+ * Why the worktree run engine is suppressed. Mirrors the server's fail-closed
+ * ladder in `resolveWorktreeRunExecutionActivation`.
+ */
+export type WorktreeRunExecutionSuppressedReason =
+  | "not_worktree_runtime"
+  | "flag_disabled"
+  | "missing_cutoff"
+  | "missing_instance_id"
+  | "instance_id_mismatch"
+  | "settings_read_error";
+
+/**
+ * Resolved worktree run-engine activation. `armed` means the scheduler executes
+ * runs created after `cutoff`; otherwise `reason` explains the suppression.
+ */
+export type WorktreeRunExecutionActivationState =
+  | {
+      armed: true;
+      cutoff: string;
+      activationInstanceId: string;
+      reason: null;
+    }
+  | {
+      armed: false;
+      cutoff: null;
+      activationInstanceId: string | null;
+      reason: WorktreeRunExecutionSuppressedReason;
+    };
+
+/**
+ * Authoritative boot-truth for the worktree run engine, served to the UI so a
+ * preview user can tell "inherited, inert" state from live execution at a glance.
+ */
+export interface WorktreeRunEngineStatus {
+  /** True when the server runtime is a worktree preview (`PAPERCLIP_IN_WORKTREE`). */
+  inWorktree: boolean;
+  /** Activation resolved server-side (mirrors the scheduler gate). */
+  activation: WorktreeRunExecutionActivationState;
+  /** Current boot's server-managed instance identity (nonce), if stamped. */
+  instanceNonce: string | null;
+  /** Count of inherited heartbeat runs quarantined at seed time (durable evidence). */
+  quarantinedRunCount: number;
+}
+
 export interface InstanceSettings {
   id: string;
   defaultEnvironmentId: string | null;
