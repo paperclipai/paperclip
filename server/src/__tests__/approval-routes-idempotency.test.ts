@@ -458,4 +458,72 @@ describe("approval routes idempotent retries", () => {
     expect(res.body.error).toContain("Cheap status-only recovery runs cannot create or modify approvals");
     expect(mockApprovalService.addComment).not.toHaveBeenCalled();
   });
+
+  it("propagates activity-log failures after a successful obsolete cancellation on read", async () => {
+    const cancelled = {
+      id: "approval-9",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "cancelled",
+      payload: { title: "Obsolete" },
+      decisionNote: "Cancelled because all linked issues are terminal; the requested action is obsolete.",
+      requestedByAgentId: null,
+    };
+    mockApprovalService.getById.mockResolvedValue({
+      ...cancelled,
+      status: "pending",
+    });
+    mockApprovalService.cancelObsoleteWhenLinkedIssuesTerminal.mockResolvedValue({
+      approval: cancelled,
+      applied: true,
+    });
+    mockLogActivity.mockRejectedValueOnce(new Error("activity log write failed"));
+
+    const res = await request(await createApp())
+      .get("/api/approvals/approval-9");
+
+    expect(res.status, JSON.stringify(res.body)).toBe(500);
+    expect(mockApprovalService.cancelObsoleteWhenLinkedIssuesTerminal).toHaveBeenCalledWith("approval-9");
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "approval.cancelled",
+        entityId: "approval-9",
+        details: expect.objectContaining({
+          reason: "linked_issues_terminal",
+          source: "approval.read",
+        }),
+      }),
+    );
+    // Must not fall back to returning the cancelled row without audit evidence.
+    expect(res.body).not.toMatchObject({ status: "cancelled" });
+  });
+
+  it("still falls back to the stored approval when obsolete cancellation itself fails on read", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-10",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "pending",
+      payload: { title: "Still pending" },
+      decisionNote: null,
+      requestedByAgentId: null,
+    });
+    mockApprovalService.cancelObsoleteWhenLinkedIssuesTerminal.mockRejectedValueOnce(
+      new Error("linked issue lookup failed"),
+    );
+
+    const res = await request(await createApp())
+      .get("/api/approvals/approval-10");
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toMatchObject({
+      id: "approval-10",
+      status: "pending",
+    });
+    expect(mockLogActivity).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: "approval.cancelled" }),
+    );
+  });
 });

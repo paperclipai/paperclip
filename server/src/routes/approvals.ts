@@ -127,18 +127,26 @@ export function approvalRoutes(
   }
 
   async function reconcileObsoleteApprovalOnRead(approvalId: string, source: string) {
+    let approval: Awaited<ReturnType<typeof svc.cancelObsoleteWhenLinkedIssuesTerminal>>["approval"];
+    let applied = false;
     try {
-      const { approval, applied } = await svc.cancelObsoleteWhenLinkedIssuesTerminal(approvalId);
-      if (applied) {
-        await logObsoleteApprovalCancellation(approval, source);
-      }
-      return approval;
+      const result = await svc.cancelObsoleteWhenLinkedIssuesTerminal(approvalId);
+      approval = result.approval;
+      applied = result.applied;
     } catch (err) {
+      // Only swallow cancellation/read failures. Audit must not share this catch —
+      // a successful cancel followed by a failed logActivity must not return an
+      // unaudited cancelled row.
       logger.warn({ err, approvalId, source }, "failed to reconcile obsolete approval on read");
       const fallback = await svc.getById(approvalId);
       if (!fallback) throw err;
       return fallback;
     }
+
+    if (applied) {
+      await logObsoleteApprovalCancellation(approval, source);
+    }
+    return approval;
   }
 
   router.get("/companies/:companyId/approvals", async (req, res) => {

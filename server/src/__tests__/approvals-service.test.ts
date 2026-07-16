@@ -289,7 +289,30 @@ describe("approvalService obsolete linked-issue cancellation", () => {
         decisionNote: LINKED_ISSUES_TERMINAL_CANCEL_NOTE,
       }),
     );
+    // Non-hire approvals never call terminate.
     expect(mockAgentService.terminate).not.toHaveBeenCalled();
+  });
+
+  it("terminates pending hire_agent agents when obsolete-cancelling linked approvals", async () => {
+    const pending = createApproval("pending");
+    const cancelled = {
+      ...pending,
+      status: "cancelled",
+      decisionNote: LINKED_ISSUES_TERMINAL_CANCEL_NOTE,
+      decidedByUserId: "system",
+    };
+    const stub = createObsoleteReconcileDbStub({
+      approval: pending,
+      linkedIssues: [{ issueId: "issue-1", status: "done" }],
+      updateResult: cancelled,
+    });
+
+    const svc = approvalService(stub.db as any);
+    const result = await svc.cancelObsoleteWhenLinkedIssuesTerminal("approval-1");
+
+    expect(result.applied).toBe(true);
+    expect(result.approval.status).toBe("cancelled");
+    expect(mockAgentService.terminate).toHaveBeenCalledWith("agent-1");
   });
 
   it("leaves mixed terminal/open linked approvals actionable", async () => {

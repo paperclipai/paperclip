@@ -2640,28 +2640,33 @@ export function issueRoutes(
     issue: { id: string; companyId: string },
     source: string,
   ) {
+    let results: Awaited<ReturnType<typeof approvalsSvc.reconcileObsoleteForIssue>>;
     try {
-      const results = await approvalsSvc.reconcileObsoleteForIssue(issue.id);
-      for (const { approval, applied } of results) {
-        if (!applied) continue;
-        await logActivity(db, {
-          companyId: issue.companyId,
-          actorType: "system",
-          actorId: "approval_lifecycle",
-          action: "approval.cancelled",
-          entityType: "approval",
-          entityId: approval.id,
-          details: {
-            type: approval.type,
-            reason: "linked_issues_terminal",
-            decisionNote: approval.decisionNote,
-            sourceIssueId: issue.id,
-            source,
-          },
-        });
-      }
+      results = await approvalsSvc.reconcileObsoleteForIssue(issue.id);
     } catch (err) {
+      // Only swallow reconciliation failures. Applied cancellations must still
+      // emit audit evidence — logActivity errors propagate below.
       logger.warn({ err, issueId: issue.id, source }, "failed to reconcile obsolete linked approvals");
+      return;
+    }
+
+    for (const { approval, applied } of results) {
+      if (!applied) continue;
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: "system",
+        actorId: "approval_lifecycle",
+        action: "approval.cancelled",
+        entityType: "approval",
+        entityId: approval.id,
+        details: {
+          type: approval.type,
+          reason: "linked_issues_terminal",
+          decisionNote: approval.decisionNote,
+          sourceIssueId: issue.id,
+          source,
+        },
+      });
     }
   }
 

@@ -127,12 +127,23 @@ export function approvalService(db: Db) {
       return { approval: existing, applied: false };
     }
 
-    return resolveApproval(
+    const result = await resolveApproval(
       id,
       "cancelled",
       opts?.decidedByUserId ?? "system",
       opts?.decisionNote ?? LINKED_ISSUES_TERMINAL_CANCEL_NOTE,
     );
+
+    // Mirror reject(): obsolete hire_agent cancel must not leave a pending agent stranded.
+    if (result.applied && result.approval.type === "hire_agent") {
+      const payload = result.approval.payload as Record<string, unknown>;
+      const payloadAgentId = typeof payload.agentId === "string" ? payload.agentId : null;
+      if (payloadAgentId) {
+        await agentsSvc.terminate(payloadAgentId);
+      }
+    }
+
+    return result;
   }
 
   return {
@@ -263,7 +274,9 @@ export function approvalService(db: Db) {
     /**
      * Cancel a pending/revision-requested approval whose every linked issue is
      * terminal. Idempotent: already-cancelled approvals and mixed open/terminal
-     * link sets are no-ops. Does not run reject/approve side effects.
+     * link sets are no-ops. Does not run approve side effects. For `hire_agent`,
+     * terminates any pending payload agent (same cleanup as reject) so obsolete
+     * cancel cannot leave an orphaned pending hire.
      */
     cancelObsoleteWhenLinkedIssuesTerminal,
 
