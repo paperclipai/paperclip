@@ -1,6 +1,7 @@
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
 import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
+import { deriveBoardChatIssueTitle } from "../lib/board-chat.js";
 import { instanceSettingsService, issueService } from "../services/index.js";
 import { assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
 
@@ -14,13 +15,6 @@ const BOARD_CHAT_UNAVAILABLE_REASONS = {
   WRONG_KIND: "wrong_kind",
   CANCELLED: "cancelled",
 } as const;
-
-function deriveBoardChatIssueTitle(message: string): string {
-  const singleLine = message.replace(/\s+/g, " ").trim();
-  if (!singleLine) return "New chat";
-  if (singleLine.length <= 80) return singleLine;
-  return `${singleLine.slice(0, 77).trimEnd()}...`;
-}
 
 function isAvailableBoardChatIssue(issue: { status?: string | null }) {
   return issue.status !== "cancelled";

@@ -152,9 +152,13 @@ function thenableRows(rows: Array<Record<string, unknown>>) {
 
 function createDbStub(...selectRows: Array<Array<Record<string, unknown>>>) {
   const rowsQueue = [...selectRows];
-  return {
+  const execute = vi.fn(async () => undefined);
+  const db = {
     select: vi.fn(() => thenableRows(rowsQueue.shift() ?? [])),
+    execute,
+    transaction: vi.fn(async (run: (tx: { execute: typeof execute }) => Promise<unknown>) => run({ execute })),
   };
+  return db;
 }
 
 async function createApp(
@@ -303,6 +307,31 @@ describe("selected-agent issue chat backend", () => {
         title: "Can you summarize the hiring plan before tomorrow?",
       },
     );
+  });
+
+  it("holds the selected-agent chat lock until wake creation finishes", async () => {
+    let releaseWakeup: (() => void) | undefined;
+    mockHeartbeatService.wakeup.mockImplementation(
+      () => new Promise<void>((resolve) => {
+        releaseWakeup = resolve;
+      }),
+    );
+    const db = createDbStub([makeAgent()], [], []);
+    const app = await createApp(db);
+
+    const responsePromise = request(app)
+      .post(`/api/issues/${ISSUE_ID}/selected-agent-chat/comments`)
+      .send({ body: "hello", targetAgentId: TARGET_AGENT_ID })
+      .then((response) => response);
+
+    await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1));
+    expect(db.transaction).toHaveBeenCalledTimes(1);
+    expect(db.execute).toHaveBeenCalledTimes(1);
+    expect(db.transaction.mock.results[0]?.value).toBeInstanceOf(Promise);
+
+    releaseWakeup?.();
+    const response = await responsePromise;
+    expect(response.status).toBe(201);
   });
 
   it("keeps a custom board chat title while refreshing the selected target agent", async () => {

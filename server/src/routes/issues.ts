@@ -129,6 +129,7 @@ import {
 } from "../services/task-watchdog-scope.js";
 import type { TaskWatchdogServiceDeps, taskWatchdogService } from "../services/task-watchdogs.js";
 import { logger } from "../middleware/logger.js";
+import { deriveBoardChatIssueTitle } from "../lib/board-chat.js";
 import { conflict, forbidden, HttpError, notFound, unauthorized, unprocessable } from "../errors.js";
 import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
 import {
@@ -1719,13 +1720,6 @@ function selectedAgentChatTaskKey(issueId: string, targetAgentId: string) {
 
 const BOARD_CHAT_ORIGIN_KIND = "board_chat";
 const BOARD_CHAT_GENERIC_TITLES = new Set(["New chat", "Board Operations"]);
-
-function deriveSelectedAgentBoardChatTitle(message: string): string {
-  const singleLine = message.replace(/\s+/g, " ").trim();
-  if (!singleLine) return "New chat";
-  if (singleLine.length <= 80) return singleLine;
-  return `${singleLine.slice(0, 77).trimEnd()}...`;
-}
 
 function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   issueStatus: string | null | undefined;
@@ -9475,148 +9469,166 @@ export function issueRoutes(
         });
       }
 
-      const actor = getActorInfo(req);
-      const interruptRequested = req.body.interrupt === true;
-      const activeSelectedChatRun = await resolveAnyActiveSelectedAgentChatRun(issue);
-      if (activeSelectedChatRun && activeSelectedChatRun.agentId !== targetAgent.id) {
-        if (!interruptRequested) {
-          throw conflict("Another selected-agent chat target is already running for this issue", {
-            code: "selected_agent_chat_target_active",
-            activeRunId: activeSelectedChatRun.id,
-            activeTargetAgentId: activeSelectedChatRun.agentId,
-            requestedTargetAgentId: targetAgent.id,
-          });
-        }
-        const cancelled = await heartbeat.cancelRun(
-          activeSelectedChatRun.id,
-          "Interrupted by selected-agent chat retarget",
-          operatorInterruptCancelOptions({ issueId: issue.id, actor }),
+      const responseBody = await db.transaction(async (tx) => {
+        await tx.execute(
+          sql`select pg_advisory_xact_lock(hashtextextended(${`selected-agent-chat:${issue.id}`}, 0))`,
         );
-        if (cancelled) {
-          await logActivity(db, {
-            companyId: cancelled.companyId,
-            actorType: actor.actorType,
-            actorId: actor.actorId,
-            agentId: actor.agentId,
-            runId: actor.runId,
-            action: "heartbeat.cancelled",
-            entityType: "heartbeat_run",
-            entityId: cancelled.id,
-            details: {
-              agentId: cancelled.agentId,
-              source: "selected_agent_chat_retarget",
-              issueId: issue.id,
-              cancellationKind: "operator_interrupted",
-              operatorInterrupted: true,
+
+        const actor = getActorInfo(req);
+        const interruptRequested = req.body.interrupt === true;
+        const activeSelectedChatRun = await resolveAnyActiveSelectedAgentChatRun(issue);
+        if (activeSelectedChatRun && activeSelectedChatRun.agentId !== targetAgent.id) {
+          if (!interruptRequested) {
+            throw conflict("Another selected-agent chat target is already running for this issue", {
+              code: "selected_agent_chat_target_active",
+              activeRunId: activeSelectedChatRun.id,
+              activeTargetAgentId: activeSelectedChatRun.agentId,
               requestedTargetAgentId: targetAgent.id,
+            });
+          }
+          const cancelled = await heartbeat.cancelRun(
+            activeSelectedChatRun.id,
+            "Interrupted by selected-agent chat retarget",
+            operatorInterruptCancelOptions({ issueId: issue.id, actor }),
+          );
+          if (cancelled) {
+            await logActivity(db, {
+              companyId: cancelled.companyId,
+              actorType: actor.actorType,
+              actorId: actor.actorId,
+              agentId: actor.agentId,
+              runId: actor.runId,
+              action: "heartbeat.cancelled",
+              entityType: "heartbeat_run",
+              entityId: cancelled.id,
+              details: {
+                agentId: cancelled.agentId,
+                source: "selected_agent_chat_retarget",
+                issueId: issue.id,
+                cancellationKind: "operator_interrupted",
+                operatorInterrupted: true,
+                requestedTargetAgentId: targetAgent.id,
+              },
+            });
+          }
+        }
+
+        const sameTargetActiveRun = await resolveActiveIssueRunForAgent(issue, targetAgent.id);
+        const sourceTrust = await sourceTrustForActorWrite(issue, actor);
+        const comment = await svc.addComment(
+          id,
+          req.body.body,
+          {
+            agentId: actor.agentId ?? undefined,
+            userId: actor.actorType === "user" ? actor.actorId : undefined,
+            runId: actor.runId,
+          },
+          {
+            authorType: req.body.authorType ?? "user",
+            presentation: req.body.presentation ?? null,
+            metadata: req.body.metadata ?? null,
+            sourceTrust,
+          },
+        );
+
+        if (issue.originKind === BOARD_CHAT_ORIGIN_KIND) {
+          const boardChatPatch: Partial<typeof issueRows.$inferInsert> = {};
+          if (issue.originId !== targetAgent.id) {
+            boardChatPatch.originId = targetAgent.id;
+          }
+          if (BOARD_CHAT_GENERIC_TITLES.has(issue.title)) {
+            boardChatPatch.title = deriveBoardChatIssueTitle(req.body.body);
+          }
+          if (Object.keys(boardChatPatch).length > 0) {
+            await svc.update(issue.id, boardChatPatch);
+          }
+        }
+
+        await issueReferencesSvc.syncComment(comment.id);
+        await logActivity(db, {
+          companyId: issue.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "issue.comment_added",
+          entityType: "issue",
+          entityId: issue.id,
+          details: {
+            commentId: comment.id,
+            bodySnippet: comment.body.slice(0, 120),
+            identifier: issue.identifier,
+            issueTitle: issue.title,
+            source: "selected_agent_chat",
+            targetAgentId: targetAgent.id,
+            targetAgentName: targetAgent.name,
+          },
+        });
+
+        const taskKey = selectedAgentChatTaskKey(issue.id, targetAgent.id);
+        await heartbeat
+          .wakeup(targetAgent.id, {
+            source: "automation",
+            triggerDetail: "system",
+            reason: "issue_commented",
+            payload: {
+              issueId: issue.id,
+              taskId: issue.id,
+              taskKey,
+              commentId: comment.id,
+              targetAgentId: targetAgent.id,
+              selectedAgentChat: true,
+              mutation: "selected_agent_chat_comment",
             },
-          });
-        }
-      }
+            requestedByActorType: actor.actorType,
+            requestedByActorId: actor.actorId,
+            contextSnapshot: {
+              issueId: issue.id,
+              taskId: issue.id,
+              taskKey,
+              commentId: comment.id,
+              wakeCommentId: comment.id,
+              wakeReason: "issue_commented",
+              source: "selected_agent_chat.comment",
+              selectedAgentChat: true,
+              targetAgentId: targetAgent.id,
+              projectId: issue.projectId ?? null,
+              goalId: issue.goalId ?? null,
+              billingCode: issue.billingCode ?? null,
+              ...(sameTargetActiveRun ? { activeRunId: sameTargetActiveRun.id } : {}),
+            },
+          })
+          .catch((err) =>
+            logger.warn(
+              {
+                err,
+                issueId: issue.id,
+                agentId: targetAgent.id,
+              },
+              "failed to wake selected-agent chat target on issue comment",
+            ),
+          );
 
-      const sameTargetActiveRun = await resolveActiveIssueRunForAgent(issue, targetAgent.id);
-      const sourceTrust = await sourceTrustForActorWrite(issue, actor);
-      const comment = await svc.addComment(id, req.body.body, {
-        agentId: actor.agentId ?? undefined,
-        userId: actor.actorType === "user" ? actor.actorId : undefined,
-        runId: actor.runId,
-      }, {
-        authorType: req.body.authorType ?? "user",
-        presentation: req.body.presentation ?? null,
-        metadata: req.body.metadata ?? null,
-        sourceTrust,
-      });
-
-      if (issue.originKind === BOARD_CHAT_ORIGIN_KIND) {
-        const boardChatPatch: Partial<typeof issueRows.$inferInsert> = {};
-        if (issue.originId !== targetAgent.id) {
-          boardChatPatch.originId = targetAgent.id;
-        }
-        if (BOARD_CHAT_GENERIC_TITLES.has(issue.title)) {
-          boardChatPatch.title = deriveSelectedAgentBoardChatTitle(req.body.body);
-        }
-        if (Object.keys(boardChatPatch).length > 0) {
-          await svc.update(issue.id, boardChatPatch);
-        }
-      }
-
-      await issueReferencesSvc.syncComment(comment.id);
-      await logActivity(db, {
-        companyId: issue.companyId,
-        actorType: actor.actorType,
-        actorId: actor.actorId,
-        agentId: actor.agentId,
-        runId: actor.runId,
-        action: "issue.comment_added",
-        entityType: "issue",
-        entityId: issue.id,
-        details: {
-          commentId: comment.id,
-          bodySnippet: comment.body.slice(0, 120),
-          identifier: issue.identifier,
-          issueTitle: issue.title,
-          source: "selected_agent_chat",
-          targetAgentId: targetAgent.id,
-          targetAgentName: targetAgent.name,
-        },
-      });
-
-      const taskKey = selectedAgentChatTaskKey(issue.id, targetAgent.id);
-      void heartbeat
-        .wakeup(targetAgent.id, {
-          source: "automation",
-          triggerDetail: "system",
-          reason: "issue_commented",
-          payload: {
-            issueId: issue.id,
-            taskId: issue.id,
-            taskKey,
-            commentId: comment.id,
-            targetAgentId: targetAgent.id,
-            selectedAgentChat: true,
-            mutation: "selected_agent_chat_comment",
+        // Tell the client whether the wake can actually run here: on worktree
+        // instances scheduling is suppressed, and a silent no-reply chat reads
+        // as "sending did nothing" (PAP-13345).
+        const wakeSuppression = resolveHeartbeatSchedulingSuppression();
+        return {
+          comment,
+          targetAgent: {
+            id: targetAgent.id,
+            name: targetAgent.name,
+            role: targetAgent.role,
+            status: targetAgent.status,
           },
-          requestedByActorType: actor.actorType,
-          requestedByActorId: actor.actorId,
-          contextSnapshot: {
-            issueId: issue.id,
-            taskId: issue.id,
-            taskKey,
-            commentId: comment.id,
-            wakeCommentId: comment.id,
-            wakeReason: "issue_commented",
-            source: "selected_agent_chat.comment",
-            selectedAgentChat: true,
-            targetAgentId: targetAgent.id,
-            projectId: issue.projectId ?? null,
-            goalId: issue.goalId ?? null,
-            billingCode: issue.billingCode ?? null,
-            ...(sameTargetActiveRun ? { activeRunId: sameTargetActiveRun.id } : {}),
+          wake: {
+            suppressed: wakeSuppression.suppressed,
+            reason: wakeSuppression.reason,
           },
-        })
-        .catch((err) => logger.warn({
-          err,
-          issueId: issue.id,
-          agentId: targetAgent.id,
-        }, "failed to wake selected-agent chat target on issue comment"));
-
-      // Tell the client whether the wake can actually run here: on worktree
-      // instances scheduling is suppressed, and a silent no-reply chat reads
-      // as "sending did nothing" (PAP-13345).
-      const wakeSuppression = resolveHeartbeatSchedulingSuppression();
-      res.status(201).json({
-        comment,
-        targetAgent: {
-          id: targetAgent.id,
-          name: targetAgent.name,
-          role: targetAgent.role,
-          status: targetAgent.status,
-        },
-        wake: {
-          suppressed: wakeSuppression.suppressed,
-          reason: wakeSuppression.reason,
-        },
+        };
       });
+
+      res.status(201).json(responseBody);
     },
   );
 
