@@ -64,6 +64,9 @@ jobs:
       - name: Test standalone package build concurrency
         run: node --test ./scripts/__tests__/build-standalone-concurrency.test.mjs
 
+      - name: Install operations test dependencies
+        run: pnpm install --filter paperclipai... --no-frozen-lockfile
+
       - name: Test operations hardening
         run: pnpm run test:ops
 
