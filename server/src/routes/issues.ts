@@ -9735,6 +9735,7 @@ export function issueRoutes(
     // Without a single transaction, a 422 (or any error) thrown by the status update after the
     // comment is inserted would leave an orphan comment without the corresponding state change.
     let comment: Awaited<ReturnType<typeof svc.addComment>>;
+    let reusedComment = false;
     if (shouldAutoApproveReviewComment) {
       const transition = applyIssueExecutionPolicyTransition({
         issue: currentIssue,
@@ -9848,16 +9849,27 @@ export function issueRoutes(
         requestedByActorId: actor.actorId,
       });
     } else {
-      comment = await svc.addComment(id, req.body.body, {
+      const commentActor = {
         agentId: actor.agentId ?? undefined,
         userId: actor.actorType === "user" ? actor.actorId : undefined,
         runId: actor.runId,
-      }, {
+      };
+      const commentOptions = {
         authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
         presentation: req.body.presentation ?? null,
         metadata: req.body.metadata ?? null,
         sourceTrust: await sourceTrustForActorWrite(currentIssue, actor),
-      });
+      };
+      const result = typeof svc.addCommentWithRunRetryDedup === "function"
+        ? await svc.addCommentWithRunRetryDedup(id, req.body.body, commentActor, commentOptions)
+        : { comment: await svc.addComment(id, req.body.body, commentActor, commentOptions), reused: false };
+      comment = result.comment;
+      reusedComment = result.reused;
+    }
+
+    if (reusedComment) {
+      res.status(200).json(comment);
+      return;
     }
 
     await issueReferencesSvc.syncComment(comment.id);

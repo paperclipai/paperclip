@@ -7362,6 +7362,50 @@ export function issueService(db: Db) {
       return redactIssueComment(comment, currentUserRedactionOptions.enabled);
     },
 
+    addCommentWithRunRetryDedup: async (
+      issueId: string,
+      body: string,
+      actor: { agentId?: string; userId?: string; runId?: string | null },
+      options?: {
+        authorType?: IssueCommentAuthorType | null;
+        presentation?: IssueCommentPresentation | null;
+        metadata?: IssueCommentMetadata | null;
+        sourceTrust?: typeof issueComments.$inferInsert.sourceTrust;
+        createdAt?: Date | string | null;
+      },
+    ) => {
+      if (!actor.runId) {
+        return { comment: await issueService(db).addComment(issueId, body, actor, options), reused: false };
+      }
+      const runId = actor.runId;
+      return db.transaction(async (tx) => {
+        const guardKey = `issue-comment:run-retry:${issueId}:${runId}:${actor.agentId ?? actor.userId ?? "system"}:${body}`;
+        await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${guardKey}, 0))`);
+        const currentUserRedactionOptions = {
+          enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
+        };
+        const redactedBody = redactCurrentUserText(body, currentUserRedactionOptions);
+        const existing = await tx
+          .select()
+          .from(issueComments)
+          .where(and(
+            eq(issueComments.issueId, issueId),
+            eq(issueComments.createdByRunId, runId),
+            actor.agentId ? eq(issueComments.authorAgentId, actor.agentId) : isNull(issueComments.authorAgentId),
+            actor.userId ? eq(issueComments.authorUserId, actor.userId) : isNull(issueComments.authorUserId),
+            eq(issueComments.body, redactedBody),
+            isNull(issueComments.deletedAt),
+          ))
+          .orderBy(asc(issueComments.createdAt))
+          .then((rows) => rows[0] ?? null);
+        if (existing) {
+          return { comment: redactIssueComment(existing, currentUserRedactionOptions.enabled), reused: true };
+        }
+        const comment = await issueService(db).addComment(issueId, body, actor, options, tx);
+        return { comment, reused: false };
+      });
+    },
+
     createAttachment: async (input: {
       issueId: string;
       issueCommentId?: string | null;
