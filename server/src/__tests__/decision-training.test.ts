@@ -208,6 +208,48 @@ describeEmbeddedPostgres("decision training", () => {
     expect(item?.trainingExampleId).toBe(example.id);
   });
 
+  it("does not log a notes update when the submitted notes are unchanged", async () => {
+    const seeded = await seedResolvedInteraction();
+    const example = await decisionTrainingService(db).create({
+      companyId: seeded.companyId,
+      sourceKind: "interaction",
+      sourceId: seeded.interactionId,
+      issueId: seeded.issueId,
+      notes: "Keep the current notes.",
+      createdByUserId: "board-user",
+    });
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", userId: "board-user", source: "local_implicit" };
+      next();
+    });
+    app.use("/api", decisionTrainingRoutes(db));
+    app.use(errorHandler);
+
+    await request(app)
+      .patch(`/api/decision-training/${example.id}`)
+      .send({ notes: "Keep the current notes." })
+      .expect(200);
+
+    const noOpLogs = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.action, "decision_training.notes_updated"));
+    expect(noOpLogs).toHaveLength(0);
+
+    await request(app)
+      .patch(`/api/decision-training/${example.id}`)
+      .send({ notes: "Record the real change." })
+      .expect(200);
+
+    const changedLogs = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.action, "decision_training.notes_updated"));
+    expect(changedLogs).toHaveLength(1);
+  });
+
   it("rejects agent writes and snapshot mutation", async () => {
     const seeded = await seedResolvedInteraction();
     const app = express();
