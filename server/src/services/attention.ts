@@ -605,18 +605,26 @@ export function attentionService(db: Db) {
           payload: approvals.payload,
           createdAt: approvals.createdAt,
           updatedAt: approvals.updatedAt,
-          // The issue this approval is anchored to (if any). Surfaced so the
-          // Decisions row can offer decision-training capture, which anchors to
-          // the durable approval + issue pair.
-          issueId: issueApprovals.issueId,
         })
         .from(approvals)
-        .leftJoin(issueApprovals, and(
-          eq(issueApprovals.approvalId, approvals.id),
-          eq(issueApprovals.companyId, companyId),
-        ))
         .where(and(eq(approvals.companyId, companyId), eq(approvals.status, "pending")))
         .orderBy(desc(approvals.updatedAt), desc(approvals.id));
+
+      const pendingApprovalIds = pendingApprovals.map((approval) => approval.id);
+      const approvalIssueRows = pendingApprovalIds.length > 0
+        ? await db
+          .select({ approvalId: issueApprovals.approvalId, issueId: issueApprovals.issueId })
+          .from(issueApprovals)
+          .where(and(
+            eq(issueApprovals.companyId, companyId),
+            inArray(issueApprovals.approvalId, pendingApprovalIds),
+          ))
+          .orderBy(asc(issueApprovals.approvalId), asc(issueApprovals.issueId))
+        : [];
+      const approvalIssueMap = new Map<string, string>();
+      for (const row of approvalIssueRows) {
+        if (!approvalIssueMap.has(row.approvalId)) approvalIssueMap.set(row.approvalId, row.issueId);
+      }
 
       for (const approval of pendingApprovals) {
         const dedupKey = `approval:${approval.id}`;
@@ -636,7 +644,7 @@ export function attentionService(db: Db) {
               type: approval.type,
               requestedByAgentId: approval.requestedByAgentId,
               requestedByUserId: approval.requestedByUserId,
-              issueId: approval.issueId,
+              issueId: approvalIssueMap.get(approval.id) ?? null,
             },
           },
           whyNow: "Approval is pending a board decision.",

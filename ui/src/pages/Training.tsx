@@ -13,6 +13,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
+import { queryKeys } from "@/lib/queryKeys";
 import { cn, formatDate, formatDateTime } from "@/lib/utils";
 
 type SnapshotRecord = Record<string, unknown>;
@@ -171,12 +172,12 @@ export function TrainingInspector() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const [notes, setNotes] = useState("");
   const [editing, setEditing] = useState(false);
-  const recordQuery = useQuery({ queryKey: ["decision-training", id], queryFn: ({ signal }) => decisionTrainingApi.get(id, { signal }), enabled: Boolean(id) });
+  const recordQuery = useQuery({ queryKey: queryKeys.decisionTraining.detail(id), queryFn: ({ signal }) => decisionTrainingApi.get(id, { signal }), enabled: Boolean(id) });
   const example = recordQuery.data;
   const commentsQuery = useQuery({ queryKey: ["issues", example?.issueId, "comments", "training-audit"], queryFn: () => issuesApi.listComments(example!.issueId, { order: "asc" }), enabled: Boolean(example?.issueId) });
   useEffect(() => { if (example) setNotes(example.notes); }, [example]);
   useEffect(() => setBreadcrumbs([{ label: "Decisions", href: "/decisions" }, { label: "Training", href: "/training" }, { label: example ? decisionTitle(example) : "Example" }]), [example, setBreadcrumbs]);
-  const saveMutation = useMutation({ mutationFn: () => decisionTrainingApi.updateNotes(id, notes), onSuccess: (updated) => { queryClient.setQueryData(["decision-training", id], updated); setEditing(false); } });
+  const saveMutation = useMutation({ mutationFn: () => decisionTrainingApi.updateNotes(id, notes), onSuccess: (updated) => { queryClient.setQueryData(queryKeys.decisionTraining.detail(id), updated); setEditing(false); } });
 
   if (recordQuery.isLoading) return <p className="p-6 text-sm text-muted-foreground">Loading training example…</p>;
   if (!example) return <p className="p-6 text-sm text-destructive">Training example not found.</p>;
