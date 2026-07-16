@@ -444,6 +444,8 @@ export type IssueMonitorScheduledBy = (typeof ISSUE_MONITOR_SCHEDULED_BY)[number
 export const ISSUE_EXECUTION_MONITOR_KINDS = ["external_service"] as const;
 export type IssueExecutionMonitorKind = (typeof ISSUE_EXECUTION_MONITOR_KINDS)[number];
 
+export const PROVIDER_QUOTA_MONITOR_SERVICE_NAME = "AI provider quota";
+
 export const ISSUE_EXECUTION_MONITOR_RECOVERY_POLICIES = [
   "wake_owner",
   "create_recovery_issue",
@@ -918,6 +920,7 @@ export const PERMISSION_KEYS = [
   "tools:view_audit",
   "tools:use",
   "tools:manage_runtime",
+  "inbox:manage",
   "users:invite",
   "users:manage_permissions",
   "tasks:assign",

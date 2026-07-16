@@ -67,6 +67,10 @@ import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { parseObject } from "../adapters/utils.js";
 import {
+  hydrateSuccessfulRunHandoffLiveness,
+  SUCCESSFUL_RUN_HANDOFF_LIVE_WAKE_STATUSES,
+} from "./successful-run-handoff-state.js";
+import {
   defaultIssueExecutionWorkspaceSettingsForProject,
   gateProjectExecutionWorkspacePolicy,
   issueExecutionWorkspaceModeForPersistedWorkspace,
@@ -2672,7 +2676,7 @@ async function blockedByMapForIssues(
 
 const BLOCKED_INBOX_TERMINAL_STATUSES = ["done", "cancelled"] as const;
 const BLOCKED_INBOX_ACTIVE_RUN_STATUSES = ["queued", "running"] as const;
-const BLOCKED_INBOX_ACTIVE_WAKE_STATUSES = ["queued", "deferred_issue_execution"] as const;
+const BLOCKED_INBOX_ACTIVE_WAKE_STATUSES = SUCCESSFUL_RUN_HANDOFF_LIVE_WAKE_STATUSES;
 const BLOCKED_INBOX_PENDING_INTERACTION_STATUSES = ["pending"] as const;
 const BLOCKED_INBOX_PENDING_APPROVAL_STATUSES = ["pending", "revision_requested"] as const;
 const BLOCKED_INBOX_RECOVERY_ORIGIN_KINDS = ["harness_liveness_escalation", "stranded_issue_recovery"] as const;
@@ -2794,6 +2798,7 @@ function readSuccessfulRunHandoffFromActivity(row: {
   return {
     state,
     required: state === "required",
+    hasLiveContinuation: false,
     sourceRunId:
       readStringFromRecord(details, "sourceRunId")
       ?? readStringFromRecord(details, "source_run_id")
@@ -2818,6 +2823,7 @@ async function listSuccessfulRunHandoffMapForIssues(
   dbOrTx: any,
   companyId: string,
   issueIds: string[],
+  options?: { hydrateLiveness?: boolean },
 ): Promise<Map<string, SuccessfulRunHandoffState>> {
   const uniqueIssueIds = [...new Set(issueIds)];
   const states = new Map<string, SuccessfulRunHandoffState>();
@@ -2856,7 +2862,9 @@ async function listSuccessfulRunHandoffMapForIssues(
     }
   }
 
-  return states;
+  return options?.hydrateLiveness === false
+    ? states
+    : hydrateSuccessfulRunHandoffLiveness(dbOrTx, companyId, states);
 }
 
 function externalWaitFromDescription(description: string | null): { owner: string; action: string } | null {
@@ -3033,7 +3041,10 @@ async function listIssueBlockedInboxAttentionMap(
       : dbOrTx
           .select({
             companyId: heartbeatRuns.companyId,
-            issueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`,
+            issueId: sql<string | null>`coalesce(
+              ${heartbeatRuns.contextSnapshot} ->> 'issueId',
+              ${heartbeatRuns.contextSnapshot} ->> 'taskId'
+            )`,
             agentId: heartbeatRuns.agentId,
             status: heartbeatRuns.status,
           })
@@ -3041,14 +3052,22 @@ async function listIssueBlockedInboxAttentionMap(
           .where(and(
             eq(heartbeatRuns.companyId, companyId),
             inArray(heartbeatRuns.status, [...BLOCKED_INBOX_ACTIVE_RUN_STATUSES]),
-            inArray(sql<string>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`, graphIssueIds),
+            inArray(sql<string>`coalesce(
+              ${heartbeatRuns.contextSnapshot} ->> 'issueId',
+              ${heartbeatRuns.contextSnapshot} ->> 'taskId'
+            )`, graphIssueIds),
           )),
     graphIssueIds.length === 0
       ? Promise.resolve([])
       : dbOrTx
           .select({
             companyId: agentWakeupRequests.companyId,
-            issueId: sql<string | null>`${agentWakeupRequests.payload} ->> 'issueId'`,
+            issueId: sql<string | null>`coalesce(
+              ${agentWakeupRequests.payload} ->> 'issueId',
+              ${agentWakeupRequests.payload} ->> 'taskId',
+              ${agentWakeupRequests.payload} -> '_paperclipWakeContext' ->> 'issueId',
+              ${agentWakeupRequests.payload} -> '_paperclipWakeContext' ->> 'taskId'
+            )`,
             agentId: agentWakeupRequests.agentId,
             status: agentWakeupRequests.status,
           })
@@ -3056,15 +3075,22 @@ async function listIssueBlockedInboxAttentionMap(
           .where(and(
             eq(agentWakeupRequests.companyId, companyId),
             inArray(agentWakeupRequests.status, [...BLOCKED_INBOX_ACTIVE_WAKE_STATUSES]),
-            sql`${agentWakeupRequests.runId} is null`,
-            inArray(sql<string>`${agentWakeupRequests.payload} ->> 'issueId'`, graphIssueIds),
+            inArray(sql<string>`coalesce(
+              ${agentWakeupRequests.payload} ->> 'issueId',
+              ${agentWakeupRequests.payload} ->> 'taskId',
+              ${agentWakeupRequests.payload} -> '_paperclipWakeContext' ->> 'issueId',
+              ${agentWakeupRequests.payload} -> '_paperclipWakeContext' ->> 'taskId'
+            )`, graphIssueIds),
           )),
     graphIssueIds.length === 0
       ? Promise.resolve([])
       : dbOrTx
           .select({
             companyId: heartbeatRuns.companyId,
-            issueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`,
+            issueId: sql<string | null>`coalesce(
+              ${heartbeatRuns.contextSnapshot} ->> 'issueId',
+              ${heartbeatRuns.contextSnapshot} ->> 'taskId'
+            )`,
             agentId: heartbeatRuns.agentId,
             status: heartbeatRuns.status,
           })
@@ -3072,7 +3098,10 @@ async function listIssueBlockedInboxAttentionMap(
           .where(and(
             eq(heartbeatRuns.companyId, companyId),
             eq(heartbeatRuns.status, "scheduled_retry"),
-            inArray(sql<string>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`, graphIssueIds),
+            inArray(sql<string>`coalesce(
+              ${heartbeatRuns.contextSnapshot} ->> 'issueId',
+              ${heartbeatRuns.contextSnapshot} ->> 'taskId'
+            )`, graphIssueIds),
           )),
     graphIssueIds.length === 0
       ? Promise.resolve([])
@@ -3105,7 +3134,7 @@ async function listIssueBlockedInboxAttentionMap(
             inArray(approvals.status, [...BLOCKED_INBOX_PENDING_APPROVAL_STATUSES]),
             inArray(issueApprovals.issueId, graphIssueIds),
           )),
-    listSuccessfulRunHandoffMapForIssues(dbOrTx, companyId, rowIssueIds),
+    listSuccessfulRunHandoffMapForIssues(dbOrTx, companyId, rowIssueIds, { hydrateLiveness: false }),
   ]);
 
   const pendingInteractions = (interactionRows as BlockedInboxInteractionRow[]).map((row) => ({
@@ -3186,6 +3215,13 @@ async function listIssueBlockedInboxAttentionMap(
   for (const row of approvalRows as BlockedInboxApprovalRow[]) {
     if (!approvalByIssueId.has(row.issueId)) approvalByIssueId.set(row.issueId, row);
   }
+  const liveHandoffRunIssueIds = new Set([
+    ...(activeRunRows as Array<{ issueId: string | null }>),
+    ...(scheduledRetryRows as Array<{ issueId: string | null }>),
+  ].flatMap((row) => row.issueId ? [row.issueId] : []));
+  const liveHandoffWakeIssueIds = new Set(
+    (wakeRows as Array<{ issueId: string | null }>).flatMap((row) => row.issueId ? [row.issueId] : []),
+  );
 
   for (const row of issueRows) {
     if (row.companyId !== companyId || BLOCKED_INBOX_TERMINAL_STATUSES.includes(row.status as typeof BLOCKED_INBOX_TERMINAL_STATUSES[number]) || row.hiddenAt) {
@@ -3193,7 +3229,11 @@ async function listIssueBlockedInboxAttentionMap(
     }
     const source = issueRef(row);
     const handoff = handoffMap.get(row.id);
-    if (handoff && (handoff.required || handoff.state === "escalated")) {
+    const hasLiveHandoffContinuation = Boolean(
+      handoff?.state === "required"
+      && (liveHandoffRunIssueIds.has(row.id) || liveHandoffWakeIssueIds.has(row.id))
+    );
+    if (handoff && !hasLiveHandoffContinuation && (handoff.required || handoff.state === "escalated")) {
       result.set(row.id, attentionBase({
         state: "missing_disposition",
         reason: "missing_successful_run_disposition",

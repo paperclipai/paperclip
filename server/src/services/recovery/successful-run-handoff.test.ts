@@ -9,6 +9,7 @@ import {
   buildSuccessfulRunHandoffRequiredNotice,
   decideSuccessfulRunHandoff,
   isIdempotentFinishSuccessfulRunHandoffWakeStatus,
+  isSuccessfulRunHandoffValidPathSkip,
   isSuccessfulRunHandoffRequiredNoticeBody,
   noticeMetadataReferencesRecoveryAction,
 } from "./successful-run-handoff.js";
@@ -128,6 +129,12 @@ describe("successful run handoff decision", () => {
       kind: "skip",
       reason: "issue already has an active execution path",
     });
+  });
+
+  it("identifies valid-path skips that can durably resolve a stale required event", () => {
+    expect(isSuccessfulRunHandoffValidPathSkip(decide({ hasActiveExecutionPath: true }))).toBe(true);
+    expect(isSuccessfulRunHandoffValidPathSkip(decide({ hasQueuedWake: true }))).toBe(true);
+    expect(isSuccessfulRunHandoffValidPathSkip(decide({ budgetBlocked: true }))).toBe(false);
   });
 
   it("does not treat killed background-task evidence as a missing live path when a durable monitor owns the wait", () => {

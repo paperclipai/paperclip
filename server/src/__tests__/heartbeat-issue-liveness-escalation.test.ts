@@ -66,6 +66,7 @@ import { heartbeatService } from "../services/heartbeat.ts";
 import { instanceSettingsService } from "../services/instance-settings.ts";
 import { issueService } from "../services/issues.ts";
 import { runningProcesses } from "../adapters/index.ts";
+import { DEFAULT_LIVENESS_REESCALATION_COOLDOWN_MS } from "../services/recovery/service.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -1153,10 +1154,11 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     );
   });
 
-  it("creates a fresh escalation when the previous matching escalation is terminal", async () => {
+  it("holds a recently closed matching escalation, then re-escalates after the cooldown", async () => {
     await enableAutoRecovery();
     const { companyId, managerId, blockedIssueId, blockerIssueId } = await seedBlockedChain();
     const heartbeat = heartbeatService(db);
+    const now = new Date();
     const incidentKey = [
       "harness_liveness",
       companyId,
@@ -1178,9 +1180,18 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
       identifier: "CLOSED-3",
       originKind: "harness_liveness_escalation",
       originId: incidentKey,
+      createdAt: new Date(now.getTime() - 30 * 60 * 1000),
+      updatedAt: now,
     });
 
-    const result = await heartbeat.reconcileIssueGraphLiveness();
+    const held = await heartbeat.reconcileIssueGraphLiveness({ now });
+
+    expect(held.escalationsCreated).toBe(0);
+    expect(held.skippedReescalationCooldown).toBe(1);
+
+    const result = await heartbeat.reconcileIssueGraphLiveness({
+      now: new Date(now.getTime() + DEFAULT_LIVENESS_REESCALATION_COOLDOWN_MS + 1),
+    });
 
     expect(result.escalationsCreated).toBe(1);
     expect(result.existingEscalations).toBe(0);
@@ -1209,6 +1220,41 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
       .where(eq(issueRelations.relatedIssueId, blockedIssueId));
     expect(blockers.some((row) => row.blockerIssueId === closedEscalationId)).toBe(false);
     expect(blockers.some((row) => row.blockerIssueId === freshEscalation?.id)).toBe(true);
+  });
+
+  it("re-escalates immediately after a matching escalation is cancelled", async () => {
+    await enableAutoRecovery();
+    const { companyId, managerId, blockedIssueId, blockerIssueId } = await seedBlockedChain();
+    const heartbeat = heartbeatService(db);
+    const now = new Date();
+    const incidentKey = [
+      "harness_liveness",
+      companyId,
+      blockedIssueId,
+      "blocked_by_unassigned_issue",
+      blockerIssueId,
+    ].join(":");
+
+    await db.insert(issues).values({
+      id: randomUUID(),
+      companyId,
+      title: "Cancelled escalation",
+      status: "cancelled",
+      priority: "high",
+      parentId: blockedIssueId,
+      assigneeAgentId: managerId,
+      issueNumber: 3,
+      identifier: "CANCELLED-3",
+      originKind: "harness_liveness_escalation",
+      originId: incidentKey,
+      createdAt: new Date(now.getTime() - 30 * 60 * 1000),
+      updatedAt: now,
+    });
+
+    const result = await heartbeat.reconcileIssueGraphLiveness({ now });
+
+    expect(result.escalationsCreated).toBe(1);
+    expect(result.skippedReescalationCooldown).toBe(0);
   });
 
   it("removes closed liveness escalations from blocker relations during reconciliation", async () => {
