@@ -631,6 +631,12 @@ Expected:
 - `/api/health` returns `{"status":"ok"}`
 - `/api/companies` returns a JSON array
 
+### Routine dispatch status and idempotency
+
+`POST /api/routines/:id/run` supports explicit `manual` and `api` dispatches for both `active` and `paused` routines. `archived` routines cannot run. Automatic schedule and webhook dispatches require the routine and trigger to be active.
+
+Callers that may retry a dispatch must send a stable `idempotencyKey`. The key is scoped to the company, routine, source, and trigger, and replaying the same request returns the original routine run and linked execution issue instead of creating duplicate work. For branch handoffs, derive the key from the normalized branch name and commit SHA, and retain the returned routine-run and issue links as handoff evidence.
+
 ## Reset Local Dev Database
 
 To wipe local dev data and start fresh:

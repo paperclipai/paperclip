@@ -1619,6 +1619,46 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     });
   });
 
+  it("reuses paused API routine runs with the same idempotency key", async () => {
+    const { companyId, agentId, projectId, svc } = await seedFixture();
+    const draftRoutine = await svc.create(
+      companyId,
+      {
+        projectId,
+        goalId: null,
+        parentIssueId: null,
+        title: "idempotent draft dispatch",
+        description: "Create one execution issue",
+        assigneeAgentId: agentId,
+        priority: "medium",
+        status: "paused",
+        concurrencyPolicy: "always_enqueue",
+        catchUpPolicy: "skip_missed",
+      },
+      {},
+    );
+
+    const first = await svc.runRoutine(draftRoutine.id, {
+      source: "api",
+      idempotencyKey: "branch:pap-14223:commit:abc123",
+    });
+    const replay = await svc.runRoutine(draftRoutine.id, {
+      source: "api",
+      idempotencyKey: "branch:pap-14223:commit:abc123",
+    });
+
+    expect(replay.id).toBe(first.id);
+    expect(replay.linkedIssueId).toBe(first.linkedIssueId);
+    expect(first.status).toBe("issue_created");
+
+    const routineIssues = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(eq(issues.originId, draftRoutine.id));
+
+    expect(routineIssues).toHaveLength(1);
+  });
+
   it("rejects enabling automation for routines without a default agent", async () => {
     const { companyId, svc } = await seedFixture();
     const draftRoutine = await svc.create(

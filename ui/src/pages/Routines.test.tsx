@@ -4,7 +4,7 @@ import type { AnchorHTMLAttributes, ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { Issue, RoutineListItem } from "@paperclipai/shared";
+import type { FolderListResult, Issue, RoutineListItem } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Routines, buildRoutineGroups, buildRoutineSections, sortRoutines } from "./Routines";
 
@@ -20,6 +20,7 @@ async function act(callback: () => void | Promise<void>) {
 
 const navigateMock = vi.fn();
 const routinesListMock = vi.fn<(companyId: string) => Promise<RoutineListItem[]>>();
+const foldersListMock = vi.fn<(companyId: string, kind: string) => Promise<FolderListResult>>();
 const issuesListMock = vi.fn<(companyId: string, filters?: Record<string, unknown>) => Promise<Issue[]>>();
 const markdownEditorRenderMock = vi.fn((props: { mentions?: Array<{ id: string; name: string }> }) => props);
 const issuesListRenderMock = vi.fn(({ issues }: { issues: Issue[] }) => (
@@ -55,6 +56,16 @@ vi.mock("../api/routines", () => ({
     create: vi.fn(),
     update: vi.fn(),
     run: vi.fn(),
+  },
+}));
+
+vi.mock("../api/folders", () => ({
+  foldersApi: {
+    list: (companyId: string, kind: string) => foldersListMock(companyId, kind),
+    create: vi.fn(),
+    update: vi.fn(),
+    delete: vi.fn(),
+    moveItem: vi.fn(),
   },
 }));
 
@@ -343,6 +354,13 @@ describe("Routines page", () => {
     currentSearch = "";
     navigateMock.mockReset();
     routinesListMock.mockReset();
+    foldersListMock.mockReset();
+    foldersListMock.mockResolvedValue({
+      kind: "routine",
+      folders: [],
+      allCount: 0,
+      unfiledCount: 0,
+    });
     issuesListMock.mockReset();
     markdownEditorRenderMock.mockClear();
     issuesListRenderMock.mockClear();
@@ -396,6 +414,22 @@ describe("Routines page", () => {
     expect(groups.map((group) => group.label)).toEqual(["Project Alpha", "Built-in routines"]);
     expect(groups[0]?.items.map((item) => item.title)).toEqual(["Morning sync"]);
     expect(groups[1]?.items.map((item) => item.title)).toEqual(["Reflection review"]);
+  });
+
+  it("uses a flat group when Folder grouping is active", () => {
+    const routines = [
+      createRoutine({ id: "routine-1", title: "Morning sync", projectId: "project-1" }),
+      createRoutine({ id: "routine-2", title: "Weekly digest", projectId: "project-2" }),
+    ];
+
+    const groups = buildRoutineGroups(
+      routines,
+      "folder",
+      new Map(),
+      new Map(),
+    );
+
+    expect(groups).toEqual([{ key: "__all", label: null, items: routines }]);
   });
 
   it("sorts routines by selected field and direction without mutating the source list", () => {
@@ -489,7 +523,7 @@ describe("Routines page", () => {
     });
   });
 
-  it("defaults the routines list to project groups sorted by title", async () => {
+  it("defaults the routines list to folder mode without rendering project groups", async () => {
     routinesListMock.mockResolvedValue([
       createRoutine({ id: "routine-1", title: "Weekly digest", projectId: "project-1" }),
       createRoutine({ id: "routine-2", title: "Morning sync", projectId: "project-1" }),
@@ -513,17 +547,15 @@ describe("Routines page", () => {
       await flush();
     });
 
-    for (let attempts = 0; attempts < 5 && !container.textContent?.includes("Project Alpha"); attempts += 1) {
+    for (let attempts = 0; attempts < 5 && !container.textContent?.includes("Morning sync"); attempts += 1) {
       await act(async () => {
         await flush();
       });
     }
 
     const text = container.textContent ?? "";
-    expect(text.indexOf("Project Alpha")).toBeLessThan(text.indexOf("Project Beta"));
     expect(text.indexOf("Morning sync")).toBeLessThan(text.indexOf("Weekly digest"));
-    expect(text.indexOf("Project Alpha")).toBeLessThan(text.indexOf("Morning sync"));
-    expect(text.indexOf("Weekly digest")).toBeLessThan(text.indexOf("Project Beta"));
+    expect(text).toContain("New folder");
 
     await act(async () => {
       root.unmount();
@@ -531,6 +563,7 @@ describe("Routines page", () => {
   });
 
   it("renders built-in routines in a dedicated section on the routines tab", async () => {
+    localStorage.setItem("paperclip:routines-view:company-1", JSON.stringify({ groupBy: "project" }));
     routinesListMock.mockResolvedValue([
       createRoutine({
         id: "routine-1",

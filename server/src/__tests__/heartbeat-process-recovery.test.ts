@@ -1499,8 +1499,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     await withTempPaperclipHome(async (home) => {
       const heartbeat = heartbeatService(db);
+      const previousServerPid = process.pid;
+      const newServerPid = previousServerPid + 1;
       await writeHotRestartIntent({
-        previousServerPid: process.pid,
+        previousServerPid,
         previousServerVersion: "old-version",
         requestedAt: new Date("2026-03-19T00:05:00.000Z"),
       });
@@ -1509,49 +1511,54 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         new Date("2026-03-19T00:06:00.000Z"),
       );
 
-      const adoption = await heartbeat.reconcileHotRestartAdoption(
-        new Date("2026-03-19T00:07:00.000Z"),
-      );
-      expect(adoption).toMatchObject({
-        mode: "reported",
-        adoptedRunIds: [runId],
-        finalizedWhileDownRunIds: [],
-        lostRunIds: [],
-        skippedRunIds: [],
-      });
+      Object.defineProperty(process, "pid", { value: newServerPid });
+      try {
+        const adoption = await heartbeat.reconcileHotRestartAdoption(
+          new Date("2026-03-19T00:07:00.000Z"),
+        );
+        expect(adoption).toMatchObject({
+          mode: "reported",
+          adoptedRunIds: [runId],
+          finalizedWhileDownRunIds: [],
+          lostRunIds: [],
+          skippedRunIds: [],
+        });
 
-      const report = JSON.parse(
-        await fs.readFile(resolveHotRestartReportPath(home), "utf8"),
-      ) as Record<string, unknown>;
-      expect(report).toMatchObject({
-        previousServerPid: process.pid,
-        newServerPid: process.pid,
-        previousServerVersion: "old-version",
-        adoptedRunIds: [runId],
-        finalizedWhileDownRunIds: [],
-        lostRunIds: [],
-      });
-      expect(typeof report.newServerVersion).toBe("string");
-
-      const reap = await heartbeat.reapOrphanedRuns();
-      expect(reap).toEqual({ reaped: 0, runIds: [] });
-      const adopted = await db
-        .select()
-        .from(heartbeatRuns)
-        .where(eq(heartbeatRuns.id, runId))
-        .then((rows) => rows[0] ?? null);
-      expect(adopted?.status).toBe("running");
-      expect(adopted?.errorCode).not.toBe("process_lost");
-      expect(adopted?.resultJson).toMatchObject({
-        hotRestart: {
-          adopted: true,
-          adoptedAt: "2026-03-19T00:07:00.000Z",
-          previousServerPid: process.pid,
-          newServerPid: process.pid,
+        const report = JSON.parse(
+          await fs.readFile(resolveHotRestartReportPath(home), "utf8"),
+        ) as Record<string, unknown>;
+        expect(report).toMatchObject({
+          previousServerPid,
+          newServerPid,
           previousServerVersion: "old-version",
-          processPid: child.pid,
-        },
-      });
+          adoptedRunIds: [runId],
+          finalizedWhileDownRunIds: [],
+          lostRunIds: [],
+        });
+        expect(typeof report.newServerVersion).toBe("string");
+
+        const reap = await heartbeat.reapOrphanedRuns();
+        expect(reap).toEqual({ reaped: 0, runIds: [] });
+        const adopted = await db
+          .select()
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, runId))
+          .then((rows) => rows[0] ?? null);
+        expect(adopted?.status).toBe("running");
+        expect(adopted?.errorCode).not.toBe("process_lost");
+        expect(adopted?.resultJson).toMatchObject({
+          hotRestart: {
+            adopted: true,
+            adoptedAt: "2026-03-19T00:07:00.000Z",
+            previousServerPid,
+            newServerPid,
+            previousServerVersion: "old-version",
+            processPid: child.pid,
+          },
+        });
+      } finally {
+        Object.defineProperty(process, "pid", { value: previousServerPid });
+      }
     });
   });
 

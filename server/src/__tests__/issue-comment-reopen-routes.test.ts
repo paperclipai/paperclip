@@ -117,6 +117,7 @@ vi.mock("../services/instance-settings.js", () => ({
   instanceSettingsService: () => mockInstanceSettingsService,
 }));
 
+  issueExecutionHealthService: () => ({ summarize: async () => null }),
 vi.mock("../services/issues.js", () => ({
   issueService: () => mockIssueService,
 }));

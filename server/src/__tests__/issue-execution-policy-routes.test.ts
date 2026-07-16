@@ -50,6 +50,7 @@ const mockIssueThreadInteractionService = vi.hoisted(() => ({
   expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
 }));
 const mockIssueApprovalService = vi.hoisted(() => ({
+    issueExecutionHealthService: () => ({ summarize: async () => null }),
   listApprovalsForIssue: vi.fn(async () => []),
 }));
 

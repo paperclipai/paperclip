@@ -101,6 +101,7 @@ const mockDb = vi.hoisted(() => ({
 vi.mock("../services/index.js", () => ({
   companyService: () => ({
     getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
+  issueExecutionHealthService: () => ({ summarize: async () => null }),
   }),
   accessService: () => mockAccessService,
   agentService: () => mockAgentService,

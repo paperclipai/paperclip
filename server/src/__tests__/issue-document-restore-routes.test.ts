@@ -126,6 +126,7 @@ function registerModuleMocks() {
     heartbeatService: () => mockHeartbeatService,
     instanceSettingsService: () => mockInstanceSettingsService,
     issueApprovalService: () => ({}),
+    issueExecutionHealthService: () => ({ summarize: async () => null }),
     issueReferenceService: () => ({
       deleteDocumentSource: async () => undefined,
       diffIssueReferenceSummary: () => ({

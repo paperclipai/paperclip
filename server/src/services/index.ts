@@ -5,6 +5,7 @@ export { companySearchExtractService } from "./company-search-extract.js";
 export { feedbackService } from "./feedback.js";
 export { companySkillService } from "./company-skills.js";
 export { companySkillPolicyService, normalizeSkillPolicySourceType } from "./company-skill-policy.js";
+export { folderService } from "./folders.js";
 export { agentService, deduplicateAgentName } from "./agents.js";
 export {
   builtInAgentService,
@@ -61,6 +62,7 @@ export { goalService } from "./goals.js";
 export { activityService, type ActivityFilters } from "./activity.js";
 export { workTimelineService, normalizeTimelineWindow } from "./work-timeline.js";
 export { attentionService } from "./attention.js";
+export { captureDecisionSnapshot, decisionTrainingService } from "./decision-training.js";
 export type {
   WorkTimelineActor,
   WorkTimelineEdge,
@@ -142,3 +144,5 @@ export {
 } from "./codex-auth-reconciliation.js";
 export { reconcilePersistedRuntimeServicesOnStartup, restartDesiredRuntimeServicesOnStartup } from "./workspace-runtime.js";
 export { createStorageServiceFromConfig, getStorageService } from "../storage/index.js";
+
+export { issueExecutionHealthService } from "./issue-execution-health.js";

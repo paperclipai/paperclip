@@ -119,6 +119,7 @@ const mockExternalObjectService = vi.hoisted(() => ({
   getProjectSummary: vi.fn(async () => ({
     authRequiredCount: 0,
     byLiveness: {},
+    issueExecutionHealthService: () => ({ summarize: async () => null }),
     byStatusCategory: {},
     highestSeverity: "muted",
     objects: [],

@@ -193,6 +193,9 @@ export const queryKeys = {
     documentAnnotations: (routineId: string, key: "description", status: "open" | "resolved" | "all" = "all") =>
       ["routines", "document-annotations", routineId, key, status] as const,
   },
+  folders: {
+    list: (companyId: string, kind: string) => ["folders", companyId, kind] as const,
+  },
   pipelines: {
     list: (companyId: string) => ["pipelines", companyId] as const,
     detail: (pipelineId: string) => ["pipelines", "detail", pipelineId] as const,

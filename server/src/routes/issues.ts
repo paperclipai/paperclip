@@ -135,6 +135,7 @@ import {
 } from "./workspace-command-authz.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 import {
+  deriveDefaultAttachmentFilename,
   isInlineAttachmentContentType,
   normalizeIssueAttachmentMaxBytes,
   normalizeContentType,
@@ -2592,6 +2593,9 @@ export function issueRoutes(
   const companySkillsSvc = companySkillService(db);
   const documentAnnotationsSvc = documentAnnotationService(db);
   const issueReferencesSvc = issueReferenceService(db);
+  const executionHealthSvc = typeof serviceIndex.issueExecutionHealthService === "function"
+    ? serviceIndex.issueExecutionHealthService(db)
+    : { summarize: async () => null };
   const issueThreadInteractionsSvc = issueThreadInteractionService(db);
   const taskWatchdogFactory: TaskWatchdogServiceFactory | undefined = Object.prototype.hasOwnProperty.call(
     serviceIndex,
@@ -5068,6 +5072,7 @@ export function issueRoutes(
       continuationSummary,
       currentExecutionWorkspace,
       activeRecoveryAction,
+      executionHealth,
     ] =
       await Promise.all([
         resolveIssueProjectAndGoal(issue),
@@ -5082,6 +5087,7 @@ export function issueRoutes(
         documentsSvc.getIssueDocumentByKey(issue.id, ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY),
         currentExecutionWorkspacePromise,
         recoveryActionsSvc.getActiveForIssue(issue.companyId, issue.id),
+        executionHealthSvc.summarize(issue),
       ]);
     const recoveryActionsByRelationIssue = await relationRecoveryActionMap(
       recoveryActionsSvc,
@@ -5188,6 +5194,7 @@ export function issueRoutes(
         : null,
       planReviewContext,
       currentExecutionWorkspace,
+      executionHealth,
     });
   });
 
@@ -5322,6 +5329,9 @@ export function issueRoutes(
     const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
+    const inboxArchiveFieldsPromise = req.actor.type === "board" && req.actor.userId
+      ? svc.getActiveInboxArchiveFields(issue, req.actor.userId)
+      : Promise.resolve({});
     const [
       { project, goal },
       ancestors,
@@ -5335,6 +5345,8 @@ export function issueRoutes(
       scheduledRetry,
       activeRecoveryAction,
       linkedCases,
+      executionHealth,
+      inboxArchiveFields,
     ] = await Promise.all([
       resolveIssueProjectAndGoal(issue),
       svc.getAncestors(issue.id),
@@ -5348,6 +5360,8 @@ export function issueRoutes(
       svc.getCurrentScheduledRetry(issue.id),
       recoveryActionsSvc.getActiveForIssue(issue.companyId, issue.id),
       listIssueLinkedCases(db, issue.companyId, issue.id),
+      executionHealthSvc.summarize(issue),
+      inboxArchiveFieldsPromise,
     ]);
     const recoveryActionsByRelationIssue = await relationRecoveryActionMap(
       recoveryActionsSvc,
@@ -5373,6 +5387,7 @@ export function issueRoutes(
     const workProducts = await workProductsSvc.listForIssue(issue.id);
     res.json({
       ...issue,
+      ...inboxArchiveFields,
       goalId: goal?.id ?? issue.goalId,
       ancestors,
       ...(blockerAttention ? { blockerAttention } : {}),
@@ -5391,6 +5406,7 @@ export function issueRoutes(
       currentExecutionWorkspace: compactIssueExecutionWorkspace(currentExecutionWorkspace),
       workProducts,
       linkedCases,
+      executionHealth,
     });
   });
 
@@ -10306,10 +10322,14 @@ export function issueRoutes(
     }
 
     const actor = getActorInfo(req);
+    const providedFilename = typeof file.originalname === "string" ? file.originalname.trim() : "";
+    const originalFilename = providedFilename.length > 0
+      ? providedFilename
+      : deriveDefaultAttachmentFilename(contentType);
     const stored = await storage.putFile({
       companyId,
       namespace: `issues/${issueId}`,
-      originalFilename: file.originalname || null,
+      originalFilename,
       contentType,
       body: file.buffer,
     });

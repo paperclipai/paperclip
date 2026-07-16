@@ -77,6 +77,7 @@ function item(
     workspace: null,
     detail: null,
     dismissal: null,
+    trainingExampleId: null,
     ...overrides,
   };
 }

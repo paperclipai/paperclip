@@ -130,6 +130,9 @@ const ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_LOG_BYTES = 2_000_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_CHUNK_BYTES = 256_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_END_SLACK_MS = 60_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_PARALLEL_READS = 8;
+export const ISSUE_CREATE_IDEMPOTENCY_KEY_RETENTION_DAYS = 7;
+const ISSUE_CREATE_IDEMPOTENCY_KEY_RETENTION_MS = ISSUE_CREATE_IDEMPOTENCY_KEY_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+const ISSUE_CREATE_IDEMPOTENCY_KEY_CLEANUP_BATCH_SIZE = 500;
 const DELETED_ISSUE_COMMENT_BODY = "";
 const ISSUE_WAKE_DIAGNOSTICS_ACTIVITY_ACTIONS = ["issue.tree_hold_wakeup_deferred"] as const;
 
@@ -4991,6 +4994,42 @@ export function issueService(db: Db) {
       return row ?? null;
     },
 
+    getActiveInboxArchiveFields: async (
+      issue: Pick<IssueRow, "id" | "companyId" | "updatedAt">,
+      userId: string,
+    ) => {
+      const [[activity], archive] = await Promise.all([
+        lastActivityStatsForIssues(db, issue.companyId, [issue.id]),
+        db
+          .select({
+            archivedAt: issueInboxArchives.archivedAt,
+            archivedByActorType: issueInboxArchives.archivedByActorType,
+            archivedByAgentId: issueInboxArchives.archivedByAgentId,
+            archivedByRunId: issueInboxArchives.archivedByRunId,
+          })
+          .from(issueInboxArchives)
+          .where(and(
+            eq(issueInboxArchives.companyId, issue.companyId),
+            eq(issueInboxArchives.issueId, issue.id),
+            eq(issueInboxArchives.userId, userId),
+          ))
+          .then((rows) => rows[0] ?? null),
+      ]);
+      if (!archive) return {};
+      const lastActivityAt = latestIssueActivityAt(
+        issue.updatedAt,
+        activity?.latestCommentAt ?? null,
+        activity?.latestLogAt ?? null,
+      ) ?? issue.updatedAt;
+      if (archive.archivedAt < lastActivityAt) return {};
+      return {
+        archivedAt: archive.archivedAt,
+        archivedByActorType: archive.archivedByActorType,
+        archivedByAgentId: archive.archivedByAgentId,
+        archivedByRunId: archive.archivedByRunId,
+      };
+    },
+
     getById: async (raw: string) => {
       const id = raw.trim();
       const identifier = normalizeIssueReferenceIdentifier(id);
@@ -6031,6 +6070,19 @@ export function issueService(db: Db) {
         let existingIssue: typeof issues.$inferSelect | undefined;
         let deduplicationReason: "idempotency_key" | "recent_open_title" | null = null;
         if (idempotencyKey) {
+          const idempotencyKeyRetentionCutoff = new Date(Date.now() - ISSUE_CREATE_IDEMPOTENCY_KEY_RETENTION_MS);
+          await tx.execute(sql`
+            delete from ${issueCreateIdempotencyKeys}
+            where ${issueCreateIdempotencyKeys.id} in (
+              select ${issueCreateIdempotencyKeys.id}
+              from ${issueCreateIdempotencyKeys}
+              where ${issueCreateIdempotencyKeys.companyId} = ${companyId}
+                and ${issueCreateIdempotencyKeys.createdAt} < ${idempotencyKeyRetentionCutoff.toISOString()}::timestamptz
+              order by ${issueCreateIdempotencyKeys.createdAt} asc, ${issueCreateIdempotencyKeys.id} asc
+              limit ${ISSUE_CREATE_IDEMPOTENCY_KEY_CLEANUP_BATCH_SIZE}
+            )
+          `);
+
           [existingIssue] = await tx
             .select()
             .from(issueCreateIdempotencyKeys)

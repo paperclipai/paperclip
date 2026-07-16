@@ -112,3 +112,24 @@ export function normalizeIssueAttachmentMaxBytes(value: number | null | undefine
   }
   return Math.min(Math.floor(value), MAX_COMPANY_ATTACHMENT_MAX_BYTES, MAX_ATTACHMENT_BYTES);
 }
+
+const ATTACHMENT_CONTENT_TYPE_EXTENSIONS: Record<string, string> = {
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/jpg": "jpg",
+  "image/webp": "webp",
+  "image/gif": "gif",
+  "image/svg+xml": "svg",
+  "application/pdf": "pdf",
+  "text/markdown": "md",
+  "text/plain": "txt",
+  "application/json": "json",
+  "text/csv": "csv",
+  "text/html": "html",
+  "application/zip": "zip",
+};
+
+export function deriveDefaultAttachmentFilename(contentType: string): string {
+  const extension = ATTACHMENT_CONTENT_TYPE_EXTENSIONS[normalizeContentType(contentType)] ?? "bin";
+  return `attachment.${extension}`;
+}

@@ -1,0 +1,212 @@
+import { randomUUID } from "node:crypto";
+import express from "express";
+import request from "supertest";
+import { eq } from "drizzle-orm";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import {
+  activityLog,
+  companies,
+  createDb,
+  decisionTrainingExamples,
+  issueComments,
+  issues,
+  issueThreadInteractions,
+  projects,
+} from "@paperclipai/db";
+import {
+  getEmbeddedPostgresTestSupport,
+  startEmbeddedPostgresTestDatabase,
+} from "./helpers/embedded-postgres.js";
+import { errorHandler } from "../middleware/index.js";
+import { decisionTrainingRoutes } from "../routes/decision-training.js";
+import { attentionService } from "../services/attention.js";
+import { captureDecisionSnapshot, decisionTrainingService } from "../services/decision-training.js";
+
+const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+
+if (!embeddedPostgresSupport.supported) {
+  console.warn(
+    `Skipping embedded Postgres decision training tests on this host: ${embeddedPostgresSupport.reason ?? "unsupported environment"}`,
+  );
+}
+
+describeEmbeddedPostgres("decision training", () => {
+  let db!: ReturnType<typeof createDb>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-decision-training-");
+    db = createDb(tempDb.connectionString);
+  }, 30_000);
+
+  afterEach(async () => {
+    await db.delete(activityLog);
+    await db.delete(decisionTrainingExamples);
+    await db.delete(issueThreadInteractions);
+    await db.delete(issueComments);
+    await db.delete(issues);
+    await db.delete(projects);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seedResolvedInteraction() {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const issueId = randomUUID();
+    const interactionId = randomUUID();
+    const cutoffAt = new Date("2026-07-16T12:00:00.000Z");
+    const beforeId = randomUUID();
+    const atCutoffId = randomUUID();
+    const afterId = randomUUID();
+
+    await db.insert(companies).values({ id: companyId, name: "Decision Co", issuePrefix: `D${companyId.slice(0, 4)}` });
+    await db.insert(projects).values({ id: projectId, companyId, name: "Decisions" });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      projectId,
+      identifier: "DEC-1",
+      title: "Choose a rollout strategy",
+      status: "in_review",
+    });
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId,
+      kind: "request_confirmation",
+      status: "accepted",
+      payload: { question: "Ship it?" } as never,
+      result: { accepted: true } as never,
+      resolvedByUserId: "board-user",
+      resolvedAt: cutoffAt,
+    });
+    await db.insert(issueComments).values([
+      { id: beforeId, companyId, issueId, body: "Before", createdAt: new Date("2026-07-16T11:59:59.000Z") },
+      { id: atCutoffId, companyId, issueId, body: "At cutoff", createdAt: cutoffAt },
+      { id: afterId, companyId, issueId, body: "Leaked later context", createdAt: new Date("2026-07-16T12:00:01.000Z") },
+    ]);
+    return { companyId, issueId, interactionId, cutoffAt, beforeId, atCutoffId, afterId };
+  }
+
+  it("includes the cutoff boundary and excludes later comments", async () => {
+    const seeded = await seedResolvedInteraction();
+    const captured = await captureDecisionSnapshot(db, {
+      companyId: seeded.companyId,
+      sourceKind: "interaction",
+      sourceId: seeded.interactionId,
+      issueId: seeded.issueId,
+    }, new Date("2026-07-16T13:00:00.000Z"));
+
+    expect(captured.cutoffAt).toEqual(seeded.cutoffAt);
+    expect(captured.snapshot.cutoff).toEqual({
+      at: seeded.cutoffAt.toISOString(),
+      lastCommentId: seeded.atCutoffId,
+      commentCount: 2,
+    });
+    expect(captured.snapshot.comments.map((comment) => comment.id)).toEqual([seeded.beforeId, seeded.atCutoffId]);
+    expect(JSON.stringify(captured.snapshot)).not.toContain("Leaked later context");
+  });
+
+  it("enforces one example per decision and author", async () => {
+    const seeded = await seedResolvedInteraction();
+    const svc = decisionTrainingService(db);
+    const input = {
+      companyId: seeded.companyId,
+      sourceKind: "interaction" as const,
+      sourceId: seeded.interactionId,
+      issueId: seeded.issueId,
+      notes: "Ship behind a flag.",
+      createdByUserId: "board-user",
+    };
+
+    const created = await svc.create(input);
+    await expect(svc.create(input)).rejects.toMatchObject({ status: 409 });
+    const updated = await svc.updateNotes(created.id, "board-user", "Use a 10% canary first.");
+    expect(updated?.notesHistory).toEqual([
+      expect.objectContaining({ author: "board-user", body: "Ship behind a flag." }),
+    ]);
+    expect(updated?.snapshot).toEqual(created.snapshot);
+  });
+
+  it("enriches attention items with the current user's training example", async () => {
+    const seeded = await seedResolvedInteraction();
+    const example = await decisionTrainingService(db).create({
+      companyId: seeded.companyId,
+      sourceKind: "interaction",
+      sourceId: seeded.interactionId,
+      issueId: seeded.issueId,
+      notes: "Captured guidance.",
+      createdByUserId: "board-user",
+    });
+    await db
+      .update(issueThreadInteractions)
+      .set({ status: "pending", resolvedAt: null, updatedAt: new Date() })
+      .where(eq(issueThreadInteractions.id, seeded.interactionId));
+
+    const feed = await attentionService(db).list(seeded.companyId, { userId: "board-user" });
+    const item = feed.items.find((candidate) => candidate.subject.id === seeded.interactionId);
+    expect(item?.trainingExampleId).toBe(example.id);
+  });
+
+  it("rejects agent writes and snapshot mutation", async () => {
+    const seeded = await seedResolvedInteraction();
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = {
+        type: "agent",
+        agentId: randomUUID(),
+        companyId: seeded.companyId,
+        source: "agent_jwt",
+      };
+      next();
+    });
+    app.use("/api", decisionTrainingRoutes(db));
+    app.use(errorHandler);
+
+    await request(app)
+      .post(`/api/companies/${seeded.companyId}/decision-training`)
+      .send({ sourceKind: "interaction", sourceId: seeded.interactionId, issueId: seeded.issueId, notes: "No" })
+      .expect(403);
+
+    await request(app)
+      .patch(`/api/decision-training/${randomUUID()}`)
+      .send({ notes: "Changed", snapshot: { version: 2 } })
+      .expect(400);
+  });
+
+  it("exports immutable state and labels as JSONL", async () => {
+    const seeded = await seedResolvedInteraction();
+    const example = await decisionTrainingService(db).create({
+      companyId: seeded.companyId,
+      sourceKind: "interaction",
+      sourceId: seeded.interactionId,
+      issueId: seeded.issueId,
+      notes: "Use a feature flag.",
+      createdByUserId: "board-user",
+    });
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", userId: "board-user", source: "local_implicit" };
+      next();
+    });
+    app.use("/api", decisionTrainingRoutes(db));
+    app.use(errorHandler);
+
+    const response = await request(app)
+      .get(`/api/companies/${seeded.companyId}/decision-training/export.jsonl`)
+      .expect(200);
+    const line = JSON.parse(response.text.trim());
+    expect(line).toEqual({
+      state: example.snapshot,
+      label: { outcome: "accepted", notes: "Use a feature flag." },
+    });
+    expect(response.text).not.toContain("Leaked later context");
+  });
+});

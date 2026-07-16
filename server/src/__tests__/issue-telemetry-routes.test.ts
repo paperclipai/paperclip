@@ -64,6 +64,7 @@ function registerModuleMocks() {
     }),
     instanceSettingsService: () => ({}),
     issueApprovalService: () => ({}),
+    issueExecutionHealthService: () => ({ summarize: async () => null }),
     issueReferenceService: () => ({
       deleteDocumentSource: async () => undefined,
       diffIssueReferenceSummary: () => ({

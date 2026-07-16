@@ -14,6 +14,12 @@ export type {
   AttentionWorkspaceRef,
 } from "./attention.js";
 export type {
+  DecisionTrainingExample,
+  DecisionTrainingNotesHistoryEntry,
+  DecisionTrainingSnapshotV1,
+  DecisionTrainingSourceKind,
+} from "./decision-training.js";
+export type {
   Environment,
   EnvironmentDeleteBlastRadius,
   EnvironmentDeleteBlockedReason,
@@ -163,6 +169,16 @@ export type {
   CompanySkillInstallCatalogRequest,
   CompanySkillInstallCatalogResult,
 } from "./company-skill.js";
+export type {
+  FolderKind,
+  Folder,
+  FolderListItem,
+  FolderListResult,
+  CreateFolderRequest,
+  UpdateFolderRequest,
+  MoveFolderRequest,
+  MoveFolderItemRequest,
+} from "./folder.js";
 export type {
   CatalogTeamKind,
   CatalogTeamTrustLevel,
@@ -617,6 +633,22 @@ export type {
   IssueTreePreviewTotals,
   IssueTreePreviewWarning,
 } from "./issue-tree-control.js";
+export {
+  ISSUE_EXECUTION_HEALTH_STATES,
+  ISSUE_EXECUTION_HEALTH_REASON_CODES,
+} from "./reliability.js";
+export type {
+  IssueExecutionHealthState,
+  IssueExecutionHealthReasonCode,
+  IssueExecutionHealthRunEvidence,
+  IssueExecutionHealthQueuedWakeEvidence,
+  IssueExecutionHealthInteractionEvidence,
+  IssueExecutionHealthApprovalEvidence,
+  IssueExecutionHealthRecoveryEvidence,
+  IssueExecutionHealthBlockerEvidence,
+  IssueExecutionHealthEvidence,
+  IssueExecutionHealthSummary,
+} from "./reliability.js";
 export type { Goal } from "./goal.js";
 export type { Approval, ApprovalComment } from "./approval.js";
 export type {

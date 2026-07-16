@@ -73,6 +73,7 @@ vi.mock("../services/index.js", () => ({
     listCompanyIds: vi.fn(async () => ["company-1"]),
   }),
   issueApprovalService: () => ({}),
+  issueExecutionHealthService: () => ({ summarize: async () => null }),
   issueReferenceService: () => ({
     deleteDocumentSource: async () => undefined,
     diffIssueReferenceSummary: () => ({
@@ -145,6 +146,7 @@ function registerModuleMocks() {
       listCompanyIds: vi.fn(async () => ["company-1"]),
     }),
     issueApprovalService: () => ({}),
+    issueExecutionHealthService: () => ({ summarize: async () => null }),
     issueReferenceService: () => ({
       deleteDocumentSource: async () => undefined,
       diffIssueReferenceSummary: () => ({

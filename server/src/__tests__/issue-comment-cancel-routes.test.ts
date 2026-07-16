@@ -83,6 +83,7 @@ function registerModuleMocks() {
   }));
 
   vi.doMock("../telemetry.js", () => ({
+    issueExecutionHealthService: () => ({ summarize: async () => null }),
     getTelemetryClient: vi.fn(() => ({ track: vi.fn() })),
   }));
 

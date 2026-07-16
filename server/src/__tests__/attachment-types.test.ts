@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   DEFAULT_ALLOWED_TYPES,
+  deriveDefaultAttachmentFilename,
   INLINE_ATTACHMENT_TYPES,
   isInlineAttachmentContentType,
   matchesContentType,
@@ -107,6 +108,27 @@ describe("normalizeContentType", () => {
   it("falls back to octet-stream when the type is missing", () => {
     expect(normalizeContentType(undefined)).toBe("application/octet-stream");
     expect(normalizeContentType("")).toBe("application/octet-stream");
+  });
+});
+
+describe("deriveDefaultAttachmentFilename", () => {
+  it("maps common image content types to stable extensions", () => {
+    expect(deriveDefaultAttachmentFilename("image/png")).toBe("attachment.png");
+    expect(deriveDefaultAttachmentFilename("image/jpeg")).toBe("attachment.jpg");
+    expect(deriveDefaultAttachmentFilename("image/webp")).toBe("attachment.webp");
+    expect(deriveDefaultAttachmentFilename("image/svg+xml")).toBe("attachment.svg");
+  });
+
+  it("maps documents and text types to their natural extensions", () => {
+    expect(deriveDefaultAttachmentFilename("application/pdf")).toBe("attachment.pdf");
+    expect(deriveDefaultAttachmentFilename("text/markdown")).toBe("attachment.md");
+    expect(deriveDefaultAttachmentFilename("text/csv")).toBe("attachment.csv");
+    expect(deriveDefaultAttachmentFilename("application/json")).toBe("attachment.json");
+  });
+
+  it("falls back to attachment.bin for unknown or empty content types", () => {
+    expect(deriveDefaultAttachmentFilename("application/x-proprietary")).toBe("attachment.bin");
+    expect(deriveDefaultAttachmentFilename("")).toBe("attachment.bin");
   });
 });
 

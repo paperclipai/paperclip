@@ -63,6 +63,12 @@ export type {
   AttentionSubjectKind,
   AttentionWorkspaceRef,
 } from "./types/attention.js";
+export type {
+  DecisionTrainingExample,
+  DecisionTrainingNotesHistoryEntry,
+  DecisionTrainingSnapshotV1,
+  DecisionTrainingSourceKind,
+} from "./types/decision-training.js";
 
 export type {
   PipelineAutomationRetryBlocker,
@@ -889,6 +895,16 @@ export type {
   IssueTreePreviewRun,
   IssueTreePreviewTotals,
   IssueTreePreviewWarning,
+  IssueExecutionHealthState,
+  IssueExecutionHealthReasonCode,
+  IssueExecutionHealthRunEvidence,
+  IssueExecutionHealthQueuedWakeEvidence,
+  IssueExecutionHealthInteractionEvidence,
+  IssueExecutionHealthApprovalEvidence,
+  IssueExecutionHealthRecoveryEvidence,
+  IssueExecutionHealthBlockerEvidence,
+  IssueExecutionHealthEvidence,
+  IssueExecutionHealthSummary,
   Goal,
   Approval,
   ApprovalComment,
@@ -1285,6 +1301,11 @@ export {
   matchWorkspaceRuntimeServiceToCommand,
   scoreWorkspaceRuntimeServiceMatch,
 } from "./workspace-commands.js";
+
+export {
+  ISSUE_EXECUTION_HEALTH_STATES,
+  ISSUE_EXECUTION_HEALTH_REASON_CODES,
+} from "./types/reliability.js";
 
 export {
   DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
@@ -2101,12 +2122,36 @@ export type {
 } from "./environment-support.js";
 
 export type { AdapterRegistryEntry } from "./types/adapter-registry.js";
+export type {
+  FolderKind,
+  Folder,
+  FolderListItem,
+  FolderListResult,
+  CreateFolderRequest,
+  UpdateFolderRequest,
+  MoveFolderRequest,
+  MoveFolderItemRequest,
+} from "./types/folder.js";
 
 export {
   adapterRegistryEntrySchema,
   adapterRegistrySchema,
   type AdapterRegistryEntryParsed,
 } from "./validators/adapter-registry.js";
+export {
+  folderKindSchema,
+  folderSchema,
+  folderListItemSchema,
+  folderListResultSchema,
+  createFolderSchema,
+  updateFolderSchema,
+  moveFolderSchema,
+  moveFolderItemSchema,
+  type CreateFolder,
+  type UpdateFolder,
+  type MoveFolder,
+  type MoveFolderItem,
+} from "./validators/folder.js";
 
 export {
   environmentCustomImageTemplateKindSchema,

@@ -85,6 +85,7 @@ function registerModuleMocks() {
     companySkillService: () => ({
       completeTestRunForIssue: vi.fn(async () => null),
     }),
+    issueExecutionHealthService: () => ({ summarize: async () => null }),
     documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
     documentService: () => ({}),
     executionWorkspaceService: () => ({}),

@@ -96,6 +96,7 @@ function registerModuleMocks() {
     goalService: () => ({}),
     heartbeatService: () => mockHeartbeatService,
     issueApprovalService: () => ({}),
+    issueExecutionHealthService: () => ({ summarize: async () => null }),
     issueReferenceService: () => mockIssueReferenceService,
     issueRecoveryActionService: () => ({
       getActiveForIssue: vi.fn(async () => null),

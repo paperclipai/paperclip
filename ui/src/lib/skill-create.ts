@@ -21,6 +21,7 @@ export type SkillCreateDraft = {
   sharingScope: Exclude<CompanySkillSharingScope, "public_link">;
   forkedFromSkillId: string | null;
   forkedFromName: string | null;
+  folderId?: string | null;
 };
 
 export function normalizeSkillDraftSlug(value: string) {
@@ -128,5 +129,6 @@ export function skillCreateDraftToPayload(draft: SkillCreateDraft): CompanySkill
     categories: draft.categories,
     sharingScope: draft.sharingScope,
     forkedFromSkillId: draft.forkedFromSkillId,
+    folderId: draft.folderId ?? null,
   };
 }

@@ -81,6 +81,7 @@ function registerRouteMocks() {
       listCompanyIds: vi.fn(async () => ["company-1"]),
     }),
     issueApprovalService: () => ({}),
+    issueExecutionHealthService: () => ({ summarize: async () => null }),
     issueReferenceService: () => ({
       deleteDocumentSource: async () => undefined,
       diffIssueReferenceSummary: () => ({

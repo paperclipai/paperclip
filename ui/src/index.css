@@ -163,6 +163,12 @@
   --status-task-done: #22c55e;
   --status-task-blocked: #dc2626;
   --status-task-cancelled: #a8aeb2;
+  --folder-swatch-1: var(--status-task-in_progress);
+  --folder-swatch-2: var(--status-task-in_review);
+  --folder-swatch-3: var(--status-task-done);
+  --folder-swatch-4: var(--status-agent-running);
+  --folder-swatch-5: var(--status-task-todo);
+  --folder-swatch-6: var(--status-task-backlog);
 
   /* Task status ICON hues (PAP-238 3b) — AA-tuned (every glyph ≥ 3:1 against
      its surface, WCAG 2.1 AA, both modes). Distinct from the
@@ -1692,6 +1698,8 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --sz-calc-41: min(520px,calc(100vw - 2rem)); /* Extracted from ui/src/pages/Secrets.tsx (w-[min(520px,calc(100vw-2rem))]). */
   --sz-calc-42: min(80vh,34rem); /* Extracted from ui/src/pages/Secrets.tsx (max-h-[min(80vh,34rem)]). */
   --sz-14rem: 14rem; /* Extracted from ui/src/pages/TeamCatalog.tsx (max-w-[14rem]). */
+  --sz-folder-rail: 13.25rem;
+  --sz-80dvh: 80dvh;
   --rad-3: 3px; /* Extracted from ui/src/components/ExternalObjectPill.tsx (ring-[3px]). */
   --rad-4: 4px; /* Extracted from ui/src/components/IssueChatThread.tsx (rounded-br-[4px]). */
   --rad-2: 2px; /* Extracted from ui/src/components/SidebarCompanyMenu.tsx (ring-[2px]). */
@@ -1824,6 +1832,8 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --gtc-62: 1fr minmax(0,18rem);
   --gtc-63: 280px 1fr;
   --gtc-64: minmax(0,20rem) 1fr;
+  --gtc-folder-row: 1rem minmax(0,1fr) auto;
+  --gtc-folder-action-row: 1rem minmax(0,1fr) auto auto;
   --gtr-1: auto auto; /* Extracted from ui/src/components/ui/card.tsx (grid-rows-[auto_auto]). */
   --gtr-2: 1fr; /* Extracted from ui/src/pages/CompanySkills.tsx (grid-rows-[1fr]). */
   --gtr-3: 0fr; /* Extracted from ui/src/pages/CompanySkills.tsx (grid-rows-[0fr]). */

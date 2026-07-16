@@ -57,6 +57,7 @@ vi.mock("../services/index.js", () => ({
   issueService: () => mockIssueService,
   companyService: () => mockCompanyService,
   environmentService: () => mockEnvironmentService,
+  issueExecutionHealthService: () => ({ summarize: async () => null }),
   issueReferenceService: () => mockIssueReferenceService,
   logActivity: mockLogActivity,
   workspaceOperationService: () => ({}),
