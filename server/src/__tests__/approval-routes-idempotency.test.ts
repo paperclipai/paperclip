@@ -438,7 +438,16 @@ describe("approval routes idempotent retries", () => {
       .post("/api/companies/company-1/approvals")
       .send({
         type: "request_board_approval",
-        payload: { title: "Approve hosting spend" },
+        payload: {
+          title: "Approve Bounded Hosting Spend Increase",
+          summary: "The hosting limit was reached during a verified deployment run. Board approval is required before the bounded increase can be applied.",
+          question: "Should the bounded hosting spend increase be applied?",
+          approveConsequence: "Approve applies the bounded increase and resumes the deployment.",
+          rejectConsequence: "Reject leaves the current limit unchanged and keeps deployment blocked.",
+          evidenceUrl: "https://example.test/reports/hosting-spend-proof.md",
+          urgency: "High; the verified deployment is currently blocked.",
+          blockedUntilDecision: "The production deployment remains blocked.",
+        },
       });
 
     expect(res.status, JSON.stringify(res.body)).toBe(403);
