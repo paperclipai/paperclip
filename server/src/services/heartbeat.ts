@@ -6786,8 +6786,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (!issue.assigneeAgentId || issue.assigneeUserId) {
       throw conflict("Issue monitor requires an agent assignee");
     }
-    if (!["in_progress", "in_review"].includes(issue.status)) {
-      throw conflict("Issue monitor can only run while the issue is in progress or in review");
+    if (!["in_progress", "in_review", "blocked"].includes(issue.status)) {
+      throw conflict("Issue monitor can only run while the issue is in progress, in review, or blocked");
     }
 
     const staleClaimThreshold = new Date(now.getTime() - 5 * 60 * 1000);
@@ -6804,7 +6804,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             sql`${issues.monitorNextCheckAt} is not null`,
             isNull(issues.assigneeUserId),
             sql`${issues.assigneeAgentId} is not null`,
-            inArray(issues.status, ["in_progress", "in_review"]),
+            inArray(issues.status, ["in_progress", "in_review", "blocked"]),
             or(
               isNull(issues.monitorWakeRequestedAt),
               lt(issues.monitorWakeRequestedAt, staleClaimThreshold),
@@ -6846,7 +6846,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           lte(issues.monitorNextCheckAt, now),
           isNull(issues.assigneeUserId),
           sql`${issues.assigneeAgentId} is not null`,
-          inArray(issues.status, ["in_progress", "in_review"]),
+          inArray(issues.status, ["in_progress", "in_review", "blocked"]),
           or(
             isNull(issues.monitorWakeRequestedAt),
             lt(issues.monitorWakeRequestedAt, staleClaimThreshold),
@@ -6874,7 +6874,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               lte(issues.monitorNextCheckAt, now),
               isNull(issues.assigneeUserId),
               sql`${issues.assigneeAgentId} is not null`,
-              inArray(issues.status, ["in_progress", "in_review"]),
+              inArray(issues.status, ["in_progress", "in_review", "blocked"]),
               or(
                 isNull(issues.monitorWakeRequestedAt),
                 lt(issues.monitorWakeRequestedAt, staleClaimThreshold),

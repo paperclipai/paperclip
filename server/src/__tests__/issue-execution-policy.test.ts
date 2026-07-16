@@ -1398,7 +1398,7 @@ describe("issue execution policy transitions", () => {
       expect(() =>
         applyIssueExecutionPolicyTransition({
           issue: {
-            status: "blocked",
+            status: "todo",
             assigneeAgentId: coderAgentId,
             assigneeUserId: null,
             executionPolicy: null,
@@ -1411,6 +1411,102 @@ describe("issue execution policy transitions", () => {
           monitorExplicitlyUpdated: true,
         }),
       ).toThrow("Monitor can only be scheduled");
+    });
+
+    it("allows explicitly scheduling a monitor on a blocked, agent-owned issue", () => {
+      const policy = normalizeIssueExecutionPolicy({
+        stages: [],
+        monitor: {
+          nextCheckAt: "2026-04-11T12:30:00.000Z",
+          notes: "Recheck once the calendar-gated blocker clears",
+          scheduledBy: "assignee",
+        },
+      })!;
+
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "blocked",
+          assigneeAgentId: coderAgentId,
+          assigneeUserId: null,
+          executionPolicy: null,
+          executionState: null,
+          monitorAttemptCount: 0,
+          monitorNextCheckAt: null,
+          monitorLastTriggeredAt: null,
+          monitorNotes: null,
+          monitorScheduledBy: null,
+        },
+        policy,
+        previousPolicy: null,
+        requestedAssigneePatch: {},
+        actor: { agentId: coderAgentId },
+        monitorExplicitlyUpdated: true,
+      });
+
+      expect(result.patch.monitorNextCheckAt).toEqual(new Date("2026-04-11T12:30:00.000Z"));
+      expect(result.patch.monitorScheduledBy).toBe("assignee");
+      expect(result.patch.executionState).toMatchObject({
+        monitor: {
+          status: "scheduled",
+          nextCheckAt: "2026-04-11T12:30:00.000Z",
+          scheduledBy: "assignee",
+        },
+      });
+    });
+
+    it("does not clear a scheduled monitor when a blocked issue's status is reasserted", () => {
+      const policy = normalizeIssueExecutionPolicy({
+        stages: [],
+        monitor: {
+          nextCheckAt: "2026-04-11T12:30:00.000Z",
+          notes: "Recheck once the calendar-gated blocker clears",
+          scheduledBy: "assignee",
+        },
+      })!;
+
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "blocked",
+          assigneeAgentId: coderAgentId,
+          assigneeUserId: null,
+          executionPolicy: policy,
+          executionState: {
+            status: "idle",
+            currentStageId: null,
+            currentStageIndex: null,
+            currentStageType: null,
+            currentParticipant: null,
+            returnAssignee: null,
+            completedStageIds: [],
+            lastDecisionId: null,
+            lastDecisionOutcome: null,
+            monitor: {
+              status: "scheduled",
+              nextCheckAt: "2026-04-11T12:30:00.000Z",
+              lastTriggeredAt: null,
+              attemptCount: 0,
+              notes: "Recheck once the calendar-gated blocker clears",
+              scheduledBy: "assignee",
+              clearedAt: null,
+              clearReason: null,
+            },
+          },
+          monitorAttemptCount: 0,
+          monitorNextCheckAt: new Date("2026-04-11T12:30:00.000Z"),
+          monitorLastTriggeredAt: null,
+          monitorNotes: "Recheck once the calendar-gated blocker clears",
+          monitorScheduledBy: "assignee",
+        },
+        policy,
+        previousPolicy: policy,
+        requestedStatus: "blocked",
+        requestedAssigneePatch: {},
+        actor: { agentId: coderAgentId },
+      });
+
+      expect(result.patch.monitorNextCheckAt).toEqual(new Date("2026-04-11T12:30:00.000Z"));
+      expect(result.patch.executionPolicy).toBeUndefined();
+      expect(result.patch.executionState).toBeUndefined();
     });
 
     it("rejects explicitly re-arming a monitor after max attempts are exhausted", () => {
