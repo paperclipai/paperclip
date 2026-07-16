@@ -88,7 +88,7 @@ export function TrainingLibrary() {
     author: author === "all" ? undefined : author,
   }), [author, kind, project, q]);
   const recordsQuery = useQuery({
-    queryKey: ["decision-training", selectedCompanyId, filters],
+    queryKey: [...queryKeys.decisionTraining.list(selectedCompanyId ?? ""), filters],
     queryFn: ({ signal }) => decisionTrainingApi.list(selectedCompanyId!, filters, { signal }),
     enabled: Boolean(selectedCompanyId),
   });
@@ -199,6 +199,7 @@ export function TrainingInspector() {
   });
 
   if (recordQuery.isLoading) return <p className="p-6 text-sm text-muted-foreground">Loading training example…</p>;
+  if (recordQuery.isError) return <p className="p-6 text-sm text-destructive">Could not load training example.</p>;
   if (!example) return <p className="p-6 text-sm text-destructive">Training example not found.</p>;
   const issueIdentifier = stringValue(example.snapshot.issue, "identifier") ?? example.issueId.slice(0, 8);
   return (
