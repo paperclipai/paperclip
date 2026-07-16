@@ -19,13 +19,14 @@ Actively garden pull requests referenced by Paperclip issues active in a recent 
 - Never use mutating `gh` commands or mutating GitHub API requests. The scripts only use `gh pr view` and read-only `gh api` GET requests.
 - Draft pull requests are report-only. Do not post gardening comments for drafts.
 - Comment only on existing originating issues. Never create a gardening issue per pull request.
-- `--dry-run` suppresses all Paperclip gardening comments. Discovery and GitHub inspection remain read-only in every mode.
+- `--dry-run` suppresses all Paperclip mutations, including gardening comments and inbox archives. Discovery and GitHub inspection remain read-only in every mode.
 
 ## Inputs
 
 - `--days <N>`: issue activity window, default `30`.
 - `--repo <owner/repo>`: GitHub repository, default detected by `gh repo view`.
-- `--dry-run`: discover, verify, and report without posting Stage C comments.
+- `--dry-run`: discover, verify, and report without posting comments or archiving inbox entries.
+- `--archive-inbox`: after GitHub confirms a candidate PR is merged at its current head, archive the originating issue from the responsible user's inbox in Stage D.
 - `--cooldown-hours <N>`: repeat-comment cooldown, default `48`.
 - `--max-rounds <N>`: maximum gardening rounds per PR, default `3`.
 
@@ -96,7 +97,28 @@ Current-head verification at `abc123` found:
 Gardening round 1/3. Re-verification is required after changes; do not merge based on this comment.
 ```
 
-## Stage D — Monitor to Termination
+## Stage D — Optional Inbox Tidy-Up
+
+Run this stage only when the caller explicitly supplied `--archive-inbox`. `--dry-run` always suppresses inbox mutations, even when `--archive-inbox` is also present. Without the flag, do not archive anything.
+
+Stage D applies to a previously monitored candidate that transitions to merged. Rerun Stage B immediately before this stage and require GitHub to report `state: merged` for the same current head SHA recorded by that verification. Fresh Stage A discovery intentionally drops PRs that were already merged or closed.
+
+For each qualifying candidate, archive its `originatingIssue` from the responsible user's inbox with `POST /api/issues/:issueId/inbox-archive` and an empty JSON body. Do not pass `userId`; the Paperclip API resolves the responsible user from the gardener's run context and enforces that user's inbox-agent policy. GitHub access remains read-only.
+
+Do not archive PRs that are merely `ready`, closed without merging, draft, pending, or merged at an unverified or stale head. Never archive an originating issue while the user is still awaiting review, a decision, approval, or other action on it. If Paperclip denies the mutation because the responsible user is unresolved, inbox management is disabled, the gardener is not allowlisted, or a trust boundary applies, report the denial and continue without retrying around policy.
+
+After a successful archive, leave a standard gardening marker comment on the originating issue that names the archived issue and merged PR:
+
+```markdown
+<!-- pr-gardening:paperclipai/paperclip#1234 -->
+Inbox tidy-up: archived [PAP-310](/PAP/issues/PAP-310) from the responsible user's inbox after confirming https://github.com/paperclipai/paperclip/pull/1234 merged at current head `abc123`.
+
+This archive is audited and reversible; later issue activity may resurface the item.
+```
+
+Use `POST /api/issues/:issueId/comments` and include `X-Paperclip-Run-Id` on both the archive and comment requests. In `--dry-run`, report the archive and marker comment that would have been written, but perform neither mutation.
+
+## Stage E — Monitor to Termination
 
 Set the gardening run issue's `blockedByIssueIds` to the non-terminal issues commented in Stage C so blocker resolution wakes the gardener. A scheduled or manual rerun is the fallback.
 
@@ -108,7 +130,7 @@ On every wake, rerun Stage B first. A PR terminates from active gardening only w
 
 Do not leave the gardening issue blocked on terminal issues. Do not poll agents or long-running sessions.
 
-## Stage E — Render and Publish the Report
+## Stage F — Render and Publish the Report
 
 ```bash
 node .agents/skills/pr-gardening/scripts/render-report.mjs \
@@ -132,4 +154,4 @@ Run focused script tests:
 node --test .agents/skills/pr-gardening/scripts/pr-gardening.test.mjs
 ```
 
-For a live dry run, execute Stages A, B, and E with `--dry-run`, then sanity-check named PRs only if they are still open. Merged or closed examples should appear under `droppedClosedPullRequests`, not in readiness results.
+For a live dry run, execute Stages A, B, and F with `--dry-run`, then sanity-check named PRs only if they are still open. Merged or closed examples should appear under `droppedClosedPullRequests`, not in readiness results. If also exercising `--archive-inbox`, confirm the report describes the suppressed Stage D action and that no Paperclip archive or marker-comment mutation occurred.
