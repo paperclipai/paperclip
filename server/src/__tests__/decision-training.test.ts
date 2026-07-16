@@ -322,6 +322,35 @@ describeEmbeddedPostgres("decision training", () => {
     await request(app).delete("/api/decision-training/not-a-uuid").expect(404);
   });
 
+  it("rejects updates and deletes from a different board user", async () => {
+    const seeded = await seedResolvedInteraction();
+    const example = await decisionTrainingService(db).create({
+      companyId: seeded.companyId,
+      sourceKind: "interaction",
+      sourceId: seeded.interactionId,
+      issueId: seeded.issueId,
+      notes: "Owner notes",
+      createdByUserId: "board-user",
+    });
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", userId: "other-board-user", source: "local_implicit" };
+      next();
+    });
+    app.use("/api", decisionTrainingRoutes(db));
+    app.use(errorHandler);
+
+    await request(app)
+      .patch(`/api/decision-training/${example.id}`)
+      .send({ notes: "Changed by someone else" })
+      .expect(403);
+    await request(app).delete(`/api/decision-training/${example.id}`).expect(403);
+
+    const unchanged = await decisionTrainingService(db).getById(example.id);
+    expect(unchanged?.notes).toBe("Owner notes");
+  });
+
   it("rejects agent writes and snapshot mutation", async () => {
     const seeded = await seedResolvedInteraction();
     const app = express();

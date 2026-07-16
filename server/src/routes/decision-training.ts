@@ -36,6 +36,14 @@ function parseExampleId(req: Request, res: Response) {
   return parsed.data;
 }
 
+function requireExampleOwner(res: Response, userId: string, createdByUserId: string) {
+  if (userId !== createdByUserId) {
+    res.status(403).json({ error: "Only the example author can change decision training examples" });
+    return false;
+  }
+  return true;
+}
+
 export function decisionTrainingRoutes(db: Db) {
   const router = Router();
   const svc = decisionTrainingService(db);
@@ -128,6 +136,7 @@ export function decisionTrainingRoutes(db: Db) {
     }
     const userId = requireHumanUser(req, res);
     if (!userId) return;
+    if (!requireExampleOwner(res, userId, existing.createdByUserId)) return;
     const notesChanged = req.body.notes !== existing.notes;
     const updated = await svc.updateNotes(existing.id, userId, req.body.notes);
     if (!updated) {
@@ -161,6 +170,7 @@ export function decisionTrainingRoutes(db: Db) {
     }
     const userId = requireHumanUser(req, res);
     if (!userId) return;
+    if (!requireExampleOwner(res, userId, existing.createdByUserId)) return;
     const deleted = await svc.delete(existing.id);
     if (deleted.length === 0) {
       res.status(404).json({ error: "Decision training example not found" });
