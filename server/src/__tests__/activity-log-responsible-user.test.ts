@@ -35,7 +35,10 @@ function createReader(rowsByTable: TableRows) {
   return {
     select: () => ({
       from: (table: unknown) => ({
-        where: () => Promise.resolve(rowsByTable.get(table) ?? []),
+        where: (condition: unknown) => {
+          expect(condition).toBeDefined();
+          return Promise.resolve(rowsByTable.get(table) ?? []);
+        },
       }),
     }),
   } as unknown as Db;
@@ -55,6 +58,21 @@ function activityInput(overrides: Partial<LogActivityInput> = {}): LogActivityIn
 }
 
 describe("resolveResponsibleUserIdForActivity", () => {
+  it("attributes user actions directly without database lookups", async () => {
+    const db = {
+      select: () => {
+        throw new Error("user attribution should not query the database");
+      },
+    } as unknown as Db;
+
+    await expect(resolveResponsibleUserIdForActivity(db, activityInput({
+      actorType: "user",
+      actorId: "user-1",
+      entityType: "company",
+      entityId: companyId,
+    }))).resolves.toBe("user-1");
+  });
+
   it("prefers the heartbeat run responsible user", async () => {
     const db = createReader(new Map([
       [heartbeatRuns, [{ responsibleUserId: "run-user" }]],

@@ -70,6 +70,8 @@ function readNonEmptyString(value: unknown) {
 }
 
 export async function resolveResponsibleUserIdForActivity(db: Db, input: LogActivityInput) {
+  if (input.actorType === "user") return readNonEmptyString(input.actorId);
+
   const runId = readNonEmptyString(input.runId);
   if (runId && isUuidLike(runId)) {
     const run = await db
