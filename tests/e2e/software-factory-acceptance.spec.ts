@@ -173,6 +173,18 @@ test("loopback monitor classifies HTTP and WebSocket transports", () => {
   expect(isLoopbackBrowserUrl("wss://example.com/socket")).toBe(false);
 });
 
+test("loopback monitor records HTTP attempts outside the dedicated host", async ({ page }) => {
+  const monitor = await installBrowserLeakMonitor(page);
+  const requestUrl = `http://localhost:${PORT}/api/health`;
+
+  await page.goto("data:text/html,<title>http monitor probe</title>");
+  await page.evaluate(async (url) => {
+    await fetch(url).catch(() => undefined);
+  }, requestUrl);
+
+  await expect.poll(() => monitor.externalRequests).toContain(requestUrl);
+});
+
 test("loopback monitor records WebSocket attempts outside the dedicated host", async ({ page }) => {
   const monitor = await installBrowserLeakMonitor(page);
   const socketUrl = `ws://localhost:${PORT}/api/live`;
