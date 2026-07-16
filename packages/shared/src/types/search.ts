@@ -146,6 +146,7 @@ export interface CompanySearchExtractResponse {
   scope: CompanySearchExtractScope;
   limit: number;
   offset: number;
+  matchesPerIssue: number;
   results: CompanySearchExtractIssueResult[];
   hasMore: boolean;
   truncated: boolean;

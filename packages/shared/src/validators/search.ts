@@ -16,7 +16,8 @@ export const COMPANY_SEARCH_MAX_OFFSET = 200;
 export const COMPANY_SEARCH_EXTRACT_DEFAULT_LIMIT = 100;
 export const COMPANY_SEARCH_EXTRACT_MAX_LIMIT = 200;
 export const COMPANY_SEARCH_EXTRACT_MAX_OFFSET = 5_000;
-export const COMPANY_SEARCH_EXTRACT_MAX_MATCHES_PER_ISSUE = 20;
+export const COMPANY_SEARCH_EXTRACT_DEFAULT_MATCHES_PER_ISSUE = 20;
+export const COMPANY_SEARCH_EXTRACT_MAX_MATCHES_PER_ISSUE = 200;
 
 const UPDATED_WITHIN_RE = /^[1-9]\d{0,2}(h|d|w|m)$/;
 
@@ -238,6 +239,16 @@ export const companySearchExtractQuerySchema = z.object({
   offset: z.unknown()
     .optional()
     .transform((value, ctx) => parseIntegerQuery(value, ctx, "offset", 0, 0, COMPANY_SEARCH_EXTRACT_MAX_OFFSET)),
+  matchesPerIssue: z.unknown()
+    .optional()
+    .transform((value, ctx) => parseIntegerQuery(
+      value,
+      ctx,
+      "matchesPerIssue",
+      COMPANY_SEARCH_EXTRACT_DEFAULT_MATCHES_PER_ISSUE,
+      1,
+      COMPANY_SEARCH_EXTRACT_MAX_MATCHES_PER_ISSUE,
+    )),
   status: z.unknown()
     .optional()
     .transform((value, ctx) => parseEnumList(value, ctx, "status", ISSUE_STATUSES)),
