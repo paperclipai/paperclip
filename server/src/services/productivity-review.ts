@@ -333,7 +333,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
           visibleIssueCondition(),
         ),
       )
-      .orderBy(desc(issues.updatedAt), desc(issues.id))
+      .orderBy(desc(issues.createdAt), desc(issues.id))
       .limit(thresholds.maxConsecutiveNoActionReviews);
 
     const earliestReviewCreatedAt = completedReviews.at(-1)?.createdAt;
