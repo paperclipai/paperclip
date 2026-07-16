@@ -92,4 +92,92 @@ describe("workProductService", () => {
     expect(txUpdate).toHaveBeenCalledTimes(2);
     expect(result?.reviewState).toBe("ready_for_review");
   });
+
+  it("deduplicates repeated external work products under load", async () => {
+    const stored: ReturnType<typeof createWorkProductRow>[] = [];
+    let locked = Promise.resolve();
+    const transaction = vi.fn(async (callback: (tx: any) => Promise<unknown>) => {
+      const previous = locked;
+      let release = () => {};
+      locked = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      await previous;
+      const tx = {
+        execute: vi.fn(async () => undefined),
+        select: vi.fn(() => ({
+          from: () => ({ where: async () => stored }),
+        })),
+        insert: vi.fn(() => ({
+          values: () => ({
+            returning: async () => {
+              const row = createWorkProductRow({ externalId: "artifact-sha-1" });
+              stored.push(row);
+              return [row];
+            },
+          }),
+        })),
+      };
+      try {
+        return await callback(tx);
+      } finally {
+        release();
+      }
+    });
+    const svc = workProductService({ transaction } as any);
+    const input = {
+      type: "artifact" as const,
+      provider: "paperclip",
+      externalId: "artifact-sha-1",
+      title: "SER-377 report",
+      status: "active",
+    };
+
+    const results = await Promise.all(
+      Array.from({ length: 25 }, () => svc.createForIssue("issue-1", "company-1", input)),
+    );
+
+    expect(stored).toHaveLength(1);
+    expect(new Set(results.map((result) => result?.id))).toEqual(new Set(["work-product-1"]));
+  });
+
+  it("releases the dedupe lock after failure so a retry can recover", async () => {
+    let attempt = 0;
+    const stored: ReturnType<typeof createWorkProductRow>[] = [];
+    const transaction = vi.fn(async (callback: (tx: any) => Promise<unknown>) => {
+      const tx = {
+        execute: vi.fn(async () => undefined),
+        select: vi.fn(() => ({ from: () => ({ where: async () => stored }) })),
+        insert: vi.fn(() => ({
+          values: () => ({
+            returning: async () => {
+              attempt += 1;
+              if (attempt === 1) throw new Error("injected insert failure");
+              const row = createWorkProductRow({ externalId: "artifact-sha-recovery" });
+              stored.push(row);
+              return [row];
+            },
+          }),
+        })),
+      };
+      return callback(tx);
+    });
+    const svc = workProductService({ transaction } as any);
+    const input = {
+      type: "artifact" as const,
+      provider: "paperclip",
+      externalId: "artifact-sha-recovery",
+      title: "SER-377 recovery report",
+      status: "active",
+    };
+
+    await expect(svc.createForIssue("issue-1", "company-1", input)).rejects.toThrow(
+      "injected insert failure",
+    );
+    await expect(svc.createForIssue("issue-1", "company-1", input)).resolves.toMatchObject({
+      id: "work-product-1",
+      externalId: "artifact-sha-recovery",
+    });
+    expect(stored).toHaveLength(1);
+  });
 });

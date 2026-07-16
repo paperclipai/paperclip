@@ -1,4 +1,4 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { issueWorkProducts } from "@paperclipai/db";
 import type { IssueWorkProduct } from "@paperclipai/shared";
@@ -53,6 +53,23 @@ export function workProductService(db: Db) {
 
     createForIssue: async (issueId: string, companyId: string, data: Omit<typeof issueWorkProducts.$inferInsert, "issueId" | "companyId">) => {
       const row = await db.transaction(async (tx) => {
+        if (data.externalId) {
+          const dedupeKey = `${companyId}:${issueId}:${data.provider}:${data.externalId}`;
+          await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${dedupeKey}, 0))`);
+          const existing = await tx
+            .select()
+            .from(issueWorkProducts)
+            .where(
+              and(
+                eq(issueWorkProducts.companyId, companyId),
+                eq(issueWorkProducts.issueId, issueId),
+                eq(issueWorkProducts.provider, data.provider),
+                eq(issueWorkProducts.externalId, data.externalId),
+              ),
+            )
+            .then((rows) => rows[0] ?? null);
+          if (existing) return existing;
+        }
         if (data.isPrimary) {
           await tx
             .update(issueWorkProducts)
