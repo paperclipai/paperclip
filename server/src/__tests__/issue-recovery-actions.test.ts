@@ -560,6 +560,92 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(enqueueWakeup).not.toHaveBeenCalled();
   });
 
+  it("does not restamp an in_review quota monitor when the assignee has a newer terminal run", async () => {
+    const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
+    const stageId = randomUUID();
+    await db.update(issues).set({
+      status: "in_review",
+      assigneeAgentId: coderId,
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: true,
+        stages: [{
+          id: stageId,
+          type: "review",
+          approvalsNeeded: 1,
+          participants: [{ id: randomUUID(), type: "agent", agentId: managerId, userId: null }],
+        }],
+      },
+      executionState: {
+        status: "pending",
+        currentStageId: stageId,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: managerId, userId: null },
+        returnAssignee: { type: "agent", agentId: coderId, userId: null },
+        reviewRequest: null,
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    }).where(eq(issues.id, sourceIssueId));
+    const participantRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: participantRunId,
+      companyId,
+      agentId: managerId,
+      invocationSource: "automation",
+      status: "failed",
+      error: "Provider quota exceeded for this model.",
+      errorCode: "adapter_failed",
+      startedAt: new Date("2026-07-15T20:00:00.000Z"),
+      finishedAt: new Date("2026-07-15T20:01:00.000Z"),
+      contextSnapshot: { issueId: sourceIssueId },
+    });
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    const firstResult = await recovery.reconcileStrandedAssignedIssues();
+
+    expect(firstResult).toMatchObject({ providerQuotaMonitored: 1 });
+    const [monitoredIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    const firstNextCheckAt = monitoredIssue?.monitorNextCheckAt;
+    expect(firstNextCheckAt).toBeInstanceOf(Date);
+    expect(monitoredIssue?.executionPolicy).toMatchObject({
+      monitor: {
+        serviceName: "AI provider quota",
+        externalRef: participantRunId,
+      },
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId: coderId,
+      invocationSource: "automation",
+      status: "failed",
+      error: "Stale assignee wake fired after the issue entered review.",
+      errorCode: "issue_assignee_changed",
+      startedAt: new Date("2026-07-15T20:02:00.000Z"),
+      finishedAt: new Date("2026-07-15T20:03:00.000Z"),
+      contextSnapshot: { issueId: sourceIssueId },
+    });
+
+    const secondResult = await recovery.reconcileStrandedAssignedIssues();
+
+    expect(secondResult).toMatchObject({ providerQuotaMonitored: 0, skipped: 1 });
+    const [unchangedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(unchangedIssue?.monitorNextCheckAt?.getTime()).toBe(firstNextCheckAt?.getTime());
+    expect(unchangedIssue?.executionPolicy).toMatchObject({
+      monitor: {
+        serviceName: "AI provider quota",
+        externalRef: participantRunId,
+      },
+    });
+    expect(await db.select().from(issueRecoveryActions)).toHaveLength(0);
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+  });
+
   it("classifies review recovery from the active participant run instead of a newer assignee run", async () => {
     const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
     const stageId = randomUUID();

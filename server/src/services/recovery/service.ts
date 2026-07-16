@@ -3535,7 +3535,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         continue;
       }
       const recoveryNow = new Date();
-      if (hasPendingProviderQuotaRecoveryMonitor(issue, latestRun, recoveryNow)) {
+      const participantLatestRunForRecovery = issue.status === "in_review" && participantAgentId
+        ? await getLatestIssueRunForAgent(issue.companyId, issue.id, participantAgentId)
+        : null;
+      const providerQuotaMonitorRun = issue.status === "in_review"
+        ? participantLatestRunForRecovery
+        : latestRun;
+      if (hasPendingProviderQuotaRecoveryMonitor(issue, providerQuotaMonitorRun, recoveryNow)) {
         result.skipped += 1;
         continue;
       }
@@ -3665,11 +3671,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           result.skipped += 1;
           continue;
         }
-        const participantLatestRun = await getLatestIssueRunForAgent(
-          issue.companyId,
-          issue.id,
-          participantAgentId,
-        );
+        const participantLatestRun = participantLatestRunForRecovery;
 
         if (!participantLatestRun || !isTerminalIssueRun(participantLatestRun)) {
           if (!agentInvokable) {
