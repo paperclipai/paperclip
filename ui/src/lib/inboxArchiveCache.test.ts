@@ -1,4 +1,4 @@
-import { QueryClient } from "@tanstack/react-query";
+import { QueryClient, QueryObserver } from "@tanstack/react-query";
 import type { Issue } from "@paperclipai/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -7,6 +7,7 @@ import {
   clearLocalInboxArchive,
   confirmLocalInboxArchive,
   filterLocalInboxArchivedIssues,
+  getIssuePresenceInActiveInboxCaches,
   getLocalInboxArchiveIssueIds,
   removeIssueFromInboxCaches,
   restoreIssueToInboxCaches,
@@ -87,5 +88,26 @@ describe("inboxArchiveCache", () => {
 
     vi.advanceTimersByTime(1);
     expect(getLocalInboxArchiveIssueIds("company-1").has("issue-a")).toBe(false);
+  });
+
+  it("distinguishes present, absent, and unavailable active inbox data", () => {
+    const companyId = "company-1";
+    const queryClient = new QueryClient();
+    const queryKey = [...queryKeys.issues.listMineByMe(companyId), "with-routine-executions"] as const;
+
+    expect(getIssuePresenceInActiveInboxCaches(queryClient, companyId, "issue-a")).toBe("unknown");
+
+    queryClient.setQueryData<Issue[]>(queryKey, [issue("issue-a")]);
+    const observer = new QueryObserver<Issue[]>(queryClient, {
+      queryKey,
+      queryFn: async () => [],
+    });
+    const unsubscribe = observer.subscribe(() => undefined);
+
+    expect(getIssuePresenceInActiveInboxCaches(queryClient, companyId, "issue-a")).toBe("present");
+    queryClient.setQueryData<Issue[]>(queryKey, [issue("issue-b")]);
+    expect(getIssuePresenceInActiveInboxCaches(queryClient, companyId, "issue-a")).toBe("absent");
+
+    unsubscribe();
   });
 });

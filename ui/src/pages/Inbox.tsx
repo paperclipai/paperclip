@@ -61,7 +61,7 @@ import {
   clearLocalInboxArchive,
   confirmLocalInboxArchive,
   invalidateInboxIssueQueries,
-  isIssueAbsentFromActiveInboxCaches,
+  getIssuePresenceInActiveInboxCaches,
   removeIssueFromInboxCaches,
   restoreIssueToInboxCaches,
   snapshotInboxIssueCaches,
@@ -1705,8 +1705,9 @@ export function Inbox() {
       if (!context?.companyId) return;
       if (!error) boundLocalInboxArchive(context.companyId, id);
       await invalidateInboxIssueQueries(queryClient, context.companyId);
-      if (!error && isIssueAbsentFromActiveInboxCaches(queryClient, context.companyId, id)) {
-        confirmLocalInboxArchive(context.companyId, id);
+      if (!error) {
+        const presence = getIssuePresenceInActiveInboxCaches(queryClient, context.companyId, id);
+        if (presence !== "unknown") confirmLocalInboxArchive(context.companyId, id);
       }
     },
     onSuccess: (_data, id) => {
