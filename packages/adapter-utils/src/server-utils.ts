@@ -112,6 +112,33 @@ export function killAllRunningProcesses(signal: NodeJS.Signals = "SIGTERM"): voi
     runningProcesses.delete(runId);
   }
 }
+
+export async function killAllRunningProcessesGraceful(graceSec = 5): Promise<void> {
+  const entries = [...runningProcesses.entries()];
+  if (entries.length === 0) return;
+
+  for (const [, running] of entries) {
+    try {
+      signalRunningProcess(running, "SIGTERM");
+    } catch {
+      // Best-effort — continue to the next process.
+    }
+  }
+
+  const graceMs = Math.max(1, graceSec) * 1000;
+  await new Promise<void>((resolve) => setTimeout(resolve, graceMs));
+
+  for (const [runId, running] of entries) {
+    if (running.child.exitCode === null && running.child.signalCode === null) {
+      try {
+        signalRunningProcess(running, "SIGKILL");
+      } catch {
+        // Process may have exited between the check and the signal.
+      }
+    }
+    runningProcesses.delete(runId);
+  }
+}
 export const MAX_EXCERPT_BYTES = 32 * 1024;
 const TERMINAL_RESULT_SCAN_OVERLAP_CHARS = 64 * 1024;
 const DEFAULT_PAPERCLIP_INSTANCE_ID = "default";

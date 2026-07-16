@@ -1207,8 +1207,8 @@ export async function startServer(): Promise<StartedServer> {
       appShutdown?.();
 
       try {
-        const { killAllRunningProcesses } = await import("./adapters/utils.js");
-        killAllRunningProcesses("SIGTERM");
+        const { killAllRunningProcessesGraceful } = await import("./adapters/utils.js");
+        await killAllRunningProcessesGraceful();
       } catch {
         // Best-effort — adapter-utils may not be available in all configurations.
       }

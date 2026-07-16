@@ -12,6 +12,7 @@ import {
   buildInvocationEnvForLogs,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   killAllRunningProcesses,
+  killAllRunningProcessesGraceful,
   materializePaperclipSkillCopy,
   refreshPaperclipWorkspaceEnvForExecution,
   renderPaperclipWakePrompt,
@@ -2147,4 +2148,64 @@ describe("killAllRunningProcesses", () => {
       expect(await waitForPidExit(livePid, 2_000)).toBe(true);
     },
   );
+});
+
+describe("killAllRunningProcessesGraceful", () => {
+  it.skipIf(process.platform === "win32")(
+    "escalates to SIGKILL after grace period for processes that ignore SIGTERM",
+    async () => {
+      const runId = randomUUID();
+      const child = spawn(
+        process.execPath,
+        [
+          "-e",
+          [
+            "process.on('SIGTERM', () => {});",
+            "process.stdout.write(String(process.pid));",
+            "setInterval(() => {}, 1000);",
+          ].join(" "),
+        ],
+        { detached: true, stdio: ["ignore", "pipe", "ignore"] },
+      );
+      const pid = await new Promise<number>((resolvePid, rejectPid) => {
+        child.stdout!.on("data", (d) => resolvePid(Number.parseInt(String(d).trim(), 10)));
+        child.on("error", rejectPid);
+      });
+      runningProcesses.set(runId, { child, graceSec: 1, processGroupId: child.pid ?? 0 });
+
+      expect(isPidAlive(pid)).toBe(true);
+
+      await killAllRunningProcessesGraceful(1);
+
+      expect(runningProcesses.size).toBe(0);
+      expect(await waitForPidExit(pid, 2_000)).toBe(true);
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "removes processes that exit on SIGTERM before the grace period",
+    async () => {
+      const runId = randomUUID();
+      const child = spawn(
+        process.execPath,
+        ["-e", "process.stdout.write('ready');setTimeout(() => process.exit(0), 500);"],
+        { detached: true, stdio: ["ignore", "pipe", "ignore"] },
+      );
+      await new Promise<void>((resolveReady, rejectReady) => {
+        child.stdout!.on("data", () => resolveReady());
+        child.on("error", rejectReady);
+      });
+      runningProcesses.set(runId, { child, graceSec: 1, processGroupId: child.pid ?? 0 });
+
+      await killAllRunningProcessesGraceful(2);
+
+      expect(runningProcesses.size).toBe(0);
+    },
+  );
+
+  it("is a safe no-op when no processes are tracked", async () => {
+    runningProcesses.clear();
+    await expect(killAllRunningProcessesGraceful(1)).resolves.toBeUndefined();
+    expect(runningProcesses.size).toBe(0);
+  });
 });
