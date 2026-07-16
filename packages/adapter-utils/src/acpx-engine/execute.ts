@@ -729,37 +729,42 @@ function buildCodexStartupConfig(input: {
   requestedModel: string;
   requestedThinkingEffort: string;
   fastMode: boolean;
-}): string | null {
+}): { value: string | null; invalidExistingConfig: boolean } {
   const hasRuntimeConfig = Boolean(
     input.requestedModel || input.requestedThinkingEffort || input.fastMode,
   );
-  if (!hasRuntimeConfig) return null;
+  if (!hasRuntimeConfig) return { value: null, invalidExistingConfig: false };
 
   let existing: Record<string, unknown> = {};
+  let invalidExistingConfig = false;
   if (input.existingConfig) {
     try {
       existing = parseObject(JSON.parse(input.existingConfig));
     } catch {
+      invalidExistingConfig = true;
       existing = {};
     }
   }
 
-  return JSON.stringify({
-    ...existing,
-    ...(input.requestedModel ? { model: input.requestedModel } : {}),
-    ...(input.requestedThinkingEffort
-      ? { model_reasoning_effort: input.requestedThinkingEffort }
-      : {}),
-    ...(input.fastMode
-      ? {
-          service_tier: "fast",
-          features: {
-            ...parseObject(existing.features),
-            fast_mode: true,
-          },
-        }
-      : {}),
-  });
+  return {
+    value: JSON.stringify({
+      ...existing,
+      ...(input.requestedModel ? { model: input.requestedModel } : {}),
+      ...(input.requestedThinkingEffort
+        ? { model_reasoning_effort: input.requestedThinkingEffort }
+        : {}),
+      ...(input.fastMode
+        ? {
+            service_tier: "fast",
+            features: {
+              ...parseObject(existing.features),
+              fast_mode: true,
+            },
+          }
+        : {}),
+    }),
+    invalidExistingConfig,
+  };
 }
 
 function isCompatibleSession(
@@ -1119,7 +1124,13 @@ async function buildRuntime(input: {
       requestedThinkingEffort,
       fastMode,
     });
-    if (codexStartupConfig) env.CODEX_CONFIG = codexStartupConfig;
+    if (codexStartupConfig.invalidExistingConfig) {
+      await input.ctx.onLog(
+        "stderr",
+        "[paperclip] Ignoring invalid user CODEX_CONFIG while applying runtime Codex settings; expected a JSON object.\n",
+      );
+    }
+    if (codexStartupConfig.value) env.CODEX_CONFIG = codexStartupConfig.value;
   }
 
   let skillPromptInstructions = "";

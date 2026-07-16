@@ -194,6 +194,7 @@ describe("shared ACPX engine runtime behavior", () => {
       String((meta[0]?.env as Record<string, string>).CODEX_CONFIG),
     ) as Record<string, unknown>;
     expect(codexConfig.model).toBe(arbitraryModel);
+    expect(codexConfig.model_reasoning_effort).toBe("xhigh");
     expect(configOptions).toEqual([]);
   });
 
@@ -216,6 +217,22 @@ describe("shared ACPX engine runtime behavior", () => {
       approval_policy: "never",
       service_tier: "fast",
       features: { experimental_feature: true, fast_mode: true },
+    });
+  });
+
+  it("warns when runtime settings replace malformed user CODEX_CONFIG", async () => {
+    const { logs, meta } = await runExecutor({
+      agent: "codex",
+      model: "gpt-runtime",
+      env: { CODEX_CONFIG: "not-json" },
+    });
+
+    expect(JSON.parse(String((meta[0]?.env as Record<string, string>).CODEX_CONFIG))).toEqual({
+      model: "gpt-runtime",
+    });
+    expect(logs).toContainEqual({
+      stream: "stderr",
+      text: "[paperclip] Ignoring invalid user CODEX_CONFIG while applying runtime Codex settings; expected a JSON object.\n",
     });
   });
 
