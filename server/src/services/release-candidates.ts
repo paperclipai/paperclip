@@ -377,66 +377,69 @@ export function releaseCandidateService(db: Db) {
 
       const token = generateDeployToken();
       const expiresAt = new Date(Date.now() + ttlMs);
-      const [authorization] = await db.insert(releaseDeployAuthorizations).values({
-        companyId: candidate.companyId,
-        candidateId: candidate.id,
-        approvalInteractionId: interaction.id,
-        tokenHash: token.hash,
-        tokenPrefix: token.prefix,
-        targetHost: candidate.targetHost,
-        imageDigest: candidate.imageDigest,
-        environment: candidate.environment,
-        sequence: candidate.sequence,
-        expiresAt,
-        createdByUserId: actor.userId ?? null,
-      }).onConflictDoNothing({
-        target: [releaseDeployAuthorizations.candidateId, releaseDeployAuthorizations.approvalInteractionId],
-      }).returning();
-      if (!authorization) {
-        const concurrentAuthorization = await db
-          .select()
-          .from(releaseDeployAuthorizations)
-          .where(and(
-            eq(releaseDeployAuthorizations.candidateId, candidate.id),
-            eq(releaseDeployAuthorizations.approvalInteractionId, interaction.id),
-          ))
-          .then((rows) => rows[0] ?? null);
-        if (!concurrentAuthorization) throw conflict("Failed to create deploy authorization");
-        return {
-          authorization: concurrentAuthorization,
-          token: null,
-          alreadyIssued: true,
-        };
-      }
-
-      const [updated] = await db.update(releaseCandidates).set({
-        status: "approved",
-        approvedByUserId: actor.userId ?? null,
-        approvedAt: new Date(),
-        updatedAt: new Date(),
-      }).where(eq(releaseCandidates.id, candidate.id)).returning();
-      const approvedCandidate = updated ?? candidate;
-      await appendAudit(db, {
-        candidate: approvedCandidate,
-        actor,
-        authorizationId: authorization.id,
-        eventType: "deploy_authorization_issued",
-        payload: {
-          authorizationId: authorization.id,
+      return db.transaction(async (tx) => {
+        const transactionDb = tx as unknown as Db;
+        const [authorization] = await tx.insert(releaseDeployAuthorizations).values({
+          companyId: candidate.companyId,
+          candidateId: candidate.id,
+          approvalInteractionId: interaction.id,
+          tokenHash: token.hash,
           tokenPrefix: token.prefix,
-          targetHost: authorization.targetHost,
-          digest: authorization.imageDigest,
-          environment: authorization.environment,
-          sequence: authorization.sequence,
-          expiresAt: authorization.expiresAt.toISOString(),
-        },
-        commentExtra: {
-          authorization_id: authorization.id,
-          token_prefix: token.prefix,
-          expires_at: authorization.expiresAt.toISOString(),
-        },
+          targetHost: candidate.targetHost,
+          imageDigest: candidate.imageDigest,
+          environment: candidate.environment,
+          sequence: candidate.sequence,
+          expiresAt,
+          createdByUserId: actor.userId ?? null,
+        }).onConflictDoNothing({
+          target: [releaseDeployAuthorizations.candidateId, releaseDeployAuthorizations.approvalInteractionId],
+        }).returning();
+        if (!authorization) {
+          const concurrentAuthorization = await tx
+            .select()
+            .from(releaseDeployAuthorizations)
+            .where(and(
+              eq(releaseDeployAuthorizations.candidateId, candidate.id),
+              eq(releaseDeployAuthorizations.approvalInteractionId, interaction.id),
+            ))
+            .then((rows) => rows[0] ?? null);
+          if (!concurrentAuthorization) throw conflict("Failed to create deploy authorization");
+          return {
+            authorization: concurrentAuthorization,
+            token: null,
+            alreadyIssued: true,
+          };
+        }
+
+        const [approvedCandidate] = await tx.update(releaseCandidates).set({
+          status: "approved",
+          approvedByUserId: actor.userId ?? null,
+          approvedAt: new Date(),
+          updatedAt: new Date(),
+        }).where(eq(releaseCandidates.id, candidate.id)).returning();
+        if (!approvedCandidate) throw conflict("Failed to approve release candidate");
+        await appendAudit(transactionDb, {
+          candidate: approvedCandidate,
+          actor,
+          authorizationId: authorization.id,
+          eventType: "deploy_authorization_issued",
+          payload: {
+            authorizationId: authorization.id,
+            tokenPrefix: token.prefix,
+            targetHost: authorization.targetHost,
+            digest: authorization.imageDigest,
+            environment: authorization.environment,
+            sequence: authorization.sequence,
+            expiresAt: authorization.expiresAt.toISOString(),
+          },
+          commentExtra: {
+            authorization_id: authorization.id,
+            token_prefix: token.prefix,
+            expires_at: authorization.expiresAt.toISOString(),
+          },
+        });
+        return { authorization, token: token.secret, alreadyIssued: false };
       });
-      return { authorization, token: token.secret, alreadyIssued: false };
     },
 
     verifyRelayAuthorization: async (authorizationId: string, token: string, artifact: RelayArtifactVerificationInput) => {

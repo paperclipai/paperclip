@@ -37,13 +37,32 @@ const candidate = {
 
 function makeDb(
   selectRows: unknown[][] = [],
-  options: { atomicAuthorizationConsume?: boolean; atomicAuthorizationIssue?: boolean } = {},
+  options: {
+    atomicAuthorizationConsume?: boolean;
+    atomicAuthorizationIssue?: boolean;
+    failApprovalUpdate?: boolean;
+  } = {},
 ) {
   const inserted: unknown[] = [];
   const updated: unknown[] = [];
+  const transactions = { count: 0 };
   let authorizationConsumed = false;
   let issuedAuthorization: Record<string, unknown> | null = null;
   const db = {
+    transaction: async (callback: (tx: unknown) => Promise<unknown>) => {
+      transactions.count += 1;
+      const insertedCount = inserted.length;
+      const updatedCount = updated.length;
+      const previousIssuedAuthorization = issuedAuthorization;
+      try {
+        return await callback(db);
+      } catch (error) {
+        inserted.splice(insertedCount);
+        updated.splice(updatedCount);
+        issuedAuthorization = previousIssuedAuthorization;
+        throw error;
+      }
+    },
     select: () => ({
       from: (table: unknown) => ({
         where: () => ({
@@ -84,6 +103,9 @@ function makeDb(
         return {
           where: () => ({
             returning: async () => {
+              if (options.failApprovalUpdate && (value as Record<string, unknown>).status === "approved") {
+                throw new Error("candidate approval update failed");
+              }
               if (options.atomicAuthorizationConsume && "leaseIssuedAt" in (value as Record<string, unknown>)) {
                 if (authorizationConsumed) return [];
                 authorizationConsumed = true;
@@ -95,7 +117,7 @@ function makeDb(
       },
     }),
   };
-  return { db: db as never, inserted, updated };
+  return { db: db as never, inserted, updated, transactions };
 }
 
 describe("release candidate approval relay", () => {
@@ -262,6 +284,54 @@ describe("release candidate approval relay", () => {
     expect(results.filter((result) => result?.token === null)).toHaveLength(1);
     expect(results.map((result) => result?.alreadyIssued).sort()).toEqual([false, true]);
     expect(results[0]?.authorization.id).toBe(results[1]?.authorization.id);
+  });
+
+  it("rolls back token issuance when the candidate approval update fails", async () => {
+    const approvedCandidate = {
+      ...candidate,
+      status: "approval_requested",
+      approvalInteractionId: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+    };
+    const interaction = {
+      id: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+      companyId: candidate.companyId,
+      issueId: candidate.sourceIssueId,
+      kind: "request_confirmation" as const,
+      status: "accepted" as const,
+      continuationPolicy: "wake_assignee" as const,
+      idempotencyKey: null,
+      sourceCommentId: null,
+      sourceRunId: null,
+      title: null,
+      summary: null,
+      payload: {
+        version: 1 as const,
+        prompt: "approve",
+        target: {
+          type: "custom" as const,
+          key: `release_candidate:${candidate.id}`,
+          revisionId: candidate.imageDigest,
+        },
+      },
+      result: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    const { db, inserted, transactions } = makeDb(
+      [[approvedCandidate], []],
+      { atomicAuthorizationIssue: true, failApprovalUpdate: true },
+    );
+
+    await expect(
+      releaseCandidateService(db).handleAcceptedInteraction(
+        candidate.sourceIssueId,
+        interaction,
+        { userId: "founder" },
+      ),
+    ).rejects.toThrow("candidate approval update failed");
+
+    expect(transactions.count).toBe(1);
+    expect(inserted).toHaveLength(0);
   });
 
   it("resolves approved leases and records deploy audit events through the token scope", async () => {
