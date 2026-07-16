@@ -1578,7 +1578,7 @@ describe("IssueDetail", () => {
     expect(container.querySelector('[data-status-icon-state="covered"]')?.textContent).toBe("blocked");
   });
 
-  it("does not add the task identifier as its own breadcrumb item (it is not a parent of the title)", async () => {
+  it("surfaces the task identifier as a muted prefix on the title crumb, not a standalone crumb", async () => {
     mockSetBreadcrumbs.mockClear();
     mockIssuesApi.get.mockResolvedValue(createIssue({ identifier: "PAP-1", title: "Breadcrumb id task" }));
 
@@ -1591,14 +1591,15 @@ describe("IssueDetail", () => {
     });
     await flushReact();
 
-    const crumbs = mockSetBreadcrumbs.mock.calls.at(-1)?.[0] as Array<{ label: string; href?: string }>;
+    const crumbs = mockSetBreadcrumbs.mock.calls.at(-1)?.[0] as Array<{ label: string; labelPrefix?: string; href?: string }>;
     expect(crumbs).toBeTruthy();
-    // The identifier lives in the properties pane, not the breadcrumb — surfacing it
-    // as a standalone crumb makes the title read as a sub-item of the identifier.
+    // The identifier is NOT its own crumb — a standalone crumb makes the title
+    // read as a sub-item of the identifier.
     expect(crumbs.some((crumb) => crumb.label === "PAP-1")).toBe(false);
-    const titleIndex = crumbs.findIndex((crumb) => crumb.label === "Breadcrumb id task");
-    // Breadcrumb is just source list -> title.
-    expect(titleIndex).toBe(crumbs.length - 1);
+    // Instead it rides on the last (title) crumb as a muted prefix: "PAP-1 <title>".
+    const titleCrumb = crumbs[crumbs.length - 1];
+    expect(titleCrumb.label).toBe("Breadcrumb id task");
+    expect(titleCrumb.labelPrefix).toBe("PAP-1");
   });
 
   it("does not flash the task identifier in the breadcrumb while the issue is still loading", async () => {
@@ -1618,18 +1619,22 @@ describe("IssueDetail", () => {
     await flushReact();
 
     // While loading, the title crumb must fall back to a neutral placeholder,
-    // never the route identifier — otherwise the task ID flashes in the breadcrumb.
-    const loadingCrumbs = mockSetBreadcrumbs.mock.calls.at(-1)?.[0] as Array<{ label: string }>;
+    // with no identifier prefix yet — otherwise the task ID flashes in the breadcrumb.
+    const loadingCrumbs = mockSetBreadcrumbs.mock.calls.at(-1)?.[0] as Array<{ label: string; labelPrefix?: string }>;
     expect(loadingCrumbs).toBeTruthy();
     expect(loadingCrumbs.some((crumb) => crumb.label === "PAP-1")).toBe(false);
+    expect(loadingCrumbs.every((crumb) => crumb.labelPrefix === undefined)).toBe(true);
 
     await act(async () => {
       deferred.resolve(createIssue({ identifier: "PAP-1", title: "Loaded title" }));
     });
     await flushReact();
 
-    const loadedCrumbs = mockSetBreadcrumbs.mock.calls.at(-1)?.[0] as Array<{ label: string }>;
-    expect(loadedCrumbs.some((crumb) => crumb.label === "Loaded title")).toBe(true);
+    const loadedCrumbs = mockSetBreadcrumbs.mock.calls.at(-1)?.[0] as Array<{ label: string; labelPrefix?: string }>;
+    const loadedTitle = loadedCrumbs[loadedCrumbs.length - 1];
+    // Once loaded, the identifier appears as the muted prefix on the title crumb.
+    expect(loadedTitle.label).toBe("Loaded title");
+    expect(loadedTitle.labelPrefix).toBe("PAP-1");
   });
 
   it("refreshes subtree pause state after resuming a hold", async () => {

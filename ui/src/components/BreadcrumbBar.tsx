@@ -1,6 +1,6 @@
 import { Link } from "@/lib/router";
 import { Menu } from "lucide-react";
-import { useBreadcrumbs } from "../context/BreadcrumbContext";
+import { useBreadcrumbs, type Breadcrumb as BreadcrumbType } from "../context/BreadcrumbContext";
 import { useSidebar } from "../context/SidebarContext";
 import { useCompany } from "../context/CompanyContext";
 import { Button } from "@/components/ui/button";
@@ -17,6 +17,24 @@ import { PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
 import { PluginLauncherOutlet, usePluginLaunchers } from "@/plugins/launchers";
 
 type GlobalToolbarContext = { companyId: string | null; companyPrefix: string | null };
+
+/**
+ * Renders a crumb's label, optionally prefixed with a muted `labelPrefix` (e.g.
+ * a task identifier) inside the same crumb — reads as "<id> <title>", not a
+ * separate hierarchical item. The prefix stays fixed-width; only the title
+ * truncates.
+ */
+function renderCrumbLabel(crumb: BreadcrumbType) {
+  if (!crumb.labelPrefix) {
+    return <span className="truncate">{crumb.label}</span>;
+  }
+  return (
+    <span className="flex min-w-0 items-center gap-1.5">
+      <span className="shrink-0 text-muted-foreground">{crumb.labelPrefix}</span>
+      <span className="truncate">{crumb.label}</span>
+    </span>
+  );
+}
 
 function GlobalToolbar({ context }: { context: GlobalToolbarContext }) {
   const { slots } = usePluginSlots({ slotTypes: ["globalToolbarButton"], companyId: context.companyId });
@@ -85,11 +103,11 @@ export function BreadcrumbBar() {
           {breadcrumbs[0].leading ? (
             <h1 className="flex items-center gap-1.5 text-sm font-semibold uppercase tracking-wider">
               <span className="flex shrink-0 items-center">{breadcrumbs[0].leading}</span>
-              <span className="truncate">{breadcrumbs[0].label}</span>
+              {renderCrumbLabel(breadcrumbs[0])}
             </h1>
           ) : (
-            <h1 className="text-sm font-semibold uppercase tracking-wider truncate">
-              {breadcrumbs[0].label}
+            <h1 className="flex min-w-0 items-center text-sm font-semibold uppercase tracking-wider">
+              {renderCrumbLabel(breadcrumbs[0])}
             </h1>
           )}
         </div>
@@ -115,10 +133,10 @@ export function BreadcrumbBar() {
                       crumb.leading ? (
                         <BreadcrumbPage className="flex min-w-0 items-center gap-1.5">
                           <span className="flex shrink-0 items-center">{crumb.leading}</span>
-                          <span className="truncate">{crumb.label}</span>
+                          {renderCrumbLabel(crumb)}
                         </BreadcrumbPage>
                       ) : (
-                        <BreadcrumbPage className="truncate">{crumb.label}</BreadcrumbPage>
+                        <BreadcrumbPage className="min-w-0">{renderCrumbLabel(crumb)}</BreadcrumbPage>
                       )
                     ) : (
                       <BreadcrumbLink asChild>

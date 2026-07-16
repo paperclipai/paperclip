@@ -1941,6 +1941,11 @@ export function IssueDetail() {
   // route param is the identifier (e.g. COR-1), and using it here made the task
   // ID flash in the breadcrumb before the title resolved (NEO-449 review).
   const breadcrumbTitle = issue?.title ?? "Task";
+  // Muted task identifier shown just before the title in the same crumb (e.g.
+  // "COR-1 Fix the thing"), keeping it omnipresent without reading as a parent
+  // of the title. Only set once the issue loads, so it never flashes as a
+  // standalone value while the title resolves (NEO-449 review).
+  const breadcrumbIdentifier = issue?.identifier ?? null;
   const breadcrumbStatus = issue?.status;
   const breadcrumbBlockerAttention = issue?.blockerAttention;
   // Stable identity for the breadcrumb status glyph. The glyph's shape/colour
@@ -3096,12 +3101,14 @@ export function IssueDetail() {
         // The status glyph (leading) already conveys in-progress/live state;
         // no redundant 🔵 emoji prefix on the title.
         label: breadcrumbTitle,
+        labelPrefix: breadcrumbIdentifier ?? undefined,
         leading: breadcrumbStatusLeading,
         leadingKey: breadcrumbStatusKey,
       },
     ]);
   }, [
     breadcrumbTitle,
+    breadcrumbIdentifier,
     hasLiveRuns,
     setBreadcrumbs,
     sourceBreadcrumb.href,

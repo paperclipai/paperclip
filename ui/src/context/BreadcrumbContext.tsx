@@ -2,6 +2,14 @@ import { createContext, useCallback, useContext, useEffect, useState, type React
 
 export interface Breadcrumb {
   label: string;
+  /**
+   * Optional muted text rendered immediately before the label, inside the same
+   * crumb (e.g. a task identifier prefixing the title). Unlike a separate crumb,
+   * this reads as "<id> <title>" rather than "<id> › <title>", so the title is
+   * not misrepresented as a child of the identifier. Not part of the label for
+   * document-title purposes.
+   */
+  labelPrefix?: string;
   href?: string;
   /** Optional node rendered before the label (e.g. a status glyph). */
   leading?: ReactNode;
@@ -33,6 +41,7 @@ function breadcrumbsEqual(left: Breadcrumb[], right: Breadcrumb[]) {
   for (let index = 0; index < left.length; index += 1) {
     if (
       left[index]?.label !== right[index]?.label
+      || left[index]?.labelPrefix !== right[index]?.labelPrefix
       || left[index]?.href !== right[index]?.href
       || left[index]?.leadingKey !== right[index]?.leadingKey
     ) {
