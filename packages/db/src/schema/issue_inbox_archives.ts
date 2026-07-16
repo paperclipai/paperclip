@@ -13,6 +13,7 @@ export const issueInboxArchives = pgTable(
     issueId: uuid("issue_id").notNull().references(() => issues.id),
     userId: text("user_id").notNull(),
     archivedByActorType: text("archived_by_actor_type").$type<"user" | "agent">().notNull().default("user"),
+    // Agent-attributed writes must set both IDs; SET NULL preserves rows if referenced records are deleted.
     archivedByAgentId: uuid("archived_by_agent_id").references(() => agents.id, { onDelete: "set null" }),
     archivedByRunId: uuid("archived_by_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
     archivedAt: timestamp("archived_at", { withTimezone: true }).notNull().defaultNow(),

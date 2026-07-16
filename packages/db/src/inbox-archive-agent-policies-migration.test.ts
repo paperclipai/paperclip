@@ -57,13 +57,13 @@ describeEmbeddedPostgres("inbox archive agent policy migration", () => {
       try {
         const hash = await migrationHash();
         await sql`DELETE FROM "drizzle"."__drizzle_migrations" WHERE "hash" = ${hash}`;
-        await sql`DROP TABLE "user_inbox_agent_policies"`;
-        await sql`ALTER TABLE "issue_inbox_archives" DROP CONSTRAINT "issue_inbox_archives_archived_by_agent_id_agents_id_fk"`;
-        await sql`ALTER TABLE "issue_inbox_archives" DROP CONSTRAINT "issue_inbox_archives_archived_by_run_id_heartbeat_runs_id_fk"`;
-        await sql`ALTER TABLE "issue_inbox_archives" DROP CONSTRAINT "issue_inbox_archives_archived_by_actor_type_check"`;
-        await sql`ALTER TABLE "issue_inbox_archives" DROP COLUMN "archived_by_agent_id"`;
-        await sql`ALTER TABLE "issue_inbox_archives" DROP COLUMN "archived_by_run_id"`;
-        await sql`ALTER TABLE "issue_inbox_archives" DROP COLUMN "archived_by_actor_type"`;
+        await sql`DROP TABLE IF EXISTS "user_inbox_agent_policies"`;
+        await sql`ALTER TABLE "issue_inbox_archives" DROP CONSTRAINT IF EXISTS "issue_inbox_archives_archived_by_agent_id_agents_id_fk"`;
+        await sql`ALTER TABLE "issue_inbox_archives" DROP CONSTRAINT IF EXISTS "issue_inbox_archives_archived_by_run_id_heartbeat_runs_id_fk"`;
+        await sql`ALTER TABLE "issue_inbox_archives" DROP CONSTRAINT IF EXISTS "issue_inbox_archives_archived_by_actor_type_check"`;
+        await sql`ALTER TABLE "issue_inbox_archives" DROP COLUMN IF EXISTS "archived_by_agent_id"`;
+        await sql`ALTER TABLE "issue_inbox_archives" DROP COLUMN IF EXISTS "archived_by_run_id"`;
+        await sql`ALTER TABLE "issue_inbox_archives" DROP COLUMN IF EXISTS "archived_by_actor_type"`;
 
         await sql`
           INSERT INTO "companies" ("id", "name", "issue_prefix")
