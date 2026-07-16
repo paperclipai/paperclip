@@ -1958,6 +1958,22 @@ export function writePaperclipSkillSyncPreference(
   return next;
 }
 
+async function isPaperclipMaterializedSkillCopy(target: string): Promise<boolean> {
+  try {
+    const raw = JSON.parse(
+      await fs.readFile(path.join(target, MATERIALIZED_SKILL_SENTINEL), "utf8"),
+    ) as unknown;
+    const parsed = parseObject(raw);
+    return (
+      parsed.version === 1 &&
+      typeof parsed.sourceFingerprint === "string" &&
+      parsed.sourceFingerprint.length > 0
+    );
+  } catch {
+    return false;
+  }
+}
+
 export async function ensurePaperclipSkillSymlink(
   source: string,
   target: string,
@@ -1971,7 +1987,17 @@ export async function ensurePaperclipSkillSymlink(
   }
 
   if (!existing.isSymbolicLink()) {
-    return "skipped";
+    if (!existing.isDirectory() || !(await isPaperclipMaterializedSkillCopy(target))) {
+      return "skipped";
+    }
+
+    const sourceFingerprint = await hashSkillDirectory(path.resolve(source));
+    if (await materializedSkillFingerprintMatches(path.resolve(target), sourceFingerprint)) {
+      return "skipped";
+    }
+
+    await materializePaperclipSkillCopy(source, target);
+    return "repaired";
   }
 
   const linkedPath = await fs.readlink(target).catch(() => null);

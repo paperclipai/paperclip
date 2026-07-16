@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { ensureCodexSkillsInjected } from "@paperclipai/adapter-codex-local/server";
+import { materializePaperclipSkillCopy } from "@paperclipai/adapter-utils/server-utils";
 
 async function makeTempDir(prefix: string): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), prefix));
@@ -118,6 +119,39 @@ describe("codex local adapter skill injection", () => {
 
     expect(await fs.realpath(path.join(skillsHome, "paperclip"))).toBe(
       await fs.realpath(path.join(customRoot, "custom", "paperclip")),
+    );
+  });
+
+  it("refreshes a stale Paperclip-managed materialized skill copy", async () => {
+    const currentRepo = await makeTempDir("paperclip-codex-current-");
+    const skillsHome = await makeTempDir("paperclip-codex-home-");
+    cleanupDirs.add(currentRepo);
+    cleanupDirs.add(skillsHome);
+
+    await createPaperclipRepoSkill(currentRepo, "paperclip");
+    const source = path.join(currentRepo, "skills", "paperclip");
+    const target = path.join(skillsHome, "paperclip");
+    await materializePaperclipSkillCopy(source, target);
+    await fs.writeFile(path.join(source, "SKILL.md"), "---\nname: paperclip\n---\n# Updated\n", "utf8");
+
+    const logs: Array<{ stream: "stdout" | "stderr"; chunk: string }> = [];
+    await ensureCodexSkillsInjected(
+      async (stream, chunk) => {
+        logs.push({ stream, chunk });
+      },
+      {
+        skillsHome,
+        skillsEntries: [{ key: paperclipKey, runtimeName: "paperclip", source }],
+      },
+    );
+
+    expect((await fs.lstat(target)).isDirectory()).toBe(true);
+    await expect(fs.readFile(path.join(target, "SKILL.md"), "utf8")).resolves.toContain("# Updated");
+    expect(logs).toContainEqual(
+      expect.objectContaining({
+        stream: "stdout",
+        chunk: expect.stringContaining('Repaired Codex skill "paperclip"'),
+      }),
     );
   });
 
