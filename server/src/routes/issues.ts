@@ -4220,11 +4220,7 @@ export function issueRoutes(
     return false;
   }
 
-  async function resolveDelegatedRecoveryTargetAgentId(companyId: string, target: "ceo") {
-    if (target !== "ceo") {
-      throw unprocessable("Unsupported delegated recovery target");
-    }
-
+  async function resolveDelegatedRecoveryTargetAgentId(companyId: string) {
     const ceoCandidates = await db
       .select({
         id: agents.id,
@@ -5626,7 +5622,10 @@ export function issueRoutes(
           const recoveryIssue = await svc.getById(resolvedAction.recoveryIssueId);
           if (recoveryIssue && recoveryIssue.companyId === existing.companyId) {
             res.json({
-              issue: existing,
+              issue: {
+                ...existing,
+                activeRecoveryAction: null,
+              },
               recoveryIssue,
               recoveryAction: resolvedAction,
               reused: true,
@@ -5651,7 +5650,7 @@ export function issueRoutes(
       }
 
       const actor = getActorInfo(req);
-      const assigneeAgentId = await resolveDelegatedRecoveryTargetAgentId(existing.companyId, target);
+      const assigneeAgentId = await resolveDelegatedRecoveryTargetAgentId(existing.companyId);
       await assertCanAssignTasks(req, existing.companyId, {
         projectId: await resolveAssignmentProjectId({
           companyId: existing.companyId,
