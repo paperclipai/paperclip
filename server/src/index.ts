@@ -560,10 +560,12 @@ export async function startServer(): Promise<StartedServer> {
     if (accessBackfill.agentMembershipsInserted > 0 || accessBackfill.humanGrantsInserted > 0) {
       logger.info(accessBackfill, "Backfilled principal access compatibility records");
     }
+  if (!shadowRuntime) {
+    const toolOAuthBackfill = await backfillLegacyToolOAuthTokens(db as any);
+    if (toolOAuthBackfill.sanitizedConnections > 0 || toolOAuthBackfill.migratedConnections > 0) {
+      logger.info(toolOAuthBackfill, "Backfilled legacy tool OAuth credentials into company secrets");
+    }
   }
-  const toolOAuthBackfill = await backfillLegacyToolOAuthTokens(db as any);
-  if (toolOAuthBackfill.sanitizedConnections > 0 || toolOAuthBackfill.migratedConnections > 0) {
-    logger.info(toolOAuthBackfill, "Backfilled legacy tool OAuth credentials into company secrets");
   }
   if (config.deploymentMode === "authenticated") {
     const {
