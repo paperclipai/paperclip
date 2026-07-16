@@ -30,6 +30,7 @@
     "ops:build-artifact": "node scripts/ops/build-artifact.mjs",
     "ops:inventory": "node scripts/ops/reconcile-agent-inventory.mjs",
     "ops:restore-drill": "node cli/node_modules/tsx/dist/cli.mjs scripts/ops/restore-drill.ts",
+    "test:ops": "node --test scripts/__tests__/ops-hardening.test.mjs",
     "paperclipai": "node cli/node_modules/tsx/dist/cli.mjs cli/src/index.ts",
     "build:npm": "./scripts/build-npm.sh",
     "release": "./scripts/release.sh",

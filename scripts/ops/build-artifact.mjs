@@ -79,6 +79,7 @@ async function verify(artifactRoot, manifestPath) {
   const actual = await describe(path.resolve(artifactRoot));
   const pass = manifest.schemaVersion === 1
     && manifest.artifactDigest === actual.digest
+    && manifest.fileCount === actual.entries.length
     && JSON.stringify(manifest.files) === JSON.stringify(actual.entries);
   process.stdout.write(`${JSON.stringify({ status: pass ? "pass" : "fail", artifactDigest: actual.digest, expectedDigest: manifest.artifactDigest })}\n`);
   if (!pass) process.exitCode = 1;
