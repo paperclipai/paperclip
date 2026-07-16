@@ -1127,22 +1127,6 @@ describe("agent issue mutation checkout ownership", () => {
 
   it.each([
     [
-      "issue create",
-      (app: express.Express) =>
-        request(app).post(`/api/companies/${companyId}/issues`).send({
-          title: "Downstream source work",
-          assigneeAdapterOverrides: { modelProfile: "cheap" },
-        }),
-    ],
-    [
-      "child issue create",
-      (app: express.Express) =>
-        request(app).post(`/api/issues/${issueId}/children`).send({
-          title: "Downstream child source work",
-          assigneeAdapterOverrides: { modelProfile: "cheap" },
-        }),
-    ],
-    [
       "issue update",
       (app: express.Express) =>
         request(app).patch(`/api/issues/${issueId}`).send({
@@ -1168,6 +1152,53 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.create).not.toHaveBeenCalled();
     expect(mockIssueService.createChild).not.toHaveBeenCalled();
     expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      "top-level issue creation",
+      (app: express.Express) =>
+        request(app).post(`/api/companies/${companyId}/issues`).send({
+          title: "Executable recovery follow-up",
+        }),
+    ],
+    [
+      "child issue creation",
+      (app: express.Express) =>
+        request(app).post(`/api/issues/${issueId}/children`).send({
+          title: "Executable recovery child",
+        }),
+    ],
+    [
+      "accepted-plan decomposition",
+      (app: express.Express) =>
+        request(app).post(`/api/issues/${issueId}/accepted-plan-decompositions`).send({
+          acceptedPlanRevisionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          children: [
+            { title: "Executable accepted-plan child" },
+          ],
+        }),
+    ],
+  ])("blocks cheap status-only recovery runs from %s", async (_name, sendRequest) => {
+    const app = await createApp(
+      ownerActor(),
+      createRunContextDb({
+        modelProfile: "cheap",
+        recoveryIntent: "status_only",
+        allowDeliverableWork: false,
+        allowDocumentUpdates: false,
+        resumeRequiresNormalModel: true,
+      }),
+    );
+
+    const res = await sendRequest(app);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toContain("cannot create executable issues or accepted-plan decompositions");
+    expect(mockIssueService.create).not.toHaveBeenCalled();
+    expect(mockIssueService.createChild).not.toHaveBeenCalled();
+    expect(mockIssueService.decomposeAcceptedPlan).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
   it("defaults agent-created root follow-up issues to inherit the current run workspace", async () => {
@@ -1533,6 +1564,7 @@ describe("agent issue mutation checkout ownership", () => {
     );
     mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue({
       id: recoveryActionId,
+      ownerType: "agent",
       ownerAgentId,
     });
 
@@ -1546,6 +1578,29 @@ describe("agent issue mutation checkout ownership", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(403);
     expect(res.body.error).toBe("Agent cannot resolve another owner's recovery action");
+    expect(mockIssueRecoveryActionService.resolveActiveForIssue).not.toHaveBeenCalled();
+  });
+
+  it("rejects the source assignee when a recovery action is board-owned without an agent owner", async () => {
+    mockIssueService.getById.mockResolvedValue(
+      makeIssue({ status: "blocked", assigneeAgentId: ownerAgentId, assigneeUserId: null }),
+    );
+    mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue({
+      id: recoveryActionId,
+      ownerType: "board",
+      ownerAgentId: null,
+    });
+
+    const res = await request(await createApp(ownerActor()))
+      .post(`/api/issues/${issueId}/recovery-actions/resolve`)
+      .send({
+        actionId: recoveryActionId,
+        outcome: "restored",
+        sourceIssueStatus: "done",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Board-owned recovery action requires board resolution");
     expect(mockIssueRecoveryActionService.resolveActiveForIssue).not.toHaveBeenCalled();
   });
 

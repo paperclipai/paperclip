@@ -193,6 +193,15 @@ describe("issue dependency wakeups in issue routes", () => {
         blockerIssueIds: ["issue-1", "issue-3"],
       },
     ]);
+    mockIssueService.getDependencyReadiness.mockResolvedValue({
+      issueId: "issue-2",
+      blockerIssueIds: ["issue-1", "issue-3"],
+      unresolvedBlockerIssueIds: [],
+      unresolvedBlockerCount: 0,
+      pendingFinalizeBlockerIssueIds: [],
+      allBlockersDone: true,
+      isDependencyReady: true,
+    });
 
     const res = await request(await createApp()).patch("/api/issues/issue-1").send({ status: "done" });
     expect(res.status).toBe(200);
@@ -208,6 +217,72 @@ describe("issue dependency wakeups in issue routes", () => {
         }),
       );
     });
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "issue-2",
+      expect.objectContaining({ blockedByIssueIds: [] }),
+    );
+  });
+
+  it("preserves unresolved blockers when route-level readiness no longer confirms repair", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      id: "issue-1",
+      companyId: "company-1",
+      identifier: "TASK-100",
+      title: "Finish blocker",
+      description: null,
+      status: "blocked",
+      priority: "medium",
+      parentId: null,
+      assigneeAgentId: "agent-1",
+      assigneeUserId: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      executionWorkspaceId: null,
+      labels: [],
+      labelIds: [],
+    });
+    mockIssueService.update.mockResolvedValue({
+      id: "issue-1",
+      companyId: "company-1",
+      identifier: "TASK-100",
+      title: "Finish blocker",
+      description: null,
+      status: "done",
+      priority: "medium",
+      parentId: null,
+      assigneeAgentId: "agent-1",
+      assigneeUserId: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      executionWorkspaceId: null,
+      labels: [],
+      labelIds: [],
+    });
+    mockIssueService.listWakeableBlockedDependents.mockResolvedValue([
+      {
+        id: "issue-2",
+        assigneeAgentId: "agent-2",
+        blockerIssueIds: ["issue-1", "issue-3"],
+      },
+    ]);
+    mockIssueService.getDependencyReadiness.mockResolvedValue({
+      issueId: "issue-2",
+      blockerIssueIds: ["issue-1", "issue-3"],
+      unresolvedBlockerIssueIds: ["issue-3"],
+      unresolvedBlockerCount: 1,
+      pendingFinalizeBlockerIssueIds: [],
+      allBlockersDone: false,
+      isDependencyReady: false,
+    });
+
+    const res = await request(await createApp()).patch("/api/issues/issue-1").send({ status: "done" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).not.toHaveBeenCalledWith(
+      "issue-2",
+      expect.objectContaining({ blockedByIssueIds: expect.any(Array) }),
+    );
+    expect(mockWakeup).not.toHaveBeenCalled();
   });
 
   it("wakes an assigned blocked issue when blockers are applied after the blocker is already done", async () => {

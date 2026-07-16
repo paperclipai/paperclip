@@ -2968,6 +2968,110 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return existingUnresolvedBlockerIssues(companyId, issueId).then((rows) => rows.map((row) => row.id));
   }
 
+  async function repairSatisfiedBlockerRelations(input: {
+    issue: Pick<typeof issues.$inferSelect, "id" | "companyId" | "identifier" | "status">;
+    satisfiedBlockerIssueIds: string[];
+    source: string;
+    runId?: string | null;
+  }) {
+    const satisfiedBlockerIssueIds = [...new Set(input.satisfiedBlockerIssueIds.filter(Boolean))];
+    if (satisfiedBlockerIssueIds.length === 0) return null;
+
+    const currentBlockerIssueIds = await existingBlockerIssueIds(input.issue.companyId, input.issue.id);
+    const satisfied = new Set(satisfiedBlockerIssueIds);
+    const removedBlockerIssueIds = currentBlockerIssueIds.filter((blockerIssueId) => satisfied.has(blockerIssueId));
+    if (removedBlockerIssueIds.length === 0) return null;
+
+    const remainingBlockerIssueIds = currentBlockerIssueIds.filter((blockerIssueId) => !satisfied.has(blockerIssueId));
+    const updated = await issuesSvc.update(input.issue.id, {
+      blockedByIssueIds: remainingBlockerIssueIds,
+    });
+    if (!updated) return null;
+
+    await logActivity(db, {
+      companyId: input.issue.companyId,
+      actorType: "system",
+      actorId: "issue_graph_liveness_backstop",
+      agentId: null,
+      runId: input.runId ?? null,
+      action: "issue.blockers.updated",
+      entityType: "issue",
+      entityId: input.issue.id,
+      details: {
+        source: input.source,
+        identifier: input.issue.identifier,
+        previousStatus: input.issue.status,
+        status: updated.status,
+        removedBlockerIssueIds,
+        remainingBlockerIssueIds,
+      },
+    });
+
+    return {
+      updated,
+      removedBlockerIssueIds,
+      remainingBlockerIssueIds,
+    };
+  }
+
+  async function ensureNormalContinuationRecoveryAction(input: {
+    issue: Pick<typeof issues.$inferSelect, "id" | "companyId" | "identifier" | "assigneeAgentId">;
+    agentId: string;
+    blockerIssueIds: string[];
+    source: string;
+    reason: string;
+    runId?: string | null;
+  }) {
+    const existing = await recoveryActionsSvc.getActiveForIssue(input.issue.companyId, input.issue.id);
+    if (existing) return { action: existing, created: false };
+
+    const action = await recoveryActionsSvc.upsertSourceScoped({
+      companyId: input.issue.companyId,
+      sourceIssueId: input.issue.id,
+      kind: "issue_graph_liveness",
+      ownerType: "agent",
+      ownerAgentId: input.agentId,
+      previousOwnerAgentId: input.issue.assigneeAgentId,
+      returnOwnerAgentId: input.issue.assigneeAgentId,
+      cause: "dependency_normal_continuation_unavailable",
+      fingerprint: `dependency_normal_continuation_unavailable:${input.issue.companyId}:${input.issue.id}`,
+      evidence: {
+        source: input.source,
+        reason: input.reason,
+        blockerIssueIds: input.blockerIssueIds,
+      },
+      nextAction: "Restore or manually queue the normal-model continuation for the source issue after its blocker dependencies resolved.",
+      wakePolicy: {
+        type: "normal_model_continuation_required",
+        reason: input.reason,
+        ownerAgentId: input.agentId,
+      },
+      monitorPolicy: null,
+      maxAttempts: 3,
+      lastAttemptAt: new Date(),
+    });
+
+    await logActivity(db, {
+      companyId: input.issue.companyId,
+      actorType: "system",
+      actorId: "issue_graph_liveness_backstop",
+      agentId: input.agentId,
+      runId: input.runId ?? null,
+      action: "issue.recovery_action_created",
+      entityType: "issue_recovery_action",
+      entityId: action.id,
+      details: {
+        source: input.source,
+        issueId: input.issue.id,
+        identifier: input.issue.identifier,
+        reason: input.reason,
+        blockerIssueIds: input.blockerIssueIds,
+      },
+    });
+
+    return { action, created: true };
+  }
+
   async function resolveContinuationWaitingOnReview(issue: typeof issues.$inferSelect) {
     const existingBlockers = await existingUnresolvedBlockerIssues(issue.companyId, issue.id);
     const openChildren = await db
@@ -4511,6 +4615,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       candidateLimitSkipped: 0,
       deferredOrFailed: 0,
       enqueueFailed: 0,
+      blockerRelationsRepaired: 0,
+      recoveryActionsCreated: 0,
+      recoveryActionsPreserved: 0,
       issueIds: [] as string[],
     };
 
@@ -4544,6 +4651,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             id: issues.id,
             companyId: issues.companyId,
             identifier: issues.identifier,
+            status: issues.status,
             assigneeAgentId: issues.assigneeAgentId,
             totalCount: sql<number>`count(*) over()::int`,
           })
@@ -4559,6 +4667,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           id: issues.id,
           companyId: issues.companyId,
           identifier: issues.identifier,
+          status: issues.status,
           assigneeAgentId: issues.assigneeAgentId,
           totalCount: sql<number>`count(*) over()::int`,
         })
@@ -4625,6 +4734,14 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           continue;
         }
 
+        const blockerRepair = await repairSatisfiedBlockerRelations({
+          issue: candidate,
+          satisfiedBlockerIssueIds: readiness.blockerIssueIds,
+          source,
+          runId: opts?.runId ?? null,
+        });
+        result.blockerRelationsRepaired += blockerRepair?.removedBlockerIssueIds.length ?? 0;
+
         const idempotencyKeys = readiness.blockerIssueIds.map((blockerIssueId) =>
           buildIssueBlockersResolvedWakeIdempotencyKey({
             dependentIssueId: candidate.id,
@@ -4690,6 +4807,19 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             // such as disabled wake-on-demand or concurrency gating. That is
             // not an enqueue error, but the backstop still did not heal now.
             result.deferredOrFailed += 1;
+            const recoveryAction = await ensureNormalContinuationRecoveryAction({
+              issue: candidate,
+              agentId,
+              blockerIssueIds: readiness.blockerIssueIds,
+              source,
+              reason: "normal_dependency_wake_not_enqueued",
+              runId: opts?.runId ?? null,
+            });
+            if (recoveryAction.created) {
+              result.recoveryActionsCreated += 1;
+            } else {
+              result.recoveryActionsPreserved += 1;
+            }
             continue;
           }
 
@@ -4716,8 +4846,21 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         } catch (err) {
           result.deferredOrFailed += 1;
           result.enqueueFailed += 1;
+          const recoveryAction = await ensureNormalContinuationRecoveryAction({
+            issue: candidate,
+            agentId,
+            blockerIssueIds: readiness.blockerIssueIds,
+            source,
+            reason: "normal_dependency_wake_enqueue_failed",
+            runId: opts?.runId ?? null,
+          });
+          if (recoveryAction.created) {
+            result.recoveryActionsCreated += 1;
+          } else {
+            result.recoveryActionsPreserved += 1;
+          }
           logger.warn(
-            { err, issueId: candidate.id, agentId, idempotencyKey, source },
+            { err, issueId: candidate.id, agentId, idempotencyKey, source, recoveryActionId: recoveryAction.action.id },
             "failed to enqueue dependency wake from issue graph liveness backstop",
           );
         }
@@ -4794,6 +4937,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       dependencyWakeCandidateLimitSkipped: 0,
       dependencyWakeDeferredOrFailed: 0,
       dependencyWakeEnqueueFailed: 0,
+      dependencyWakeBlockerRelationsRepaired: 0,
+      dependencyWakeRecoveryActionsCreated: 0,
+      dependencyWakeRecoveryActionsPreserved: 0,
       dependencyWakeIssueIds: [] as string[],
       issueIds: [] as string[],
       escalationIssueIds: [] as string[],
@@ -4813,6 +4959,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     result.dependencyWakeCandidateLimitSkipped = dependencyWakeBackstop.candidateLimitSkipped;
     result.dependencyWakeDeferredOrFailed = dependencyWakeBackstop.deferredOrFailed;
     result.dependencyWakeEnqueueFailed = dependencyWakeBackstop.enqueueFailed;
+    result.dependencyWakeBlockerRelationsRepaired = dependencyWakeBackstop.blockerRelationsRepaired;
+    result.dependencyWakeRecoveryActionsCreated = dependencyWakeBackstop.recoveryActionsCreated;
+    result.dependencyWakeRecoveryActionsPreserved = dependencyWakeBackstop.recoveryActionsPreserved;
     result.dependencyWakeIssueIds = dependencyWakeBackstop.issueIds;
 
     if (!autoRecoveryEnabled) {

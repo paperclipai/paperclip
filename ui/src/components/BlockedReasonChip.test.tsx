@@ -1,11 +1,19 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
+import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { BlockedReasonChip } from "./BlockedReasonChip";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+// `react`'s bundled `act` is not resolvable in this test environment; use the
+// synchronous flushSync shim (mirrors IssueBlockedNotice.test.tsx).
+function act(callback: () => void): void {
+  flushSync(() => {
+    callback();
+  });
+}
 
 describe("BlockedReasonChip", () => {
   let container: HTMLDivElement;
@@ -32,6 +40,20 @@ describe("BlockedReasonChip", () => {
     expect(chip?.getAttribute("data-severity")).toBe("high");
     expect(chip?.getAttribute("aria-label")).toBe("Reason: Needs decision, severity high");
     expect(chip?.textContent).toContain("Needs decision");
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("renders a cancelled dependency as the red cancelled_dependency variant, not a calm wait", () => {
+    const root = createRoot(container);
+    act(() => {
+      root.render(<BlockedReasonChip reason="blocked_by_cancelled_issue" severity="high" />);
+    });
+    const chip = container.querySelector('[data-testid="blocked-reason-chip"]');
+    expect(chip?.getAttribute("data-variant")).toBe("cancelled_dependency");
+    expect(chip?.textContent).toContain("Cancelled dependency");
+    expect(chip?.getAttribute("data-variant")).not.toBe("needs_attention");
     act(() => {
       root.unmount();
     });

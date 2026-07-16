@@ -135,6 +135,12 @@ import {
 } from "./workspace-command-authz.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 import {
+  assertStatusOnlyRecoveryRunAllowsDeliverableMutation,
+  assertStatusOnlyRecoveryRunAllowsIssueExpansion,
+  isStatusOnlyCheapRecoveryContext,
+  loadActorRunContext,
+} from "./status-only-recovery-guard.js";
+import {
   isInlineAttachmentContentType,
   normalizeIssueAttachmentMaxBytes,
   normalizeContentType,
@@ -3905,40 +3911,12 @@ export function issueRoutes(
     return { scope, discovery, sourceIssue, watchdogIssue };
   }
 
-  function isStatusOnlyCheapRecoveryContext(contextSnapshot: unknown) {
-    if (!contextSnapshot || typeof contextSnapshot !== "object" || Array.isArray(contextSnapshot)) return false;
-    const context = contextSnapshot as Record<string, unknown>;
-    return context.modelProfile === "cheap" &&
-      context.recoveryIntent === "status_only" &&
-      context.allowDeliverableWork === false &&
-      context.allowDocumentUpdates === false &&
-      context.resumeRequiresNormalModel === true;
-  }
-
   function requestsCheapIssueAssigneeModelProfile(input: { assigneeAdapterOverrides?: unknown }) {
     const overrides = input.assigneeAdapterOverrides;
     return !!overrides &&
       typeof overrides === "object" &&
       !Array.isArray(overrides) &&
       (overrides as Record<string, unknown>).modelProfile === "cheap";
-  }
-
-  async function loadActorRunContext(req: Request, companyId: string) {
-    if (req.actor.type !== "agent") return null;
-    const runId = req.actor.runId?.trim();
-    if (!runId) return null;
-    const run = await db
-      .select({
-        id: heartbeatRuns.id,
-        companyId: heartbeatRuns.companyId,
-        agentId: heartbeatRuns.agentId,
-        contextSnapshot: heartbeatRuns.contextSnapshot,
-      })
-      .from(heartbeatRuns)
-      .where(eq(heartbeatRuns.id, runId))
-      .then((rows) => rows[0] ?? null);
-    if (!run || run.companyId !== companyId || run.agentId !== req.actor.agentId) return null;
-    return run;
   }
 
   async function assertCheapRecoveryIssueAssigneeProfileAllowed(
@@ -3948,7 +3926,7 @@ export function issueRoutes(
     input: { assigneeAdapterOverrides?: unknown },
   ) {
     if (!requestsCheapIssueAssigneeModelProfile(input)) return true;
-    const run = await loadActorRunContext(req, issue.companyId);
+    const run = await loadActorRunContext(db, req, issue.companyId);
     if (!run || !isStatusOnlyCheapRecoveryContext(run.contextSnapshot)) return true;
 
     res.status(403).json({
@@ -3969,21 +3947,11 @@ export function issueRoutes(
     res: Response,
     issue: { id: string; companyId: string },
   ) {
-    const run = await loadActorRunContext(req, issue.companyId);
-    if (!run) return true;
-    if (!isStatusOnlyCheapRecoveryContext(run.contextSnapshot)) return true;
-
-    res.status(403).json({
+    return assertStatusOnlyRecoveryRunAllowsDeliverableMutation(db, req, res, {
       error: "Cheap status-only recovery runs cannot update issue documents, plans, or deliverable artifacts",
-      details: {
-        issueId: issue.id,
-        runId: run.id,
-        modelProfile: "cheap",
-        recoveryIntent: "status_only",
-        resumeRequiresNormalModel: true,
-      },
+      companyId: issue.companyId,
+      issueId: issue.id,
     });
-    return false;
   }
 
   async function assertApprovalMutationAllowedByRunContext(
@@ -3991,21 +3959,11 @@ export function issueRoutes(
     res: Response,
     issue: { id: string; companyId: string },
   ) {
-    const run = await loadActorRunContext(req, issue.companyId);
-    if (!run) return true;
-    if (!isStatusOnlyCheapRecoveryContext(run.contextSnapshot)) return true;
-
-    res.status(403).json({
+    return assertStatusOnlyRecoveryRunAllowsDeliverableMutation(db, req, res, {
       error: "Cheap status-only recovery runs cannot create or modify approvals",
-      details: {
-        issueId: issue.id,
-        runId: run.id,
-        modelProfile: "cheap",
-        recoveryIntent: "status_only",
-        resumeRequiresNormalModel: true,
-      },
+      companyId: issue.companyId,
+      issueId: issue.id,
     });
-    return false;
   }
 
   async function loadWorkProductRunAttribution(runId: string) {
@@ -4171,6 +4129,22 @@ export function issueRoutes(
     const actorAgentId = req.actor.agentId;
     if (!actorAgentId) {
       res.status(403).json({ error: "Agent authentication required" });
+      return false;
+    }
+    if (activeRecoveryAction.ownerType === "board" && !activeRecoveryAction.ownerAgentId) {
+      res.status(403).json({
+        error: "Board-owned recovery action requires board resolution",
+        details: {
+          issueId: issue.id,
+          recoveryActionId: activeRecoveryAction.id,
+          actorAgentId,
+          assigneeAgentId: issue.assigneeAgentId,
+          recoveryOwnerType: activeRecoveryAction.ownerType,
+          recoveryOwnerAgentId: activeRecoveryAction.ownerAgentId,
+          source: input.source,
+          securityPrinciples: ["Least Privilege", "Complete Mediation", "Secure Defaults"],
+        },
+      });
       return false;
     }
     if (issue.assigneeAgentId === actorAgentId) return true;
@@ -6857,6 +6831,10 @@ export function issueRoutes(
       });
       return;
     }
+    if (!(await assertStatusOnlyRecoveryRunAllowsIssueExpansion(db, req, res, {
+      companyId,
+      surface: "issues.create",
+    }))) return;
     if (await assertLowTrustControlPlaneDenied(req, res, companyId, null)) return;
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
     const sanitizedBody = await sanitizeIssueCreateAttribution(db, req, res, companyId, req.body, {
@@ -7087,6 +7065,11 @@ export function issueRoutes(
     if (!isTaskBridgeKeyActor(req) && !(await assertIssueReadAllowed(req, res, parent))) return;
     if (!(await assertTaskWatchdogCreateIssueAllowed(req, res, parent.companyId, parent))) return;
     if (await assertLowTrustControlPlaneDenied(req, res, parent.companyId, parent)) return;
+    if (!(await assertStatusOnlyRecoveryRunAllowsIssueExpansion(db, req, res, {
+      companyId: parent.companyId,
+      issueId: parent.id,
+      surface: "issues.children.create",
+    }))) return;
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
     const sanitizedBody = await sanitizeIssueCreateAttribution(db, req, res, parent.companyId, req.body, {
       surface: "issues.children.create",
@@ -7258,6 +7241,11 @@ export function issueRoutes(
     const sourceIssue = await getAccessibleResource(req, res, svc.getById(sourceIssueId), "Issue not found");
     if (!sourceIssue) return;
     if (!(await assertAgentIssueMutationAllowed(req, res, sourceIssue))) return;
+    if (!(await assertStatusOnlyRecoveryRunAllowsIssueExpansion(db, req, res, {
+      companyId: sourceIssue.companyId,
+      issueId: sourceIssue.id,
+      surface: "issues.accepted_plan_decomposition",
+    }))) return;
 
     const requestedChildren = [];
     for (const child of req.body.children as Array<typeof req.body.children[number]>) {
@@ -8400,6 +8388,48 @@ export function issueRoutes(
           },
         });
       };
+      const repairSatisfiedDependencyBlockers = async (input: {
+        dependentIssueId: string;
+        blockerIssueIds: string[];
+        source: string;
+      }) => {
+        const currentBlockerIssueIds = [...new Set(input.blockerIssueIds.filter(Boolean))];
+        if (currentBlockerIssueIds.length === 0 || typeof dependencyReadinessSvc.getDependencyReadiness !== "function") {
+          return;
+        }
+        const readiness = await dependencyReadinessSvc.getDependencyReadiness(input.dependentIssueId);
+        if (!readiness.isDependencyReady) return;
+        const satisfiedBlockerIssueIds = new Set(readiness.blockerIssueIds.filter(Boolean));
+        const removedBlockerIssueIds = currentBlockerIssueIds.filter((blockerIssueId) =>
+          satisfiedBlockerIssueIds.has(blockerIssueId),
+        );
+        if (removedBlockerIssueIds.length === 0) return;
+        const nextBlockerIssueIds = currentBlockerIssueIds.filter(
+          (blockerIssueId) => !satisfiedBlockerIssueIds.has(blockerIssueId),
+        );
+        await svc.update(input.dependentIssueId, {
+          blockedByIssueIds: nextBlockerIssueIds,
+          actorAgentId: actor.actorType === "agent" ? actor.actorId : null,
+          actorUserId: actor.actorType === "user" ? actor.actorId : null,
+        });
+        await logActivity(db, {
+          companyId: issue.companyId,
+          actorType: "system",
+          actorId: "issue_update",
+          agentId: null,
+          runId: actor.runId,
+          action: "issue.blockers.updated",
+          entityType: "issue",
+          entityId: input.dependentIssueId,
+          details: {
+            source: input.source,
+            resolvedBlockerIssueId: issue.id,
+            removedBlockerIssueIds,
+            remainingBlockerIssueIds: nextBlockerIssueIds,
+          },
+        });
+        return { removedBlockerIssueIds, remainingBlockerIssueIds: nextBlockerIssueIds };
+      };
 
       if (executionStageWakeup) {
         addWakeup(executionStageWakeup.agentId, executionStageWakeup.wakeup);
@@ -8526,11 +8556,17 @@ export function issueRoutes(
       if (becameDone) {
         const dependents = await svc.listWakeableBlockedDependents(issue.id);
         for (const dependent of dependents) {
+          const blockerRepair = await repairSatisfiedDependencyBlockers({
+            dependentIssueId: dependent.id,
+            blockerIssueIds: dependent.blockerIssueIds,
+            source: "issue.blockers_resolved",
+          });
+          if (!blockerRepair) continue;
           await addDependencyResolvedWakeup({
             agentId: dependent.assigneeAgentId,
             dependentIssueId: dependent.id,
             resolvedBlockerIssueId: issue.id,
-            blockerIssueIds: dependent.blockerIssueIds,
+            blockerIssueIds: blockerRepair.removedBlockerIssueIds,
             source: "issue.blockers_resolved",
             mutation: "blocker_done",
           });

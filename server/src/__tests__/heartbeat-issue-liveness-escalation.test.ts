@@ -13,6 +13,7 @@ import {
   executionWorkspaces,
   heartbeatRuns,
   issueComments,
+  issueRecoveryActions,
   issueRelations,
   issueTreeHolds,
   issues,
@@ -421,6 +422,48 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
       .where(and(eq(activityLog.companyId, companyId), eq(activityLog.action, "issue.blockers_resolved_wake_emitted")));
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({ entityId: blockedIssueId });
+
+    const remainingRelations = await db
+      .select()
+      .from(issueRelations)
+      .where(and(eq(issueRelations.companyId, companyId), eq(issueRelations.relatedIssueId, blockedIssueId)));
+    expect(remainingRelations).toHaveLength(0);
+
+    const repairActivity = await db
+      .select({ action: activityLog.action, entityId: activityLog.entityId, details: activityLog.details })
+      .from(activityLog)
+      .where(and(eq(activityLog.companyId, companyId), eq(activityLog.action, "issue.blockers.updated")));
+    expect(repairActivity).toEqual([
+      expect.objectContaining({
+        entityId: blockedIssueId,
+        details: expect.objectContaining({
+          source: "issue_graph_liveness.backstop",
+          removedBlockerIssueIds: [blockerIssueId],
+          remainingBlockerIssueIds: [],
+        }),
+      }),
+    ]);
+  });
+
+  it("keeps cancelled blockers unresolved instead of routing a normal continuation", async () => {
+    const { companyId, blockedIssueId, blockerIssueId } = await seedBlockedChain({ blockerStatus: "cancelled" });
+
+    const result = await heartbeatService(db).reconcileIssueGraphLiveness();
+
+    expect(result.dependencyWakesHealed).toBe(0);
+    expect(result.dependencyWakeNotReadySkipped).toBe(1);
+
+    const wakes = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.companyId, companyId));
+    expect(wakes).toHaveLength(0);
+
+    const remainingRelations = await db
+      .select()
+      .from(issueRelations)
+      .where(and(eq(issueRelations.companyId, companyId), eq(issueRelations.relatedIssueId, blockedIssueId)));
+    expect(remainingRelations.map((relation) => relation.issueId)).toEqual([blockerIssueId]);
   });
 
   it("reconciles a resolved blocked dependency after the assignee-null window closes", async () => {
@@ -618,10 +661,13 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
       .where(eq(agents.id, agentId));
 
     const result = await heartbeatService(db).reconcileIssueGraphLiveness();
+    const second = await heartbeatService(db).reconcileIssueGraphLiveness();
 
     expect(result.dependencyWakesHealed).toBe(0);
     expect(result.dependencyWakeDeferredOrFailed).toBe(1);
     expect(result.dependencyWakeEnqueueFailed).toBe(0);
+    expect(result.dependencyWakeRecoveryActionsCreated).toBe(1);
+    expect(second.dependencyWakeRecoveryActionsCreated).toBe(0);
 
     const skippedWake = await db
       .select({
@@ -634,6 +680,19 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     expect(skippedWake).toMatchObject({
       status: "skipped",
       reason: "heartbeat.wakeOnDemand.disabled",
+    });
+
+    const actions = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(and(eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.ownerAgentId, agentId)));
+    expect(actions).toHaveLength(1);
+    expect(actions[0]).toMatchObject({
+      status: "active",
+      kind: "issue_graph_liveness",
+      cause: "dependency_normal_continuation_unavailable",
+      attemptCount: 1,
+      maxAttempts: 3,
     });
   });
 
