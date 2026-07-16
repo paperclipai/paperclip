@@ -512,9 +512,13 @@ export function IssueProperties({
         assigneeOverrideThinkingEffort,
         assigneeOverrideChrome ? "Chrome" : "",
       ].filter(Boolean);
+      const summary = details.length > 0 ? `Override · ${details.join(" · ")}` : "Override · adapter options";
       return (
-        <span className="min-w-0 truncate text-sm" title={details.length > 0 ? `Custom · ${details.join(" · ")}` : "Custom adapter options"}>
-          Custom{details.length > 0 ? ` · ${details.join(" · ")}` : " adapter options"}
+        <span
+          className="min-w-0 truncate text-sm"
+          title={`Task-level model override — replaces the agent's primary model for this issue.${details.length > 0 ? ` (${details.join(" · ")})` : ""}`}
+        >
+          {summary}
         </span>
       );
     }
@@ -537,7 +541,7 @@ export function IssueProperties({
               )}
               onClick={() => setAssigneeOverrideLane(lane)}
             >
-              {lane === "primary" ? "Primary" : lane === "cheap" ? "Cheap" : "Custom"}
+              {lane === "primary" ? "Primary" : lane === "cheap" ? "Cheap" : "Override"}
             </button>
           ))}
         </div>
@@ -549,6 +553,11 @@ export function IssueProperties({
               : assigneeCheapProfile
                 ? <>· uses the agent&apos;s configured cheap profile</>
                 : <>· falls back to the primary model if no cheap profile is configured</>}
+          </p>
+        ) : null}
+        {assigneeOverrideLane === "custom" ? (
+          <p className="text-xs text-muted-foreground">
+            Task-level model override — replaces the agent&apos;s primary model for this issue.
           </p>
         ) : null}
       </div>
