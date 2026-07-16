@@ -64,8 +64,8 @@ export async function withHeartbeatSpan<T>(
     } finally {
       const durationSec = (performance.now() - startTime) / 1000;
       heartbeatActive.add(-1);
-      heartbeatDuration.record(durationSec, { agent_id: attrs.agentId, status: outcome });
-      heartbeatRunsTotal.add(1, { agent_id: attrs.agentId, status: outcome });
+      heartbeatDuration.record(durationSec, { status: outcome });
+      heartbeatRunsTotal.add(1, { status: outcome });
       span.end();
     }
   });
