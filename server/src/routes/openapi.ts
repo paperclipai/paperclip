@@ -3039,6 +3039,68 @@ registry.registerPath({
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
 });
 
+// ─── Decision training ──────────────────────────────────────────────────────
+
+const decisionTrainingSourceKindSchema = z.enum(["interaction", "approval", "execution_decision"]);
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/decision-training",
+  tags: ["decision-training"],
+  summary: "Capture a decision training example",
+  body: z.object({
+    sourceKind: decisionTrainingSourceKindSchema,
+    sourceId: z.string().uuid(),
+    issueId: z.string().uuid(),
+    notes: z.string().max(100_000).default(""),
+  }).strict(),
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/decision-training",
+  tags: ["decision-training"],
+  summary: "List decision training examples",
+  query: z.object({
+    project: z.string().uuid().optional(),
+    kind: decisionTrainingSourceKindSchema.optional(),
+    author: z.string().optional(),
+    q: z.string().max(500).optional(),
+  }),
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/decision-training/export.jsonl",
+  tags: ["decision-training"],
+  summary: "Export decision training examples as JSONL",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/decision-training/{id}",
+  tags: ["decision-training"],
+  summary: "Get a decision training example",
+});
+
+registerCurrentRoute({
+  method: "patch",
+  path: "/api/decision-training/{id}",
+  tags: ["decision-training"],
+  summary: "Update decision training notes",
+  body: z.object({ notes: z.string().max(100_000) }).strict(),
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registerCurrentRoute({
+  method: "delete",
+  path: "/api/decision-training/{id}",
+  tags: ["decision-training"],
+  summary: "Delete a decision training example",
+  responses: { 204: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
 registry.registerPath({
   method: "get",
   path: "/api/sidebar-preferences/me",
