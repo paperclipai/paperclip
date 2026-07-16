@@ -866,6 +866,7 @@ function IssueThreadNoticeReview() {
               successfulRunHandoff={{
                 state: "resolved",
                 required: false,
+                hasLiveContinuation: false,
                 sourceRunId: "run-notice-source",
                 correctiveRunId: "run-notice-corrective",
                 assigneeAgentId: codexAgent.id,

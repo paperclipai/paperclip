@@ -120,6 +120,7 @@ import {
   workProductService,
 } from "../services/index.js";
 import { buildPlanReviewContext } from "../services/plan-review-context.js";
+import { hydrateSuccessfulRunHandoffLiveness } from "../services/successful-run-handoff-state.js";
 import {
   TASK_WATCHDOG_ORIGIN_KIND,
   resolveTaskWatchdogMutationScope,
@@ -690,6 +691,7 @@ function successfulRunHandoffStateFromActivity(row: {
   return {
     state,
     required: state === "required",
+    hasLiveContinuation: false,
     sourceRunId:
       readNonEmptyString(details.sourceRunId)
       ?? readNonEmptyString(details.source_run_id)
@@ -742,7 +744,7 @@ async function listSuccessfulRunHandoffStates(
     const state = successfulRunHandoffStateFromActivity(row);
     if (state) states.set(row.entityId, state);
   }
-  return states;
+  return hydrateSuccessfulRunHandoffLiveness(db, companyId, states);
 }
 
 type RecoveryActionsLister = {

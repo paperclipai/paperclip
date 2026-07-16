@@ -58,6 +58,7 @@ function handoffIssue() {
     successfulRunHandoff: {
       state: "required",
       required: true,
+      hasLiveContinuation: false,
       sourceRunId: "9cdba892-c7ca-4d93-8604-4843873b127c",
       correctiveRunId: "61fdb79b-8012-4676-ac71-2971830e126a",
       assigneeAgentId: "agent-codex",
