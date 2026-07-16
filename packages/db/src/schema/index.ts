@@ -77,6 +77,7 @@ export { issueInboxArchives } from "./issue_inbox_archives.js";
 export { userInboxAgentPolicies } from "./user_inbox_agent_policies.js";
 export { inboxDismissals } from "./inbox_dismissals.js";
 export { feedbackVotes } from "./feedback_votes.js";
+export { decisionTrainingExamples } from "./decision_training_examples.js";
 export { feedbackExports } from "./feedback_exports.js";
 export { issueReadStates } from "./issue_read_states.js";
 export { assets } from "./assets.js";
