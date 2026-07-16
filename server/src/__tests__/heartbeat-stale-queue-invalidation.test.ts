@@ -367,6 +367,39 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(agent?.lastHeartbeatAt?.getTime()).toBeGreaterThan(now.getTime() - 120_000);
   });
 
+  it("atomically claims a due timer interval across overlapping scheduler ticks", async () => {
+    const { agentId } = await seedCompanyAndAgent({
+      heartbeatConfig: {
+        enabled: true,
+        intervalSec: 60,
+      },
+    });
+    const now = new Date();
+    await db
+      .update(agents)
+      .set({ lastHeartbeatAt: new Date(now.getTime() - 120_000) })
+      .where(eq(agents.id, agentId));
+
+    const results = await Promise.all([
+      heartbeat.tickTimers(now),
+      heartbeat.tickTimers(now),
+    ]);
+
+    expect(results.reduce((total, result) => total + result.enqueued, 0)).toBe(1);
+
+    const runs = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    const [agent] = await db
+      .select({ lastHeartbeatAt: agents.lastHeartbeatAt })
+      .from(agents)
+      .where(eq(agents.id, agentId));
+
+    expect(runs).toHaveLength(1);
+    expect(agent?.lastHeartbeatAt?.getTime()).toBeGreaterThanOrEqual(now.getTime());
+  });
+
   it("allows generic timer wakes when the agent has assigned todo work", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent({
       heartbeatConfig: {
