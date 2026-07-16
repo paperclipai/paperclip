@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { Db } from "@paperclipai/db";
-import { workspaceOperations } from "@paperclipai/db";
+import { executionWorkspaces, issues, workspaceOperations } from "@paperclipai/db";
 import type { WorkspaceOperation, WorkspaceOperationPhase, WorkspaceOperationStatus } from "@paperclipai/shared";
-import { asc, desc, eq, inArray, isNull, or, and } from "drizzle-orm";
+import { asc, desc, eq, inArray, isNull, or, and, sql } from "drizzle-orm";
 import { notFound } from "../errors.js";
 import { redactCurrentUserText, redactCurrentUserValue } from "../log-redaction.js";
 import { instanceSettingsService } from "./instance-settings.js";
@@ -95,17 +95,44 @@ export function workspaceOperationService(db: Db) {
       let executionWorkspaceId = input.executionWorkspaceId ?? null;
       const createdIds: string[] = [];
 
+      const withReadinessLocks = async <T>(
+        nextExecutionWorkspaceId: string | null,
+        mutate: (tx: any) => Promise<T>,
+      ) =>
+        db.transaction(async (tx) => {
+          if (input.issueId) {
+            await tx.execute(
+              sql`SELECT ${issues.id} FROM ${issues}
+                  WHERE ${and(eq(issues.companyId, input.companyId), eq(issues.id, input.issueId))}
+                  FOR UPDATE`,
+            );
+          }
+          if (nextExecutionWorkspaceId) {
+            await tx.execute(
+              sql`SELECT ${executionWorkspaces.id} FROM ${executionWorkspaces}
+                  WHERE ${and(
+                    eq(executionWorkspaces.companyId, input.companyId),
+                    eq(executionWorkspaces.id, nextExecutionWorkspaceId),
+                  )}
+                  FOR UPDATE`,
+            );
+          }
+          return mutate(tx);
+        });
+
       return {
         async attachExecutionWorkspaceId(nextExecutionWorkspaceId) {
           executionWorkspaceId = nextExecutionWorkspaceId ?? null;
           if (!executionWorkspaceId || createdIds.length === 0) return;
-          await db
-            .update(workspaceOperations)
-            .set({
-              executionWorkspaceId,
-              updatedAt: new Date(),
-            })
-            .where(inArray(workspaceOperations.id, createdIds));
+          await withReadinessLocks(executionWorkspaceId, (tx) =>
+            tx
+              .update(workspaceOperations)
+              .set({
+                executionWorkspaceId,
+                updatedAt: new Date(),
+              })
+              .where(inArray(workspaceOperations.id, createdIds)),
+          );
         },
 
         async recordOperation(recordInput) {
@@ -133,24 +160,28 @@ export function workspaceOperationService(db: Db) {
             });
           };
 
-          await db.insert(workspaceOperations).values({
-            id,
-            companyId: input.companyId,
-            executionWorkspaceId,
-            heartbeatRunId: input.heartbeatRunId ?? null,
-            issueId: input.issueId ?? null,
-            phase: recordInput.phase,
-            command: recordInput.command ?? null,
-            cwd: recordInput.cwd ?? null,
-            status: "running",
-            logStore: handle.store,
-            logRef: handle.logRef,
-            metadata: redactCurrentUserValue(
-              recordInput.metadata ?? null,
-              currentUserRedactionOptions,
-            ) as Record<string, unknown> | null,
-            startedAt,
-          });
+          await withReadinessLocks(executionWorkspaceId, (tx) =>
+            tx
+              .insert(workspaceOperations)
+              .values({
+                id,
+                companyId: input.companyId,
+                executionWorkspaceId,
+                heartbeatRunId: input.heartbeatRunId ?? null,
+                issueId: input.issueId ?? null,
+                phase: recordInput.phase,
+                command: recordInput.command ?? null,
+                cwd: recordInput.cwd ?? null,
+                status: "running",
+                logStore: handle.store,
+                logRef: handle.logRef,
+                metadata: redactCurrentUserValue(
+                  recordInput.metadata ?? null,
+                  currentUserRedactionOptions,
+                ) as Record<string, unknown> | null,
+                startedAt,
+              }),
+          );
           createdIds.push(id);
 
           try {
@@ -160,47 +191,54 @@ export function workspaceOperationService(db: Db) {
             await append("stderr", result.stderr ?? null);
             const finalized = await logStore.finalize(handle);
             const finishedAt = new Date();
-            const row = await db
-              .update(workspaceOperations)
-              .set({
-                executionWorkspaceId,
-                status: result.status ?? "succeeded",
-                exitCode: result.exitCode ?? null,
-                stdoutExcerpt: stdoutExcerpt || null,
-                stderrExcerpt: stderrExcerpt || null,
-                logBytes: finalized.bytes,
-                logSha256: finalized.sha256,
-                logCompressed: finalized.compressed,
-                metadata: redactCurrentUserValue(
-                  combineMetadata(recordInput.metadata, result.metadata),
-                  currentUserRedactionOptions,
-                ) as Record<string, unknown> | null,
-                finishedAt,
-                updatedAt: finishedAt,
-              })
-              .where(eq(workspaceOperations.id, id))
-              .returning()
-              .then((rows) => rows[0] ?? null);
+            const row = await withReadinessLocks<WorkspaceOperationRow | null>(
+              executionWorkspaceId,
+              async (tx) => {
+                const rows = await tx
+                  .update(workspaceOperations)
+                  .set({
+                    executionWorkspaceId,
+                    status: result.status ?? "succeeded",
+                    exitCode: result.exitCode ?? null,
+                    stdoutExcerpt: stdoutExcerpt || null,
+                    stderrExcerpt: stderrExcerpt || null,
+                    logBytes: finalized.bytes,
+                    logSha256: finalized.sha256,
+                    logCompressed: finalized.compressed,
+                    metadata: redactCurrentUserValue(
+                      combineMetadata(recordInput.metadata, result.metadata),
+                      currentUserRedactionOptions,
+                    ) as Record<string, unknown> | null,
+                    finishedAt,
+                    updatedAt: finishedAt,
+                  })
+                  .where(eq(workspaceOperations.id, id))
+                  .returning();
+                return (rows[0] as WorkspaceOperationRow | undefined) ?? null;
+              },
+            );
             if (!row) throw notFound("Workspace operation not found");
             return toWorkspaceOperation(row);
           } catch (error) {
             await append("stderr", error instanceof Error ? error.message : String(error));
             const finalized = await logStore.finalize(handle).catch(() => null);
             const finishedAt = new Date();
-            await db
-              .update(workspaceOperations)
-              .set({
-                executionWorkspaceId,
-                status: "failed",
-                stdoutExcerpt: stdoutExcerpt || null,
-                stderrExcerpt: stderrExcerpt || null,
-                logBytes: finalized?.bytes ?? null,
-                logSha256: finalized?.sha256 ?? null,
-                logCompressed: finalized?.compressed ?? false,
-                finishedAt,
-                updatedAt: finishedAt,
-              })
-              .where(eq(workspaceOperations.id, id));
+            await withReadinessLocks(executionWorkspaceId, (tx) =>
+              tx
+                .update(workspaceOperations)
+                .set({
+                  executionWorkspaceId,
+                  status: "failed",
+                  stdoutExcerpt: stdoutExcerpt || null,
+                  stderrExcerpt: stderrExcerpt || null,
+                  logBytes: finalized?.bytes ?? null,
+                  logSha256: finalized?.sha256 ?? null,
+                  logCompressed: finalized?.compressed ?? false,
+                  finishedAt,
+                  updatedAt: finishedAt,
+                })
+                .where(eq(workspaceOperations.id, id)),
+            );
             throw error;
           }
         },
