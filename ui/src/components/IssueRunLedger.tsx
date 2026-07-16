@@ -297,7 +297,7 @@ function isActiveRun(run: Pick<LedgerRun, "status" | "isLive">) {
 }
 
 /**
- * PAP-14312: runs copied into a worktree seed are quarantined (cancelled +
+ * Runs copied into a worktree seed are quarantined (cancelled with
  * `worktree_seed_quarantine`) so they never execute in the preview. Render them
  * as "inherited — inactive" instead of a scary failed/cancelled run.
  */

@@ -3233,6 +3233,14 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: "get",
+  path: "/api/instance/settings/experimental/worktree-run-engine",
+  tags: ["instance"],
+  summary: "Get worktree run-engine boot status",
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
   method: "patch",
   path: "/api/instance/settings/experimental",
   tags: ["instance"],

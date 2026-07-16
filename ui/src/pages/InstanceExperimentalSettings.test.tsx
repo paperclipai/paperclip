@@ -171,7 +171,7 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
       currentExperimentalSettings = { ...currentExperimentalSettings, ...patch };
       return { ...currentExperimentalSettings };
     });
-    // Boot-truth banner (PAP-14312) has its own coverage in
+    // The boot-truth banner has its own coverage in
     // WorktreeRunEngineBanner.test.tsx; here it defaults to not-in-worktree so
     // the page tests focus on the toggle and delegation.
     mockInstanceSettingsApi.getWorktreeRunEngine.mockResolvedValue({
@@ -386,7 +386,7 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
   });
 
   // The armed/suppressed/identity boot-truth states now live in the
-  // WorktreeRunEngineBanner (PAP-14312); the settings card only delegates to it.
+  // The settings card delegates boot-truth states to WorktreeRunEngineBanner.
   // Full state coverage lives in WorktreeRunEngineBanner.test.tsx.
   it("renders the run-engine boot-truth banner inside the worktree card", async () => {
     setWorktreeRuntimeMeta(true);

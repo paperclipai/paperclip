@@ -136,7 +136,7 @@ function IdentityLine({
 }
 
 /**
- * PAP-14312: persistent boot-truth for the worktree run engine. Renders nothing
+ * Persistent boot-truth for the worktree run engine. Renders nothing
  * outside a worktree runtime. Otherwise it reports whether the scheduler is armed
  * or suppressed (and why), which instance identity the toggle is bound to, and how
  * many inherited runs were quarantined at seed time.
