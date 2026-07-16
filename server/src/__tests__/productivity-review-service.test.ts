@@ -242,8 +242,12 @@ describeEmbeddedPostgres("productivity review service", () => {
       now: new Date(firstRefreshAt.getTime() + 2 * DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS),
       companyId: seeded.companyId,
     });
-    const cappedRefresh = await service.reconcileProductivityReviews({
+    await service.reconcileProductivityReviews({
       now: new Date(firstRefreshAt.getTime() + 3 * DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS),
+      companyId: seeded.companyId,
+    });
+    const cappedRefresh = await service.reconcileProductivityReviews({
+      now: new Date(firstRefreshAt.getTime() + 4 * DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS),
       companyId: seeded.companyId,
     });
 
@@ -253,6 +257,67 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(cappedRefresh.updated).toBe(0);
     expect(cappedRefresh.existing).toBe(1);
     expect(await listRefreshComments(review!.id)).toHaveLength(DEFAULT_PRODUCTIVITY_REVIEW_MAX_REFRESH_COMMENTS);
+  });
+
+  it("skips refresh comments when evidence body is unchanged across reconcile ticks", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({ status: "todo" });
+    // Insert runs in the distant past so runCountLastHour/runCountLastSixHours stay 0
+    // across every reconcile, holding the evidence body identical between ticks.
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now: new Date(now.getTime() - 12 * 60 * 60 * 1000),
+    });
+
+    const service = productivityReviewService(db);
+    const created = await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
+    expect(created.created).toBe(1);
+    const [review] = await listProductivityReviews(seeded.companyId);
+
+    const firstRefresh = await service.reconcileProductivityReviews({
+      now: new Date(now.getTime() + DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS),
+      companyId: seeded.companyId,
+    });
+    expect(firstRefresh.updated).toBe(1);
+    expect(await listRefreshComments(review!.id)).toHaveLength(1);
+
+    const secondRefresh = await service.reconcileProductivityReviews({
+      now: new Date(now.getTime() + 2 * DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS),
+      companyId: seeded.companyId,
+    });
+    expect(secondRefresh.updated).toBe(0);
+    expect(secondRefresh.unchanged).toBe(1);
+    expect(secondRefresh.existing).toBe(0);
+    expect(await listRefreshComments(review!.id)).toHaveLength(1);
+
+    const thirdRefresh = await service.reconcileProductivityReviews({
+      now: new Date(now.getTime() + 3 * DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS),
+      companyId: seeded.companyId,
+    });
+    expect(thirdRefresh.updated).toBe(0);
+    expect(thirdRefresh.unchanged).toBe(1);
+    expect(await listRefreshComments(review!.id)).toHaveLength(1);
+
+    // Push the no-comment streak from 10 to 15 by adding more terminal runs.
+    // Evidence body now differs (`No-comment streak: 15`), so a refresh comment is posted again.
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: 5,
+      now: new Date(now.getTime() - 24 * 60 * 60 * 1000),
+    });
+
+    const refreshAfterChange = await service.reconcileProductivityReviews({
+      now: new Date(now.getTime() + 4 * DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS),
+      companyId: seeded.companyId,
+    });
+    expect(refreshAfterChange.updated).toBe(1);
+    expect(refreshAfterChange.unchanged).toBe(0);
+    expect(await listRefreshComments(review!.id)).toHaveLength(2);
   });
 
   it("caps productivity review creation per source issue in the rolling creation window", async () => {
