@@ -2,6 +2,7 @@ import { and, asc, desc, eq, gt, gte, inArray, isNull, notInArray, sql } from "d
 import type { Db } from "@paperclipai/db";
 import { clampIssueRequestDepth } from "@paperclipai/shared";
 import {
+  activityLog,
   agents,
   companies,
   costEvents,
@@ -30,7 +31,8 @@ export const DEFAULT_PRODUCTIVITY_REVIEW_RESOLVED_SNOOZE_MS = 6 * 60 * 60 * 1000
 export const DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS = 60 * 60 * 1000;
 export const DEFAULT_PRODUCTIVITY_REVIEW_MAX_REFRESH_COMMENTS = 3;
 export const DEFAULT_PRODUCTIVITY_REVIEW_CREATION_WINDOW_MS = 24 * 60 * 60 * 1000;
-export const DEFAULT_PRODUCTIVITY_REVIEW_MAX_CREATIONS_PER_WINDOW = 3;
+export const DEFAULT_PRODUCTIVITY_REVIEW_MAX_CREATIONS_PER_WINDOW = 1;
+export const DEFAULT_PRODUCTIVITY_REVIEW_MAX_CONSECUTIVE_NO_ACTION_REVIEWS = 3;
 
 const TERMINAL_RUN_STATUSES = ["succeeded", "interrupted", "failed", "cancelled", "timed_out"] as const;
 const ACTIVE_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
@@ -54,6 +56,7 @@ type ProductivityReviewThresholds = {
   maxRefreshComments: number;
   creationWindowMs: number;
   maxCreationsPerWindow: number;
+  maxConsecutiveNoActionReviews: number;
 };
 
 type ProductivityReviewEvidence = {
@@ -176,6 +179,10 @@ function buildThresholds(overrides?: Partial<ProductivityReviewThresholds>): Pro
     maxCreationsPerWindow: readPositiveInteger(
       overrides?.maxCreationsPerWindow ?? DEFAULT_PRODUCTIVITY_REVIEW_MAX_CREATIONS_PER_WINDOW,
       DEFAULT_PRODUCTIVITY_REVIEW_MAX_CREATIONS_PER_WINDOW,
+    ),
+    maxConsecutiveNoActionReviews: readPositiveInteger(
+      overrides?.maxConsecutiveNoActionReviews ?? DEFAULT_PRODUCTIVITY_REVIEW_MAX_CONSECUTIVE_NO_ACTION_REVIEWS,
+      DEFAULT_PRODUCTIVITY_REVIEW_MAX_CONSECUTIVE_NO_ACTION_REVIEWS,
     ),
   };
 }
@@ -305,6 +312,52 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
         ),
       )
       .then((rows) => Number(rows[0]?.count ?? 0));
+  }
+
+  async function countConsecutiveNoActionProductivityReviews(
+    companyId: string,
+    sourceIssueId: string,
+    thresholds: ProductivityReviewThresholds,
+  ) {
+    const completedReviews = await db
+      .select({
+        id: issues.id,
+        createdAt: issues.createdAt,
+        updatedAt: issues.updatedAt,
+      })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, PRODUCTIVITY_REVIEW_ORIGIN_KIND),
+          eq(issues.originId, sourceIssueId),
+          eq(issues.status, "done"),
+          visibleIssueCondition(),
+        ),
+      )
+      .orderBy(desc(issues.updatedAt), desc(issues.id))
+      .limit(thresholds.maxConsecutiveNoActionReviews);
+
+    let streak = 0;
+    for (const review of completedReviews) {
+      const sourceAction = await db
+        .select({ id: activityLog.id })
+        .from(activityLog)
+        .where(
+          and(
+            eq(activityLog.companyId, companyId),
+            eq(activityLog.entityType, "issue"),
+            eq(activityLog.entityId, sourceIssueId),
+            gte(activityLog.createdAt, review.createdAt),
+            sql`${activityLog.createdAt} <= ${review.updatedAt.toISOString()}::timestamptz`,
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (sourceAction) break;
+      streak += 1;
+    }
+    return streak;
   }
 
   async function getRefreshCommentState(companyId: string, reviewIssueId: string) {
@@ -679,6 +732,15 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       return { kind: "creation_capped" as const, reviewIssueId: null };
     }
 
+    const consecutiveNoActionReviews = await countConsecutiveNoActionProductivityReviews(
+      evidence.sourceIssue.companyId,
+      evidence.sourceIssue.id,
+      opts.thresholds,
+    );
+    if (consecutiveNoActionReviews >= opts.thresholds.maxConsecutiveNoActionReviews) {
+      return { kind: "no_action_suppressed" as const, reviewIssueId: null };
+    }
+
     const ownerAgentId = await resolveReviewOwnerAgentId(evidence.sourceIssue, evidence.sourceAgent);
     let review: Awaited<ReturnType<typeof issuesSvc.create>>;
     try {
@@ -791,6 +853,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       existing: 0,
       snoozed: 0,
       creationCapped: 0,
+      noActionSuppressed: 0,
       skipped: 0,
       failed: 0,
       reviewIssueIds: [] as string[],
@@ -831,6 +894,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
         if (outcome.kind === "created") result.created += 1;
         else if (outcome.kind === "updated") result.updated += 1;
         else if (outcome.kind === "creation_capped") result.creationCapped += 1;
+        else if (outcome.kind === "no_action_suppressed") result.noActionSuppressed += 1;
         else result.existing += 1;
         if (outcome.reviewIssueId) result.reviewIssueIds.push(outcome.reviewIssueId);
       } catch (err) {

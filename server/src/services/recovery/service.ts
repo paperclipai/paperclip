@@ -75,6 +75,7 @@ const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["interrupted", "failed", "
 export const ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS = 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS = 4 * 60 * 60 * 1000;
 export const ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS = 30 * 60 * 1000;
+export const DEFAULT_LIVENESS_REESCALATION_COOLDOWN_MS = 60 * 60 * 1000;
 const ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES = 8 * 1024;
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
 const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation;
@@ -3980,6 +3981,34 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     }) ?? null;
   }
 
+  async function findRecentTerminalLivenessRecoveryIssue(
+    finding: IssueLivenessFinding,
+    now: Date,
+    cooldownMs: number,
+  ) {
+    if (cooldownMs <= 0) return null;
+    const cutoff = new Date(now.getTime() - cooldownMs);
+    return db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, finding.companyId),
+          eq(issues.originKind, RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation),
+          or(
+            eq(issues.originId, finding.incidentKey),
+            eq(issues.originFingerprint, livenessRecoveryLeafFingerprint(finding)),
+          ),
+          visibleIssueCondition(),
+          inArray(issues.status, ["done", "cancelled"]),
+          gte(issues.updatedAt, cutoff),
+        ),
+      )
+      .orderBy(desc(issues.updatedAt), desc(issues.id))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
   async function removeRecoveryBlockerFromSource(recovery: typeof issues.$inferSelect) {
     const parsed = parseLivenessIncidentKey(recovery.originId);
     if (!parsed) return false;
@@ -4335,6 +4364,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   async function createIssueGraphLivenessEscalation(input: {
     finding: IssueLivenessFinding;
     runId?: string | null;
+    now: Date;
+    reescalationCooldownMs: number;
   }) {
     const issue = await db
       .select()
@@ -4364,6 +4395,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         runId: input.runId ?? null,
       });
       return { kind: "existing" as const, escalationIssueId: existing.id };
+    }
+    if (await findRecentTerminalLivenessRecoveryIssue(
+      input.finding,
+      input.now,
+      input.reescalationCooldownMs,
+    )) {
+      return { kind: "cooldown" as const };
     }
 
     const ownerSelection = await resolveEscalationOwnerAgentId(input.finding, recoveryIssue);
@@ -4739,6 +4777,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     force?: boolean;
     lookbackHours?: number;
     issueCreatedAtGte?: Date | null;
+    now?: Date;
+    reescalationCooldownMs?: number;
   }) {
     let findings = await collectIssueGraphLivenessFindings();
     if (opts?.issueCreatedAtGte) {
@@ -4765,7 +4805,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const lookbackHours = normalizeIssueGraphLivenessAutoRecoveryLookbackHours(
       opts?.lookbackHours ?? experimentalSettings.issueGraphLivenessAutoRecoveryLookbackHours,
     );
-    const now = new Date();
+    const now = opts?.now ?? new Date();
+    const reescalationCooldownMs = Math.max(
+      0,
+      Math.floor(asNumber(opts?.reescalationCooldownMs, DEFAULT_LIVENESS_REESCALATION_COOLDOWN_MS)),
+    );
     const cutoff = new Date(now.getTime() - lookbackHours * 60 * 60 * 1000);
     const obsoleteRecoveryCleanup = await retireObsoleteLivenessRecoveryIssues(findings);
     const doneRecoveryBlockerCleanup = await retireDoneLivenessRecoveryBlockers();
@@ -4780,6 +4824,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       skipped: 0,
       skippedAutoRecoveryDisabled: 0,
       skippedOutsideLookback: 0,
+      skippedReescalationCooldown: 0,
       obsoleteRecoveriesRetired: obsoleteRecoveryCleanup.retired,
       obsoleteRecoveriesActiveSkipped: obsoleteRecoveryCleanup.activeSkipped,
       obsoleteRecoveryBlockerRelationsRemoved: obsoleteRecoveryCleanup.blockerRelationsRemoved,
@@ -4829,6 +4874,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       const escalation = await createIssueGraphLivenessEscalation({
         finding,
         runId: opts?.runId ?? null,
+        now,
+        reescalationCooldownMs,
       });
       if (escalation.kind === "created") {
         result.escalationsCreated += 1;
@@ -4838,6 +4885,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         result.existingEscalations += 1;
         result.issueIds.push(finding.issueId);
         result.escalationIssueIds.push(escalation.escalationIssueId);
+      } else if (escalation.kind === "cooldown") {
+        result.skippedReescalationCooldown += 1;
+        result.skipped += 1;
       } else {
         result.skipped += 1;
       }
