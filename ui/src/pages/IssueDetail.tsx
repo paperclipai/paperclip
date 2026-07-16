@@ -516,17 +516,22 @@ function attributionInitials(name: string): string {
   return name.slice(0, 2).toUpperCase();
 }
 
+type AttributionRole = "Assignee" | "Responsible" | "Originating";
+
 function AttributionAvatar({
-  label,
+  roles,
   actor,
   via,
 }: {
-  label: "Assignee" | "Originating";
+  roles: AttributionRole[];
   actor: AttributionActor;
   via?: string | null;
 }) {
-  const accessibleLabel = via ? `${label}: ${actor.name} · via ${via}` : `${label}: ${actor.name}`;
-  const testIdLabel = label.toLowerCase();
+  const roleLabel = roles.join(" · ");
+  const accessibleLabel = via ? `${roleLabel}: ${actor.name} · via ${via}` : `${roleLabel}: ${actor.name}`;
+  // Primary (highest-priority) role drives the test id; each role appears on at
+  // most one avatar, so primary roles are unique across the deduped strip.
+  const testIdLabel = roles[0].toLowerCase();
 
   return (
     <Tooltip>
@@ -555,7 +560,7 @@ function AttributionAvatar({
             </AvatarFallback>
           </Avatar>
           <div className="min-w-0">
-            <div className="text-(length:--text-nano) font-medium uppercase leading-none text-background/70">{label}</div>
+            <div className="text-(length:--text-nano) font-medium uppercase leading-none text-background/70">{roleLabel}</div>
             <div className="max-w-48 truncate text-xs font-medium leading-4 text-background">{actor.name}</div>
             {via ? (
               <div className="max-w-48 truncate text-(length:--text-nano) leading-3 text-background/60">via {via}</div>
@@ -578,50 +583,76 @@ function IssueAttributionByline({
   userProfileMap: ReadonlyMap<string, import("../lib/company-members").CompanyUserProfile>;
   userLabelMap: ReadonlyMap<string, string>;
 }) {
+  const buildUserActor = (userId: string): AttributionActor => ({
+    kind: "user",
+    id: userId,
+    name: formatUserLabel(userId, userLabelMap) ?? userProfileMap.get(userId)?.label ?? "User",
+    avatarUrl: userProfileMap.get(userId)?.image ?? null,
+  });
+  const buildAgentActor = (agentId: string): AttributionActor => ({
+    kind: "agent",
+    id: agentId,
+    name: agentMap.get(agentId)?.name ?? agentId.slice(0, 8),
+  });
+
   const assignee: AttributionActor | null = issue.assigneeAgentId
-    ? {
-        kind: "agent",
-        id: issue.assigneeAgentId,
-        name: agentMap.get(issue.assigneeAgentId)?.name ?? issue.assigneeAgentId.slice(0, 8),
-      }
+    ? buildAgentActor(issue.assigneeAgentId)
     : issue.assigneeUserId
-      ? {
-          kind: "user",
-          id: issue.assigneeUserId,
-          name: formatUserLabel(issue.assigneeUserId, userLabelMap)
-            ?? userProfileMap.get(issue.assigneeUserId)?.label
-            ?? "User",
-          avatarUrl: userProfileMap.get(issue.assigneeUserId)?.image ?? null,
-        }
+      ? buildUserActor(issue.assigneeUserId)
       : null;
+  // `local-board` and other sentinels resolve to their display identity (e.g.
+  // "Board") through `formatUserLabel` inside `buildUserActor`.
+  const responsible: AttributionActor | null = issue.responsibleUserId
+    ? buildUserActor(issue.responsibleUserId)
+    : null;
   const originatingActor = deriveOriginatingActor(issue);
   const originator: AttributionActor | null = originatingActor
     ? originatingActor.kind === "agent"
-      ? {
-          kind: "agent",
-          id: originatingActor.id,
-          name: agentMap.get(originatingActor.id)?.name ?? originatingActor.id.slice(0, 8),
-        }
-      : {
-          kind: "user",
-          id: originatingActor.id,
-          name: formatUserLabel(originatingActor.id, userLabelMap)
-            ?? userProfileMap.get(originatingActor.id)?.label
-            ?? "User",
-          avatarUrl: userProfileMap.get(originatingActor.id)?.image ?? null,
-        }
+      ? buildAgentActor(originatingActor.id)
+      : buildUserActor(originatingActor.id)
     : null;
   const originatorVia =
     originatingActor?.kind === "user" && originatingActor.viaAgentId
       ? agentMap.get(originatingActor.viaAgentId)?.name ?? originatingActor.viaAgentId.slice(0, 8)
       : null;
-  if (!assignee && !originator) return null;
+
+  // Dedup by actor identity (kind + id): each distinct actor renders exactly
+  // once, with every role it holds. Roles are added in stable priority order
+  // (Assignee → Responsible → Originating), and entries preserve first-seen
+  // order, so both the roles within an avatar and the avatars themselves stay
+  // in that order.
+  type ActorRoleEntry = { actor: AttributionActor; roles: AttributionRole[]; via: string | null };
+  const entries: ActorRoleEntry[] = [];
+  const entryIndexByKey = new Map<string, number>();
+  const addRole = (role: AttributionRole, actor: AttributionActor | null, via: string | null = null) => {
+    if (!actor) return;
+    const key = `${actor.kind}:${actor.id}`;
+    const existingIndex = entryIndexByKey.get(key);
+    if (existingIndex != null) {
+      entries[existingIndex].roles.push(role);
+      if (via && !entries[existingIndex].via) entries[existingIndex].via = via;
+      return;
+    }
+    entryIndexByKey.set(key, entries.length);
+    entries.push({ actor, roles: [role], via });
+  };
+  addRole("Assignee", assignee);
+  addRole("Responsible", responsible);
+  addRole("Originating", originator, originatorVia);
+
+  if (entries.length === 0) return null;
 
   return (
     <TooltipProvider>
       <AvatarGroup className="-space-x-1.5" aria-label="Task people" data-testid="issue-attribution-avatar-stack">
-        {assignee ? <AttributionAvatar label="Assignee" actor={assignee} /> : null}
-        {originator ? <AttributionAvatar label="Originating" actor={originator} via={originatorVia} /> : null}
+        {entries.map((entry) => (
+          <AttributionAvatar
+            key={`${entry.actor.kind}:${entry.actor.id}`}
+            roles={entry.roles}
+            actor={entry.actor}
+            via={entry.via}
+          />
+        ))}
       </AvatarGroup>
     </TooltipProvider>
   );

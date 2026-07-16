@@ -1166,7 +1166,7 @@ describe("IssueDetail", () => {
     });
   });
 
-  it("attributes an agent-created issue to the transitive responsible user with a via affordance", async () => {
+  it("dedups the responsible + transitive-originating human into one avatar with a via affordance", async () => {
     mockIssuesApi.get.mockResolvedValue(createIssue({
       assigneeAgentId: "agent-1",
       createdByAgentId: "agent-1",
@@ -1199,19 +1199,169 @@ describe("IssueDetail", () => {
     await flushReact();
 
     await waitForAssertion(() => {
-      const originatingAvatar = container.querySelector('[data-testid="issue-originating-avatar"]');
-      expect(originatingAvatar?.getAttribute("aria-label")).toBe("Originating: Dotta · via CodexCoder");
+      // Responsible + Originating collapse onto a single avatar (keyed by the
+      // primary role: Responsible), listing both roles and the via affordance.
+      const avatarStack = container.querySelector('[data-testid="issue-attribution-avatar-stack"]');
+      expect(avatarStack?.querySelectorAll('[data-testid$="-avatar"]').length).toBe(2);
+      expect(container.querySelector('[data-testid="issue-originating-avatar"]')).toBeNull();
+      const responsibleAvatar = container.querySelector('[data-testid="issue-responsible-avatar"]');
+      expect(responsibleAvatar?.getAttribute("aria-label")).toBe(
+        "Responsible · Originating: Dotta · via CodexCoder",
+      );
     });
 
     const pointerEvent = window.PointerEvent ?? MouseEvent;
-    const originatingAvatar = container.querySelector('[data-testid="issue-originating-avatar"]');
+    const responsibleAvatar = container.querySelector('[data-testid="issue-responsible-avatar"]');
     await act(async () => {
-      originatingAvatar?.dispatchEvent(new pointerEvent("pointermove", { bubbles: true }));
+      responsibleAvatar?.dispatchEvent(new pointerEvent("pointermove", { bubbles: true }));
     });
     await waitForAssertion(() => {
-      const tooltip = document.body.querySelector('[data-testid="issue-originating-tooltip"]');
+      const tooltip = document.body.querySelector('[data-testid="issue-responsible-tooltip"]');
+      expect(tooltip?.textContent).toContain("Responsible · Originating");
       expect(tooltip?.textContent).toContain("Dotta");
       expect(tooltip?.textContent).toContain("via CodexCoder");
+    });
+  });
+
+  it("collapses a single actor holding all three roles into one avatar with a combined-role tooltip", async () => {
+    // assignee, responsible, and originator all resolve to user-1 (Dotta).
+    mockIssuesApi.get.mockResolvedValue(createIssue({
+      assigneeUserId: "user-1",
+      createdByUserId: "user-1",
+      responsibleUserId: "user-1",
+    }));
+    mockAgentsApi.list.mockResolvedValue([]);
+    mockAccessApi.listUserDirectory.mockResolvedValue({
+      users: [
+        {
+          principalId: "user-1",
+          status: "active",
+          user: { id: "user-1", name: "Dotta", email: "dotta@example.com", image: null },
+        },
+      ],
+    });
+    mockAuthApi.getSession.mockResolvedValue({
+      session: { userId: "user-1" },
+      user: { id: "user-1" },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    await waitForAssertion(() => {
+      const avatarStack = container.querySelector('[data-testid="issue-attribution-avatar-stack"]');
+      expect(avatarStack).toBeTruthy();
+      // Exactly one avatar; primary role is Assignee.
+      expect(avatarStack?.querySelectorAll('[data-testid$="-avatar"]').length).toBe(1);
+      const assigneeAvatar = container.querySelector('[data-testid="issue-assignee-avatar"]');
+      expect(assigneeAvatar?.getAttribute("aria-label")).toBe(
+        "Assignee · Responsible · Originating: Dotta",
+      );
+    });
+
+    const pointerEvent = window.PointerEvent ?? MouseEvent;
+    const assigneeAvatar = container.querySelector('[data-testid="issue-assignee-avatar"]');
+    await act(async () => {
+      assigneeAvatar?.dispatchEvent(new pointerEvent("pointermove", { bubbles: true }));
+    });
+    await waitForAssertion(() => {
+      const tooltip = document.body.querySelector('[data-testid="issue-assignee-tooltip"]');
+      expect(tooltip?.textContent).toContain("Assignee · Responsible · Originating");
+      expect(tooltip?.textContent).toContain("Dotta");
+    });
+  });
+
+  it("renders three avatars in stable order for three distinct actors", async () => {
+    // Assignee = agent, Responsible = board human, Originating = a different human creator.
+    mockIssuesApi.get.mockResolvedValue(createIssue({
+      assigneeAgentId: "agent-1",
+      createdByUserId: "user-2",
+      responsibleUserId: "local-board",
+    }));
+    mockAgentsApi.list.mockResolvedValue([createAgent({ name: "CodexCoder" })]);
+    mockAccessApi.listUserDirectory.mockResolvedValue({
+      users: [
+        {
+          principalId: "user-2",
+          status: "active",
+          user: { id: "user-2", name: "Dotta", email: "dotta@example.com", image: null },
+        },
+      ],
+    });
+    mockAuthApi.getSession.mockResolvedValue({
+      session: { userId: "user-2" },
+      user: { id: "user-2" },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    await waitForAssertion(() => {
+      const avatarStack = container.querySelector('[data-testid="issue-attribution-avatar-stack"]');
+      expect(avatarStack).toBeTruthy();
+      const avatars = Array.from(avatarStack?.querySelectorAll('[data-testid$="-avatar"]') ?? []);
+      // Stable order: Assignee → Responsible → Originating.
+      expect(avatars.map((a) => a.getAttribute("data-testid"))).toEqual([
+        "issue-assignee-avatar",
+        "issue-responsible-avatar",
+        "issue-originating-avatar",
+      ]);
+      expect(
+        container.querySelector('[data-testid="issue-assignee-avatar"]')?.getAttribute("aria-label"),
+      ).toBe("Assignee: CodexCoder");
+      // `local-board` maps to the "Board" display identity.
+      expect(
+        container.querySelector('[data-testid="issue-responsible-avatar"]')?.getAttribute("aria-label"),
+      ).toBe("Responsible: Board");
+      expect(
+        container.querySelector('[data-testid="issue-originating-avatar"]')?.getAttribute("aria-label"),
+      ).toBe("Originating: Dotta");
+    });
+  });
+
+  it("renders no attribution avatar stack when provenance fields are null", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue({
+      assigneeAgentId: null,
+      assigneeUserId: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      responsibleUserId: null,
+    }));
+    mockAgentsApi.list.mockResolvedValue([]);
+    mockAccessApi.listUserDirectory.mockResolvedValue({ users: [] });
+    mockAuthApi.getSession.mockResolvedValue({
+      session: { userId: "user-1" },
+      user: { id: "user-1" },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    await waitForAssertion(() => {
+      // The header still renders (title present) but no attribution strip.
+      expect(container.textContent).toContain("Issue detail smoke");
+      expect(container.querySelector('[data-testid="issue-attribution-avatar-stack"]')).toBeNull();
     });
   });
 
