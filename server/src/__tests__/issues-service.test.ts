@@ -1790,6 +1790,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       done: randomUUID(),
       humanComment: randomUUID(),
       mention: randomUUID(),
+      selfMention: randomUUID(),
       unarchived: randomUUID(),
     };
 
@@ -1860,6 +1861,14 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
         issueId: issueIds.mention,
         authorAgentId: agentId,
         body: "Please review this, [Viewer](user://user-1)",
+        createdAt: new Date("2026-03-26T13:00:00.000Z"),
+        updatedAt: new Date("2026-03-26T13:00:00.000Z"),
+      },
+      {
+        companyId,
+        issueId: issueIds.selfMention,
+        authorUserId: userId,
+        body: "Note to self, [Viewer](user://user-1)",
         createdAt: new Date("2026-03-26T13:00:00.000Z"),
         updatedAt: new Date("2026-03-26T13:00:00.000Z"),
       },
