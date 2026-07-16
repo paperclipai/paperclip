@@ -774,6 +774,9 @@ describe("renderPaperclipWakePrompt", () => {
     ]) {
       expect(prompt).toContain("Execution contract: take concrete action in this heartbeat");
       expect(prompt).toContain("clear final disposition");
+      expect(prompt).toContain("Immediately before returning, verify that Paperclip records one of those dispositions");
+      expect(prompt).toContain("a successful process exit or final response is not sufficient");
+      expect(prompt).toContain("If no valid disposition is recorded, record it now and do not end the run");
       expect(prompt).toContain("evidence, not valid liveness paths by themselves");
       expect(prompt).toContain("Use child issues for long or parallel delegated work instead of polling");
       expect(prompt).toContain("named unblock owner/action");

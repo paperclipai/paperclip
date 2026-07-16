@@ -8023,7 +8023,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .where(eq(heartbeatRuns.id, run.id));
     }
 
-    const handoffRun = await enqueueWakeup(run.agentId, {
+    const handoffRun = await enqueueWakeup(decision.targetAgentId, {
       source: "automation",
       triggerDetail: "system",
       reason: FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
