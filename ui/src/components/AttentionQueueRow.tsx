@@ -116,10 +116,15 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
   const snoozedUntil = item.dismissal?.kind === "snooze" ? item.dismissal.snoozedUntil : null;
   const detailLine = attentionDetailLine(item) ?? item.whyNow;
   const images = attentionDetailImages(item);
-  // Only inline-resolvable active rows can expand; that's the only case where a
-  // whole-header click has somewhere to go (plan §5). Non-inline rows keep the
+  const hasImages = images.length > 0;
+  // The issue (or source) this row points at — used as the target for the
+  // "n more" affordance in the expanded gallery.
+  const issueHref = item.relatedIssue?.href ?? href;
+  // Inline-resolvable active rows expand to reveal their resolver; rows with
+  // images expand to reveal a larger gallery (PAP-13544). Either case gives a
+  // header/thumbnail click somewhere to go. Non-inline, image-less rows keep the
   // explicit Open button and never toggle on a stray click.
-  const expandable = inline;
+  const expandable = inline || (!isHidden && hasImages);
 
   const activate = () => {
     if (expandable) onToggleExpand(item);
@@ -281,10 +286,10 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
 
           {/* Context row: project identity and evidence thumbnails move below the
               text so they never squeeze the headline on mobile. */}
-          {(item.project || images.length > 0) && (
+          {(item.project || (hasImages && !expanded)) && (
             <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
               {item.project && <ProjectMeta project={item.project} />}
-              {images.length > 0 && <ThumbnailStack images={images} />}
+              {hasImages && !expanded && <ThumbnailStack images={images} />}
             </div>
           )}
 
@@ -330,15 +335,18 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
         </div>
       </div>
 
-      {inline && expanded && (
-        <div className="border-t border-border/60 bg-muted/20 px-4 py-3 motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-top-1 motion-safe:duration-200">
-          <InlineResolver
-            item={item}
-            companyId={companyId}
-            agentMap={agentMap}
-            currentUserId={currentUserId}
-            userLabelMap={userLabelMap}
-          />
+      {expanded && (hasImages || inline) && (
+        <div className="space-y-3 border-t border-border/60 bg-muted/20 px-4 py-3 motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-top-1 motion-safe:duration-200">
+          {hasImages && <ExpandedImages images={images} issueHref={issueHref} />}
+          {inline && (
+            <InlineResolver
+              item={item}
+              companyId={companyId}
+              agentMap={agentMap}
+              currentUserId={currentUserId}
+              userLabelMap={userLabelMap}
+            />
+          )}
         </div>
       )}
     </div>
@@ -495,13 +503,13 @@ function ThumbnailStack({ images }: { images: AttentionDetailImage[] }) {
   return (
     <div className="flex shrink-0 items-center">
       <div className="flex -space-x-3">
-        {visible.map((img, i) => (
+        {visible.map((img, index) => (
           <img
-            key={img.assetId}
+            key={`${img.assetId}-${index}`}
             src={attentionImageUrl(img.assetId)}
             alt={img.alt ?? ""}
             loading="lazy"
-            style={{ zIndex: visible.length - i }}
+            style={{ zIndex: visible.length - index }}
             className="h-11 w-11 rounded-md border border-border bg-muted object-cover shadow-sm"
           />
         ))}
@@ -511,6 +519,63 @@ function ThumbnailStack({ images }: { images: AttentionDetailImage[] }) {
           +{extra}
         </span>
       )}
+    </div>
+  );
+}
+
+/**
+ * Larger image gallery shown when a row is expanded (PAP-13544). Shows the
+ * first three screenshots at a readable size; if more exist, an "n more" tile
+ * links through to the issue where the full set lives.
+ */
+function ExpandedImages({ images, issueHref }: { images: AttentionDetailImage[]; issueHref: string | null }) {
+  const visible = images.slice(0, 3);
+  const extra = images.length - visible.length;
+  return (
+    <div className="flex flex-wrap items-stretch gap-2" data-attention-expanded-images="true">
+      {visible.map((img, index) => {
+        const src = attentionImageUrl(img.assetId);
+        const key = `${img.assetId}-${index}`;
+        const image = (
+          <img
+            src={src}
+            alt={img.alt ?? ""}
+            loading="lazy"
+            className="h-32 w-44 rounded-md border border-border bg-muted object-cover shadow-sm"
+          />
+        );
+        return issueHref ? (
+          <Link
+            key={key}
+            to={issueHref}
+            className="block rounded-md focus-visible:ring-ring focus-visible:ring-(length:--rad-3) focus-visible:outline-none"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {image}
+          </Link>
+        ) : (
+          <span key={key} className="block">
+            {image}
+          </span>
+        );
+      })}
+      {extra > 0 && (issueHref ? (
+        <Link
+          to={issueHref}
+          onClick={(e) => e.stopPropagation()}
+          className="flex h-32 w-24 flex-col items-center justify-center rounded-md border border-dashed border-border bg-muted/40 text-sm font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-ring focus-visible:ring-(length:--rad-3) focus-visible:outline-none"
+        >
+          <span className="text-base font-semibold">{extra} more</span>
+          <span className="mt-0.5 inline-flex items-center gap-1 text-(length:--text-nano)">
+            View issue
+            <ExternalLink className="h-3 w-3" />
+          </span>
+        </Link>
+      ) : (
+        <span className="flex h-32 w-24 items-center justify-center rounded-md border border-dashed border-border bg-muted/40 text-sm font-semibold text-muted-foreground">
+          {extra} more
+        </span>
+      ))}
     </div>
   );
 }
