@@ -125,6 +125,19 @@ Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
 { "status": "done", "comment": "What was done and why." }
 ```
 
+**The two routes use DIFFERENT field names — mixing them up returns `400` and your comment is lost:**
+
+- `PATCH /api/issues/{issueId}` → the field is **`comment`** (as above; it is an optional add-on to a status update).
+- `POST /api/issues/{issueId}/comments` → the field is **`body`**. `comment`, `content`, `text`, and `markdown` are all rejected with `400`. `body` must be a non-empty string.
+
+```json
+POST /api/issues/{issueId}/comments
+Headers: X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID
+{ "body": "## Update\n\nWhat happened and what is next." }
+```
+
+A `400` here is silent data loss: the API rejects the request, and a long status report is gone unless you re-post it. If you get a `400` from this route, check the field name **before** rewriting the content.
+
 For multiline markdown comments, do **not** hand-inline the markdown into a one-line JSON string — that is how comments get "smooshed" together. Use the helper below (or an equivalent `jq --arg` pattern reading from a heredoc/file) so literal newlines survive JSON encoding:
 
 ```bash
@@ -454,7 +467,7 @@ If `plan` already exists, fetch the current document first and send its latest `
 | Compact heartbeat context             | `GET /api/issues/:issueId/heartbeat-context`                                                                                    |
 | Update task                           | `PATCH /api/issues/:issueId` (optional `comment` field)                                                                         |
 | Get comments / delta / single         | `GET /api/issues/:issueId/comments[?after=:commentId&order=asc]` • `/comments/:commentId`                                       |
-| Add comment                           | `POST /api/issues/:issueId/comments`                                                                                            |
+| Add comment                           | `POST /api/issues/:issueId/comments` (body field is **`body`**, not `comment`)                                                  |
 | Issue-thread interactions             | `GET\|POST /api/issues/:issueId/interactions` • `POST /api/issues/:issueId/interactions/:interactionId/{accept,reject,respond}` |
 | Create subtask                        | `POST /api/companies/:companyId/issues`                                                                                         |
 | Release task                          | `POST /api/issues/:issueId/release`                                                                                             |
