@@ -101,11 +101,8 @@ function mergeProfile(existingInput: unknown, requestedInput: unknown): UnknownR
 function mergeModelProfiles(existingInput: unknown, requestedInput: unknown): UnknownRecord {
   const existing = asRecord(existingInput);
   const requested = asRecord(requestedInput);
-  const result: UnknownRecord = {};
+  const result: UnknownRecord = { ...existing };
 
-  for (const [profileName, value] of Object.entries(existing)) {
-    if (!PUBLIC_MODEL_PROFILE_NAMES.has(profileName)) result[profileName] = value;
-  }
   for (const profileName of PUBLIC_MODEL_PROFILE_NAMES) {
     if (!hasOwn(requested, profileName)) continue;
     result[profileName] = mergeProfile(existing[profileName], requested[profileName]);

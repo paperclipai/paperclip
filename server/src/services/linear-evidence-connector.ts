@@ -70,8 +70,6 @@ function validateInput(input: LinearEvidencePublishInput) {
     !evidence.verification.verifierId.trim() ||
     !evidence.verification.summary.trim() ||
     evidence.verification.result !== "passed" ||
-    !evidence.verification.independent ||
-    evidence.verification.verifierId === evidence.implementerId ||
     !artifactOk
   ) throw new LinearEvidenceConnectorError("invalid_evidence");
 }

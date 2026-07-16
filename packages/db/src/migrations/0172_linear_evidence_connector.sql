@@ -23,7 +23,8 @@ CREATE TABLE "linear_evidence_deliveries" (
   "lease_expires_at" timestamp with time zone,
   "last_error_code" text,
   "created_at" timestamp with time zone DEFAULT now() NOT NULL,
-  "updated_at" timestamp with time zone DEFAULT now() NOT NULL
+  "updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+  CONSTRAINT "linear_evidence_deliveries_state_check" CHECK ("state" IN ('pending', 'published', 'conflict'))
 );
 --> statement-breakpoint
 CREATE TABLE "linear_evidence_conflicts" (
@@ -37,7 +38,8 @@ CREATE TABLE "linear_evidence_conflicts" (
   "detected_at" timestamp with time zone DEFAULT now() NOT NULL,
   "resolved_at" timestamp with time zone,
   "resolved_by_user_id" text,
-  "resolved_by_agent_id" uuid
+  "resolved_by_agent_id" uuid,
+  CONSTRAINT "linear_evidence_conflicts_resolution_check" CHECK ("resolution" IN ('unresolved', 'resolved'))
 );
 --> statement-breakpoint
 ALTER TABLE "linear_evidence_mappings" ADD CONSTRAINT "linear_evidence_mappings_company_id_companies_id_fk" FOREIGN KEY ("company_id") REFERENCES "public"."companies"("id") ON DELETE cascade ON UPDATE no action;

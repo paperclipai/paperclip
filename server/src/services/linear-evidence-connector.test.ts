@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   companies,
@@ -229,6 +229,61 @@ describePg("linearEvidenceConnector", () => {
     expect(retry.delivery.state).toBe("pending");
     expect(transport.createComment).not.toHaveBeenCalled();
     expect((await db.select().from(linearEvidenceDeliveries))).toHaveLength(1);
+  });
+
+  it("allows the issue policy to decide whether independent QA is required", async () => {
+    const input = await fixture();
+    const transport: LinearEvidenceTransport = {
+      findCommentByMarker: vi.fn(),
+      createComment: vi.fn(),
+      getComment: vi.fn(),
+    };
+    const connector = linearEvidenceConnector(db, transport);
+    const snapshot = await connector.publish({
+      ...input,
+      evidence: {
+        ...input.evidence,
+        verification: {
+          ...input.evidence.verification,
+          verifierId: input.evidence.implementerId,
+          independent: false,
+        },
+      },
+      dryRun: true,
+    });
+
+    expect(snapshot.evidence.verification).toMatchObject({
+      verifierId: input.evidence.implementerId,
+      independent: false,
+    });
+    expect(snapshot.delivery.state).toBe("pending");
+    expect(transport.createComment).not.toHaveBeenCalled();
+  });
+
+  it("enforces delivery-state and conflict-resolution domains in PostgreSQL", async () => {
+    const input = await fixture();
+    const transport: LinearEvidenceTransport = {
+      findCommentByMarker: vi.fn(),
+      createComment: vi.fn(),
+      getComment: vi.fn(),
+    };
+    const connector = linearEvidenceConnector(db, transport);
+    await connector.publish({ ...input, dryRun: true });
+    const [mapping] = await db.select().from(linearEvidenceMappings);
+    await db.insert(linearEvidenceConflicts).values({
+      mappingId: mapping!.id,
+      conflictKey: "constraint_probe",
+      fingerprint: "constraint-probe",
+      paperclipValue: { value: "paperclip" },
+      linearValue: { value: "linear" },
+    });
+
+    await expect(
+      db.execute(sql`update linear_evidence_deliveries set state = 'invalid'`),
+    ).rejects.toThrow();
+    await expect(
+      db.execute(sql`update linear_evidence_conflicts set resolution = 'invalid'`),
+    ).rejects.toThrow();
   });
 
   it("reconciles by marker after an ambiguous accepted create without duplicating the comment", async () => {

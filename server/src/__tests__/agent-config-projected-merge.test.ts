@@ -64,6 +64,11 @@ describe("agent projected config update merge", () => {
           maxTurnContinuation: { enabled: true, maxAttempts: 3, delayMs: 1000, hiddenCursor: "keep" },
         },
         modelProfiles: {
+          default: {
+            enabled: true,
+            label: "Default",
+            adapterConfig: { model: "gpt-5", env: { OPENAI_API_KEY: { secretRef: "secret-1" } } },
+          },
           cheap: {
             enabled: true,
             label: "Cheap",
@@ -92,6 +97,11 @@ describe("agent projected config update merge", () => {
         maxTurnContinuation: { enabled: true, maxAttempts: 4, delayMs: 2000, hiddenCursor: "keep" },
       },
       modelProfiles: {
+        default: {
+          enabled: true,
+          label: "Default",
+          adapterConfig: { model: "gpt-5", env: { OPENAI_API_KEY: { secretRef: "secret-1" } } },
+        },
         cheap: {
           enabled: true,
           label: "Cheap",

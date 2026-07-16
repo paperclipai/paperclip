@@ -1,4 +1,6 @@
+import { sql } from "drizzle-orm";
 import {
+  check,
   index,
   jsonb,
   pgTable,
@@ -49,6 +51,10 @@ export const linearEvidenceDeliveries = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
+    stateCheck: check(
+      "linear_evidence_deliveries_state_check",
+      sql`${table.state} in ('pending', 'published', 'conflict')`,
+    ),
     idempotencyUq: uniqueIndex("linear_evidence_deliveries_idempotency_uq").on(table.idempotencyKey),
     mappingVersionIdx: index("linear_evidence_deliveries_mapping_version_idx").on(
       table.mappingId,
@@ -75,6 +81,10 @@ export const linearEvidenceConflicts = pgTable(
     resolvedByAgentId: uuid("resolved_by_agent_id").references(() => agents.id, { onDelete: "set null" }),
   },
   (table) => ({
+    resolutionCheck: check(
+      "linear_evidence_conflicts_resolution_check",
+      sql`${table.resolution} in ('unresolved', 'resolved')`,
+    ),
     fingerprintUq: uniqueIndex("linear_evidence_conflicts_fingerprint_uq").on(table.mappingId, table.fingerprint),
     unresolvedIdx: index("linear_evidence_conflicts_unresolved_idx").on(
       table.mappingId,
