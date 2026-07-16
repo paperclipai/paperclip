@@ -1234,6 +1234,56 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(enqueueWakeup).toHaveBeenCalledOnce();
   }, 15_000);
 
+  it("does not trust run-result repository paths for workspace repair", async () => {
+    const { companyId, coderId, sourceIssue } = await seedCompany();
+    const repoRoot = await createGitRepo();
+    const expectedBranch = "repair/untrusted-expected";
+    const actualBranch = "repair/untrusted-actual";
+    const worktreePath = path.join(repoRoot, ".paperclip", "worktrees", "untrusted-root");
+    await fs.mkdir(path.dirname(worktreePath), { recursive: true });
+    await runGit(repoRoot, ["branch", expectedBranch, "main"]);
+    await runGit(repoRoot, ["worktree", "add", "-b", actualBranch, worktreePath, "main"]);
+    const executionWorkspaceId = await seedExecutionWorkspace({
+      companyId,
+      sourceIssueId: sourceIssue.id,
+      repoRoot,
+      worktreePath,
+      branchName: expectedBranch,
+    });
+    await db
+      .update(executionWorkspaces)
+      .set({ projectWorkspaceId: null })
+      .where(eq(executionWorkspaces.id, executionWorkspaceId));
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    await recovery.escalateStrandedAssignedIssue({
+      issue: sourceIssue,
+      previousStatus: "in_progress",
+      latestRun: {
+        id: randomUUID(),
+        agentId: coderId,
+        status: "failed",
+        error: "workspace branch mismatch",
+        errorCode: "workspace_validation_failed",
+        contextSnapshot: {},
+        livenessState: "failed",
+        resultJson: {
+          workspaceValidation: {
+            reason: "git_worktree_branch_incoherence",
+            executionWorkspaceId,
+            repoRoot,
+          },
+        },
+      },
+      recoveryCause: "workspace_validation_failed",
+    });
+
+    expect(await runGit(worktreePath, ["branch", "--show-current"]).then((result) => result.stdout.trim())).toBe(actualBranch);
+    expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, sourceIssue.id))).toHaveLength(1);
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+  }, 15_000);
+
   it("never discards dirty work and routes unrecoverable workspace repair to the CTO", async () => {
     const { companyId, managerId, coderId, sourceIssue } = await seedCompany();
     const repoRoot = await createGitRepo();

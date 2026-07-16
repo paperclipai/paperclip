@@ -2343,13 +2343,9 @@ export async function attemptMechanicalWorkspaceValidationRepair(input: {
       ))
       .limit(1)
     : [];
-  const evidenceRepoRoot =
-    asString(input.workspaceValidation.repoRoot, "").trim() ||
-    asString(managedBranch.repoRoot, "").trim() ||
-    null;
-  const repoRoot = asString(projectWorkspace?.cwd, "").trim() || evidenceRepoRoot;
+  const repoRoot = asString(projectWorkspace?.cwd, "").trim();
   if (!repoRoot || !await directoryExists(repoRoot)) {
-    return { repaired: false, executionWorkspaceId, reason: "source repository is missing" };
+    return { repaired: false, executionWorkspaceId, reason: "registered source repository is missing" };
   }
 
   let inspection = await inspectManagedGitWorktreeBranch({
