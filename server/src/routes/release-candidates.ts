@@ -5,7 +5,8 @@ import { z } from "zod";
 import type { Db } from "@paperclipai/db";
 import type { StorageService } from "../storage/types.js";
 import { validate } from "../middleware/validate.js";
-import { badRequest, conflict, notFound, unauthorized } from "../errors.js";
+import { badRequest, conflict, HttpError, notFound, unauthorized } from "../errors.js";
+import { logger } from "../middleware/logger.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { assetService } from "../services/assets.js";
 import { issueService } from "../services/issues.js";
@@ -167,14 +168,15 @@ export function releaseCandidateRoutes(db: Db, storage: StorageService) {
     "/release-candidates/deploy-records",
     validate(deployRecordSchema),
     async (req, res) => {
-      const actor = getActorInfo(req);
       const token = readDeployTokenHeader(req);
+      const { candidate } = await candidates.getApprovedLease(req.body.authorizationId, token);
+      assertCompanyAccess(req, candidate.companyId);
+      const actor = getActorInfo(req);
       const result = await candidates.recordDeployEvent({ ...req.body, token }, {
         agentId: actor.agentId,
         userId: actor.actorType === "user" ? actor.actorId : null,
         runId: actor.runId,
       });
-      assertCompanyAccess(req, result.candidate.companyId);
       res.status(201).json({
         ok: true,
         eventType: result.eventType,
@@ -322,7 +324,35 @@ export function releaseCandidateRoutes(db: Db, storage: StorageService) {
           userId: actor.actorType === "user" ? actor.actorId : null,
           runId: actor.runId,
         },
-      );
+      ).catch(async (err: unknown) => {
+        if (err instanceof HttpError && err.status === 409) {
+          const stagedAssets = [
+            { assetId: artifactAsset.id, objectKey: storedArtifact.objectKey },
+            { assetId: signatureBundleAsset.id, objectKey: storedSignatureBundle.objectKey },
+          ];
+          for (const stagedAsset of stagedAssets) {
+            try {
+              await storage.deleteObject(candidate.companyId, stagedAsset.objectKey);
+            } catch (cleanupError) {
+              logger.warn({
+                err: cleanupError,
+                authorizationId: req.params.authorizationId,
+                objectKey: stagedAsset.objectKey,
+              }, "failed to delete relay storage object after staging conflict");
+            }
+            try {
+              await assets.remove(candidate.companyId, stagedAsset.assetId);
+            } catch (cleanupError) {
+              logger.warn({
+                err: cleanupError,
+                authorizationId: req.params.authorizationId,
+                assetId: stagedAsset.assetId,
+              }, "failed to delete relay asset row after staging conflict");
+            }
+          }
+        }
+        throw err;
+      });
       res.status(201).json({
         authorizationId: authorization.id,
         candidateId: authorization.candidateId,

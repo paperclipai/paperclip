@@ -3,12 +3,14 @@ import { Readable } from "node:stream";
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { conflict } from "../errors.js";
 import { errorHandler } from "../middleware/index.js";
 import { releaseCandidateRoutes } from "../routes/release-candidates.js";
 
 const mockAssetService = vi.hoisted(() => ({
   create: vi.fn(),
   getById: vi.fn(),
+  remove: vi.fn(),
 }));
 
 const mockReleaseCandidateService = vi.hoisted(() => ({
@@ -61,6 +63,7 @@ describe("release candidate routes", () => {
     mockReleaseCandidateService.stageRelayArtifact.mockReset();
     mockAssetService.create.mockReset();
     mockAssetService.getById.mockReset();
+    mockAssetService.remove.mockReset();
   });
 
   it("returns staged artifact digest fields and approval interaction id for approved leases", async () => {
@@ -141,6 +144,14 @@ describe("release candidate routes", () => {
   it("passes deploy-record tokens only from the header and keeps the request target token-free", async () => {
     const authorizationId = "99999999-9999-4999-8999-999999999999";
     const requestTargets: string[] = [];
+    mockReleaseCandidateService.getApprovedLease.mockResolvedValue({
+      authorization: { id: authorizationId },
+      candidate: {
+        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        companyId,
+        sourceIssueId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      },
+    });
     mockReleaseCandidateService.recordDeployEvent.mockResolvedValue({
       eventType: "deploy_started",
       authorization: { id: authorizationId },
@@ -161,12 +172,36 @@ describe("release candidate routes", () => {
       .send({ authorizationId, status: "started", commitSha: "abc1234567" });
 
     expect(res.status).toBe(201);
+    expect(mockReleaseCandidateService.getApprovedLease).toHaveBeenCalledWith(
+      authorizationId,
+      "pcdeploy_header-token",
+    );
     expect(mockReleaseCandidateService.recordDeployEvent).toHaveBeenCalledWith(
       expect.objectContaining({ authorizationId, status: "started", token: "pcdeploy_header-token" }),
       expect.any(Object),
     );
     expect(requestTargets).toEqual(["/api/release-candidates/deploy-records"]);
     expect(JSON.stringify(requestTargets)).not.toContain("pcdeploy_header-token");
+  });
+
+  it("rejects cross-company deploy records before writing audit events", async () => {
+    const authorizationId = "99999999-9999-4999-8999-999999999999";
+    mockReleaseCandidateService.getApprovedLease.mockResolvedValue({
+      authorization: { id: authorizationId },
+      candidate: {
+        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        companyId: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+        sourceIssueId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      },
+    });
+
+    const res = await request(createApp())
+      .post("/api/release-candidates/deploy-records")
+      .set("X-Paperclip-Deploy-Token", "pcdeploy_header-token")
+      .send({ authorizationId, status: "started" });
+
+    expect(res.status).toBe(403);
+    expect(mockReleaseCandidateService.recordDeployEvent).not.toHaveBeenCalled();
   });
 
   it("rejects deprecated body deploy tokens for deploy records", async () => {
@@ -277,6 +312,91 @@ describe("release candidate routes", () => {
       artifactPath: `/api/release-deploy-authorizations/${authorizationId}/staged-artifact`,
       signatureBundlePath: `/api/release-deploy-authorizations/${authorizationId}/staged-signature-bundle`,
     });
+  });
+
+  it("cleans up uploaded assets when a concurrent staging request loses the token race", async () => {
+    const authorizationId = "99999999-9999-4999-8999-999999999999";
+    const tarball = Buffer.from("scanner relay artifact");
+    const signatureBundle = Buffer.from("{\"mediaType\":\"application/vnd.dev.sigstore.bundle+json\"}");
+    const tarballSha256 = `sha256:${createHash("sha256").update(tarball).digest("hex")}`;
+    const signatureBundleSha256 = `sha256:${createHash("sha256").update(signatureBundle).digest("hex")}`;
+    const artifactAssetId = "77777777-7777-4777-8777-777777777777";
+    const signatureAssetId = "88888888-8888-4888-8888-888888888888";
+    const artifactObjectKey = "release-candidates/artifact.tar";
+    const signatureObjectKey = "release-candidates/signature.sigstore.json";
+    mockReleaseCandidateService.verifyRelayAuthorization.mockResolvedValue({
+      authorization: { id: authorizationId },
+      candidate: {
+        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        companyId,
+        sourceIssueId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      },
+    });
+    mockAssetService.create
+      .mockResolvedValueOnce({ id: artifactAssetId })
+      .mockResolvedValueOnce({ id: signatureAssetId });
+    mockAssetService.remove.mockResolvedValue(undefined);
+    mockReleaseCandidateService.stageRelayArtifact.mockRejectedValue(
+      conflict("Failed to consume deploy authorization"),
+    );
+    const storage = {
+      putFile: vi.fn()
+        .mockResolvedValueOnce({
+          provider: "local_disk",
+          objectKey: artifactObjectKey,
+          contentType: "application/x-tar",
+          byteSize: tarball.length,
+          sha256: tarballSha256.replace(/^sha256:/, ""),
+          originalFilename: "scanner-release-candidate.tar",
+        })
+        .mockResolvedValueOnce({
+          provider: "local_disk",
+          objectKey: signatureObjectKey,
+          contentType: "application/vnd.dev.sigstore.bundle+json",
+          byteSize: signatureBundle.length,
+          sha256: signatureBundleSha256.replace(/^sha256:/, ""),
+          originalFilename: "scanner-release-candidate.sigstore.json",
+        }),
+      deleteObject: vi.fn().mockResolvedValue(undefined),
+    };
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = {
+        type: "agent",
+        source: "agent_jwt",
+        agentId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+        companyId,
+        runId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+      };
+      next();
+    });
+    app.use("/api", releaseCandidateRoutes({} as never, storage as never));
+    app.use(errorHandler);
+
+    const res = await request(app)
+      .post(`/api/release-deploy-authorizations/${authorizationId}/stage-relay-artifact`)
+      .set("X-Paperclip-Deploy-Token", "pcdeploy_header-token")
+      .send({
+        imageDigest: "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        sbomHash: "2222222222222222222222222222222222222222222222222222222222222222",
+        signatureVerified: true,
+        sbomVerified: true,
+        tarballSha256,
+        tarballBase64: tarball.toString("base64"),
+        signatureBundleSha256,
+        signatureBundleBase64: signatureBundle.toString("base64"),
+      });
+
+    expect(res.status).toBe(409);
+    expect(storage.deleteObject.mock.calls).toEqual([
+      [companyId, artifactObjectKey],
+      [companyId, signatureObjectKey],
+    ]);
+    expect(mockAssetService.remove.mock.calls).toEqual([
+      [companyId, artifactAssetId],
+      [companyId, signatureAssetId],
+    ]);
   });
 
   it("rejects relay artifact staging when the signature bundle bytes do not match the declared hash", async () => {
