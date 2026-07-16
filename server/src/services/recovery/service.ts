@@ -3372,6 +3372,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     latestRun: NonNullable<LatestIssueRun>;
     classification: Extract<NonNullable<AdapterFailureRecoveryClassification>, { kind: "provider_quota" }>;
   }) {
+    if (input.issue.status !== "in_progress" && input.issue.status !== "in_review") return null;
+
     const targetAgentId = getAdapterFailureRecoveryTargetAgentId(input.issue);
     if (!targetAgentId || input.latestRun.agentId !== targetAgentId) return null;
 
