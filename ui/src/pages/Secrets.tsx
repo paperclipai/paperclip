@@ -625,7 +625,7 @@ export function Secrets() {
     provider: "local_encrypted" as SecretProvider,
     providerConfigId: "",
   });
-  const [createError, setCreateError] = useState<unknown | null>(null);
+  const [createError, setCreateError] = useState<unknown>(null);
   const [rotateOpen, setRotateOpen] = useState(false);
   const [rotateValue, setRotateValue] = useState("");
   const [rotateExternalRef, setRotateExternalRef] = useState("");
@@ -3420,7 +3420,7 @@ function SecretCreateError({
 
   if (!isAwsCreateError) {
     return (
-      <p className="text-xs text-destructive" role="alert">
+      <p className="text-xs text-destructive" role="alert" data-testid="secret-create-error">
         {message}
       </p>
     );
