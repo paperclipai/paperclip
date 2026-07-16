@@ -211,10 +211,10 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     instanceId = "00000000-0000-4000-8000-000000000001",
   ) {
     const experimental = {
-        enableWorktreeRunExecution: true,
-        worktreeRunExecutionInstanceNonce: instanceId,
-        worktreeRunExecutionActivatedAt: cutoff.toISOString(),
-        worktreeRunExecutionActivationInstanceId: instanceId,
+      enableWorktreeRunExecution: true,
+      worktreeRunExecutionInstanceNonce: instanceId,
+      worktreeRunExecutionActivatedAt: cutoff.toISOString(),
+      worktreeRunExecutionActivationInstanceId: instanceId,
     };
     await db
       .insert(instanceSettings)
