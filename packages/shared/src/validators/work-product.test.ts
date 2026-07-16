@@ -40,6 +40,9 @@ describe("attachmentArtifactWorkProductMetadataSchema", () => {
       "openPath",
       "downloadPath",
     ]);
+  });
+});
+
 const validInput = {
   type: "artifact",
   provider: "paperclip",
