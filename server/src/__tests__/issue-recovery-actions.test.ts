@@ -598,7 +598,81 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(enqueueWakeup).not.toHaveBeenCalled();
   });
 
-  it("requeues a cross-agent review participant with incomplete configuration", async () => {
+  it("classifies review recovery from the active participant run instead of a newer assignee run", async () => {
+    const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
+    const stageId = randomUUID();
+    await db.update(issues).set({
+      status: "in_review",
+      assigneeAgentId: coderId,
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: true,
+        stages: [{
+          id: stageId,
+          type: "review",
+          approvalsNeeded: 1,
+          participants: [{ id: randomUUID(), type: "agent", agentId: managerId, userId: null }],
+        }],
+      },
+      executionState: {
+        status: "pending",
+        currentStageId: stageId,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: managerId, userId: null },
+        returnAssignee: { type: "agent", agentId: coderId, userId: null },
+        reviewRequest: null,
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    }).where(eq(issues.id, sourceIssueId));
+    const participantRunId = randomUUID();
+    const assigneeRunId = randomUUID();
+    await db.insert(heartbeatRuns).values([{
+      id: participantRunId,
+      companyId,
+      agentId: managerId,
+      invocationSource: "automation",
+      status: "failed",
+      error: "review process exited unexpectedly",
+      errorCode: "adapter_failed",
+      startedAt: new Date("2026-07-15T20:00:00.000Z"),
+      finishedAt: new Date("2026-07-15T20:01:00.000Z"),
+      contextSnapshot: { issueId: sourceIssueId },
+    }, {
+      id: assigneeRunId,
+      companyId,
+      agentId: coderId,
+      invocationSource: "automation",
+      status: "failed",
+      error: "You've hit your usage limit. Try again at 11:00 PM (UTC)",
+      errorCode: "adapter_failed",
+      startedAt: new Date("2026-07-15T20:02:00.000Z"),
+      finishedAt: new Date("2026-07-15T20:03:00.000Z"),
+      contextSnapshot: { issueId: sourceIssueId },
+    }]);
+    const enqueueWakeup = vi.fn(async () => ({ id: randomUUID() } as never));
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    const result = await recovery.reconcileStrandedAssignedIssues();
+
+    expect(result).toMatchObject({ providerQuotaMonitored: 0, reviewParticipantRequeued: 1 });
+    const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(updatedIssue).toMatchObject({
+      status: "in_review",
+      assigneeAgentId: coderId,
+      monitorNextCheckAt: null,
+    });
+    const [assigneeRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, assigneeRunId));
+    expect(assigneeRun?.errorCode).toBe("adapter_failed");
+    expect(enqueueWakeup).toHaveBeenCalledWith(managerId, expect.objectContaining({
+      reason: "execution_review_participant_recovery",
+      payload: expect.objectContaining({ issueId: sourceIssueId, retryOfRunId: participantRunId }),
+    }));
+  });
+
+  it("blocks a cross-agent review participant with incomplete configuration", async () => {
     const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
     const stageId = randomUUID();
     await db.update(issues).set({
@@ -644,19 +718,23 @@ describeEmbeddedPostgres("issue recovery actions", () => {
 
     const result = await recovery.reconcileStrandedAssignedIssues();
 
-    expect(result).toMatchObject({ escalated: 0, reviewParticipantRequeued: 1 });
+    expect(result).toMatchObject({ escalated: 1, reviewParticipantRequeued: 0 });
     const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
     expect(updatedIssue).toMatchObject({
-      status: "in_review",
-      assigneeAgentId: coderId,
+      status: "blocked",
+      assigneeAgentId: managerId,
     });
     const [updatedRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
-    expect(updatedRun?.errorCode).toBe("adapter_failed");
-    expect(await db.select().from(issueRecoveryActions)).toHaveLength(0);
-    expect(enqueueWakeup).toHaveBeenCalledWith(managerId, expect.objectContaining({
-      reason: "execution_review_participant_recovery",
-      payload: expect.objectContaining({ issueId: sourceIssueId, retryOfRunId: runId }),
-    }));
+    expect(updatedRun?.errorCode).toBe("configuration_incomplete");
+    const [action] = await db.select().from(issueRecoveryActions);
+    expect(action).toMatchObject({
+      sourceIssueId,
+      ownerAgentId: managerId,
+      previousOwnerAgentId: coderId,
+      cause: "configuration_incomplete",
+      recoveryIssueId: null,
+    });
+    expect(enqueueWakeup).not.toHaveBeenCalled();
   });
 
   it("uses the default quota backoff when the provider does not state a reset time", async () => {

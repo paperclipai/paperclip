@@ -3556,7 +3556,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         continue;
       }
 
-      const adapterFailureClassification = latestRun && isUnsuccessfulTerminalIssueRun(latestRun)
+      const adapterFailureClassification = issue.status !== "in_review" && latestRun && isUnsuccessfulTerminalIssueRun(latestRun)
         ? classifyAdapterFailureForRecovery(latestRun, recoveryNow)
         : null;
       if (latestRun && adapterFailureClassification) {
@@ -3572,11 +3572,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             result.issueIds.push(issue.id);
             continue;
           }
-          if (issue.status !== "in_review") {
-            result.skipped += 1;
-            continue;
-          }
-        } else if (issue.status !== "in_review") {
+          result.skipped += 1;
+          continue;
+        } else {
           const updated = await escalateStrandedAssignedIssue({
             issue,
             previousStatus: issue.status as StrandedPreviousStatus,
@@ -3685,6 +3683,52 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             } else {
               result.skipped += 1;
             }
+          } else {
+            result.skipped += 1;
+          }
+          continue;
+        }
+
+        const participantAdapterFailureClassification = isUnsuccessfulTerminalIssueRun(participantLatestRun)
+          ? classifyAdapterFailureForRecovery(participantLatestRun, recoveryNow)
+          : null;
+        if (participantAdapterFailureClassification?.kind === "provider_quota") {
+          const monitored = await scheduleProviderQuotaRecoveryMonitor({
+            issue,
+            latestRun: participantLatestRun,
+            classification: participantAdapterFailureClassification,
+          });
+          if (monitored) {
+            latestRun = await persistAdapterFailureRecoveryClassification(
+              participantLatestRun,
+              participantAdapterFailureClassification,
+            );
+            result.providerQuotaMonitored += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
+          continue;
+        }
+        if (participantAdapterFailureClassification?.kind === "configuration_incomplete") {
+          const updated = await escalateStrandedAssignedIssue({
+            issue,
+            previousStatus: "in_review",
+            latestRun: participantLatestRun,
+            recoveryCause: "configuration_incomplete",
+            recoveryOwnerAgentId: participantAgentId,
+            comment:
+              "Paperclip classified the active review participant's latest adapter failure as " +
+              "`configuration_incomplete`. Moving the issue to `blocked` with the configuration fix " +
+              "recorded instead of repeatedly requeueing the reviewer.",
+          });
+          if (updated) {
+            latestRun = await persistAdapterFailureRecoveryClassification(
+              participantLatestRun,
+              participantAdapterFailureClassification,
+            );
+            result.escalated += 1;
+            result.issueIds.push(issue.id);
           } else {
             result.skipped += 1;
           }
