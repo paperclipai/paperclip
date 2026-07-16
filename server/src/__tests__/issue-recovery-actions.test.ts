@@ -1234,6 +1234,106 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(enqueueWakeup).toHaveBeenCalledOnce();
   }, 15_000);
 
+  it("continues recovery escalation after repairing an issue with no agent assignee", async () => {
+    const { companyId, managerId, sourceIssue } = await seedCompany();
+    const repoRoot = await createGitRepo();
+    const expectedBranch = "repair/unassigned-expected";
+    const actualBranch = "repair/unassigned-actual";
+    const worktreePath = path.join(repoRoot, ".paperclip", "worktrees", "unassigned-branch");
+    await fs.mkdir(path.dirname(worktreePath), { recursive: true });
+    await runGit(repoRoot, ["branch", expectedBranch, "main"]);
+    await runGit(repoRoot, ["worktree", "add", "-b", actualBranch, worktreePath, "main"]);
+    const executionWorkspaceId = await seedExecutionWorkspace({
+      companyId,
+      sourceIssueId: sourceIssue.id,
+      repoRoot,
+      worktreePath,
+      branchName: expectedBranch,
+    });
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    await recovery.escalateStrandedAssignedIssue({
+      issue: { ...sourceIssue, assigneeAgentId: null },
+      previousStatus: "in_progress",
+      latestRun: {
+        id: randomUUID(),
+        agentId: null,
+        status: "failed",
+        error: "workspace branch mismatch",
+        errorCode: "workspace_validation_failed",
+        contextSnapshot: {},
+        livenessState: "failed",
+        resultJson: {
+          workspaceValidation: {
+            reason: "git_worktree_branch_incoherence",
+            executionWorkspaceId,
+          },
+        },
+      },
+      recoveryCause: "workspace_validation_failed",
+    });
+
+    expect(await runGit(worktreePath, ["branch", "--show-current"]).then((result) => result.stdout.trim())).toBe(expectedBranch);
+    const actions = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, sourceIssue.id));
+    expect(actions).toHaveLength(1);
+    expect(actions[0]).toMatchObject({
+      cause: "workspace_validation_failed",
+      ownerAgentId: managerId,
+    });
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+  }, 15_000);
+
+  it("escalates when an auto-repair retry fails workspace validation again", async () => {
+    const { companyId, managerId, coderId, sourceIssue } = await seedCompany();
+    const repoRoot = await createGitRepo();
+    const expectedBranch = "repair/retry-expected";
+    const actualBranch = "repair/retry-actual";
+    const worktreePath = path.join(repoRoot, ".paperclip", "worktrees", "failed-retry");
+    await fs.mkdir(path.dirname(worktreePath), { recursive: true });
+    await runGit(repoRoot, ["branch", expectedBranch, "main"]);
+    await runGit(repoRoot, ["worktree", "add", "-b", actualBranch, worktreePath, "main"]);
+    const executionWorkspaceId = await seedExecutionWorkspace({
+      companyId,
+      sourceIssueId: sourceIssue.id,
+      repoRoot,
+      worktreePath,
+      branchName: expectedBranch,
+    });
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    await recovery.escalateStrandedAssignedIssue({
+      issue: sourceIssue,
+      previousStatus: "in_progress",
+      latestRun: {
+        id: randomUUID(),
+        agentId: coderId,
+        status: "failed",
+        error: "workspace branch mismatch after automatic repair",
+        errorCode: "workspace_validation_failed",
+        contextSnapshot: { retryReason: "workspace_validation_auto_repaired" },
+        livenessState: "failed",
+        resultJson: {
+          workspaceValidation: {
+            reason: "git_worktree_branch_incoherence",
+            executionWorkspaceId,
+          },
+        },
+      },
+      recoveryCause: "workspace_validation_failed",
+    });
+
+    expect(await runGit(worktreePath, ["branch", "--show-current"]).then((result) => result.stdout.trim())).toBe(actualBranch);
+    const actions = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, sourceIssue.id));
+    expect(actions).toHaveLength(1);
+    expect(actions[0]).toMatchObject({
+      cause: "workspace_validation_failed",
+      ownerAgentId: managerId,
+    });
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+  }, 15_000);
+
   it("does not trust run-result repository paths for workspace repair", async () => {
     const { companyId, coderId, sourceIssue } = await seedCompany();
     const repoRoot = await createGitRepo();
