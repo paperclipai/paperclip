@@ -27,7 +27,7 @@ export interface DecisionTrainingSnapshotV1 {
     repoUrl: string | null;
     ref: string | null;
     commitSha: string | null;
-    resolution: "exact" | "nearest_run" | "none";
+    resolution: "exact" | "nearest_run" | "workspace" | "none";
   };
 }
 
