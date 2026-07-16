@@ -163,8 +163,6 @@ type SuccessfulRunHandoffRecoveryEvidence = {
   maxHandoffAttempts: number;
 };
 
-const PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS = 15 * 60 * 1000;
-
 function readRecoveryRunErrorFamily(latestRun: LatestIssueRun) {
   const result = parseObject(latestRun?.resultJson);
   return readNonEmptyString(result.errorFamily);
