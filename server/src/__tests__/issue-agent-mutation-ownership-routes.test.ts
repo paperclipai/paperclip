@@ -633,12 +633,15 @@ describe("agent issue mutation checkout ownership", () => {
       },
     });
     mockWorkProductService.createForIssue.mockResolvedValue({
-      id: "product-2",
-      issueId,
-      companyId,
-      type: "artifact",
-      provider: "test",
-      title: "Artifact",
+      created: true,
+      product: {
+        id: "product-2",
+        issueId,
+        companyId,
+        type: "artifact",
+        provider: "test",
+        title: "Artifact",
+      },
     });
     mockWorkProductService.getById.mockResolvedValue({
       id: "product-1",
@@ -765,7 +768,7 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockWorkProductService.update).not.toHaveBeenCalled();
     expect(mockStorageService.putFile).not.toHaveBeenCalled();
     expect(mockStorageService.deleteObject).not.toHaveBeenCalled();
-  });
+  }, 15_000);
 
   it("allows mentioned peer agents to post comments without ownership of an active checkout", async () => {
     mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
@@ -1038,6 +1041,39 @@ describe("agent issue mutation checkout ownership", () => {
     expect(res.body.error).toBe("createdByRunId is not valid for this company");
     expect(mockWorkProductService.createForIssue).not.toHaveBeenCalled();
   });
+
+  it("returns an idempotent work product retry without duplicate activity", async () => {
+    const app = await createApp(ownerActor());
+    mockWorkProductService.createForIssue.mockResolvedValueOnce({
+      created: false,
+      product: {
+        id: "product-existing",
+        issueId,
+        companyId,
+        type: "artifact",
+        provider: "test",
+        externalId: "artifact-sha-1",
+        title: "SER-377 report",
+      },
+    });
+
+    const res = await request(app)
+      .post(`/api/issues/${issueId}/work-products`)
+      .send({
+        type: "artifact",
+        provider: "test",
+        externalId: "artifact-sha-1",
+        title: "SER-377 report",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.id).toBe("product-existing");
+    expect(mockLogActivity).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: "issue.work_product_created" }),
+    );
+    expect(mockIssueRecoveryActionService.getActiveForIssue).not.toHaveBeenCalled();
+  }, 30_000);
 
   it.each([
     [

@@ -6411,9 +6411,14 @@ export function issueRoutes(
         metadata: req.body.metadata ?? null,
       });
     }
-    const product = await workProductsSvc.createForIssue(issue.id, issue.companyId, createInput);
-    if (!product) {
+    const result = await workProductsSvc.createForIssue(issue.id, issue.companyId, createInput);
+    if (!result) {
       res.status(422).json({ error: "Invalid work product payload" });
+      return;
+    }
+    const { product, created } = result;
+    if (!created) {
+      res.status(200).json(product);
       return;
     }
     await logActivity(db, {

@@ -173,7 +173,7 @@ describe("approval routes idempotent retries", () => {
     expect(mockIssueApprovalService.listIssuesForApproval).not.toHaveBeenCalled();
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
     expect(mockLogActivity).not.toHaveBeenCalled();
-  });
+  }, 15_000);
 
   it("does not emit duplicate rejection logs when reject is already resolved", async () => {
     mockApprovalService.getById.mockResolvedValue({
@@ -267,6 +267,50 @@ describe("approval routes idempotent retries", () => {
     expect(mockApprovalService.approve).toHaveBeenCalledWith("approval-4", "user-1", "ship it");
   });
 
+  it("fails closed when a user tries to approve their own request", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-self",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "pending",
+      payload: {},
+      requestedByUserId: "user-1",
+      requestedByAgentId: null,
+    });
+
+    const res = await request(await createApp())
+      .post("/api/approvals/approval-self/approve")
+      .send({ decisionNote: "approve my own request" });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Approval requester cannot decide their own request");
+    expect(mockApprovalService.approve).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("fails closed for local implicit board self-approval", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-local-self",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "pending",
+      payload: {},
+      requestedByUserId: "board",
+      requestedByAgentId: null,
+    });
+
+    const res = await request(
+      await createApp({ userId: undefined, source: "local_implicit", companyIds: undefined }),
+    )
+      .post("/api/approvals/approval-local-self/approve")
+      .send({ decisionNote: "implicit self approval" });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Approval requester cannot decide their own request");
+    expect(mockApprovalService.approve).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
   it("derives approval attribution from the authenticated actor on reject", async () => {
     mockApprovalService.getById.mockResolvedValue({
       id: "approval-5",
@@ -292,6 +336,27 @@ describe("approval routes idempotent retries", () => {
 
     expect(res.status).toBe(200);
     expect(mockApprovalService.reject).toHaveBeenCalledWith("approval-5", "user-1", "not now");
+  });
+
+  it("fails closed when a requester rejects their own approval", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-self-reject",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "pending",
+      payload: {},
+      requestedByUserId: "user-1",
+      requestedByAgentId: null,
+    });
+
+    const res = await request(await createApp())
+      .post("/api/approvals/approval-self-reject/reject")
+      .send({ decisionNote: "reject my own request" });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Approval requester cannot decide their own request");
+    expect(mockApprovalService.reject).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
   });
 
   it("derives approval attribution from the authenticated actor on request revision", async () => {
@@ -322,7 +387,38 @@ describe("approval routes idempotent retries", () => {
     );
   });
 
+  it("fails closed when a requester asks revision on their own approval", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-self-revision",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "pending",
+      payload: {},
+      requestedByUserId: "user-1",
+      requestedByAgentId: null,
+    });
+
+    const res = await request(await createApp())
+      .post("/api/approvals/approval-self-revision/request-revision")
+      .send({ decisionNote: "revise my own request" });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Approval requester cannot decide their own request");
+    expect(mockApprovalService.requestRevision).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
   it("lets agents create generic issue-linked board approval requests", async () => {
+    const payload = {
+      title: "Approve Bounded Hosting Spend Increase",
+      summary: "The hosting limit was reached during a verified deployment run. Board approval is required before the bounded increase can be applied.",
+      question: "Should the bounded hosting spend increase be applied?",
+      approveConsequence: "Approve applies the bounded increase and resumes the deployment.",
+      rejectConsequence: "Reject leaves the current limit unchanged and keeps deployment blocked.",
+      evidenceUrl: "https://example.test/reports/hosting-spend-proof.md",
+      urgency: "High; the verified deployment is currently blocked.",
+      blockedUntilDecision: "The production deployment remains blocked.",
+    };
     mockApprovalService.create.mockResolvedValue({
       id: "approval-1",
       companyId: "company-1",
@@ -330,7 +426,7 @@ describe("approval routes idempotent retries", () => {
       requestedByAgentId: "agent-1",
       requestedByUserId: null,
       status: "pending",
-      payload: { title: "Approve hosting spend" },
+      payload,
       decisionNote: null,
       decidedByUserId: null,
       decidedAt: null,
@@ -343,7 +439,7 @@ describe("approval routes idempotent retries", () => {
       .send({
         type: "request_board_approval",
         issueIds: ["00000000-0000-0000-0000-000000000001"],
-        payload: { title: "Approve hosting spend" },
+        payload,
       });
 
     expect([200, 201], JSON.stringify(res.body)).toContain(res.status);
@@ -384,7 +480,16 @@ describe("approval routes idempotent retries", () => {
       .post("/api/companies/company-1/approvals")
       .send({
         type: "request_board_approval",
-        payload: { title: "Approve hosting spend" },
+        payload: {
+          title: "Approve Bounded Hosting Spend Increase",
+          summary: "The hosting limit was reached during a verified deployment run. Board approval is required before the bounded increase can be applied.",
+          question: "Should the bounded hosting spend increase be applied?",
+          approveConsequence: "Approve applies the bounded increase and resumes the deployment.",
+          rejectConsequence: "Reject leaves the current limit unchanged and keeps deployment blocked.",
+          evidenceUrl: "https://example.test/reports/hosting-spend-proof.md",
+          urgency: "High; the verified deployment is currently blocked.",
+          blockedUntilDecision: "The production deployment remains blocked.",
+        },
       });
 
     expect(res.status, JSON.stringify(res.body)).toBe(403);

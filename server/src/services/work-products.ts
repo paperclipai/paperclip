@@ -1,4 +1,4 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { issueWorkProducts } from "@paperclipai/db";
 import type { IssueWorkProduct } from "@paperclipai/shared";
@@ -31,6 +31,15 @@ function toIssueWorkProduct(row: IssueWorkProductRow): IssueWorkProduct {
   };
 }
 
+export function workProductDedupeKey(
+  companyId: string,
+  issueId: string,
+  provider: string,
+  externalId: string,
+) {
+  return JSON.stringify([companyId, issueId, provider, externalId]);
+}
+
 export function workProductService(db: Db) {
   return {
     listForIssue: async (issueId: string) => {
@@ -53,6 +62,28 @@ export function workProductService(db: Db) {
 
     createForIssue: async (issueId: string, companyId: string, data: Omit<typeof issueWorkProducts.$inferInsert, "issueId" | "companyId">) => {
       const row = await db.transaction(async (tx) => {
+        if (data.externalId) {
+          const dedupeKey = workProductDedupeKey(
+            companyId,
+            issueId,
+            data.provider,
+            data.externalId,
+          );
+          await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${dedupeKey}, 0))`);
+          const existing = await tx
+            .select()
+            .from(issueWorkProducts)
+            .where(
+              and(
+                eq(issueWorkProducts.companyId, companyId),
+                eq(issueWorkProducts.issueId, issueId),
+                eq(issueWorkProducts.provider, data.provider),
+                eq(issueWorkProducts.externalId, data.externalId),
+              ),
+            )
+            .then((rows) => rows[0] ?? null);
+          if (existing) return { row: existing, created: false };
+        }
         if (data.isPrimary) {
           await tx
             .update(issueWorkProducts)
@@ -65,7 +96,7 @@ export function workProductService(db: Db) {
               ),
             );
         }
-        return await tx
+        const inserted = await tx
           .insert(issueWorkProducts)
           .values({
             ...data,
@@ -74,8 +105,9 @@ export function workProductService(db: Db) {
           })
           .returning()
           .then((rows) => rows[0] ?? null);
+        return inserted ? { row: inserted, created: true } : null;
       });
-      return row ? toIssueWorkProduct(row) : null;
+      return row ? { product: toIssueWorkProduct(row.row), created: row.created } : null;
     },
 
     update: async (id: string, patch: Partial<typeof issueWorkProducts.$inferInsert>) => {
