@@ -600,6 +600,7 @@ function paperclipIssue(overrides: Partial<Issue> = {}): Issue {
     createdAt: now,
     updatedAt: now,
     ...overrides,
+    createdFromIssueId: overrides.createdFromIssueId ?? null,
   };
 }
 
