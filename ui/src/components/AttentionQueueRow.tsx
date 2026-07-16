@@ -10,7 +10,7 @@ import {
   RotateCcw,
   X,
 } from "lucide-react";
-import type { Agent, AttentionDetailImage, AttentionItem } from "@paperclipai/shared";
+import type { Agent, AttentionItem } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { accessApi } from "../api/access";
 import { approvalsApi } from "../api/approvals";
@@ -18,15 +18,13 @@ import { issuesApi } from "../api/issues";
 import { useToastActions } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
 import {
-  attentionDetailImages,
   attentionDetailLine,
-  attentionImageUrl,
-  attentionToneStyle,
   isInlineResolvable,
   severityBadge,
   sourceMeta,
 } from "../lib/attention";
-import { cn, relativeTime } from "../lib/utils";
+import { getProjectIcon } from "../lib/project-icons";
+import { cn, projectUrl, relativeTime } from "../lib/utils";
 import { Button } from "./ui/button";
 import { Textarea } from "./ui/textarea";
 import {
@@ -40,16 +38,9 @@ import {
   DropdownMenuTrigger,
 } from "./ui/dropdown-menu";
 import { AttentionInteractionResolver } from "./AttentionInteractionResolver";
-import { ProjectTile } from "./ProjectTile";
 
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
-
-// Decision-action buttons: a comfortable tap target when the row is narrow
-// (h-9 / text-sm), shrinking back to the dense pill (h-6 / text-xs) once the
-// row's own container is wide enough (`@xl` ≈ 576px). Container-query driven so
-// the row also reflows correctly inside narrow side panels, not just on phones.
-const ACTION_BTN = "h-9 gap-1.5 px-3 text-sm @xl:h-6 @xl:gap-1 @xl:px-2 @xl:text-xs";
 
 /** Tomorrow at 9am local time. */
 function tomorrowMorningIso(): string {
@@ -107,7 +98,6 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
   selected = false,
 }: AttentionQueueRowProps) {
   const meta = sourceMeta(item.sourceKind);
-  const tone = attentionToneStyle(item);
   const sevBadge = severityBadge(item.severity);
   const Icon = meta.icon;
   const isHidden = variant === "hidden";
@@ -115,7 +105,6 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
   const href = item.subject.href;
   const snoozedUntil = item.dismissal?.kind === "snooze" ? item.dismissal.snoozedUntil : null;
   const detailLine = attentionDetailLine(item) ?? item.whyNow;
-  const images = attentionDetailImages(item);
   // Only inline-resolvable active rows can expand; that's the only case where a
   // whole-header click has somewhere to go (plan §5). Non-inline rows keep the
   // explicit Open button and never toggle on a stray click.
@@ -132,16 +121,21 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
     }
   };
 
-  // Which rows contribute an action bar. Inline rows carry compact decision
-  // verbs; deep-link rows carry an Open button; curtain rows carry Restore.
-  const compactActions = !isHidden ? collectCompactActions(item) : [];
-  const showCompact = !expanded && compactActions.length > 0;
-  const showOpen = !inline && !!href;
+  // Footer CTAs (3a): every card carries one solid advance verb and at most one
+  // outline counter-verb from the six-verb vocabulary. One-tap decision cards
+  // get Approve/Reject; other inline cards get Answer/Review (expand); deep-link
+  // cards get Review/Open; curtain rows get Restore. Mutually exclusive so no
+  // card ever shows more than one advance verb.
+  const decisionCtas = !isHidden ? collectDecisionCtas(item) : null;
+  const showDecision = !expanded && decisionCtas !== null;
+  const showExpandVerb = !expanded && !decisionCtas && inline;
+  const showOpen = !isHidden && !decisionCtas && !inline && !!href;
   const showRestore = isHidden && !!onRestore;
-  const showActionBar = showCompact || showOpen || showRestore;
-  // Left gutter width (chevron + gap) so the stacked content aligns under the
-  // headline in the wide layout; when narrow, everything runs full-bleed.
-  const gutterIndent = "@xl:pl-6";
+  const showCtas = showDecision || showExpandVerb || showOpen || showRestore;
+  // Context pathway (4a): every card with a source href carries a footer-left
+  // "View …" link — active, expanded, and curtain rows alike — so context is
+  // never buried in the overflow menu.
+  const showActionBar = showCtas || !!href;
 
   return (
     <div
@@ -161,9 +155,6 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
       data-attention-source={item.sourceKind}
       data-attention-severity={item.severity}
     >
-      {/* Type accent bar (canonical color map — never severity). */}
-      <span className={cn("absolute inset-y-0 left-0 w-1", tone.accent)} aria-hidden />
-
       <div className="flex items-start gap-2 py-3 pl-4 pr-3">
         {/* Expand affordance / spacer gutter — keeps headlines aligned across the list. */}
         {expandable ? (
@@ -188,7 +179,7 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
           <div className="flex items-start justify-between gap-2">
             <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
               <span className="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground">
-                <Icon className={cn("h-3.5 w-3.5", tone.icon)} />
+                <Icon className="h-3.5 w-3.5" />
                 {meta.label}
               </span>
               {sevBadge && (
@@ -204,10 +195,13 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
               {item.relatedIssue?.identifier && (
                 <Link
                   to={item.relatedIssue.href ?? "#"}
-                  className="font-mono text-(length:--text-nano) text-muted-foreground hover:text-foreground"
+                  className="inline-flex min-w-0 items-baseline gap-1.5 text-(length:--text-nano) text-muted-foreground hover:text-foreground"
                   onClick={(e) => e.stopPropagation()}
                 >
-                  {item.relatedIssue.identifier}
+                  <span className="font-mono">{item.relatedIssue.identifier}</span>
+                  {item.relatedIssue.title && (
+                    <span className="max-w-(--sz-16rem) truncate">{item.relatedIssue.title}</span>
+                  )}
                 </Link>
               )}
             </div>
@@ -235,20 +229,15 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
                       <MoreHorizontal className="h-4 w-4" />
                     </Button>
                   </DropdownMenuTrigger>
+                  {/* Deferral verbs only (4a): the context pathway moved to the
+                      always-visible footer-left link, so the menu no longer
+                      hides navigation. */}
                   <DropdownMenuContent align="end">
                     {onSnooze && <SnoozeSubmenu onSnooze={(iso) => onSnooze(item, iso)} />}
                     <DropdownMenuItem onClick={() => onDismiss(item)}>
                       <X className="h-4 w-4" />
                       Dismiss
                     </DropdownMenuItem>
-                    {href && (
-                      <>
-                        <DropdownMenuSeparator />
-                        <DropdownMenuItem asChild>
-                          <Link to={href}>Open source</Link>
-                        </DropdownMenuItem>
-                      </>
-                    )}
                   </DropdownMenuContent>
                 </DropdownMenu>
               )}
@@ -279,51 +268,59 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
             <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">{detailLine}</p>
           </div>
 
-          {/* Context row: project identity and evidence thumbnails move below the
-              text so they never squeeze the headline on mobile. */}
-          {(item.project || images.length > 0) && (
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-              {item.project && <ProjectMeta project={item.project} />}
-              {images.length > 0 && <ThumbnailStack images={images} />}
-            </div>
-          )}
+          {/* Context row: project identity only (5b). Evidence thumbnails were
+              dropped from the card — screenshots live one click away behind the
+              footer-left context link, keeping the card two text lines tall. */}
+          {item.project && <ProjectMeta project={item.project} />}
 
-          {/* Action bar: full-width, thumb-reachable buttons on mobile;
-              right-aligned dense pills on desktop. Sibling of the headline so
-              taps never toggle expand. */}
+          {/* Persistent footer bar: context link left (4a), CTAs right at one
+              size (3a). Sibling of the headline so taps never toggle expand. */}
           {showActionBar && (
             <div
-              className={cn("flex flex-wrap items-center gap-2 @xl:justify-end", gutterIndent)}
+              className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2"
               data-attention-actions="true"
             >
-              {showCompact && (
-                <CompactDecisionActions
-                  item={item}
-                  companyId={companyId}
-                  onOpen={() => onToggleExpand(item)}
-                />
-              )}
-
-              {showOpen && (
-                <Button asChild variant="outline" size="xs" className={cn(ACTION_BTN, "w-full @xl:w-auto")}>
-                  <Link to={href!}>
-                    Open
-                    <ExternalLink className="h-3 w-3" />
-                  </Link>
-                </Button>
-              )}
-
-              {showRestore && (
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="xs"
-                  className={cn(ACTION_BTN, "w-full @xl:w-auto")}
-                  onClick={() => onRestore(item)}
+              {href ? (
+                <Link
+                  to={href}
+                  className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground hover:underline"
+                  data-attention-context-link="true"
+                  onClick={(e) => e.stopPropagation()}
                 >
-                  <RotateCcw className="h-3 w-3" />
-                  Restore
-                </Button>
+                  {meta.contextLabel}
+                  <span aria-hidden>→</span>
+                </Link>
+              ) : (
+                <span aria-hidden />
+              )}
+
+              {showCtas && (
+                <div className="flex flex-wrap items-center justify-end gap-2">
+                  {(showDecision || showExpandVerb) && (
+                    <CompactDecisionActions
+                      item={item}
+                      companyId={companyId}
+                      ctas={decisionCtas}
+                      onOpen={() => onToggleExpand(item)}
+                    />
+                  )}
+
+                  {showOpen && (
+                    <Button asChild size="sm">
+                      <Link to={href!}>
+                        {item.sourceKind === "review" ? "Review" : "Open"}
+                        <ExternalLink className="h-3.5 w-3.5" />
+                      </Link>
+                    </Button>
+                  )}
+
+                  {showRestore && (
+                    <Button type="button" variant="outline" size="sm" onClick={() => onRestore(item)}>
+                      <RotateCcw className="h-3.5 w-3.5" />
+                      Restore
+                    </Button>
+                  )}
+                </div>
               )}
             </div>
           )}
@@ -345,57 +342,76 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
   );
 });
 
-type CompactDecisionAction = "accept" | "approve" | "reject" | "request_revision";
+type CompactDecisionAction = "accept" | "approve" | "reject";
 
-function compactDecisionAction(item: AttentionItem, verbId: string): CompactDecisionAction | null {
-  if (item.sourceKind === "approval" && (verbId === "approve" || verbId === "reject" || verbId === "request_revision")) {
-    return verbId;
-  }
-  if (item.sourceKind === "join_request" && (verbId === "approve" || verbId === "reject")) {
-    return verbId;
+/**
+ * The one-tap decision pair a collapsed card can resolve in place. Labels are
+ * fixed to the six-verb vocabulary (Approve / Reject) rather than echoing the
+ * server verb labels, so "Approve" never drifts to "Accept"/"Confirm" between
+ * sources — the expanded resolver still shows the full configured wording.
+ * Approvals' third verb (Request revision) lives in the resolver only.
+ */
+interface CompactDecisionCtas {
+  /** Solid advance verb ("Approve"), when the card has one. */
+  advance: { action: "accept" | "approve" } | null;
+  /** Outline counter-verb ("Reject"); confirmations collect a reason in the resolver. */
+  counter: { viaResolver: boolean } | null;
+}
+
+function collectDecisionCtas(item: AttentionItem): CompactDecisionCtas | null {
+  const has = (id: string) => item.decisionVerbs.some((verb) => verb.id === id);
+  if (item.sourceKind === "approval" || item.sourceKind === "join_request") {
+    if (!has("approve") && !has("reject")) return null;
+    return {
+      advance: has("approve") ? { action: "approve" } : null,
+      counter: has("reject") ? { viaResolver: false } : null,
+    };
   }
   if (
     item.sourceKind === "issue_thread_interaction"
     && item.subject.metadata?.kind === "request_confirmation"
-    && (verbId === "accept" || verbId === "reject")
   ) {
-    return verbId;
+    if (!has("accept") && !has("reject")) return null;
+    return {
+      advance: has("accept") ? { action: "accept" } : null,
+      counter: has("reject") ? { viaResolver: true } : null,
+    };
   }
   return null;
 }
 
-/** The compact accept/reject verbs a collapsed row can resolve in place. */
-function collectCompactActions(item: AttentionItem): Array<{ action: CompactDecisionAction; label: string; id: string }> {
-  return item.decisionVerbs.slice(0, 3).flatMap((verb) => {
-    const action = compactDecisionAction(item, verb.id);
-    return action ? [{ action, label: verb.label, id: verb.id }] : [];
-  });
+/** Advance verb for inline cards that resolve through the expanded form. */
+function expandVerbLabel(item: AttentionItem): "Answer" | "Review" {
+  return item.subject.metadata?.kind === "ask_user_questions" ? "Answer" : "Review";
 }
 
 function CompactDecisionActions({
   item,
   companyId,
+  ctas,
   onOpen,
 }: {
   item: AttentionItem;
   companyId: string;
+  ctas: CompactDecisionCtas | null;
   onOpen: () => void;
 }) {
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
-  const actions = collectCompactActions(item);
+  const advance = ctas?.advance ?? null;
+  const counter = ctas?.counter ?? null;
 
   const decision = useMutation<unknown, Error, CompactDecisionAction>({
     mutationFn: (action: CompactDecisionAction) => {
       if (item.sourceKind === "approval") {
-        if (action === "approve") return approvalsApi.approve(item.subject.id);
-        if (action === "reject") return approvalsApi.reject(item.subject.id);
-        return approvalsApi.requestRevision(item.subject.id);
+        return action === "reject"
+          ? approvalsApi.reject(item.subject.id)
+          : approvalsApi.approve(item.subject.id);
       }
       if (item.sourceKind === "join_request") {
-        return action === "approve"
-          ? accessApi.approveJoinRequest(companyId, item.subject.id)
-          : accessApi.rejectJoinRequest(companyId, item.subject.id);
+        return action === "reject"
+          ? accessApi.rejectJoinRequest(companyId, item.subject.id)
+          : accessApi.approveJoinRequest(companyId, item.subject.id);
       }
       if (item.sourceKind === "issue_thread_interaction") {
         const issueId = item.subject.metadata?.issueId;
@@ -419,99 +435,90 @@ function CompactDecisionActions({
     },
     onError: (error, action) => {
       pushToast({
-        title: `Could not ${decisionLabel(action)}`,
+        title: `Could not ${action === "reject" ? "reject" : "approve"}`,
         body: error instanceof Error ? error.message : "Please try again.",
         tone: "error",
       });
     },
   });
 
-  if (actions.length === 0) return null;
-
   return (
-    <div className="flex w-full flex-wrap items-center gap-2 @xl:w-auto @xl:justify-end @xl:gap-1" aria-label="Decision actions">
-      {actions.map(({ action, id, label }) => (
+    <div className="flex flex-wrap items-center justify-end gap-2" aria-label="Decision actions">
+      {counter && (
         <Button
-          key={id}
           type="button"
-          variant={decisionVerbVariant({ id, label, description: "" })}
-          size="xs"
-          className={cn(ACTION_BTN, "min-w-0 flex-1 @xl:flex-none")}
+          variant="outline"
+          size="sm"
           disabled={decision.isPending}
           onClick={(event) => {
             event.stopPropagation();
-            if (item.sourceKind === "issue_thread_interaction" && action === "reject") {
+            if (counter.viaResolver) {
               onOpen();
               return;
             }
-            decision.mutate(action);
+            decision.mutate("reject");
           }}
         >
-          {decision.isPending && decision.variables === action && <Loader2 className="h-3 w-3 animate-spin" />}
-          {label}
+          {decision.isPending && decision.variables === "reject" && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+          Reject
         </Button>
-      ))}
+      )}
+      {advance && (
+        <Button
+          type="button"
+          size="sm"
+          disabled={decision.isPending}
+          onClick={(event) => {
+            event.stopPropagation();
+            decision.mutate(advance.action);
+          }}
+        >
+          {decision.isPending && decision.variables !== "reject" && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+          Approve
+        </Button>
+      )}
+      {!ctas && (
+        <Button
+          type="button"
+          size="sm"
+          onClick={(event) => {
+            event.stopPropagation();
+            onOpen();
+          }}
+        >
+          {expandVerbLabel(item)}
+        </Button>
+      )}
     </div>
   );
-}
-
-function decisionLabel(action: CompactDecisionAction): string {
-  if (action === "request_revision") return "sent for revision";
-  if (action === "accept" || action === "approve") return "approved";
-  return "rejected";
 }
 
 function compactDecisionSuccessLabel(sourceKind: AttentionItem["sourceKind"], action: CompactDecisionAction): string {
-  if (sourceKind === "approval") return `Approval ${decisionLabel(action)}`;
-  if (sourceKind === "join_request") return `Join request ${decisionLabel(action)}`;
-  return action === "accept" ? "Confirmation accepted" : "Confirmation declined";
+  const outcome = action === "reject" ? "rejected" : "approved";
+  if (sourceKind === "approval") return `Approval ${outcome}`;
+  if (sourceKind === "join_request") return `Join request ${outcome}`;
+  return action === "reject" ? "Confirmation declined" : "Confirmation accepted";
 }
 
-function decisionVerbVariant(verb: AttentionItem["decisionVerbs"][number]): "default" | "outline" | "destructive" {
-  const text = `${verb.label} ${verb.description ?? ""}`.toLowerCase();
-  if (/\b(reject|decline|deny|delete|remove)\b/.test(text)) return "destructive";
-  if (/\b(accept|approve|confirm|apply)\b/.test(text)) return "default";
-  return "outline";
-}
-
-/** Inline project identity keeps useful context without a competing badge. */
+/**
+ * Inline project identity keeps useful context without a competing badge.
+ * The icon renders bare on the card background in the same gray as the name
+ * (no colored tile — the project color stays on project-native surfaces),
+ * and the whole pair links to the project.
+ */
 function ProjectMeta({ project }: { project: NonNullable<AttentionItem["project"]> }) {
+  const Icon = getProjectIcon(project.icon);
   return (
-    <span
-      className="inline-flex max-w-(--sz-12rem) items-center gap-1.5 text-(length:--text-nano) text-muted-foreground"
+    <Link
+      to={projectUrl(project)}
+      className="inline-flex max-w-(--sz-12rem) items-center gap-1.5 text-(length:--text-nano) text-muted-foreground hover:text-foreground"
       title={project.name}
       data-testid="attention-project-meta"
+      onClick={(e) => e.stopPropagation()}
     >
-      <ProjectTile color={project.color} icon={project.icon} size="xs" />
+      <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden />
       <span className="truncate">{project.name}</span>
-    </span>
-  );
-}
-
-/** Square screenshot thumbnails at the right of the description (plan §10). */
-function ThumbnailStack({ images }: { images: AttentionDetailImage[] }) {
-  const visible = images.slice(0, 3);
-  const extra = images.length - visible.length;
-  return (
-    <div className="flex shrink-0 items-center">
-      <div className="flex -space-x-3">
-        {visible.map((img, i) => (
-          <img
-            key={img.assetId}
-            src={attentionImageUrl(img.assetId)}
-            alt={img.alt ?? ""}
-            loading="lazy"
-            style={{ zIndex: visible.length - i }}
-            className="h-11 w-11 rounded-md border border-border bg-muted object-cover shadow-sm"
-          />
-        ))}
-      </div>
-      {extra > 0 && (
-        <span className="ml-1 inline-flex h-6 items-center rounded-md border border-border bg-muted px-1.5 text-(length:--text-nano) font-medium text-muted-foreground">
-          +{extra}
-        </span>
-      )}
-    </div>
+    </Link>
   );
 }
 

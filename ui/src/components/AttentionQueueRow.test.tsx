@@ -136,7 +136,7 @@ describe("AttentionQueueRow", () => {
     expect(el.textContent).not.toContain("Open");
   });
 
-  it("does not inline a review — it deep-links instead", () => {
+  it("does not inline a review — it deep-links with the Review verb instead", () => {
     const el = render(
       <AttentionQueueRow
         item={buildItem({
@@ -159,7 +159,14 @@ describe("AttentionQueueRow", () => {
         onDismiss={noop}
       />,
     );
-    expect(el.textContent).toContain("Open");
+    // Deep-link cards carry one solid advance verb — "Review" for review rows.
+    // Selected via data-variant: the footer's first anchor is now the 4a
+    // context link, which is a plain link rather than a Button.
+    const actionArea = container?.querySelector('[data-attention-actions="true"]');
+    const cta = actionArea?.querySelector("a[data-variant]");
+    expect(cta?.textContent).toBe("Review");
+    expect(cta?.getAttribute("href")).toBe("/PAP/issues/PAP-1");
+    expect(cta?.getAttribute("data-variant")).toBe("default");
     // No approval buttons should render for a review row.
     expect(el.textContent).not.toContain("Request revision");
   });
@@ -293,13 +300,14 @@ describe("AttentionQueueRow", () => {
     expect(row?.getAttribute("class")).toContain("ring-ring");
   });
 
-  it("renders collapsed inline decision verbs in a dedicated action bar with semantic variants", () => {
+  it("renders collapsed decision verbs as one solid advance + one outline counter, footer-right", () => {
     render(
       <AttentionQueueRow
         item={buildItem({
           decisionVerbs: [
             { id: "approve", label: "Approve", description: null },
             { id: "reject", label: "Reject", description: null },
+            { id: "request_revision", label: "Request revision", description: null },
           ],
         })}
         companyId="c1"
@@ -316,23 +324,28 @@ describe("AttentionQueueRow", () => {
     const decisionActions = container?.querySelector('[aria-label="Decision actions"]');
     expect(decisionActions?.textContent).toContain("Approve");
     expect(decisionActions?.textContent).toContain("Reject");
+    // The third verb stays in the expanded resolver — a card carries at most two CTAs.
+    expect(decisionActions?.textContent).not.toContain("Request revision");
 
-    // The action bar is its own full-width band (mobile-first) that collapses to
-    // a right-aligned pill row once the row's container is wide (container query)
-    // — no longer a stretched right column.
+    // The footer band now splits context-left / CTAs-right (4a), so the
+    // justify-end contract moved from the outer bar to the CTA group.
     const actionArea = decisionActions?.closest('[data-attention-actions="true"]');
-    expect(actionArea?.getAttribute("class")).toContain("@xl:justify-end");
+    expect(actionArea?.getAttribute("class")).toContain("justify-between");
+    expect(decisionActions?.parentElement?.getAttribute("class")).toContain("justify-end");
 
     const rowMenu = container?.querySelector('[aria-label="Row actions"]');
     expect(rowMenu?.closest('[data-attention-menu="true"]')).toBeTruthy();
     expect(rowMenu?.closest('[data-attention-actions="true"]')).toBeNull();
 
     const buttons = Array.from(decisionActions?.querySelectorAll("button") ?? []);
+    // One size for every CTA; solid advance verb, outline counter-verb (red is
+    // reserved for the Critical badge, so Reject is no longer destructive).
+    expect(buttons.every((button) => button.getAttribute("data-size") === "sm")).toBe(true);
     expect(buttons.find((button) => button.textContent === "Approve")?.getAttribute("data-variant")).toBe(
       "default",
     );
     expect(buttons.find((button) => button.textContent === "Reject")?.getAttribute("data-variant")).toBe(
-      "destructive",
+      "outline",
     );
   });
 
@@ -362,7 +375,7 @@ describe("AttentionQueueRow", () => {
     expect(container?.textContent).toContain("Approval approved");
   });
 
-  it("renders configured confirmation labels and accepts from the compact action area", async () => {
+  it("normalizes configured confirmation labels to Approve/Reject and accepts from the card", async () => {
     const onToggleExpand = vi.fn();
     vi.mocked(issuesApi.acceptInteraction).mockResolvedValue({} as never);
     render(
@@ -391,15 +404,16 @@ describe("AttentionQueueRow", () => {
       />,
     );
 
+    // The card uses the fixed six-verb vocabulary; configured wording ("Approve
+    // plan" / "Request changes") only appears once the resolver is expanded.
     const decisionActions = container?.querySelector('[aria-label="Decision actions"]');
-    expect(decisionActions?.textContent).toContain("Approve plan");
-    expect(decisionActions?.textContent).toContain("Request changes");
-    expect(Array.from(decisionActions?.querySelectorAll("button") ?? []).find((button) => button.textContent === "Approve plan")?.getAttribute("data-variant")).toBe("default");
-    expect(Array.from(decisionActions?.querySelectorAll("button") ?? []).find((button) => button.textContent === "Request changes")?.getAttribute("data-variant")).toBe("outline");
+    expect(decisionActions?.textContent).not.toContain("Approve plan");
+    expect(decisionActions?.textContent).not.toContain("Request changes");
+    const buttons = Array.from(decisionActions?.querySelectorAll("button") ?? []);
+    expect(buttons.find((button) => button.textContent === "Approve")?.getAttribute("data-variant")).toBe("default");
+    expect(buttons.find((button) => button.textContent === "Reject")?.getAttribute("data-variant")).toBe("outline");
 
-    const approve = Array.from(decisionActions?.querySelectorAll("button") ?? []).find(
-      (button) => button.textContent === "Approve plan",
-    );
+    const approve = buttons.find((button) => button.textContent === "Approve");
     act(() => approve?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
 
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -407,7 +421,7 @@ describe("AttentionQueueRow", () => {
     expect(onToggleExpand).not.toHaveBeenCalled();
   });
 
-  it("opens the matching confirmation form when requesting changes from a compact action", () => {
+  it("opens the matching confirmation form when rejecting from a compact action", () => {
     const onToggleExpand = vi.fn();
     render(
       <AttentionQueueRow
@@ -432,16 +446,92 @@ describe("AttentionQueueRow", () => {
       />,
     );
 
-    const requestChanges = Array.from(container?.querySelectorAll("button") ?? []).find(
-      (button) => button.textContent === "Request changes",
+    const reject = Array.from(container?.querySelectorAll("button") ?? []).find(
+      (button) => button.textContent === "Reject",
     );
-    act(() => requestChanges?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    act(() => reject?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
 
     expect(onToggleExpand).toHaveBeenCalledOnce();
     expect(issuesApi.rejectInteraction).not.toHaveBeenCalled();
   });
 
-  it("renders evidence thumbnails in a centered context row below the text stack", () => {
+  it("gives questions an Answer advance verb that expands the inline resolver", () => {
+    const onToggleExpand = vi.fn();
+    render(
+      <AttentionQueueRow
+        item={buildItem({
+          sourceKind: "issue_thread_interaction",
+          subject: {
+            kind: "interaction",
+            id: "interaction-2",
+            companyId: "c1",
+            title: "Questions need answers",
+            identifier: null,
+            status: "pending",
+            href: "/PAP/issues/issue-1#interaction-interaction-2",
+            metadata: { kind: "ask_user_questions", issueId: "issue-1" },
+          },
+          decisionVerbs: [{ id: "respond", label: "Respond", description: null }],
+        })}
+        companyId="c1"
+        expanded={false}
+        onToggleExpand={onToggleExpand}
+        onDismiss={noop}
+      />,
+    );
+
+    const decisionActions = container?.querySelector('[aria-label="Decision actions"]');
+    const answer = Array.from(decisionActions?.querySelectorAll("button") ?? []).find(
+      (button) => button.textContent === "Answer",
+    );
+    expect(answer?.getAttribute("data-variant")).toBe("default");
+    act(() => answer?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(onToggleExpand).toHaveBeenCalledWith(expect.objectContaining({ id: "a1" }));
+    expect(issuesApi.acceptInteraction).not.toHaveBeenCalled();
+  });
+
+  it("gives multi-item interactions a Review advance verb that expands the inline resolver", () => {
+    const onToggleExpand = vi.fn();
+    render(
+      <AttentionQueueRow
+        item={buildItem({
+          sourceKind: "issue_thread_interaction",
+          subject: {
+            kind: "interaction",
+            id: "interaction-3",
+            companyId: "c1",
+            title: "Suggested tasks need a decision",
+            identifier: null,
+            status: "pending",
+            href: "/PAP/issues/issue-1#interaction-interaction-3",
+            metadata: { kind: "suggest_tasks", issueId: "issue-1" },
+          },
+          decisionVerbs: [
+            { id: "accept", label: "Accept", description: null },
+            { id: "reject", label: "Reject", description: null },
+          ],
+        })}
+        companyId="c1"
+        expanded={false}
+        onToggleExpand={onToggleExpand}
+        onDismiss={noop}
+      />,
+    );
+
+    const decisionActions = container?.querySelector('[aria-label="Decision actions"]');
+    const review = Array.from(decisionActions?.querySelectorAll("button") ?? []).find(
+      (button) => button.textContent === "Review",
+    );
+    expect(review?.getAttribute("data-variant")).toBe("default");
+    act(() => review?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(onToggleExpand).toHaveBeenCalledOnce();
+    expect(issuesApi.acceptInteraction).not.toHaveBeenCalled();
+  });
+
+  // Anatomy 5b: the thumbnail row was removed from the card — evidence lives
+  // one click away behind the footer-left context link, so detail images must
+  // never render inline even when the payload carries them.
+  it("does not render evidence thumbnails even when the detail payload has images", () => {
     render(
       <AttentionQueueRow
         item={buildItem({
@@ -458,12 +548,8 @@ describe("AttentionQueueRow", () => {
       />,
     );
 
-    const image = container?.querySelector('img[alt="Screenshot"]');
-    expect(image?.getAttribute("src")).toBe("/api/assets/asset-1/content");
-
-    const thumbnailStack = image?.parentElement?.parentElement;
-    expect(thumbnailStack?.getAttribute("class")).toContain("items-center");
-    expect(thumbnailStack?.parentElement?.getAttribute("class")).toContain("items-center");
+    expect(container?.querySelector('img[alt="Screenshot"]')).toBeNull();
+    expect(container?.querySelector('img[src*="asset-1"]')).toBeNull();
   });
 
   it("is memoized — a parent re-render with identical props does not re-render the row", async () => {
@@ -501,5 +587,62 @@ describe("AttentionQueueRow", () => {
       />,
     );
     expect(container?.querySelector('[role="button"][aria-expanded]')).toBeNull();
+  });
+
+  it("always shows a footer-left context link named for the source (4a)", () => {
+    render(
+      <AttentionQueueRow
+        item={buildItem()}
+        companyId="c1"
+        expanded={false}
+        onToggleExpand={noop}
+        onDismiss={noop}
+      />,
+    );
+
+    const link = container?.querySelector('[data-attention-context-link="true"]');
+    expect(link?.textContent).toBe("View request→");
+    expect(link?.getAttribute("href")).toBe("/PAP/approvals/approval-1");
+    // Footer-left: the link leads the footer band, ahead of the CTA group.
+    expect(link?.closest('[data-attention-actions="true"]')?.firstElementChild).toBe(link);
+  });
+
+  it("keeps the context link visible while the resolver is expanded", () => {
+    render(
+      <AttentionQueueRow
+        item={buildItem()}
+        companyId="c1"
+        expanded
+        onToggleExpand={noop}
+        onDismiss={noop}
+      />,
+    );
+
+    const link = container?.querySelector('[data-attention-context-link="true"]');
+    expect(link?.textContent).toContain("View request");
+  });
+
+  it("gives curtain rows the context link beside Restore", () => {
+    const onRestore = vi.fn();
+    render(
+      <AttentionQueueRow
+        item={buildItem({
+          dismissal: { kind: "dismiss", dismissedAt: "2026-07-12T12:00:00Z" } as AttentionItem["dismissal"],
+        })}
+        companyId="c1"
+        expanded={false}
+        onToggleExpand={noop}
+        onDismiss={noop}
+        onRestore={onRestore}
+        variant="hidden"
+      />,
+    );
+
+    const link = container?.querySelector('[data-attention-context-link="true"]');
+    expect(link?.getAttribute("href")).toBe("/PAP/approvals/approval-1");
+    const restore = Array.from(container?.querySelectorAll("button") ?? []).find(
+      (button) => button.textContent === "Restore",
+    );
+    expect(restore).toBeTruthy();
   });
 });

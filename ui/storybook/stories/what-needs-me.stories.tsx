@@ -81,19 +81,6 @@ function item(
   };
 }
 
-/** A visible colored tile as a data URI so thumbnails render in static screenshots. */
-function thumb(hex: string, label: string): string {
-  const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='88' height='88'><rect width='88' height='88' fill='${hex}'/><text x='44' y='50' font-family='sans-serif' font-size='13' fill='white' text-anchor='middle'>${label}</text></svg>`;
-  return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
-}
-
-const IMAGES = [
-  { assetId: thumb("#0ea5e9", "1"), alt: "screenshot 1" },
-  { assetId: thumb("#8b5cf6", "2"), alt: "screenshot 2" },
-  { assetId: thumb("#f43f5e", "3"), alt: "screenshot 3" },
-  { assetId: thumb("#f59e0b", "4"), alt: "screenshot 4" },
-];
-
 const POPULATED: AttentionItem[] = [
   item(
     "recov-1",
@@ -199,9 +186,9 @@ const DETAILS: Record<string, AttentionItem["detail"]> = {
     kind: "questions",
     questionCount: 2,
     firstQuestionText: "Which auth provider should we standardize on?",
-    images: [IMAGES[0], IMAGES[1]],
+    images: [],
   },
-  "review-1": { kind: "generic", summaryExcerpt: "3 files changed · +212 / −41", images: [IMAGES[0], IMAGES[1], IMAGES[2], IMAGES[3]] },
+  "review-1": { kind: "generic", summaryExcerpt: "3 files changed · +212 / −41", images: [] },
   "fail-1": { kind: "failed_run", agentName: "Deployer", failureReasonExcerpt: "exit code 1 running migrate", images: [] },
   "budget-1": { kind: "budget", observedPercent: 85, amountObserved: 425, amountLimit: 500, images: [] },
 };
@@ -213,8 +200,10 @@ const POPULATED_DATED: AttentionItem[] = POPULATED.map((it) => ({
   detail: DETAILS[it.id] ?? it.detail,
 }));
 
-// A dedicated set exercising the §4 color map (a plan approval = violet next to a
-// sky confirmation), §7 detail lines, §8 project chips and §10 thumbnail stacks.
+// A dedicated set exercising the Quiet Ledger card anatomy: mono type icon +
+// label (1a), detail lines, project chips, and the persistent footer CTAs
+// drawn from the six-verb vocabulary (3a). Type colors and thumbnail stacks
+// are retired (PAP-313); evidence lives behind the footer-left context link.
 const SHOWCASE: AttentionItem[] = [
   {
     ...item("plan-1", "issue_thread_interaction", "high", "Approve plan: Attention queue redesign", "A plan is awaiting your approval.", {
@@ -227,7 +216,7 @@ const SHOWCASE: AttentionItem[] = [
       project: { id: "proj-alpha", name: "Alpha", urlKey: "alpha", color: "#0f766e", icon: "rocket" },
     }),
     activityAt: new Date(NOW - 20 * 60 * 1000).toISOString(),
-    detail: { kind: "plan_approval", issueTitle: "Attention home", planTitle: "Row/card redesign — 8 sections", summaryExcerpt: null, images: [IMAGES[1]] },
+    detail: { kind: "plan_approval", issueTitle: "Attention home", planTitle: "Row/card redesign — 8 sections", summaryExcerpt: null, images: [] },
   },
   {
     ...item("conf-1", "approval", "medium", "Confirm: publish release notes", "A confirmation is pending.", {
@@ -251,7 +240,7 @@ const SHOWCASE: AttentionItem[] = [
       project: PROJECTS["intx-1"],
     }),
     activityAt: new Date(NOW - 90 * 60 * 1000).toISOString(),
-    detail: { kind: "questions", questionCount: 2, firstQuestionText: "Which auth provider should we standardize on?", images: [IMAGES[0], IMAGES[2]] },
+    detail: { kind: "questions", questionCount: 2, firstQuestionText: "Which auth provider should we standardize on?", images: [] },
   },
   {
     ...item("fail-2", "failed_run", "critical", "Deploy pipeline failed after 3 retries", "Retries exhausted.", {
@@ -259,7 +248,7 @@ const SHOWCASE: AttentionItem[] = [
       relatedIssue: null,
     }),
     activityAt: new Date(NOW - 3 * HOUR).toISOString(),
-    detail: { kind: "failed_run", agentName: "Deployer", failureReasonExcerpt: "exit code 1 running migrate", images: [IMAGES[3]] },
+    detail: { kind: "failed_run", agentName: "Deployer", failureReasonExcerpt: "exit code 1 running migrate", images: [] },
   },
   {
     ...item("budg-2", "budget_alert", "low", "Company budget crossed 85%", "Budget threshold crossed.", {
@@ -314,6 +303,7 @@ function Queue({
   snoozed = [],
   dismissed = [],
   openCurtains = false,
+  selectedId = null,
 }: {
   items: AttentionItem[];
   groupBy?: AttentionGroupBy;
@@ -321,6 +311,7 @@ function Queue({
   snoozed?: AttentionItem[];
   dismissed?: AttentionItem[];
   openCurtains?: boolean;
+  selectedId?: string | null;
 }) {
   const firstInline = items.find((i) => i.inlineResolvable && (i.sourceKind === "approval" || i.sourceKind === "join_request"));
   const [expandedId, setExpandedId] = useState<string | null>(firstInline?.id ?? null);
@@ -350,8 +341,8 @@ function Queue({
       </div>
       {count === 0 && snoozed.length === 0 && dismissed.length === 0 ? (
         <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-border py-20 text-center">
-          <div className="mb-4 rounded-full bg-green-500/10 p-4">
-            <CheckCircle2 className="h-10 w-10 text-green-500" />
+          <div className="mb-4 rounded-full bg-muted p-4">
+            <CheckCircle2 className="h-10 w-10 text-muted-foreground" />
           </div>
           <p className="text-lg font-semibold text-foreground">You're all caught up</p>
           <p className="mt-1 flex items-center gap-1.5 text-sm text-muted-foreground">
@@ -379,6 +370,7 @@ function Queue({
                       key={it.id}
                       item={it}
                       companyId={companyId}
+                      selected={selectedId === it.id}
                       expanded={expandedId === it.id}
                       onToggleExpand={() => setExpandedId((p) => (p === it.id ? null : it.id))}
                       onDismiss={(d) => setCleared((prev) => new Set(prev).add(d.id))}
@@ -468,8 +460,14 @@ export const WithCurtains: Story = {
   args: { items: POPULATED_DATED.slice(0, 3), groupBy: "date", snoozed: SNOOZED, dismissed: DISMISSED, openCurtains: true },
 };
 
-export const TypeColorsAndDetail: Story = {
+export const CardAnatomyAndDetail: Story = {
+  name: "Card anatomy & detail",
   args: { items: SHOWCASE, groupBy: "type" },
+};
+
+/** The keyboard-selection ring (`ring-ring`, token-only) on the first card. */
+export const KeyboardSelected: Story = {
+  args: { items: POPULATED_DATED, groupBy: "date", selectedId: "recov-1" },
 };
 
 /** The ~8s undo toast shown after dismissing a row (plan §6). */
@@ -530,9 +528,9 @@ export const MobilePopulated: StoryObj = {
   ),
 };
 
-/** Mobile: the type-color + detail + thumbnail showcase at phone width. */
+/** Mobile: the card anatomy + detail showcase at phone width. */
 export const MobileShowcase: StoryObj = {
-  name: "Mobile · Type colors & detail",
+  name: "Mobile · Card anatomy & detail",
   render: () => (
     <PhoneFrame>
       <Queue items={SHOWCASE} groupBy="type" />

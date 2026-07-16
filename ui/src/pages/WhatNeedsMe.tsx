@@ -791,8 +791,8 @@ function CaughtUpNote({ filtered }: { filtered: boolean }) {
 function ZeroState() {
   return (
     <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-border py-20 text-center">
-      <div className="mb-4 rounded-full bg-green-500/10 p-4">
-        <CheckCircle2 className="h-10 w-10 text-green-500" />
+      <div className="mb-4 rounded-full bg-muted p-4">
+        <CheckCircle2 className="h-10 w-10 text-muted-foreground" />
       </div>
       <p className="text-lg font-semibold text-foreground">You're all caught up</p>
       <p className="mt-1 flex items-center gap-1.5 text-sm text-muted-foreground">

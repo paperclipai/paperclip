@@ -12,10 +12,8 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import type {
-  AttentionDetailImage,
   AttentionFeed,
   AttentionItem,
-  AttentionItemDetail,
   AttentionProjectRef,
   AttentionSeverity,
   AttentionSourceKind,
@@ -41,124 +39,29 @@ export function isInlineResolvable(item: AttentionItem): boolean {
 interface SourceMeta {
   label: string;
   icon: LucideIcon;
+  /**
+   * Footer-left context-link label (plan 4a), named for where `subject.href`
+   * actually lands (issue thread, run page, /costs…) so the link never
+   * over-promises relative to its destination.
+   */
+  contextLabel: string;
 }
 
 const SOURCE_META: Record<AttentionSourceKind, SourceMeta> = {
-  approval: { label: "Approval", icon: ShieldCheck },
-  issue_thread_interaction: { label: "Decision requested", icon: MessageSquareQuote },
-  join_request: { label: "Join request", icon: UserPlus },
-  recovery_action: { label: "Recovery", icon: LifeBuoy },
-  productivity_review: { label: "Productivity review", icon: Zap },
-  blocker_attention: { label: "Blocked dependency", icon: Ban },
-  review: { label: "Review", icon: Eye },
-  failed_run: { label: "Failed run", icon: RefreshCw },
-  budget_alert: { label: "Budget", icon: DollarSign },
-  agent_error_alert: { label: "Agent error", icon: AlertTriangle },
+  approval: { label: "Approval", icon: ShieldCheck, contextLabel: "View request" },
+  issue_thread_interaction: { label: "Decision requested", icon: MessageSquareQuote, contextLabel: "View thread" },
+  join_request: { label: "Join request", icon: UserPlus, contextLabel: "View members" },
+  recovery_action: { label: "Recovery", icon: LifeBuoy, contextLabel: "View issue" },
+  productivity_review: { label: "Productivity review", icon: Zap, contextLabel: "View issue" },
+  blocker_attention: { label: "Blocked dependency", icon: Ban, contextLabel: "View issue" },
+  review: { label: "Review", icon: Eye, contextLabel: "View issue" },
+  failed_run: { label: "Failed run", icon: RefreshCw, contextLabel: "View run" },
+  budget_alert: { label: "Budget", icon: DollarSign, contextLabel: "View budget" },
+  agent_error_alert: { label: "Agent error", icon: AlertTriangle, contextLabel: "View agent" },
 };
 
 export function sourceMeta(kind: AttentionSourceKind): SourceMeta {
-  return SOURCE_META[kind] ?? { label: kind.replaceAll("_", " "), icon: AlertTriangle };
-}
-
-interface SeverityStyle {
-  /** Left accent bar + dot color. */
-  accent: string;
-  dot: string;
-  label: string;
-}
-
-const SEVERITY_STYLE: Record<AttentionSeverity, SeverityStyle> = {
-  critical: { accent: "bg-red-500", dot: "bg-red-500", label: "Critical" },
-  high: { accent: "bg-orange-500", dot: "bg-orange-500", label: "High" },
-  medium: { accent: "bg-yellow-500", dot: "bg-yellow-500", label: "Medium" },
-  low: { accent: "bg-blue-500", dot: "bg-blue-500", label: "Low" },
-};
-
-export function severityStyle(severity: AttentionSeverity): SeverityStyle {
-  return SEVERITY_STYLE[severity] ?? SEVERITY_STYLE.low;
-}
-
-// ---------------------------------------------------------------------------
-// Canonical type → color map (PAP-13409 §4)
-//
-// The row color is driven by the *kind of decision*, never by severity — one
-// map, sourced from `IssueThreadInteractionCard`'s palette so a plan approval or
-// confirmation reads identically in the queue and on the issue thread:
-//   • confirmations / questions / suggested-tasks / verdicts / reviews → sky
-//   • plan approvals                                                   → violet
-//   • failures (failed run, agent error)                              → rose
-//   • blocked / recovery / budget                                     → amber
-//   • join request                                                    → neutral
-// Severity only ever surfaces as a small Critical/High badge (never the accent).
-// ---------------------------------------------------------------------------
-
-export type AttentionTone = "sky" | "violet" | "rose" | "amber" | "neutral";
-
-export interface AttentionToneStyle {
-  /** Left accent bar background. */
-  accent: string;
-  /** Source-icon tint. */
-  icon: string;
-  /** Chip / badge border+bg+text (matches the interaction card badge palette). */
-  chip: string;
-}
-
-const TONE_STYLE: Record<AttentionTone, AttentionToneStyle> = {
-  sky: {
-    accent: "bg-sky-500",
-    icon: "text-sky-600 dark:text-sky-400",
-    chip: "border-sky-500/60 bg-sky-500/10 text-sky-900 dark:bg-sky-500/15 dark:text-sky-100",
-  },
-  violet: {
-    accent: "bg-violet-500",
-    icon: "text-violet-600 dark:text-violet-400",
-    chip: "border-violet-500/60 bg-violet-500/10 text-violet-900 dark:bg-violet-500/15 dark:text-violet-100",
-  },
-  rose: {
-    accent: "bg-rose-500",
-    icon: "text-rose-600 dark:text-rose-400",
-    chip: "border-rose-500/60 bg-rose-500/10 text-rose-900 dark:bg-rose-500/15 dark:text-rose-100",
-  },
-  amber: {
-    accent: "bg-amber-500",
-    icon: "text-amber-600 dark:text-amber-400",
-    chip: "border-amber-500/60 bg-amber-500/10 text-amber-900 dark:bg-amber-500/15 dark:text-amber-100",
-  },
-  neutral: {
-    accent: "bg-muted-foreground/40",
-    icon: "text-muted-foreground",
-    chip: "border-border/70 bg-muted/50 text-muted-foreground",
-  },
-};
-
-/**
- * Resolve the canonical tone for a row. A plan approval is violet regardless of
- * which surface tagged it (approval flow *or* issue-thread confirmation), so we
- * check the T1 detail discriminant first, then fall back to the source kind.
- */
-export function attentionTone(item: AttentionItem): AttentionTone {
-  if (item.detail?.kind === "plan_approval") return "violet";
-  switch (item.sourceKind) {
-    case "failed_run":
-    case "agent_error_alert":
-      return "rose";
-    case "blocker_attention":
-    case "recovery_action":
-    case "budget_alert":
-      return "amber";
-    case "join_request":
-      return "neutral";
-    case "approval":
-    case "issue_thread_interaction":
-    case "review":
-    case "productivity_review":
-    default:
-      return "sky";
-  }
-}
-
-export function attentionToneStyle(item: AttentionItem): AttentionToneStyle {
-  return TONE_STYLE[attentionTone(item)];
+  return SOURCE_META[kind] ?? { label: kind.replaceAll("_", " "), icon: AlertTriangle, contextLabel: "View source" };
 }
 
 /**
@@ -168,10 +71,12 @@ export function attentionToneStyle(item: AttentionItem): AttentionToneStyle {
  */
 export function severityBadge(severity: AttentionSeverity): { label: string; className: string } | null {
   if (severity === "critical") {
-    return { label: "Critical", className: "border-red-500/60 bg-red-500/10 text-red-700 dark:text-red-300" };
+    // Red is reserved for Critical, and only as an outline — no fill. AA on
+    // --card: 4.76:1 light, 4.69:1 dark (--destructive vs --card, WCAG 2.1).
+    return { label: "Critical", className: "border-destructive/60 text-destructive" };
   }
   if (severity === "high") {
-    return { label: "High", className: "border-orange-500/60 bg-orange-500/10 text-orange-700 dark:text-orange-300" };
+    return { label: "High", className: "border-border text-muted-foreground" };
   }
   return null;
 }
@@ -246,21 +151,6 @@ export function attentionDetailLine(item: AttentionItem): string | null {
     default:
       return null;
   }
-}
-
-/** Screenshot / thumbnail images attached to the detail block, if any. */
-export function attentionDetailImages(item: AttentionItem): AttentionDetailImage[] {
-  return (item.detail as AttentionItemDetail | null)?.images ?? [];
-}
-
-/**
- * Content URL for an attention detail image asset. Already-absolute or data
- * URLs pass through unchanged (server may hand back a CDN URL; stories use data
- * URIs), otherwise we resolve the in-app asset content route.
- */
-export function attentionImageUrl(assetId: string): string {
-  if (assetId.startsWith("data:") || assetId.startsWith("http")) return assetId;
-  return `/api/assets/${assetId}/content`;
 }
 
 /**
