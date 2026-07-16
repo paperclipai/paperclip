@@ -5983,6 +5983,9 @@ export function issueService(db: Db) {
     create: async (
       companyId: string,
       data: IssueCreateInput,
+      options?: {
+        onDeduplicated?: (reason: "idempotency_key" | "recent_open_title") => void;
+      },
     ) => {
       const {
         labelIds: inputLabelIds,
@@ -6030,6 +6033,7 @@ export function issueService(db: Db) {
         }
 
         let existingIssue: typeof issues.$inferSelect | undefined;
+        let deduplicationReason: "idempotency_key" | "recent_open_title" | null = null;
         if (idempotencyKey) {
           [existingIssue] = await tx
             .select()
@@ -6041,6 +6045,7 @@ export function issueService(db: Db) {
             ))
             .limit(1)
             .then((rows) => rows.map((row) => row.issues));
+          if (existingIssue) deduplicationReason = "idempotency_key";
         }
         if (!existingIssue && allowDuplicate === false) {
           [existingIssue] = await tx
@@ -6056,6 +6061,7 @@ export function issueService(db: Db) {
             ))
             .orderBy(asc(issues.createdAt), asc(issues.id))
             .limit(1);
+          if (existingIssue) deduplicationReason = "recent_open_title";
         }
         if (existingIssue) {
           if (idempotencyKey) {
@@ -6064,6 +6070,7 @@ export function issueService(db: Db) {
               .values({ companyId, idempotencyKey, issueId: existingIssue.id })
               .onConflictDoNothing();
           }
+          if (deduplicationReason) options?.onDeduplicated?.(deduplicationReason);
           const [enriched] = await withIssueLabels(tx, [existingIssue]);
           const [withRelations] = await withIssueRelationSummaries(companyId, [enriched], tx);
           return withRelations;

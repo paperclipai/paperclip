@@ -6965,6 +6965,7 @@ export function issueRoutes(
       projectId: createBody.projectId ?? null,
       executionPolicy,
     }, actor);
+    let deduplicationReason: "idempotency_key" | "recent_open_title" | null = null;
     const issue = await svc.create(companyId, {
       ...createBody,
       ...(taskBridgeOriginForActor(req) ?? {}),
@@ -6978,13 +6979,18 @@ export function issueRoutes(
       actorResponsibleUserId: authenticatedActorResponsibleUserId(req),
       trustExplicitResponsibleUserId: actor.actorType === "user",
       watchdogActorRunId: actor.runId,
+    }, {
+      onDeduplicated: (reason) => {
+        deduplicationReason = reason;
+      },
     });
     if (issue.id !== issueId) {
+      if (!deduplicationReason) throw new Error("Deduplicated issue creation did not report a reason");
       const referenceSummary = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
       res.status(200).json({
         ...issue,
         deduplicated: true,
-        deduplicationReason: createBody.idempotencyKey ? "idempotency_key" : "recent_open_title",
+        deduplicationReason,
         relatedWork: referenceSummary,
         referencedIssueIdentifiers: referenceSummary.outbound.map((item) => item.issue.identifier ?? item.issue.id),
       });

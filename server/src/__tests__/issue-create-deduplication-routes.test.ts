@@ -149,10 +149,24 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
 
     expect([keyed.status, titleOnly.status].sort()).toEqual([200, 201]);
     expect(keyed.body.id).toBe(titleOnly.body.id);
+    expect([keyed, titleOnly].find((response) => response.status === 200)?.body).toMatchObject({
+      deduplicated: true,
+      deduplicationReason: "recent_open_title",
+    });
     expect(await db.select().from(issues).where(eq(issues.parentId, parent.id))).toHaveLength(1);
     expect(await db.select().from(issueCreateIdempotencyKeys)).toEqual([
       expect.objectContaining({ issueId: keyed.body.id, idempotencyKey: "run-2:coordinate-launch" }),
     ]);
+
+    const replay = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({ parentId: parent.id, title: "Different title", idempotencyKey: "run-2:coordinate-launch" })
+      .expect(200);
+    expect(replay.body).toMatchObject({
+      id: keyed.body.id,
+      deduplicated: true,
+      deduplicationReason: "idempotency_key",
+    });
   });
 
   it("allows an explicit duplicate create", async () => {
