@@ -257,6 +257,10 @@ export async function captureDecisionSnapshot(
 
 export function decisionTrainingService(db: Db) {
   return {
+    // Capture the snapshot the way create() would, but without persisting it, so
+    // the drawer's create state can preview exactly what will be frozen before
+    // the user commits (PAP-14299).
+    preview: async (input: CaptureInput) => captureDecisionSnapshot(db, input),
     create: async (input: CaptureInput & { notes: string; createdByUserId: string }) => {
       const captured = await captureDecisionSnapshot(db, input);
       const rows = await db

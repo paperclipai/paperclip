@@ -605,8 +605,16 @@ export function attentionService(db: Db) {
           payload: approvals.payload,
           createdAt: approvals.createdAt,
           updatedAt: approvals.updatedAt,
+          // The issue this approval is anchored to (if any). Surfaced so the
+          // Decisions row can offer decision-training capture, which anchors to
+          // the durable (approval + issue) pair (PAP-14299).
+          issueId: issueApprovals.issueId,
         })
         .from(approvals)
+        .leftJoin(issueApprovals, and(
+          eq(issueApprovals.approvalId, approvals.id),
+          eq(issueApprovals.companyId, companyId),
+        ))
         .where(and(eq(approvals.companyId, companyId), eq(approvals.status, "pending")))
         .orderBy(desc(approvals.updatedAt), desc(approvals.id));
 
@@ -628,6 +636,7 @@ export function attentionService(db: Db) {
               type: approval.type,
               requestedByAgentId: approval.requestedByAgentId,
               requestedByUserId: approval.requestedByUserId,
+              issueId: approval.issueId,
             },
           },
           whyNow: "Approval is pending a board decision.",

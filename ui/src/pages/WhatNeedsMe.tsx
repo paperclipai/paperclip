@@ -624,6 +624,16 @@ export function WhatNeedsMe() {
           )}
         </div>
       )}
+
+      <DecisionTrainingDrawer
+        open={trainingItem !== null}
+        onOpenChange={(next) => {
+          if (!next) setTrainingItem(null);
+        }}
+        companyId={selectedCompanyId}
+        item={trainingItem}
+        currentUserId={currentUserId}
+      />
     </div>
   );
 }

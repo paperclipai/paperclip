@@ -66,6 +66,7 @@ export type {
 export type {
   DecisionTrainingExample,
   DecisionTrainingNotesHistoryEntry,
+  DecisionTrainingPreview,
   DecisionTrainingSnapshotV1,
   DecisionTrainingSourceKind,
 } from "./types/decision-training.js";
