@@ -18,6 +18,8 @@ import { eq } from "drizzle-orm";
 const DEFAULT_SINGLETON_KEY = "default";
 const instanceGeneralSettingsStorageSchema = instanceGeneralSettingsSchema.strip();
 const instanceExperimentalSettingsStorageSchema = instanceExperimentalSettingsSchema.strip();
+type InstanceSettingsDb = Pick<Db, "insert" | "select" | "update">;
+
 const TRUTHY_RUNTIME_ENV_VALUES = new Set(["1", "true", "yes", "on"]);
 
 interface InstanceSettingsServiceOptions {
@@ -273,7 +275,7 @@ function toInstanceSettings(row: typeof instanceSettings.$inferSelect): Instance
   } as InstanceSettings;
 }
 
-export function instanceSettingsService(db: Db, options: InstanceSettingsServiceOptions = {}) {
+export function instanceSettingsService(db: InstanceSettingsDb, options: InstanceSettingsServiceOptions = {}) {
   async function getOrCreateRow() {
     const existing = await db
       .select()

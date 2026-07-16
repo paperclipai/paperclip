@@ -84,6 +84,7 @@ export const DEFAULT_LIVENESS_REESCALATION_COOLDOWN_MS = 60 * 60 * 1000;
 const ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES = 8 * 1024;
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
 const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation;
+const DETACHED_PROCESS_ERROR_CODE = "process_detached";
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON = "execution_review_participant_recovery";
 const RESOLVED_DEPENDENCY_WAKE_BACKSTOP_CANDIDATE_LIMIT = 500;
@@ -135,6 +136,9 @@ type ResolvedDependencyWakeBackstopOptions = {
   blockerIssueId?: string | null;
   source?: ResolvedDependencyWakeBackstopSource;
 };
+
+type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
+type DbOrTransaction = Db | DbTransaction;
 
 type LatestIssueRun = Pick<
   typeof heartbeatRuns.$inferSelect,
@@ -1256,6 +1260,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         status: issues.status,
         priority: issues.priority,
         assigneeAgentId: issues.assigneeAgentId,
+        createdAt: issues.createdAt,
         updatedAt: issues.updatedAt,
       })
       .from(issues)
@@ -1315,6 +1320,16 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       )
       .limit(1);
     return row != null;
+  }
+
+  async function latestWatchdogDecisionCreatedAt(companyId: string, runId: string) {
+    const [row] = await db
+      .select({ createdAt: heartbeatRunWatchdogDecisions.createdAt })
+      .from(heartbeatRunWatchdogDecisions)
+      .where(and(eq(heartbeatRunWatchdogDecisions.companyId, companyId), eq(heartbeatRunWatchdogDecisions.runId, runId)))
+      .orderBy(desc(heartbeatRunWatchdogDecisions.createdAt))
+      .limit(1);
+    return row?.createdAt ?? null;
   }
 
   async function buildRunOutputSilence(
@@ -1434,8 +1449,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return null;
   }
 
-  async function nextRunEventSeq(runId: string) {
-    const [row] = await db
+  async function nextRunEventSeq(runId: string, dbOrTx: DbOrTransaction = db) {
+    const [row] = await dbOrTx
       .select({ maxSeq: sql<number | null>`max(${heartbeatRunEvents.seq})` })
       .from(heartbeatRunEvents)
       .where(eq(heartbeatRunEvents.runId, runId));
@@ -1449,12 +1464,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       message: string;
       payload?: Record<string, unknown>;
     },
+    dbOrTx: DbOrTransaction = db,
   ) {
-    await db.insert(heartbeatRunEvents).values({
+    await dbOrTx.insert(heartbeatRunEvents).values({
       companyId: run.companyId,
       runId: run.id,
       agentId: run.agentId,
-      seq: await nextRunEventSeq(run.id),
+      seq: await nextRunEventSeq(run.id, dbOrTx),
       eventType: "lifecycle",
       stream: "system",
       level: event.level,
@@ -1693,6 +1709,101 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     });
     await finalizeAgentAfterSourceResolvedRun(finalizedRun, finalRunStatus);
     return { kind: "folded" as const, evaluationIssueId: input.existingEvaluation?.id ?? null };
+  }
+
+  async function resolveDetachedNoSourceLateOutput(input: {
+    run: typeof heartbeatRuns.$inferSelect;
+    sourceIssue: typeof issues.$inferSelect | null;
+    existingEvaluation: Awaited<ReturnType<typeof findOpenStaleRunEvaluation>>;
+  }) {
+    if (input.sourceIssue || !input.existingEvaluation) return null;
+    if (input.run.errorCode !== DETACHED_PROCESS_ERROR_CODE) return null;
+    if (!input.run.lastOutputAt) return null;
+
+    const latestDecisionAt = await latestWatchdogDecisionCreatedAt(input.run.companyId, input.run.id);
+    const cutoff = latestDecisionAt && latestDecisionAt > input.existingEvaluation.createdAt
+      ? latestDecisionAt
+      : input.existingEvaluation.createdAt;
+    if (input.run.lastOutputAt <= cutoff) return null;
+
+    return {
+      outputAt: input.run.lastOutputAt,
+      outputSeq: input.run.lastOutputSeq ?? 0,
+      outputStream: input.run.lastOutputStream === "stdout" || input.run.lastOutputStream === "stderr"
+        ? input.run.lastOutputStream
+        : null,
+      cutoff,
+    };
+  }
+
+  async function foldDetachedNoSourceLateOutput(input: {
+    run: typeof heartbeatRuns.$inferSelect;
+    existingEvaluation: NonNullable<Awaited<ReturnType<typeof findOpenStaleRunEvaluation>>>;
+    evidence: NonNullable<Awaited<ReturnType<typeof resolveDetachedNoSourceLateOutput>>>;
+    now: Date;
+  }) {
+    const snoozedUntil = new Date(input.now.getTime() + ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS);
+    await db.transaction(async (tx) => {
+      await issuesSvc.update(input.existingEvaluation.id, { status: "done" }, tx);
+      await issuesSvc.addComment(input.existingEvaluation.id, [
+        "Detached no-source watchdog fold.",
+        "",
+        `- Run: \`${input.run.id}\``,
+        `- Late output at: ${input.evidence.outputAt.toISOString()}`,
+        `- Late output sequence: ${input.evidence.outputSeq}`,
+        `- Late output stream: ${input.evidence.outputStream ?? "unknown"}`,
+        `- Evaluation opened at: ${input.existingEvaluation.createdAt.toISOString()}`,
+        "- Outcome: false positive; the detached no-source run emitted durable output after review opened.",
+      ].join("\n"), { runId: input.run.id }, undefined, tx);
+
+      const [decision] = await tx
+        .insert(heartbeatRunWatchdogDecisions)
+        .values({
+          companyId: input.run.companyId,
+          runId: input.run.id,
+          evaluationIssueId: input.existingEvaluation.id,
+          decision: "continue",
+          reason: "Recovered detached no-source run emitted durable output after the watchdog evaluation opened.",
+          snoozedUntil,
+          createdByRunId: input.run.id,
+        })
+        .returning();
+      if (!decision) {
+        throw new Error("Failed to record detached no-source watchdog re-arm decision");
+      }
+
+      const payload = {
+        evaluationIssueId: input.existingEvaluation.id,
+        evaluationIssueIdentifier: input.existingEvaluation.identifier,
+        outputAt: input.evidence.outputAt.toISOString(),
+        outputSeq: input.evidence.outputSeq,
+        outputStream: input.evidence.outputStream,
+        cutoffAt: input.evidence.cutoff.toISOString(),
+        snoozedUntil: snoozedUntil.toISOString(),
+        watchdogDecisionId: decision.id,
+      };
+      await appendRecoveryRunEvent(input.run, {
+        level: "info",
+        message: "Detached no-source watchdog fold re-armed after late output",
+        payload,
+      }, tx);
+      await logActivity(tx, {
+        companyId: input.run.companyId,
+        actorType: "system",
+        actorId: "system",
+        agentId: input.run.agentId,
+        runId: input.run.id,
+        action: "heartbeat.output_stale_detached_no_source_rearmed",
+        entityType: "heartbeat_run",
+        entityId: input.run.id,
+        details: {
+          source: "recovery.scan_silent_active_runs",
+          ...payload,
+        },
+      });
+    });
+
+    return { kind: "folded" as const, evaluationIssueId: input.existingEvaluation.id };
   }
 
   async function resolveStaleRunOwnerAgentId(input: {
@@ -1983,6 +2094,19 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         });
       }
     }
+    const detachedNoSourceLateOutput = await resolveDetachedNoSourceLateOutput({
+      run: input.run,
+      sourceIssue,
+      existingEvaluation: existing,
+    });
+    if (existing && detachedNoSourceLateOutput) {
+      return foldDetachedNoSourceLateOutput({
+        run: input.run,
+        existingEvaluation: existing,
+        evidence: detachedNoSourceLateOutput,
+        now: input.now,
+      });
+    }
 
     // Idle output is expected when the source issue is blocked — skip ticket creation entirely.
     if (sourceIssue?.status === "blocked") return { kind: "skipped" as const };
@@ -2167,7 +2291,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   async function scanSilentActiveRuns(opts?: { now?: Date; companyId?: string; issueCreatedAtGte?: Date | null }) {
     const now = opts?.now ?? new Date();
     const suspicionBefore = new Date(now.getTime() - ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS);
-    let candidates = await db
+    const staleCandidates = await db
       .select()
       .from(heartbeatRuns)
       .where(
@@ -2179,6 +2303,37 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       )
       .orderBy(asc(heartbeatRuns.createdAt))
       .limit(100);
+    const evaluationCandidates = await db
+      .select({ run: heartbeatRuns })
+      .from(issues)
+      .innerJoin(
+        heartbeatRuns,
+        and(
+          eq(issues.companyId, heartbeatRuns.companyId),
+          sql`${issues.originId} = ${heartbeatRuns.id}::text`,
+        ),
+      )
+      .where(
+        and(
+          opts?.companyId ? eq(issues.companyId, opts.companyId) : undefined,
+          eq(issues.originKind, STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND),
+          isNull(issues.hiddenAt),
+          notInArray(issues.status, ["done", "cancelled"]),
+          eq(heartbeatRuns.status, "running"),
+        ),
+      )
+      .orderBy(asc(issues.createdAt))
+      .limit(100);
+    const candidatesById = new Map<string, typeof heartbeatRuns.$inferSelect>();
+    for (const run of staleCandidates) {
+      candidatesById.set(run.id, run);
+    }
+    for (const { run } of evaluationCandidates) {
+      if (!candidatesById.has(run.id)) {
+        candidatesById.set(run.id, run);
+      }
+    }
+    let candidates = [...candidatesById.values()];
 
     if (opts?.issueCreatedAtGte) {
       const issueIds = [...new Set(candidates.flatMap((run) => {
