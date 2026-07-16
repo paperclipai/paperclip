@@ -1,0 +1,27 @@
+{
+  "name": "@paperclipai/plugin-openclaw-notify",
+  "version": "0.1.0",
+  "description": "Fires OpenClaw webhook on meaningful Paperclip issue events — status changes, new comments, blocks, review requests. Replaces polling with push.",
+  "type": "module",
+  "private": true,
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "paperclipPlugin": {
+    "manifest": "./dist/manifest.js",
+    "worker": "./dist/worker.js"
+  },
+  "scripts": {
+    "prebuild": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps",
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "typecheck": "pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit"
+  },
+  "dependencies": {
+    "@paperclipai/plugin-sdk": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.6.0",
+    "typescript": "^5.7.3"
+  }
+}
