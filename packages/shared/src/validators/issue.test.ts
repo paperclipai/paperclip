@@ -69,6 +69,7 @@ describe("issue validators", () => {
   it("allows false-positive recovery resolutions to atomically restore the source issue status", () => {
     expect(
       resolveIssueRecoveryActionSchema.parse({
+        actionId: "11111111-1111-4111-8111-111111111111",
         outcome: "false_positive",
         sourceIssueStatus: "in_review",
       }),
@@ -94,6 +95,7 @@ describe("issue validators", () => {
   it("allows restored recovery resolutions to return the source issue to todo", () => {
     expect(
       resolveIssueRecoveryActionSchema.parse({
+        actionId: "11111111-1111-4111-8111-111111111111",
         outcome: "restored",
         sourceIssueStatus: "todo",
       }),
@@ -113,6 +115,7 @@ describe("issue validators", () => {
   it("allows cancelled recovery resolutions to atomically restore the source issue status", () => {
     expect(
       resolveIssueRecoveryActionSchema.parse({
+        actionId: "11111111-1111-4111-8111-111111111111",
         outcome: "cancelled",
         sourceIssueStatus: "in_review",
       }),
@@ -145,6 +148,15 @@ describe("issue validators", () => {
     expect(
       resolveIssueRecoveryActionSchema.safeParse({
         outcome: "escalated",
+      }).success,
+    ).toBe(false);
+  });
+
+  it("requires the exact recovery action identity for resolution", () => {
+    expect(
+      resolveIssueRecoveryActionSchema.safeParse({
+        outcome: "restored",
+        sourceIssueStatus: "todo",
       }).success,
     ).toBe(false);
   });

@@ -961,6 +961,63 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     await expect(recoveryActionSvc.getActiveForIssue(companyId, sourceIssueId)).resolves.toBeNull();
   });
 
+  it("returns conflict instead of resolving a replacement action authorized to a different owner", async () => {
+    const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
+    await db.update(issues).set({ assigneeAgentId: null }).where(eq(issues.id, sourceIssueId));
+    const recoveryActionSvc = issueRecoveryActionService(db);
+    const authorizedAction = await recoveryActionSvc.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "issue_graph_liveness",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      cause: "owner-a-recovery",
+      fingerprint: "owner-a-recovery",
+      nextAction: "Owner A may resolve this action.",
+    });
+    const app = createApp({
+      type: "agent",
+      agentId: managerId,
+      companyId,
+      runId: randomUUID(),
+      source: "agent_key",
+    });
+    let resolutionRequest!: Promise<any>;
+
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`select ${issues.id} from ${issues} where ${issues.id} = ${sourceIssueId} for update`);
+      resolutionRequest = request(app)
+        .post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`)
+        .send({
+          actionId: authorizedAction.id,
+          outcome: "restored",
+          sourceIssueStatus: "todo",
+        })
+        .then((response) => response);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      await recoveryActionSvc.upsertSourceScoped({
+        companyId,
+        sourceIssueId,
+        kind: "issue_graph_liveness",
+        ownerType: "agent",
+        ownerAgentId: coderId,
+        cause: "owner-b-replacement",
+        fingerprint: "owner-b-replacement",
+        nextAction: "Only owner B may resolve this replacement.",
+      }, tx);
+    });
+
+    const rejected = await resolutionRequest;
+    expect(rejected.status).toBe(409);
+    expect(rejected.body.error).toContain("Recovery action ownership changed");
+    await expect(recoveryActionSvc.getActiveForIssue(companyId, sourceIssueId)).resolves.toMatchObject({
+      id: authorizedAction.id,
+      ownerAgentId: coderId,
+      cause: "owner-b-replacement",
+      status: "active",
+    });
+  });
+
   it("completes terminal recovery while a normal upsert waits on the source issue lock", async () => {
     const { companyId, managerId, sourceIssueId } = await seedCompany();
     const recoveryActionSvc = issueRecoveryActionService(db);
@@ -1011,11 +1068,11 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       ]);
 
       expect(terminalAction).toMatchObject({ cause: "workspace_finalize_failed", status: "active" });
-      expect(normalAction).toMatchObject({ id: terminalAction.id, cause: "issue_graph_liveness", status: "active" });
+      expect(normalAction).toMatchObject({ id: terminalAction.id, cause: "workspace_finalize_failed", status: "active" });
       await expect(recoveryActionSvc.getActiveForIssue(companyId, sourceIssueId)).resolves.toMatchObject({
         id: terminalAction.id,
-        cause: "issue_graph_liveness",
-        attemptCount: 2,
+        cause: "workspace_finalize_failed",
+        attemptCount: 1,
       });
     } finally {
       transactionSpy.mockRestore();

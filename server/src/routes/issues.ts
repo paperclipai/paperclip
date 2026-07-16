@@ -5502,7 +5502,11 @@ export function issueRoutes(
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
     if (!existing) return;
     if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+    const { actionId, outcome, sourceIssueStatus, resolutionNote } = req.body;
     const activeRecoveryAction = await recoveryActionsSvc.getActiveForIssue(existing.companyId, existing.id);
+    if (activeRecoveryAction && activeRecoveryAction.id !== actionId) {
+      throw conflict("Recovery action changed; reload the issue and retry with the active action id");
+    }
     if (
       !(await assertRecoveryActionAuthority(
         req,
@@ -5515,7 +5519,6 @@ export function issueRoutes(
       return;
     }
 
-    const { actionId, outcome, sourceIssueStatus, resolutionNote } = req.body;
     if (outcome === "false_positive" || outcome === "cancelled") {
       assertBoard(req);
     }
@@ -5530,19 +5533,35 @@ export function issueRoutes(
 
     const actionStatus = outcome === "cancelled" ? "cancelled" : "resolved";
     const result = await db.transaction(async (tx) => {
-      await tx.execute(sql`
-        select ${issueRows.id}
-        from ${issueRows}
-        where ${issueRows.companyId} = ${existing.companyId}
-          and ${issueRows.id} = ${existing.id}
-        for update
-      `);
+      const lockedIssue = await tx
+        .select()
+        .from(issueRows)
+        .where(
+          and(
+            eq(issueRows.companyId, existing.companyId),
+            eq(issueRows.id, existing.id),
+          ),
+        )
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      if (!lockedIssue) throw notFound("Issue not found");
 
-      const lockedRecoveryAction = await recoveryActionsSvc.getActiveForIssue(
+      const lockedRecoveryAction = await recoveryActionsSvc.lockActiveForIssue(
         existing.companyId,
         existing.id,
         tx,
       );
+      if (!lockedRecoveryAction || lockedRecoveryAction.id !== actionId) {
+        throw conflict("Recovery action changed; reload the issue and retry with the active action id");
+      }
+      if (
+        lockedIssue.assigneeAgentId !== existing.assigneeAgentId ||
+        lockedRecoveryAction.ownerType !== activeRecoveryAction?.ownerType ||
+        lockedRecoveryAction.ownerAgentId !== activeRecoveryAction?.ownerAgentId ||
+        lockedRecoveryAction.ownerUserId !== activeRecoveryAction?.ownerUserId
+      ) {
+        throw conflict("Recovery action ownership changed; reload the issue and retry");
+      }
       if (lockedRecoveryAction?.cause === "workspace_finalize_failed" && actionStatus !== "cancelled") {
         const latestFinalize = await tx
           .select({ status: workspaceOperations.status })
@@ -5617,6 +5636,7 @@ export function issueRoutes(
 
       return { issue, recoveryAction };
     });
+    if (!result) return;
 
     await routinesSvc.syncRunStatusForIssue(result.issue.id);
 

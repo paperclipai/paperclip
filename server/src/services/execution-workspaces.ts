@@ -1780,6 +1780,23 @@ export function executionWorkspaceService(db: Db) {
           updatedRow = branchUpdatedRow;
         }
 
+        // Global recovery lock order is source issue -> recovery action. Lock the
+        // source before resolving recovery metadata or mutating its disposition;
+        // otherwise branch reconciliation can deadlock a concurrent recovery
+        // producer that already owns the source row.
+        const sourceBefore = await tx
+          .select()
+          .from(issues)
+          .where(
+            and(
+              eq(issues.companyId, lockedWorkspace.companyId),
+              eq(issues.id, lockedWorkspace.sourceIssueId),
+            ),
+          )
+          .for("update")
+          .then((rows) => rows[0] ?? null);
+        if (!sourceBefore) throw notFound("Source issue not found");
+
         let recoveryAction = await recoveryActionsSvc.resolveActiveForIssue(
           {
             companyId: lockedWorkspace.companyId,
@@ -1820,27 +1837,6 @@ export function executionWorkspaceService(db: Db) {
         let restoredSourceIssue: ExecutionWorkspaceBranchReconcileResult["restoredSourceIssue"] = null;
         let sourceIssueStatusChanged = false;
         if (input.mode === "quarantine_restore") {
-          const [sourceBefore] = await tx
-            .select({
-              id: issues.id,
-              companyId: issues.companyId,
-              status: issues.status,
-              assigneeAgentId: issues.assigneeAgentId,
-              assigneeUserId: issues.assigneeUserId,
-              executionPolicy: issues.executionPolicy,
-              executionState: issues.executionState,
-              monitorNextCheckAt: issues.monitorNextCheckAt,
-              monitorWakeRequestedAt: issues.monitorWakeRequestedAt,
-              monitorLastTriggeredAt: issues.monitorLastTriggeredAt,
-              monitorAttemptCount: issues.monitorAttemptCount,
-              monitorNotes: issues.monitorNotes,
-              monitorScheduledBy: issues.monitorScheduledBy,
-            })
-            .from(issues)
-            .where(eq(issues.id, lockedWorkspace.sourceIssueId))
-            .for("update");
-          if (!sourceBefore) throw notFound("Source issue not found");
-
           const requestedStatus = quarantineRestoreRequestedSourceStatus(sourceBefore);
           const policy = normalizeIssueExecutionPolicy(sourceBefore.executionPolicy ?? null);
           const transition = applyIssueExecutionPolicyTransition({

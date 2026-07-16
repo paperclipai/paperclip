@@ -118,6 +118,27 @@ export function issueRecoveryActionService(db: Db) {
     return row ? toReadModel(row) : null;
   }
 
+  async function lockActiveForIssue(
+    companyId: string,
+    sourceIssueId: string,
+    tx: DbTransaction,
+  ): Promise<IssueRecoveryAction | null> {
+    const [row] = await tx
+      .select()
+      .from(issueRecoveryActions)
+      .where(
+        and(
+          eq(issueRecoveryActions.companyId, companyId),
+          eq(issueRecoveryActions.sourceIssueId, sourceIssueId),
+          inArray(issueRecoveryActions.status, [...ACTIVE_RECOVERY_ACTION_STATUSES]),
+        ),
+      )
+      .orderBy(desc(issueRecoveryActions.updatedAt), desc(issueRecoveryActions.createdAt))
+      .limit(1)
+      .for("update");
+    return row ? toReadModel(row) : null;
+  }
+
   async function listActiveForIssues(companyId: string, sourceIssueIds: string[]) {
     if (sourceIssueIds.length === 0) return new Map<string, IssueRecoveryAction>();
     const rows = await db
@@ -162,6 +183,16 @@ export function issueRecoveryActionService(db: Db) {
     const now = new Date();
     const ownerType = input.ownerType ?? (input.ownerAgentId ? "agent" : "board");
     if (existing) {
+      // A failed terminal workspace finalization is the authoritative fail-closed
+      // state for the issue. Ordinary recovery producers must not erase it while
+      // racing the finalize projection. A later successful finalize resolves the
+      // terminal action explicitly before another producer can replace it.
+      if (
+        existing.cause === "workspace_finalize_failed" &&
+        input.cause !== "workspace_finalize_failed"
+      ) {
+        return existing;
+      }
       const [updated] = await dbOrTx
         .update(issueRecoveryActions)
         .set({
@@ -263,42 +294,58 @@ export function issueRecoveryActionService(db: Db) {
     input: ResolveIssueRecoveryActionInput,
     dbOrTx: DbOrTransaction = db,
   ): Promise<IssueRecoveryAction | null> {
-    const now = new Date();
-    const predicates = [
-      eq(issueRecoveryActions.companyId, input.companyId),
-      eq(issueRecoveryActions.sourceIssueId, input.sourceIssueId),
-      inArray(issueRecoveryActions.status, [...ACTIVE_RECOVERY_ACTION_STATUSES]),
-    ];
-    if (input.actionId) {
-      predicates.push(eq(issueRecoveryActions.id, input.actionId));
-    }
-    if (input.kind) {
-      predicates.push(eq(issueRecoveryActions.kind, input.kind));
-    }
-    if (input.cause) {
-      predicates.push(eq(issueRecoveryActions.cause, input.cause));
-    }
-    if (input.fingerprint) {
-      predicates.push(eq(issueRecoveryActions.fingerprint, input.fingerprint));
-    }
+    const resolveWithSourceLock = async (tx: DbTransaction) => {
+      await tx.execute(sql`
+        select ${issues.id}
+        from ${issues}
+        where ${issues.companyId} = ${input.companyId}
+          and ${issues.id} = ${input.sourceIssueId}
+        for update
+      `);
 
-    const [updated] = await dbOrTx
-      .update(issueRecoveryActions)
-      .set({
-        status: input.status,
-        outcome: input.outcome,
-        resolutionNote: input.resolutionNote ?? null,
-        resolvedAt: now,
-        updatedAt: now,
-      })
-      .where(and(...predicates))
-      .returning();
+      const now = new Date();
+      const predicates = [
+        eq(issueRecoveryActions.companyId, input.companyId),
+        eq(issueRecoveryActions.sourceIssueId, input.sourceIssueId),
+        inArray(issueRecoveryActions.status, [...ACTIVE_RECOVERY_ACTION_STATUSES]),
+      ];
+      if (input.actionId) {
+        predicates.push(eq(issueRecoveryActions.id, input.actionId));
+      }
+      if (input.kind) {
+        predicates.push(eq(issueRecoveryActions.kind, input.kind));
+      }
+      if (input.cause) {
+        predicates.push(eq(issueRecoveryActions.cause, input.cause));
+      }
+      if (input.fingerprint) {
+        predicates.push(eq(issueRecoveryActions.fingerprint, input.fingerprint));
+      }
 
-    return updated ? toReadModel(updated) : null;
+      const [updated] = await tx
+        .update(issueRecoveryActions)
+        .set({
+          status: input.status,
+          outcome: input.outcome,
+          resolutionNote: input.resolutionNote ?? null,
+          resolvedAt: now,
+          updatedAt: now,
+        })
+        .where(and(...predicates))
+        .returning();
+
+      return updated ? toReadModel(updated) : null;
+    };
+
+    if (dbOrTx !== db) {
+      return resolveWithSourceLock(dbOrTx as DbTransaction);
+    }
+    return db.transaction(resolveWithSourceLock);
   }
 
   return {
     getActiveForIssue,
+    lockActiveForIssue,
     listActiveForIssues,
     resolveActiveForIssue,
     upsertSourceScoped,

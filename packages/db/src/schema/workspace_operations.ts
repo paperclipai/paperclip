@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import {
   bigint,
   boolean,
@@ -63,5 +64,14 @@ export const workspaceOperations = pgTable(
       table.issueId,
       table.startedAt,
     ),
+    companyIssueFinalizeLatestIdx: index("workspace_operations_company_issue_finalize_latest_idx")
+      .on(
+        table.companyId,
+        table.issueId,
+        table.startedAt.desc(),
+        table.createdAt.desc(),
+        table.id.desc(),
+      )
+      .where(sql`${table.phase} = 'workspace_finalize' and ${table.issueId} is not null`),
   }),
 );

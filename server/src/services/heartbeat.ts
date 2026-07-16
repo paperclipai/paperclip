@@ -13919,6 +13919,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       ? await resolveSessionBeforeForWakeup(recoveryAgent, taskKey)
       : null;
     const recoveryAgentNameKey = normalizeAgentNameKey(recoveryAgent?.name);
+    // Owner selection touches agents, budgets, and instance settings. Resolve it
+    // before the issue-locking promotion transaction so a pool at capacity cannot
+    // deadlock on nested base-pool acquisition.
+    const terminalRecoveryIssue = contextIssueId
+      ? await db
+        .select()
+        .from(issues)
+        .where(and(eq(issues.companyId, run.companyId), eq(issues.id, contextIssueId)))
+        .limit(1)
+        .then((rows) => rows[0] ?? null)
+      : null;
+    const terminalRecoveryOwnerAgentId = terminalRecoveryIssue
+      ? await recovery.resolveFailedTerminalWorkspaceFinalizeOwner(terminalRecoveryIssue)
+      : null;
 
     const promotionResult = await db.transaction(async (tx) => {
       // Lock the context issue (if any) AND every issue that still references this run.
@@ -14030,7 +14044,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         const currentFinalize = await tx
           .select({
             id: workspaceOperations.id,
-            executionWorkspaceId: workspaceOperations.executionWorkspaceId,
             status: workspaceOperations.status,
           })
           .from(workspaceOperations)
@@ -14050,7 +14063,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           .limit(1)
           .then((rows) => rows[0] ?? null);
 
-        if (currentFinalize?.executionWorkspaceId) {
+        if (currentFinalize) {
           const latestFinalize = await tx
             .select({ id: workspaceOperations.id })
             .from(workspaceOperations)
@@ -14074,6 +14087,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               const recoveryAction = await recovery.ensureFailedTerminalWorkspaceFinalizeRecovery({
                 issue,
                 latestRun: run,
+                recoveryOwnerAgentId: terminalRecoveryOwnerAgentId,
               }, tx);
               return { kind: "failed_terminal_workspace_finalize" as const, issue, recoveryAction };
             }

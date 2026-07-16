@@ -38,6 +38,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.ts";
 import { instanceSettingsService } from "../services/instance-settings.ts";
+import { issueRecoveryActionService } from "../services/issue-recovery-actions.ts";
 import { issueService } from "../services/issues.ts";
 
 const execFileAsync = promisify(execFile);
@@ -931,6 +932,162 @@ describeEmbeddedPostgres("heartbeat workspace finalization branch guard", () => 
 
     await expect(waitForRecoveryAction(db, issueId, "active")).resolves.toMatchObject({
       id: activeRecovery?.id,
+      cause: "workspace_finalize_failed",
+      status: "active",
+    });
+  });
+
+  it("reconciles failed finalization after restart and resolves it after a newer nullable-workspace success", async () => {
+    const repoRoot = await createGitRepo();
+    tempRoots.push(repoRoot);
+    const { companyId, projectId, agentId, issueId } = await seedRunTarget(db, repoRoot);
+    await db
+      .update(issues)
+      .set({ status: "done", projectId: null, projectWorkspaceId: null })
+      .where(eq(issues.id, issueId));
+    const failedFinalize = await seedTerminalFinalizeResult(db, {
+      companyId,
+      projectId,
+      agentId,
+      issueId,
+      status: "failed",
+      startedAt: new Date("2026-07-15T21:00:00.000Z"),
+      workspaceName: "deleted-workspace-failed-finalize",
+    });
+    await db.delete(executionWorkspaces).where(eq(executionWorkspaces.id, failedFinalize.executionWorkspaceId));
+    await expect(waitForRecoveryAction(db, issueId, "active", 100)).resolves.toBeNull();
+
+    const heartbeat = heartbeatService(db);
+    await expect(heartbeat.reconcileStrandedAssignedIssues()).resolves.toMatchObject({
+      terminalFinalizeRecoveryOpened: 1,
+      terminalFinalizeRecoveryResolved: 0,
+      issueIds: [issueId],
+    });
+    const active = await waitForRecoveryAction(db, issueId, "active");
+    expect(active).toMatchObject({
+      cause: "workspace_finalize_failed",
+      status: "active",
+      evidence: { latestRunId: failedFinalize.runId },
+    });
+
+    const succeededRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: succeededRunId,
+      companyId,
+      agentId,
+      invocationSource: "automation",
+      status: "succeeded",
+      responsibleUserId: "responsible-user",
+      contextSnapshot: { issueId },
+    });
+    await db.insert(workspaceOperations).values({
+      companyId,
+      executionWorkspaceId: null,
+      heartbeatRunId: succeededRunId,
+      issueId,
+      phase: "workspace_finalize",
+      status: "succeeded",
+      startedAt: new Date("2026-07-15T21:01:00.000Z"),
+      finishedAt: new Date("2026-07-15T21:01:00.000Z"),
+    });
+    const explainPlan = await db.transaction(async (tx) => {
+      await tx.execute(sql`set local enable_seqscan = off`);
+      return tx.execute(sql`
+        explain
+        select id
+        from workspace_operations
+        where company_id = ${companyId}
+          and issue_id = ${issueId}
+          and phase = 'workspace_finalize'
+        order by started_at desc, created_at desc, id desc
+        limit 1
+      `);
+    });
+    expect(JSON.stringify(explainPlan)).toContain("workspace_operations_company_issue_finalize_latest_idx");
+
+    await expect(heartbeat.reconcileStrandedAssignedIssues()).resolves.toMatchObject({
+      terminalFinalizeRecoveryOpened: 0,
+      terminalFinalizeRecoveryResolved: 1,
+      issueIds: [issueId],
+    });
+    await expect(waitForRecoveryAction(db, issueId, "resolved")).resolves.toMatchObject({
+      id: active?.id,
+      status: "resolved",
+      outcome: "restored",
+    });
+  });
+
+  it("keeps terminal failure sticky when production promotion races an ordinary recovery upsert", async () => {
+    const repoRoot = await createGitRepo();
+    tempRoots.push(repoRoot);
+    const { companyId, projectId, agentId, issueId } = await seedRunTarget(db, repoRoot);
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, issueId));
+    const failedFinalize = await seedTerminalFinalizeResult(db, {
+      companyId,
+      projectId,
+      agentId,
+      issueId,
+      status: "failed",
+      startedAt: new Date("2026-07-15T22:00:00.000Z"),
+      workspaceName: "production-lock-order-failed-finalize",
+    });
+    const heartbeat = heartbeatService(db);
+    const recoveryActions = issueRecoveryActionService(db);
+    let promotion!: Promise<unknown>;
+    let ordinaryUpsert!: ReturnType<typeof recoveryActions.upsertSourceScoped>;
+
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`select ${issues.id} from ${issues} where ${issues.id} = ${issueId} for update`);
+      promotion = heartbeat.cancelRun(failedFinalize.runId, "Project failed terminal finalization");
+      ordinaryUpsert = recoveryActions.upsertSourceScoped({
+        companyId,
+        sourceIssueId: issueId,
+        kind: "issue_graph_liveness",
+        ownerType: "agent",
+        ownerAgentId: agentId,
+        cause: "issue_graph_liveness",
+        fingerprint: "ordinary-recovery-racing-terminal-projection",
+        nextAction: "Restore a live path.",
+      });
+      await waitForRunStatuses(db, [failedFinalize.runId], "cancelled");
+    });
+
+    await expect(Promise.race([
+      Promise.all([promotion, ordinaryUpsert]),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("production recovery lock order deadlocked")), 2_000)),
+    ])).resolves.toHaveLength(2);
+    await expect(waitForRecoveryAction(db, issueId, "active")).resolves.toMatchObject({
+      cause: "workspace_finalize_failed",
+      status: "active",
+    });
+  });
+
+  it("projects terminal recovery without nested acquisition when the pool has one connection", async () => {
+    const repoRoot = await createGitRepo();
+    tempRoots.push(repoRoot);
+    const { companyId, projectId, agentId, issueId } = await seedRunTarget(db, repoRoot);
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, issueId));
+    const failedFinalize = await seedTerminalFinalizeResult(db, {
+      companyId,
+      projectId,
+      agentId,
+      issueId,
+      status: "failed",
+      startedAt: new Date("2026-07-15T23:00:00.000Z"),
+      workspaceName: "single-connection-failed-finalize",
+    });
+    const singleConnectionDb = createDb(tempDb!.connectionString, { max: 1 });
+
+    try {
+      await expect(Promise.race([
+        heartbeatService(singleConnectionDb).cancelRun(failedFinalize.runId, "Project failed terminal finalization"),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("single-connection promotion timed out")), 2_000)),
+      ])).resolves.toBeDefined();
+    } finally {
+      await singleConnectionDb.$client.end();
+    }
+
+    await expect(waitForRecoveryAction(db, issueId, "active")).resolves.toMatchObject({
       cause: "workspace_finalize_failed",
       status: "active",
     });

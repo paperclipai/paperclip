@@ -1184,6 +1184,13 @@
       "when": 1784037600000,
       "tag": "0170_company_skill_policies",
       "breakpoints": true
+    },
+    {
+      "idx": 173,
+      "version": "7",
+      "when": 1784163472591,
+      "tag": "0173_workspace_finalize_issue_latest_index",
+      "breakpoints": true
     }
   ]
 }

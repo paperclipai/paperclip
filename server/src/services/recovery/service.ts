@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, gte, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
@@ -23,6 +23,7 @@ import {
   issueRelations,
   issueThreadInteractions,
   issues,
+  workspaceOperations,
 } from "@paperclipai/db";
 import { parseObject, asBoolean, asNumber } from "../../adapters/utils.js";
 import { runningProcesses } from "../../adapters/index.js";
@@ -2548,13 +2549,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     previousStatus: StrandedPreviousStatus;
     recoveryCause?: StrandedRecoveryCause;
     recoveryOwnerAgentId?: string | null;
+    preparedRecoveryOwnerAgentId?: string | null;
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
   }, dbOrTx: DbOrTransaction = db) {
     const recoveryCause = input.recoveryCause ?? "stranded_assigned_issue";
-    const ownerAgentId = await resolveStrandedIssueRecoveryOwnerAgentId(
-      input.issue,
-      input.recoveryOwnerAgentId,
-    );
+    const ownerAgentId = input.preparedRecoveryOwnerAgentId !== undefined
+      ? input.preparedRecoveryOwnerAgentId
+      : await resolveStrandedIssueRecoveryOwnerAgentId(input.issue, input.recoveryOwnerAgentId);
     const now = new Date();
     const action = await recoveryActionsSvc.upsertSourceScoped({
       companyId: input.issue.companyId,
@@ -2995,13 +2996,21 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   async function ensureFailedTerminalWorkspaceFinalizeRecovery(input: {
     issue: typeof issues.$inferSelect;
     latestRun: LatestIssueRun;
+    recoveryOwnerAgentId: string | null;
   }, dbOrTx: DbOrTransaction) {
     return ensureSourceScopedStrandedRecoveryAction({
       issue: input.issue,
       previousStatus: "done",
       latestRun: input.latestRun,
       recoveryCause: "workspace_finalize_failed",
+      preparedRecoveryOwnerAgentId: input.recoveryOwnerAgentId,
     }, dbOrTx);
+  }
+
+  async function resolveFailedTerminalWorkspaceFinalizeOwner(
+    issue: typeof issues.$inferSelect,
+  ) {
+    return resolveStrandedIssueRecoveryOwnerAgentId(issue);
   }
 
   async function surfaceFailedTerminalWorkspaceFinalize(input: {
@@ -3095,7 +3104,157 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     });
   }
 
+  async function reconcileTerminalWorkspaceFinalizations() {
+    const candidates = await db
+      .selectDistinctOn(
+        [workspaceOperations.companyId, workspaceOperations.issueId],
+        {
+          companyId: workspaceOperations.companyId,
+          issueId: workspaceOperations.issueId,
+        },
+      )
+      .from(workspaceOperations)
+      .innerJoin(
+        issues,
+        and(
+          eq(issues.companyId, workspaceOperations.companyId),
+          eq(issues.id, workspaceOperations.issueId),
+        ),
+      )
+      .where(
+        and(
+          eq(issues.status, "done"),
+          eq(workspaceOperations.phase, "workspace_finalize"),
+          isNotNull(workspaceOperations.issueId),
+        ),
+      )
+      .orderBy(
+        workspaceOperations.companyId,
+        workspaceOperations.issueId,
+        desc(workspaceOperations.startedAt),
+        desc(workspaceOperations.createdAt),
+        desc(workspaceOperations.id),
+      );
+
+    const result = {
+      terminalFinalizeRecoveryOpened: 0,
+      terminalFinalizeRecoveryResolved: 0,
+      issueIds: [] as string[],
+    };
+
+    for (const candidate of candidates) {
+      if (!candidate.issueId) continue;
+      const issueSnapshot = await db
+        .select()
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, candidate.companyId),
+            eq(issues.id, candidate.issueId),
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (!issueSnapshot) continue;
+      const recoveryOwnerAgentId = await resolveFailedTerminalWorkspaceFinalizeOwner(issueSnapshot);
+
+      const projection = await db.transaction(async (tx) => {
+        const issue = await tx
+          .select()
+          .from(issues)
+          .where(
+            and(
+              eq(issues.companyId, candidate.companyId),
+              eq(issues.id, candidate.issueId!),
+            ),
+          )
+          .for("update")
+          .then((rows) => rows[0] ?? null);
+        if (!issue || issue.status !== "done") return null;
+
+        const latestFinalize = await tx
+          .select()
+          .from(workspaceOperations)
+          .where(
+            and(
+              eq(workspaceOperations.companyId, issue.companyId),
+              eq(workspaceOperations.issueId, issue.id),
+              eq(workspaceOperations.phase, "workspace_finalize"),
+            ),
+          )
+          .orderBy(
+            desc(workspaceOperations.startedAt),
+            desc(workspaceOperations.createdAt),
+            desc(workspaceOperations.id),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+        if (!latestFinalize) return null;
+
+        const latestRun = latestFinalize.heartbeatRunId
+          ? await tx
+            .select()
+            .from(heartbeatRuns)
+            .where(eq(heartbeatRuns.id, latestFinalize.heartbeatRunId))
+            .limit(1)
+            .then((rows) => rows[0] ?? null)
+          : null;
+
+        if (latestFinalize.status === "failed") {
+          const active = await recoveryActionsSvc.getActiveForIssue(issue.companyId, issue.id, tx);
+          const activeEvidence = parseObject(active?.evidence);
+          if (
+            active?.cause === "workspace_finalize_failed" &&
+            latestFinalize.heartbeatRunId &&
+            activeEvidence.latestRunId === latestFinalize.heartbeatRunId
+          ) {
+            return null;
+          }
+          const recoveryAction = await ensureFailedTerminalWorkspaceFinalizeRecovery({
+            issue,
+            latestRun,
+            recoveryOwnerAgentId,
+          }, tx);
+          return { kind: "opened" as const, issue, latestRun, recoveryAction };
+        }
+
+        if (latestFinalize.status === "succeeded") {
+          const resolved = await resolveFailedTerminalWorkspaceFinalize({
+            issue,
+            runId: latestFinalize.heartbeatRunId ?? "workspace-finalize-reconciler",
+          }, tx);
+          return resolved
+            ? { kind: "resolved" as const, issue, runId: latestFinalize.heartbeatRunId ?? "workspace-finalize-reconciler", resolved }
+            : null;
+        }
+
+        return null;
+      });
+
+      if (projection?.kind === "opened") {
+        await surfaceFailedTerminalWorkspaceFinalize({
+          issue: projection.issue,
+          latestRun: projection.latestRun,
+          recoveryAction: projection.recoveryAction,
+        });
+        result.terminalFinalizeRecoveryOpened += 1;
+        result.issueIds.push(projection.issue.id);
+      } else if (projection?.kind === "resolved") {
+        await recordResolvedTerminalWorkspaceFinalize({
+          issue: projection.issue,
+          runId: projection.runId,
+          resolved: projection.resolved,
+        });
+        result.terminalFinalizeRecoveryResolved += 1;
+        result.issueIds.push(projection.issue.id);
+      }
+    }
+
+    return result;
+  }
+
   async function reconcileStrandedAssignedIssues(opts?: { issueCreatedAtGte?: Date | null }) {
+    const terminalFinalizeProjection = await reconcileTerminalWorkspaceFinalizations();
     const candidates = await db
       .select()
       .from(issues)
@@ -3124,7 +3283,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       waitingOnReviewResolved: 0,
       recentProgressExempted: 0,
       skipped: 0,
-      issueIds: [] as string[],
+      terminalFinalizeRecoveryOpened: terminalFinalizeProjection.terminalFinalizeRecoveryOpened,
+      terminalFinalizeRecoveryResolved: terminalFinalizeProjection.terminalFinalizeRecoveryResolved,
+      issueIds: [...terminalFinalizeProjection.issueIds],
     };
 
     for (const issue of candidates) {
@@ -4855,6 +5016,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     escalateStrandedRecoveryIssueInPlace,
     escalateStrandedAssignedIssue,
     ensureFailedTerminalWorkspaceFinalizeRecovery,
+    resolveFailedTerminalWorkspaceFinalizeOwner,
     surfaceFailedTerminalWorkspaceFinalize,
     resolveFailedTerminalWorkspaceFinalize,
     recordResolvedTerminalWorkspaceFinalize,
