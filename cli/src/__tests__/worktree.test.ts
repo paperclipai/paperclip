@@ -576,6 +576,7 @@ describe("worktree helpers", () => {
         .set({
           experimental: {
             enableWorktreeRunExecution: true,
+            worktreeRunExecutionInstanceNonce: "9ed115ac-9e93-4fe9-a4f1-eb4ea2b0fb24",
             worktreeRunExecutionActivatedAt: "2026-07-16T12:00:00.000Z",
             worktreeRunExecutionActivationInstanceId: "source-instance",
             enableSmokeLab: true,
@@ -588,6 +589,7 @@ describe("worktree helpers", () => {
       const [settings] = await db.select().from(instanceSettings);
       expect(settings?.experimental).toMatchObject({
         enableWorktreeRunExecution: false,
+        worktreeRunExecutionInstanceNonce: null,
         worktreeRunExecutionActivatedAt: null,
         worktreeRunExecutionActivationInstanceId: null,
         enableSmokeLab: true,

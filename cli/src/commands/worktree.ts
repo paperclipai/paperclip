@@ -1353,6 +1353,7 @@ export async function resetSeededWorktreeRunExecutionActivation(connectionString
       const nextExperimental = {
         ...experimental,
         enableWorktreeRunExecution: false,
+        worktreeRunExecutionInstanceNonce: null,
         worktreeRunExecutionActivatedAt: null,
         worktreeRunExecutionActivationInstanceId: null,
       };

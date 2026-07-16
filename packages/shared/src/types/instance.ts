@@ -74,13 +74,18 @@ export interface InstanceExperimentalSettings {
    */
   enableWorktreeRunExecution: boolean;
   /**
+   * Server-managed random identity for this worktree database. Seed/reset flows
+   * clear it so the first boot stamps a fresh value.
+   */
+  worktreeRunExecutionInstanceNonce: string | null;
+  /**
    * Server-managed cutoff recorded when worktree run execution is enabled in
    * this instance. Client PATCH payloads must not control this value.
    */
   worktreeRunExecutionActivatedAt: string | null;
   /**
-   * Server-managed instance id captured with the cutoff so copied settings rows
-   * from another instance fail closed.
+   * Server-managed instance nonce captured with the cutoff so copied activation
+   * state from another instance fails closed.
    */
   worktreeRunExecutionActivationInstanceId: string | null;
   issueGraphLivenessAutoRecoveryLookbackHours: number;

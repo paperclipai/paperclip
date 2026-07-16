@@ -143,6 +143,24 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
     }).updateExperimental({ enableWorktreeRunExecution: true });
   }
 
+  it("stamps and reuses a server-managed nonce on first worktree settings read", async () => {
+    const generatedNonce = "9ed115ac-9e93-4fe9-a4f1-eb4ea2b0fb24";
+    const settings = instanceSettingsService(db, {
+      runtimeEnv: {
+        PAPERCLIP_IN_WORKTREE: "true",
+        PAPERCLIP_INSTANCE_ID: "injected-shared-instance-id",
+      },
+      generateInstanceNonce: () => generatedNonce,
+    });
+
+    await expect(settings.getExperimental()).resolves.toMatchObject({
+      worktreeRunExecutionInstanceNonce: generatedNonce,
+    });
+    await expect(settings.getExperimental()).resolves.toMatchObject({
+      worktreeRunExecutionInstanceNonce: generatedNonce,
+    });
+  });
+
   async function waitForCompletedRun(runId: string, agentId: string) {
     let latestStatus: string | null = null;
     let latestLastRunId: string | null = null;
@@ -259,7 +277,7 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
     const heartbeat = heartbeatService(db, {
       runtimeEnv: {
         PAPERCLIP_IN_WORKTREE: "true",
-        PAPERCLIP_INSTANCE_ID: "test-worktree",
+        PAPERCLIP_INSTANCE_ID: "different-injected-instance-id",
       },
     });
 
