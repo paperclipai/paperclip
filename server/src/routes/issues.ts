@@ -2590,7 +2590,6 @@ export function issueRoutes(
   const goalsSvc = goalService(db);
   const issueApprovalsSvc = issueApprovalService(db);
   const recoveryActionsSvc = issueRecoveryActionService(db);
-  const inboxPoliciesSvc = inboxAgentPolicyService(db);
   const executionWorkspacesSvc = executionWorkspaceServiceDirect(db);
   const workProductsSvc = workProductService(db);
   const documentsSvc = documentService(db);
@@ -6732,7 +6731,7 @@ export function issueRoutes(
   ) {
     if (req.actor.type === "board") {
       if (!req.actor.userId) throw forbidden("Board user context required", { code: "inbox_target_user_unresolved" });
-      const policy = await inboxPoliciesSvc.get(issue.companyId, req.actor.userId);
+      const policy = await inboxAgentPolicyService(db).get(issue.companyId, req.actor.userId);
       return {
         userId: req.actor.userId,
         targetResolvedFrom: "responsible_user" as const,
