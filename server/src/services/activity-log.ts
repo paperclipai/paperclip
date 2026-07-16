@@ -20,6 +20,7 @@ const ACTIVITY_ACTION_TO_PLUGIN_EVENT: Readonly<Record<string, PluginEventType>>
   issue_blockers_updated: "issue.relations.updated",
   approval_approved: "approval.decided",
   approval_rejected: "approval.decided",
+  approval_cancelled: "approval.decided",
   approval_revision_requested: "approval.decided",
   budget_soft_threshold_crossed: "budget.incident.opened",
   budget_hard_threshold_crossed: "budget.incident.opened",

@@ -1,12 +1,22 @@
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { approvalComments, approvals } from "@paperclipai/db";
+import { approvalComments, approvals, issueApprovals, issues } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { agentService } from "./agents.js";
 import { budgetService } from "./budgets.js";
 import { notifyHireApproved } from "./hire-hook.js";
 import { instanceSettingsService } from "./instance-settings.js";
+
+const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
+export const LINKED_ISSUES_TERMINAL_CANCEL_NOTE =
+  "Cancelled because all linked issues are terminal; the requested action is obsolete.";
+
+function resolutionVerb(targetStatus: "approved" | "rejected" | "cancelled") {
+  if (targetStatus === "approved") return "approved";
+  if (targetStatus === "rejected") return "rejected";
+  return "cancelled";
+}
 
 export function approvalService(db: Db) {
   const agentsSvc = agentService(db);
@@ -41,9 +51,20 @@ export function approvalService(db: Db) {
     return existing;
   }
 
+  async function listLinkedIssueStatuses(approvalId: string) {
+    return db
+      .select({
+        issueId: issues.id,
+        status: issues.status,
+      })
+      .from(issueApprovals)
+      .innerJoin(issues, eq(issueApprovals.issueId, issues.id))
+      .where(eq(issueApprovals.approvalId, approvalId));
+  }
+
   async function resolveApproval(
     id: string,
-    targetStatus: "approved" | "rejected",
+    targetStatus: "approved" | "rejected" | "cancelled",
     decidedByUserId: string,
     decisionNote: string | null | undefined,
   ): Promise<ResolutionResult> {
@@ -53,7 +74,7 @@ export function approvalService(db: Db) {
         return { approval: existing, applied: false };
       }
       throw unprocessable(
-        `Only pending or revision requested approvals can be ${targetStatus === "approved" ? "approved" : "rejected"}`,
+        `Only pending or revision requested approvals can be ${resolutionVerb(targetStatus)}`,
       );
     }
 
@@ -81,7 +102,36 @@ export function approvalService(db: Db) {
     }
 
     throw unprocessable(
-      `Only pending or revision requested approvals can be ${targetStatus === "approved" ? "approved" : "rejected"}`,
+      `Only pending or revision requested approvals can be ${resolutionVerb(targetStatus)}`,
+    );
+  }
+
+  async function cancelObsoleteWhenLinkedIssuesTerminal(
+    id: string,
+    opts?: {
+      decidedByUserId?: string;
+      decisionNote?: string | null;
+    },
+  ): Promise<ResolutionResult> {
+    const existing = await getExistingApproval(id);
+    if (!canResolveStatuses.has(existing.status)) {
+      return { approval: existing, applied: false };
+    }
+
+    const linkedIssues = await listLinkedIssueStatuses(id);
+    // Approvals with no linked issues are not obsolete by this rule.
+    if (linkedIssues.length === 0) {
+      return { approval: existing, applied: false };
+    }
+    if (!linkedIssues.every((row) => TERMINAL_ISSUE_STATUSES.has(row.status))) {
+      return { approval: existing, applied: false };
+    }
+
+    return resolveApproval(
+      id,
+      "cancelled",
+      opts?.decidedByUserId ?? "system",
+      opts?.decisionNote ?? LINKED_ISSUES_TERMINAL_CANCEL_NOTE,
     );
   }
 
@@ -208,6 +258,39 @@ export function approvalService(db: Db) {
       }
 
       return { approval: updated, applied };
+    },
+
+    /**
+     * Cancel a pending/revision-requested approval whose every linked issue is
+     * terminal. Idempotent: already-cancelled approvals and mixed open/terminal
+     * link sets are no-ops. Does not run reject/approve side effects.
+     */
+    cancelObsoleteWhenLinkedIssuesTerminal,
+
+    /**
+     * After an issue becomes terminal (or on approval read/link), cancel any
+     * open approvals linked to that issue whose full linked-issue set is now
+     * terminal. Returns one result per open linked approval considered.
+     */
+    reconcileObsoleteForIssue: async (issueId: string): Promise<ResolutionResult[]> => {
+      const openApprovals = await db
+        .select({
+          id: approvals.id,
+        })
+        .from(issueApprovals)
+        .innerJoin(approvals, eq(issueApprovals.approvalId, approvals.id))
+        .where(
+          and(
+            eq(issueApprovals.issueId, issueId),
+            inArray(approvals.status, resolvableStatuses),
+          ),
+        );
+
+      const results: ResolutionResult[] = [];
+      for (const row of openApprovals) {
+        results.push(await cancelObsoleteWhenLinkedIssuesTerminal(row.id));
+      }
+      return results;
     },
 
     requestRevision: async (id: string, decidedByUserId: string, decisionNote?: string | null) => {

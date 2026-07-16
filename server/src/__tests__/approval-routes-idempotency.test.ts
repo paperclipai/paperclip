@@ -12,6 +12,8 @@ const mockApprovalService = vi.hoisted(() => ({
   resubmit: vi.fn(),
   listComments: vi.fn(),
   addComment: vi.fn(),
+  cancelObsoleteWhenLinkedIssuesTerminal: vi.fn(),
+  reconcileObsoleteForIssue: vi.fn(),
 }));
 
 const mockHeartbeatService = vi.hoisted(() => ({
@@ -127,6 +129,8 @@ describe("approval routes idempotent retries", () => {
     mockApprovalService.resubmit.mockReset();
     mockApprovalService.listComments.mockReset();
     mockApprovalService.addComment.mockReset();
+    mockApprovalService.cancelObsoleteWhenLinkedIssuesTerminal.mockReset();
+    mockApprovalService.reconcileObsoleteForIssue.mockReset();
     mockHeartbeatService.wakeup.mockReset();
     mockIssueApprovalService.listIssuesForApproval.mockReset();
     mockIssueApprovalService.linkManyForApproval.mockReset();
@@ -141,6 +145,14 @@ describe("approval routes idempotent retries", () => {
     });
     mockHeartbeatService.wakeup.mockResolvedValue({ id: "wake-1" });
     mockIssueApprovalService.listIssuesForApproval.mockResolvedValue([{ id: "issue-1" }]);
+    mockApprovalService.cancelObsoleteWhenLinkedIssuesTerminal.mockImplementation(async (id: string) => {
+      const fromGet = await mockApprovalService.getById(id);
+      if (fromGet) return { approval: fromGet, applied: false };
+      const created = mockApprovalService.create.mock.results.at(-1)?.value;
+      const approval = created ? await created : null;
+      return { approval, applied: false };
+    });
+    mockApprovalService.reconcileObsoleteForIssue.mockResolvedValue([]);
     mockLogActivity.mockResolvedValue(undefined);
   });
 

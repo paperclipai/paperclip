@@ -104,6 +104,43 @@ export function approvalRoutes(
     return false;
   }
 
+  async function logObsoleteApprovalCancellation(
+    approval: { id: string; companyId: string; type: string; decisionNote: string | null },
+    source: string,
+    sourceIssueId?: string | null,
+  ) {
+    await logActivity(db, {
+      companyId: approval.companyId,
+      actorType: "system",
+      actorId: "approval_lifecycle",
+      action: "approval.cancelled",
+      entityType: "approval",
+      entityId: approval.id,
+      details: {
+        type: approval.type,
+        reason: "linked_issues_terminal",
+        decisionNote: approval.decisionNote,
+        sourceIssueId: sourceIssueId ?? null,
+        source,
+      },
+    });
+  }
+
+  async function reconcileObsoleteApprovalOnRead(approvalId: string, source: string) {
+    try {
+      const { approval, applied } = await svc.cancelObsoleteWhenLinkedIssuesTerminal(approvalId);
+      if (applied) {
+        await logObsoleteApprovalCancellation(approval, source);
+      }
+      return approval;
+    } catch (err) {
+      logger.warn({ err, approvalId, source }, "failed to reconcile obsolete approval on read");
+      const fallback = await svc.getById(approvalId);
+      if (!fallback) throw err;
+      return fallback;
+    }
+  }
+
   router.get("/companies/:companyId/approvals", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
@@ -118,7 +155,8 @@ export function approvalRoutes(
     const approval = await getAccessibleResource(req, res, svc.getById(id), "Approval not found");
     if (!approval) return;
     if (!(await assertApprovalAccessAllowed(req, res, approval.companyId))) return;
-    res.json(redactApprovalPayload(approval));
+    const reconciled = await reconcileObsoleteApprovalOnRead(id, "approval.read");
+    res.json(redactApprovalPayload(reconciled));
   });
 
   router.post("/companies/:companyId/approvals", validate(createApprovalSchema), async (req, res) => {
@@ -173,7 +211,9 @@ export function approvalRoutes(
       details: { type: approval.type, issueIds: uniqueIssueIds },
     });
 
-    res.status(201).json(redactApprovalPayload(approval));
+    // Creating an approval already linked only to terminal issues is immediately obsolete.
+    const reconciled = await reconcileObsoleteApprovalOnRead(approval.id, "approval.created");
+    res.status(201).json(redactApprovalPayload(reconciled));
   });
 
   router.get("/approvals/:id/issues", async (req, res) => {
@@ -181,6 +221,7 @@ export function approvalRoutes(
     const approval = await getAccessibleResource(req, res, svc.getById(id), "Approval not found");
     if (!approval) return;
     if (!(await assertApprovalAccessAllowed(req, res, approval.companyId))) return;
+    await reconcileObsoleteApprovalOnRead(id, "approval.issues.read");
     const issues = await issueApprovalsSvc.listIssuesForApproval(id);
     res.json(issues);
   });

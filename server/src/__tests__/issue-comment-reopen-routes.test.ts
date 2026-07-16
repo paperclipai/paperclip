@@ -125,6 +125,18 @@ vi.mock("../services/routines.js", () => ({
   routineService: () => mockRoutineService,
 }));
 
+vi.mock("../services/approvals.js", () => ({
+  approvalService: () => ({
+    reconcileObsoleteForIssue: vi.fn(async () => []),
+    cancelObsoleteWhenLinkedIssuesTerminal: vi.fn(async () => ({
+      approval: { id: "approval-1", status: "pending" },
+      applied: false,
+    })),
+  }),
+  LINKED_ISSUES_TERMINAL_CANCEL_NOTE:
+    "Cancelled because all linked issues are terminal; the requested action is obsolete.",
+}));
+
 vi.mock("../services/index.js", () => ({
   companyService: () => ({
     getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
