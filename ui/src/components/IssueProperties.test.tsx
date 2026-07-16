@@ -111,6 +111,7 @@ vi.mock("../lib/assignees", () => ({
   },
   formatUserLabel: (userId: string | null | undefined, userLabelMap?: Map<string, string>) => {
     if (!userId) return null;
+    if (userId === "local-board") return "Board";
     return userLabelMap?.get(userId) ?? "User";
   },
 }));
@@ -200,6 +201,7 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     projectWorkspaceId: null,
     goalId: null,
     parentId: null,
+    createdFromIssueId: null,
     title: "Parent issue",
     description: null,
     status: "todo",
@@ -467,7 +469,7 @@ describe("IssueProperties", () => {
     document.body.innerHTML = "";
   });
 
-  it("shows assignee and originating without responsible wording", async () => {
+  it("renders distinct originating, creator, and responsible rows even when actors overlap", async () => {
     mockAgentsApi.list.mockResolvedValue([{ id: "agent-1", name: "CodexCoder", status: "active", adapterType: "codex_local" }]);
     const root = renderProperties(container, {
       issue: createIssue({
@@ -481,15 +483,18 @@ describe("IssueProperties", () => {
     });
     await flush();
 
+    // P3 shows every distinct provenance role explicitly (dedup only happens in
+    // the header icon strip): Originating + Creator resolve to the human
+    // creator, Responsible to the explicit responsible user.
     await waitForAssertion(() => {
       expect(container.textContent).toContain("Assignee");
       expect(container.textContent).toContain("CodexCoder");
       expect(container.textContent).toContain("Originating");
+      expect(container.textContent).toContain("Creator");
+      expect(container.textContent).toContain("Responsible");
       expect(container.textContent).toContain("Riley Board");
-      expect(container.textContent).not.toContain("Morgan Product");
-      expect(container.textContent).not.toContain("Responsible");
+      expect(container.textContent).toContain("Morgan Product");
       expect(container.textContent).not.toContain("Kicked off by");
-      expect(container.textContent).not.toContain("Created by");
       expect(container.querySelector('[data-shape="square"]')?.textContent).toContain("CodexCoder");
     });
 
@@ -565,7 +570,10 @@ describe("IssueProperties", () => {
       expect(container.textContent).toContain("Originating");
       expect(container.textContent).toContain("Morgan Product");
       expect(container.textContent).toContain("via CodexCoder");
-      expect(container.textContent).not.toContain("Responsible");
+      // The creating agent surfaces as its own Creator row, and the transitive
+      // responsible user now surfaces explicitly as a Responsible row.
+      expect(container.textContent).toContain("Creator");
+      expect(container.textContent).toContain("Responsible");
       expect(container.textContent).not.toContain("Kicked off by");
     });
 
@@ -589,6 +597,158 @@ describe("IssueProperties", () => {
       expect(container.textContent).toContain("Originating");
       expect(container.textContent).toContain("Morgan Product");
       expect(container.textContent).not.toContain("via ");
+    });
+
+    act(() => root.unmount());
+  });
+
+  it("renders the responsible board sentinel as a Board identity, never the raw id", async () => {
+    const root = renderProperties(container, {
+      issue: createIssue({
+        createdByUserId: null,
+        createdByAgentId: null,
+        responsibleUserId: "local-board",
+      }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+    });
+    await flush();
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Responsible");
+      expect(container.textContent).toContain("Board");
+      expect(container.textContent).not.toContain("local-board");
+    });
+
+    act(() => root.unmount());
+  });
+
+  it("renders a routine origin chip linking to the originating routine", async () => {
+    const root = renderProperties(container, {
+      issue: createIssue({
+        originKind: "routine_execution",
+        originId: "routine-1",
+        originRunId: "run-1",
+        createdByAgentId: "agent-1",
+      }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+    });
+    await flush();
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Origin");
+      expect(container.textContent).toContain("Routine execution");
+      const originLink = container.querySelector('a[href="/routines/routine-1"]');
+      expect(originLink).not.toBeNull();
+      expect(originLink?.textContent).toContain("Routine execution");
+    });
+
+    act(() => root.unmount());
+  });
+
+  it("links a non-routine origin to the originating run when the run and agent are known", async () => {
+    const root = renderProperties(container, {
+      issue: createIssue({
+        originKind: "stranded_issue_recovery",
+        originId: null,
+        originRunId: "run-9",
+        createdByAgentId: "agent-1",
+      }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+    });
+    await flush();
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Stranded-issue recovery");
+      expect(container.querySelector('a[href="/agents/agent-1/runs/run-9"]')).not.toBeNull();
+    });
+
+    act(() => root.unmount());
+  });
+
+  it("renders a plugin origin chip with the plugin key and no link when unresolvable", async () => {
+    const root = renderProperties(container, {
+      issue: createIssue({
+        originKind: "plugin:paperclip.missions",
+        originId: null,
+        originRunId: null,
+        createdByAgentId: null,
+      }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+    });
+    await flush();
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("paperclip.missions");
+    });
+    // No routine/run link when neither the routine nor a run+agent is resolvable.
+    expect(container.querySelector('a[href^="/routines/"]')).toBeNull();
+    expect(container.querySelector('a[href*="/runs/"]')).toBeNull();
+
+    act(() => root.unmount());
+  });
+
+  it("renders the originating-issue chip linking to the source task", async () => {
+    const root = renderProperties(container, {
+      issue: createIssue({
+        createdFromIssueId: "issue-src",
+        createdFromIssue: {
+          id: "issue-src",
+          identifier: "PAP-9",
+          title: "Source task",
+          status: "done",
+        },
+      }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+    });
+    await flush();
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("From task");
+      const fromLink = container.querySelector('a[href="/issues/PAP-9"]');
+      expect(fromLink).not.toBeNull();
+      expect(fromLink?.textContent).toContain("PAP-9");
+      expect(fromLink?.textContent).toContain("Source task");
+    });
+
+    act(() => root.unmount());
+  });
+
+  it("hides all optional provenance rows for a pre-migration issue without crashing", async () => {
+    const root = renderProperties(container, {
+      issue: createIssue({
+        createdByUserId: null,
+        createdByAgentId: null,
+        responsibleUserId: null,
+        originKind: undefined,
+        originId: null,
+        originRunId: null,
+        createdFromIssue: null,
+        createdFromIssueId: null,
+      }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+    });
+    await flush();
+
+    await waitForAssertion(() => {
+      // The About section still renders its always-on rows.
+      expect(container.textContent).toContain("Created");
+      expect(container.textContent).not.toContain("Originating");
+      expect(container.textContent).not.toContain("Creator");
+      expect(container.textContent).not.toContain("Responsible");
+      expect(container.textContent).not.toContain("Origin");
+      expect(container.textContent).not.toContain("From task");
     });
 
     act(() => root.unmount());

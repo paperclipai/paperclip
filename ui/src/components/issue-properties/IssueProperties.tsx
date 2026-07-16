@@ -2,7 +2,13 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType }
 import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { issueStatusText } from "@/lib/status-colors";
 import { Link } from "@/lib/router";
-import { deriveOriginatingActor, type Issue, type IssueLabel } from "@paperclipai/shared";
+import {
+  deriveOriginatingActor,
+  type BuiltInIssueOriginKind,
+  type Issue,
+  type IssueLabel,
+  type IssueOriginKind,
+} from "@paperclipai/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { accessApi } from "../../api/access";
 import { agentsApi } from "../../api/agents";
@@ -52,7 +58,7 @@ import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { User, ArrowUpRight, Plus, GitBranch, FolderOpen, HardDrive, Check, Clock, RotateCcw, Loader2, CheckCircle2, ArchiveRestore } from "lucide-react";
+import { User, ArrowUpRight, Plus, GitBranch, FolderOpen, HardDrive, Check, Clock, RotateCcw, Loader2, CheckCircle2, ArchiveRestore, Repeat, ScanEye, Eye, LifeBuoy, Puzzle, Hand, Activity, AlertTriangle, Sparkles } from "lucide-react";
 import { AgentIcon } from "../AgentIconPicker";
 import { InlineEntitySelector, type InlineEntityOption } from "../InlineEntitySelector";
 import {
@@ -119,6 +125,38 @@ function TruncatedCopyable({ value, icon: Icon }: { value: string; icon: Compone
       )}
     </div>
   );
+}
+
+type OriginIcon = ComponentType<{ className?: string }>;
+
+/** Human-readable label + icon for each built-in issue origin kind (About §Origin). */
+const ORIGIN_KIND_META: Record<BuiltInIssueOriginKind, { label: string; icon: OriginIcon }> = {
+  manual: { label: "Manual", icon: Hand },
+  routine_execution: { label: "Routine execution", icon: Repeat },
+  stale_active_run_evaluation: { label: "Stale run evaluation", icon: Activity },
+  harness_liveness_escalation: { label: "Liveness escalation", icon: AlertTriangle },
+  issue_productivity_review: { label: "Productivity review", icon: Eye },
+  stranded_issue_recovery: { label: "Stranded-issue recovery", icon: LifeBuoy },
+  task_watchdog: { label: "Watchdog", icon: ScanEye },
+  task_watchdog_product_bug: { label: "Watchdog product bug", icon: ScanEye },
+};
+
+/**
+ * Resolve an origin kind to a display chip. Plugin origins (`plugin:<key>`)
+ * surface the plugin key with a puzzle icon; unknown kinds fall back to the raw
+ * value so the row never renders empty for a valued origin.
+ */
+function describeOriginKind(
+  originKind: IssueOriginKind | undefined,
+): { label: string; Icon: OriginIcon } | null {
+  if (!originKind) return null;
+  if (originKind.startsWith("plugin:")) {
+    const pluginKey = originKind.slice("plugin:".length);
+    return { label: pluginKey || "Plugin", Icon: Puzzle };
+  }
+  const meta = ORIGIN_KIND_META[originKind as BuiltInIssueOriginKind];
+  if (meta) return { label: meta.label, Icon: meta.icon };
+  return { label: originKind, Icon: Sparkles };
 }
 
 interface IssuePropertiesProps {
@@ -669,6 +707,22 @@ export function IssueProperties({
     originatingActor?.kind === "user" && originatingActor.viaAgentId
       ? agentName(originatingActor.viaAgentId) ?? originatingActor.viaAgentId.slice(0, 8)
       : null;
+  const creatorUserProfile = issue.createdByUserId
+    ? userProfileMap.get(issue.createdByUserId)
+    : null;
+  const responsibleUserProfile = issue.responsibleUserId
+    ? userProfileMap.get(issue.responsibleUserId)
+    : null;
+  const originDescriptor = describeOriginKind(issue.originKind);
+  // Link to the origin entity when we can resolve one: the routine for routine
+  // executions, otherwise the originating run (when both the run and its agent
+  // are known).
+  const originLink =
+    issue.originKind === "routine_execution" && issue.originId
+      ? `/routines/${issue.originId}`
+      : issue.originRunId && issue.createdByAgentId
+        ? `/agents/${issue.createdByAgentId}/runs/${issue.originRunId}`
+        : null;
   const selectedAssigneeValue = issue.assigneeAgentId
     ? `agent:${issue.assigneeAgentId}`
     : issue.assigneeUserId
@@ -2367,6 +2421,66 @@ export function IssueProperties({
                 ) : null}
               </span>
             )}
+          </PropertyRow>
+        ) : null}
+        {/* Creator: the raw actor recorded on the issue, shown even when it
+            matches Originating — dedup happens only in the header icon strip. */}
+        {issue.createdByUserId ? (
+          <PropertyRow label="Creator">
+            <Identity
+              name={creatorUserLabel ?? creatorUserProfile?.label ?? "User"}
+              avatarUrl={creatorUserProfile?.image ?? null}
+              size="sm"
+            />
+          </PropertyRow>
+        ) : issue.createdByAgentId ? (
+          <PropertyRow label="Creator">
+            <Link to={`/agents/${issue.createdByAgentId}`} className="hover:underline">
+              <Identity
+                name={agentName(issue.createdByAgentId) ?? issue.createdByAgentId.slice(0, 8)}
+                size="sm"
+                shape="square"
+              />
+            </Link>
+          </PropertyRow>
+        ) : null}
+        {issue.responsibleUserId ? (
+          <PropertyRow label="Responsible">
+            <Identity
+              name={actualUserLabel(issue.responsibleUserId) ?? responsibleUserProfile?.label ?? "User"}
+              avatarUrl={responsibleUserProfile?.image ?? null}
+              size="sm"
+            />
+          </PropertyRow>
+        ) : null}
+        {originDescriptor ? (
+          <PropertyRow label="Origin">
+            {originLink ? (
+              <Link
+                to={originLink}
+                className="inline-flex min-w-0 items-center gap-1 rounded-full border border-border px-2 py-0.5 text-xs no-underline hover:bg-accent/50 transition-colors"
+                title={originDescriptor.label}
+              >
+                <originDescriptor.Icon className="h-3 w-3 shrink-0 text-muted-foreground" />
+                <span className="truncate">{originDescriptor.label}</span>
+                <ArrowUpRight className="h-3 w-3 shrink-0 text-muted-foreground" />
+              </Link>
+            ) : (
+              <PropertyChip>
+                <originDescriptor.Icon className="mr-1 h-3 w-3 shrink-0 text-muted-foreground" />
+                {originDescriptor.label}
+              </PropertyChip>
+            )}
+          </PropertyRow>
+        ) : null}
+        {issue.createdFromIssue ? (
+          <PropertyRow label="From task">
+            <IssueReferencePill issue={issue.createdFromIssue}>
+              <span className="truncate">
+                {issue.createdFromIssue.identifier ? `${issue.createdFromIssue.identifier} ` : ""}
+                {issue.createdFromIssue.title}
+              </span>
+            </IssueReferencePill>
           </PropertyRow>
         ) : null}
         {issue.startedAt && (
