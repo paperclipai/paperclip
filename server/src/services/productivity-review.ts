@@ -338,22 +338,29 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       .orderBy(desc(issues.updatedAt), desc(issues.id))
       .limit(thresholds.maxConsecutiveNoActionReviews);
 
+    const earliestReviewCreatedAt = completedReviews.at(-1)?.createdAt;
+    if (!earliestReviewCreatedAt) return 0;
+    const sourceActions = await db
+      .select({ createdAt: activityLog.createdAt })
+      .from(activityLog)
+      .where(
+        and(
+          eq(activityLog.companyId, companyId),
+          eq(activityLog.entityType, "issue"),
+          eq(activityLog.entityId, sourceIssueId),
+          gte(activityLog.createdAt, earliestReviewCreatedAt),
+        ),
+      );
+
     let streak = 0;
-    for (const review of completedReviews) {
-      const sourceAction = await db
-        .select({ id: activityLog.id })
-        .from(activityLog)
-        .where(
-          and(
-            eq(activityLog.companyId, companyId),
-            eq(activityLog.entityType, "issue"),
-            eq(activityLog.entityId, sourceIssueId),
-            gte(activityLog.createdAt, review.createdAt),
-            sql`${activityLog.createdAt} <= ${review.updatedAt.toISOString()}::timestamptz`,
-          ),
-        )
-        .limit(1)
-        .then((rows) => rows[0] ?? null);
+    for (const [index, review] of completedReviews.entries()) {
+      const hasRecordedDuration = review.updatedAt.getTime() > review.createdAt.getTime();
+      const nextNewerReviewCreatedAt = completedReviews[index - 1]?.createdAt ?? null;
+      const sourceAction = sourceActions.some((activity) => {
+        if (activity.createdAt < review.createdAt) return false;
+        if (hasRecordedDuration) return activity.createdAt <= review.updatedAt;
+        return !nextNewerReviewCreatedAt || activity.createdAt < nextNewerReviewCreatedAt;
+      });
       if (sourceAction) break;
       streak += 1;
     }

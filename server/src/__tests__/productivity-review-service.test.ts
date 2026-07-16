@@ -333,7 +333,7 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(await listProductivityReviews(seeded.companyId)).toHaveLength(3);
   });
 
-  it("resets no-action suppression when the latest completed review produces source action", async () => {
+  it("resets no-action suppression when a zero-duration latest review produces source action", async () => {
     const now = new Date("2026-04-28T12:00:00.000Z");
     const seeded = await seedAssignedIssue();
     await insertRuns({
@@ -363,6 +363,10 @@ describeEmbeddedPostgres("productivity review service", () => {
     });
     await db.insert(issues).values(reviewWindows);
     const latestReview = reviewWindows[2]!;
+    await db
+      .update(issues)
+      .set({ updatedAt: latestReview.createdAt })
+      .where(eq(issues.id, latestReview.id));
     await db.insert(activityLog).values({
       companyId: seeded.companyId,
       actorType: "agent",
