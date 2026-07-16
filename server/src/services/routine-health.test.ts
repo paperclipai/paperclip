@@ -63,6 +63,45 @@ describe("computeRoutineHealth", () => {
     ]);
   });
 
+  it("does not let a trigger-owned run consume a sibling trigger's legacy run", () => {
+    const report = computeRoutineHealth({
+      routineId: "routine-1",
+      triggers: [trigger, { ...trigger, id: "trigger-2" }],
+      runs: [
+        {
+          id: "owned-run",
+          triggerId: "trigger-1",
+          source: "schedule",
+          status: "completed",
+          triggeredAt: new Date("2026-07-16T02:00:00Z"),
+          failureReason: null,
+          triggerPayload: null,
+          coalescedIntoRunId: null,
+          linkedIssue: null,
+        },
+        {
+          id: "legacy-run",
+          triggerId: null,
+          source: "schedule",
+          status: "completed",
+          triggeredAt: new Date("2026-07-16T02:00:00Z"),
+          failureReason: null,
+          triggerPayload: null,
+          coalescedIntoRunId: null,
+          linkedIssue: null,
+        },
+      ],
+      now: new Date("2026-07-16T12:00:00Z"),
+      days: 1,
+    });
+
+    expect(report.dailyResults[0]?.ticks).toEqual([
+      expect.objectContaining({ triggerId: "trigger-1", runId: "owned-run", result: "done" }),
+      expect.objectContaining({ triggerId: "trigger-2", runId: "legacy-run", result: "done" }),
+    ]);
+    expect(report.alerts).toEqual([]);
+  });
+
   it("reports disabled or missing schedule triggers without inventing expectations", () => {
     const report = computeRoutineHealth({
       routineId: "routine-1",

@@ -2353,11 +2353,12 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     const resumed = await svc.syncRunStatusForIssue(issueId);
     expect(resumed).toMatchObject({ status: "issue_created", failureReason: null });
     expect(resumed!.completedAt).toBeNull();
+    expect(resumed!.triggerPayload).toMatchObject({
+      transientFailure: { reason: "Execution issue moved to blocked" },
+    });
 
-    // Issue blocks again and then completes: exactly one terminal result, with the
-    // transient block preserved as context instead of a stale failureReason.
-    await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, issueId));
-    await svc.syncRunStatusForIssue(issueId);
+    // Issue completes after resuming: exactly one terminal result, with the transient
+    // block preserved as context instead of a stale failureReason.
     await db.update(issues).set({ status: "done" }).where(eq(issues.id, issueId));
     const completed = await svc.syncRunStatusForIssue(issueId);
     expect(completed).toMatchObject({ status: "completed", failureReason: null });

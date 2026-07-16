@@ -246,10 +246,6 @@ export function computeRoutineHealth(input: {
       cursor = nextCronTickInTimeZone(trigger.cronExpression!, trigger.timezone!, cursor);
     }
 
-    const triggerRuns = scheduledRuns.filter(
-      (run) => run.triggerId === trigger.id || run.triggerId === null,
-    );
-
     for (let i = 0; i < expected.length; i += 1) {
       const tickAt = expected[i]!;
       // A catch-up fire for a missed tick lands late but before the next tick, so the
@@ -258,11 +254,18 @@ export function computeRoutineHealth(input: {
       const matchEnd = i + 1 < expected.length
         ? expected[i + 1]!.getTime() - 60 * 1000
         : Number.POSITIVE_INFINITY;
-      const matched = triggerRuns.filter((run) => {
+      const matchesWindow = (run: RoutineHealthRunInput) => {
         if (matchedRunIds.has(run.id)) return false;
         const at = run.triggeredAt.getTime();
         return at >= matchStart && at < matchEnd;
-      });
+      };
+      const exactMatches = scheduledRuns.filter(
+        (run) => run.triggerId === trigger.id && matchesWindow(run),
+      );
+      const legacyMatches = exactMatches.length === 0
+        ? scheduledRuns.filter((run) => run.triggerId === null && matchesWindow(run))
+        : [];
+      const matched = exactMatches.length > 0 ? exactMatches : legacyMatches;
 
       if (matched.length === 0) {
         const withinGrace = now.getTime() - tickAt.getTime() < DISPATCH_GRACE_MS;
@@ -282,7 +285,11 @@ export function computeRoutineHealth(input: {
 
       // Prefer the run that actually linked an issue; otherwise the latest attempt.
       const primary = matched.find((run) => run.linkedIssue !== null) ?? matched[matched.length - 1]!;
-      for (const run of matched) matchedRunIds.add(run.id);
+      if (exactMatches.length > 0) {
+        for (const run of exactMatches) matchedRunIds.add(run.id);
+      } else {
+        matchedRunIds.add(primary.id);
+      }
       const { result, reason } = classifyRun(primary);
       ticks.push({
         expectedAt: tickAt.toISOString(),

@@ -3161,6 +3161,13 @@ export function routineService(
           status: "issue_created",
           failureReason: null,
           completedAt: null,
+          triggerPayload: {
+            ...(run.triggerPayload ?? {}),
+            transientFailure: {
+              reason: run.failureReason,
+              clearedAt: new Date().toISOString(),
+            },
+          },
         });
       }
       return null;
