@@ -239,15 +239,20 @@ export function nextCronTickInTimeZone(expression: string, timeZone: string, aft
   return null;
 }
 
-function isSubHourlyCronExpression(expression: string) {
-  const cron = parseCron(expression);
-  return (
-    cron.minutes.length > 1 &&
-    cron.hours.length === 24 &&
-    cron.daysOfMonth.length === 31 &&
-    cron.months.length === 12 &&
-    cron.daysOfWeek.length === 7
-  );
+function isSubHourlyCronExpression(expression: string, timeZone: string, after: Date) {
+  const firstTick = nextCronTickInTimeZone(expression, timeZone, after);
+  if (!firstTick) return false;
+
+  const windowEnd = firstTick.getTime() + 24 * 60 * 60 * 1000;
+  let occurrenceCount = 1;
+  let cursor = firstTick;
+  while (occurrenceCount <= 24) {
+    const nextTick = nextCronTickInTimeZone(expression, timeZone, cursor);
+    if (!nextTick || nextTick.getTime() >= windowEnd) return false;
+    occurrenceCount += 1;
+    cursor = nextTick;
+  }
+  return true;
 }
 
 function nextResultText(status: string, issueId?: string | null) {
@@ -2950,7 +2955,7 @@ export function routineService(
         let claimedNextRunAt = nextCronTickInTimeZone(row.trigger.cronExpression, row.trigger.timezone, now);
 
         if (!projectPaused && !worktreeSuppressed && row.routine.catchUpPolicy === "enqueue_missed_with_cap") {
-          if (isSubHourlyCronExpression(row.trigger.cronExpression)) {
+          if (isSubHourlyCronExpression(row.trigger.cronExpression, row.trigger.timezone, now)) {
             claimedNextRunAt = nextCronTickInTimeZone(row.trigger.cronExpression, row.trigger.timezone, now);
           } else {
             let cursor: Date | null = row.trigger.nextRunAt;

@@ -2130,6 +2130,29 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(updatedTrigger?.nextRunAt).toEqual(new Date("2026-07-16T09:00:00.000Z"));
   });
 
+  it("coalesces sub-hourly schedules restricted to weekdays", async () => {
+    const { routine, svc } = await seedFixture();
+    await db.update(routines).set({
+      catchUpPolicy: "enqueue_missed_with_cap",
+    }).where(eq(routines.id, routine.id));
+    const { trigger } = await svc.createTrigger(routine.id, {
+      kind: "schedule",
+      cronExpression: "*/10 * * * 1-5",
+      timezone: "UTC",
+    }, {});
+    await db.update(routineTriggers).set({
+      nextRunAt: new Date("2026-07-13T00:00:00.000Z"),
+    }).where(eq(routineTriggers.id, trigger.id));
+
+    expect(await svc.tickScheduledTriggers(new Date("2026-07-13T01:05:00.000Z"))).toEqual({ triggered: 1 });
+
+    const runs = await db.select().from(routineRuns).where(eq(routineRuns.routineId, routine.id));
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.status).toBe("issue_created");
+    const updatedTrigger = await db.select().from(routineTriggers).where(eq(routineTriggers.id, trigger.id)).then((rows) => rows[0]);
+    expect(updatedTrigger?.nextRunAt).toEqual(new Date("2026-07-13T01:10:00.000Z"));
+  });
+
   it("applies the armed cutoff to webhook dispatch but not manual API runs", async () => {
     const runtimeEnv = { PAPERCLIP_IN_WORKTREE: "true", PAPERCLIP_INSTANCE_ID: "worktree-routines-test" };
     const { routine, svc } = await seedFixture({ runtimeEnv });
