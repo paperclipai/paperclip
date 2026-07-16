@@ -120,6 +120,16 @@ test("candidate discovery reports truncated issue matches without discarding the
                 matchesTruncated: true,
                 matches: [],
               },
+              {
+                issueId: "issue-truncated",
+                identifier: "PAP-TRUNCATED",
+                title: "Large PR thread",
+                status: "done",
+                assigneeAgentId: "agent-1",
+                updatedAt: "2026-07-13T00:00:00Z",
+                matchesTruncated: true,
+                matches: [],
+              },
             ],
           };
         }

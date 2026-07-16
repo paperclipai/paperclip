@@ -33,7 +33,7 @@ export async function findCandidates(options) {
   const matchesPerIssue = 200;
   const issueMap = new Map();
   let offset = 0;
-  const truncatedIssues = [];
+  const truncatedIssueMap = new Map();
 
   while (true) {
     const query = new URLSearchParams({
@@ -46,14 +46,17 @@ export async function findCandidates(options) {
       matchesPerIssue: String(matchesPerIssue),
     });
     const page = await getPaperclip(`/companies/${companyId}/search/extract?${query}`, { apiUrl, apiKey });
-    for (const issue of page.results) issueMap.set(issue.issueId, issue);
     for (const issue of page.results) {
-      if (issue.matchesTruncated) truncatedIssues.push({ issueId: issue.issueId, identifier: issue.identifier });
+      issueMap.set(issue.issueId, issue);
+      if (issue.matchesTruncated) {
+        truncatedIssueMap.set(issue.issueId, { issueId: issue.issueId, identifier: issue.identifier });
+      }
     }
     if (!page.hasMore) break;
     offset += limit;
     if (offset > 5000) throw new Error("Extract-search pagination exceeded the supported 5000 issue offset");
   }
+  const truncatedIssues = [...truncatedIssueMap.values()];
   if (truncatedIssues.length > 0) {
     console.warn(`Warning: ${truncatedIssues.length} issue(s) had truncated match sets (>${matchesPerIssue} PR URL matches). These issues may contribute incomplete PR discovery: ${truncatedIssues.map((i) => i.identifier ?? i.issueId).join(", ")}. Proceeding with available data.`);
   }
