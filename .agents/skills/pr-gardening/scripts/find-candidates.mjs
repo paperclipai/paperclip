@@ -4,6 +4,7 @@ import {
   chooseOriginatingIssue,
   extractPullRequestNumber,
   ghJson,
+  isMissingPullRequestError,
   issueSummary,
   normalizeRepository,
   paperclipGet,
@@ -29,6 +30,7 @@ export async function findCandidates(options) {
 
   const contains = `github.com/${repository}/pull`;
   const limit = 200;
+  const matchesPerIssue = 200;
   const issueMap = new Map();
   let offset = 0;
   let truncated = false;
@@ -41,6 +43,7 @@ export async function findCandidates(options) {
       updatedWithin: `${days}d`,
       limit: String(limit),
       offset: String(offset),
+      matchesPerIssue: String(matchesPerIssue),
     });
     const page = await getPaperclip(`/companies/${companyId}/search/extract?${query}`, { apiUrl, apiKey });
     for (const issue of page.results) issueMap.set(issue.issueId, issue);
@@ -89,16 +92,29 @@ export async function findCandidates(options) {
 
   const candidates = [];
   const closed = [];
+  const unavailable = [];
   for (const entry of [...pullRequests.values()].sort((left, right) => left.number - right.number)) {
-    const pullRequest = getGhJson([
-      "pr",
-      "view",
-      String(entry.number),
-      "--repo",
-      repository,
-      "--json",
-      "number,url,title,state,isDraft,headRefOid,updatedAt",
-    ]);
+    let pullRequest;
+    try {
+      pullRequest = getGhJson([
+        "pr",
+        "view",
+        String(entry.number),
+        "--repo",
+        repository,
+        "--json",
+        "number,url,title,state,isDraft,headRefOid,updatedAt",
+      ]);
+    } catch (error) {
+      if (!isMissingPullRequestError(error)) throw error;
+      unavailable.push({
+        number: entry.number,
+        url: prUrl(repository, entry.number),
+        state: "unavailable",
+        reason: "GitHub could not resolve this pull request",
+      });
+      continue;
+    }
     const sourceIssues = [...entry.issueMentions.values()].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
     const candidate = {
       number: pullRequest.number,
@@ -131,6 +147,7 @@ export async function findCandidates(options) {
       distinctPullRequestCount: pullRequests.size,
       openPullRequestCount: candidates.length,
       droppedClosedPullRequests: closed,
+      droppedUnavailablePullRequests: unavailable,
       truncated: false,
     },
     candidates,
