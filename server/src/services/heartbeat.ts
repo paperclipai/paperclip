@@ -14348,7 +14348,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           })
           .where(eq(agentWakeupRequests.id, deferred.id));
 
-        if (promotedContextSnapshot.dependencyBlockedInteraction !== true) {
+        if (shouldWakeOwnIssueExecutionLock(promotedContextSnapshot)) {
           await tx
             .update(issues)
             .set({
