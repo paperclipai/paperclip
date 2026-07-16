@@ -24,7 +24,7 @@ afterEach(() => {
 });
 
 describe("LiveBrowserPreview", () => {
-  it("does not create a browser stream when EventSource is unavailable", () => {
+  it("shows an explicit disconnected preview when EventSource is unavailable", () => {
     vi.stubGlobal("EventSource", undefined);
 
     expect(() => {
@@ -33,6 +33,7 @@ describe("LiveBrowserPreview", () => {
       });
     }).not.toThrow();
 
-    expect(container.querySelector("[data-testid=live-browser-preview]")).toBeNull();
+    expect(container.querySelector("[data-testid=live-browser-preview]")).not.toBeNull();
+    expect(container.textContent).toContain("Reconnecting to the Camoufox preview");
   });
 });

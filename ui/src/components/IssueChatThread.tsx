@@ -229,6 +229,10 @@ export function canStopIssueChatRun(args: {
   return runStatus === "queued" || runStatus === "running";
 }
 
+export function findLatestBrowserPreviewRun(runs: readonly LiveRunForIssue[]) {
+  return [...runs].reverse().find((run) => run.browserActivityAt) ?? null;
+}
+
 function isIssueChatCommentAttachment(value: unknown): value is IssueAttachment {
   if (!value || typeof value !== "object") return false;
   const attachment = value as Partial<IssueAttachment>;
@@ -4396,7 +4400,10 @@ export function IssueChatThread({
     return ids;
   }, [displayLiveRuns]);
   const browserPreviewRun = useMemo(
-    () => [...displayLiveRuns].reverse().find((run) => run.status === "running" && run.browserActivityAt) ?? null,
+    // Camoufox often completes a focused browser action before the board has
+    // time to render its first frame. Keep the latest issue-owned browser run
+    // mounted after the heartbeat settles so the final frame remains visible.
+    () => findLatestBrowserPreviewRun(displayLiveRuns),
     [displayLiveRuns],
   );
   const clearLatestSettleTimeouts = useCallback(() => {

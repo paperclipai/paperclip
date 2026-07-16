@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ChevronDown, ChevronUp, Eye, LoaderCircle, WifiOff } from "lucide-react";
+import { ChevronDown, ChevronUp, Eye, LoaderCircle, MonitorUp, WifiOff } from "lucide-react";
 import { cn } from "../lib/utils";
 
 export type BrowserStreamStatus = "waiting" | "live" | "disconnected";
@@ -59,8 +59,6 @@ export function LiveBrowserPreview({ runId, agentName }: LiveBrowserPreviewProps
 
   const statusLabel = status === "live" ? "Live" : status === "waiting" ? "Waiting for browser" : "Reconnecting";
 
-  if (!frame) return null;
-
   return (
     <section className="overflow-hidden rounded-2xl border border-sky-500/25 bg-slate-950 text-slate-100 shadow-[0_20px_60px_rgba(2,132,199,0.12)]" data-testid="live-browser-preview">
       <button
@@ -94,7 +92,14 @@ export function LiveBrowserPreview({ runId, agentName }: LiveBrowserPreviewProps
 
       {!collapsed ? (
         <div className="relative aspect-video min-h-48 w-full bg-[radial-gradient(circle_at_center,rgba(14,165,233,0.08),transparent_55%)]">
-          <img src={frame} alt="Live Camoufox browser viewport" className="h-full w-full object-contain" />
+          {frame ? (
+            <img src={frame} alt="Live Camoufox browser viewport" className="h-full w-full object-contain" />
+          ) : (
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-slate-400">
+              {status === "waiting" ? <LoaderCircle className="size-8 animate-spin text-sky-300/70" /> : <MonitorUp className="size-8 text-sky-300/70" />}
+              <span className="text-sm">{status === "waiting" ? "Waiting for the first Camoufox frame…" : "Reconnecting to the Camoufox preview…"}</span>
+            </div>
+          )}
         </div>
       ) : null}
     </section>

@@ -11,10 +11,12 @@ import {
   VIRTUALIZED_THREAD_ROW_THRESHOLD,
   canStopIssueChatRun,
   didPrependThreadMessages,
+  findLatestBrowserPreviewRun,
   findLatestCommentMessageIndex,
   resolveAssistantMessageFoldedState,
   resolveIssueChatHumanAuthor,
 } from "./IssueChatThread";
+import type { LiveRunForIssue } from "../api/heartbeats";
 import { ToastProvider } from "../context/ToastContext";
 import { ToastViewport } from "./ToastViewport";
 import type {
@@ -40,6 +42,17 @@ function hasSmoothScrollBehavior(arg: unknown) {
     && "behavior" in arg
     && (arg as ScrollToOptions).behavior === "smooth";
 }
+
+describe("findLatestBrowserPreviewRun", () => {
+  it("keeps the latest Camoufox preview available after its run completes", () => {
+    const runs = [
+      { id: "run-1", status: "running", browserActivityAt: null },
+      { id: "run-2", status: "succeeded", browserActivityAt: "2026-07-16T12:15:23Z" },
+    ] as LiveRunForIssue[];
+
+    expect(findLatestBrowserPreviewRun(runs)?.id).toBe("run-2");
+  });
+});
 
 const { markdownBodyRenderMock, markdownEditorFocusMock } = vi.hoisted(() => ({
   markdownBodyRenderMock: vi.fn(),

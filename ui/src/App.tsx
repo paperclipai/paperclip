@@ -78,6 +78,7 @@ function boardRoutes() {
       <Route path="talk" element={<TalkToTeam />} />
       <Route path="dashboard" element={<Dashboard />} />
       <Route path="dashboard/live" element={<DashboardLive />} />
+      <Route path="browser" element={<Navigate to="../browsers" replace />} />
       <Route path="browsers" element={<Browsers />} />
       <Route path="onboarding" element={<OnboardingRoutePage />} />
       <Route path="companies" element={<Companies />} />
@@ -310,6 +311,7 @@ export function App() {
           </Route>
           <Route path="companies" element={<UnprefixedBoardRedirect />} />
           <Route path="talk" element={<UnprefixedBoardRedirect />} />
+          <Route path="browser" element={<UnprefixedBoardRedirect />} />
           <Route path="browsers" element={<UnprefixedBoardRedirect />} />
           <Route path="issues" element={<UnprefixedBoardRedirect />} />
           <Route path="issues/:issueId" element={<UnprefixedBoardRedirect />} />
