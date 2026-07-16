@@ -69,11 +69,24 @@ export const issues = pgTable(
     completedAt: timestamp("completed_at", { withTimezone: true }),
     cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
     hiddenAt: timestamp("hidden_at", { withTimezone: true }),
+    // Soft-delete / archive (ADR-GOV-17 D2 / SAT-8309). Distinct from per-user inbox archives.
+    archivedAt: timestamp("archived_at", { withTimezone: true }),
+    archivedByActorType: text("archived_by_actor_type"),
+    archivedByActorId: text("archived_by_actor_id"),
+    archiveReason: text("archive_reason"),
+    restoreManifest: jsonb("restore_manifest").$type<{
+      blocks?: Array<{
+        relatedIssueId: string;
+        createdByAgentId?: string | null;
+        createdByUserId?: string | null;
+      }>;
+    } | null>(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
     companyStatusIdx: index("issues_company_status_idx").on(table.companyId, table.status),
+    companyArchivedAtIdx: index("issues_company_archived_at_idx").on(table.companyId, table.archivedAt),
     companyHarnessKindIdx: index("issues_company_harness_kind_idx").on(table.companyId, table.harnessKind),
     assigneeStatusIdx: index("issues_company_assignee_status_idx").on(
       table.companyId,

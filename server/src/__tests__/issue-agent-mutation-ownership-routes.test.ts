@@ -13,21 +13,29 @@ const recoveryActionId = "77777777-7777-4777-8777-777777777777";
 const mockIssueService = vi.hoisted(() => ({
   addComment: vi.fn(),
   assertCheckoutOwner: vi.fn(),
+  archive: vi.fn(),
   create: vi.fn(),
   createChild: vi.fn(),
   decomposeAcceptedPlan: vi.fn(),
+  findMentionedProjectIds: vi.fn(),
+  getActiveInboxArchiveFields: vi.fn(),
+  getAncestors: vi.fn(),
   getAttachmentById: vi.fn(),
   getByIdentifier: vi.fn(),
   getById: vi.fn(),
   getComment: vi.fn(),
+  getCurrentScheduledRetry: vi.fn(),
   getRelationSummaries: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
   list: vi.fn(),
   listAttachments: vi.fn(),
+  listBlockerAttention: vi.fn(),
   listComments: vi.fn(),
+  listProductivityReviews: vi.fn(),
   listWakeableBlockedDependents: vi.fn(),
   remove: vi.fn(),
   removeAttachment: vi.fn(),
+  restore: vi.fn(),
   update: vi.fn(),
   findMentionedAgents: vi.fn(),
 }));
@@ -154,7 +162,14 @@ function registerRouteMocks() {
 
   vi.doMock("../services/documents.js", () => ({
     documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
-    documentService: () => mockDocumentService,
+    documentService: () => ({
+      ...mockDocumentService,
+      getIssueDocumentPayload: vi.fn(async () => ({
+        planDocument: null,
+        documentSummaries: [],
+        legacyPlanDocument: null,
+      })),
+    }),
   }));
 
   vi.doMock("../services/issues.js", () => ({
@@ -184,7 +199,14 @@ function registerRouteMocks() {
     }),
     companyService: () => mockCompanyService,
     documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
-    documentService: () => mockDocumentService,
+    documentService: () => ({
+      ...mockDocumentService,
+      getIssueDocumentPayload: vi.fn(async () => ({
+        planDocument: null,
+        documentSummaries: [],
+        legacyPlanDocument: null,
+      })),
+    }),
     executionWorkspaceService: () => ({}),
     feedbackService: () => ({
       listIssueVotesForUser: vi.fn(async () => []),
@@ -249,6 +271,11 @@ function makeIssue(overrides: Record<string, unknown> = {}) {
     executionPolicy: null,
     executionState: null,
     hiddenAt: null,
+    archivedAt: null,
+    archivedByActorType: null,
+    archivedByActorId: null,
+    archiveReason: null,
+    restoreManifest: null,
     ...overrides,
   };
 }
@@ -498,6 +525,8 @@ describe("agent issue mutation checkout ownership", () => {
     mockIssueApprovalService.listApprovalsForIssue.mockResolvedValue([]);
     mockIssueThreadInteractionService.listForIssue.mockReset();
     mockIssueThreadInteractionService.listForIssue.mockResolvedValue([]);
+    mockIssueService.archive.mockReset();
+    mockIssueService.restore.mockReset();
     mockIssueService.remove.mockReset();
     mockIssueService.removeAttachment.mockReset();
     mockIssueService.update.mockReset();
@@ -535,6 +564,13 @@ describe("agent issue mutation checkout ownership", () => {
     mockCompanyService.getById.mockResolvedValue({ id: companyId, issuePrefix: "PAP" });
     mockIssueService.getById.mockResolvedValue(makeIssue());
     mockIssueService.getByIdentifier.mockResolvedValue(null);
+    mockIssueService.getAncestors.mockResolvedValue([]);
+    mockIssueService.findMentionedProjectIds.mockResolvedValue([]);
+    mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
+    mockIssueService.listBlockerAttention.mockResolvedValue(new Map());
+    mockIssueService.listProductivityReviews.mockResolvedValue(new Map());
+    mockIssueService.getCurrentScheduledRetry.mockResolvedValue(null);
+    mockIssueService.getActiveInboxArchiveFields.mockResolvedValue({});
     mockIssueService.getComment.mockResolvedValue({
       id: "comment-1",
       issueId,
@@ -609,6 +645,15 @@ describe("agent issue mutation checkout ownership", () => {
         body: "Mentioned reply context.",
       },
     ]);
+    mockIssueService.archive.mockResolvedValue(
+      makeIssue({
+        archivedAt: new Date("2026-07-17T00:00:00.000Z"),
+        archivedByActorType: "board",
+        archivedByActorId: "board-user",
+        restoreManifest: { blocks: [] },
+      }),
+    );
+    mockIssueService.restore.mockResolvedValue(makeIssue({ archivedAt: null, restoreManifest: null }));
     mockIssueService.remove.mockResolvedValue(makeIssue({ status: "cancelled" }));
     mockIssueService.getAttachmentById.mockResolvedValue({
       id: "attachment-1",
@@ -1665,6 +1710,7 @@ describe("agent issue mutation checkout ownership", () => {
         issueId,
         securityPrinciples: ["Least Privilege", "Complete Mediation"],
       });
+      expect(mockIssueService.archive).not.toHaveBeenCalled();
       expect(mockIssueService.remove).not.toHaveBeenCalled();
       return res;
     }
@@ -1769,15 +1815,155 @@ describe("agent issue mutation checkout ownership", () => {
       );
     });
 
-    it("allows board actor DELETE (Phase 1 hard delete)", async () => {
+    it("allows board actor DELETE as soft-archive (Phase 2)", async () => {
       mockIssueService.getById.mockResolvedValue(makeIssue());
-      mockIssueService.remove.mockResolvedValue(makeIssue({ status: "cancelled" }));
+      const archivedIssue = makeIssue({
+        archivedAt: new Date("2026-07-17T00:00:00.000Z"),
+        archivedByActorType: "board",
+        archivedByActorId: "board-user",
+        restoreManifest: { blocks: [] },
+      });
+      mockIssueService.archive.mockResolvedValue(archivedIssue);
 
       const res = await request(await createApp(boardActor())).delete(`/api/issues/${issueId}`);
 
       expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockIssueService.archive).toHaveBeenCalledWith(
+        issueId,
+        { actorType: "board", actorId: "board-user" },
+        { reason: null },
+      );
+      expect(mockIssueService.remove).not.toHaveBeenCalled();
+      expect(res.body).toEqual(expect.objectContaining({ archived: true, issue: expect.objectContaining({ id: issueId }) }));
+    });
+  });
+
+  describe("ADR-GOV-17 Phase 2 soft-delete/archive + restore (SAT-8309)", () => {
+    const boardOnlyDeleteError = "DELETE /api/issues is restricted to board users (ADR-GOV-17)";
+    const boardOnlyRestoreError = "POST /api/issues/:id/restore is restricted to board users (ADR-GOV-17)";
+
+    it("rejects agent soft-delete, restore, and hard-delete", async () => {
+      mockIssueService.getById.mockResolvedValue(makeIssue());
+      const app = await createApp(ownerActor());
+
+      const soft = await request(app).delete(`/api/issues/${issueId}`);
+      expect(soft.status).toBe(403);
+      expect(soft.body.error).toBe(boardOnlyDeleteError);
+      expect(mockIssueService.archive).not.toHaveBeenCalled();
+
+      const restore = await request(app).post(`/api/issues/${issueId}/restore`);
+      expect(restore.status).toBe(403);
+      expect(restore.body.error).toBe(boardOnlyRestoreError);
+      expect(mockIssueService.restore).not.toHaveBeenCalled();
+
+      const hard = await request(app).delete(`/api/issues/${issueId}?hard=true`);
+      expect(hard.status).toBe(403);
+      expect(hard.body.error).toBe(boardOnlyDeleteError);
+      expect(mockIssueService.remove).not.toHaveBeenCalled();
+    });
+
+    it("board archive → restore round-trip preserves blocker edges via restoreManifest", async () => {
+      const dependentId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+      const live = makeIssue();
+      const archived = makeIssue({
+        archivedAt: new Date("2026-07-17T00:00:00.000Z"),
+        archivedByActorType: "board",
+        archivedByActorId: "board-user",
+        restoreManifest: {
+          blocks: [{ relatedIssueId: dependentId, createdByAgentId: null, createdByUserId: null }],
+        },
+      });
+      const restored = makeIssue({
+        archivedAt: null,
+        restoreManifest: null,
+      });
+
+      mockIssueService.getById.mockResolvedValue(live);
+      mockIssueService.archive.mockResolvedValue(archived);
+      mockIssueService.restore.mockResolvedValue(restored);
+
+      const app = await createApp(boardActor());
+      const archiveRes = await request(app).delete(`/api/issues/${issueId}`);
+      expect(archiveRes.status).toBe(200);
+      expect(archiveRes.body.archived).toBe(true);
+      expect(archiveRes.body.issue.restoreManifest).toEqual({
+        blocks: [{ relatedIssueId: dependentId, createdByAgentId: null, createdByUserId: null }],
+      });
+      expect(mockIssueService.archive).toHaveBeenCalled();
+
+      mockIssueService.getById.mockResolvedValue(archived);
+      const restoreRes = await request(app).post(`/api/issues/${issueId}/restore`);
+      expect(restoreRes.status).toBe(200);
+      expect(mockIssueService.restore).toHaveBeenCalledWith(issueId);
+      expect(restoreRes.body.archivedAt).toBeNull();
+    });
+
+    it("hard delete without prior archive returns 409; with archive succeeds + tombstone", async () => {
+      mockIssueService.getById.mockResolvedValue(makeIssue({ archivedAt: null }));
+      const app = await createApp(boardActor());
+
+      const rejected = await request(app).delete(`/api/issues/${issueId}?hard=true`);
+      expect(rejected.status, JSON.stringify(rejected.body)).toBe(409);
+      expect(rejected.body.error).toMatch(/archived first/i);
+      expect(mockIssueService.remove).not.toHaveBeenCalled();
+
+      const archivedAt = new Date("2026-07-17T00:00:00.000Z");
+      mockIssueService.getById.mockResolvedValue(
+        makeIssue({
+          archivedAt,
+          identifier: "PAP-1649",
+          title: "Owned active issue",
+        }),
+      );
+      mockIssueService.remove.mockResolvedValue(makeIssue({ status: "cancelled" }));
+
+      const ok = await request(app).delete(`/api/issues/${issueId}?hard=true`);
+      expect(ok.status, JSON.stringify(ok.body)).toBe(200);
       expect(mockIssueService.remove).toHaveBeenCalledWith(issueId);
-      expect(res.body).toEqual(expect.objectContaining({ id: issueId }));
+      expect(mockLogActivity).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: "issue.hard_deleted",
+          entityId: issueId,
+          details: expect.objectContaining({
+            id: issueId,
+            identifier: "PAP-1649",
+            title: "Owned active issue",
+          }),
+        }),
+      );
+    });
+
+    it("archived issues excluded from default list; board includeArchived=true includes them; agent GET is 404", async () => {
+      const archived = makeIssue({
+        archivedAt: new Date("2026-07-17T00:00:00.000Z"),
+        archivedByActorType: "board",
+        archivedByActorId: "board-user",
+      });
+
+      mockIssueService.list.mockResolvedValue([]);
+      const boardApp = await createApp(boardActor());
+      const defaultList = await request(boardApp).get(`/api/companies/${companyId}/issues`);
+      expect(defaultList.status).toBe(200);
+      expect(mockIssueService.list).toHaveBeenCalledWith(
+        companyId,
+        expect.objectContaining({ includeArchived: false }),
+      );
+
+      mockIssueService.list.mockResolvedValue([archived]);
+      const archivedList = await request(boardApp).get(
+        `/api/companies/${companyId}/issues?includeArchived=true`,
+      );
+      expect(archivedList.status).toBe(200);
+      expect(mockIssueService.list).toHaveBeenCalledWith(
+        companyId,
+        expect.objectContaining({ includeArchived: true }),
+      );
+
+      mockIssueService.getById.mockResolvedValue(archived);
+      const agentGet = await request(await createApp(ownerActor())).get(`/api/issues/${issueId}`);
+      expect(agentGet.status).toBe(404);
+      // Board GET is allowed past this gate (requireBoard); full enrichment is covered in GET suite.
     });
   });
 

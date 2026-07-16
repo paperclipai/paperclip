@@ -486,6 +486,8 @@ export interface IssueFilters {
   includeBlockedBy?: boolean;
   includeBlockedInboxAttention?: boolean;
   includeLiveDescendantSummary?: boolean;
+  /** Board-only: include soft-deleted/archived issues (ADR-GOV-17 D2). */
+  includeArchived?: boolean;
   hasPlanDocument?: boolean;
   lowTrustBoundary?: LowTrustBoundary & { companyId: string };
   q?: string;
@@ -2525,6 +2527,11 @@ const issueListSelect = {
   completedAt: issues.completedAt,
   cancelledAt: issues.cancelledAt,
   hiddenAt: issues.hiddenAt,
+  archivedAt: issues.archivedAt,
+  archivedByActorType: issues.archivedByActorType,
+  archivedByActorId: issues.archivedByActorId,
+  archiveReason: issues.archiveReason,
+  restoreManifest: issues.restoreManifest,
   createdAt: issues.createdAt,
   updatedAt: issues.updatedAt,
 };
@@ -4702,7 +4709,10 @@ export function issueService(db: Db) {
         });
       }
 
-      const conditions = [eq(issues.companyId, companyId), visibleIssueCondition()];
+      const conditions = [
+        eq(issues.companyId, companyId),
+        visibleIssueCondition({ includeArchived: filters?.includeArchived === true }),
+      ];
       const assigneeAgentFilter = parseIssueAssigneeAgentFilter(filters?.assigneeAgentId);
       assertValidAssigneeAgentFilter(assigneeAgentFilter);
       const limit = typeof filters?.limit === "number" && Number.isFinite(filters.limit)
@@ -4929,7 +4939,10 @@ export function issueService(db: Db) {
         ) ?? row.updatedAt;
         return {
           ...row,
-          ...activeInboxArchiveFields(archiveByIssueId.get(row.id), lastActivityAt),
+          // Soft-deleted issues own archivedAt; do not overlay per-user inbox archive fields.
+          ...(row.archivedAt
+            ? {}
+            : activeInboxArchiveFields(archiveByIssueId.get(row.id), lastActivityAt)),
           ...(includeBlockedBy ? { blockedBy: blockedByMap.get(row.id) ?? [] } : {}),
           lastActivityAt,
           ...(blockerAttentionByIssueId.has(row.id) ? { blockerAttention: blockerAttentionByIssueId.get(row.id) } : {}),
@@ -4952,7 +4965,10 @@ export function issueService(db: Db) {
         return countBlockedInboxIssues(db, companyId, filters);
       }
 
-      const conditions = [eq(issues.companyId, companyId), visibleIssueCondition()];
+      const conditions = [
+        eq(issues.companyId, companyId),
+        visibleIssueCondition({ includeArchived: filters?.includeArchived === true }),
+      ];
       const statuses = parseStatusFilter(filters?.status);
       if (statuses.length === 1) conditions.push(eq(issues.status, statuses[0]!));
       else if (statuses.length > 1) conditions.push(inArray(issues.status, statuses));
@@ -6712,6 +6728,157 @@ export function issueService(db: Db) {
 
       return cleared;
     },
+
+    /**
+     * Soft-delete / archive an issue (ADR-GOV-17 D2). Captures outbound "blocks"
+     * edges into restoreManifest and clears them in the same transaction so
+     * dependents are not stranded on an archived blocker.
+     */
+    archive: (
+      id: string,
+      actor: { actorType: string; actorId: string },
+      opts: { reason?: string | null } = {},
+    ) =>
+      db.transaction(async (tx) => {
+        const existing = await tx
+          .select()
+          .from(issues)
+          .where(eq(issues.id, id))
+          .then((rows) => rows[0] ?? null);
+        if (!existing) return null;
+        if (existing.archivedAt) {
+          const [enriched] = await withIssueLabels(tx, [existing]);
+          return enriched;
+        }
+
+        const blockEdges = await tx
+          .select({
+            relatedIssueId: issueRelations.relatedIssueId,
+            createdByAgentId: issueRelations.createdByAgentId,
+            createdByUserId: issueRelations.createdByUserId,
+          })
+          .from(issueRelations)
+          .where(
+            and(
+              eq(issueRelations.companyId, existing.companyId),
+              eq(issueRelations.issueId, id),
+              eq(issueRelations.type, "blocks"),
+            ),
+          );
+
+        if (blockEdges.length > 0) {
+          await tx
+            .delete(issueRelations)
+            .where(
+              and(
+                eq(issueRelations.companyId, existing.companyId),
+                eq(issueRelations.issueId, id),
+                eq(issueRelations.type, "blocks"),
+              ),
+            );
+        }
+
+        const now = new Date();
+        const restoreManifest = {
+          blocks: blockEdges.map((edge) => ({
+            relatedIssueId: edge.relatedIssueId,
+            createdByAgentId: edge.createdByAgentId ?? null,
+            createdByUserId: edge.createdByUserId ?? null,
+          })),
+        };
+
+        const updated = await tx
+          .update(issues)
+          .set({
+            archivedAt: now,
+            archivedByActorType: actor.actorType,
+            archivedByActorId: actor.actorId,
+            archiveReason: opts.reason ?? null,
+            restoreManifest,
+            checkoutRunId: null,
+            executionRunId: null,
+            executionLockedAt: null,
+            updatedAt: now,
+          })
+          .where(eq(issues.id, id))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+
+        if (!updated) return null;
+        const [enriched] = await withIssueLabels(tx, [updated]);
+        return enriched;
+      }),
+
+    /**
+     * Restore a soft-deleted issue and re-link preserved blocker edges when both
+     * endpoints still exist.
+     */
+    restore: (id: string) =>
+      db.transaction(async (tx) => {
+        const existing = await tx
+          .select()
+          .from(issues)
+          .where(eq(issues.id, id))
+          .then((rows) => rows[0] ?? null);
+        if (!existing) return null;
+        if (!existing.archivedAt) {
+          const [enriched] = await withIssueLabels(tx, [existing]);
+          return enriched;
+        }
+
+        const manifest = (existing.restoreManifest ?? null) as {
+          blocks?: Array<{
+            relatedIssueId: string;
+            createdByAgentId?: string | null;
+            createdByUserId?: string | null;
+          }>;
+        } | null;
+        const blocks = Array.isArray(manifest?.blocks) ? manifest.blocks : [];
+
+        if (blocks.length > 0) {
+          const relatedIds = [...new Set(blocks.map((b) => b.relatedIssueId))];
+          const stillPresent = await tx
+            .select({ id: issues.id })
+            .from(issues)
+            .where(and(eq(issues.companyId, existing.companyId), inArray(issues.id, relatedIds)));
+          const presentIds = new Set(stillPresent.map((row) => row.id));
+          const toRestore = blocks.filter((edge) => presentIds.has(edge.relatedIssueId));
+          if (toRestore.length > 0) {
+            await tx
+              .insert(issueRelations)
+              .values(
+                toRestore.map((edge) => ({
+                  companyId: existing.companyId,
+                  issueId: id,
+                  relatedIssueId: edge.relatedIssueId,
+                  type: "blocks" as const,
+                  createdByAgentId: edge.createdByAgentId ?? null,
+                  createdByUserId: edge.createdByUserId ?? null,
+                })),
+              )
+              .onConflictDoNothing();
+          }
+        }
+
+        const now = new Date();
+        const updated = await tx
+          .update(issues)
+          .set({
+            archivedAt: null,
+            archivedByActorType: null,
+            archivedByActorId: null,
+            archiveReason: null,
+            restoreManifest: null,
+            updatedAt: now,
+          })
+          .where(eq(issues.id, id))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+
+        if (!updated) return null;
+        const [enriched] = await withIssueLabels(tx, [updated]);
+        return enriched;
+      }),
 
     remove: (id: string) =>
       db.transaction(async (tx) => {
