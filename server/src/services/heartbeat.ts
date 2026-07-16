@@ -10505,10 +10505,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const resumeIntent = context.resumeIntent === true || context.followUpRequested === true;
     const wakeReason = readNonEmptyString(context.wakeReason);
     const retryReason = readNonEmptyString(context.retryReason) ?? run.scheduledRetryReason ?? null;
+    const interactionResolvedAt = readNonEmptyString(context.interactionResolvedAt);
+    const hasResolvedInteractionEvidence = interactionResolvedAt !== null && !Number.isNaN(Date.parse(interactionResolvedAt));
 
     if (
       issue.status === "in_progress" &&
       !wakeCommentId &&
+      !hasResolvedInteractionEvidence &&
       (wakeReason === "issue_continuation_needed" || retryReason === "issue_continuation_needed")
     ) {
       const queuedWake = parseObject(context.paperclipWake);

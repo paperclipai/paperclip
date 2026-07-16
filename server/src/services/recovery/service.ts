@@ -289,6 +289,7 @@ const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
 // issue has a real waiting target we convert it into a normal dependency wait rather
 // than escalating it as stranded.
 const CONTINUATION_WAITING_ON_REVIEW_ERROR_CODE = "issue_continuation_waiting_on_review";
+const INTERACTION_CONTINUATION_REQUEUE_MAX_ATTEMPTS = 3;
 
 const CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS = 3;
 const CONTINUATION_RECOVERY_DEFAULT_MAX_ATTEMPTS = 1;
@@ -635,7 +636,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   async function summarizeRecentContinuationRetries(
     companyId: string,
     issueId: string,
+    agentId: string,
     errorCodeToMatch: string | null,
+    since: Date | null = null,
   ) {
     const rows = await db
       .select({
@@ -649,7 +652,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .where(
         and(
           eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.agentId, agentId),
           sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+          ...(since ? [gte(heartbeatRuns.createdAt, since)] : []),
         ),
       )
       .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
@@ -3336,6 +3341,39 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             agentId,
             acceptedInteractionResolvedAt,
           );
+          const { consecutive } = await summarizeRecentContinuationRetries(
+            issue.companyId,
+            issue.id,
+            agentId,
+            CONTINUATION_WAITING_ON_REVIEW_ERROR_CODE,
+            acceptedInteractionResolvedAt,
+          );
+          if (consecutive >= INTERACTION_CONTINUATION_REQUEUE_MAX_ATTEMPTS && latestPostResolutionRun) {
+            const resolved = await resolveContinuationWaitingOnReview(issue);
+            if (resolved) {
+              result.waitingOnReviewResolved += 1;
+              result.issueIds.push(issue.id);
+              continue;
+            }
+
+            const updated = await escalateStrandedAssignedIssue({
+              issue,
+              previousStatus: issue.status as StrandedPreviousStatus,
+              latestRun: latestPostResolutionRun,
+              comment:
+                `Paperclip stopped requeueing accepted interaction \`${acceptedContinuationInteraction.id}\` after ` +
+                `${consecutive} consecutive continuation wakes were cancelled while waiting on review. ` +
+                "Moving the issue to `blocked` so the missing execution path is visible for intervention.",
+            });
+            if (updated) {
+              result.escalated += 1;
+              result.issueIds.push(issue.id);
+            } else {
+              result.skipped += 1;
+            }
+            continue;
+          }
+
           const queued = await enqueueStrandedIssueRecovery({
             issueId: issue.id,
             agentId,
@@ -3656,6 +3694,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           const { consecutive, latestFinishedAt } = await summarizeRecentContinuationRetries(
             issue.companyId,
             issue.id,
+            agentId,
             classification.errorCode,
           );
           if (consecutive >= classification.maxAttempts) {
