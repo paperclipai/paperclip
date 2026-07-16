@@ -8870,7 +8870,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .returning()
         .then((rows) => rows[0] ?? null);
 
-      await appendRunEvent(updated ?? run, await nextRunEventSeq(run.id), {
+      if (!updated) {
+        const latest = await db
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, run.id))
+          .then((rows) => rows[0] ?? null);
+        if (latest && latest.status !== "running") {
+          classify(candidate, "finalized_while_down", `run_status_${latest.status}`, patch);
+        } else {
+          classify(candidate, "lost", "adoption_update_not_applied", patch);
+        }
+        continue;
+      }
+
+      await appendRunEvent(updated, await nextRunEventSeq(run.id), {
         eventType: "lifecycle",
         stream: "system",
         level: "info",
