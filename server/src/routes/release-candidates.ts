@@ -7,7 +7,7 @@ import type { StorageService } from "../storage/types.js";
 import { validate } from "../middleware/validate.js";
 import { badRequest, conflict, HttpError, notFound, unauthorized } from "../errors.js";
 import { logger } from "../middleware/logger.js";
-import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertCompanyAccess, getActorInfo, hasCompanyAccess } from "./authz.js";
 import { assetService } from "../services/assets.js";
 import { issueService } from "../services/issues.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
@@ -134,6 +134,7 @@ export function releaseCandidateRoutes(db: Db, storage: StorageService) {
     const query = approvedLeaseQuerySchema.parse(req.query);
     const token = readDeployTokenHeader(req);
     const { authorization, candidate } = await candidates.getApprovedLease(query.authorizationId, token);
+    if (!hasCompanyAccess(req, candidate.companyId)) throw notFound("Release deploy authorization not found");
     assertCompanyAccess(req, candidate.companyId);
     res.json({
       authorizationId: authorization.id,
@@ -170,6 +171,7 @@ export function releaseCandidateRoutes(db: Db, storage: StorageService) {
     async (req, res) => {
       const token = readDeployTokenHeader(req);
       const { candidate } = await candidates.getApprovedLease(req.body.authorizationId, token);
+      if (!hasCompanyAccess(req, candidate.companyId)) throw notFound("Release deploy authorization not found");
       assertCompanyAccess(req, candidate.companyId);
       const actor = getActorInfo(req);
       const result = await candidates.recordDeployEvent({ ...req.body, token }, {
@@ -189,7 +191,7 @@ export function releaseCandidateRoutes(db: Db, storage: StorageService) {
 
   router.get("/release-candidates/:candidateId", async (req, res) => {
     const candidate = await candidates.getById(req.params.candidateId as string);
-    if (!candidate) throw notFound("Release candidate not found");
+    if (!candidate || !hasCompanyAccess(req, candidate.companyId)) throw notFound("Release candidate not found");
     assertCompanyAccess(req, candidate.companyId);
     res.json(candidate);
   });
@@ -199,7 +201,7 @@ export function releaseCandidateRoutes(db: Db, storage: StorageService) {
     validate(updateReleaseCandidateSchema),
     async (req, res) => {
       const candidate = await candidates.getById(req.params.candidateId as string);
-      if (!candidate) throw notFound("Release candidate not found");
+      if (!candidate || !hasCompanyAccess(req, candidate.companyId)) throw notFound("Release candidate not found");
       assertCompanyAccess(req, candidate.companyId);
       const actor = getActorInfo(req);
       const updated = await candidates.updateMutable(candidate.id, req.body, {
@@ -216,7 +218,7 @@ export function releaseCandidateRoutes(db: Db, storage: StorageService) {
     validate(createApprovalInteractionSchema),
     async (req, res) => {
       const candidate = await candidates.getById(req.params.candidateId as string);
-      if (!candidate) throw notFound("Release candidate not found");
+      if (!candidate || !hasCompanyAccess(req, candidate.companyId)) throw notFound("Release candidate not found");
       assertCompanyAccess(req, candidate.companyId);
       const actor = getActorInfo(req);
       const sourceIssue = await issueService(db).getById(candidate.sourceIssueId);
@@ -265,6 +267,7 @@ export function releaseCandidateRoutes(db: Db, storage: StorageService) {
         tarballSha256: expectedTarballSha,
         signatureBundleSha256: expectedSignatureBundleSha,
       });
+      if (!hasCompanyAccess(req, candidate.companyId)) throw notFound("Release deploy authorization not found");
       assertCompanyAccess(req, candidate.companyId);
       const storedArtifact = await storage.putFile({
         companyId: candidate.companyId,
@@ -374,6 +377,7 @@ export function releaseCandidateRoutes(db: Db, storage: StorageService) {
   router.get("/release-deploy-authorizations/:authorizationId/staged-artifact", async (req, res) => {
     const token = readDeployTokenHeader(req);
     const { authorization, candidate } = await candidates.getApprovedLease(req.params.authorizationId as string, token);
+    if (!hasCompanyAccess(req, candidate.companyId)) throw notFound("Release deploy authorization not found");
     assertCompanyAccess(req, candidate.companyId);
     await streamRelayAsset(
       res,
@@ -387,6 +391,7 @@ export function releaseCandidateRoutes(db: Db, storage: StorageService) {
   router.get("/release-deploy-authorizations/:authorizationId/staged-signature-bundle", async (req, res) => {
     const token = readDeployTokenHeader(req);
     const { authorization, candidate } = await candidates.getApprovedLease(req.params.authorizationId as string, token);
+    if (!hasCompanyAccess(req, candidate.companyId)) throw notFound("Release deploy authorization not found");
     assertCompanyAccess(req, candidate.companyId);
     await streamRelayAsset(
       res,

@@ -200,7 +200,7 @@ describe("release candidate routes", () => {
       .set("X-Paperclip-Deploy-Token", "pcdeploy_header-token")
       .send({ authorizationId, status: "started" });
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
     expect(mockReleaseCandidateService.recordDeployEvent).not.toHaveBeenCalled();
   });
 
