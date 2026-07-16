@@ -7,6 +7,10 @@ export const DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS = 24;
 export const MIN_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS = 1;
 export const MAX_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS = 24 * 30;
 
+export const DEFAULT_ISSUE_GRAPH_LIVENESS_RECOVERY_SPAWN_SUPPRESSION_WINDOW_MINUTES = 15;
+export const MIN_ISSUE_GRAPH_LIVENESS_RECOVERY_SPAWN_SUPPRESSION_WINDOW_MINUTES = 0;
+export const MAX_ISSUE_GRAPH_LIVENESS_RECOVERY_SPAWN_SUPPRESSION_WINDOW_MINUTES = 240;
+
 export interface BackupRetentionPolicy {
   dailyDays: (typeof DAILY_RETENTION_PRESETS)[number];
   weeklyWeeks: (typeof WEEKLY_RETENTION_PRESETS)[number];
@@ -84,6 +88,8 @@ export interface InstanceExperimentalSettings {
    */
   worktreeRunExecutionActivationInstanceId: string | null;
   issueGraphLivenessAutoRecoveryLookbackHours: number;
+  /** Minutes to suppress re-spawn after a recovery escalation closes. 0 = disabled. */
+  issueGraphLivenessRecoverySpawnSuppressionWindowMinutes: number;
 }
 
 export interface InstanceSettings {

@@ -1166,6 +1166,7 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     ].join(":");
     const closedEscalationId = randomUUID();
 
+    const longAgo = new Date(Date.now() - 60 * 60 * 1000); // 1h ago — outside any suppression window
     await db.insert(issues).values({
       id: closedEscalationId,
       companyId,
@@ -1178,6 +1179,8 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
       identifier: "CLOSED-3",
       originKind: "harness_liveness_escalation",
       originId: incidentKey,
+      createdAt: longAgo,
+      updatedAt: longAgo,
     });
 
     const result = await heartbeat.reconcileIssueGraphLiveness();
@@ -1248,6 +1251,99 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
       .from(issueRelations)
       .where(eq(issueRelations.relatedIssueId, blockedIssueId));
     expect(blockers.some((row) => row.blockerIssueId === escalations[0]!.id)).toBe(false);
+  });
+
+  it("suppresses re-spawn within the cooldown window after an escalation closes", async () => {
+    await enableAutoRecovery();
+    // Set a 15-minute suppression window (default).
+    await instanceSettingsService(db).updateExperimental({
+      issueGraphLivenessRecoverySpawnSuppressionWindowMinutes: 15,
+    });
+    const { companyId, blockerIssueId } = await seedBlockedChain();
+    const heartbeat = heartbeatService(db);
+
+    // First reconcile: creates the escalation.
+    const first = await heartbeat.reconcileIssueGraphLiveness();
+    expect(first.escalationsCreated).toBe(1);
+
+    // Mark the escalation done to simulate the agent finishing the recovery issue.
+    const escalations = await db
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, "harness_liveness_escalation"),
+        ),
+      );
+    expect(escalations).toHaveLength(1);
+    await db
+      .update(issues)
+      .set({ status: "done" })
+      .where(eq(issues.id, escalations[0]!.id));
+
+    // Source issue is still in a liveness-invariant-violating state (blockerIssueId still open).
+    // Second reconcile: must be suppressed — the closed escalation is within the window.
+    const second = await heartbeat.reconcileIssueGraphLiveness();
+    expect(second.skippedInSuppressionWindow).toBe(1);
+    expect(second.escalationsCreated).toBe(0);
+
+    // Total escalation count must still be 1 (no new spawn).
+    const allEscalations = await db
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, "harness_liveness_escalation"),
+        ),
+      );
+    expect(allEscalations).toHaveLength(1);
+  });
+
+  it("allows re-spawn once the suppression window expires", async () => {
+    await enableAutoRecovery();
+    await instanceSettingsService(db).updateExperimental({
+      issueGraphLivenessRecoverySpawnSuppressionWindowMinutes: 15,
+    });
+    const { companyId } = await seedBlockedChain();
+    const heartbeat = heartbeatService(db);
+
+    // First reconcile: creates the escalation.
+    const first = await heartbeat.reconcileIssueGraphLiveness();
+    expect(first.escalationsCreated).toBe(1);
+
+    // Mark escalation done and back-date updatedAt to be outside the 15-min window.
+    const escalations = await db
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, "harness_liveness_escalation"),
+        ),
+      );
+    const expiredAt = new Date(Date.now() - 20 * 60 * 1000); // 20 minutes ago
+    await db
+      .update(issues)
+      .set({ status: "done", updatedAt: expiredAt })
+      .where(eq(issues.id, escalations[0]!.id));
+
+    // Second reconcile: suppression window has expired — must create a new escalation.
+    const second = await heartbeat.reconcileIssueGraphLiveness();
+    expect(second.skippedInSuppressionWindow).toBe(0);
+    expect(second.escalationsCreated).toBe(1);
+
+    const allEscalations = await db
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, "harness_liveness_escalation"),
+        ),
+      );
+    expect(allEscalations).toHaveLength(2);
   });
 
   it("handles an armed cutoff when no liveness findings exist", async () => {

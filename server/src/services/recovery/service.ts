@@ -4,6 +4,7 @@ import {
   DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   MAX_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   MIN_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
+  DEFAULT_ISSUE_GRAPH_LIVENESS_RECOVERY_SPAWN_SUPPRESSION_WINDOW_MINUTES,
   type IssueGraphLivenessAutoRecoveryPreview,
   type IssueGraphLivenessAutoRecoveryPreviewItem,
 } from "@paperclipai/shared";
@@ -3980,6 +3981,51 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     }) ?? null;
   }
 
+  async function findRecentlyClosedLivenessEscalation(
+    companyId: string,
+    incidentKey: string,
+    windowMs: number,
+  ) {
+    const since = new Date(Date.now() - windowMs);
+    return db
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation),
+          eq(issues.originId, incidentKey),
+          isNull(issues.hiddenAt),
+          inArray(issues.status, ["done", "cancelled"]),
+          gte(issues.updatedAt, since),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
+  async function findRecentlyClosedLivenessEscalationForLeaf(
+    finding: IssueLivenessFinding,
+    windowMs: number,
+  ) {
+    const since = new Date(Date.now() - windowMs);
+    return db
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, finding.companyId),
+          eq(issues.originKind, RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation),
+          eq(issues.originFingerprint, livenessRecoveryLeafFingerprint(finding)),
+          isNull(issues.hiddenAt),
+          inArray(issues.status, ["done", "cancelled"]),
+          gte(issues.updatedAt, since),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
   async function removeRecoveryBlockerFromSource(recovery: typeof issues.$inferSelect) {
     const parsed = parseLivenessIncidentKey(recovery.originId);
     if (!parsed) return false;
@@ -4335,6 +4381,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   async function createIssueGraphLivenessEscalation(input: {
     finding: IssueLivenessFinding;
     runId?: string | null;
+    suppressionWindowMs: number;
   }) {
     const issue = await db
       .select()
@@ -4364,6 +4411,26 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         runId: input.runId ?? null,
       });
       return { kind: "existing" as const, escalationIssueId: existing.id };
+    }
+
+    if (input.suppressionWindowMs > 0) {
+      const recentlyClosed =
+        await findRecentlyClosedLivenessEscalation(
+          issue.companyId,
+          input.finding.incidentKey,
+          input.suppressionWindowMs,
+        ) ?? await findRecentlyClosedLivenessEscalationForLeaf(input.finding, input.suppressionWindowMs);
+      if (recentlyClosed) {
+        logger.debug({
+          incidentKey: input.finding.incidentKey,
+          findingState: input.finding.state,
+          sourceIssueId: issue.id,
+          suppressionWindowMs: input.suppressionWindowMs,
+          recentlyClosedEscalationId: recentlyClosed.id,
+          recentlyClosedStatus: recentlyClosed.status,
+        }, "suppressed liveness escalation spawn: recently closed within suppression window");
+        return { kind: "suppressed" as const };
+      }
     }
 
     const ownerSelection = await resolveEscalationOwnerAgentId(input.finding, recoveryIssue);
@@ -4765,6 +4832,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const lookbackHours = normalizeIssueGraphLivenessAutoRecoveryLookbackHours(
       opts?.lookbackHours ?? experimentalSettings.issueGraphLivenessAutoRecoveryLookbackHours,
     );
+    const suppressionWindowMinutes =
+      experimentalSettings.issueGraphLivenessRecoverySpawnSuppressionWindowMinutes ??
+      DEFAULT_ISSUE_GRAPH_LIVENESS_RECOVERY_SPAWN_SUPPRESSION_WINDOW_MINUTES;
+    const suppressionWindowMs = suppressionWindowMinutes * 60 * 1000;
     const now = new Date();
     const cutoff = new Date(now.getTime() - lookbackHours * 60 * 60 * 1000);
     const obsoleteRecoveryCleanup = await retireObsoleteLivenessRecoveryIssues(findings);
@@ -4774,12 +4845,14 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       findings: findings.length,
       autoRecoveryEnabled,
       lookbackHours,
+      suppressionWindowMinutes,
       cutoff: cutoff.toISOString(),
       escalationsCreated: 0,
       existingEscalations: 0,
       skipped: 0,
       skippedAutoRecoveryDisabled: 0,
       skippedOutsideLookback: 0,
+      skippedInSuppressionWindow: 0,
       obsoleteRecoveriesRetired: obsoleteRecoveryCleanup.retired,
       obsoleteRecoveriesActiveSkipped: obsoleteRecoveryCleanup.activeSkipped,
       obsoleteRecoveryBlockerRelationsRemoved: obsoleteRecoveryCleanup.blockerRelationsRemoved,
@@ -4829,6 +4902,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       const escalation = await createIssueGraphLivenessEscalation({
         finding,
         runId: opts?.runId ?? null,
+        suppressionWindowMs,
       });
       if (escalation.kind === "created") {
         result.escalationsCreated += 1;
@@ -4838,6 +4912,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         result.existingEscalations += 1;
         result.issueIds.push(finding.issueId);
         result.escalationIssueIds.push(escalation.escalationIssueId);
+      } else if (escalation.kind === "suppressed") {
+        result.skippedInSuppressionWindow += 1;
+        result.skipped += 1;
       } else {
         result.skipped += 1;
       }
