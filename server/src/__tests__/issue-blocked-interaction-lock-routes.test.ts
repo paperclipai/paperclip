@@ -682,6 +682,117 @@ describeEmbeddedPostgres("blocked interaction wakes do not claim issue execution
     );
   });
 
+  it("keeps deferred blocked mention wake promotions unlocked", async () => {
+    const { assigneeAgentId, issueId } = await seedScenario();
+    const firstRun = await startBlockedInteractionWake(assigneeAgentId, issueId, "issue_commented");
+    const commentId = randomUUID();
+
+    await db
+      .update(issues)
+      .set({
+        executionRunId: firstRun.id,
+        executionAgentNameKey: "qaeng",
+        executionLockedAt: new Date(),
+      })
+      .where(eq(issues.id, issueId));
+
+    const deferredRun = await heartbeat.wakeup(assigneeAgentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_comment_mentioned",
+      payload: { issueId, commentId },
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        commentId,
+        wakeCommentId: commentId,
+        wakeReason: "issue_comment_mentioned",
+        source: "comment.mention",
+      },
+      requestedByActorType: "user",
+      requestedByActorId: "local-board",
+    });
+    expect(deferredRun).toBeNull();
+
+    await waitForCondition(async () =>
+      db
+        .select({ status: agentWakeupRequests.status })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.agentId, assigneeAgentId))
+        .then((rows) => rows.some((row) => row.status === "deferred_issue_execution"))
+    );
+
+    adapterControl.release();
+
+    await waitForCondition(async () =>
+      db
+        .select({
+          runId: agentWakeupRequests.runId,
+          status: agentWakeupRequests.status,
+          reason: agentWakeupRequests.reason,
+        })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.agentId, assigneeAgentId))
+        .then((rows) => rows.some((row) => row.reason === "issue_execution_promoted" && Boolean(row.runId))),
+    );
+
+    const promotedWake = await db
+      .select({
+        runId: agentWakeupRequests.runId,
+        status: agentWakeupRequests.status,
+        reason: agentWakeupRequests.reason,
+      })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, assigneeAgentId))
+      .then((rows) => rows.find((row) => row.reason === "issue_execution_promoted" && row.runId) ?? null);
+    expect(promotedWake?.reason).toBe("issue_execution_promoted");
+    expect(["queued", "claimed", "running"]).toContain(promotedWake?.status ?? "");
+
+    const promotedIssueRow = await db
+      .select({
+        status: issues.status,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+        executionLockedAt: issues.executionLockedAt,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(promotedIssueRow).toEqual({
+      status: "blocked",
+      checkoutRunId: null,
+      executionRunId: null,
+      executionLockedAt: null,
+    });
+
+    adapterControl.release();
+
+    await waitForCondition(async () =>
+      db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.agentId, assigneeAgentId))
+        .then((rows) => rows.filter((row) => row.status === "succeeded").length === 2)
+    );
+
+    const finalIssueRow = await db
+      .select({
+        status: issues.status,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+        executionLockedAt: issues.executionLockedAt,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(finalIssueRow).toEqual({
+      status: "blocked",
+      checkoutRunId: null,
+      executionRunId: null,
+      executionLockedAt: null,
+    });
+  });
+
   it("keeps cancelled dependency-blocked mention wakes comment-only and unlocked", async () => {
     const { companyId, assigneeAgentId, foreignAgentId, issueId } = await seedScenario("cancelled");
     await db.insert(issueComments).values({
