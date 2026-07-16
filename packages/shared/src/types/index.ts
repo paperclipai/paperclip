@@ -197,6 +197,9 @@ export type {
 } from "./adapter-skills.js";
 export type {
   Agent,
+  AgentResponse,
+  AgentDetailResponse,
+  AgentResponsePermissions,
   AgentAccessState,
   AgentChainOfCommandEntry,
   AgentDetail,
@@ -619,7 +622,7 @@ export type {
   IssueTreePreviewWarning,
 } from "./issue-tree-control.js";
 export type { Goal } from "./goal.js";
-export type { Approval, ApprovalComment } from "./approval.js";
+export type { Approval, ApprovalResponse, ApprovalComment } from "./approval.js";
 export type {
   BudgetPolicy,
   BudgetPolicySummary,

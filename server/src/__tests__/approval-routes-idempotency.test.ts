@@ -144,6 +144,67 @@ describe("approval routes idempotent retries", () => {
     mockLogActivity.mockResolvedValue(undefined);
   });
 
+  it.each([
+    ["list", (app: express.Express) => request(app).get("/api/companies/company-1/approvals")],
+    ["detail", (app: express.Express) => request(app).get("/api/approvals/approval-safe")],
+    ["approve", (app: express.Express) => request(app).post("/api/approvals/approval-safe/approve").send({})],
+    ["reject", (app: express.Express) => request(app).post("/api/approvals/approval-safe/reject").send({})],
+    ["revision", (app: express.Express) => request(app).post("/api/approvals/approval-safe/request-revision").send({})],
+    ["resubmit", (app: express.Express) => request(app).post("/api/approvals/approval-safe/resubmit").send({})],
+  ])("positively projects hire approval %s responses", async (_surface, issueRequest) => {
+    const secret = "approval-projection-secret";
+    const approval = {
+      id: "approval-safe",
+      companyId: "company-1",
+      type: "hire_agent",
+      requestedByAgentId: "agent-1",
+      requestedByUserId: null,
+      status: "pending",
+      payload: {
+        name: "Reviewer",
+        adapterType: "codex_local",
+        adapterConfig: { model: "gpt-5", fastMode: true, env: { TOKEN: secret }, unknown: secret },
+        runtimeConfig: { heartbeat: { enabled: true, runtimeToken: secret } },
+        requestedConfigurationSnapshot: {
+          adapterType: "codex_local",
+          adapterConfig: { model: "gpt-5", env: { TOKEN: secret } },
+          runtimeConfig: { heartbeat: { intervalSec: 60, token: secret } },
+          desiredSkills: ["review"],
+          unknown: secret,
+        },
+        unknownPayloadCanary: secret,
+      },
+      decisionNote: null,
+      decidedByUserId: null,
+      decidedAt: null,
+      createdAt: new Date("2026-07-15T00:00:00.000Z"),
+      updatedAt: new Date("2026-07-15T00:00:00.000Z"),
+      unknownRowCanary: secret,
+    };
+    mockApprovalService.list.mockResolvedValue([approval]);
+    mockApprovalService.getById.mockResolvedValue(approval);
+    mockApprovalService.approve.mockResolvedValue({ approval, applied: false });
+    mockApprovalService.reject.mockResolvedValue({ approval, applied: false });
+    mockApprovalService.requestRevision.mockResolvedValue(approval);
+    mockApprovalService.resubmit.mockResolvedValue(approval);
+
+    const res = await issueRequest(await createApp());
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(JSON.stringify(res.body)).not.toContain(secret);
+    const body = Array.isArray(res.body) ? res.body[0] : res.body;
+    expect(body.payload).toMatchObject({
+      name: "Reviewer",
+      adapterConfig: { model: "gpt-5", fastMode: true },
+      runtimeConfig: { heartbeat: { enabled: true } },
+      requestedConfigurationSnapshot: {
+        adapterType: "codex_local",
+        adapterConfig: { model: "gpt-5" },
+        runtimeConfig: { heartbeat: { intervalSec: 60 } },
+        desiredSkills: ["review"],
+      },
+    });
+  });
+
   it("does not emit duplicate approval side effects when approve is already resolved", async () => {
     mockApprovalService.getById.mockResolvedValue({
       id: "approval-1",

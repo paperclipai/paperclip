@@ -73,6 +73,7 @@ describe("projectAgentResponse", () => {
         promptTemplate: "Preserve this human-authored prompt exactly.",
       },
       runtimeConfig: {
+        heartbeat: { enabled: true },
         modelProfiles: {
           cheap: {
             enabled: true,
@@ -94,9 +95,10 @@ describe("projectAgentResponse", () => {
     expect(projected.adapterConfig).not.toHaveProperty("apiKey");
     expect(projected.adapterConfig).not.toHaveProperty("headers");
     expect(projected.adapterConfig).not.toHaveProperty("unknownPluginConfig");
-    expect(projected.runtimeConfig).not.toHaveProperty("heartbeat");
+    expect(projected.runtimeConfig.heartbeat).toEqual({ enabled: true });
+    expect(projected.runtimeConfig.heartbeat).not.toHaveProperty("runtimeToken");
     expect(projected.runtimeConfig).not.toHaveProperty("executionMetadata");
-    expect(projected).not.toHaveProperty("metadata");
+    expect(projected.metadata).toBeNull();
     expect(projected).not.toHaveProperty("internalExecutionMetadata");
     expect(projected.permissions).not.toHaveProperty("internalGrantMetadata");
   });

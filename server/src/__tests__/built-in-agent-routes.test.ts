@@ -55,6 +55,7 @@ function builtInState(overrides: Record<string, unknown> = {}) {
       defaultInstructions: "Write briefs.",
       defaultRole: "general",
       allowedAdapterTypes: ["codex_local"],
+      unknownDefinitionCanary: "definition-secret",
     },
     status: "ready",
     agentId,
@@ -66,8 +67,22 @@ function builtInState(overrides: Record<string, unknown> = {}) {
       status: "idle",
       adapterType: "codex_local",
       adapterConfig: { model: "gpt-5.4" },
+      unknownAgentCanary: "agent-secret",
     },
     pauseReason: null,
+    resources: [{
+      resourceKind: "instructions",
+      resourceKey: "briefs",
+      resourceId: "resource-1",
+      stockVersion: "v1",
+      stockHash: "safe-stock-hash",
+      currentHash: "safe-current-hash",
+      stockStatus: "stock_current",
+      updateAvailable: false,
+      resetAvailable: true,
+      unknownResourceCanary: "resource-secret",
+    }],
+    unknownStateCanary: "state-secret",
     ...overrides,
   };
 }
@@ -132,6 +147,21 @@ describe("built-in agent routes", () => {
     expect(mockBuiltInAgentService.list).toHaveBeenCalledWith(companyId);
     expect(res.body).toEqual([expect.objectContaining({ status: "ready", agentId })]);
     expect(res.body[0].agent.adapterConfig).toEqual({});
+    expect(JSON.stringify(res.body)).not.toContain("definition-secret");
+    expect(JSON.stringify(res.body)).not.toContain("agent-secret");
+    expect(JSON.stringify(res.body)).not.toContain("resource-secret");
+    expect(JSON.stringify(res.body)).not.toContain("state-secret");
+    expect(res.body[0].resources[0]).toEqual({
+      resourceKind: "instructions",
+      resourceKey: "briefs",
+      resourceId: "resource-1",
+      stockVersion: "v1",
+      stockHash: "safe-stock-hash",
+      currentHash: "safe-current-hash",
+      stockStatus: "stock_current",
+      updateAvailable: false,
+      resetAvailable: true,
+    });
   });
 
   it("denies list requests outside the actor company boundary", async () => {
@@ -359,8 +389,18 @@ describe("built-in agent routes", () => {
   it("returns pending hire approvals instead of provisioning immediately when company policy requires it", async () => {
     const approval = {
       id: "approval-1",
+      companyId,
       status: "pending",
       type: "hire_agent",
+      requestedByAgentId: "manager-agent",
+      requestedByUserId: null,
+      payload: { name: "Briefs Agent", unknownApprovalCanary: "approval-secret" },
+      decisionNote: null,
+      decidedByUserId: null,
+      decidedAt: null,
+      createdAt: new Date("2026-07-15T00:00:00.000Z"),
+      updatedAt: new Date("2026-07-15T00:00:00.000Z"),
+      unknownApprovalCanary: "approval-row-secret",
     };
     mockBuiltInAgentService.provision.mockResolvedValue({
       state: builtInState({
@@ -383,6 +423,8 @@ describe("built-in agent routes", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(202);
     expect(res.body.status).toBe("pending_approval");
     expect(res.body.approval).toMatchObject({ id: "approval-1", status: "pending", type: "hire_agent" });
+    expect(JSON.stringify(res.body.approval)).not.toContain("approval-secret");
+    expect(JSON.stringify(res.body.approval)).not.toContain("approval-row-secret");
     expect(mockBuiltInAgentService.ensure).not.toHaveBeenCalled();
     expect(mockBuiltInAgentService.provision).toHaveBeenCalledWith(
       companyId,

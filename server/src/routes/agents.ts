@@ -108,6 +108,11 @@ import {
   projectAgentResponse,
   projectAgentRuntimeConfig,
 } from "../serializers/agent-response.js";
+import { projectApprovalResponse } from "../serializers/approval-response.js";
+import {
+  mergeAgentAdapterConfigForUpdate,
+  mergeAgentRuntimeConfigForUpdate,
+} from "../serializers/agent-config-merge.js";
 import { listInvalidOrgChainDescendantIds } from "../services/agent-invokability.js";
 import {
   AGENT_PROFILE_CHANGE_CONSENT_FIELDS,
@@ -1660,52 +1665,6 @@ export function agentRoutes(
     };
   }
 
-  function projectHireApproval(approval: Record<string, unknown> | null) {
-    if (!approval) return null;
-    const payload = readObject(approval.payload) ?? {};
-    const requestedSnapshot = readObject(payload.requestedConfigurationSnapshot);
-    const projectedPayload: Record<string, unknown> = {};
-    for (const key of [
-      "name",
-      "role",
-      "title",
-      "icon",
-      "reportsTo",
-      "capabilities",
-      "adapterType",
-      "budgetMonthlyCents",
-      "desiredSkills",
-      "agentId",
-      "requestedByAgentId",
-    ] as const) {
-      if (payload[key] !== undefined) projectedPayload[key] = payload[key];
-    }
-    projectedPayload.adapterConfig = projectAgentAdapterConfig(payload.adapterConfig);
-    projectedPayload.runtimeConfig = projectAgentRuntimeConfig(payload.runtimeConfig);
-    if (requestedSnapshot) {
-      projectedPayload.requestedConfigurationSnapshot = {
-        adapterType: requestedSnapshot.adapterType,
-        adapterConfig: projectAgentAdapterConfig(requestedSnapshot.adapterConfig),
-        runtimeConfig: projectAgentRuntimeConfig(requestedSnapshot.runtimeConfig),
-        desiredSkills: requestedSnapshot.desiredSkills,
-      };
-    }
-    return {
-      id: approval.id,
-      companyId: approval.companyId,
-      type: approval.type,
-      requestedByAgentId: approval.requestedByAgentId,
-      requestedByUserId: approval.requestedByUserId,
-      status: approval.status,
-      payload: projectedPayload,
-      decisionNote: approval.decisionNote,
-      decidedByUserId: approval.decidedByUserId,
-      decidedAt: approval.decidedAt,
-      createdAt: approval.createdAt,
-      updatedAt: approval.updatedAt,
-    };
-  }
-
   function projectRevisionSnapshot(snapshot: unknown): Record<string, unknown> {
     if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) return {};
     const record = snapshot as Record<string, unknown>;
@@ -2578,7 +2537,9 @@ export function agentRoutes(
 
     res.status(201).json({
       agent: projectAgentResponse(agent as unknown as Record<string, unknown>),
-      approval: projectHireApproval(approval),
+      approval: approval
+        ? projectApprovalResponse(approval as unknown as Record<string, unknown>)
+        : null,
     });
   });
 
@@ -3044,8 +3005,12 @@ export function agentRoutes(
         await assertCanManageInstructionsPath(req, existing);
       }
       let rawEffectiveAdapterConfig = requestedAdapterConfig ?? existingAdapterConfig;
-      if (requestedAdapterConfig && !changingAdapterType && !replaceAdapterConfig) {
-        rawEffectiveAdapterConfig = { ...existingAdapterConfig, ...requestedAdapterConfig };
+      if (requestedAdapterConfig && !changingAdapterType) {
+        rawEffectiveAdapterConfig = mergeAgentAdapterConfigForUpdate(
+          existingAdapterConfig,
+          requestedAdapterConfig,
+          replaceAdapterConfig,
+        );
       }
       if (changingAdapterType) {
         // Preserve adapter-agnostic keys (env, cwd, etc.) from the existing config
@@ -3080,10 +3045,14 @@ export function agentRoutes(
     }
     if (requestedRuntimeConfig) {
       const baseAdapterConfig = asRecord(patchData.adapterConfig) ?? asRecord(existing.adapterConfig) ?? {};
+      const mergedRuntimeConfig = mergeAgentRuntimeConfigForUpdate(
+        existing.runtimeConfig,
+        requestedRuntimeConfig,
+      );
       patchData.runtimeConfig = await normalizeRuntimeConfigAdapterConfigsForPersistence(
         existing.companyId,
         requestedAdapterType,
-        requestedRuntimeConfig,
+        mergedRuntimeConfig,
         baseAdapterConfig,
       );
     }

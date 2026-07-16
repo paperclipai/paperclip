@@ -19,15 +19,8 @@ import {
   secretService,
 } from "../services/index.js";
 import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
-import { redactEventPayload } from "../redaction.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
-
-function redactApprovalPayload<T extends { payload: Record<string, unknown> }>(approval: T): T {
-  return {
-    ...approval,
-    payload: redactEventPayload(approval.payload) ?? {},
-  };
-}
+import { projectApprovalResponse } from "../serializers/approval-response.js";
 
 function isStatusOnlyCheapRecoveryContext(contextSnapshot: unknown) {
   if (!contextSnapshot || typeof contextSnapshot !== "object" || Array.isArray(contextSnapshot)) return false;
@@ -110,7 +103,7 @@ export function approvalRoutes(
     if (!(await assertApprovalAccessAllowed(req, res, companyId))) return;
     const status = req.query.status as string | undefined;
     const result = await svc.list(companyId, status);
-    res.json(result.map((approval) => redactApprovalPayload(approval)));
+    res.json(result.map((approval) => projectApprovalResponse(approval as unknown as Record<string, unknown>)));
   });
 
   router.get("/approvals/:id", async (req, res) => {
@@ -118,7 +111,7 @@ export function approvalRoutes(
     const approval = await getAccessibleResource(req, res, svc.getById(id), "Approval not found");
     if (!approval) return;
     if (!(await assertApprovalAccessAllowed(req, res, approval.companyId))) return;
-    res.json(redactApprovalPayload(approval));
+    res.json(projectApprovalResponse(approval as unknown as Record<string, unknown>));
   });
 
   router.post("/companies/:companyId/approvals", validate(createApprovalSchema), async (req, res) => {
@@ -173,7 +166,7 @@ export function approvalRoutes(
       details: { type: approval.type, issueIds: uniqueIssueIds },
     });
 
-    res.status(201).json(redactApprovalPayload(approval));
+    res.status(201).json(projectApprovalResponse(approval as unknown as Record<string, unknown>));
   });
 
   router.get("/approvals/:id/issues", async (req, res) => {
@@ -278,7 +271,7 @@ export function approvalRoutes(
       }
     }
 
-    res.json(redactApprovalPayload(approval));
+    res.json(projectApprovalResponse(approval as unknown as Record<string, unknown>));
   });
 
   router.post("/approvals/:id/reject", validate(resolveApprovalSchema), async (req, res) => {
@@ -303,7 +296,7 @@ export function approvalRoutes(
       });
     }
 
-    res.json(redactApprovalPayload(approval));
+    res.json(projectApprovalResponse(approval as unknown as Record<string, unknown>));
   });
 
   router.post(
@@ -329,7 +322,7 @@ export function approvalRoutes(
         details: { type: approval.type },
       });
 
-      res.json(redactApprovalPayload(approval));
+      res.json(projectApprovalResponse(approval as unknown as Record<string, unknown>));
     },
   );
 
@@ -365,7 +358,7 @@ export function approvalRoutes(
       entityId: approval.id,
       details: { type: approval.type },
     });
-    res.json(redactApprovalPayload(approval));
+    res.json(projectApprovalResponse(approval as unknown as Record<string, unknown>));
   });
 
   router.get("/approvals/:id/comments", async (req, res) => {

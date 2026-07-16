@@ -8,7 +8,8 @@ import { builtInAgentService } from "../services/built-in-agents.js";
 import { authorizationDeniedDetails } from "../services/authorization.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import type { BuiltInAgentState } from "../services/built-in-agents.js";
-import { projectAgentResponse } from "../serializers/agent-response.js";
+import { projectAgentPermissions, projectAgentResponse } from "../serializers/agent-response.js";
+import { projectApprovalResponse } from "../serializers/approval-response.js";
 
 const WEEKDAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
@@ -30,39 +31,119 @@ function formatScheduleLabel(trigger: { cronExpression: string; timezone: string
   return `Weekly · ${trigger.timezone}`;
 }
 
-function projectBuiltInAgentState(state: BuiltInAgentState) {
-  const definition = {
-    ...state.definition,
-    defaultInstructions: state.definition.defaultInstructions ? "[file-backed]" : "",
-    bundle: state.definition.bundle
-      ? {
-        stockVersion: state.definition.bundle.stockVersion,
-        instructions: {
-          entryFile: state.definition.bundle.instructions.entryFile,
-          files: Object.keys(state.definition.bundle.instructions.files),
-        },
-        skill: {
-          skillKey: state.definition.bundle.skill.skillKey,
-          displayName: state.definition.bundle.skill.displayName,
-          slug: state.definition.bundle.skill.slug,
-          canonicalKey: state.definition.bundle.skill.canonicalKey,
-          files: Object.keys(state.definition.bundle.skill.files),
-        },
-        routine: {
-          routineKey: state.definition.bundle.routine.routineKey,
-          title: state.definition.bundle.routine.title,
-          status: state.definition.bundle.routine.status,
-          triggerCount: state.definition.bundle.routine.triggers.length,
-          scheduleLabel: formatScheduleLabel(state.definition.bundle.routine.triggers[0]),
-        },
-      }
-      : undefined,
-  } as BuiltInAgentState["definition"];
-  if (!state.agent) return { ...state, definition };
+interface BuiltInAgentDefinitionResponse {
+  key: string;
+  displayName: string;
+  featureKeys: string[];
+  shortPurpose: string;
+  defaultInstructions: string;
+  defaultRole: string;
+  defaultTitle: string | null;
+  defaultIcon: string | null;
+  defaultPermissions: ReturnType<typeof projectAgentPermissions>;
+  defaultStatus: "idle" | "paused" | null;
+  defaultManager: "single_root_agent" | null;
+  allowedAdapterTypes: string[];
+  defaultBudgetMonthlyCents: number | null;
+  bundle?: {
+    stockVersion: string;
+    instructions: { entryFile: string; files: string[] };
+    skill: { skillKey: string; displayName: string; slug: string; canonicalKey: string; files: string[] };
+    routine: { routineKey: string; title: string; status: string; triggerCount: number; scheduleLabel: string };
+  };
+}
+
+function projectBuiltInDefinition(state: BuiltInAgentState): BuiltInAgentDefinitionResponse {
+  const source = state.definition;
   return {
-    ...state,
-    definition,
-    agent: projectAgentResponse(state.agent as unknown as Record<string, unknown>),
+    key: source.key,
+    displayName: source.displayName,
+    featureKeys: [...source.featureKeys],
+    shortPurpose: source.shortPurpose,
+    defaultInstructions: source.defaultInstructions ? "[file-backed]" : "",
+    defaultRole: source.defaultRole,
+    defaultTitle: source.defaultTitle ?? null,
+    defaultIcon: source.defaultIcon ?? null,
+    defaultPermissions: projectAgentPermissions(source.defaultPermissions),
+    defaultStatus: source.defaultStatus ?? null,
+    defaultManager: source.defaultManager ?? null,
+    allowedAdapterTypes: [...(source.allowedAdapterTypes ?? [])],
+    defaultBudgetMonthlyCents: source.defaultBudgetMonthlyCents ?? null,
+    ...(source.bundle
+      ? {
+          bundle: {
+            stockVersion: source.bundle.stockVersion,
+            instructions: {
+              entryFile: source.bundle.instructions.entryFile,
+              files: Object.keys(source.bundle.instructions.files),
+            },
+            skill: {
+              skillKey: source.bundle.skill.skillKey,
+              displayName: source.bundle.skill.displayName,
+              slug: source.bundle.skill.slug,
+              canonicalKey: source.bundle.skill.canonicalKey,
+              files: Object.keys(source.bundle.skill.files),
+            },
+            routine: {
+              routineKey: source.bundle.routine.routineKey,
+              title: source.bundle.routine.title,
+              status: source.bundle.routine.status,
+              triggerCount: source.bundle.routine.triggers.length,
+              scheduleLabel: formatScheduleLabel(source.bundle.routine.triggers[0]),
+            },
+          },
+        }
+      : {}),
+  };
+}
+
+function projectBuiltInResource(resource: BuiltInAgentState["resources"][number]) {
+  return {
+    resourceKind: resource.resourceKind,
+    resourceKey: resource.resourceKey,
+    resourceId: resource.resourceId,
+    stockVersion: resource.stockVersion,
+    stockHash: resource.stockHash,
+    currentHash: resource.currentHash,
+    stockStatus: resource.stockStatus,
+    updateAvailable: resource.updateAvailable,
+    resetAvailable: resource.resetAvailable,
+    ...(resource.changedFiles ? { changedFiles: [...resource.changedFiles] } : {}),
+    ...(typeof resource.scheduleEnabled === "boolean" ? { scheduleEnabled: resource.scheduleEnabled } : {}),
+    ...(resource.pendingUpdateInteractionId !== undefined
+      ? { pendingUpdateInteractionId: resource.pendingUpdateInteractionId }
+      : {}),
+    ...(resource.pendingUpdateIssueId !== undefined ? { pendingUpdateIssueId: resource.pendingUpdateIssueId } : {}),
+    ...(resource.pendingUpdateIssueIdentifier !== undefined
+      ? { pendingUpdateIssueIdentifier: resource.pendingUpdateIssueIdentifier }
+      : {}),
+  };
+}
+
+function projectBuiltInAgentState(state: BuiltInAgentState) {
+  const projectedAgent = state.agent
+    ? {
+        ...projectAgentResponse(state.agent as unknown as Record<string, unknown>),
+        // Built-in list/status historically did not expose configuration without
+        // the normal configuration-read gate. Keep that authorization behavior.
+        adapterConfig: {},
+        runtimeConfig: {},
+      }
+    : null;
+  return {
+    definition: projectBuiltInDefinition(state),
+    status: state.status,
+    agentId: state.agentId,
+    agent: projectedAgent,
+    pauseReason: state.pauseReason,
+    resources: state.resources.map(projectBuiltInResource),
+    ...(state.approval !== undefined
+      ? {
+          approval: state.approval
+            ? projectApprovalResponse(state.approval as unknown as Record<string, unknown>)
+            : null,
+        }
+      : {}),
   };
 }
 

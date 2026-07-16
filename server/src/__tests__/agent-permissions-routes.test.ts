@@ -480,6 +480,7 @@ describe.sequential("agent permission routes", () => {
     expect(res.body.adapterConfig).toEqual({
       provider: "openai-codex",
       promptTemplate: "Keep this human-authored prompt.",
+      command: "pnpm agent:run",
     });
     expect(res.body.runtimeConfig).toEqual({
       modelProfiles: {
@@ -537,7 +538,61 @@ describe.sequential("agent permission routes", () => {
     const projected = Array.isArray(res.body) ? res.body[0] : res.body;
     expect(projected.capabilities).toBe("Human-authored description remains exact.");
     expect(projected.adapterConfig.promptTemplate).toBe("Human-authored prompt remains exact.");
-    expect(projected).not.toHaveProperty("metadata");
+    expect(projected.metadata).toBeNull();
+  });
+
+  it("preserves hidden adapter bindings and unrelated runtime settings across a projected visible edit", async () => {
+    const existing = {
+      ...baseAgent,
+      adapterType: "codex_local",
+      adapterConfig: {
+        model: "gpt-4",
+        fastMode: false,
+        env: { OPENAI_API_KEY: { secretRef: "secret-1" } },
+        pluginRuntime: { credentialBindingId: "binding-1" },
+      },
+      runtimeConfig: {
+        heartbeat: { enabled: true, intervalSec: 300, leaseToken: "hidden" },
+        pluginRuntime: { privateSetting: "keep" },
+      },
+    };
+    mockAgentService.getById.mockResolvedValue(existing);
+    mockAgentService.update.mockImplementation(async (_id, patch) => ({ ...existing, ...patch }));
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}`)
+      .send({
+        adapterConfig: { model: "gpt-5", fastMode: true },
+        replaceAdapterConfig: true,
+        runtimeConfig: { heartbeat: { enabled: true, intervalSec: 60 } },
+      }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAgentService.update).toHaveBeenCalledWith(
+      agentId,
+      expect.objectContaining({
+        adapterConfig: expect.objectContaining({
+          model: "gpt-5",
+          fastMode: true,
+          env: { OPENAI_API_KEY: { secretRef: "secret-1" } },
+          pluginRuntime: { credentialBindingId: "binding-1" },
+        }),
+        runtimeConfig: {
+          heartbeat: { enabled: true, intervalSec: 60, leaseToken: "hidden" },
+          pluginRuntime: { privateSetting: "keep" },
+        },
+      }),
+      expect.any(Object),
+    );
+    expect(JSON.stringify(res.body)).not.toContain("secret-1");
+    expect(JSON.stringify(res.body)).not.toContain("binding-1");
   });
 
   it("redacts company agent list for authenticated company members without agent admin permission", async () => {
@@ -1003,7 +1058,7 @@ describe.sequential("agent permission routes", () => {
         },
       },
     });
-    expect(res.body).not.toHaveProperty("metadata");
+    expect(res.body.metadata).toBeNull();
   });
 
   it("rejects direct agent creation when new agents require board approval", async () => {

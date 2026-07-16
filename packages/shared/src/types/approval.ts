@@ -15,6 +15,11 @@ export interface Approval {
   updatedAt: Date;
 }
 
+/** Public approval DTO with a type-specific, positively projected payload. */
+export interface ApprovalResponse extends Omit<Approval, "payload"> {
+  payload: Record<string, unknown>;
+}
+
 export interface ApprovalComment {
   id: string;
   companyId: string;

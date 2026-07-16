@@ -23,6 +23,14 @@ export interface AgentPermissions extends Record<string, unknown> {
   authorizationPolicy?: TrustAuthorizationPolicy;
 }
 
+/** Explicit public response contract; persistence-only permission fields are omitted. */
+export interface AgentResponsePermissions extends AgentPermissions {
+  canCreateAgents: boolean;
+  canCreateSkills?: boolean;
+  trustPreset?: TrustPreset;
+  authorizationPolicy?: TrustAuthorizationPolicy;
+}
+
 export interface AgentModelProfileConfig {
   enabled?: boolean;
   label?: string;
@@ -105,6 +113,18 @@ export interface Agent {
   orgChainHealth?: AgentOrgChainHealth;
   createdAt: Date;
   updatedAt: Date;
+}
+
+/** Public agent DTO returned by API response projections. */
+export interface AgentResponse extends Agent {
+  /** Persistence metadata is deliberately withheld from API responses. */
+  metadata: null;
+  permissions: AgentResponsePermissions;
+}
+
+export interface AgentDetailResponse extends AgentResponse {
+  chainOfCommand: AgentChainOfCommandEntry[];
+  access: AgentAccessState;
 }
 
 export interface AgentDetail extends Agent {
