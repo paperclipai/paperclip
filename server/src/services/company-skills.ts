@@ -1214,6 +1214,26 @@ function isPaperclipBundledSkillKey(key: string) {
   return key.startsWith("paperclipai/paperclip/");
 }
 
+function paperclipBundledFolderCategory(key: string, metadata?: unknown) {
+  const keyParts = key.split("/");
+  if (keyParts[0] === "paperclipai" && keyParts[1] === "bundled" && keyParts[2]) {
+    return keyParts[2];
+  }
+  if (isPaperclipBundledSkillKey(key)) return "paperclip-core";
+  if (isPlainRecord(metadata) && asString(metadata.sourceKind) === "paperclip_bundled") {
+    return "paperclip-core";
+  }
+  return null;
+}
+
+function bundledFolderLabel(category: string) {
+  return category
+    .split(/[-_\s]+/)
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
+}
+
 function stripDerivedPaperclipBundledMetadata(key: string, metadata: unknown): unknown {
   if (metadata === null || metadata === undefined) return {};
   const comparable = stableJsonComparable(metadata);
@@ -2808,6 +2828,39 @@ export function companySkillService(db: Db) {
     return [];
   }
 
+  async function reconcilePaperclipSkillFolders(companyId: string) {
+    const shippedSkills = await db
+      .select({
+        id: companySkills.id,
+        key: companySkills.key,
+        folderId: companySkills.folderId,
+        metadata: companySkills.metadata,
+      })
+      .from(companySkills)
+      .where(eq(companySkills.companyId, companyId))
+      .then((rows) => rows.flatMap((skill) => {
+        const category = paperclipBundledFolderCategory(skill.key, skill.metadata);
+        return category ? [{ ...skill, category }] : [];
+      }));
+    const foldersByCategory = new Map<string, Awaited<ReturnType<typeof folderSvc.ensureBundledCategory>>>();
+    for (const skill of shippedSkills) {
+      let folder = foldersByCategory.get(skill.category);
+      if (!folder) {
+        folder = await folderSvc.ensureBundledCategory(companyId, bundledFolderLabel(skill.category));
+        foldersByCategory.set(skill.category, folder);
+      }
+      if (skill.folderId === folder.id) continue;
+      await db
+        .update(companySkills)
+        .set({ folderId: folder.id, updatedAt: new Date() })
+        .where(and(eq(companySkills.companyId, companyId), eq(companySkills.id, skill.id)));
+    }
+    await folderSvc.pruneEmptyBundledCategories(
+      companyId,
+      Array.from(foldersByCategory.keys(), bundledFolderLabel),
+    );
+  }
+
   async function reconcileLocalPathSkillSources(companyId: string) {
     const rows = await db
       .select({
@@ -2899,6 +2952,7 @@ export function companySkillService(db: Db) {
         throw notFound("Company not found");
       }
       await ensureBundledSkills(companyId);
+      await reconcilePaperclipSkillFolders(companyId);
       await reconcileLocalPathSkillSources(companyId);
     })();
 
@@ -5093,6 +5147,10 @@ export function companySkillService(db: Db) {
     }
     const markdown = await fs.readFile(path.join(originSnapshotLocator, catalogSkill.entrypoint), "utf8");
     const metadata = buildCatalogSkillMetadata(catalogSkill, existingByKey, originSnapshotLocator);
+    const bundledCategory = paperclipBundledFolderCategory(catalogSkill.key, metadata);
+    const bundledFolder = bundledCategory
+      ? await folderSvc.ensureBundledCategory(companyId, bundledFolderLabel(bundledCategory))
+      : null;
     const parsed = parseFrontmatterMarkdown(markdown);
     const storeMetadata = readSkillStoreMetadata(parsed.frontmatter, {
       ...metadata,
@@ -5100,6 +5158,7 @@ export function companySkillService(db: Db) {
     });
     const values = {
       companyId,
+      folderId: bundledFolder?.id ?? existingByKey?.folderId ?? null,
       key: catalogSkill.key,
       slug,
       name: catalogSkill.name,
@@ -5489,8 +5548,9 @@ export function companySkillService(db: Db) {
       };
       const parsed = parseFrontmatterMarkdown(skill.markdown);
       const storeMetadata = readSkillStoreMetadata(parsed.frontmatter, metadata);
-      const bundledFolder = isPaperclipBundledSkillKey(skill.key) || incomingKind === "paperclip_bundled"
-        ? await folderSvc.ensureBundledCategory(companyId, skill.key.split("/")[2] ?? "other")
+      const bundledCategory = paperclipBundledFolderCategory(skill.key, incomingMeta);
+      const bundledFolder = bundledCategory
+        ? await folderSvc.ensureBundledCategory(companyId, bundledFolderLabel(bundledCategory))
         : null;
       const projectId = asString(incomingMeta.projectId);
       const projectName = asString(incomingMeta.projectName);

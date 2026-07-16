@@ -511,6 +511,28 @@ export function folderService(db: Db) {
     throw conflict("Could not create bundled skill folder");
   }
 
+  async function pruneEmptyBundledCategories(companyId: string, retainedCategories: string[]) {
+    const root = await findSystemFolder(companyId, "bundled");
+    if (!root) return;
+    const rows = await getRows(companyId, "skill");
+    const retainedSystemKeys = new Set(
+      retainedCategories.map((category) => `bundled:${normalizeFolderSlug(category)}`),
+    );
+    const usedFolderIds = new Set(
+      await db
+        .select({ folderId: companySkills.folderId })
+        .from(companySkills)
+        .where(eq(companySkills.companyId, companyId))
+        .then((skills) => skills.flatMap((skill) => skill.folderId ? [skill.folderId] : [])),
+    );
+    const parentIds = new Set(rows.flatMap((row) => row.parentId ? [row.parentId] : []));
+    for (const row of rows) {
+      if (row.parentId !== root.id || !row.systemKey?.startsWith("bundled:")) continue;
+      if (retainedSystemKeys.has(row.systemKey) || usedFolderIds.has(row.id) || parentIds.has(row.id)) continue;
+      await db.delete(folders).where(and(eq(folders.companyId, companyId), eq(folders.id, row.id)));
+    }
+  }
+
   return {
     list,
     create,
@@ -524,5 +546,6 @@ export function folderService(db: Db) {
     ensureMyFolder,
     ensureProjectFolder,
     ensureBundledCategory,
+    pruneEmptyBundledCategories,
   };
 }

@@ -1,4 +1,13 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type PointerEvent,
+  type ReactNode,
+} from "react";
 import {
   Boxes,
   Check,
@@ -65,6 +74,37 @@ export interface TagFacet {
   count: number;
 }
 
+const DEFAULT_FOLDER_RAIL_WIDTH = 256;
+const MIN_FOLDER_RAIL_WIDTH = 224;
+const MAX_FOLDER_RAIL_WIDTH = 400;
+const FOLDER_RAIL_WIDTH_STEP = 16;
+const FOLDER_RAIL_STORAGE_KEY = "paperclip.skills.folderRail.width";
+
+function clampFolderRailWidth(width: number) {
+  return Math.min(MAX_FOLDER_RAIL_WIDTH, Math.max(MIN_FOLDER_RAIL_WIDTH, width));
+}
+
+function readStoredFolderRailWidth() {
+  if (typeof window === "undefined") return DEFAULT_FOLDER_RAIL_WIDTH;
+  try {
+    const stored = window.localStorage.getItem(FOLDER_RAIL_STORAGE_KEY);
+    if (!stored) return DEFAULT_FOLDER_RAIL_WIDTH;
+    const parsed = Number.parseInt(stored, 10);
+    return Number.isFinite(parsed) ? clampFolderRailWidth(parsed) : DEFAULT_FOLDER_RAIL_WIDTH;
+  } catch {
+    return DEFAULT_FOLDER_RAIL_WIDTH;
+  }
+}
+
+function writeStoredFolderRailWidth(width: number) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(FOLDER_RAIL_STORAGE_KEY, String(clampFolderRailWidth(width)));
+  } catch {
+    // Resizing still works when browser storage is unavailable.
+  }
+}
+
 /** Whether a folder's own actions (rename/recolor/subfolder/delete) are offered. */
 function folderIsEditable(folder: FolderListItem): boolean {
   return !folder.systemKey && !isBundledFolder(folder) && !isProjectsFolder(folder);
@@ -111,6 +151,10 @@ export function SkillFolderRail({
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
+  const [width, setWidth] = useState(readStoredFolderRailWidth);
+  const [isResizing, setIsResizing] = useState(false);
+  const widthRef = useRef(width);
+  const dragState = useRef<{ startX: number; startWidth: number } | null>(null);
 
   // Auto-expand the ancestors of the current selection so it's always visible.
   useEffect(() => {
@@ -153,11 +197,57 @@ export function SkillFolderRail({
   const allCount = result?.allCount ?? 0;
   const unfiledCount = result?.unfiledCount ?? 0;
 
+  const commitWidth = useCallback((nextWidth: number) => {
+    const clamped = clampFolderRailWidth(nextWidth);
+    widthRef.current = clamped;
+    setWidth(clamped);
+    writeStoredFolderRailWidth(clamped);
+  }, []);
+
+  const handlePointerDown = useCallback((event: PointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    dragState.current = { startX: event.clientX, startWidth: widthRef.current };
+    setIsResizing(true);
+  }, []);
+
+  const handlePointerMove = useCallback((event: PointerEvent<HTMLDivElement>) => {
+    if (!dragState.current) return;
+    const nextWidth = dragState.current.startWidth + event.clientX - dragState.current.startX;
+    const clamped = clampFolderRailWidth(nextWidth);
+    widthRef.current = clamped;
+    setWidth(clamped);
+  }, []);
+
+  const endResize = useCallback(() => {
+    if (!dragState.current) return;
+    dragState.current = null;
+    setIsResizing(false);
+    writeStoredFolderRailWidth(widthRef.current);
+  }, []);
+
+  const handleKeyDown = useCallback((event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      commitWidth(width - FOLDER_RAIL_WIDTH_STEP);
+    } else if (event.key === "ArrowRight") {
+      event.preventDefault();
+      commitWidth(width + FOLDER_RAIL_WIDTH_STEP);
+    } else if (event.key === "Home") {
+      event.preventDefault();
+      commitWidth(MIN_FOLDER_RAIL_WIDTH);
+    } else if (event.key === "End") {
+      event.preventDefault();
+      commitWidth(MAX_FOLDER_RAIL_WIDTH);
+    }
+  }, [commitWidth, width]);
+
   return (
-    <nav
-      aria-label="Skill folders"
-      className="hidden w-(--sz-folder-rail) shrink-0 flex-col overflow-y-auto border-r border-border pr-3 md:flex"
-    >
+    <div className="relative hidden h-full shrink-0 md:flex" style={{ width: `${width}px` }}>
+      <nav
+        aria-label="Skill folders"
+        className="flex min-w-0 flex-1 flex-col overflow-y-auto border-r border-border pr-3"
+      >
       <div className="mb-2 flex items-center justify-between gap-2 pt-0.5">
         <div className="text-(length:--text-micro) font-medium uppercase tracking-wide text-muted-foreground">
           Folders
@@ -345,7 +435,29 @@ export function SkillFolderRail({
           </div>
         </div>
       ) : null}
-    </nav>
+      </nav>
+      <div
+        role="separator"
+        aria-label="Resize skill folders"
+        aria-orientation="vertical"
+        aria-valuemin={MIN_FOLDER_RAIL_WIDTH}
+        aria-valuemax={MAX_FOLDER_RAIL_WIDTH}
+        aria-valuenow={width}
+        tabIndex={0}
+        className={cn(
+          "absolute inset-y-0 right-0 z-20 w-3 cursor-col-resize touch-none outline-none",
+          "before:absolute before:inset-y-0 before:left-1/2 before:w-px before:-translate-x-1/2 before:bg-transparent before:transition-colors",
+          "hover:before:bg-border focus-visible:before:bg-ring",
+          isResizing && "before:bg-ring",
+        )}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={endResize}
+        onPointerCancel={endResize}
+        onLostPointerCapture={endResize}
+        onKeyDown={handleKeyDown}
+      />
+    </div>
   );
 }
 
@@ -388,7 +500,7 @@ function VirtualRow({
     <button
       type="button"
       className={cn(
-        "grid w-full grid-cols-(--gtc-folder-row) items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent/40",
+        "grid w-full grid-cols-(--gtc-folder-row-actions) items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent/40",
         active ? "bg-accent/60 text-foreground" : muted ? "text-muted-foreground/70" : "text-muted-foreground",
       )}
       aria-current={active ? "page" : undefined}
@@ -397,7 +509,8 @@ function VirtualRow({
     >
       <span className="flex h-4 w-4 items-center justify-center">{icon}</span>
       <span className="truncate">{label}</span>
-      <span className="text-xs text-muted-foreground">{count}</span>
+      <span className="text-right text-xs tabular-nums text-muted-foreground">{count}</span>
+      <span className="h-6 w-6" aria-hidden="true" />
     </button>
   );
 }
@@ -451,7 +564,7 @@ function TreeBranch({
     <div>
       <div
         className={cn(
-          "group flex items-center gap-1 rounded-md pr-1 text-sm transition-colors hover:bg-accent/40",
+          "group grid grid-cols-(--gtc-folder-row-actions) items-center gap-2 rounded-md pr-2 text-sm transition-colors hover:bg-accent/40",
           active ? "bg-accent/60 text-foreground" : "text-muted-foreground",
         )}
         style={{ paddingLeft: `${depth * 0.75}rem` }}
@@ -469,7 +582,7 @@ function TreeBranch({
         </button>
         <button
           type="button"
-          className="flex min-w-0 flex-1 items-center gap-2 py-1 text-left"
+          className="flex min-w-0 items-center gap-2 py-1 text-left"
           aria-current={active ? "page" : undefined}
           onClick={() => onSelect(folder.id)}
           onDoubleClick={() => editable && onStartRename(folder)}
@@ -496,7 +609,7 @@ function TreeBranch({
             <span className="truncate">{label}</span>
           )}
         </button>
-        <span className="text-xs text-muted-foreground">{folder.itemCount}</span>
+        <span className="text-right text-xs tabular-nums text-muted-foreground">{folder.itemCount}</span>
         {editable || canNest ? (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>

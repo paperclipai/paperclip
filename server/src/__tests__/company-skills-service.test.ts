@@ -313,6 +313,13 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     const bundledSkill = initialList.find((skill) => skill.key.startsWith("paperclipai/paperclip/"));
     expect(bundledSkill).toBeDefined();
     if (!bundledSkill) throw new Error("Expected bundled Paperclip skills fixture");
+    const bundledFolder = bundledSkill.folderId
+      ? await db.select().from(folders).where(eq(folders.id, bundledSkill.folderId)).then((rows) => rows[0])
+      : null;
+    expect(bundledFolder).toMatchObject({
+      name: "Paperclip Core",
+      systemKey: "bundled:paperclip-core",
+    });
 
     const preservedUpdatedAt = new Date("2026-01-01T00:00:00.000Z");
     await db
