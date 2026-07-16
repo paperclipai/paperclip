@@ -9,6 +9,7 @@ import {
   issues,
 } from "@paperclipai/db";
 import {
+  COMPANY_SEARCH_EXTRACT_DEFAULT_MATCHES_PER_ISSUE,
   COMPANY_SEARCH_EXTRACT_MAX_MATCHES_PER_ISSUE,
   companySearchExtractQuerySchema,
 } from "@paperclipai/shared";
@@ -36,15 +37,18 @@ describe("extract-search query validation", () => {
       status: "in_progress,in_review",
       limit: "200",
       offset: "5000",
+      matchesPerIssue: "200",
       updatedWithin: "30d",
     });
 
     expect(parsed.kind).toBe("url");
     expect(parsed.scope).toBe("comments");
     expect(parsed.status).toEqual(["in_progress", "in_review"]);
+    expect(parsed.matchesPerIssue).toBe(COMPANY_SEARCH_EXTRACT_MAX_MATCHES_PER_ISSUE);
     expect(() => companySearchExtractQuerySchema.parse({ contains: ".*", kind: "regex" })).toThrow();
     expect(() => companySearchExtractQuerySchema.parse({ contains: "x" })).toThrow();
     expect(() => companySearchExtractQuerySchema.parse({ contains: "needle", limit: "201" })).toThrow();
+    expect(() => companySearchExtractQuerySchema.parse({ contains: "needle", matchesPerIssue: "201" })).toThrow();
     expect(() => companySearchExtractQuerySchema.parse({
       contains: "needle",
       updatedWithin: "30d",
@@ -214,10 +218,10 @@ describeEmbeddedPostgres("companySearchExtractService", () => {
     expect(result.results.map((row) => row.issueId)).toEqual([recentId]);
   });
 
-  it("caps distinct matches per issue and marks truncation explicitly", async () => {
+  it("uses the default distinct-match cap and marks truncation explicitly", async () => {
     const companyId = await createCompany();
     const urls = Array.from(
-      { length: COMPANY_SEARCH_EXTRACT_MAX_MATCHES_PER_ISSUE + 1 },
+      { length: COMPANY_SEARCH_EXTRACT_DEFAULT_MATCHES_PER_ISSUE + 1 },
       (_, index) => `https://github.com/paperclipai/paperclip/pull/${index + 1}`,
     );
     await createIssue(companyId, { description: urls.join(" ") });
@@ -227,9 +231,30 @@ describeEmbeddedPostgres("companySearchExtractService", () => {
       kind: "url",
     }));
 
-    expect(result.results[0]?.matches).toHaveLength(COMPANY_SEARCH_EXTRACT_MAX_MATCHES_PER_ISSUE);
+    expect(result.matchesPerIssue).toBe(COMPANY_SEARCH_EXTRACT_DEFAULT_MATCHES_PER_ISSUE);
+    expect(result.results[0]?.matches).toHaveLength(COMPANY_SEARCH_EXTRACT_DEFAULT_MATCHES_PER_ISSUE);
     expect(result.results[0]?.matchesTruncated).toBe(true);
     expect(result.truncated).toBe(true);
+  });
+
+  it("supports a bounded per-issue match cap for complete machine extraction", async () => {
+    const companyId = await createCompany();
+    const urls = Array.from(
+      { length: COMPANY_SEARCH_EXTRACT_DEFAULT_MATCHES_PER_ISSUE + 1 },
+      (_, index) => `https://github.com/paperclipai/paperclip/pull/${index + 1}`,
+    );
+    await createIssue(companyId, { description: urls.join(" ") });
+
+    const result = await svc.extract(companyId, companySearchExtractQuerySchema.parse({
+      contains: "github.com/paperclipai/paperclip/pull",
+      kind: "url",
+      matchesPerIssue: COMPANY_SEARCH_EXTRACT_MAX_MATCHES_PER_ISSUE,
+    }));
+
+    expect(result.matchesPerIssue).toBe(COMPANY_SEARCH_EXTRACT_MAX_MATCHES_PER_ISSUE);
+    expect(result.results[0]?.matches).toHaveLength(urls.length);
+    expect(result.results[0]?.matchesTruncated).toBe(false);
+    expect(result.truncated).toBe(false);
   });
 
   it("does not return matching issues from another company", async () => {
