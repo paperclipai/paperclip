@@ -111,6 +111,7 @@ import {
   companySkillTestRunTemplateUpdateSchema,
   evaluateSkillPolicySchema,
   replaceSkillPolicySchema,
+  updateInboxAgentPolicySchema,
   // Issue tree
   createIssueTreeHoldSchema,
   previewIssueTreeControlSchema,
@@ -2066,8 +2067,11 @@ registry.registerPath({
   path: "/api/issues/{id}/inbox-archive",
   tags: ["issues"],
   summary: "Archive issue from inbox",
-  request: { params: z.object({ id: z.string() }) },
-  responses: { 200: r.ok(), 401: r.unauthorized },
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(z.object({ userId: z.string().min(1).optional() })),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
 });
 
 registry.registerPath({
@@ -2075,8 +2079,11 @@ registry.registerPath({
   path: "/api/issues/{id}/inbox-archive",
   tags: ["issues"],
   summary: "Un-archive issue from inbox",
-  request: { params: z.object({ id: z.string() }) },
-  responses: { 200: r.ok(), 401: r.unauthorized },
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(z.object({ userId: z.string().min(1).optional() })),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
 });
 
 registry.registerPath({
@@ -4044,6 +4051,48 @@ registry.registerPath({
     body: jsonBody(evaluateSkillPolicySchema),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/users/me/inbox-agent-policy",
+  tags: ["companies"],
+  summary: "Get the current user's inbox agent policy",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "put",
+  path: "/api/companies/{companyId}/users/me/inbox-agent-policy",
+  tags: ["companies"],
+  summary: "Update the current user's inbox agent policy",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(updateInboxAgentPolicySchema),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 422: r.unprocessable },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/users/{userId}/inbox-agent-policy",
+  tags: ["companies"],
+  summary: "Get a company user's inbox agent policy",
+  request: { params: z.object({ companyId: z.string(), userId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "put",
+  path: "/api/companies/{companyId}/users/{userId}/inbox-agent-policy",
+  tags: ["companies"],
+  summary: "Update a company user's inbox agent policy",
+  request: {
+    params: z.object({ companyId: z.string(), userId: z.string() }),
+    body: jsonBody(updateInboxAgentPolicySchema),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 422: r.unprocessable },
 });
 
 // ─── Execution workspaces ─────────────────────────────────────────────────────

@@ -106,6 +106,7 @@ import {
   issueApprovalService,
   issueRecoveryActionService,
   issueThreadInteractionService,
+  inboxAgentPolicyService,
   ISSUE_LIST_DEFAULT_LIMIT,
   ISSUE_LIST_MAX_LIMIT,
   issueReferenceService,
@@ -196,6 +197,9 @@ const updateIssueRouteSchema = updateIssueSchema.extend({
 const refreshExternalObjectsSchema = z.object({
   objectIds: z.array(z.string().uuid()).max(50).optional(),
 }).strict();
+const inboxArchiveBodySchema = z.object({
+  userId: z.string().trim().min(1).optional(),
+}).strict().default({});
 const externalObjectSummariesSchema = z.object({
   issueIds: z.array(z.string().uuid()).max(1000),
 }).strict();
@@ -2591,6 +2595,7 @@ export function issueRoutes(
   const goalsSvc = goalService(db);
   const issueApprovalsSvc = issueApprovalService(db);
   const recoveryActionsSvc = issueRecoveryActionService(db);
+  const inboxPoliciesSvc = inboxAgentPolicyService(db);
   const executionWorkspacesSvc = executionWorkspaceServiceDirect(db);
   const workProductsSvc = workProductService(db);
   const documentsSvc = documentService(db);
@@ -6726,20 +6731,66 @@ export function issueRoutes(
     res.json({ id: issue.id, removed });
   });
 
-  router.post("/issues/:id/inbox-archive", async (req, res) => {
+  async function resolveInboxArchiveTarget(
+    req: Request,
+    issue: { id: string; companyId: string },
+  ) {
+    if (req.actor.type === "board") {
+      if (!req.actor.userId) throw forbidden("Board user context required", { code: "inbox_target_user_unresolved" });
+      const policy = await inboxPoliciesSvc.get(issue.companyId, req.actor.userId);
+      return {
+        userId: req.actor.userId,
+        targetResolvedFrom: "responsible_user" as const,
+        policyMode: policy.mode,
+      };
+    }
+    if (req.actor.type !== "agent") throw unauthorized("Authentication required");
+
+    const explicitUserId = typeof req.body?.userId === "string" ? req.body.userId.trim() || null : null;
+    const responsibleUserId = req.actor.onBehalfOfUserId?.trim() || null;
+    const userId = explicitUserId ?? responsibleUserId;
+    if (!userId) {
+      throw forbidden("Inbox target user could not be resolved", { code: "inbox_target_user_unresolved" });
+    }
+
+    const decision = await access.decide({
+      actor: req.actor,
+      action: "inbox:manage",
+      resource: { type: "issue", companyId: issue.companyId, issueId: issue.id },
+      scope: { userId },
+    });
+    if (!decision.allowed) {
+      const code = decision.reason === "inbox_management_disabled"
+        ? "inbox_management_disabled"
+        : decision.reason === "inbox_agent_not_allowed" || decision.reason === "deny_low_trust_boundary"
+          ? "inbox_agent_not_allowed"
+          : decision.reason === "inbox_target_user_unresolved"
+            ? "inbox_target_user_unresolved"
+            : userId !== responsibleUserId
+              ? "inbox_cross_user_grant_required"
+              : "inbox_agent_not_allowed";
+      throw forbidden(decision.explanation, { code, reason: decision.reason });
+    }
+
+    const policy = await inboxPoliciesSvc.get(issue.companyId, userId);
+    return {
+      userId,
+      targetResolvedFrom: explicitUserId ? "explicit" as const : "responsible_user" as const,
+      policyMode: policy.mode,
+    };
+  }
+
+  router.post("/issues/:id/inbox-archive", validate(inboxArchiveBodySchema), async (req, res) => {
     const id = req.params.id as string;
     const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
     if (!issue) return;
-    if (req.actor.type !== "board") {
-      res.status(403).json({ error: "Board authentication required" });
-      return;
-    }
-    if (!req.actor.userId) {
-      res.status(403).json({ error: "Board user context required" });
-      return;
-    }
-    const archiveState = await svc.archiveInbox(issue.companyId, issue.id, req.actor.userId, new Date());
+    const target = await resolveInboxArchiveTarget(req, issue);
     const actor = getActorInfo(req);
+    const archiveState = await svc.archiveInbox(issue.companyId, issue.id, target.userId, new Date(), {
+      archivedByActorType: req.actor.type === "agent" ? "agent" : "user",
+      archivedByAgentId: actor.agentId,
+      archivedByRunId: actor.runId,
+    });
     await logActivity(db, {
       companyId: issue.companyId,
       actorType: actor.actorType,
@@ -6749,24 +6800,22 @@ export function issueRoutes(
       action: "issue.inbox_archived",
       entityType: "issue",
       entityId: issue.id,
-      details: { userId: req.actor.userId, archivedAt: archiveState.archivedAt },
+      details: {
+        userId: target.userId,
+        archivedAt: archiveState.archivedAt,
+        targetResolvedFrom: target.targetResolvedFrom,
+        policyMode: target.policyMode,
+      },
     });
     res.json(archiveState);
   });
 
-  router.delete("/issues/:id/inbox-archive", async (req, res) => {
+  router.delete("/issues/:id/inbox-archive", validate(inboxArchiveBodySchema), async (req, res) => {
     const id = req.params.id as string;
     const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
     if (!issue) return;
-    if (req.actor.type !== "board") {
-      res.status(403).json({ error: "Board authentication required" });
-      return;
-    }
-    if (!req.actor.userId) {
-      res.status(403).json({ error: "Board user context required" });
-      return;
-    }
-    const removed = await svc.unarchiveInbox(issue.companyId, issue.id, req.actor.userId);
+    const target = await resolveInboxArchiveTarget(req, issue);
+    const removed = await svc.unarchiveInbox(issue.companyId, issue.id, target.userId);
     const actor = getActorInfo(req);
     await logActivity(db, {
       companyId: issue.companyId,
@@ -6777,9 +6826,13 @@ export function issueRoutes(
       action: "issue.inbox_unarchived",
       entityType: "issue",
       entityId: issue.id,
-      details: { userId: req.actor.userId },
+      details: {
+        userId: target.userId,
+        targetResolvedFrom: target.targetResolvedFrom,
+        policyMode: target.policyMode,
+      },
     });
-    res.json(removed ?? { ok: true });
+    res.json(removed ?? { ok: true, userId: target.userId });
   });
 
   router.get("/issues/:id/approvals", async (req, res) => {

@@ -1270,6 +1270,16 @@ export {
   type UpdateResourceMembership,
 } from "./validators/resource-memberships.js";
 export {
+  inboxAgentPolicyModeSchema,
+  updateInboxAgentPolicySchema,
+  type UpdateInboxAgentPolicy,
+} from "./validators/inbox-agent-policy.js";
+export {
+  INBOX_AGENT_POLICY_MODES,
+  type InboxAgentPolicyMode,
+  type InboxAgentPolicy,
+} from "./types/inbox-agent-policy.js";
+export {
   RESOURCE_MEMBERSHIP_STATES,
   type ResourceMembershipResourceType,
   type ResourceMembershipState,
