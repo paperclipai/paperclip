@@ -5,10 +5,12 @@ import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
+  agents,
   companies,
   createDb,
   decisionTrainingExamples,
   executionWorkspaces,
+  heartbeatRuns,
   issueComments,
   issues,
   issueThreadInteractions,
@@ -48,9 +50,11 @@ describeEmbeddedPostgres("decision training", () => {
     await db.delete(issueThreadInteractions);
     await db.delete(issueComments);
     await db.delete(executionWorkspaces);
+    await db.delete(heartbeatRuns);
     await db.delete(issues);
     await db.delete(projectWorkspaces);
     await db.delete(projects);
+    await db.delete(agents);
     await db.delete(companies);
   });
 
@@ -114,6 +118,56 @@ describeEmbeddedPostgres("decision training", () => {
     });
     expect(captured.snapshot.comments.map((comment) => comment.id)).toEqual([seeded.beforeId, seeded.atCutoffId]);
     expect(JSON.stringify(captured.snapshot)).not.toContain("Leaked later context");
+  });
+
+  it("excludes runs updated after the decision cutoff", async () => {
+    const seeded = await seedResolvedInteraction();
+    const agentId = randomUUID();
+    const includedRunId = randomUUID();
+    const excludedRunId = randomUUID();
+    await db.insert(agents).values({
+      id: agentId,
+      companyId: seeded.companyId,
+      name: "Decision agent",
+      role: "engineer",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values([
+      {
+        id: includedRunId,
+        companyId: seeded.companyId,
+        agentId,
+        status: "succeeded",
+        startedAt: new Date("2026-07-16T11:00:00.000Z"),
+        finishedAt: new Date("2026-07-16T11:30:00.000Z"),
+        contextSnapshot: { issueId: seeded.issueId, evidence: "known before cutoff" },
+        createdAt: new Date("2026-07-16T11:00:00.000Z"),
+        updatedAt: new Date("2026-07-16T11:30:00.000Z"),
+      },
+      {
+        id: excludedRunId,
+        companyId: seeded.companyId,
+        agentId,
+        status: "running",
+        startedAt: new Date("2026-07-16T11:45:00.000Z"),
+        contextSnapshot: { issueId: seeded.issueId, evidence: "written after cutoff" },
+        createdAt: new Date("2026-07-16T11:45:00.000Z"),
+        updatedAt: new Date("2026-07-16T12:30:00.000Z"),
+      },
+    ]);
+
+    const captured = await captureDecisionSnapshot(db, {
+      companyId: seeded.companyId,
+      sourceKind: "interaction",
+      sourceId: seeded.interactionId,
+      issueId: seeded.issueId,
+    }, new Date("2026-07-16T13:00:00.000Z"));
+
+    expect(captured.snapshot.runs.map((run) => run.id)).toEqual([includedRunId]);
+    expect(JSON.stringify(captured.snapshot)).not.toContain("written after cutoff");
   });
 
   it("labels workspace-only commit evidence accurately", async () => {
