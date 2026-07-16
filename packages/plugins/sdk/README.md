@@ -197,6 +197,50 @@ ctx.jobs.register("heartbeat", async (job) => {
 });
 ```
 
+## Managed routines
+
+Plugins that ship recurring company work can declare routines in `manifest.routines` and reconcile them through the host. The host creates ordinary Paperclip routines, so operators can inspect, pause, edit, and run them from the standard routines UI.
+
+1. Add `routines.managed` to `manifest.capabilities`.
+2. Declare each routine with a stable `routineKey`, `title`, and any optional assignee/project references, variables, triggers, or issue defaults.
+3. Call `ctx.routines.managed.reconcile()` during plugin setup or configuration to create the routine when it is missing.
+
+```ts
+const manifest = {
+  capabilities: ["routines.managed"],
+  routines: [
+    {
+      routineKey: "nightly-lint",
+      title: "Run nightly lint",
+      description: "Creates a nightly lint task for the plugin managed agent.",
+      assigneeRef: { resourceKind: "agent", resourceKey: "maintainer" },
+      projectRef: { resourceKind: "project", resourceKey: "workspace" },
+      triggers: [
+        {
+          kind: "schedule",
+          cronExpression: "0 2 * * *",
+          timezone: "UTC",
+        },
+      ],
+    },
+  ],
+};
+
+const resolution = await ctx.routines.managed.reconcile("nightly-lint", companyId);
+```
+
+Managed routine methods:
+
+| Method | Behavior |
+|--------|----------|
+| `get(routineKey, companyId)` | Resolve the routine currently bound to the manifest declaration. |
+| `reconcile(routineKey, companyId, overrides?)` | Create a missing routine and its default triggers; preserve an existing routine's operator edits. |
+| `reset(routineKey, companyId, overrides?)` | Reapply manifest defaults to an existing routine. |
+| `update(routineKey, companyId, { status })` | Change the routine status. |
+| `run(routineKey, companyId, overrides?)` | Start one run, optionally overriding the assignee or project. |
+
+`assigneeRef` and `projectRef` point to other manifest-managed resources by stable key. Reconciliation returns `missing_refs` until those resources exist, unless the caller supplies `assigneeAgentId` or `projectId` overrides. Default triggers are created only when the routine has no triggers, so reconciliation does not overwrite operator scheduling changes. Use `reset()` only for an explicit return to manifest defaults.
+
 ## UI slots and launchers
 
 Slots are mount points for plugin React components. Launchers are host-rendered entry points (buttons, menu items) that open plugin UI. Declare slots in `manifest.ui.slots` with `type`, `id`, `displayName`, `exportName`; for context-sensitive slots add `entityTypes`. Declare launchers in `manifest.ui.launchers` (or legacy `manifest.launchers`).
