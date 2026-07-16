@@ -4,13 +4,16 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:net";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  agentWakeupRequests,
   agents,
   authUsers,
   companies,
   createDb,
+  heartbeatRuns,
+  instanceSettings,
   issueComments,
   issues,
   projects,
@@ -22,6 +25,7 @@ import {
   copySeededSecretsKey,
   pauseSeededScheduledRoutines,
   quarantineSeededWorktreeExecutionState,
+  resetSeededWorktreeRunExecutionActivation,
   readSourceAttachmentBody,
   rebindWorkspaceCwd,
   resolveSourceConfigPath,
@@ -359,6 +363,11 @@ describe("worktree helpers", () => {
     const todoIssueId = randomUUID();
     const reviewIssueId = randomUUID();
     const userIssueId = randomUUID();
+    const wakeupId = randomUUID();
+    const completedWakeupId = randomUUID();
+    const queuedRunId = randomUUID();
+    const runningRunId = randomUUID();
+    const succeededRunId = randomUUID();
 
     try {
       await db.insert(companies).values({
@@ -406,6 +415,11 @@ describe("worktree helpers", () => {
           identifier: "WTQ-1",
           executionAgentNameKey: "codexcoder",
           executionLockedAt: new Date("2026-04-18T00:00:00.000Z"),
+          monitorNextCheckAt: new Date("2026-04-18T00:01:00.000Z"),
+          monitorWakeRequestedAt: new Date("2026-04-18T00:00:30.000Z"),
+          monitorLastTriggeredAt: new Date("2026-04-18T00:00:00.000Z"),
+          monitorAttemptCount: 2,
+          monitorNotes: "copied monitor state",
         },
         {
           id: todoIssueId,
@@ -438,8 +452,53 @@ describe("worktree helpers", () => {
           identifier: "WTQ-4",
         },
       ]);
+      await db.insert(agentWakeupRequests).values([
+        {
+          id: wakeupId,
+          companyId,
+          agentId,
+          source: "system",
+          status: "queued",
+        },
+        {
+          id: completedWakeupId,
+          companyId,
+          agentId,
+          source: "system",
+          status: "completed",
+        },
+      ]);
+      await db.insert(heartbeatRuns).values([
+        {
+          id: queuedRunId,
+          companyId,
+          agentId,
+          status: "queued",
+          wakeupRequestId: wakeupId,
+          processPid: 1234,
+          processGroupId: 1234,
+        },
+        {
+          id: runningRunId,
+          companyId,
+          agentId,
+          status: "running",
+          processPid: 5678,
+          processGroupId: 5678,
+        },
+        {
+          id: succeededRunId,
+          companyId,
+          agentId,
+          status: "succeeded",
+          wakeupRequestId: completedWakeupId,
+        },
+      ]);
 
       await expect(quarantineSeededWorktreeExecutionState(tempDb.connectionString)).resolves.toEqual({
+        cancelledHeartbeatRuns: 2,
+        deletedPendingWakeups: 1,
+        clearedIssueMonitors: 1,
         disabledTimerHeartbeats: 1,
         resetRunningAgents: 1,
         quarantinedInProgressIssues: 1,
@@ -459,6 +518,32 @@ describe("worktree helpers", () => {
       expect(inProgressIssue?.assigneeAgentId).toBeNull();
       expect(inProgressIssue?.executionAgentNameKey).toBeNull();
       expect(inProgressIssue?.executionLockedAt).toBeNull();
+      expect(inProgressIssue?.monitorNextCheckAt).toBeNull();
+      expect(inProgressIssue?.monitorWakeRequestedAt).toBeNull();
+      expect(inProgressIssue?.monitorLastTriggeredAt).toBeNull();
+      expect(inProgressIssue?.monitorAttemptCount).toBe(0);
+      expect(inProgressIssue?.monitorNotes).toBeNull();
+
+      const quarantinedRuns = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(inArray(heartbeatRuns.id, [queuedRunId, runningRunId]));
+      expect(quarantinedRuns).toHaveLength(2);
+      for (const run of quarantinedRuns) {
+        expect(run.status).toBe("cancelled");
+        expect(run.errorCode).toBe("worktree_seed_quarantine");
+        expect(run.processPid).toBeNull();
+        expect(run.processGroupId).toBeNull();
+        expect(run.finishedAt).toBeInstanceOf(Date);
+      }
+
+      const [succeededRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, succeededRunId));
+      expect(succeededRun?.status).toBe("succeeded");
+      expect(succeededRun?.wakeupRequestId).toBe(completedWakeupId);
+
+      const wakeups = await db.select().from(agentWakeupRequests);
+      expect(wakeups).toHaveLength(1);
+      expect(wakeups[0]?.id).toBe(completedWakeupId);
 
       const [todoIssue] = await db.select().from(issues).where(eq(issues.id, todoIssueId));
       expect(todoIssue?.status).toBe("todo");
@@ -475,6 +560,38 @@ describe("worktree helpers", () => {
       const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, inProgressIssueId));
       expect(comments).toHaveLength(1);
       expect(comments[0]?.body).toContain("Quarantined during worktree seed");
+    } finally {
+      await db.$client?.end?.({ timeout: 5 }).catch(() => undefined);
+      await tempDb.cleanup();
+    }
+  }, 20_000);
+
+  itEmbeddedPostgres("always disarms copied worktree run execution settings", async () => {
+    const tempDb = await startEmbeddedPostgresTestDatabase("paperclip-worktree-activation-reset-");
+    const db = createDb(tempDb.connectionString);
+
+    try {
+      await db
+        .update(instanceSettings)
+        .set({
+          experimental: {
+            enableWorktreeRunExecution: true,
+            worktreeRunExecutionActivatedAt: "2026-07-16T12:00:00.000Z",
+            worktreeRunExecutionActivationInstanceId: "source-instance",
+            enableSmokeLab: true,
+          },
+        })
+        .where(eq(instanceSettings.singletonKey, "default"));
+
+      await expect(resetSeededWorktreeRunExecutionActivation(tempDb.connectionString)).resolves.toBe(1);
+
+      const [settings] = await db.select().from(instanceSettings);
+      expect(settings?.experimental).toMatchObject({
+        enableWorktreeRunExecution: false,
+        worktreeRunExecutionActivatedAt: null,
+        worktreeRunExecutionActivationInstanceId: null,
+        enableSmokeLab: true,
+      });
     } finally {
       await db.$client?.end?.({ timeout: 5 }).catch(() => undefined);
       await tempDb.cleanup();

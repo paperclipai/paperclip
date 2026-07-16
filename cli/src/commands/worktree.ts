@@ -22,6 +22,7 @@ import pc from "picocolors";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import {
   applyPendingMigrations,
+  agentWakeupRequests,
   agents,
   assets,
   companies,
@@ -32,6 +33,7 @@ import {
   formatDatabaseBackupResult,
   goals,
   heartbeatRuns,
+  instanceSettings,
   inspectMigrations,
   issueAttachments,
   issueComments,
@@ -195,6 +197,9 @@ type SeedWorktreeDatabaseResult = {
 };
 
 export type SeededWorktreeExecutionQuarantineSummary = {
+  cancelledHeartbeatRuns: number;
+  deletedPendingWakeups: number;
+  clearedIssueMonitors: number;
   disabledTimerHeartbeats: number;
   resetRunningAgents: number;
   quarantinedInProgressIssues: number;
@@ -218,6 +223,9 @@ function formatSeededWorktreeExecutionQuarantineSummary(
   summary: SeededWorktreeExecutionQuarantineSummary,
 ): string {
   return [
+    `cancelled heartbeat runs: ${summary.cancelledHeartbeatRuns}`,
+    `deleted pending wakeups: ${summary.deletedPendingWakeups}`,
+    `cleared issue monitors: ${summary.clearedIssueMonitors}`,
     `disabled timer heartbeats: ${summary.disabledTimerHeartbeats}`,
     `reset running agents: ${summary.resetRunningAgents}`,
     `quarantined in-progress issues: ${summary.quarantinedInProgressIssues}`,
@@ -1149,6 +1157,9 @@ export async function pauseSeededScheduledRoutines(connectionString: string): Pr
 }
 
 const EMPTY_SEEDED_WORKTREE_EXECUTION_QUARANTINE_SUMMARY: SeededWorktreeExecutionQuarantineSummary = {
+  cancelledHeartbeatRuns: 0,
+  deletedPendingWakeups: 0,
+  clearedIssueMonitors: 0,
   disabledTimerHeartbeats: 0,
   resetRunningAgents: 0,
   quarantinedInProgressIssues: 0,
@@ -1192,6 +1203,63 @@ export async function quarantineSeededWorktreeExecutionState(
   const summary = { ...EMPTY_SEEDED_WORKTREE_EXECUTION_QUARANTINE_SUMMARY };
   try {
     await db.transaction(async (tx) => {
+      const now = new Date();
+      const pendingWakeups = await tx
+        .select({ id: agentWakeupRequests.id })
+        .from(agentWakeupRequests)
+        .where(inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution", "claimed"]));
+      const pendingWakeupIds = pendingWakeups.map((row) => row.id);
+
+      if (pendingWakeupIds.length > 0) {
+        await tx
+          .update(heartbeatRuns)
+          .set({ wakeupRequestId: null, updatedAt: now })
+          .where(inArray(heartbeatRuns.wakeupRequestId, pendingWakeupIds));
+      }
+
+      const cancelledRuns = await tx
+        .update(heartbeatRuns)
+        .set({
+          status: "cancelled",
+          errorCode: "worktree_seed_quarantine",
+          processPid: null,
+          processGroupId: null,
+          scheduledRetryAt: null,
+          finishedAt: now,
+          updatedAt: now,
+        })
+        .where(inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"]))
+        .returning({ id: heartbeatRuns.id });
+      summary.cancelledHeartbeatRuns = cancelledRuns.length;
+
+      if (pendingWakeupIds.length > 0) {
+        const deletedWakeups = await tx
+          .delete(agentWakeupRequests)
+          .where(inArray(agentWakeupRequests.id, pendingWakeupIds))
+          .returning({ id: agentWakeupRequests.id });
+        summary.deletedPendingWakeups = deletedWakeups.length;
+      }
+
+      const clearedMonitors = await tx
+        .update(issues)
+        .set({
+          monitorNextCheckAt: null,
+          monitorWakeRequestedAt: null,
+          monitorLastTriggeredAt: null,
+          monitorAttemptCount: 0,
+          monitorNotes: null,
+          updatedAt: now,
+        })
+        .where(sql`
+          ${issues.monitorNextCheckAt} is not null
+          or ${issues.monitorWakeRequestedAt} is not null
+          or ${issues.monitorLastTriggeredAt} is not null
+          or ${issues.monitorAttemptCount} <> 0
+          or ${issues.monitorNotes} is not null
+        `)
+        .returning({ id: issues.id });
+      summary.clearedIssueMonitors = clearedMonitors.length;
+
       const seededAgents = await tx
         .select({
           id: agents.id,
@@ -1215,7 +1283,7 @@ export async function quarantineSeededWorktreeExecutionState(
             .set({
               runtimeConfig: normalized.runtimeConfig,
               status: nextStatus,
-              updatedAt: new Date(),
+              updatedAt: now,
             })
             .where(eq(agents.id, agent.id));
         }
@@ -1248,7 +1316,7 @@ export async function quarantineSeededWorktreeExecutionState(
             executionAgentNameKey: null,
             executionLockedAt: null,
             executionWorkspaceId: null,
-            updatedAt: new Date(),
+            updatedAt: now,
           })
           .where(eq(issues.id, issue.id));
 
@@ -1270,6 +1338,31 @@ export async function quarantineSeededWorktreeExecutionState(
     });
 
     return summary;
+  } finally {
+    await db.$client?.end?.({ timeout: 5 }).catch(() => undefined);
+  }
+}
+
+export async function resetSeededWorktreeRunExecutionActivation(connectionString: string): Promise<number> {
+  const db = createDb(connectionString);
+  try {
+    const rows = await db.select({ id: instanceSettings.id, experimental: instanceSettings.experimental }).from(instanceSettings);
+    let resetCount = 0;
+    for (const row of rows) {
+      const experimental = isRecord(row.experimental) ? row.experimental : {};
+      const nextExperimental = {
+        ...experimental,
+        enableWorktreeRunExecution: false,
+        worktreeRunExecutionActivatedAt: null,
+        worktreeRunExecutionActivationInstanceId: null,
+      };
+      await db
+        .update(instanceSettings)
+        .set({ experimental: nextExperimental, updatedAt: new Date() })
+        .where(eq(instanceSettings.id, row.id));
+      resetCount += 1;
+    }
+    return resetCount;
   } finally {
     await db.$client?.end?.({ timeout: 5 }).catch(() => undefined);
   }
@@ -1334,6 +1427,7 @@ async function seedWorktreeDatabase(input: {
       backupFile: backup.backupFile,
     });
     await applyPendingMigrations(targetConnectionString);
+    await resetSeededWorktreeRunExecutionActivation(targetConnectionString);
     const executionQuarantine = input.preserveLiveWork
       ? { ...EMPTY_SEEDED_WORKTREE_EXECUTION_QUARANTINE_SUMMARY }
       : await quarantineSeededWorktreeExecutionState(targetConnectionString);
@@ -3094,7 +3188,7 @@ export async function worktreeMergeHistoryCommand(sourceArg: string | undefined,
 }
 
 async function runWorktreeReseed(opts: WorktreeReseedOptions): Promise<void> {
-  const seedMode = opts.seedMode ?? "full";
+  const seedMode = opts.seedMode ?? "minimal";
   if (!isWorktreeSeedMode(seedMode)) {
     throw new Error(`Unsupported seed mode "${seedMode}". Expected one of: minimal, full.`);
   }
@@ -3290,7 +3384,7 @@ export function registerWorktreeCommands(program: Command): void {
     .option("--server-port <port>", "Preferred server port", (value) => Number(value))
     .option("--db-port <port>", "Preferred embedded Postgres port", (value) => Number(value))
     .option("--seed-mode <mode>", "Seed profile: minimal or full (default: minimal)", "minimal")
-    .option("--preserve-live-work", "Do not quarantine copied agent timers or assigned open issues in the seeded worktree", false)
+    .option("--preserve-live-work", "Preserve copied runs, wakeups, monitors, agent timers, and assigned open issues", false)
     .option("--no-seed", "Skip database seeding from the source instance")
     .option("--force", "Replace existing repo-local config and isolated instance data", false)
     .action(worktreeMakeCommand);
@@ -3307,7 +3401,7 @@ export function registerWorktreeCommands(program: Command): void {
     .option("--server-port <port>", "Preferred server port", (value) => Number(value))
     .option("--db-port <port>", "Preferred embedded Postgres port", (value) => Number(value))
     .option("--seed-mode <mode>", "Seed profile: minimal or full (default: minimal)", "minimal")
-    .option("--preserve-live-work", "Do not quarantine copied agent timers or assigned open issues in the seeded worktree", false)
+    .option("--preserve-live-work", "Preserve copied runs, wakeups, monitors, agent timers, and assigned open issues", false)
     .option("--no-seed", "Skip database seeding from the source instance")
     .option("--force", "Replace existing repo-local config and isolated instance data", false)
     .action(worktreeInitCommand);
@@ -3346,8 +3440,8 @@ export function registerWorktreeCommands(program: Command): void {
     .option("--from-config <path>", "Source config.json to seed from")
     .option("--from-data-dir <path>", "Source PAPERCLIP_HOME used when deriving the source config")
     .option("--from-instance <id>", "Source instance id when deriving the source config")
-    .option("--seed-mode <mode>", "Seed profile: minimal or full (default: full)", "full")
-    .option("--preserve-live-work", "Do not quarantine copied agent timers or assigned open issues in the seeded worktree", false)
+    .option("--seed-mode <mode>", "Seed profile: minimal or full (default: minimal)", "minimal")
+    .option("--preserve-live-work", "Preserve copied runs, wakeups, monitors, agent timers, and assigned open issues", false)
     .option("--yes", "Skip the destructive confirmation prompt", false)
     .option("--allow-live-target", "Override the guard that requires the target worktree DB to be stopped first", false)
     .action(worktreeReseedCommand);
@@ -3361,7 +3455,7 @@ export function registerWorktreeCommands(program: Command): void {
     .option("--from-data-dir <path>", "Source PAPERCLIP_HOME used when deriving the source config")
     .option("--from-instance <id>", "Source instance id when deriving the source config (default: default)")
     .option("--seed-mode <mode>", "Seed profile: minimal or full (default: minimal)", "minimal")
-    .option("--preserve-live-work", "Do not quarantine copied agent timers or assigned open issues in the seeded worktree", false)
+    .option("--preserve-live-work", "Preserve copied runs, wakeups, monitors, agent timers, and assigned open issues", false)
     .option("--no-seed", "Repair metadata only and skip reseeding when bootstrapping a missing worktree config", false)
     .option("--allow-live-target", "Override the guard that requires the target worktree DB to be stopped first", false)
     .action(worktreeRepairCommand);
