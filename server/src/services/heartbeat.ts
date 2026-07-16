@@ -333,6 +333,13 @@ const WORKSPACE_VALIDATION_FAILURE_CODE = "workspace_validation_failed";
 const WORKSPACE_VALIDATION_RECOVERY_CAUSE = "workspace_validation_failed";
 const CONFIGURATION_INCOMPLETE_FAILURE_CODE = "configuration_incomplete";
 const CONFIGURATION_INCOMPLETE_RECOVERY_CAUSE = "configuration_incomplete";
+// Skills source unreadable during a deploy worktree swap (raised by the
+// claude-local prompt-cache bundler once its bounded in-process retry is
+// exhausted). Kept as its own retryable code — not `adapter_failed` — so
+// recovery/service.ts can back off across the full swap window. Matched
+// structurally by `code` because the error crosses the adapter→server package
+// boundary.
+const SKILLS_SOURCE_UNAVAILABLE_FAILURE_CODE = "skills_source_unavailable";
 const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON = "execution_review_participant_recovery";
 const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON = "execution_review_participant_recovery";
 const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_CAUSE = "execution_review_participant_recovery";
@@ -1411,6 +1418,14 @@ function fingerprintFinalizeWorkspaceBranchValidation(input: {
 
 function isConfigurationIncompleteFailure(error: unknown): error is ConfigurationIncompleteFailure {
   return error instanceof ConfigurationIncompleteFailure;
+}
+
+// Detect the claude-local skills-source-unavailable failure structurally by its
+// `code` string, since the error is thrown in the adapter package and caught
+// here in the server package (an `instanceof` check would not survive the
+// package boundary).
+function isSkillsSourceUnavailableFailure(error: unknown): boolean {
+  return (error as { code?: unknown } | null)?.code === SKILLS_SOURCE_UNAVAILABLE_FAILURE_CODE;
 }
 
 function isConfigurationIncompleteFailedRun(
@@ -13565,11 +13580,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       );
       const workspaceValidationFailure = isWorkspaceValidationFailure(err) ? err : null;
       const configurationIncompleteFailure = isConfigurationIncompleteFailure(err) ? err : null;
+      const skillsSourceUnavailable = isSkillsSourceUnavailableFailure(err);
       const recordedResponsibleUserDenialCode =
         normalizeResponsibleUserDenialCode((await getRun(run.id).catch(() => null))?.errorCode);
       const failureErrorCode =
         workspaceValidationFailure?.code
         ?? configurationIncompleteFailure?.code
+        ?? (skillsSourceUnavailable ? SKILLS_SOURCE_UNAVAILABLE_FAILURE_CODE : null)
         ?? recordedResponsibleUserDenialCode
         ?? "adapter_failed";
       logger.error({ err, runId }, "heartbeat execution failed");
@@ -13693,11 +13710,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           // recovery path routes it to a human owner instead of looping retries.
           const workspaceValidationSetupFailure = isWorkspaceValidationFailure(outerErr) ? outerErr : null;
           const configurationIncompleteSetupFailure = isConfigurationIncompleteFailure(outerErr) ? outerErr : null;
+          const skillsSourceUnavailableSetupFailure = isSkillsSourceUnavailableFailure(outerErr);
           const recordedResponsibleUserDenialCode =
             normalizeResponsibleUserDenialCode((await getRun(runId).catch(() => null))?.errorCode);
           const setupFailureErrorCode =
             workspaceValidationSetupFailure?.code ??
             configurationIncompleteSetupFailure?.code ??
+            (skillsSourceUnavailableSetupFailure ? SKILLS_SOURCE_UNAVAILABLE_FAILURE_CODE : null) ??
             recordedResponsibleUserDenialCode ??
             "setup_failed";
           logger.error({ err: outerErr, runId }, "heartbeat execution setup failed");
