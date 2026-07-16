@@ -3376,13 +3376,16 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     if (!targetAgentId || input.latestRun.agentId !== targetAgentId) return null;
 
     const previousPolicy = normalizeIssueExecutionPolicy(input.issue.executionPolicy ?? null);
+    const retryTargetDescription = input.issue.status === "in_review"
+      ? "the active review participant"
+      : "the original assignee";
     const policy = {
       ...(previousPolicy ?? { mode: "normal" as const, commentRequired: true, stages: [] }),
       monitor: {
         nextCheckAt: input.classification.retryAt.toISOString(),
         notes: input.classification.parsedResetTime
-          ? "Provider usage quota reached; retry the original assignee at the provider reset time."
-          : "Provider usage quota reached; retry the original assignee after the default recovery backoff.",
+          ? `Provider usage quota reached; retry ${retryTargetDescription} at the provider reset time.`
+          : `Provider usage quota reached; retry ${retryTargetDescription} after the default recovery backoff.`,
         scheduledBy: "assignee" as const,
         kind: "external_service" as const,
         serviceName: PROVIDER_QUOTA_MONITOR_SERVICE_NAME,

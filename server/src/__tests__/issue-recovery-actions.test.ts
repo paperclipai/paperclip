@@ -553,6 +553,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       status: "in_review",
       assigneeAgentId: coderId,
       monitorNextCheckAt: expect.any(Date),
+      monitorNotes: "Provider usage quota reached; retry the active review participant after the default recovery backoff.",
     });
     const [updatedRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     expect(updatedRun?.errorCode).toBe("provider_quota");
