@@ -1,6 +1,7 @@
 import { Readable } from "node:stream";
 import express from "express";
 import request from "supertest";
+import sharp from "sharp";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { StorageService } from "../storage/types.js";
 import type { ImageReferenceInput } from "../services/openai-image-generation.js";
@@ -209,6 +210,21 @@ function makeAttachment(contentType: string, originalFilename: string) {
   };
 }
 
+async function createPng(width: number, height: number) {
+  return sharp({
+    create: {
+      width,
+      height,
+      channels: 3,
+      background: { r: 24, g: 90, b: 180 },
+    },
+  }).png().toBuffer();
+}
+
+function hasPngColorSpaceEvidence(bytes: Buffer) {
+  return ["sRGB", "iCCP", "gAMA", "cHRM"].some((chunkName) => bytes.includes(Buffer.from(chunkName, "ascii")));
+}
+
 describe("normalizeIssueAttachmentMaxBytes", () => {
   it("keeps the process-level attachment cap as the final cap", async () => {
     const previous = process.env.PAPERCLIP_ATTACHMENT_MAX_BYTES;
@@ -396,6 +412,29 @@ describe("issue attachment routes", () => {
     expect(mockIssueService.getById).toHaveBeenCalledTimes(1);
   });
 
+  it("rejects unsafe non-exact image generation sizes before provider work", async () => {
+    const storage = createStorageService();
+    const issue = {
+      id: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      identifier: "PAP-1",
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+
+    const app = await createApp(storage);
+    const res = await request(app)
+      .post(`/api/issues/${issue.id}/image-generations`)
+      .send({
+        prompt: "Generate with an invalid size.",
+        size: "auto",
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toContain("exact WxH pixel size");
+    expect(mockGenerateCodexIssueImage).not.toHaveBeenCalled();
+    expect(storage.__calls.putFiles).toHaveLength(0);
+  });
+
   it("binds reference image attachment bytes to the OpenAI image edit request", async () => {
     const previousImageKey = process.env.PAPERCLIP_IMAGE_OPENAI_API_KEY;
     const previousImageProvider = process.env.PAPERCLIP_IMAGE_PROVIDER;
@@ -433,11 +472,12 @@ describe("issue attachment routes", () => {
     mockIssueService.createAttachment
       .mockResolvedValueOnce(outputAttachment)
       .mockResolvedValueOnce(auditAttachment);
+    const generatedPng = await createPng(1080, 1350);
 
     const fetchMock = vi.fn(async () =>
       new Response(
         JSON.stringify({
-          data: [{ b64_json: Buffer.from("generated-png").toString("base64") }],
+          data: [{ b64_json: generatedPng.toString("base64") }],
         }),
         {
           status: 200,
@@ -482,18 +522,25 @@ describe("issue attachment routes", () => {
         contentType: "image/png",
         originalFilename: "carousel.png",
       });
-      expect(storage.__calls.putFiles[0]?.body.toString()).toBe("generated-png");
+      const outputMetadata = await sharp(storage.__calls.putFiles[0]?.body).metadata();
+      expect(outputMetadata.width).toBe(1080);
+      expect(outputMetadata.height).toBe(1350);
+      expect(hasPngColorSpaceEvidence(storage.__calls.putFiles[0]?.body)).toBe(true);
 
       const audit = JSON.parse(storage.__calls.putFiles[1]?.body.toString() ?? "{}") as {
         model?: string;
         generationMode?: string;
         actualImageInputsBound?: string[];
         outputAttachmentId?: string;
+        outputDimensions?: { width?: number; height?: number };
+        outputPngColorSpaceEvidence?: Record<string, boolean>;
       };
       expect(audit.model).toBe("gpt-image-2");
       expect(audit.generationMode).toBe("reference_backed");
       expect(audit.actualImageInputsBound).toEqual([referenceAttachmentId]);
       expect(audit.outputAttachmentId).toBe(outputAttachment.id);
+      expect(audit.outputDimensions).toEqual({ width: 1080, height: 1350 });
+      expect(Object.values(audit.outputPngColorSpaceEvidence ?? {}).some(Boolean)).toBe(true);
       expect(res.body.actualImageInputsBound).toEqual([referenceAttachmentId]);
       expect(res.body.outputAttachment.contentPath).toBe(`/api/attachments/${outputAttachment.id}/content`);
       expect(res.body.auditAttachment.contentPath).toBe(`/api/attachments/${auditAttachment.id}/content`);
@@ -557,7 +604,7 @@ describe("issue attachment routes", () => {
       endpoint: "codex_exec_image_gen",
       generationMode: "reference_backed",
       actualImageInputsBound: [referenceAttachmentId],
-      outputBytes: Buffer.from("generated-png"),
+      outputBytes: await createPng(1080, 1350),
       outputContentType: "image/png",
       providerRequestId: "019f286b-9bae-7961-bb48-e5c658f53427",
       codexThreadId: "019f286b-9bae-7961-bb48-e5c658f53427",
@@ -599,11 +646,13 @@ describe("issue attachment routes", () => {
         generationMode?: string;
         actualImageInputsBound?: string[];
         codexThreadId?: string;
+        outputDimensions?: { width?: number; height?: number };
       };
       expect(audit.provider).toBe("codex_native");
       expect(audit.generationMode).toBe("reference_backed");
       expect(audit.actualImageInputsBound).toEqual([referenceAttachmentId]);
       expect(audit.codexThreadId).toBe("019f286b-9bae-7961-bb48-e5c658f53427");
+      expect(audit.outputDimensions).toEqual({ width: 1080, height: 1350 });
       expect(res.body.provider).toBe("codex_native");
     } finally {
       if (previousImageProvider === undefined) {
@@ -611,6 +660,111 @@ describe("issue attachment routes", () => {
       } else {
         process.env.PAPERCLIP_IMAGE_PROVIDER = previousImageProvider;
       }
+    }
+  });
+
+  it("normalizes audited reference-backed image output to the requested size with explicit sRGB evidence", async () => {
+    const previousImageProvider = process.env.PAPERCLIP_IMAGE_PROVIDER;
+    delete process.env.PAPERCLIP_IMAGE_PROVIDER;
+    mockGenerateCodexIssueImage.mockReset();
+    vi.doMock("../services/codex-image-generation.js", () => ({
+      generateCodexIssueImage: mockGenerateCodexIssueImage,
+    }));
+
+    const issueId = "11111111-1111-4111-8111-111111111111";
+    const referenceAttachmentId = "2d8a654e-2ece-43cf-9000-ab0fe254e1a6";
+    const providerPng = await createPng(1122, 1402);
+    expect(hasPngColorSpaceEvidence(providerPng)).toBe(false);
+
+    const storage = createStorageService();
+    storage.getObject = vi.fn(async () => ({
+      stream: Readable.from(Buffer.from("PNGDATA")),
+      contentType: "image/png",
+      contentLength: 7,
+    }));
+    mockIssueService.getById.mockResolvedValue({
+      id: issueId,
+      companyId: "company-1",
+      identifier: "SIX-4034",
+    });
+    mockIssueService.getAttachmentById.mockResolvedValue({
+      ...makeAttachment("image/png", "source-still.png"),
+      id: referenceAttachmentId,
+      issueId,
+    });
+    mockIssueService.createAttachment
+      .mockResolvedValueOnce({
+        ...makeAttachment("image/png", "final.png"),
+        id: "33333333-3333-4333-8333-333333333333",
+        issueId,
+      })
+      .mockResolvedValueOnce({
+        ...makeAttachment("application/json", "paperclip-image-audit.json"),
+        id: "44444444-4444-4444-8444-444444444444",
+        issueId,
+      });
+    mockGenerateCodexIssueImage.mockResolvedValue({
+      provider: "codex_native",
+      model: "gpt-image-2",
+      endpoint: "codex_exec_image_gen",
+      generationMode: "reference_backed",
+      actualImageInputsBound: [referenceAttachmentId],
+      outputBytes: providerPng,
+      outputContentType: "image/png",
+      providerRequestId: "thread-4036",
+      codexThreadId: "thread-4036",
+      codexOutputPath: null,
+    });
+
+    try {
+      const app = await createApp(storage);
+      const res = await request(app)
+        .post(`/api/issues/${issueId}/image-generations`)
+        .send({
+          prompt: "Regenerate the ad using the supplied still as a real image reference.",
+          referenceImageAttachmentIds: [referenceAttachmentId],
+          size: "1080x1350",
+          quality: "high",
+          outputFilename: "final.png",
+        });
+
+      expect(res.status).toBe(201);
+      const outputBytes = storage.__calls.putFiles[0]?.body;
+      const outputMetadata = await sharp(outputBytes).metadata();
+      expect(outputMetadata.width).toBe(1080);
+      expect(outputMetadata.height).toBe(1350);
+      expect(hasPngColorSpaceEvidence(outputBytes)).toBe(true);
+
+      const audit = JSON.parse(storage.__calls.putFiles[1]?.body.toString() ?? "{}") as {
+        generationMode?: string;
+        promptOnly?: boolean;
+        actualImageInputsBound?: string[];
+        outputAttachmentId?: string;
+        providerOutputDimensions?: { width?: number; height?: number };
+        outputDimensions?: { width?: number; height?: number };
+        outputPngColorSpaceEvidence?: Record<string, boolean>;
+        referenceImageInputs?: Array<{ sourceKind?: string; sourceId?: string; byteSize?: number }>;
+      };
+      expect(audit.outputAttachmentId).toBe("33333333-3333-4333-8333-333333333333");
+      expect(audit.providerOutputDimensions).toEqual({ width: 1122, height: 1402 });
+      expect(audit.outputDimensions).toEqual({ width: 1080, height: 1350 });
+      expect(Object.values(audit.outputPngColorSpaceEvidence ?? {}).some(Boolean)).toBe(true);
+      expect(audit.generationMode).toBe("reference_backed");
+      expect(audit.promptOnly).toBe(false);
+      expect(audit.actualImageInputsBound).toEqual([referenceAttachmentId]);
+      expect(audit.referenceImageInputs).toEqual([
+        expect.objectContaining({
+          sourceKind: "attachment",
+          sourceId: referenceAttachmentId,
+          byteSize: 7,
+        }),
+      ]);
+      expect(res.body.outputAttachmentId).toBe(audit.outputAttachmentId);
+      expect(res.body.outputDimensions).toEqual({ width: 1080, height: 1350 });
+      expect(res.body.actualImageInputsBound).toEqual([referenceAttachmentId]);
+    } finally {
+      if (previousImageProvider === undefined) delete process.env.PAPERCLIP_IMAGE_PROVIDER;
+      else process.env.PAPERCLIP_IMAGE_PROVIDER = previousImageProvider;
     }
   });
 
@@ -664,7 +818,7 @@ describe("issue attachment routes", () => {
       endpoint: "codex_exec_image_gen",
       generationMode: input.references.length > 0 ? "reference_backed" : "prompt_only",
       actualImageInputsBound: input.references.map((reference: ImageReferenceInput) => reference.sourceId),
-      outputBytes: Buffer.from("generated-png"),
+      outputBytes: await createPng(1024, 1024),
       outputContentType: "image/png",
       providerRequestId: "thread-1",
       codexThreadId: "thread-1",

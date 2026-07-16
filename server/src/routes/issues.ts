@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
+import sharp from "sharp";
 import { z } from "zod";
 import { and, asc, desc, eq, inArray, notInArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -187,6 +188,8 @@ const SUPPORTED_REFERENCE_IMAGE_TYPES = new Set([
 
 type IssueImageProvider = "codex_native" | "openai";
 const MAX_REFERENCE_IMAGE_BYTES = 25 * 1024 * 1024;
+const MAX_GENERATED_IMAGE_DIMENSION = 8192;
+const GENERATED_IMAGE_ASPECT_RATIO_TOLERANCE = 0.02;
 
 type ParsedExecutionState = NonNullable<ReturnType<typeof parseIssueExecutionState>>;
 type NormalizedExecutionPolicy = NonNullable<ReturnType<typeof normalizeIssueExecutionPolicy>>;
@@ -1643,6 +1646,94 @@ export function issueRoutes(
     if (configured === "openai") return "openai";
     if (configured === "codex" || configured === "codex_native" || configured === "codex-native") return "codex_native";
     return "codex_native";
+  }
+
+  function parseRequestedImageSize(size: string) {
+    const match = /^(\d{1,5})x(\d{1,5})$/i.exec(size.trim());
+    if (!match) {
+      throw unprocessable("Image generation size must be an exact WxH pixel size, for example 1080x1350");
+    }
+    const width = Number(match[1]);
+    const height = Number(match[2]);
+    if (
+      !Number.isSafeInteger(width) ||
+      !Number.isSafeInteger(height) ||
+      width <= 0 ||
+      height <= 0 ||
+      width > MAX_GENERATED_IMAGE_DIMENSION ||
+      height > MAX_GENERATED_IMAGE_DIMENSION
+    ) {
+      throw unprocessable(`Image generation size must be between 1 and ${MAX_GENERATED_IMAGE_DIMENSION} pixels per side`);
+    }
+    return { width, height };
+  }
+
+  function pngHasExplicitColorSpaceEvidence(bytes: Buffer) {
+    return ["sRGB", "iCCP", "gAMA", "cHRM"].some((chunkName) => bytes.includes(Buffer.from(chunkName, "ascii")));
+  }
+
+  async function normalizeGeneratedImageOutput(input: {
+    bytes: Buffer;
+    requestedSize: { width: number; height: number };
+  }) {
+    const providerMetadata = await sharp(input.bytes).metadata().catch(() => null);
+    if (!providerMetadata?.width || !providerMetadata.height) {
+      throw unprocessable("Image generation returned an unreadable image");
+    }
+
+    const requestedRatio = input.requestedSize.width / input.requestedSize.height;
+    const providerRatio = providerMetadata.width / providerMetadata.height;
+    const needsResize =
+      providerMetadata.width !== input.requestedSize.width ||
+      providerMetadata.height !== input.requestedSize.height;
+    if (needsResize && Math.abs(providerRatio - requestedRatio) > GENERATED_IMAGE_ASPECT_RATIO_TOLERANCE) {
+      throw unprocessable(
+        `Image generation returned ${providerMetadata.width}x${providerMetadata.height}, which cannot be safely normalized to requested ${input.requestedSize.width}x${input.requestedSize.height}`,
+      );
+    }
+
+    const finalBytes = await sharp(input.bytes)
+      .resize({
+        width: input.requestedSize.width,
+        height: input.requestedSize.height,
+        fit: "fill",
+      })
+      .toColorspace("srgb")
+      .withMetadata({ icc: "srgb" })
+      .png()
+      .toBuffer();
+    const finalMetadata = await sharp(finalBytes).metadata();
+    if (finalMetadata.width !== input.requestedSize.width || finalMetadata.height !== input.requestedSize.height) {
+      throw unprocessable(
+        `Image output normalization failed: expected ${input.requestedSize.width}x${input.requestedSize.height}, got ${finalMetadata.width ?? "unknown"}x${finalMetadata.height ?? "unknown"}`,
+      );
+    }
+    if (!pngHasExplicitColorSpaceEvidence(finalBytes)) {
+      throw unprocessable("Image output normalization failed to embed explicit sRGB color-space evidence");
+    }
+
+    return {
+      bytes: finalBytes,
+      contentType: "image/png" as const,
+      providerDimensions: {
+        width: providerMetadata.width,
+        height: providerMetadata.height,
+      },
+      finalDimensions: {
+        width: finalMetadata.width,
+        height: finalMetadata.height,
+      },
+      providerColorSpace: providerMetadata.space ?? null,
+      finalColorSpace: finalMetadata.space ?? null,
+      finalColorProfileBytes: finalMetadata.icc?.length ?? 0,
+      finalPngColorSpaceEvidence: {
+        sRGB: finalBytes.includes(Buffer.from("sRGB", "ascii")),
+        iCCP: finalBytes.includes(Buffer.from("iCCP", "ascii")),
+        gAMA: finalBytes.includes(Buffer.from("gAMA", "ascii")),
+        cHRM: finalBytes.includes(Buffer.from("cHRM", "ascii")),
+      },
+      resized: needsResize,
+    };
   }
 
   async function createIssueGeneratedAttachment(input: {
@@ -7554,6 +7645,7 @@ export function issueRoutes(
   router.post("/issues/:id/image-generations", validate(generateIssueImageSchema), async (req, res) => {
     const id = req.params.id as string;
     const body = req.body as z.infer<typeof generateIssueImageSchema>;
+    const requestedSize = parseRequestedImageSize(body.size);
     const issue = await svc.getById(id);
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });
@@ -7631,6 +7723,10 @@ export function issueRoutes(
           agentId: actor.agentId,
           runId: actor.runId,
         });
+    const normalizedOutput = await normalizeGeneratedImageOutput({
+      bytes: generated.outputBytes,
+      requestedSize,
+    });
 
     const outputAttachment = await createIssueGeneratedAttachment({
       issueId: issue.id,
@@ -7638,8 +7734,8 @@ export function issueRoutes(
       actor,
       namespace: `issues/${issue.id}/generated-images`,
       originalFilename: generatedImageFilename(body.outputFilename),
-      contentType: generated.outputContentType,
-      body: generated.outputBytes,
+      contentType: normalizedOutput.contentType,
+      body: normalizedOutput.bytes,
     });
 
     const audit = {
@@ -7660,8 +7756,15 @@ export function issueRoutes(
       generationMode: generated.generationMode,
       promptOnly: generated.generationMode === "prompt_only",
       outputAttachmentId: outputAttachment.id,
-      outputContentType: generated.outputContentType,
-      outputByteSize: generated.outputBytes.length,
+      outputContentType: normalizedOutput.contentType,
+      outputByteSize: normalizedOutput.bytes.length,
+      providerOutputDimensions: normalizedOutput.providerDimensions,
+      outputDimensions: normalizedOutput.finalDimensions,
+      outputNormalized: normalizedOutput.resized,
+      providerColorSpace: normalizedOutput.providerColorSpace,
+      outputColorSpace: normalizedOutput.finalColorSpace,
+      outputColorProfileBytes: normalizedOutput.finalColorProfileBytes,
+      outputPngColorSpaceEvidence: normalizedOutput.finalPngColorSpaceEvidence,
       providerRequestId: generated.providerRequestId,
       codexThreadId: "codexThreadId" in generated ? generated.codexThreadId : null,
       codexOutputPath: "codexOutputPath" in generated ? generated.codexOutputPath : null,
