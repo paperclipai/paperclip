@@ -7,6 +7,7 @@ import {
   timestamp,
   uuid,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import type { SourceTrustMetadata } from "@paperclipai/shared";
 import { companies } from "./companies.js";
 import { executionWorkspaces } from "./execution_workspaces.js";
@@ -58,6 +59,11 @@ export const issueWorkProducts = pgTable(
       table.provider,
       table.externalId,
     ),
+    companyIssueProviderExternalIdUq: uniqueIndex(
+      "issue_work_products_company_issue_provider_external_id_uq",
+    )
+      .on(table.companyId, table.issueId, table.provider, table.externalId)
+      .where(sql`${table.externalId} is not null`),
     companyUpdatedIdx: index("issue_work_products_company_updated_idx").on(
       table.companyId,
       table.updatedAt,
