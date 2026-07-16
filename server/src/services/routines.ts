@@ -3043,10 +3043,34 @@ export function routineService(
         .where(eq(issues.id, issueId))
         .then((rows) => rows[0] ?? null);
       if (!issue || issue.originKind !== "routine_execution" || !issue.originRunId) return null;
+      const run = await db
+        .select({
+          id: routineRuns.id,
+          status: routineRuns.status,
+          failureReason: routineRuns.failureReason,
+          triggerPayload: routineRuns.triggerPayload,
+        })
+        .from(routineRuns)
+        .where(eq(routineRuns.id, issue.originRunId))
+        .then((rows) => rows[0] ?? null);
+      if (!run) return null;
       if (issue.status === "done") {
+        const transientFailureReason = run.status === "failed" ? run.failureReason : null;
         return finalizeRun(issue.originRunId, {
           status: "completed",
+          failureReason: null,
           completedAt: new Date(),
+          ...(transientFailureReason
+            ? {
+              triggerPayload: {
+                ...(run.triggerPayload ?? {}),
+                transientFailure: {
+                  reason: transientFailureReason,
+                  clearedAt: new Date().toISOString(),
+                },
+              },
+            }
+            : {}),
         });
       }
       if (issue.status === "blocked" || issue.status === "cancelled") {
@@ -3054,6 +3078,13 @@ export function routineService(
           status: "failed",
           failureReason: `Execution issue moved to ${issue.status}`,
           completedAt: new Date(),
+        });
+      }
+      if (run.status === "failed" && run.failureReason?.startsWith("Execution issue moved to")) {
+        return finalizeRun(issue.originRunId, {
+          status: "issue_created",
+          failureReason: null,
+          completedAt: null,
         });
       }
       return null;
