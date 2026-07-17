@@ -65,6 +65,20 @@ export interface LogActivityInput {
   details?: Record<string, unknown> | null;
 }
 
+export async function createActivityDetailsRedactor(db: Db) {
+  const currentUserRedactionOptions = {
+    enabled: (await instanceSettingsService(db).getGeneral()).censorUsernameInLogs,
+  };
+  return (details: Record<string, unknown> | null) => (
+    details ? redactCurrentUserValue(sanitizeRecord(details), currentUserRedactionOptions) : null
+  );
+}
+
+export async function redactActivityDetails(db: Db, details: Record<string, unknown> | null) {
+  if (!details) return null;
+  return (await createActivityDetailsRedactor(db))(details);
+}
+
 function readNonEmptyString(value: unknown) {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
@@ -125,13 +139,7 @@ export async function resolveResponsibleUserIdForActivity(db: Db, input: LogActi
 }
 
 export async function logActivity(db: Db, input: LogActivityInput) {
-  const currentUserRedactionOptions = {
-    enabled: (await instanceSettingsService(db).getGeneral()).censorUsernameInLogs,
-  };
-  const sanitizedDetails = input.details ? sanitizeRecord(input.details) : null;
-  const redactedDetails = sanitizedDetails
-    ? redactCurrentUserValue(sanitizedDetails, currentUserRedactionOptions)
-    : null;
+  const redactedDetails = await redactActivityDetails(db, input.details ?? null);
   const responsibleUserId = await resolveResponsibleUserIdForActivity(db, input);
   await db.insert(activityLog).values({
     companyId: input.companyId,
