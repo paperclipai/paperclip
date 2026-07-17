@@ -6935,6 +6935,79 @@ export function issueService(db: Db) {
         return enriched;
       }
 
+      // Paused/terminated assignees cannot continue the issue, but still block the
+      // normal unassigned-or-same-assignee checkout path. Allow takeover so managers
+      // (and other agents with assign rights) can re-route stranded work without a
+      // board unpause. Refuse while a live checkout/execution lock remains.
+      if (
+        checkoutRunId &&
+        current.assigneeAgentId &&
+        current.assigneeAgentId !== agentId &&
+        (expectedStatuses.includes(current.status) || current.status === "in_progress")
+      ) {
+        const inactiveAssignee = await db
+          .select({
+            id: agents.id,
+            status: agents.status,
+          })
+          .from(agents)
+          .where(eq(agents.id, current.assigneeAgentId))
+          .then((rows) => rows[0] ?? null);
+        const assigneeInactive =
+          inactiveAssignee?.status === "paused" || inactiveAssignee?.status === "terminated";
+        if (assigneeInactive) {
+          const executionLockClear =
+            !current.executionRunId ||
+            current.executionRunId === checkoutRunId ||
+            (await isTerminalOrMissingHeartbeatRun(current.executionRunId));
+          const checkoutLockClear =
+            !current.checkoutRunId ||
+            current.checkoutRunId === checkoutRunId ||
+            (await isTerminalOrMissingHeartbeatRun(current.checkoutRunId));
+          if (executionLockClear && checkoutLockClear) {
+            const takeoverNow = new Date();
+            const takeoverSet: Record<string, unknown> = {
+              assigneeAgentId: agentId,
+              assigneeUserId: null,
+              checkoutRunId,
+              executionRunId: checkoutRunId,
+              executionAgentNameKey: null,
+              executionLockedAt: takeoverNow,
+              status: "in_progress",
+              updatedAt: takeoverNow,
+            };
+            if (current.status !== "in_progress") {
+              takeoverSet.startedAt = takeoverNow;
+            }
+            const takeoverConditions = [
+              eq(issues.id, id),
+              eq(issues.assigneeAgentId, current.assigneeAgentId),
+              eq(issues.status, current.status),
+            ];
+            if (current.executionRunId) {
+              takeoverConditions.push(eq(issues.executionRunId, current.executionRunId));
+            } else {
+              takeoverConditions.push(isNull(issues.executionRunId));
+            }
+            if (current.checkoutRunId) {
+              takeoverConditions.push(eq(issues.checkoutRunId, current.checkoutRunId));
+            } else {
+              takeoverConditions.push(isNull(issues.checkoutRunId));
+            }
+            const takenOver = await db
+              .update(issues)
+              .set(takeoverSet)
+              .where(and(...takeoverConditions))
+              .returning()
+              .then((rows) => rows[0] ?? null);
+            if (takenOver) {
+              const [enriched] = await withIssueLabels(db, [takenOver]);
+              return enriched;
+            }
+          }
+        }
+      }
+
       throw conflict("Issue checkout conflict", {
         issueId: current.id,
         status: current.status,

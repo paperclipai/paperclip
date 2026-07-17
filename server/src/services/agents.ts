@@ -511,6 +511,25 @@ export function agentService(db: Db) {
     }
 
     const normalizedPatch = { ...data } as Partial<typeof agents.$inferInsert>;
+    if (
+      existing.status === "paused" &&
+      typeof data.status === "string" &&
+      data.status !== "paused"
+    ) {
+      // Leaving paused via generic update must clear forensics the same way resume does.
+      if (!Object.prototype.hasOwnProperty.call(normalizedPatch, "pauseReason")) {
+        normalizedPatch.pauseReason = null;
+      }
+      if (!Object.prototype.hasOwnProperty.call(normalizedPatch, "pauseNote")) {
+        normalizedPatch.pauseNote = null;
+      }
+      if (!Object.prototype.hasOwnProperty.call(normalizedPatch, "pausedAt")) {
+        normalizedPatch.pausedAt = null;
+      }
+      if (!Object.prototype.hasOwnProperty.call(normalizedPatch, "pausedByUserId")) {
+        normalizedPatch.pausedByUserId = null;
+      }
+    }
     if (data.permissions !== undefined) {
       const role = (data.role ?? existing.role) as string;
       normalizedPatch.permissions = normalizeAgentPermissions(data.permissions, role);
@@ -632,17 +651,32 @@ export function agentService(db: Db) {
 
     update: updateAgent,
 
-    pause: async (id: string, reason: "manual" | "budget" | "system" = "manual") => {
+    pause: async (
+      id: string,
+      reason: "manual" | "budget" | "system" = "manual",
+      forensics?: { note?: string | null; pausedByUserId?: string | null },
+    ) => {
       const existing = await getById(id);
       if (!existing) return null;
       if (existing.status === "terminated") throw conflict("Cannot pause terminated agent");
+
+      const pauseNote =
+        typeof forensics?.note === "string" && forensics.note.trim().length > 0
+          ? forensics.note.trim()
+          : null;
+      const pausedByUserId =
+        typeof forensics?.pausedByUserId === "string" && forensics.pausedByUserId.trim().length > 0
+          ? forensics.pausedByUserId.trim()
+          : null;
 
       const updated = await db
         .update(agents)
         .set({
           status: "paused",
           pauseReason: reason,
+          pauseNote,
           pausedAt: new Date(),
+          pausedByUserId,
           errorReason: null,
           updatedAt: new Date(),
         })
@@ -665,7 +699,9 @@ export function agentService(db: Db) {
         .set({
           status: "idle",
           pauseReason: null,
+          pauseNote: null,
           pausedAt: null,
+          pausedByUserId: null,
           errorReason: null,
           updatedAt: new Date(),
         })
@@ -691,7 +727,9 @@ export function agentService(db: Db) {
         .set({
           status: "idle",
           pauseReason: null,
+          pauseNote: null,
           pausedAt: null,
+          pausedByUserId: null,
           errorReason: null,
           updatedAt: new Date(),
         })
@@ -714,7 +752,9 @@ export function agentService(db: Db) {
         .set({
           status: "terminated",
           pauseReason: null,
+          pauseNote: null,
           pausedAt: null,
+          pausedByUserId: null,
           errorReason: null,
           updatedAt: new Date(),
         })
