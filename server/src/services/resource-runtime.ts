@@ -262,6 +262,7 @@ export function resourceRuntimeService(db: Db) {
       const byId = new Map(rows.map((row) => [row.id, row]));
       const prepared: PreparedResource[] = [];
       const usedMounts = new Set<string>();
+      const usedEnvironmentKeys = new Set<string>();
       const resourcesRoot = path.join(input.workspaceRoot, "resources");
       const stagingRoot = path.join(input.workspaceRoot, ".resource-staging");
       const environment: Record<string, string> = {
@@ -280,6 +281,11 @@ export function resourceRuntimeService(db: Db) {
         const mountPath = resolveMountPath(resourcesRoot, resource.mountPath);
         if (usedMounts.has(mountPath)) throw conflict(`Resource mount path is used more than once: ${resource.mountPath}`);
         usedMounts.add(mountPath);
+        const environmentKey = resourceEnvKey(resource.key);
+        if (usedEnvironmentKeys.has(environmentKey)) {
+          throw conflict(`Resource environment key is used more than once: ${environmentKey}`);
+        }
+        usedEnvironmentKeys.add(environmentKey);
 
         const credential = await credentialContext(db, resource);
         const env = credential.env;
@@ -314,7 +320,7 @@ export function resourceRuntimeService(db: Db) {
         if (resource.sourcePath) {
           await copyResourceTree(sourcePath, mountPath);
         }
-        environment[resourceEnvKey(resource.key)] = mountPath;
+        environment[environmentKey] = mountPath;
         prepared.push({
           resource,
           attachment,

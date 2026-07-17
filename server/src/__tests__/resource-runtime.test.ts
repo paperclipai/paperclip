@@ -124,6 +124,30 @@ describeEmbeddedPostgres("resourceRuntimeService", () => {
     await fs.writeFile(path.join(invalidBranchWorkspace, "resources", "context", "context.md"), "invalid\n", "utf8");
     await expect(invalidBranchPrepared!.publish()).rejects.toThrow("Invalid Git output branch");
 
+    const collidingResourceId = randomUUID();
+    await db.insert(resources).values({
+      id: collidingResourceId,
+      companyId,
+      key: "CONTEXT",
+      type: "git",
+      repository: remotePath,
+      sourcePath: null,
+      defaultRef: "main",
+      mountPath: "context-upper",
+      credentialRef: null,
+      labels: {},
+      status: "active",
+    });
+    await expect(resourceRuntimeService(db).prepare({
+      companyId,
+      runId: "run-environment-collision-test",
+      workspaceRoot: path.join(fixtureRoot, "environment-collision-workspace"),
+      manifest: { version: 1, resources: [
+        { resourceId, mode: "input" },
+        { resourceId: collidingResourceId, mode: "input" },
+      ] },
+    })).rejects.toThrow("Resource environment key is used more than once");
+
     const noChangeWorkspace = path.join(fixtureRoot, "no-change-workspace");
     const noChangePrepared = await resourceRuntimeService(db).prepare({
       companyId,
