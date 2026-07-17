@@ -982,6 +982,50 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     })).rejects.toThrow("A decline reason is required for this confirmation");
   });
 
+  it("rolls back confirmation acceptance when its transactional hook fails", async () => {
+    const { companyId, goalId, issueId } = await seedConfirmationIssue("Atomic confirmation acceptance");
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        prompt: "Authorize production delivery?",
+      },
+    }, {
+      userId: "local-board",
+    });
+
+    await expect(interactionsSvc.acceptInteraction({
+      id: issueId,
+      companyId,
+      goalId,
+      projectId: null,
+    }, created.id, {}, {
+      userId: "local-board",
+    }, {
+      onRequestConfirmationAccepted: async () => {
+        throw new Error("deploy authorization issuance failed");
+      },
+    })).rejects.toThrow("deploy authorization issuance failed");
+
+    const [persisted] = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, created.id));
+
+    expect(persisted).toMatchObject({
+      id: created.id,
+      status: "pending",
+      result: null,
+      resolvedByUserId: null,
+      resolvedByAgentId: null,
+      resolvedAt: null,
+    });
+  });
+
   it("accepts request_checkbox_confirmation interactions with selected option ids", async () => {
     const { companyId, goalId, issueId } = await seedConfirmationIssue("Checkbox confirmation accept");
 

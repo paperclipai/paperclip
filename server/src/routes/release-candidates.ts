@@ -229,23 +229,28 @@ export function releaseCandidateRoutes(db: Db, storage: StorageService) {
     "/release-candidates/:candidateId/approval-interaction",
     validate(createApprovalInteractionSchema),
     async (req, res) => {
-      const candidate = await candidates.getById(req.params.candidateId as string);
-      if (!candidate || !hasCompanyAccess(req, candidate.companyId)) throw notFound("Release candidate not found");
-      assertCompanyAccess(req, candidate.companyId);
       const actor = getActorInfo(req);
-      const sourceIssue = await issueService(db).getById(candidate.sourceIssueId);
-      if (!sourceIssue) throw notFound("Source issue not found");
-      const interactionInput = candidates.buildApprovalInteractionInput(candidate);
-      const interaction = await issueThreadInteractionService(db).create(sourceIssue, interactionInput, {
-        agentId: actor.agentId,
-        userId: actor.actorType === "user" ? actor.actorId : null,
+      const result = await db.transaction(async (tx) => {
+        const transactionDb = tx as unknown as Db;
+        const transactionCandidates = releaseCandidateService(transactionDb);
+        const candidate = await transactionCandidates.getById(req.params.candidateId as string);
+        if (!candidate || !hasCompanyAccess(req, candidate.companyId)) throw notFound("Release candidate not found");
+        assertCompanyAccess(req, candidate.companyId);
+        const sourceIssue = await issueService(transactionDb).getById(candidate.sourceIssueId);
+        if (!sourceIssue) throw notFound("Source issue not found");
+        const interactionInput = transactionCandidates.buildApprovalInteractionInput(candidate);
+        const interaction = await issueThreadInteractionService(transactionDb).create(sourceIssue, interactionInput, {
+          agentId: actor.agentId,
+          userId: actor.actorType === "user" ? actor.actorId : null,
+        });
+        const updated = await transactionCandidates.markApprovalInteractionCreated(candidate.id, interaction, {
+          agentId: actor.agentId,
+          userId: actor.actorType === "user" ? actor.actorId : null,
+          runId: actor.runId,
+        }, candidate.updatedAt);
+        return { candidate: updated, interaction };
       });
-      const updated = await candidates.markApprovalInteractionCreated(candidate.id, interaction, {
-        agentId: actor.agentId,
-        userId: actor.actorType === "user" ? actor.actorId : null,
-        runId: actor.runId,
-      });
-      res.status(201).json({ candidate: updated, interaction });
+      res.status(201).json(result);
     },
   );
 

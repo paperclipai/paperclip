@@ -216,6 +216,117 @@ export function verifyRelayArtifact(candidate: CandidateRow, artifact: RelayArti
   }
 }
 
+async function issueDeployAuthorizationForAcceptedInteraction(
+  operationDb: Db,
+  issueId: string,
+  interaction: IssueThreadInteraction,
+  actor: Actor,
+  ttlMs: number,
+) {
+  if (interaction.kind !== "request_confirmation" || interaction.status !== "accepted") return null;
+  const target = interaction.payload.target;
+  if (!target || target.type !== "custom" || !target.key.startsWith(RELEASE_CANDIDATE_CONFIRMATION_TARGET_PREFIX)) {
+    return null;
+  }
+  const candidateId = target.key.slice(RELEASE_CANDIDATE_CONFIRMATION_TARGET_PREFIX.length);
+  const candidate = await operationDb
+    .select()
+    .from(releaseCandidates)
+    .where(eq(releaseCandidates.id, candidateId))
+    .then((rows) => rows[0] ?? null);
+  if (!candidate || candidate.sourceIssueId !== issueId) {
+    throw unprocessable("Release candidate approval target does not match the source issue");
+  }
+  if (candidate.approvalInteractionId !== interaction.id) {
+    throw unprocessable("Release candidate approval interaction does not match candidate record");
+  }
+  if (target.revisionId !== candidate.imageDigest) {
+    throw unprocessable("Release candidate approval digest does not match candidate record");
+  }
+  const existing = await operationDb
+    .select()
+    .from(releaseDeployAuthorizations)
+    .where(and(
+      eq(releaseDeployAuthorizations.candidateId, candidate.id),
+      eq(releaseDeployAuthorizations.approvalInteractionId, interaction.id),
+    ))
+    .then((rows) => rows[0] ?? null);
+  if (existing) {
+    return {
+      authorization: existing,
+      token: null,
+      alreadyIssued: true,
+    };
+  }
+
+  const token = generateDeployToken();
+  const expiresAt = new Date(Date.now() + ttlMs);
+  const [authorization] = await operationDb.insert(releaseDeployAuthorizations).values({
+    companyId: candidate.companyId,
+    candidateId: candidate.id,
+    approvalInteractionId: interaction.id,
+    tokenHash: token.hash,
+    tokenPrefix: token.prefix,
+    targetHost: candidate.targetHost,
+    imageDigest: candidate.imageDigest,
+    environment: candidate.environment,
+    sequence: candidate.sequence,
+    expiresAt,
+    createdByUserId: actor.userId ?? null,
+  }).onConflictDoNothing({
+    target: [releaseDeployAuthorizations.candidateId, releaseDeployAuthorizations.approvalInteractionId],
+  }).returning();
+  if (!authorization) {
+    const concurrentAuthorization = await operationDb
+      .select()
+      .from(releaseDeployAuthorizations)
+      .where(and(
+        eq(releaseDeployAuthorizations.candidateId, candidate.id),
+        eq(releaseDeployAuthorizations.approvalInteractionId, interaction.id),
+      ))
+      .then((rows) => rows[0] ?? null);
+    if (!concurrentAuthorization) throw conflict("Failed to create deploy authorization");
+    return {
+      authorization: concurrentAuthorization,
+      token: null,
+      alreadyIssued: true,
+    };
+  }
+
+  const [approvedCandidate] = await operationDb.update(releaseCandidates).set({
+    status: "approved",
+    approvedByUserId: actor.userId ?? null,
+    approvedAt: new Date(),
+    updatedAt: new Date(),
+  }).where(and(
+    eq(releaseCandidates.id, candidate.id),
+    eq(releaseCandidates.status, "approval_requested"),
+    eq(releaseCandidates.approvalInteractionId, interaction.id),
+  )).returning();
+  if (!approvedCandidate) throw conflict("Failed to approve release candidate");
+  await appendAudit(operationDb, {
+    candidate: approvedCandidate,
+    actor,
+    authorizationId: authorization.id,
+    eventType: "deploy_authorization_issued",
+    payload: {
+      authorizationId: authorization.id,
+      tokenPrefix: token.prefix,
+      targetHost: authorization.targetHost,
+      digest: authorization.imageDigest,
+      environment: authorization.environment,
+      sequence: authorization.sequence,
+      expiresAt: authorization.expiresAt.toISOString(),
+    },
+    commentExtra: {
+      authorization_id: authorization.id,
+      token_prefix: token.prefix,
+      expires_at: authorization.expiresAt.toISOString(),
+    },
+  });
+  return { authorization, token: token.secret, alreadyIssued: false };
+}
+
 export function releaseCandidateService(db: Db) {
   async function getById(id: string) {
     return db.select().from(releaseCandidates).where(eq(releaseCandidates.id, id)).then((rows) => rows[0] ?? null);
@@ -265,13 +376,27 @@ export function releaseCandidateService(db: Db) {
         documentRevisionId: data.documentRevisionId ?? candidate.documentRevisionId,
         metadata: data.metadata ?? candidate.metadata,
         updatedAt: new Date(),
-      }).where(eq(releaseCandidates.id, candidateId)).returning();
-      if (!updated) throw conflict("Failed to update release candidate");
+      }).where(and(
+        eq(releaseCandidates.id, candidateId),
+        eq(releaseCandidates.status, "candidate_created"),
+        isNull(releaseCandidates.approvalInteractionId),
+      )).returning();
+      if (!updated) {
+        throw conflict("Release candidate is immutable after approval interaction creation", {
+          code: "release_candidate_immutable",
+          candidateId,
+        });
+      }
       await appendAudit(db, { candidate: updated, actor, eventType: "candidate_updated" });
       return updated;
     },
 
-    markApprovalInteractionCreated: async (candidateId: string, interaction: IssueThreadInteraction, actor: Actor) => {
+    markApprovalInteractionCreated: async (
+      candidateId: string,
+      interaction: IssueThreadInteraction,
+      actor: Actor,
+      expectedUpdatedAt: Date,
+    ) => {
       const candidate = await getById(candidateId);
       if (!candidate) throw notFound("Release candidate not found");
       assertCandidateMutable(candidate);
@@ -291,8 +416,18 @@ export function releaseCandidateService(db: Db) {
         approvalInteractionId: interaction.id,
         status: "approval_requested",
         updatedAt: new Date(),
-      }).where(eq(releaseCandidates.id, candidateId)).returning();
-      if (!updated) throw conflict("Failed to bind release candidate approval interaction");
+      }).where(and(
+        eq(releaseCandidates.id, candidateId),
+        eq(releaseCandidates.status, "candidate_created"),
+        isNull(releaseCandidates.approvalInteractionId),
+        eq(releaseCandidates.updatedAt, expectedUpdatedAt),
+      )).returning();
+      if (!updated) {
+        throw conflict("Release candidate changed while creating its approval interaction; retry the request", {
+          code: "release_candidate_approval_race",
+          candidateId,
+        });
+      }
       await appendAudit(db, {
         candidate: updated,
         actor,
@@ -342,105 +477,25 @@ export function releaseCandidateService(db: Db) {
       },
     }),
 
-    handleAcceptedInteraction: async (issueId: string, interaction: IssueThreadInteraction, actor: Actor, ttlMs = DEFAULT_AUTH_TTL_MS) => {
-      if (interaction.kind !== "request_confirmation" || interaction.status !== "accepted") return null;
-      const target = interaction.payload.target;
-      if (!target || target.type !== "custom" || !target.key.startsWith(RELEASE_CANDIDATE_CONFIRMATION_TARGET_PREFIX)) {
-        return null;
-      }
-      const candidateId = target.key.slice(RELEASE_CANDIDATE_CONFIRMATION_TARGET_PREFIX.length);
-      const candidate = await getById(candidateId);
-      if (!candidate || candidate.sourceIssueId !== issueId) {
-        throw unprocessable("Release candidate approval target does not match the source issue");
-      }
-      if (candidate.approvalInteractionId !== interaction.id) {
-        throw unprocessable("Release candidate approval interaction does not match candidate record");
-      }
-      if (target.revisionId !== candidate.imageDigest) {
-        throw unprocessable("Release candidate approval digest does not match candidate record");
-      }
-      const existing = await db
-        .select()
-        .from(releaseDeployAuthorizations)
-        .where(and(
-          eq(releaseDeployAuthorizations.candidateId, candidate.id),
-          eq(releaseDeployAuthorizations.approvalInteractionId, interaction.id),
-        ))
-        .then((rows) => rows[0] ?? null);
-      if (existing) {
-        return {
-          authorization: existing,
-          token: null,
-          alreadyIssued: true,
-        };
-      }
+    handleAcceptedInteraction: async (
+      issueId: string,
+      interaction: IssueThreadInteraction,
+      actor: Actor,
+      ttlMs = DEFAULT_AUTH_TTL_MS,
+    ) => db.transaction(async (tx) => issueDeployAuthorizationForAcceptedInteraction(
+      tx as unknown as Db,
+      issueId,
+      interaction,
+      actor,
+      ttlMs,
+    )),
 
-      const token = generateDeployToken();
-      const expiresAt = new Date(Date.now() + ttlMs);
-      return db.transaction(async (tx) => {
-        const transactionDb = tx as unknown as Db;
-        const [authorization] = await tx.insert(releaseDeployAuthorizations).values({
-          companyId: candidate.companyId,
-          candidateId: candidate.id,
-          approvalInteractionId: interaction.id,
-          tokenHash: token.hash,
-          tokenPrefix: token.prefix,
-          targetHost: candidate.targetHost,
-          imageDigest: candidate.imageDigest,
-          environment: candidate.environment,
-          sequence: candidate.sequence,
-          expiresAt,
-          createdByUserId: actor.userId ?? null,
-        }).onConflictDoNothing({
-          target: [releaseDeployAuthorizations.candidateId, releaseDeployAuthorizations.approvalInteractionId],
-        }).returning();
-        if (!authorization) {
-          const concurrentAuthorization = await tx
-            .select()
-            .from(releaseDeployAuthorizations)
-            .where(and(
-              eq(releaseDeployAuthorizations.candidateId, candidate.id),
-              eq(releaseDeployAuthorizations.approvalInteractionId, interaction.id),
-            ))
-            .then((rows) => rows[0] ?? null);
-          if (!concurrentAuthorization) throw conflict("Failed to create deploy authorization");
-          return {
-            authorization: concurrentAuthorization,
-            token: null,
-            alreadyIssued: true,
-          };
-        }
-
-        const [approvedCandidate] = await tx.update(releaseCandidates).set({
-          status: "approved",
-          approvedByUserId: actor.userId ?? null,
-          approvedAt: new Date(),
-          updatedAt: new Date(),
-        }).where(eq(releaseCandidates.id, candidate.id)).returning();
-        if (!approvedCandidate) throw conflict("Failed to approve release candidate");
-        await appendAudit(transactionDb, {
-          candidate: approvedCandidate,
-          actor,
-          authorizationId: authorization.id,
-          eventType: "deploy_authorization_issued",
-          payload: {
-            authorizationId: authorization.id,
-            tokenPrefix: token.prefix,
-            targetHost: authorization.targetHost,
-            digest: authorization.imageDigest,
-            environment: authorization.environment,
-            sequence: authorization.sequence,
-            expiresAt: authorization.expiresAt.toISOString(),
-          },
-          commentExtra: {
-            authorization_id: authorization.id,
-            token_prefix: token.prefix,
-            expires_at: authorization.expiresAt.toISOString(),
-          },
-        });
-        return { authorization, token: token.secret, alreadyIssued: false };
-      });
-    },
+    handleAcceptedInteractionInTransaction: async (
+      issueId: string,
+      interaction: IssueThreadInteraction,
+      actor: Actor,
+      ttlMs = DEFAULT_AUTH_TTL_MS,
+    ) => issueDeployAuthorizationForAcceptedInteraction(db, issueId, interaction, actor, ttlMs),
 
     verifyRelayAuthorization: async (authorizationId: string, token: string, artifact: RelayArtifactVerificationInput) => {
       const authorization = await getAuthorizationById(authorizationId);

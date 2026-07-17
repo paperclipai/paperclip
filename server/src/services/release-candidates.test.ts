@@ -40,7 +40,9 @@ function makeDb(
   options: {
     atomicAuthorizationConsume?: boolean;
     atomicAuthorizationIssue?: boolean;
+    failApprovalBinding?: boolean;
     failApprovalUpdate?: boolean;
+    failMutableUpdate?: boolean;
     failStagingUpdate?: boolean;
   } = {},
 ) {
@@ -106,6 +108,12 @@ function makeDb(
         return {
           where: () => ({
             returning: async () => {
+              if (options.failMutableUpdate && "workflowRunUrl" in (value as Record<string, unknown>)) {
+                return [];
+              }
+              if (options.failApprovalBinding && (value as Record<string, unknown>).status === "approval_requested") {
+                return [];
+              }
               if (options.failApprovalUpdate && (value as Record<string, unknown>).status === "approved") {
                 throw new Error("candidate approval update failed");
               }
@@ -153,6 +161,62 @@ describe("release candidate approval relay", () => {
       status: 409,
       message: "Release candidate is immutable after approval interaction creation",
     });
+  });
+
+  it("rejects a mutable update when approval wins after the initial read", async () => {
+    const { db, inserted } = makeDb([[candidate]], { failMutableUpdate: true });
+
+    await expect(
+      releaseCandidateService(db).updateMutable(candidate.id, { workflowRunUrl: "https://github.example/new" }, {}),
+    ).rejects.toMatchObject({
+      status: 409,
+      message: "Release candidate is immutable after approval interaction creation",
+    });
+
+    expect(inserted).toHaveLength(0);
+  });
+
+  it("rejects approval binding when the candidate changed after interaction creation began", async () => {
+    const interaction = {
+      id: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+      companyId: candidate.companyId,
+      issueId: candidate.sourceIssueId,
+      kind: "request_confirmation" as const,
+      status: "pending" as const,
+      continuationPolicy: "wake_assignee" as const,
+      idempotencyKey: null,
+      sourceCommentId: null,
+      sourceRunId: null,
+      title: null,
+      summary: null,
+      payload: {
+        version: 1 as const,
+        prompt: "approve",
+        target: {
+          type: "custom" as const,
+          key: `release_candidate:${candidate.id}`,
+          revisionId: candidate.imageDigest,
+        },
+      },
+      result: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    const { db, inserted } = makeDb([[candidate]], { failApprovalBinding: true });
+
+    await expect(
+      releaseCandidateService(db).markApprovalInteractionCreated(
+        candidate.id,
+        interaction,
+        {},
+        candidate.updatedAt,
+      ),
+    ).rejects.toMatchObject({
+      status: 409,
+      message: "Release candidate changed while creating its approval interaction; retry the request",
+    });
+
+    expect(inserted).toHaveLength(0);
   });
 
   it("rejects accepted confirmations whose target digest does not match the candidate", async () => {
