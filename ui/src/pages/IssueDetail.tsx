@@ -104,6 +104,10 @@ import { AgentIcon } from "../components/AgentIconPicker";
 import { IssueReferenceActivitySummary } from "../components/IssueReferenceActivitySummary";
 import { IssueRelatedWorkPanel } from "../components/IssueRelatedWorkPanel";
 import { IssueMonitorActivityCard } from "../components/IssueMonitorActivityCard";
+import {
+  IssueExecutionStageDecisionCard,
+  type IssueExecutionStageDecision,
+} from "../components/IssueExecutionStageDecisionCard";
 import { IssueScheduledRetryCard } from "../components/IssueScheduledRetryCard";
 import { IssueProperties } from "../components/IssueProperties";
 import { PauseAffectsSummaryView } from "../components/interrupt-handoff/InterruptHandoffViews";
@@ -2150,6 +2154,23 @@ export function IssueDetail() {
       }
     },
   });
+  // Execution-stage decisions (NEO-500): the server accepts a decision from the
+  // stage's currentParticipant via a plain status PATCH — approve is `done` (+comment),
+  // request-changes is `in_progress` (+comment) which returns to the returnAssignee.
+  const [pendingExecutionStageDecision, setPendingExecutionStageDecision] =
+    useState<IssueExecutionStageDecision | null>(null);
+  const handleExecutionStageDecision = useCallback(
+    (decision: IssueExecutionStageDecision, comment: string) => {
+      setPendingExecutionStageDecision(decision);
+      updateIssue.mutate(
+        decision === "approve"
+          ? { status: "done", comment }
+          : { status: "in_progress", comment },
+        { onSettled: () => setPendingExecutionStageDecision(null) },
+      );
+    },
+    [updateIssue],
+  );
   const resolveRecoveryAction = useMutation({
     mutationFn: (data: {
       actionId?: string;
@@ -4695,6 +4716,14 @@ export function IssueDetail() {
           </div>
         );
       })()}
+
+      <IssueExecutionStageDecisionCard
+        issue={issue}
+        currentUserId={currentUserId}
+        onDecide={handleExecutionStageDecision}
+        isPending={updateIssue.isPending}
+        pendingDecision={pendingExecutionStageDecision}
+      />
 
       <Separator />
 
