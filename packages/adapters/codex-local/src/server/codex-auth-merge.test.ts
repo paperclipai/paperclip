@@ -231,7 +231,11 @@ describe("codex home auth merge on sandbox asset extract", () => {
     }
   });
 
-  it("keeps same-account sandbox auth when freshness is equal, missing, or unparseable", async () => {
+  it("keeps host auth when the sandbox copy is not strictly newer (equal, missing, or unparseable freshness)", async () => {
+    // The extract path stages the sandbox copy as `source` and the host copy as
+    // `destination`. The decision predicate only adopts the source when it is
+    // strictly fresher, so a tie, a missing last_refresh on either side, or an
+    // unparseable stamp all fall through to the host destination.
     const cases = [
       {
         name: "equal last_refresh",
@@ -303,7 +307,7 @@ describe("codex home auth merge on sandbox asset extract", () => {
         sandboxAuth: entry.sandboxAuth,
         hostAuth: entry.hostAuth,
       });
-      expect(result.finalAuth, entry.name).toBe(entry.sandboxAuth);
+      expect(result.finalAuth, entry.name).toBe(entry.hostAuth);
       expect(result.finalMode, entry.name).toBe(0o600);
     }
   });
@@ -351,13 +355,16 @@ describe("codex home auth merge on sandbox asset extract", () => {
 });
 
 // The extract shell script consumes the decision predicate as a child process
-// and only branches on its exit code (10 = use sandbox auth.json, 20 = keep the
-// host auth.json / do not copy back). This suite drives the `.cjs` directly the
-// same way, asserting the exit code per row for both directions. `inbound` is the
-// default and stays byte-for-byte the pre-existing behaviour; `outbound` is the
-// new copy-back guard that only greenlights sandbox→host when the sandbox
-// credential is strictly newer, same-identity, subscription-kind.
-describe("codex-auth-merge-decision predicate directions", () => {
+// and only branches on its exit code (10 = use the source auth.json, 20 = keep
+// the destination auth.json). The predicate is direction-agnostic: the caller
+// decides which file is `source` and which is `destination` by argument order
+// (first = source, second = destination), so there is no `--direction` flag.
+// This suite drives the `.cjs` directly the same way, asserting the exit code
+// per row. Both the inbound restore (extract.sh: source = the sandbox copy,
+// destination = the host copy) and the future outbound copy-back guard reduce to
+// the same single question — adopt the source only when it is strictly newer,
+// same-identity, subscription-kind.
+describe("codex-auth-merge-decision predicate (source/destination)", () => {
   const cleanupDirs: string[] = [];
 
   afterEach(async () => {
@@ -372,8 +379,8 @@ describe("codex-auth-merge-decision predicate directions", () => {
     new URL("./codex-auth-merge-decision.cjs", import.meta.url),
   );
 
-  const KEEP_HOST = 20;
-  const USE_SANDBOX = 10;
+  const KEEP_DESTINATION = 20;
+  const USE_SOURCE = 10;
 
   function subscriptionAuth(input: {
     accountId: string;
@@ -397,20 +404,18 @@ describe("codex-auth-merge-decision predicate directions", () => {
   }
 
   async function runDecision(input: {
-    direction?: "inbound" | "outbound";
-    sandboxAuth: string;
-    hostAuth: string;
+    sourceAuth: string;
+    destinationAuth: string;
   }): Promise<{ code: number; output: string }> {
     const dir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-auth-decision-"));
     cleanupDirs.push(dir);
-    const sandboxPath = path.join(dir, "sandbox-auth.json");
-    const hostPath = path.join(dir, "host-auth.json");
-    await writeFile(sandboxPath, input.sandboxAuth, { mode: 0o600 });
-    await writeFile(hostPath, input.hostAuth, { mode: 0o600 });
+    const sourcePath = path.join(dir, "source-auth.json");
+    const destinationPath = path.join(dir, "destination-auth.json");
+    await writeFile(sourcePath, input.sourceAuth, { mode: 0o600 });
+    await writeFile(destinationPath, input.destinationAuth, { mode: 0o600 });
 
-    const args = [decisionScriptPath];
-    if (input.direction) args.push(`--direction=${input.direction}`);
-    args.push(sandboxPath, hostPath);
+    // Arg order is the whole contract: first = source, second = destination.
+    const args = [decisionScriptPath, sourcePath, destinationPath];
 
     try {
       const result = await execFile("node", args);
@@ -426,207 +431,119 @@ describe("codex-auth-merge-decision predicate directions", () => {
   const NEWER = "2026-07-09T02:00:00Z";
   const OLDER = "2026-07-09T01:00:00Z";
 
-  describe("outbound (sandbox→host copy-back guard)", () => {
-    const cases: { name: string; sandboxAuth: string; hostAuth: string; expected: number }[] = [
-      {
-        name: "sandbox strictly newer, same identity → copy back",
-        sandboxAuth: subscriptionAuth({ accountId: "acct", lastRefresh: NEWER }),
-        hostAuth: subscriptionAuth({ accountId: "acct", lastRefresh: OLDER }),
-        expected: USE_SANDBOX,
-      },
-      {
-        name: "equal last_refresh (tie) → keep host",
-        sandboxAuth: subscriptionAuth({ accountId: "acct", lastRefresh: NEWER, marker: "sb" }),
-        hostAuth: subscriptionAuth({ accountId: "acct", lastRefresh: NEWER, marker: "ho" }),
-        expected: KEEP_HOST,
-      },
-      {
-        name: "sandbox older → keep host",
-        sandboxAuth: subscriptionAuth({ accountId: "acct", lastRefresh: OLDER }),
-        hostAuth: subscriptionAuth({ accountId: "acct", lastRefresh: NEWER }),
-        expected: KEEP_HOST,
-      },
-      {
-        name: "identity mismatch even when sandbox newer → keep host",
-        sandboxAuth: subscriptionAuth({ accountId: "acct-sandbox", lastRefresh: NEWER }),
-        hostAuth: subscriptionAuth({ accountId: "acct-host", lastRefresh: OLDER }),
-        expected: KEEP_HOST,
-      },
-      {
-        name: "sandbox last_refresh missing → keep host",
-        sandboxAuth: subscriptionAuth({ accountId: "acct" }),
-        hostAuth: subscriptionAuth({ accountId: "acct", lastRefresh: OLDER }),
-        expected: KEEP_HOST,
-      },
-      {
-        name: "host last_refresh missing → keep host",
-        sandboxAuth: subscriptionAuth({ accountId: "acct", lastRefresh: NEWER }),
-        hostAuth: subscriptionAuth({ accountId: "acct" }),
-        expected: KEEP_HOST,
-      },
-      {
-        name: "sandbox last_refresh unparseable → keep host",
-        sandboxAuth: subscriptionAuth({ accountId: "acct", lastRefresh: "not-a-date" }),
-        hostAuth: subscriptionAuth({ accountId: "acct", lastRefresh: OLDER }),
-        expected: KEEP_HOST,
-      },
-      {
-        name: "host last_refresh unparseable → keep host",
-        sandboxAuth: subscriptionAuth({ accountId: "acct", lastRefresh: NEWER }),
-        hostAuth: subscriptionAuth({ accountId: "acct", lastRefresh: "not-a-date" }),
-        expected: KEEP_HOST,
-      },
-      {
-        name: "sandbox apikey → keep host",
-        sandboxAuth: apiKeyAuth("sandbox"),
-        hostAuth: subscriptionAuth({ accountId: "acct", lastRefresh: OLDER }),
-        expected: KEEP_HOST,
-      },
-      {
-        name: "host apikey → keep host",
-        sandboxAuth: subscriptionAuth({ accountId: "acct", lastRefresh: NEWER }),
-        hostAuth: apiKeyAuth("host"),
-        expected: KEEP_HOST,
-      },
-      {
-        name: "both apikey → keep host",
-        sandboxAuth: apiKeyAuth("sandbox"),
-        hostAuth: apiKeyAuth("host"),
-        expected: KEEP_HOST,
-      },
-      {
-        name: "kind mismatch (sandbox subscription, host apikey) → keep host",
-        sandboxAuth: subscriptionAuth({ accountId: "acct", lastRefresh: NEWER }),
-        hostAuth: apiKeyAuth("host"),
-        expected: KEEP_HOST,
-      },
-      {
-        name: "sandbox unusable JSON → keep host",
-        sandboxAuth: "{not valid json",
-        hostAuth: subscriptionAuth({ accountId: "acct", lastRefresh: OLDER }),
-        expected: KEEP_HOST,
-      },
-      {
-        name: "host unusable JSON → keep host",
-        sandboxAuth: subscriptionAuth({ accountId: "acct", lastRefresh: NEWER }),
-        hostAuth: "{not valid json",
-        expected: KEEP_HOST,
-      },
-    ];
+  const cases: { name: string; sourceAuth: string; destinationAuth: string; expected: number }[] = [
+    {
+      name: "source strictly newer, same identity → use source",
+      sourceAuth: subscriptionAuth({ accountId: "acct", lastRefresh: NEWER }),
+      destinationAuth: subscriptionAuth({ accountId: "acct", lastRefresh: OLDER }),
+      expected: USE_SOURCE,
+    },
+    {
+      name: "equal last_refresh (tie) → keep destination",
+      sourceAuth: subscriptionAuth({ accountId: "acct", lastRefresh: NEWER, marker: "src" }),
+      destinationAuth: subscriptionAuth({ accountId: "acct", lastRefresh: NEWER, marker: "dst" }),
+      expected: KEEP_DESTINATION,
+    },
+    {
+      name: "source older → keep destination",
+      sourceAuth: subscriptionAuth({ accountId: "acct", lastRefresh: OLDER }),
+      destinationAuth: subscriptionAuth({ accountId: "acct", lastRefresh: NEWER }),
+      expected: KEEP_DESTINATION,
+    },
+    {
+      name: "identity mismatch even when source newer → keep destination",
+      sourceAuth: subscriptionAuth({ accountId: "acct-source", lastRefresh: NEWER }),
+      destinationAuth: subscriptionAuth({ accountId: "acct-destination", lastRefresh: OLDER }),
+      expected: KEEP_DESTINATION,
+    },
+    {
+      name: "source last_refresh missing → keep destination",
+      sourceAuth: subscriptionAuth({ accountId: "acct" }),
+      destinationAuth: subscriptionAuth({ accountId: "acct", lastRefresh: OLDER }),
+      expected: KEEP_DESTINATION,
+    },
+    {
+      name: "destination last_refresh missing → keep destination",
+      sourceAuth: subscriptionAuth({ accountId: "acct", lastRefresh: NEWER }),
+      destinationAuth: subscriptionAuth({ accountId: "acct" }),
+      expected: KEEP_DESTINATION,
+    },
+    {
+      name: "both last_refresh missing → keep destination",
+      sourceAuth: subscriptionAuth({ accountId: "acct" }),
+      destinationAuth: subscriptionAuth({ accountId: "acct" }),
+      expected: KEEP_DESTINATION,
+    },
+    {
+      name: "source last_refresh unparseable → keep destination",
+      sourceAuth: subscriptionAuth({ accountId: "acct", lastRefresh: "not-a-date" }),
+      destinationAuth: subscriptionAuth({ accountId: "acct", lastRefresh: OLDER }),
+      expected: KEEP_DESTINATION,
+    },
+    {
+      name: "destination last_refresh unparseable → keep destination",
+      sourceAuth: subscriptionAuth({ accountId: "acct", lastRefresh: NEWER }),
+      destinationAuth: subscriptionAuth({ accountId: "acct", lastRefresh: "not-a-date" }),
+      expected: KEEP_DESTINATION,
+    },
+    {
+      name: "source apikey → keep destination",
+      sourceAuth: apiKeyAuth("source"),
+      destinationAuth: subscriptionAuth({ accountId: "acct", lastRefresh: OLDER }),
+      expected: KEEP_DESTINATION,
+    },
+    {
+      name: "destination apikey → keep destination",
+      sourceAuth: subscriptionAuth({ accountId: "acct", lastRefresh: NEWER }),
+      destinationAuth: apiKeyAuth("destination"),
+      expected: KEEP_DESTINATION,
+    },
+    {
+      name: "both apikey → keep destination",
+      sourceAuth: apiKeyAuth("source"),
+      destinationAuth: apiKeyAuth("destination"),
+      expected: KEEP_DESTINATION,
+    },
+    {
+      name: "kind mismatch (source subscription, destination apikey) → keep destination",
+      sourceAuth: subscriptionAuth({ accountId: "acct", lastRefresh: NEWER }),
+      destinationAuth: apiKeyAuth("destination"),
+      expected: KEEP_DESTINATION,
+    },
+    {
+      name: "source unusable JSON → keep destination",
+      sourceAuth: "{not valid json",
+      destinationAuth: subscriptionAuth({ accountId: "acct", lastRefresh: OLDER }),
+      expected: KEEP_DESTINATION,
+    },
+    {
+      name: "destination unusable JSON → keep destination",
+      sourceAuth: subscriptionAuth({ accountId: "acct", lastRefresh: NEWER }),
+      destinationAuth: "{not valid json",
+      expected: KEEP_DESTINATION,
+    },
+  ];
 
-    for (const entry of cases) {
-      it(entry.name, async () => {
-        const result = await runDecision({
-          direction: "outbound",
-          sandboxAuth: entry.sandboxAuth,
-          hostAuth: entry.hostAuth,
-        });
-        expect(result.code).toBe(entry.expected);
-      });
-    }
-
-    it("never emits sandbox token bytes on copy-back", async () => {
+  for (const entry of cases) {
+    it(entry.name, async () => {
       const result = await runDecision({
-        direction: "outbound",
-        sandboxAuth: subscriptionAuth({
-          accountId: "acct",
-          lastRefresh: NEWER,
-          marker: "SECRET-SENTINEL",
-        }),
-        hostAuth: subscriptionAuth({ accountId: "acct", lastRefresh: OLDER }),
+        sourceAuth: entry.sourceAuth,
+        destinationAuth: entry.destinationAuth,
       });
-      expect(result.code).toBe(USE_SANDBOX);
-      expect(result.output).not.toContain("SENTINEL");
+      expect(result.code).toBe(entry.expected);
     });
-  });
+  }
 
-  describe("inbound (default) regression", () => {
-    const cases: { name: string; sandboxAuth: string; hostAuth: string; expected: number }[] = [
-      {
-        name: "host strictly newer → keep host",
-        sandboxAuth: subscriptionAuth({ accountId: "acct", lastRefresh: OLDER }),
-        hostAuth: subscriptionAuth({ accountId: "acct", lastRefresh: NEWER }),
-        expected: KEEP_HOST,
-      },
-      {
-        name: "sandbox strictly newer → use sandbox",
-        sandboxAuth: subscriptionAuth({ accountId: "acct", lastRefresh: NEWER }),
-        hostAuth: subscriptionAuth({ accountId: "acct", lastRefresh: OLDER }),
-        expected: USE_SANDBOX,
-      },
-      {
-        name: "equal last_refresh (tie) → use sandbox",
-        sandboxAuth: subscriptionAuth({ accountId: "acct", lastRefresh: NEWER, marker: "sb" }),
-        hostAuth: subscriptionAuth({ accountId: "acct", lastRefresh: NEWER, marker: "ho" }),
-        expected: USE_SANDBOX,
-      },
-      {
-        name: "both last_refresh missing → use sandbox",
-        sandboxAuth: subscriptionAuth({ accountId: "acct" }),
-        hostAuth: subscriptionAuth({ accountId: "acct" }),
-        expected: USE_SANDBOX,
-      },
-      {
-        name: "sandbox last_refresh missing, host present → use sandbox",
-        sandboxAuth: subscriptionAuth({ accountId: "acct" }),
-        hostAuth: subscriptionAuth({ accountId: "acct", lastRefresh: NEWER }),
-        expected: USE_SANDBOX,
-      },
-      {
-        name: "host last_refresh missing, sandbox present → use sandbox",
-        sandboxAuth: subscriptionAuth({ accountId: "acct", lastRefresh: OLDER }),
-        hostAuth: subscriptionAuth({ accountId: "acct" }),
-        expected: USE_SANDBOX,
-      },
-      {
-        name: "identity mismatch → keep host",
-        sandboxAuth: subscriptionAuth({ accountId: "acct-sandbox", lastRefresh: NEWER }),
-        hostAuth: subscriptionAuth({ accountId: "acct-host", lastRefresh: OLDER }),
-        expected: KEEP_HOST,
-      },
-      {
-        name: "apikey host → keep host",
-        sandboxAuth: subscriptionAuth({ accountId: "acct", lastRefresh: NEWER }),
-        hostAuth: apiKeyAuth("host"),
-        expected: KEEP_HOST,
-      },
-      {
-        name: "kind mismatch → keep host",
-        sandboxAuth: apiKeyAuth("sandbox"),
-        hostAuth: subscriptionAuth({ accountId: "acct", lastRefresh: NEWER }),
-        expected: KEEP_HOST,
-      },
-      {
-        name: "sandbox unusable → keep host",
-        sandboxAuth: "{not valid json",
-        hostAuth: subscriptionAuth({ accountId: "acct", lastRefresh: NEWER }),
-        expected: KEEP_HOST,
-      },
-      {
-        name: "host unusable → keep host",
-        sandboxAuth: subscriptionAuth({ accountId: "acct", lastRefresh: NEWER }),
-        hostAuth: "{not valid json",
-        expected: KEEP_HOST,
-      },
-    ];
-
-    for (const entry of cases) {
-      it(`explicit --direction=inbound: ${entry.name}`, async () => {
-        const result = await runDecision({
-          direction: "inbound",
-          sandboxAuth: entry.sandboxAuth,
-          hostAuth: entry.hostAuth,
-        });
-        expect(result.code).toBe(entry.expected);
-      });
-
-      it(`default (no flag): ${entry.name}`, async () => {
-        const result = await runDecision({
-          sandboxAuth: entry.sandboxAuth,
-          hostAuth: entry.hostAuth,
-        });
-        expect(result.code).toBe(entry.expected);
-      });
-    }
+  it("never emits source token bytes", async () => {
+    const result = await runDecision({
+      sourceAuth: subscriptionAuth({
+        accountId: "acct",
+        lastRefresh: NEWER,
+        marker: "SECRET-SENTINEL",
+      }),
+      destinationAuth: subscriptionAuth({ accountId: "acct", lastRefresh: OLDER }),
+    });
+    expect(result.code).toBe(USE_SOURCE);
+    expect(result.output).not.toContain("SENTINEL");
   });
 });

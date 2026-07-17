@@ -41,73 +41,47 @@ function parseAuth(filePath) {
   };
 }
 
-// Exit codes are direction-agnostic: 20 = keep the host auth.json (inbound: do
-// not overwrite the sandbox copy on the way in; outbound: do not copy the
-// sandbox copy back to the host); 10 = use the sandbox auth.json.
-const KEEP_HOST = 20;
-const USE_SANDBOX = 10;
+// This predicate answers a single, direction-agnostic question: should the
+// caller replace the `destination` auth.json with the `source` auth.json? The
+// caller picks which copy is source and which is destination from its own frame
+// of reference (an inbound restore, an outbound copy-back, …) purely by argument
+// order — there is no `--direction` flag and no hard-coded sandbox/host notion:
+//
+//   argv[0] (first positional)  = source auth.json path
+//   argv[1] (second positional) = destination auth.json path
+//
+// Exit 10 = use source; exit 20 = keep destination. The predicate only ever
+// reads the two files and exits with a code — it never prints token bytes.
+const USE_SOURCE = 10;
+const KEEP_DESTINATION = 20;
 
-// Parse an optional `--direction=inbound|outbound` flag (default `inbound`) out
-// of argv while leaving the two positional auth paths in order. Inbound is the
-// original host→sandbox merge decision; outbound is the sandbox→host copy-back
-// guard. Fail loudly on an unrecognised direction rather than silently defaulting.
-const rawArgs = process.argv.slice(2);
-let direction = "inbound";
-const positional = [];
-for (const arg of rawArgs) {
-  if (arg.startsWith("--direction=")) {
-    direction = arg.slice("--direction=".length);
-  } else {
-    positional.push(arg);
-  }
-}
-if (direction !== "inbound" && direction !== "outbound") {
-  console.error(`[paperclip] unknown --direction=${direction}; expected inbound|outbound`);
-  process.exit(1);
-}
+const [sourceAuthPath, destinationAuthPath] = process.argv.slice(2);
+const sourceAuth = parseAuth(sourceAuthPath);
+const destinationAuth = parseAuth(destinationAuthPath);
 
-const [sandboxAuthPath, hostAuthPath] = positional;
-const sandboxAuth = parseAuth(sandboxAuthPath);
-const hostAuth = parseAuth(hostAuthPath);
-
-// Shared identity/kind pre-checks. Both directions refuse to move a credential
-// unless the two sides are the same usable, subscription-kind identity — an
-// unusable side, an api-key credential, a kind mismatch, or a different
-// account_id all keep the host copy regardless of direction.
+// Fail closed to the destination unless both sides are the same usable,
+// subscription-kind identity — an unusable side, an api-key credential, a kind
+// mismatch, or a different account_id all keep the destination copy.
 if (
-  hostAuth.kind === "unusable" ||
-  sandboxAuth.kind === "unusable" ||
-  sandboxAuth.kind !== hostAuth.kind ||
-  hostAuth.kind === "apikey" ||
-  sandboxAuth.accountId !== hostAuth.accountId
+  destinationAuth.kind === "unusable" ||
+  sourceAuth.kind === "unusable" ||
+  sourceAuth.kind !== destinationAuth.kind ||
+  destinationAuth.kind === "apikey" ||
+  sourceAuth.accountId !== destinationAuth.accountId
 ) {
-  process.exit(KEEP_HOST);
+  process.exit(KEEP_DESTINATION);
 }
 
-if (direction === "outbound") {
-  // Copy the sandbox credential back to the host only when it is strictly
-  // fresher: both sides must carry a parseable last_refresh and the sandbox one
-  // must be strictly greater. Ties and null/unparseable freshness keep the host
-  // copy so a spent single-use refresh token is never written back over a good one.
-  if (
-    sandboxAuth.lastRefresh !== null &&
-    hostAuth.lastRefresh !== null &&
-    sandboxAuth.lastRefresh > hostAuth.lastRefresh
-  ) {
-    process.exit(USE_SANDBOX);
-  }
-  process.exit(KEEP_HOST);
-}
-
-// Inbound (default): keep the host copy only when it is strictly fresher than
-// the sandbox copy; ties and null/unparseable freshness fall through to the
-// sandbox copy.
+// Use the source credential only when it is strictly fresher: both sides must
+// carry a parseable last_refresh and the source one must be strictly greater.
+// Ties and null/unparseable freshness keep the destination copy so a spent
+// single-use refresh token is never written over a good one.
 if (
-  hostAuth.lastRefresh !== null &&
-  sandboxAuth.lastRefresh !== null &&
-  hostAuth.lastRefresh > sandboxAuth.lastRefresh
+  sourceAuth.lastRefresh !== null &&
+  destinationAuth.lastRefresh !== null &&
+  sourceAuth.lastRefresh > destinationAuth.lastRefresh
 ) {
-  process.exit(KEEP_HOST);
+  process.exit(USE_SOURCE);
 }
 
-process.exit(USE_SANDBOX);
+process.exit(KEEP_DESTINATION);
