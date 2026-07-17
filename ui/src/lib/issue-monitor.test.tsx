@@ -9,6 +9,7 @@ import {
   formatMonitorAbsoluteFull,
   formatMonitorEta,
   formatMonitorEtaLabel,
+  formatMonitorOffset,
   useMonitorCountdown,
 } from "./issue-monitor";
 
@@ -38,6 +39,13 @@ describe("monitor time formatting", () => {
     expect(formatMonitorEtaLabel(new Date(now.getTime() + (2 * 60 + 12) * 60_000), now)).toBe("In 2h 12m");
     expect(formatMonitorEtaLabel(now, now)).toBe("Due now");
     expect(formatMonitorEtaLabel(new Date(now.getTime() - 18 * 60_000), now)).toBe("Overdue by 18m");
+  });
+
+  it("uses the injectable Date.now clock for scheduled retry offsets", () => {
+    const dateNowSpy = vi.spyOn(Date, "now").mockReturnValue(now.getTime());
+    expect(formatMonitorOffset(new Date(now.getTime() + 15 * 60_000))).toBe("in 15m");
+    expect(formatMonitorOffset(now)).toBe("now");
+    dateNowSpy.mockRestore();
   });
 
   it("formats the full local timestamp with weekday, year and zone", () => {

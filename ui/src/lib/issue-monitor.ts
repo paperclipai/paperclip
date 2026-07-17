@@ -256,7 +256,7 @@ export function useMonitorCountdown(nextCheckAt: MonitorDate | null | undefined)
 }
 
 export function formatMonitorOffset(nextCheckAt: MonitorDate): string {
-  const eta = formatMonitorEta(nextCheckAt, new Date());
+  const eta = formatMonitorEta(nextCheckAt, new Date(Date.now()));
   if (eta === "due now") return "now";
   if (eta.startsWith("overdue by ")) return `${eta.slice("overdue by ".length)} ago`;
   return eta;
