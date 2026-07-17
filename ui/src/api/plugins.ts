@@ -301,13 +301,13 @@ export const pluginsApi = {
    * Fetch recent log entries for a plugin.
    *
    * @param pluginId - UUID of the plugin.
-   * @param options - Optional filters: limit, level, since.
+   * @param options - Company scope plus optional filters: limit, level, since.
    */
-  logs: (pluginId: string, options?: { limit?: number; level?: string; since?: string }) => {
-    const params = new URLSearchParams();
-    if (options?.limit) params.set("limit", String(options.limit));
-    if (options?.level) params.set("level", options.level);
-    if (options?.since) params.set("since", options.since);
+  logs: (pluginId: string, options: { companyId: string; limit?: number; level?: string; since?: string }) => {
+    const params = new URLSearchParams({ companyId: options.companyId });
+    if (options.limit) params.set("limit", String(options.limit));
+    if (options.level) params.set("level", options.level);
+    if (options.since) params.set("since", options.since);
     const qs = params.toString();
     return api.get<Array<{ id: string; pluginId: string; level: string; message: string; meta: Record<string, unknown> | null; createdAt: string }>>(
       `/plugins/${pluginId}/logs${qs ? `?${qs}` : ""}`,

@@ -86,9 +86,11 @@ export function PluginSettings() {
   });
 
   const { data: recentLogs } = useQuery({
-    queryKey: queryKeys.plugins.logs(pluginId!),
-    queryFn: () => pluginsApi.logs(pluginId!, { limit: 50 }),
-    enabled: !!pluginId && plugin?.status === "ready",
+    queryKey: pluginId && selectedCompanyId
+      ? queryKeys.plugins.logs(pluginId, selectedCompanyId)
+      : ["plugins", pluginId ?? "__missing_plugin__", "companies", "__missing_company__", "logs"] as const,
+    queryFn: () => pluginsApi.logs(pluginId!, { companyId: selectedCompanyId!, limit: 50 }),
+    enabled: !!pluginId && !!selectedCompanyId && plugin?.status === "ready",
     refetchInterval: 30000,
   });
 

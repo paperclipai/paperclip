@@ -37,7 +37,7 @@
 import { and, eq, lte, or } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { pluginJobs, pluginJobRuns } from "@paperclipai/db";
-import type { PluginJobStore } from "./plugin-job-store.js";
+import type { JobRunAttributionInput, PluginJobStore } from "./plugin-job-store.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { parseCron, nextCronTick, validateCron } from "./cron.js";
 import { logger } from "../middleware/logger.js";
@@ -85,6 +85,13 @@ export interface TriggerJobResult {
   runId: string;
   /** The job ID that was triggered. */
   jobId: string;
+}
+
+export interface TriggerJobOptions {
+  /** Host-authorized company scope for manual runs; null/omitted means instance scope. */
+  companyId?: string | null;
+  /** Host-derived attribution for manual/retry runs. */
+  attribution?: JobRunAttributionInput;
 }
 
 /**
@@ -157,7 +164,7 @@ export interface PluginJobScheduler {
    * @returns The created run info
    * @throws {Error} if the job is not found, not active, or already running
    */
-  triggerJob(jobId: string, trigger?: "manual" | "retry"): Promise<TriggerJobResult>;
+  triggerJob(jobId: string, trigger?: "manual" | "retry", options?: TriggerJobOptions): Promise<TriggerJobResult>;
 
   /**
    * Run a single scheduler tick immediately (for testing).
@@ -439,6 +446,7 @@ export function createPluginJobScheduler(
   async function triggerJob(
     jobId: string,
     trigger: "manual" | "retry" = "manual",
+    triggerOptions: TriggerJobOptions = {},
   ): Promise<TriggerJobResult> {
     const job = await jobStore.getJobById(jobId);
     if (!job) {
@@ -486,7 +494,9 @@ export function createPluginJobScheduler(
     const run = await jobStore.createRun({
       jobId,
       pluginId: job.pluginId,
+      companyId: triggerOptions.companyId ?? null,
       trigger,
+      ...triggerOptions.attribution,
     });
 
     // Dispatch in background — don't block the caller

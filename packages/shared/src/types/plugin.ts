@@ -865,8 +865,22 @@ export interface PluginJobRunRecord {
   jobId: string;
   /** FK to `plugins.id`. */
   pluginId: string;
+  /** Company scope for company-owned runs; null for instance-scope rows. */
+  companyId: string | null;
   /** What triggered this run. */
   trigger: "schedule" | "manual" | "retry";
+  /** Host-derived actor type that triggered the run, when available. */
+  triggeredByActorType: "agent" | "user" | "system" | "plugin" | null;
+  /** Host-derived actor id that triggered the run, when available. */
+  triggeredByActorId: string | null;
+  /** Host-derived agent id that triggered the run, when applicable. */
+  triggeredByAgentId: string | null;
+  /** Host-derived board/user id that triggered the run, when applicable. */
+  triggeredByUserId: string | null;
+  /** Host-derived heartbeat run id that triggered the run, when applicable. */
+  triggeredByRunId: string | null;
+  /** Responsible user resolved by the host for this run, when known. */
+  responsibleUserId: string | null;
   /** Current run status. */
   status: "pending" | "queued" | "running" | "succeeded" | "failed" | "cancelled";
   /** Run duration in milliseconds. */

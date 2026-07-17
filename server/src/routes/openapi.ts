@@ -4642,9 +4642,17 @@ registry.registerPath({
   method: "get",
   path: "/api/plugins/{pluginId}/logs",
   tags: ["plugins"],
-  summary: "Get plugin logs",
-  request: { params: z.object({ pluginId: z.string() }) },
-  responses: { 200: r.ok(), 401: r.unauthorized },
+  summary: "Get company-scoped plugin logs",
+  request: {
+    params: z.object({ pluginId: z.string() }),
+    query: z.object({
+      companyId: z.string(),
+      limit: z.coerce.number().int().min(1).max(500).optional(),
+      level: z.string().optional(),
+      since: z.string().optional(),
+    }),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
 registry.registerPath({
@@ -4715,8 +4723,11 @@ registry.registerPath({
   path: "/api/plugins/{pluginId}/jobs/{jobId}/trigger",
   tags: ["plugins"],
   summary: "Trigger a plugin job",
-  request: { params: z.object({ pluginId: z.string(), jobId: z.string() }) },
-  responses: { 200: r.ok(), 401: r.unauthorized },
+  request: {
+    params: z.object({ pluginId: z.string(), jobId: z.string() }),
+    body: jsonBody(z.object({ companyId: z.string().optional() }).optional()),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
 registry.registerPath({

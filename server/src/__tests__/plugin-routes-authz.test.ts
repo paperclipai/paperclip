@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mockRegistry = vi.hoisted(() => ({
   getById: vi.fn(),
   getByKey: vi.fn(),
+  getConfig: vi.fn(),
   upsertConfig: vi.fn(),
   getCompanySettings: vi.fn(),
   upsertCompanySettings: vi.fn(),
@@ -23,6 +24,8 @@ const mockSecretService = vi.hoisted(() => ({
   syncSecretRefsForTarget: vi.fn(),
 }));
 
+const mockLogActivity = vi.hoisted(() => vi.fn());
+
 vi.mock("../services/plugin-registry.js", () => ({
   pluginRegistryService: () => mockRegistry,
 }));
@@ -31,9 +34,13 @@ vi.mock("../services/plugin-lifecycle.js", () => ({
   pluginLifecycleManager: () => mockLifecycle,
 }));
 
-vi.mock("../services/activity-log.js", () => ({
-  logActivity: vi.fn(),
-}));
+vi.mock("../services/activity-log.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/activity-log.js")>();
+  return {
+    ...actual,
+    logActivity: mockLogActivity,
+  };
+});
 
 vi.mock("../services/secrets.js", () => ({
   secretService: () => mockSecretService,
@@ -351,6 +358,67 @@ describe.sequential("plugin install and upgrade authz", () => {
       companyId: companyA,
       configJson,
     });
+  }, 20_000);
+
+  it("audits plugin config reads and tests without raw config values", async () => {
+    readyPlugin();
+    mockRegistry.getConfig.mockResolvedValue({
+      id: "config-1",
+      pluginId,
+      companyId: companyA,
+      configJson: { apiToken: "stored-secret-value" },
+    });
+    const call = vi.fn().mockResolvedValue({ ok: true, warnings: ["reachable"] });
+    const { app } = await createApp(boardActor({ runId: runA }), {}, {
+      bridgeDeps: {
+        workerManager: { call, isRunning: vi.fn(() => true) },
+      },
+    });
+
+    const readRes = await request(app)
+      .get(`/api/plugins/${pluginId}/config?companyId=${companyA}`);
+    const testRes = await request(app)
+      .post(`/api/plugins/${pluginId}/config/test`)
+      .send({ companyId: companyA, configJson: { apiToken: "submitted-secret-value" } });
+
+    expect(readRes.status).toBe(200);
+    expect(testRes.status).toBe(200);
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      companyId: companyA,
+      actorType: "user",
+      actorId: "user-1",
+      runId: runA,
+      action: "plugin.config.read",
+      entityType: "plugin",
+      entityId: pluginId,
+      details: expect.objectContaining({
+        pluginId,
+        pluginKey: "paperclip.example",
+        companyId: companyA,
+        configPresent: true,
+        configKeyCount: 1,
+      }),
+    }));
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      companyId: companyA,
+      actorType: "user",
+      actorId: "user-1",
+      runId: runA,
+      action: "plugin.config.tested",
+      entityType: "plugin",
+      entityId: pluginId,
+      details: expect.objectContaining({
+        pluginId,
+        companyId: companyA,
+        supported: true,
+        valid: true,
+        warningCount: 1,
+        configKeyCount: 1,
+      }),
+    }));
+    const auditCalls = JSON.stringify(mockLogActivity.mock.calls);
+    expect(auditCalls).not.toContain("stored-secret-value");
+    expect(auditCalls).not.toContain("submitted-secret-value");
   }, 20_000);
 
   it("rejects plugin config saves that reference another company's secret before syncing bindings", async () => {
@@ -715,6 +783,25 @@ describe.sequential("plugin tool and bridge authz", () => {
       params: { view: "compact" },
       renderEnvironment: null,
     });
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      companyId: companyA,
+      actorType: "user",
+      actorId: "user-1",
+      agentId: null,
+      runId: null,
+      action: "plugin.bridge.data_read",
+      entityType: "plugin",
+      entityId: pluginId,
+      details: expect.objectContaining({
+        pluginId,
+        pluginKey: "paperclip.example",
+        companyId: companyA,
+        bridgeMethod: "getData",
+        dataKey: "health",
+        routeStyle: "url",
+        outcome: "success",
+      }),
+    }));
   });
 
   it("allows omitted-company bridge calls for instance admins as global plugin actions", async () => {
@@ -873,6 +960,25 @@ describe.sequential("plugin tool and bridge authz", () => {
       },
       renderEnvironment: null,
     });
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      companyId: companyA,
+      actorType: "agent",
+      actorId: agentA,
+      agentId: agentA,
+      runId: runA,
+      action: "plugin.bridge.action_performed",
+      entityType: "plugin",
+      entityId: pluginId,
+      details: expect.objectContaining({
+        pluginId,
+        pluginKey: "paperclip.example",
+        companyId: companyA,
+        bridgeMethod: "performAction",
+        actionKey: "sync",
+        routeStyle: "legacy",
+        outcome: "success",
+      }),
+    }));
   });
 
   it("rejects agent plugin actions outside the authenticated company scope", async () => {
@@ -926,6 +1032,41 @@ describe.sequential("plugin tool and bridge authz", () => {
     });
   });
 
+  it("audits company-scoped plugin log reads", async () => {
+    readyPlugin();
+    const limit = vi.fn(() => Promise.resolve([
+      { id: "log-1", pluginId, companyId: companyA, level: "info", message: "ok", meta: null },
+    ]));
+    const orderBy = vi.fn(() => ({ limit }));
+    const where = vi.fn(() => ({ orderBy }));
+    const from = vi.fn(() => ({ where }));
+    const db = { select: vi.fn(() => ({ from })) };
+    const { app } = await createApp(boardActor({ companyIds: [companyA], runId: runA }), {}, { db });
+
+    const res = await request(app)
+      .get(`/api/plugins/${pluginId}/logs?companyId=${companyA}&limit=10&level=info`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveLength(1);
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      companyId: companyA,
+      actorType: "user",
+      actorId: "user-1",
+      runId: runA,
+      action: "plugin.logs.read",
+      entityType: "plugin",
+      entityId: pluginId,
+      details: expect.objectContaining({
+        pluginId,
+        pluginKey: "paperclip.example",
+        companyId: companyA,
+        limit: 10,
+        level: "info",
+        resultCount: 1,
+      }),
+    }));
+  });
+
   it("rejects manual job triggers for non-admin board users", async () => {
     const scheduler = { triggerJob: vi.fn() };
     const jobStore = { getJobByIdForPlugin: vi.fn() };
@@ -945,22 +1086,52 @@ describe.sequential("plugin tool and bridge authz", () => {
   it("allows manual job triggers for instance admins", async () => {
     readyPlugin();
     const scheduler = { triggerJob: vi.fn().mockResolvedValue({ runId: "run-1", jobId: "job-1" }) };
-    const jobStore = { getJobByIdForPlugin: vi.fn().mockResolvedValue({ id: "job-1" }) };
+    const jobStore = { getJobByIdForPlugin: vi.fn().mockResolvedValue({ id: "job-1", jobKey: "sync" }) };
     const { app } = await createApp(boardActor({
       userId: "admin-1",
       isInstanceAdmin: true,
-      companyIds: [],
+      companyIds: [companyA],
+      runId: runA,
     }), {}, {
       jobDeps: { scheduler, jobStore },
     });
 
     const res = await request(app)
       .post(`/api/plugins/${pluginId}/jobs/job-1/trigger`)
-      .send({});
+      .send({ companyId: companyA });
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ runId: "run-1", jobId: "job-1" });
-    expect(scheduler.triggerJob).toHaveBeenCalledWith("job-1", "manual");
+    expect(scheduler.triggerJob).toHaveBeenCalledWith("job-1", "manual", {
+      companyId: companyA,
+      attribution: {
+        triggeredByActorType: "user",
+        triggeredByActorId: "admin-1",
+        triggeredByAgentId: null,
+        triggeredByUserId: "admin-1",
+        triggeredByRunId: runA,
+        responsibleUserId: "admin-1",
+      },
+    });
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      companyId: companyA,
+      actorType: "user",
+      actorId: "admin-1",
+      agentId: null,
+      runId: runA,
+      action: "plugin.job.triggered",
+      entityType: "plugin_job",
+      entityId: "job-1",
+      details: expect.objectContaining({
+        pluginId,
+        pluginKey: "paperclip.example",
+        companyId: companyA,
+        jobId: "job-1",
+        jobKey: "sync",
+        trigger: "manual",
+        pluginJobRunId: "run-1",
+      }),
+    }));
   });
 
   // ─── Agent JWT tool execution (cherry-picked from #5549) ─────────────────────
