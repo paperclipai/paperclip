@@ -1,4 +1,12 @@
-import { useEffect, useMemo, useRef, type ReactNode } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  type ReactNode,
+} from "react";
 import { useQuery, useQueryClient, type InfiniteData, type QueryClient } from "@tanstack/react-query";
 import { createCoalescingQueryClient, createInvalidationBatcher } from "../lib/query-invalidation-batcher";
 import { patchRunStatusInList, removeRunFromList } from "../lib/live-runs-cache";
@@ -33,6 +41,53 @@ type LiveUpdatesSocketLike = {
   onclose: ((this: WebSocket, ev: CloseEvent) => unknown) | null;
   close: (code?: number, reason?: string) => void;
 };
+
+export type CompanyLiveEventHandler = (event: LiveEvent) => void;
+
+interface LiveEventSubscription {
+  subscribe: (handler: CompanyLiveEventHandler) => () => void;
+}
+
+const LiveEventSubscriptionContext = createContext<LiveEventSubscription | null>(null);
+
+function dispatchLiveEventToSubscribers(
+  subscribers: Set<CompanyLiveEventHandler>,
+  expectedCompanyId: string,
+  event: LiveEvent,
+) {
+  if (event.companyId !== expectedCompanyId) return;
+  // Snapshot so a handler that (un)subscribes mid-dispatch can't mutate the set
+  // we're iterating.
+  for (const handler of Array.from(subscribers)) {
+    try {
+      handler(event);
+    } catch {
+      // A misbehaving subscriber must never break the shared socket pipeline
+      // or the toast/invalidation handling that runs alongside it.
+    }
+  }
+}
+
+/**
+ * Subscribe to live company events off the single shared LiveUpdates socket.
+ * Components can react to `heartbeat.run.progress`, `activity.logged`, etc.
+ * without opening a WebSocket per mount. Events are already filtered to the
+ * active company. No-ops when rendered outside a LiveUpdatesProvider (e.g. in
+ * isolated tests), so callers get graceful degradation for free.
+ */
+export function useCompanyLiveEvent(handler: CompanyLiveEventHandler): void {
+  const subscription = useContext(LiveEventSubscriptionContext);
+  const handlerRef = useRef(handler);
+  useEffect(() => {
+    handlerRef.current = handler;
+  });
+  useEffect(() => {
+    if (!subscription) return;
+    return subscription.subscribe((event) => {
+      handlerRef.current(event);
+    });
+  }, [subscription]);
+}
 
 function readString(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
@@ -1037,6 +1092,24 @@ function invalidateActivityQueries(
     return;
   }
 
+  if (entityType === "summary_slot") {
+    // The Summarizer's authoritative PUT logs `summary_slot.write`; refresh the
+    // affected slot + its revisions so the finished summary lands instantly
+    // instead of waiting for the card's 3s generating poll tick.
+    const scopeKind = readString(details?.scopeKind);
+    const slotKey = readString(details?.slotKey);
+    const scopeId = readString(details?.scopeId);
+    if (scopeKind && slotKey) {
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.summarySlots.detail(companyId, scopeKind, slotKey, scopeId),
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.summarySlots.revisions(companyId, scopeKind, slotKey, scopeId),
+      });
+    }
+    return;
+  }
+
   if (entityType === "company") {
     queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
   }
@@ -1209,6 +1282,8 @@ export const __liveUpdatesTestUtils = {
   buildAgentStatusToast,
   buildRunStatusToast,
   closeSocketQuietly,
+  dispatchLiveEventToSubscribers,
+  LiveEventSubscriptionContext,
   applyRunLiveStatusPatchToCaches,
   hydrateVisibleIssueComment,
   invalidateActivityQueries,
@@ -1243,6 +1318,14 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
     userId: currentUserId,
     agentId: null,
   });
+  const subscribersRef = useRef<Set<CompanyLiveEventHandler>>(new Set());
+  const subscribe = useCallback((handler: CompanyLiveEventHandler) => {
+    subscribersRef.current.add(handler);
+    return () => {
+      subscribersRef.current.delete(handler);
+    };
+  }, []);
+  const subscriptionValue = useMemo<LiveEventSubscription>(() => ({ subscribe }), [subscribe]);
 
   // Coalesce the per-event invalidation storm. Optimistic setQueryData writes
   // still pass straight through (immediate); only invalidateQueries is batched
@@ -1322,6 +1405,9 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
             userId: currentActorRef.current.userId,
             agentId: currentActorRef.current.agentId,
           });
+          // Fan the raw event out to component subscribers after cache
+          // handling so any reader sees fresh query data.
+          dispatchLiveEventToSubscribers(subscribersRef.current, liveCompanyId, parsed);
         } catch {
           // Ignore non-JSON payloads.
         }
@@ -1355,5 +1441,9 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
     };
   }, [coalescingClient, liveCompanyId, pushToast, canConnectSocket, socketAuthKey]);
 
-  return <>{children}</>;
+  return (
+    <LiveEventSubscriptionContext.Provider value={subscriptionValue}>
+      {children}
+    </LiveEventSubscriptionContext.Provider>
+  );
 }

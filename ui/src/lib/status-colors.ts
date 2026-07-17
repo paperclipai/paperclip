@@ -199,17 +199,23 @@ export const liveBlueBadge = "bg-blue-500/10 border-blue-500/30 text-blue-600 da
 // Inline banner tones (built-in agents provenance / paused notices)
 //
 // Softer, full-width banner surface derived from the same brand hue anchors as
-// `brandChipBadge`. `info` (blue) carries provenance/informational context;
-// `warning` (amber) carries paused/attention context. Consumed by
+// `brandChipBadge`. `info` carries provenance/informational context, `warning`
+// carries paused/attention context, and `danger` carries failed actions. Consumed by
 // `<InlineBanner>` so feature banners stay token-backed instead of hand-rolling
 // per-instance `bg-yellow-*`/`bg-blue-*` recipes.
 // ---------------------------------------------------------------------------
 
-export type BannerTone = "info" | "warning";
+export type BannerTone = "info" | "warning" | "danger";
 
 export const brandBanner: Record<BannerTone, string> = {
   info: "border-[#2563EB]/40 bg-[#DBEAFE]/50 text-[#1D4ED8] dark:border-[#2563eb59] dark:bg-[#2563eb14] dark:text-[#93C5FD]",
   warning: "border-[#F59E0B]/50 bg-[#FEF3C7]/60 text-[#B45309] dark:border-[#f59e0b59] dark:bg-[#f59e0b12] dark:text-[#F59E0B]",
+  // PAP-14031: aligned to the proven `failed`/`error` chip recipe (bg-red-100 /
+  // text-red-700 pair) so title + body both clear WCAG AA 4.5:1 in light and
+  // dark on either `--background` or `--card`. The prior `text-destructive` on
+  // `bg-destructive/10` measured ~3.7–4.3:1 — under AA for normal text. Border
+  // keeps the destructive hue for continuity with other danger surfaces.
+  danger: "border-destructive/40 bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300",
 };
 
 export const issueStatusColor: Record<string, BrandChipColor> = {

@@ -107,7 +107,10 @@ describeEmbeddedPostgres("companyService", () => {
       slug: "reflection-coach",
     });
 
-    const [routine] = await db.select().from(routines).where(eq(routines.companyId, created.id));
+    const [routine] = await db
+      .select()
+      .from(routines)
+      .where(and(eq(routines.companyId, created.id), eq(routines.assigneeAgentId, reflectionRows[0]!.id)));
     expect(routine).toMatchObject({
       status: "paused",
       assigneeAgentId: reflectionRows[0]!.id,

@@ -1,5 +1,18 @@
 export type { Company } from "./company.js";
 export type {
+  GenerateSummarySlotRequest,
+  GenerateSummarySlotResponse,
+  GetSummarySlotResponse,
+  ListSummarySlotRevisionsResponse,
+  SummarySlot,
+  SummarySlotDocument,
+  SummarySlotIssueRef,
+  SummarySlotRevision,
+  SummarySlotScopeSelector,
+  WriteSummarySlotRequest,
+  WriteSummarySlotResponse,
+} from "./summary-slot.js";
+export type {
   AttentionDecisionVerb,
   AttentionDetailImage,
   AttentionFeed,
@@ -13,6 +26,15 @@ export type {
   AttentionSubjectKind,
   AttentionWorkspaceRef,
 } from "./attention.js";
+export type {
+  DecisionTrainingExample,
+  DecisionTrainingNotesHistoryEntry,
+  DecisionTrainingPreview,
+  DecisionTrainingRetentionPolicy,
+  DecisionTrainingSnapshotV1,
+  DecisionTrainingSourceKind,
+} from "./decision-training.js";
+export { DECISION_TRAINING_RETENTION_POLICY } from "./decision-training.js";
 export type {
   Environment,
   EnvironmentDeleteBlastRadius,

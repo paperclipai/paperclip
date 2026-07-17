@@ -1,5 +1,5 @@
 import type { LucideIcon } from "lucide-react";
-import { Info, AlertTriangle } from "lucide-react";
+import { AlertCircle, AlertTriangle, Info } from "lucide-react";
 import type { ReactNode } from "react";
 
 import { cn } from "@/lib/utils";
@@ -8,10 +8,11 @@ import { brandBanner, type BannerTone } from "@/lib/status-colors";
 const TONE_ICON: Record<BannerTone, LucideIcon> = {
   info: Info,
   warning: AlertTriangle,
+  danger: AlertCircle,
 };
 
 export interface InlineBannerProps {
-  /** Visual tone. `info` (blue) for provenance/context, `warning` (amber) for paused/attention. */
+  /** Visual tone. `info` for context, `warning` for attention, `danger` for failures. */
   tone?: BannerTone;
   /** Optional bold heading rendered above the body. */
   title?: ReactNode;
