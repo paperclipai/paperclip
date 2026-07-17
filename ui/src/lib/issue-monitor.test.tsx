@@ -44,6 +44,7 @@ describe("monitor time formatting", () => {
   it("uses the injectable Date.now clock for scheduled retry offsets", () => {
     const dateNowSpy = vi.spyOn(Date, "now").mockReturnValue(now.getTime());
     expect(formatMonitorOffset(new Date(now.getTime() + 15 * 60_000))).toBe("in 15m");
+    expect(formatMonitorOffset(new Date(now.getTime() + 10_000))).toBe("now");
     expect(formatMonitorOffset(now)).toBe("now");
     dateNowSpy.mockRestore();
   });
