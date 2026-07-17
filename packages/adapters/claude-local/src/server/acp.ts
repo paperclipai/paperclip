@@ -210,6 +210,18 @@ async function pathExists(candidate: string): Promise<boolean> {
   return fs.access(candidate).then(() => true).catch(() => false);
 }
 
+async function claudeAcpWrapperEntrypointHealthy(commandPath: string): Promise<boolean | null> {
+  try {
+    const raw = await fs.readFile(commandPath, "utf8");
+    const match = raw.match(/\$basedir\/([^"\n]*@agentclientprotocol\/claude-agent-acp\/dist\/index\.js)/);
+    if (!match) return null;
+    const entrypointPath = path.resolve(path.dirname(commandPath), match[1]);
+    return pathExists(entrypointPath);
+  } catch {
+    return null;
+  }
+}
+
 function hasPathSeparator(command: string): boolean {
   return command.includes("/") || command.includes("\\");
 }
@@ -263,8 +275,13 @@ async function commandIsResolvable(
       return false;
     }
   }
-  if (path.isAbsolute(trimmed) || hasPathSeparator(trimmed)) return pathExists(trimmed);
-  return (await findCommandOnPath(trimmed)) !== null;
+  if (path.isAbsolute(trimmed) || hasPathSeparator(trimmed)) {
+    if (!(await pathExists(trimmed))) return false;
+    return (await claudeAcpWrapperEntrypointHealthy(trimmed)) !== false;
+  }
+  const resolved = await findCommandOnPath(trimmed);
+  if (!resolved) return false;
+  return (await claudeAcpWrapperEntrypointHealthy(resolved)) !== false;
 }
 
 async function resolveClaudeAcpCommand(config: Record<string, unknown>): Promise<string> {

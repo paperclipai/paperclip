@@ -154,6 +154,22 @@ async function createRuntimeSkill(root: string) {
   };
 }
 
+async function createBrokenClaudeAcpWrapper(root: string) {
+  const commandPath = path.join(root, "bin", "claude-agent-acp");
+  await fs.mkdir(path.dirname(commandPath), { recursive: true });
+  await fs.writeFile(
+    commandPath,
+    [
+      "#!/bin/sh",
+      'basedir=$(dirname "$(echo "$0" | sed -e \'s,\\\\,/,g\')")',
+      'exec node "$basedir/../@agentclientprotocol/claude-agent-acp/dist/index.js" "$@"',
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  return commandPath;
+}
+
 function buildContext(root: string, overrides: Partial<AdapterExecutionContext> = {}): AdapterExecutionContext {
   return {
     runId: "run-1",
@@ -239,6 +255,18 @@ describe("claude_local ACP lane", () => {
         executionTarget: null,
       }),
     ).resolves.toEqual({ engine: "cli", explicit: true });
+
+    const brokenWrapperPath = await createBrokenClaudeAcpWrapper(root);
+    await expect(
+      resolveClaudeExecutionEngineForRun({
+        config: { agentCommand: brokenWrapperPath },
+        executionTarget: null,
+      }),
+    ).resolves.toMatchObject({
+      engine: "cli",
+      explicit: false,
+      fallbackReason: expect.stringContaining("not available"),
+    });
 
     setNodeVersion("v22.11.0");
     await expect(
@@ -401,6 +429,24 @@ describe("claude_local ACP lane", () => {
       expect.objectContaining({
         code: "claude_acp_runtime_scaffold",
         level: "info",
+      }),
+    );
+
+    const brokenWrapperResult = await testClaudeAcpEnvironment({
+      adapterType: "claude_local",
+      companyId: "company-1",
+      config: {
+        engine: "acp",
+        cwd: root,
+        agentCommand: await createBrokenClaudeAcpWrapper(root),
+      },
+    });
+
+    expect(brokenWrapperResult.status).toBe("fail");
+    expect(brokenWrapperResult.checks).toContainEqual(
+      expect.objectContaining({
+        code: "claude_acp_command_missing",
+        level: "error",
       }),
     );
   });
