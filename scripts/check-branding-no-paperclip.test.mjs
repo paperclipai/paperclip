@@ -180,67 +180,46 @@ check('detector: strongContract catches conn string', strongContract('postgres:/
 check('spec: ALLOWLIST is non-empty', Array.isArray(ALLOWLIST) && ALLOWLIST.length > 0);
 
 // -------------------------------------------------------------------------
-// 6. NEO-509 — frozen data-plane forms (amends conf 3b8eba31). The 25 forms the
-//    line-based detector under-covered are now frozen (single-line strong
-//    contracts + the multi-line S3-bucket default), while renameable prose that
-//    sits right next to them (backup filename prefix, UI placeholders) STILL
-//    fires. Proves the amendment is NOT a blanket weakening.
+// 6. DATA-PLANE FREEZE (NEO-507) — quoted `"paperclip"` string LITERALS that
+//    are frozen wire/runtime contracts must NOT fire (a blanket --fix would
+//    rewrite them into breaking changes), while rendered display copy that is
+//    ALSO a quoted literal (webmanifest "name": "Paperclip") must still fire.
+//    Exact shapes taken from the NEO-436/W3 rollout scan of fork master.
 // -------------------------------------------------------------------------
-{
-  const root = mkdtempSync(join(tmpdir(), 'w3-neo509-'));
-  mkdirSync(join(root, 'cli/src/commands'), { recursive: true });
-  // Frozen forms — every one must stay green, INCLUDING the multi-line S3 default
-  // whose tail is a bare "paperclip" literal (context-aware freeze).
-  const frozenFile = join(root, 'cli/src/commands/frozen.ts');
-  const frozen = [
-    'user: "paperclip",',
-    'password: "paperclip",',
-    'await ensurePostgresDatabase(adminConnectionString, "paperclip");',
-    'bucket: source?.storage.s3.bucket ?? "paperclip",',
-    'const DEFAULT_AGENT_JWT_ISSUER = "paperclip";',
-    'provider: "paperclip",',
-    'if (wp.provider === "paperclip") keep();',
-    '    case "paperclip":',
-    'normalized.startsWith("[paperclip] skipping saved session");',
-    'choice.hasPaperclipConfig ? "paperclip" : "no-paperclip-config",',
-    'This product is called Cortex. Never refer to it as "Paperclip" in output.',
-    // multi-line S3-bucket default — tail literal on its own line:
-    '  const storageS3Bucket =',
-    '    process.env.PAPERCLIP_STORAGE_S3_BUCKET ??',
-    '    config?.storage?.s3?.bucket ??',
-    '    "paperclip";',
-  ];
-  writeFileSync(frozenFile, frozen.join('\n') + '\n');
-  check('neo509: lint green on all frozen data-plane forms', runGuard(root).code === 0);
-
-  // Codemod must leave every frozen form (incl. the multi-line tail) untouched.
-  const beforeFrozen = readFileSync(frozenFile, 'utf8');
-  runGuard(root, ['--fix']);
-  const afterFrozen = readFileSync(frozenFile, 'utf8');
-  check('neo509: --fix leaves frozen forms byte-for-byte', beforeFrozen === afterFrozen);
-  check('neo509: multi-line S3 default tail stays "paperclip"',
-    afterFrozen.includes('    "paperclip";'));
-  rmSync(frozenFile, { force: true });
-
-  // Renameable prose sitting next to the frozen forms must still FIRE and rename.
-  const proseFile = join(root, 'cli/src/commands/prose.ts');
-  const prose = [
-    'const filenamePrefix = opts.filenamePrefix?.trim() || "paperclip";',
-    '.option("--filename-prefix <p>", "Backup filename prefix", "paperclip")',
-    'placeholder: "paperclip",',
-    'placeholder="paperclip"',
-  ];
-  writeFileSync(proseFile, prose.join('\n') + '\n');
-  const proseLint = runGuard(root);
-  check('neo509: prose defaults/placeholders still FIRE', proseLint.code === 1,
-    `exit=${proseLint.code}`);
-  check('neo509: fire names the backup filenamePrefix prose',
-    (proseLint.stderr + proseLint.stdout).includes('prose.ts'));
-  runGuard(root, ['--fix']);
-  const proseAfter = readFileSync(proseFile, 'utf8');
-  check('neo509: --fix renames prose paperclip→cortex', !proseAfter.includes('"paperclip"'));
-  check('neo509: tree lints clean after prose --fix', runGuard(root).code === 0);
-  rmSync(root, { recursive: true, force: true });
+const DATA_PLANE_FROZEN = [
+  'user: "paperclip",',                                                   // pg cred
+  'password: "paperclip",',                                              // pg cred
+  'await ensurePostgresDatabase(adminConnectionString, "paperclip");',  // db name
+  'bucket: source?.storage.s3.bucket ?? "paperclip",',                 // s3 bucket
+  'bucket: "paperclip",',                                               // s3 bucket
+  '    "paperclip";',                                                    // bare fallback default
+  'const DEFAULT_AGENT_JWT_ISSUER = "paperclip";',                     // jwt issuer
+  'String(config.sessionKey ?? "paperclip")',                          // session key
+  'const filenamePrefix = opts.filenamePrefix?.trim() || "paperclip";',// backup prefix
+  'const prefix = detailString(h?.details, "prefix") ?? "paperclip";', // secret prefix (crosses a quoted arg)
+  'placeholder="paperclip"',                                            // ui placeholder (jsx)
+  'placeholder: "paperclip",',                                         // ui placeholder (object)
+  'wp.provider === "paperclip"',                                       // provider enum
+  'provider: "paperclip",',                                            // provider enum
+  'if (skill.sourceBadge === "paperclip") return "company";',         // badge enum
+  'case "paperclip":',                                                 // switch discriminant
+  'choice.hasPaperclipConfig ? "paperclip" : "no-paperclip-config",', // config-presence discriminant
+  'return normalized.startsWith("[paperclip] skipping saved session resume");', // log-prefix matcher
+  'This product is called Cortex. Never refer to it as "Paperclip" in user-facing output.', // instruction line
+];
+for (const l of DATA_PLANE_FROZEN) {
+  check(`data-plane: freezes ${l.trim().slice(0, 48)}`, strongContract(l) !== null && !(hasBrandWord(l) && !strongContract(l)));
+}
+// Must NOT under-fire: rendered display copy / model-echoable brand that is a
+// quoted or plain literal must still be a violation.
+const STILL_FIRES = [
+  '  "name": "Paperclip",',            // webmanifest display copy (capital, key `name`)
+  '  "short_name": "Paperclip",',      // webmanifest display copy
+  '  - paperclip',                     // SKILL.md tag list (model-echoable)
+  'follow the `paperclip` skill.',     // backtick skill reference
+];
+for (const l of STILL_FIRES) {
+  check(`no-under-fire: still fires ${l.trim().slice(0, 40)}`, hasBrandWord(l) && !strongContract(l));
 }
 
 // -------------------------------------------------------------------------

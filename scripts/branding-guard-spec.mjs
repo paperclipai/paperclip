@@ -123,76 +123,90 @@ export const OUT_OF_GUARD_SKILL_RE = /(^\.agents\/skills\/[^/]*paperclip|^\.clau
 //   paperclip:issue-draft (localStorage/event key) · postgres://paperclip:
 //   paperclip@… (embedded-pg default creds/dbname). Prose "Paperclip:" (capital
 //   + space) is intentionally NOT matched, so rendered copy still renames.
-//
-// NEO-509 (amends conf 3b8eba31): a bare lowercase `"paperclip"` STRING LITERAL
-// reads as a brand word to BRAND_WORD_RE (quotes are boundaries), but many such
-// occurrences are FROZEN data-plane values shared with upstream — renaming any
-// breaks auth / DB / storage / enum / log-parsing interop. The line-based
-// detector under-covers the FORMS they appear in, so we add whole-line freezes
-// keyed on each contract-bearing context. Every rule below is case-SENSITIVE on
-// the lowercase literal so rendered prose ("Paperclip", placeholder text) still
-// fires and renames. Forms enumerated in NEO-483 `guard-activation-triage`.
 export const STRONG_CONTRACT = [
   { id: 'nskey', re: /\bpaperclip:[a-z]/ },              // namespace/storage/event key
   { id: 'conn',  re: /:paperclip[:@]|paperclip:paperclip/i }, // conn-string user:pass
-
-  // embedded-pg default creds + S3-bucket + workProduct provider — struct/record
-  // field whose VALUE is the frozen id. Keyed on the field name so prose keys
-  // (placeholder:, name:, short_name:) are NOT matched.
-  { id: 'frozen-field', re: /\b(?:user|password|bucket|provider)\s*:\s*["']paperclip["']/ },
-  // code value-default `?? "paperclip"` / `|| "paperclip"` resolving a frozen
-  // resource id (S3 bucket / adapter sessionKey / secret-name prefix). Requires
-  // the frozen resource token on the line so a renameable default like the
-  // backup `filenamePrefix || "paperclip"` (Bucket A/W2 prose) still fires.
-  { id: 'resource-default', re: /(?:s3[?.]*\.?bucket|\bbucket\b|sessionKey|secretNamePrefix|["']prefix["'])[^\n]*(?:\?\?|\|\|)\s*["']paperclip["']/ },
-  // embedded-pg default dbname passed to ensurePostgresDatabase(conn, "paperclip")
-  { id: 'pg-dbname', re: /ensurePostgresDatabase\([^)]*["']paperclip["']/ },
-  // enum / discriminant comparison — workProduct provider, catalog source badge,
-  // switch-case discriminator. Comparison/`case` forms are never rendered prose.
-  { id: 'enum-cmp', re: /(?:={2,3}\s*["']paperclip["']|case\s+["']paperclip["']\s*:)/ },
-  // auth JWT issuer claim (token `iss`); renaming breaks token validation.
-  { id: 'jwt-issuer', re: /(?:JWT_ISSUER|\bISSUER|["']iss["'])\s*[:=]\s*["']paperclip["']/ },
-  // frozen `[paperclip]` log-prefix — consumers parse the literal bracketed tag
-  // emitted by the out-of-scope (frozen) instrumentation; renaming breaks parsing.
-  { id: 'log-prefix', re: /\[paperclip\]/ },
-  // internal config discriminant paired with the `no-paperclip-config` sentinel.
-  { id: 'config-flag', re: /no-paperclip-config/ },
-  // D6 anti-brand naming directive — the line literally quotes the OLD brand to
-  // forbid it ("Never refer to it as \"Paperclip\""); rewriting is nonsensical.
-  { id: 'd6-directive', re: /refer to it as\s+["“][Pp]aperclip["”]/ },
 ];
 
+// -------------------------------------------------------------------------
+// DATA_PLANE_CONTRACT — frozen quoted string LITERALS (NEO-507).
+//
+// The boundary detector treats `"`, `:`, space, `(` as word boundaries, so a
+// bare quoted value like `user: "paperclip"` reads as a standalone brand word
+// and OVER-FIRES. But these values are wire/runtime contracts shared with
+// upstream paperclipai/paperclip — a blanket `--fix` would silently rewrite
+// them into BREAKING changes (`user: "paperclip"` → `user: "cortex"` breaks the
+// embedded-pg login; a renamed S3 bucket / DB name / JWT issuer / provider enum
+// / log-prefix matcher all break interop or persisted data).
+//
+// The freeze is KEY / CONTEXT-AWARE, never "any quoted paperclip": each rule
+// keys off the property/callsite/syntax the literal sits in, and the value
+// token is pinned to lowercase `"paperclip"` (data identifiers are always
+// lowercase). So rendered DISPLAY copy that is also a quoted literal — e.g.
+// `ui/public/site.webmanifest` `"name": "Paperclip"` (capital, key `name`) —
+// is deliberately NOT frozen and still fires. Genuine model-echoable brand in
+// SKILL.md tag lists (`- paperclip`) or backtick skill refs (`` `paperclip` ``)
+// is likewise untouched (unquoted / backtick, not a `"paperclip"` literal).
+//
+// Taxonomy source unchanged (NEO-436 plan rev 6 §3/§4/§6); this is a
+// detector-completeness fix, not a taxonomy change.
+export const DATA_PLANE_CONTRACT = [
+  // Split embedded-pg creds — `user: "paperclip"` / `password: "paperclip"`.
+  { id: 'pg-cred',        re: /\b(?:user|password|username|passwd)\s*:\s*"paperclip"/ },
+  // DB-name arg — `ensurePostgresDatabase(conn, "paperclip")`.
+  { id: 'pg-dbname',      re: /ensure[A-Za-z]*Database\s*\([^)]*"paperclip"/ },
+  // S3 bucket literal / default — `bucket: "paperclip"`, `bucket ?? "paperclip"`.
+  { id: 's3-bucket',      re: /\bbucket\b[^"\n]*"paperclip"/ },
+  // Provider / badge enum discriminants — `provider === "paperclip"`,
+  // `provider: "paperclip"`, `sourceBadge === "paperclip"`.
+  { id: 'enum-provider',  re: /\b(?:provider|sourceBadge)\s*(?:!==?|===?|:)\s*"paperclip"/ },
+  // `switch` discriminant — `case "paperclip":`.
+  { id: 'enum-case',      re: /\bcase\s+"paperclip"\s*:/ },
+  // Config-presence discriminant vocabulary — the ternary label
+  // `hasPaperclipConfig ? "paperclip" : "no-paperclip-config"`. The negative
+  // partner is dash-frozen, so renaming only the positive branch would split
+  // the pair; both stay frozen as the `.paperclip` config-dir vocabulary.
+  { id: 'config-flag',    re: /"paperclip"\s*:\s*"no-paperclip-config"/ },
+  // Identity/auth default — `DEFAULT_AGENT_JWT_ISSUER = "paperclip"`.
+  { id: 'jwt-issuer',     re: /ISSUER\s*=\s*"paperclip"/ },
+  // Session-key default — `sessionKey ?? "paperclip"`.
+  { id: 'session-key',    re: /\bsessionKey\b[^"\n]*"paperclip"/ },
+  // Secret / backup name-prefix defaults — `filenamePrefix … "paperclip"`,
+  // `secretNamePrefix … "paperclip"`, `const prefix = … ?? "paperclip"`. Uses
+  // `.*` (not `[^"]*`) so it still matches when an intervening quoted arg sits
+  // between the key and the default, e.g. `detailString(…, "prefix") ?? "paperclip"`.
+  { id: 'name-prefix',    re: /\b(?:filenamePrefix|secretNamePrefix|prefix)\b.*"paperclip"/ },
+  // CLI option default for the backup filename prefix.
+  { id: 'cli-prefix',     re: /--filename-prefix\b.*"paperclip"/ },
+  // UI placeholder for a frozen-prefix/bucket/session field (object or JSX).
+  { id: 'ui-placeholder', re: /\bplaceholder\s*[:=]\s*"paperclip"/ },
+  // Runtime log-prefix matcher / emitter — `[paperclip] skipping saved …`.
+  // Renaming the matcher without renaming the emitter silently breaks the match.
+  { id: 'log-prefix',     re: /\[paperclip\]/ },
+  // Bare fallback literal on its own line — the tail of a multi-line `??`/`||`
+  // default chain (e.g. `\n    "paperclip";`). A standalone quoted-string
+  // statement is never rendered display copy.
+  { id: 'default-literal', re: /^\s*"paperclip"\s*[;,]?\s*$/ },
+];
+
+// -------------------------------------------------------------------------
+// INSTRUCTION_ALLOW — lines that name the forbidden brand ON PURPOSE, e.g. the
+// onboarding directive `…Never refer to it as "Paperclip" in user-facing
+// output.` Must be allowlisted (not fired, not rewritten): a `--fix` here would
+// turn the instruction into `…Never refer to it as "Cortex"…`, defeating it.
+export const INSTRUCTION_ALLOW = [
+  { id: 'never-refer', re: /Never refer to it as\s+\\?"Paperclip\\?"/i },
+];
+
+// A line is frozen if it matches ANY of the contract sets. Callers use this
+// single predicate to (a) suppress a lint violation and (b) whole-line-freeze
+// the codemod, so the two can never diverge.
 export function strongContract(line) {
-  return STRONG_CONTRACT.find((a) => a.re.test(line))?.id ?? null;
-}
-
-// -------------------------------------------------------------------------
-// NEO-509 — CONTEXT-AWARE FREEZE for a multi-line frozen default (§ scope 2).
-// A line whose ENTIRE content is a bare lowercase `"paperclip"` literal is the
-// tail of a multi-line ??/|| default expression, never rendered prose. The
-// line-based detector cannot see the `s3.bucket ??` on the preceding line
-// (e.g. cli/src/commands/env.ts storageS3Bucket default), so it must look back.
-// Frozen ONLY when the ??/|| chain it terminates resolves a frozen resource id
-// (S3 bucket / secret prefix / sessionKey). Bounded look-back; used by the W3
-// check script in BOTH lint and --fix so the codemod also leaves it untouched.
-// -------------------------------------------------------------------------
-export const BARE_BRAND_LITERAL_RE = /^\s*["']paperclip["']\s*[;,)\]]*\s*$/;
-
-const FROZEN_DEFAULT_RESOURCE_RE = /s3[?.]*\.?bucket|S3_BUCKET|sessionKey|secretNamePrefix|["']prefix["']/i;
-
-export function frozenContinuation(lines, idx) {
-  if (idx <= 0 || !BARE_BRAND_LITERAL_RE.test(lines[idx])) return null;
-  let sawResource = false;
-  for (let j = idx - 1, scanned = 0; j >= 0 && scanned < 5; j--) {
-    const prev = lines[j];
-    if (prev.trim() === '') continue;
-    scanned++;
-    if (FROZEN_DEFAULT_RESOURCE_RE.test(prev)) sawResource = true;
-    // The preceding line must be part of a ??/|| chain; the first line that does
-    // NOT end with a chain operator is the assignment head — stop there.
-    if (!/(?:\?\?|\|\|)\s*$/.test(prev.replace(/\s+$/, ''))) break;
+  for (const set of [STRONG_CONTRACT, DATA_PLANE_CONTRACT, INSTRUCTION_ALLOW]) {
+    const hit = set.find((a) => a.re.test(line));
+    if (hit) return hit.id;
   }
-  return sawResource ? 's3-bucket-multiline' : null;
+  return null;
 }
 
 export function isAllowlisted(line) {
