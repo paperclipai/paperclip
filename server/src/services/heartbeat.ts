@@ -16988,18 +16988,33 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         const elapsedMs = now.getTime() - baseline;
         if (elapsedMs < policy.intervalSec * 1000) continue;
 
-        const run = await enqueueWakeup(agent.id, {
-          source: "timer",
-          triggerDetail: "system",
-          reason: "heartbeat_timer",
-          requestedByActorType: "system",
-          requestedByActorId: "heartbeat_scheduler",
-          contextSnapshot: {
-            source: "scheduler",
-            reason: "interval_elapsed",
-            now: now.toISOString(),
-          },
-        });
+        // enqueueWakeup throws for a per-agent refusal (budget hard-stop, an
+        // inactive company, a lost invokability race). Those are conditions of
+        // one agent, so they must not abort the scan: an unguarded throw here
+        // skips every remaining agent and tickDueIssueMonitors below, taking
+        // the whole fleet's scheduling down over a single stopped agent.
+        let run: Awaited<ReturnType<typeof enqueueWakeup>> = null;
+        try {
+          run = await enqueueWakeup(agent.id, {
+            source: "timer",
+            triggerDetail: "system",
+            reason: "heartbeat_timer",
+            requestedByActorType: "system",
+            requestedByActorId: "heartbeat_scheduler",
+            contextSnapshot: {
+              source: "scheduler",
+              reason: "interval_elapsed",
+              now: now.toISOString(),
+            },
+          });
+        } catch (err) {
+          logger.warn(
+            { err, agentId: agent.id, companyId: agent.companyId },
+            "heartbeat timer tick skipped agent",
+          );
+          skipped += 1;
+          continue;
+        }
         if (run) enqueued += 1;
         else skipped += 1;
       }
