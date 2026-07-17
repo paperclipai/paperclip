@@ -1,8 +1,12 @@
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import path from "node:path";
 import { ensurePostgresDatabase, getPostgresDataDirectory } from "./client.js";
 import { createEmbeddedPostgresLogBuffer, formatEmbeddedPostgresError } from "./embedded-postgres-error.js";
+import {
+  formatEmbeddedPostgresLifecycleAmbiguity,
+  inspectEmbeddedPostgresLifecycle,
+} from "./embedded-postgres-lifecycle.js";
 import { prepareEmbeddedPostgresNativeRuntime } from "./embedded-postgres-native.js";
 import { resolveDatabaseTarget } from "./runtime-config.js";
 
@@ -28,29 +32,6 @@ export type MigrationConnection = {
   source: string;
   stop: () => Promise<void>;
 };
-
-function readRunningPostmasterPid(postmasterPidFile: string): number | null {
-  if (!existsSync(postmasterPidFile)) return null;
-  try {
-    const pid = Number(readFileSync(postmasterPidFile, "utf8").split("\n")[0]?.trim());
-    if (!Number.isInteger(pid) || pid <= 0) return null;
-    process.kill(pid, 0);
-    return pid;
-  } catch {
-    return null;
-  }
-}
-
-function readPidFilePort(postmasterPidFile: string): number | null {
-  if (!existsSync(postmasterPidFile)) return null;
-  try {
-    const lines = readFileSync(postmasterPidFile, "utf8").split("\n");
-    const port = Number(lines[3]?.trim());
-    return Number.isInteger(port) && port > 0 ? port : null;
-  } catch {
-    return null;
-  }
-}
 
 async function isPortInUse(port: number): Promise<boolean> {
   return await new Promise((resolve) => {
@@ -94,15 +75,30 @@ async function ensureEmbeddedPostgresConnection(
 ): Promise<MigrationConnection> {
   const EmbeddedPostgres = await loadEmbeddedPostgresCtor();
   await prepareEmbeddedPostgresNativeRuntime();
-  const selectedPort = await findAvailablePort(preferredPort);
   const postmasterPidFile = path.resolve(dataDir, "postmaster.pid");
   const pgVersionFile = path.resolve(dataDir, "PG_VERSION");
-  const runningPid = readRunningPostmasterPid(postmasterPidFile);
-  const runningPort = readPidFilePort(postmasterPidFile);
+  const lifecycle = await inspectEmbeddedPostgresLifecycle({
+    dataDir,
+    configuredPort: preferredPort,
+  });
   const preferredAdminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${preferredPort}/postgres`;
   const logBuffer = createEmbeddedPostgresLogBuffer();
 
-  if (!runningPid && existsSync(pgVersionFile)) {
+  if (lifecycle.state === "ambiguous") {
+    throw new Error(formatEmbeddedPostgresLifecycleAmbiguity(lifecycle));
+  }
+
+  if (lifecycle.state === "running") {
+    const adminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${lifecycle.port}/postgres`;
+    await ensurePostgresDatabase(adminConnectionString, "paperclip");
+    return {
+      connectionString: `postgres://paperclip:paperclip@127.0.0.1:${lifecycle.port}/paperclip`,
+      source: `embedded-postgres@${lifecycle.port}`,
+      stop: async () => {},
+    };
+  }
+
+  if (existsSync(pgVersionFile)) {
     try {
       const actualDataDir = await getPostgresDataDirectory(preferredAdminConnectionString);
       const matchesDataDir =
@@ -125,17 +121,7 @@ async function ensureEmbeddedPostgresConnection(
     }
   }
 
-  if (runningPid) {
-    const port = runningPort ?? preferredPort;
-    const adminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${port}/postgres`;
-    await ensurePostgresDatabase(adminConnectionString, "paperclip");
-    return {
-      connectionString: `postgres://paperclip:paperclip@127.0.0.1:${port}/paperclip`,
-      source: `embedded-postgres@${port}`,
-      stop: async () => {},
-    };
-  }
-
+  const selectedPort = await findAvailablePort(preferredPort);
   const instance = new EmbeddedPostgres({
     databaseDir: dataDir,
     user: "paperclip",
@@ -158,7 +144,10 @@ async function ensureEmbeddedPostgresConnection(
       });
     }
   }
-  if (existsSync(postmasterPidFile)) {
+  if (lifecycle.state === "stale" && existsSync(postmasterPidFile)) {
+    process.emitWarning(
+      `Removing stale embedded PostgreSQL PID file ${postmasterPidFile} (${lifecycle.reason}).`,
+    );
     rmSync(postmasterPidFile, { force: true });
   }
   try {

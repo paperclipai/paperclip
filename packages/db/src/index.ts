@@ -35,6 +35,14 @@ export {
   ensureLinuxSharedLibraryAliases,
   prepareEmbeddedPostgresNativeRuntime,
 } from "./embedded-postgres-native.js";
+export {
+  formatEmbeddedPostgresLifecycleAmbiguity,
+  inspectEmbeddedPostgresLifecycle,
+  type EmbeddedPostgresLifecycleDependencies,
+  type EmbeddedPostgresLifecycleReason,
+  type EmbeddedPostgresLifecycleResult,
+  type EmbeddedPostgresPidLiveness,
+} from "./embedded-postgres-lifecycle.js";
 export { issueRelations } from "./schema/issue_relations.js";
 export { issueReferenceMentions } from "./schema/issue_reference_mentions.js";
 export * from "./schema/index.js";

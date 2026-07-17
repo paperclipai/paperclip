@@ -19,6 +19,9 @@ const {
   fakeServer,
   heartbeatServiceFactoryMock,
   heartbeatServiceMock,
+  ensurePostgresDatabaseMock,
+  formatEmbeddedPostgresLifecycleAmbiguityMock,
+  inspectEmbeddedPostgresLifecycleMock,
   loadConfigMock,
   resolveHeartbeatSchedulingSuppressionMock,
   routineServiceFactoryMock,
@@ -28,6 +31,11 @@ const {
   const createBetterAuthInstanceMock = vi.fn(() => ({}));
   const createDbMock = vi.fn(() => ({}) as never);
   const detectPortMock = vi.fn(async (port: number) => port);
+  const ensurePostgresDatabaseMock = vi.fn(async () => "exists");
+  const formatEmbeddedPostgresLifecycleAmbiguityMock = vi.fn(
+    () => "ambiguous embedded PostgreSQL identity",
+  );
+  const inspectEmbeddedPostgresLifecycleMock = vi.fn();
   const deriveAuthTrustedOriginsMock = vi.fn(() => []);
   const resolveHeartbeatSchedulingSuppressionMock = vi.fn(() => ({
     suppressed: false,
@@ -96,6 +104,9 @@ const {
     fakeServer,
     heartbeatServiceFactoryMock,
     heartbeatServiceMock,
+    ensurePostgresDatabaseMock,
+    formatEmbeddedPostgresLifecycleAmbiguityMock,
+    inspectEmbeddedPostgresLifecycleMock,
     loadConfigMock,
     resolveHeartbeatSchedulingSuppressionMock,
     routineServiceFactoryMock,
@@ -154,10 +165,18 @@ vi.mock("detect-port", () => ({
 
 vi.mock("@paperclipai/db", () => ({
   createDb: createDbMock,
-  ensurePostgresDatabase: vi.fn(),
+  createEmbeddedPostgresLogBuffer: vi.fn(() => ({
+    append: vi.fn(),
+    getRecentLogs: vi.fn(() => []),
+  })),
+  ensurePostgresDatabase: ensurePostgresDatabaseMock,
+  formatEmbeddedPostgresLifecycleAmbiguity: formatEmbeddedPostgresLifecycleAmbiguityMock,
+  formatEmbeddedPostgresError: vi.fn((error: unknown) => error),
   getPostgresDataDirectory: vi.fn(),
+  inspectEmbeddedPostgresLifecycle: inspectEmbeddedPostgresLifecycleMock,
   inspectMigrations: vi.fn(async () => ({ status: "upToDate" })),
   applyPendingMigrations: vi.fn(),
+  prepareEmbeddedPostgresNativeRuntime: vi.fn(),
   reconcilePendingMigrationHistory: vi.fn(async () => ({ repairedMigrations: [] })),
   formatDatabaseBackupResult: vi.fn(() => "ok"),
   runDatabaseBackup: vi.fn(),
@@ -384,6 +403,68 @@ describe("startServer feedback export wiring", () => {
       "authenticated public deployments require DATABASE_URL to be a postgres/postgresql connection string",
     );
     expect(createDbMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("startServer embedded PostgreSQL lifecycle", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      databaseMode: "embedded-postgres",
+      databaseUrl: undefined,
+      embeddedPostgresDataDir: "/tmp/paperclip-test-db",
+      embeddedPostgresPort: 54329,
+    }));
+    resolveHeartbeatSchedulingSuppressionMock.mockReturnValue({
+      suppressed: false,
+      reason: null,
+    });
+    createBetterAuthInstanceMock.mockReturnValue({});
+    deriveAuthTrustedOriginsMock.mockReturnValue([]);
+    process.env.BETTER_AUTH_SECRET = "test-secret";
+  });
+
+  it("reuses the verified PID-file port for admin and application connections", async () => {
+    inspectEmbeddedPostgresLifecycleMock.mockResolvedValue({
+      state: "running",
+      pid: 4242,
+      port: 54330,
+      dataDir: "/tmp/paperclip-test-db",
+      pidFile: "/tmp/paperclip-test-db/postmaster.pid",
+      pidFileDataDir: "/tmp/paperclip-test-db",
+      reason: "data_directory_match",
+    });
+
+    await startServer();
+
+    expect(ensurePostgresDatabaseMock).toHaveBeenCalledWith(
+      "postgres://paperclip:paperclip@127.0.0.1:54330/postgres",
+      "paperclip",
+    );
+    expect(createDbMock).toHaveBeenCalledWith(
+      "postgres://paperclip:paperclip@127.0.0.1:54330/paperclip",
+    );
+    expect(detectPortMock).not.toHaveBeenCalledWith(54329);
+  });
+
+  it("fails closed on ambiguous identity before detecting a new database port", async () => {
+    const ambiguous = {
+      state: "ambiguous",
+      pid: 4242,
+      port: 54330,
+      dataDir: "/tmp/paperclip-test-db",
+      pidFile: "/tmp/paperclip-test-db/postmaster.pid",
+      pidFileDataDir: "/tmp/paperclip-test-db",
+      reason: "identity_unverified",
+    };
+    inspectEmbeddedPostgresLifecycleMock.mockResolvedValue(ambiguous);
+
+    await expect(startServer()).rejects.toThrow("ambiguous embedded PostgreSQL identity");
+
+    expect(formatEmbeddedPostgresLifecycleAmbiguityMock).toHaveBeenCalledWith(ambiguous);
+    expect(ensurePostgresDatabaseMock).not.toHaveBeenCalled();
+    expect(createDbMock).not.toHaveBeenCalled();
+    expect(detectPortMock).not.toHaveBeenCalledWith(54329);
   });
 });
 
