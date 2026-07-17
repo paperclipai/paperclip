@@ -5740,6 +5740,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       action: "company.skill_test_run_completed",
       entityType: "company_skill_test_run",
       entityId: completedRun.id,
+      issueId: input.issueId,
       details: {
         issueId: input.issueId,
         status: completedRun.status,
@@ -10673,6 +10674,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           action: "issue.tree_hold_run_interrupted",
           entityType: "heartbeat_run",
           entityId: run.id,
+          issueId: issueId,
           details: {
             issueId,
             holdId: activePauseHold.holdId,

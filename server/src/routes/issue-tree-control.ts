@@ -281,6 +281,7 @@ export function issueTreeControlRoutes(db: Db) {
             action: "issue.tree_restore_wakeup_requested",
             entityType: "heartbeat_run",
             entityId: wakeRun.id,
+            issueId: restoredIssue.id,
             details: {
               holdId: result.hold.id,
               rootIssueId: root.id,

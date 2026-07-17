@@ -2870,6 +2870,7 @@ export function issueRoutes(
         action: "heartbeat.cancelled",
         entityType: "heartbeat_run",
         entityId: cancelledRunId,
+        issueId: input.issue.id,
         details: {
           source: "issue_comment_scheduled_retry_superseded",
           issueId: input.issue.id,
@@ -7776,6 +7777,7 @@ export function issueRoutes(
             action: "heartbeat.cancelled",
             entityType: "heartbeat_run",
             entityId: cancelled.id,
+            issueId: existing.id,
             details: {
               agentId: cancelled.agentId,
               source: "issue_comment_interrupt",
@@ -8008,6 +8010,7 @@ export function issueRoutes(
             action: "heartbeat.cancelled",
             entityType: "heartbeat_run",
             entityId: cancelled.id,
+            issueId: existing.id,
             details: { agentId: cancelled.agentId, source: "issue_status_cancelled", issueId: existing.id },
           });
         }
@@ -8023,6 +8026,7 @@ export function issueRoutes(
           action: "heartbeat.cancel_failed",
           entityType: "heartbeat_run",
           entityId: runToCancelForCancelledStatus.id,
+          issueId: existing.id,
           details: { source: "issue_status_cancelled", issueId: existing.id },
         });
       }
@@ -8353,6 +8357,7 @@ export function issueRoutes(
           action: "company.skill_test_run_completed",
           entityType: "company_skill_test_run",
           entityId: completedRun.id,
+          issueId: issue.id,
           details: {
             issueId: issue.id,
             status: completedRun.status,
@@ -9825,6 +9830,7 @@ export function issueRoutes(
             action: "heartbeat.cancelled",
             entityType: "heartbeat_run",
             entityId: cancelled.id,
+            issueId: currentIssue.id,
             details: {
               agentId: cancelled.agentId,
               source: "issue_comment_interrupt",

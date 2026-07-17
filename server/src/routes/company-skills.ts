@@ -655,6 +655,7 @@ export function companySkillRoutes(db: Db) {
         action: "company.skill_test_run_created",
         entityType: "company_skill_test_run",
         entityId: result.id,
+        issueId: result.issueId,
         details: {
           skillId,
           inputId: result.inputId,
@@ -704,6 +705,7 @@ export function companySkillRoutes(db: Db) {
       action: "company.skill_test_run_cancelled",
       entityType: "company_skill_test_run",
       entityId: result.id,
+      issueId: result.issueId,
       details: { skillId, issueId: result.issueId },
     });
     res.json(result);
@@ -741,6 +743,7 @@ export function companySkillRoutes(db: Db) {
       action: "company.skill_test_run_deleted",
       entityType: "company_skill_test_run",
       entityId: result.id,
+      issueId: result.issueId,
       details: { skillId, issueId: result.issueId },
     });
     res.json(result);

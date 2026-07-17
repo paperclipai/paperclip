@@ -84,8 +84,7 @@ export async function resolveResponsibleUserIdForActivity(db: Db, input: LogActi
   }
 
   const issueIdCandidate = readNonEmptyString(input.issueId)
-    ?? (input.entityType === "issue" ? readNonEmptyString(input.entityId) : null)
-    ?? readNonEmptyString(input.details?.issueId);
+    ?? (input.entityType === "issue" ? readNonEmptyString(input.entityId) : null);
   const issueId = isUuidLike(issueIdCandidate) ? issueIdCandidate : null;
   if (issueId) {
     const issue = await db

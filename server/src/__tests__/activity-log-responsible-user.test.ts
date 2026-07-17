@@ -101,6 +101,19 @@ describe("resolveResponsibleUserIdForActivity", () => {
     }))).resolves.toBe("issue-user");
   });
 
+  it("uses explicit issue context for non-issue activity", async () => {
+    const db = createReader(new Map([
+      [issues, [{ responsibleUserId: "issue-user", createdByUserId: null }]],
+      [companies, [{ defaultResponsibleUserId: "default-user" }]],
+    ]));
+
+    await expect(resolveResponsibleUserIdForActivity(db, activityInput({
+      entityType: "heartbeat_run",
+      entityId: runId,
+      issueId,
+    }))).resolves.toBe("issue-user");
+  });
+
   it("uses the active agent API key responsible user for no-run actions", async () => {
     const db = createReader(new Map([
       [agentApiKeys, [{ responsibleUserId: "key-user" }]],
@@ -148,6 +161,7 @@ describe("resolveResponsibleUserIdForActivity", () => {
       runId: "not-a-run-uuid",
       entityId: "not-an-issue-uuid",
       agentApiKeyId: "not-a-key-uuid",
+      details: { issueId },
     }))).resolves.toBe("default-user");
   });
 });
