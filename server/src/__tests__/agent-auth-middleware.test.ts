@@ -1,7 +1,7 @@
 import { createHash, createHmac, randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   agentApiKeys,
@@ -13,6 +13,23 @@ import { actorMiddleware } from "../middleware/auth.js";
 import { errorHandler } from "../middleware/error-handler.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { assertCompanyAccess } from "../routes/authz.js";
+
+const BOARD_TOKEN = "pcp_board_test_token";
+
+vi.mock("../services/board-auth.js", () => ({
+  boardAuthService: () => ({
+    findBoardApiKeyByToken: vi.fn(async (token: string) =>
+      token === "pcp_board_test_token" ? { id: "board-key-1", userId: "board-user-1" } : null,
+    ),
+    resolveBoardAccess: vi.fn(async () => ({
+      user: { id: "board-user-1", name: "Board User", email: "board@example.com" },
+      companyIds: [],
+      memberships: [],
+      isInstanceAdmin: false,
+    })),
+    touchBoardApiKey: vi.fn(async () => {}),
+  }),
+}));
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -28,6 +45,17 @@ function createSelectChain(rowsForTable: (table: unknown) => unknown[]) {
       };
     },
   };
+}
+
+function createDb(rowsByTable: Map<unknown, unknown[]>) {
+  return {
+    select: () => ({
+      from: (table: unknown) => ({
+        where: () => Promise.resolve(rowsByTable.get(table) ?? []),
+      }),
+    }),
+    update: () => ({ set: () => ({ where: () => Promise.resolve(undefined) }) }),
+  } as any;
 }
 
 function createDbState(input: {
@@ -377,5 +405,88 @@ describe("agent auth middleware", () => {
       entityId: keyId,
       details: { method: "GET", url: `/companies/${companyId}/protected` },
     });
+  });
+});
+
+describe("actorMiddleware run-scoped bearer authentication", () => {
+  const originalAgentJwtSecret = process.env.PAPERCLIP_AGENT_JWT_SECRET;
+
+  beforeEach(() => {
+    process.env.PAPERCLIP_AGENT_JWT_SECRET = "test-secret";
+  });
+
+  afterEach(() => {
+    if (originalAgentJwtSecret === undefined) delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
+    else process.env.PAPERCLIP_AGENT_JWT_SECRET = originalAgentJwtSecret;
+  });
+
+  it("does not resolve a board key as a board actor for a run-scoped request", async () => {
+    const rowsByTable = new Map<unknown, unknown[]>([[agentApiKeys, []]]);
+
+    const res = await request(createApp(createDb(rowsByTable)))
+      .get("/actor")
+      .set("Authorization", `Bearer ${BOARD_TOKEN}`)
+      .set("X-Paperclip-Run-Id", "run-1");
+
+    expect(res.status).toBe(200);
+    expect(res.body.type).toBe("none");
+    expect(res.body.type).not.toBe("board");
+  });
+
+  it("continues to resolve a board key for a non-run-scoped request", async () => {
+    const res = await request(createApp(createDb(new Map())))
+      .get("/actor")
+      .set("Authorization", `Bearer ${BOARD_TOKEN}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      type: "board",
+      source: "board_key",
+      userId: "board-user-1",
+    });
+  });
+
+  it("resolves a matching run-scoped local agent JWT as an agent actor", async () => {
+    const agentId = "agent-1";
+    const companyId = "company-1";
+    const runId = "run-1";
+    const token = createLocalAgentJwt(agentId, companyId, "claude_local", runId);
+    const rowsByTable = new Map<unknown, unknown[]>([
+      [agentApiKeys, []],
+      [agents, [{ id: agentId, companyId, status: "active" }]],
+    ]);
+
+    const res = await request(createApp(createDb(rowsByTable)))
+      .get("/actor")
+      .set("Authorization", `Bearer ${token}`)
+      .set("X-Paperclip-Run-Id", runId);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      type: "agent",
+      source: "agent_jwt",
+      agentId,
+      companyId,
+    });
+  });
+
+  it("never resolves a valid run-scoped agent JWT as a board actor", async () => {
+    const agentId = "agent-2";
+    const companyId = "company-2";
+    const runId = "run-2";
+    const token = createLocalAgentJwt(agentId, companyId, "claude_local", runId);
+    const rowsByTable = new Map<unknown, unknown[]>([
+      [agentApiKeys, []],
+      [agents, [{ id: agentId, companyId, status: "active" }]],
+    ]);
+
+    const res = await request(createApp(createDb(rowsByTable)))
+      .get("/actor")
+      .set("Authorization", `Bearer ${token}`)
+      .set("X-Paperclip-Run-Id", runId);
+
+    expect(res.status).toBe(200);
+    expect(res.body.type).toBe("agent");
+    expect(res.body.type).not.toBe("board");
   });
 });
