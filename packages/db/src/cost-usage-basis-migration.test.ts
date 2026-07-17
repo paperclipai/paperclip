@@ -8,7 +8,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./test-embedded-postgres.js";
 
-const COST_USAGE_BASIS_MIGRATION = "0174_cost_event_usage_basis.sql";
+const COST_USAGE_BASIS_MIGRATION = "0180_cost_event_usage_basis.sql";
 
 const cleanups: Array<() => Promise<void>> = [];
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();

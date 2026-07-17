@@ -409,6 +409,7 @@ export function fileResourceRoutes(db: Db, opts: {
         entityId: req.params.issueId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         details: listActivityDetails({
           outcome: result.state === "available" ? "success" : "unavailable",
           workspaceSelector: result.query.workspace,
@@ -521,6 +522,7 @@ export function fileResourceRoutes(db: Db, opts: {
         entityId: req.params.issueId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         details: activityDetails({
           outcome: "success",
           workspaceKind: result.workspaceKind,
@@ -646,6 +648,7 @@ export function fileResourceRoutes(db: Db, opts: {
           entityId: req.params.issueId,
           agentId: actor.agentId,
           runId: actor.runId,
+          agentApiKeyId: actor.agentApiKeyId,
           details: activityDetails({
             outcome: "success",
             workspaceKind: result.resource.workspaceKind,
@@ -695,6 +698,7 @@ export function fileResourceRoutes(db: Db, opts: {
         entityId: req.params.issueId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         details: activityDetails({
           outcome: "success",
           workspaceKind: result.resource.workspaceKind,

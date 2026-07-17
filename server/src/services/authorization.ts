@@ -14,6 +14,7 @@ import {
 } from "@paperclipai/db";
 import type {
   AgentApiKeyScope,
+  InboxAgentPolicyMode,
   PermissionKey,
   PrincipalType,
   SkillTestAgentKeyScope,
@@ -90,6 +91,7 @@ export type AuthorizationDecision = {
   allowed: boolean;
   action: AuthorizationAction;
   explanation: string;
+  inboxPolicyMode?: InboxAgentPolicyMode | "grant_override";
   code?: "RESPONSIBLE_USER_UNAUTHORIZED" | "RESPONSIBLE_USER_UNAVAILABLE";
   reason:
     | "allow_low_trust_boundary"
@@ -1769,6 +1771,7 @@ export function authorizationService(db: Db) {
           action: input.action,
           reason: "allow_explicit_grant",
           explanation: "Allowed by explicit grant inbox:manage.",
+          inboxPolicyMode: "grant_override",
           grant: {
             principalType: "agent",
             principalId: actorAgentId,
@@ -1810,6 +1813,7 @@ export function authorizationService(db: Db) {
       return allow({
         action: input.action,
         reason: "allow_self",
+        inboxPolicyMode: policy?.mode ?? "open",
         explanation: policy?.mode === "allowlist"
           ? "Allowed by the responsible user's inbox agent allowlist."
           : "Allowed by the responsible user's default-open inbox policy.",

@@ -1210,7 +1210,49 @@
       "idx": 174,
       "version": "7",
       "when": 1784210754027,
-      "tag": "0174_cost_event_usage_basis",
+      "tag": "0174_folders",
+      "breakpoints": true
+    },
+    {
+      "idx": 175,
+      "version": "7",
+      "when": 1784210755027,
+      "tag": "0175_nested_skill_folders",
+      "breakpoints": true
+    },
+    {
+      "idx": 176,
+      "version": "7",
+      "when": 1784211956161,
+      "tag": "0176_issue_create_idempotency_key_expiry",
+      "breakpoints": true
+    },
+    {
+      "idx": 177,
+      "version": "7",
+      "when": 1784241826832,
+      "tag": "0177_activity_log_responsible_user",
+      "breakpoints": true
+    },
+    {
+      "idx": 178,
+      "version": "7",
+      "when": 1784241827832,
+      "tag": "0178_summary_slots",
+      "breakpoints": true
+    },
+    {
+      "idx": 179,
+      "version": "7",
+      "when": 1784241828832,
+      "tag": "0179_summary_slot_failure_reason",
+      "breakpoints": true
+    },
+    {
+      "idx": 180,
+      "version": "7",
+      "when": 1784241829832,
+      "tag": "0180_cost_event_usage_basis",
       "breakpoints": true
     }
   ]

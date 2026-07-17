@@ -161,6 +161,55 @@ describe("ConfigureBuiltInAgentModal (PAP-12978)", () => {
     expect(onOpenChange).toHaveBeenCalledWith(false);
   });
 
+  it("prefills a built-in's default adapter and model", async () => {
+    provisionMock.mockResolvedValue({ ...makeState(), status: "ready", agentId: "a1" });
+    await renderModal(makeState({
+      definition: {
+        ...makeState().definition,
+        defaultAdapterType: "claude_local",
+        defaultAdapterConfig: { model: "claude-haiku-4-5" },
+      },
+    }));
+
+    expect(document.body.querySelector('[data-testid="adapter-dropdown"]')?.getAttribute("data-value"))
+      .toBe("claude_local");
+    expect(document.body.querySelector<HTMLInputElement>('[data-testid="model-input"]')?.value)
+      .toBe("claude-haiku-4-5");
+
+    const submit = findButton("Configure")!;
+    expect(submit.disabled).toBe(false);
+    flushSync(() => {
+      submit.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(provisionMock).toHaveBeenCalledWith("c1", "briefs", {
+      adapterType: "claude_local",
+      adapterConfig: { model: "claude-haiku-4-5" },
+    });
+  });
+
+  it("shows a visible error and blocks provisioning for an unknown model", async () => {
+    adapterModelsMock.mockResolvedValue([
+      { id: "claude-haiku-4-5", label: "Claude Haiku 4.5" },
+    ]);
+    await renderModal(makeState({
+      definition: {
+        ...makeState().definition,
+        defaultAdapterType: "claude_local",
+        defaultAdapterConfig: { model: "claude-haiku-4-6" },
+      },
+    }));
+    await flushReact();
+
+    expect(document.body.querySelector('[role="alert"]')?.textContent)
+      .toContain("claude-haiku-4-6");
+    expect(document.body.querySelector('[role="alert"]')?.textContent)
+      .toContain("not available");
+    expect(findButton("Configure")?.disabled).toBe(true);
+    expect(provisionMock).not.toHaveBeenCalled();
+  });
+
   it("sends the budget with provisioning so approval-gated setup preserves it", async () => {
     provisionMock.mockResolvedValue({
       ...makeState(),

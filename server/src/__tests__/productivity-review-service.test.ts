@@ -385,6 +385,62 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(await listProductivityReviews(seeded.companyId)).toHaveLength(4);
   });
 
+  it("uses review creation order for no-action streak windows", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+    });
+    const reviewWindows = [
+      { hoursAgo: 96, updatedAt: new Date(now.getTime() - 95 * 60 * 60 * 1000) },
+      { hoursAgo: 72, updatedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000) },
+      { hoursAgo: 48, updatedAt: new Date(now.getTime() - 47 * 60 * 60 * 1000) },
+    ].map((window, index) => {
+      const createdAt = new Date(now.getTime() - window.hoursAgo * 60 * 60 * 1000);
+      return {
+        id: randomUUID(),
+        companyId: seeded.companyId,
+        title: `Productivity review ordered window ${index + 1}`,
+        status: "done" as const,
+        priority: "high" as const,
+        originKind: PRODUCTIVITY_REVIEW_ORIGIN_KIND,
+        originId: seeded.issueId,
+        originFingerprint: `productivity-review:${seeded.issueId}`,
+        parentId: seeded.issueId,
+        issueNumber: index + 2,
+        identifier: `${seeded.issuePrefix}-${index + 2}`,
+        createdAt,
+        updatedAt: window.updatedAt,
+      };
+    });
+    const middleReviewCreatedAt = reviewWindows[1]!.createdAt;
+    await db.insert(issues).values(reviewWindows);
+    await db.insert(activityLog).values({
+      companyId: seeded.companyId,
+      actorType: "agent",
+      actorId: seeded.coderId,
+      agentId: seeded.coderId,
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: seeded.issueId,
+      createdAt: new Date(middleReviewCreatedAt.getTime() + 60_000),
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+      thresholds: { maxConsecutiveNoActionReviews: 1 },
+    });
+
+    expect(result.created).toBe(0);
+    expect(result.noActionSuppressed).toBe(1);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(3);
+  });
+
   it("does not count cancelled productivity reviews toward the creation cap", async () => {
     const now = new Date("2026-04-28T12:00:00.000Z");
     const seeded = await seedAssignedIssue();

@@ -12,6 +12,7 @@ import {
   documentRevisions,
   documents,
   executionWorkspaces,
+  folders,
   goals,
   heartbeatRuns,
   issueInboxArchives,
@@ -972,6 +973,17 @@ export function routineService(
       .then((rows) => rows[0] ?? null);
     if (!parentIssue) throw notFound("Parent issue not found");
     if (parentIssue.companyId !== companyId) throw unprocessable("Parent issue must belong to same company");
+  }
+
+  async function assertRoutineFolder(companyId: string, folderId: string | null | undefined) {
+    if (!folderId) return;
+    const folder = await db
+      .select({ id: folders.id, kind: folders.kind })
+      .from(folders)
+      .where(and(eq(folders.companyId, companyId), eq(folders.id, folderId)))
+      .then((rows) => rows[0] ?? null);
+    if (!folder) throw notFound("Folder not found");
+    if (folder.kind !== "routine") throw unprocessable("Folder kind must match routine");
   }
 
   async function listTriggersForRoutineIds(companyId: string, routineIds: string[]) {
@@ -2066,6 +2078,7 @@ export function routineService(
 
     create: async (companyId: string, input: CreateRoutine, actor: Actor): Promise<Routine> => {
       await assertProject(companyId, input.projectId ?? null);
+      await assertRoutineFolder(companyId, input.folderId ?? null);
       await assertAssignableAgent(db, companyId, input.assigneeAgentId ?? null, { kind: "routine" });
       if (input.goalId) await assertGoal(companyId, input.goalId);
       if (input.parentIssueId) await assertParentIssue(companyId, input.parentIssueId);
@@ -2092,6 +2105,7 @@ export function routineService(
           .values({
             companyId,
             projectId: input.projectId ?? null,
+            folderId: input.folderId ?? null,
             goalId: input.goalId ?? null,
             parentIssueId: input.parentIssueId ?? null,
             title: input.title,
@@ -2130,6 +2144,7 @@ export function routineService(
       const existing = await getRoutineById(id);
       if (!existing) return null;
       const nextProjectId = patch.projectId === undefined ? existing.projectId : patch.projectId;
+      const nextFolderId = patch.folderId === undefined ? existing.folderId : patch.folderId;
       const nextAssigneeAgentId = patch.assigneeAgentId === undefined ? existing.assigneeAgentId : patch.assigneeAgentId;
       const nextTitle = patch.title ?? existing.title;
       const nextDescription = patch.description === undefined ? existing.description : patch.description;
@@ -2153,6 +2168,7 @@ export function routineService(
         patch.variables === undefined ? existing.variables : sanitizeRoutineVariableInputs(patch.variables),
       );
       if (patch.projectId !== undefined) await assertProject(existing.companyId, nextProjectId);
+      if (patch.folderId !== undefined) await assertRoutineFolder(existing.companyId, nextFolderId);
       if (patch.assigneeAgentId !== undefined || patch.status === "active") {
         await assertAssignableAgent(db, existing.companyId, nextAssigneeAgentId, { kind: "routine" });
       }
@@ -2202,6 +2218,7 @@ export function routineService(
         const candidate: RoutineRow = {
           ...locked,
           projectId: nextProjectId,
+          folderId: nextFolderId,
           goalId: patch.goalId === undefined ? locked.goalId : patch.goalId,
           parentIssueId: patch.parentIssueId === undefined ? locked.parentIssueId : patch.parentIssueId,
           title: nextTitle,
@@ -2218,8 +2235,20 @@ export function routineService(
           updatedByUserId: actor.userId ?? null,
         };
 
+        const folderChanged = patch.folderId !== undefined && locked.folderId !== candidate.folderId;
         if (locked.latestRevisionId && routineCurrentFieldsMatch(locked, candidate)) {
-          return locked;
+          if (!folderChanged) return locked;
+          const [updated] = await txDb
+            .update(routines)
+            .set({
+              folderId: candidate.folderId,
+              updatedByAgentId: actor.agentId ?? null,
+              updatedByUserId: actor.userId ?? null,
+              updatedAt: new Date(),
+            })
+            .where(eq(routines.id, id))
+            .returning();
+          return updated ?? locked;
         }
 
         const nextSnapshot = await buildRoutineRevisionSnapshot(txDb, candidate);
@@ -2252,6 +2281,7 @@ export function routineService(
           .update(routines)
           .set({
             projectId: candidate.projectId,
+            folderId: candidate.folderId,
             goalId: candidate.goalId,
             parentIssueId: candidate.parentIssueId,
             title: candidate.title,

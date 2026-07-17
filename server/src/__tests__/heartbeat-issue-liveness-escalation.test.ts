@@ -1,19 +1,23 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   agents,
   agentWakeupRequests,
+  agentRuntimeState,
   budgetPolicies,
   companies,
   companyMemberships,
+  companySkills,
   costEvents,
   createDb,
   executionWorkspaces,
+  heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
   issueRelations,
+  issueTreeHoldMembers,
   issueTreeHolds,
   issues,
   projects,
@@ -104,7 +108,26 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
     await new Promise((resolve) => setTimeout(resolve, 50));
-    await db.execute(sql.raw(`TRUNCATE TABLE "companies" CASCADE`));
+    await db.delete(activityLog);
+    await db.delete(heartbeatRunEvents);
+    await db.delete(costEvents);
+    await db.delete(workspaceOperations);
+    await db.delete(issueComments);
+    await db.delete(issueTreeHoldMembers);
+    await db.delete(issueTreeHolds);
+    await db.delete(issueRelations);
+    await db.delete(issues);
+    await db.delete(executionWorkspaces);
+    await db.delete(projectWorkspaces);
+    await db.delete(projects);
+    await db.delete(heartbeatRuns);
+    await db.delete(agentWakeupRequests);
+    await db.delete(agentRuntimeState);
+    await db.delete(budgetPolicies);
+    await db.delete(agents);
+    await db.delete(companyMemberships);
+    await db.delete(companySkills);
+    await db.delete(companies);
     await instanceSettingsService(db).updateExperimental({
       enableIssueGraphLivenessAutoRecovery: false,
       enableIsolatedWorkspaces: false,

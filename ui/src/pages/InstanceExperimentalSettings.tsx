@@ -296,6 +296,7 @@ export function InstanceExperimentalSettings() {
   const enableCloudSync = experimentalQuery.data?.enableCloudSync === true;
   const enableExternalObjects = experimentalQuery.data?.enableExternalObjects === true;
   const enableBuiltInAgents = experimentalQuery.data?.enableBuiltInAgents === true;
+  const enableSummaries = experimentalQuery.data?.enableSummaries === true;
   const enableDecisions = experimentalQuery.data?.enableDecisions === true;
   const enableGoalsSidebarLink = experimentalQuery.data?.enableGoalsSidebarLink === true;
   const enableCases = experimentalQuery.data?.enableCases === true;
@@ -504,6 +505,24 @@ export function InstanceExperimentalSettings() {
             onCheckedChange={() => toggleMutation.mutate({ enableBuiltInAgents: !enableBuiltInAgents })}
             disabled={toggleMutation.isPending}
             aria-label="Toggle built-in agents experimental setting"
+          />
+        </div>
+      </Card>
+
+      <Card className="block p-5">
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-1.5">
+            <h2 className="text-sm font-semibold">Summaries</h2>
+            <p className="max-w-2xl text-sm text-muted-foreground">
+              Show Summarizer-generated status slots on project and workspace pages, with on-demand refresh and
+              revision history. Existing summary data is kept when this is disabled.
+            </p>
+          </div>
+          <ToggleSwitch
+            checked={enableSummaries}
+            onCheckedChange={() => toggleMutation.mutate({ enableSummaries: !enableSummaries })}
+            disabled={toggleMutation.isPending}
+            aria-label="Toggle summaries experimental setting"
           />
         </div>
       </Card>

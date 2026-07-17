@@ -37,6 +37,7 @@ const mockIssuesApi = vi.hoisted(() => ({
   createLabel: vi.fn(),
   upsertWatchdog: vi.fn(),
   deleteWatchdog: vi.fn(),
+  unarchiveFromInbox: vi.fn(),
 }));
 
 const mockAuthApi = vi.hoisted(() => ({
@@ -441,6 +442,7 @@ describe("IssueProperties", () => {
     }));
     mockIssuesApi.upsertWatchdog.mockResolvedValue({});
     mockIssuesApi.deleteWatchdog.mockResolvedValue({ ok: true });
+    mockIssuesApi.unarchiveFromInbox.mockResolvedValue({ ok: true });
     mockAuthApi.getSession.mockResolvedValue({ user: { id: "user-1" } });
     mockAccessApi.listUserDirectory.mockResolvedValue({
       users: [
@@ -1631,7 +1633,7 @@ describe("IssueProperties", () => {
     await flush();
     await flush();
 
-    expect(container.textContent).toContain("Custom · gpt-5.4 · high");
+    expect(container.textContent).toContain("Override · gpt-5.4 · high");
     expect(container.textContent).toContain("Model lane");
 
     // Wait for the adapter-models query to resolve so the model options render.
@@ -2387,6 +2389,111 @@ describe("IssueProperties", () => {
     expect(pullRequestLink?.className).not.toContain("paperclip-mention-chip");
     expect(pullRequestLink?.className).not.toContain("rounded-full");
     expect(pullRequestLink?.className).not.toContain("border");
+
+    act(() => root.unmount());
+  });
+
+  it("shows agent-archive attribution and unarchive only in the properties pane", async () => {
+    mockAgentsApi.list.mockResolvedValue([
+      { id: "agent-9", name: "Gardener", status: "active", adapterType: "codex_local", icon: null },
+    ]);
+    const root = renderProperties(container, {
+      issue: createIssue({
+        archivedAt: new Date("2026-04-06T12:10:00.000Z"),
+        archivedByActorType: "agent",
+        archivedByAgentId: "agent-9",
+        archivedByRunId: "run-1",
+      }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+    });
+    await flush();
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Archived");
+      // The value shows just the agent name (the row label already says
+      // "Archived"), giving the name the full column width at 320px.
+      expect(container.textContent).toContain("Gardener");
+      const unarchive = Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent?.includes("Unarchive"));
+      expect(unarchive).toBeTruthy();
+    });
+
+    // The tooltip must carry the full "Archived by <name> · <time>" phrasing so
+    // the attribution is recoverable if a long name truncates at the 320px pane
+    // width (PAP-14182 review fix).
+    const attribution = Array.from(container.querySelectorAll("span"))
+      .find((span) => span.getAttribute("title")?.startsWith("Archived by Gardener"));
+    expect(attribution).toBeTruthy();
+
+    const unarchiveButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Unarchive"))!;
+    await act(async () => {
+      unarchiveButton.click();
+    });
+    await flush();
+    expect(mockIssuesApi.unarchiveFromInbox).toHaveBeenCalledWith("issue-1");
+
+    act(() => root.unmount());
+  });
+
+  it("surfaces unarchive failures inline", async () => {
+    mockAgentsApi.list.mockResolvedValue([
+      { id: "agent-9", name: "Gardener", status: "active", adapterType: "codex_local", icon: null },
+    ]);
+    mockIssuesApi.unarchiveFromInbox.mockRejectedValue(new Error("Archive policy denied"));
+    const root = renderProperties(container, {
+      issue: createIssue({
+        archivedAt: new Date("2026-04-06T12:10:00.000Z"),
+        archivedByActorType: "agent",
+        archivedByAgentId: "agent-9",
+        archivedByRunId: "run-1",
+      }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+    });
+    await flush();
+
+    let unarchiveButton: HTMLButtonElement | undefined;
+    await waitForAssertion(() => {
+      unarchiveButton = Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent?.includes("Unarchive"));
+      expect(unarchiveButton).toBeTruthy();
+    });
+    await act(async () => {
+      unarchiveButton!.click();
+    });
+    await flush();
+
+    await waitForAssertion(() => {
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain("Archive policy denied");
+    });
+
+    act(() => root.unmount());
+  });
+
+  it("does not render archive attribution for user (manual) archives", async () => {
+    const root = renderProperties(container, {
+      issue: createIssue({
+        archivedAt: new Date("2026-04-06T12:10:00.000Z"),
+        archivedByActorType: "user",
+        archivedByAgentId: null,
+      }),
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+    });
+    await flush();
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Updated");
+    });
+    expect(container.textContent).not.toContain("Archived by");
+    expect(
+      Array.from(container.querySelectorAll("button")).some((button) => button.textContent?.includes("Unarchive")),
+    ).toBe(false);
 
     act(() => root.unmount());
   });

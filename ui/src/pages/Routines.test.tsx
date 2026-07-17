@@ -4,7 +4,7 @@ import type { AnchorHTMLAttributes, ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { Issue, RoutineListItem } from "@paperclipai/shared";
+import type { FolderListResult, Issue, RoutineListItem } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Routines, buildRoutineGroups, buildRoutineSections, sortRoutines } from "./Routines";
 
@@ -20,6 +20,7 @@ async function act(callback: () => void | Promise<void>) {
 
 const navigateMock = vi.fn();
 const routinesListMock = vi.fn<(companyId: string) => Promise<RoutineListItem[]>>();
+const foldersListMock = vi.fn<(companyId: string, kind: string) => Promise<FolderListResult>>();
 const issuesListMock = vi.fn<(companyId: string, filters?: Record<string, unknown>) => Promise<Issue[]>>();
 const markdownEditorRenderMock = vi.fn((props: { mentions?: Array<{ id: string; name: string }> }) => props);
 const issuesListRenderMock = vi.fn(({ issues }: { issues: Issue[] }) => (
@@ -55,6 +56,16 @@ vi.mock("../api/routines", () => ({
     create: vi.fn(),
     update: vi.fn(),
     run: vi.fn(),
+  },
+}));
+
+vi.mock("../api/folders", () => ({
+  foldersApi: {
+    list: (companyId: string, kind: string) => foldersListMock(companyId, kind),
+    create: vi.fn(),
+    update: vi.fn(),
+    delete: vi.fn(),
+    moveItem: vi.fn(),
   },
 }));
 
@@ -275,6 +286,7 @@ function createRoutine(overrides: Partial<RoutineListItem>): RoutineListItem {
     triggers: [],
     lastRun: null,
     activeIssue: null,
+    folderId: null,
     ...overrides,
   };
 }
@@ -343,6 +355,13 @@ describe("Routines page", () => {
     currentSearch = "";
     navigateMock.mockReset();
     routinesListMock.mockReset();
+    foldersListMock.mockReset();
+    foldersListMock.mockResolvedValue({
+      kind: "routine",
+      folders: [],
+      allCount: 0,
+      unfiledCount: 0,
+    });
     issuesListMock.mockReset();
     markdownEditorRenderMock.mockClear();
     issuesListRenderMock.mockClear();
@@ -396,6 +415,22 @@ describe("Routines page", () => {
     expect(groups.map((group) => group.label)).toEqual(["Project Alpha", "Built-in routines"]);
     expect(groups[0]?.items.map((item) => item.title)).toEqual(["Morning sync"]);
     expect(groups[1]?.items.map((item) => item.title)).toEqual(["Reflection review"]);
+  });
+
+  it("uses a flat group when Folder grouping is active", () => {
+    const routines = [
+      createRoutine({ id: "routine-1", title: "Morning sync", projectId: "project-1" }),
+      createRoutine({ id: "routine-2", title: "Weekly digest", projectId: "project-2" }),
+    ];
+
+    const groups = buildRoutineGroups(
+      routines,
+      "folder",
+      new Map(),
+      new Map(),
+    );
+
+    expect(groups).toEqual([{ key: "__all", label: null, items: routines }]);
   });
 
   it("sorts routines by selected field and direction without mutating the source list", () => {
@@ -489,7 +524,7 @@ describe("Routines page", () => {
     });
   });
 
-  it("defaults the routines list to project groups sorted by title", async () => {
+  it("defaults the routines list to folder mode without rendering project groups", async () => {
     routinesListMock.mockResolvedValue([
       createRoutine({ id: "routine-1", title: "Weekly digest", projectId: "project-1" }),
       createRoutine({ id: "routine-2", title: "Morning sync", projectId: "project-1" }),
@@ -513,17 +548,15 @@ describe("Routines page", () => {
       await flush();
     });
 
-    for (let attempts = 0; attempts < 5 && !container.textContent?.includes("Project Alpha"); attempts += 1) {
+    for (let attempts = 0; attempts < 5 && !container.textContent?.includes("Morning sync"); attempts += 1) {
       await act(async () => {
         await flush();
       });
     }
 
     const text = container.textContent ?? "";
-    expect(text.indexOf("Project Alpha")).toBeLessThan(text.indexOf("Project Beta"));
     expect(text.indexOf("Morning sync")).toBeLessThan(text.indexOf("Weekly digest"));
-    expect(text.indexOf("Project Alpha")).toBeLessThan(text.indexOf("Morning sync"));
-    expect(text.indexOf("Weekly digest")).toBeLessThan(text.indexOf("Project Beta"));
+    expect(text).toContain("New folder");
 
     await act(async () => {
       root.unmount();
@@ -546,7 +579,6 @@ describe("Routines page", () => {
       }),
     ]);
     issuesListMock.mockResolvedValue([]);
-
     const root = createRoot(container);
     const queryClient = new QueryClient({
       defaultOptions: {
@@ -570,12 +602,114 @@ describe("Routines page", () => {
     }
 
     const text = container.textContent ?? "";
-    expect(text.indexOf("Project Alpha")).toBeLessThan(text.indexOf("Morning sync"));
     expect(text.indexOf("Morning sync")).toBeLessThan(text.indexOf("Built-in routines"));
     expect(text.indexOf("Built-in routines")).toBeLessThan(text.indexOf("Reflection review"));
 
     await act(async () => {
       root.unmount();
+    });
+  });
+
+  it("filters to Unfiled and shows the empty-folder state with a create CTA", async () => {
+    foldersListMock.mockResolvedValue({
+      kind: "routine",
+      allCount: 2,
+      unfiledCount: 1,
+      folders: [
+        {
+          id: "folder-reporting",
+          companyId: "company-1",
+          kind: "routine",
+          parentId: null,
+          name: "Reporting",
+          slug: "reporting",
+          systemKey: null,
+          path: "reporting",
+          depth: 1,
+          color: "#6366f1",
+          position: 0,
+          itemCount: 1,
+          createdAt: new Date("2026-07-01T00:00:00.000Z"),
+          updatedAt: new Date("2026-07-01T00:00:00.000Z"),
+        },
+        {
+          id: "folder-empty",
+          companyId: "company-1",
+          kind: "routine",
+          parentId: null,
+          name: "Empty folder",
+          slug: "empty-folder",
+          systemKey: null,
+          path: "empty-folder",
+          depth: 1,
+          color: null,
+          position: 1,
+          itemCount: 0,
+          createdAt: new Date("2026-07-01T00:00:00.000Z"),
+          updatedAt: new Date("2026-07-01T00:00:00.000Z"),
+        },
+      ],
+    });
+    routinesListMock.mockResolvedValue([
+      createRoutine({ id: "routine-1", title: "Filed digest", folderId: "folder-reporting" }),
+      createRoutine({ id: "routine-2", title: "Loose routine", folderId: null }),
+    ]);
+    issuesListMock.mockResolvedValue([]);
+
+    currentSearch = "folder=unfiled";
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+      },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Routines />
+        </QueryClientProvider>,
+      );
+      await flush();
+    });
+    for (let attempts = 0; attempts < 5 && !container.textContent?.includes("Loose routine"); attempts += 1) {
+      await act(async () => {
+        await flush();
+      });
+    }
+
+    // Unfiled filter: only the folderless routine renders; the rail still lists folders.
+    expect(container.textContent).toContain("Loose routine");
+    expect(container.textContent).not.toContain("Filed digest");
+    expect(container.textContent).toContain("Reporting");
+    expect(container.textContent).toContain("Empty folder");
+
+    await act(async () => {
+      root.unmount();
+    });
+
+    // Remount filtered to the empty folder: empty state + create-into-folder CTA.
+    currentSearch = "folder=folder-empty";
+    const secondRoot = createRoot(container);
+    await act(async () => {
+      secondRoot.render(
+        <QueryClientProvider client={queryClient}>
+          <Routines />
+        </QueryClientProvider>,
+      );
+      await flush();
+    });
+    for (let attempts = 0; attempts < 5 && !container.textContent?.includes("This folder is empty"); attempts += 1) {
+      await act(async () => {
+        await flush();
+      });
+    }
+
+    expect(container.textContent).toContain("This folder is empty");
+    expect(container.textContent).toContain("New routine in this folder");
+
+    await act(async () => {
+      secondRoot.unmount();
     });
   });
 

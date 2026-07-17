@@ -45,7 +45,6 @@ import { Identity } from "../components/Identity";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { AgentActionButtons } from "../components/AgentActionButtons";
 import { InlineBanner } from "../components/InlineBanner";
-import { BuiltInAgentBadge } from "../components/BuiltInAgentBadges";
 import { BuiltInBundlePanel } from "../components/BuiltInBundlePanel";
 import { ConfigureBuiltInAgentModal } from "../components/ConfigureBuiltInAgentModal";
 import { BudgetPolicyCard } from "../components/BudgetPolicyCard";
@@ -1129,7 +1128,6 @@ export function AgentDetail() {
           <div className="min-w-0">
             <div className="flex items-center gap-2">
               <h2 className="text-2xl font-bold truncate">{agent.name}</h2>
-              {builtInState && <BuiltInAgentBadge />}
             </div>
             <p className="text-sm text-muted-foreground truncate">
               {roleLabels[agent.role] ?? agent.role}

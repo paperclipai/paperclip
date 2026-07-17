@@ -112,6 +112,12 @@ export const queryKeys = {
   builtInAgents: {
     list: (companyId: string) => ["built-in-agents", companyId] as const,
   },
+  summarySlots: {
+    detail: (companyId: string, scopeKind: string, slotKey: string, scopeId?: string | null) =>
+      ["summary-slots", companyId, scopeKind, slotKey, scopeId ?? null] as const,
+    revisions: (companyId: string, scopeKind: string, slotKey: string, scopeId?: string | null) =>
+      ["summary-slots", companyId, scopeKind, slotKey, scopeId ?? null, "revisions"] as const,
+  },
   issues: {
     list: (companyId: string) => ["issues", companyId] as const,
     mentionPool: (companyId: string) => ["issues", companyId, "mention-pool"] as const,
@@ -192,6 +198,9 @@ export const queryKeys = {
     activity: (companyId: string, id: string) => ["routines", "activity", companyId, id] as const,
     documentAnnotations: (routineId: string, key: "description", status: "open" | "resolved" | "all" = "all") =>
       ["routines", "document-annotations", routineId, key, status] as const,
+  },
+  folders: {
+    list: (companyId: string, kind: string) => ["folders", companyId, kind] as const,
   },
   pipelines: {
     list: (companyId: string) => ["pipelines", companyId] as const,
@@ -300,6 +309,9 @@ export const queryKeys = {
   },
   auth: {
     session: ["auth", "session"] as const,
+  },
+  inboxAgentPolicy: {
+    mine: (companyId: string) => ["inbox-agent-policy", companyId, "me"] as const,
   },
   sidebarPreferences: {
     companyOrder: (userId: string) => ["sidebar-preferences", "company-order", userId] as const,

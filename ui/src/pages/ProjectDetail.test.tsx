@@ -32,6 +32,7 @@ const mockResourceMembershipsApi = vi.hoisted(() => ({
 const mockNavigate = vi.hoisted(() => vi.fn());
 const mockSetBreadcrumbs = vi.hoisted(() => vi.fn());
 const mockIssuesList = vi.hoisted(() => vi.fn());
+const mockSummarySlotCard = vi.hoisted(() => vi.fn());
 
 vi.mock("../api/projects", () => ({ projectsApi: mockProjectsApi }));
 vi.mock("../api/issues", () => ({ issuesApi: mockIssuesApi }));
@@ -80,6 +81,12 @@ vi.mock("../components/InlineEditor", () => ({
 }));
 vi.mock("../components/ProjectWorkspacesContent", () => ({
   ProjectWorkspacesContent: () => <div data-testid="project-workspaces" />,
+}));
+vi.mock("../components/SummarySlotCard", () => ({
+  SummarySlotCard: (props: unknown) => {
+    mockSummarySlotCard(props);
+    return <div data-testid="summary-slot-card">Project summary card</div>;
+  },
 }));
 vi.mock("../components/PageTabBar", () => ({
   PageTabBar: ({ items }: { items: Array<{ value: string; label: string }> }) => (
@@ -204,6 +211,16 @@ describe("ProjectDetail", () => {
     });
 
     expect(container.textContent).toContain("Managed by Missions");
+    expect(container.textContent).toContain("Project summary card");
+    expect(mockSummarySlotCard).toHaveBeenCalledWith(expect.objectContaining({
+      companyId: "company-1",
+      scopeKind: "project",
+      scopeId: "project-1",
+      title: "Project summary",
+    }));
+    const titleEditor = Array.from(container.querySelectorAll("span")).find((node) => node.textContent === "Managed Project");
+    const summaryCard = container.querySelector('[data-testid="summary-slot-card"]');
+    expect(titleEditor && summaryCard ? Boolean(titleEditor.compareDocumentPosition(summaryCard) & Node.DOCUMENT_POSITION_FOLLOWING) : false).toBe(true);
     expect(container.textContent).toContain("Plugin operations");
     expect(mockIssuesApi.list).toHaveBeenCalledWith("company-1", {
       projectId: "project-1",

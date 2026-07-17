@@ -5,6 +5,7 @@ export { companySearchExtractService } from "./company-search-extract.js";
 export { feedbackService } from "./feedback.js";
 export { companySkillService } from "./company-skills.js";
 export { companySkillPolicyService, normalizeSkillPolicySourceType } from "./company-skill-policy.js";
+export { folderService } from "./folders.js";
 export { agentService, deduplicateAgentName } from "./agents.js";
 export {
   builtInAgentService,
@@ -98,6 +99,7 @@ export {
   type PrincipalAccessCompatibilityBackfillStats,
 } from "./principal-access-compatibility.js";
 export { authorizationService } from "./authorization.js";
+export { inboxAgentPolicyService } from "./inbox-agent-policy.js";
 export type {
   AuthorizationAction,
   AuthorizationActor,
@@ -134,6 +136,7 @@ export { workspaceOperationService } from "./workspace-operations.js";
 export { workspaceFileResourceService } from "./workspace-file-resources.js";
 export { workProductService } from "./work-products.js";
 export { logActivity, type LogActivityInput } from "./activity-log.js";
+export { summarySlotService, SUMMARIZER_BUILT_IN_KEY } from "./summary-slots.js";
 export { notifyHireApproved, type NotifyHireApprovedInput } from "./hire-hook.js";
 export { publishLiveEvent, subscribeCompanyLiveEvents } from "./live-events.js";
 export {

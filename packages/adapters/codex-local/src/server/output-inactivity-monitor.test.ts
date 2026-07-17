@@ -51,6 +51,10 @@ class FakeClock {
 }
 
 describe("resolveCodexInactivityTimeout", () => {
+  it("defaults to 30 minutes", () => {
+    expect(DEFAULT_CODEX_OUTPUT_INACTIVITY_TIMEOUT_MS).toBe(30 * 60 * 1000);
+  });
+
   it("uses default when value is unset", () => {
     expect(resolveCodexInactivityTimeout(undefined)).toEqual({
       mode: "default",

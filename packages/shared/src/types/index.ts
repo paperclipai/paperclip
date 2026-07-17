@@ -1,5 +1,18 @@
 export type { Company } from "./company.js";
 export type {
+  GenerateSummarySlotRequest,
+  GenerateSummarySlotResponse,
+  GetSummarySlotResponse,
+  ListSummarySlotRevisionsResponse,
+  SummarySlot,
+  SummarySlotDocument,
+  SummarySlotIssueRef,
+  SummarySlotRevision,
+  SummarySlotScopeSelector,
+  WriteSummarySlotRequest,
+  WriteSummarySlotResponse,
+} from "./summary-slot.js";
+export type {
   AttentionDecisionVerb,
   AttentionDetailImage,
   AttentionFeed,
@@ -163,6 +176,17 @@ export type {
   CompanySkillInstallCatalogRequest,
   CompanySkillInstallCatalogResult,
 } from "./company-skill.js";
+export type {
+  FolderKind,
+  Folder,
+  FolderListItem,
+  FolderListResult,
+  CreateFolderRequest,
+  UpdateFolderRequest,
+  MoveFolderRequest,
+  MoveFolderItemRequest,
+  EnsureMySkillFolderRequest,
+} from "./folder.js";
 export type {
   CatalogTeamKind,
   CatalogTeamTrustLevel,

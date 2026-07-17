@@ -91,7 +91,9 @@ function createLocalSandboxRunner(
   };
 }
 
-function buildRuntime() {
+function buildRuntime(
+  onSetConfigOption?: (input: { key: string; value: string }) => void,
+) {
   return {
     ensureSession: async () => ({
       backendSessionId: "backend-session",
@@ -105,6 +107,9 @@ function buildRuntime() {
       result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
       cancel: async () => {},
     }),
+    setConfigOption: async (input: { key: string; value: string }) => {
+      onSetConfigOption?.(input);
+    },
     close: async () => {},
   };
 }
@@ -120,12 +125,13 @@ async function runExecutor(
   } = {},
 ) {
   const runtimeOptions: Record<string, unknown>[] = [];
+  const configOptions: Array<{ key: string; value: string }> = [];
   const meta: Record<string, unknown>[] = [];
   const logs: Array<{ stream: string; text: string }> = [];
   const execute = createAcpxEngineExecutor({
     createRuntime: (options) => {
       runtimeOptions.push(options as unknown as Record<string, unknown>);
-      return buildRuntime() as never;
+      return buildRuntime(({ key, value }) => configOptions.push({ key, value })) as never;
     },
   });
 
@@ -151,10 +157,110 @@ async function runExecutor(
   } as never);
 
   expect(result.exitCode).toBe(0);
-  return { logs, meta, runtimeOptions, result };
+  return { logs, meta, runtimeOptions, configOptions, result };
 }
 
 describe("shared ACPX engine runtime behavior", () => {
+  it("sets Codex model, effort, and fast mode through CODEX_CONFIG without session config calls", async () => {
+    const { configOptions, meta } = await runExecutor({
+      agent: "codex",
+      model: "gpt-5.6-sol",
+      modelReasoningEffort: "high",
+      fastMode: true,
+    });
+
+    expect(JSON.parse(String((meta[0]?.env as Record<string, string>).CODEX_CONFIG))).toEqual({
+      model: "gpt-5.6-sol",
+      model_reasoning_effort: "high",
+      service_tier: "fast",
+      features: { fast_mode: true },
+    });
+    expect(configOptions).toEqual([]);
+    expect(meta[0]?.commandNotes).toContain(
+      "Requested ACPX model: gpt-5.6-sol (set via CODEX_CONFIG at startup).",
+    );
+  });
+
+  it("forwards arbitrary Codex model IDs verbatim without picker-dependent session config", async () => {
+    const arbitraryModel = "gpt-999-test-does-not-exist";
+    const { configOptions, meta } = await runExecutor({
+      agent: "codex",
+      model: arbitraryModel,
+      reasoningEffort: "xhigh",
+      fastMode: true,
+    });
+
+    const codexConfig = JSON.parse(
+      String((meta[0]?.env as Record<string, string>).CODEX_CONFIG),
+    ) as Record<string, unknown>;
+    expect(codexConfig.model).toBe(arbitraryModel);
+    expect(codexConfig.model_reasoning_effort).toBe("xhigh");
+    expect(configOptions).toEqual([]);
+  });
+
+  it("merges user CODEX_CONFIG while runtime model settings win", async () => {
+    const { meta } = await runExecutor({
+      agent: "codex",
+      model: "gpt-runtime",
+      fastMode: true,
+      env: {
+        CODEX_CONFIG: JSON.stringify({
+          model: "gpt-user",
+          approval_policy: "never",
+          features: { experimental_feature: true, fast_mode: false },
+        }),
+      },
+    });
+
+    expect(JSON.parse(String((meta[0]?.env as Record<string, string>).CODEX_CONFIG))).toEqual({
+      model: "gpt-runtime",
+      approval_policy: "never",
+      service_tier: "fast",
+      features: { experimental_feature: true, fast_mode: true },
+    });
+  });
+
+  it("warns when runtime settings replace malformed user CODEX_CONFIG", async () => {
+    const { logs, meta } = await runExecutor({
+      agent: "codex",
+      model: "gpt-runtime",
+      env: { CODEX_CONFIG: "not-json" },
+    });
+
+    expect(JSON.parse(String((meta[0]?.env as Record<string, string>).CODEX_CONFIG))).toEqual({
+      model: "gpt-runtime",
+    });
+    expect(logs).toContainEqual({
+      stream: "stderr",
+      text: "[paperclip] Ignoring invalid user CODEX_CONFIG while applying runtime Codex settings; expected a JSON object.\n",
+    });
+  });
+
+  it("keeps Claude startup model handling and Gemini session config handling unchanged", async () => {
+    const claude = await runExecutor({ agent: "claude", model: "claude-opus-4-7" });
+    expect((claude.meta[0]?.env as Record<string, string>).ANTHROPIC_MODEL).toBe(
+      "claude-opus-4-7",
+    );
+    expect(claude.configOptions).toEqual([]);
+
+    const gemini = await runExecutor({
+      agent: "gemini",
+      model: "gemini-2.5-pro",
+      thinkingEffort: "high",
+    });
+    expect(gemini.configOptions).toEqual([
+      { key: "model", value: "gemini-2.5-pro" },
+      { key: "effort", value: "high" },
+    ]);
+  });
+
+  it("does not inject CODEX_CONFIG or session config when Codex overrides are absent", async () => {
+    const { configOptions, meta } = await runExecutor({ agent: "codex" });
+
+    expect((meta[0]?.env as Record<string, string>).CODEX_CONFIG).toBeUndefined();
+    expect(configOptions).toEqual([]);
+  });
+
   it("includes Paperclip env and API access notes in the ACPX prompt without leaking the token", async () => {
     const { meta } = await runExecutor(
       { agent: "custom", agentCommand: "node ./fake-acp.js" },

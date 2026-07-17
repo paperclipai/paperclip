@@ -88,6 +88,25 @@ export type SuccessfulRunHandoffDecision =
       reason: string;
     };
 
+const SUCCESSFUL_RUN_HANDOFF_VALID_PATH_SKIP_REASONS = new Set([
+  "issue has execution policy state",
+  "active routine continuation owns the next action",
+  "issue already has an active execution path",
+  "issue already has a queued or deferred wake",
+  "pending interaction or approval owns the next action",
+  "persisted issue monitor owns the next action",
+  "explicit blocker path owns the next action",
+  "open recovery issue owns the ambiguity",
+  "issue is under an active pause hold",
+  "corrective handoff wake already exists for this source run",
+]);
+
+export function isSuccessfulRunHandoffValidPathSkip(
+  decision: SuccessfulRunHandoffDecision,
+): decision is Extract<SuccessfulRunHandoffDecision, { kind: "skip" }> {
+  return decision.kind === "skip" && SUCCESSFUL_RUN_HANDOFF_VALID_PATH_SKIP_REASONS.has(decision.reason);
+}
+
 function metadataText(value: unknown, fallback = "unknown") {
   const text = typeof value === "string" ? value.trim() : value == null ? "" : String(value).trim();
   const resolved = text.length > 0 ? text : fallback;

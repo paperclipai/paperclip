@@ -12,6 +12,7 @@ import {
   documentRevisions,
   documents,
   executionWorkspaces,
+  folders,
   heartbeatRuns,
   instanceSettings,
   issueInboxArchives,
@@ -68,6 +69,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     await db.delete(routineRuns);
     await db.delete(routineTriggers);
     await db.delete(routines);
+    await db.delete(folders);
     await db.delete(routineDocuments);
     await db.delete(documents);
     await db.delete(documentRevisions);
@@ -269,6 +271,39 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
 
     expect(projectRoutines.map((entry) => entry.id)).toEqual([routine.id]);
     expect(allRoutines.map((entry) => entry.id)).toEqual(expect.arrayContaining([routine.id, otherRoutine.id]));
+  });
+
+  it("does not reveal folders owned by another company", async () => {
+    const { companyId, agentId, projectId, svc } = await seedFixture();
+    const otherCompanyId = randomUUID();
+    await db.insert(companies).values({
+      id: otherCompanyId,
+      name: "Other company",
+      issuePrefix: `T${otherCompanyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      defaultResponsibleUserId: randomUUID(),
+      requireBoardApprovalForNewAgents: false,
+    });
+    const [otherFolder] = await db.insert(folders).values({
+      companyId: otherCompanyId,
+      kind: "routine",
+      name: "Private folder",
+      slug: "private-folder",
+      position: 0,
+    }).returning();
+
+    await expect(svc.create(companyId, {
+      projectId,
+      folderId: otherFolder!.id,
+      goalId: null,
+      parentIssueId: null,
+      title: "cross-company folder probe",
+      description: null,
+      assigneeAgentId: agentId,
+      priority: "medium",
+      status: "active",
+      concurrencyPolicy: "coalesce_if_active",
+      catchUpPolicy: "skip_missed",
+    }, {})).rejects.toMatchObject({ status: 404, message: "Folder not found" });
   });
 
   it("defaults activity gates to always at company scope", async () => {
