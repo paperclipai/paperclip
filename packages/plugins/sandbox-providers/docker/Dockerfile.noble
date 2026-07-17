@@ -1,0 +1,16 @@
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates curl git nodejs npm sudo tini \
+  && rm -rf /var/lib/apt/lists/* \
+  && groupadd --gid 1000 paperclip \
+  && useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash paperclip \
+  && install -d -o paperclip -g paperclip -m 0755 /workspace \
+  && printf 'paperclip ALL=(ALL) NOPASSWD: ALL\\n' > /etc/sudoers.d/paperclip \
+  && chmod 0440 /etc/sudoers.d/paperclip
+
+USER paperclip
+WORKDIR /workspace
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["sleep", "infinity"]
