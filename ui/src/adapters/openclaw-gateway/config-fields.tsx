@@ -237,7 +237,7 @@ export function OpenClawGatewayConfigFields({
             }
             immediate
             className={inputClass}
-            placeholder="paperclip"
+            placeholder="cortex"
           />
         </Field>
       )}

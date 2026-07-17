@@ -73,8 +73,8 @@ export async function promptStorage(current?: StorageConfig): Promise<StorageCon
 
   const bucket = await p.text({
     message: "S3 bucket",
-    defaultValue: base.s3.bucket || "paperclip",
-    placeholder: "paperclip",
+    defaultValue: base.s3.bucket || "cortex",
+    placeholder: "cortex",
     validate: (value) => {
       if (!value || value.trim().length === 0) return "Bucket is required";
     },

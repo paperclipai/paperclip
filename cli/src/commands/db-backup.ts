@@ -60,7 +60,7 @@ export async function dbBackupCommand(opts: DbBackupOptions): Promise<void> {
     opts.retentionDays,
     config?.database.backup.retentionDays ?? 30,
   );
-  const filenamePrefix = opts.filenamePrefix?.trim() || "paperclip";
+  const filenamePrefix = opts.filenamePrefix?.trim() || "cortex";
 
   p.log.message(pc.dim(`Config: ${configPath}`));
   p.log.message(pc.dim(`Connection source: ${connection.source}`));

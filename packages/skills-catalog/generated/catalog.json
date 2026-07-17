@@ -58,7 +58,7 @@
       ],
       "requires": [],
       "tags": [
-        "paperclip",
+        "cortex",
         "triage",
         "inbox",
         "workflow"
@@ -67,11 +67,11 @@
         {
           "path": "SKILL.md",
           "kind": "skill",
-          "sizeBytes": 4039,
-          "sha256": "19e62fc8b37ab64973c8bc64089b5497b4ebb07bdf4a12093194400964e05755"
+          "sizeBytes": 4036,
+          "sha256": "88d42c267f40800e048b3664d158e493cf1ba9364bda3680f8c4a603e4548388"
         }
       ],
-      "contentHash": "sha256:b449f996b5124d20401d00201bd719b697bc8f7d282a04871b0c4b07626e5029"
+      "contentHash": "sha256:ce48b1e2f0b67d94c69fead700356edb7442db727569e0b37186a96b968a7cad"
     },
     {
       "id": "paperclipai:bundled:paperclip-operations:task-planning",
@@ -93,7 +93,7 @@
       ],
       "requires": [],
       "tags": [
-        "paperclip",
+        "cortex",
         "planning",
         "issues",
         "delegation"
@@ -102,11 +102,11 @@
         {
           "path": "SKILL.md",
           "kind": "skill",
-          "sizeBytes": 4926,
-          "sha256": "f72f7d8bea110ff42de7994bb9c59c15e9ba6d4845b13451737bf48d6132fb78"
+          "sizeBytes": 4923,
+          "sha256": "7585766e5605b31d39e201d91ead13fdfa4c1a1c725e0e7faf7f082cc717e5e8"
         }
       ],
-      "contentHash": "sha256:eea113d0479f89a78bddd635b8c5ce289e8cb854d61a35c638bb4229af1b4279"
+      "contentHash": "sha256:86dbbe5324f10bfdba06106224e3db7bc99699e12228213b88c34cad29677545"
     },
     {
       "id": "paperclipai:bundled:product:wireframe",
