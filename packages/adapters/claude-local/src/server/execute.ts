@@ -65,6 +65,7 @@ import {
   isClaudeUnknownSessionError,
   isClaudePoisonedPreviousMessageIdError,
   isClaudeImageProcessingError,
+  isClaudeThinkingBlocksResumeError,
 } from "./parse.js";
 import {
   materializeRemoteClaudeConfig,
@@ -1042,6 +1043,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       (asString(parsed.session_id, opts.fallbackSessionId ?? "") || opts.fallbackSessionId);
     const clearSessionForMaxTurns = isClaudeMaxTurnsResult(parsed);
     const poisonedPreviousMessageId = isClaudePoisonedPreviousMessageIdError(parsed);
+    // A resumed transcript whose latest assistant message still carries its
+    // original thinking / redacted_thinking blocks is rejected with a 400 by
+    // /v1/messages and is just as unrecoverable as the poisoned message-id case
+    // above — every `--resume` re-hits the identical error until the sessionId
+    // is dropped server-side. Treat it identically. See VER-1633.
+    const poisonedThinkingBlocks = isClaudeThinkingBlocksResumeError(parsed);
     // Fable 5 policy refusals exit cleanly (exitCode=0, is_error=false), so this
     // is intentionally independent of `failed` — otherwise a refusal looks like a
     // successful run to Paperclip and the heartbeat stalls silently. See RY-604.
@@ -1057,7 +1064,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     // /v1/messages and the issue is permanently unrecoverable until the
     // sessionId is dropped server-side. Drop here so resolveNextSessionState
     // calls clearTaskSessions on the next heartbeat. See RED-978 / RED-976.
-    const shouldDropSessionForPoison = poisonedPreviousMessageId;
+    const shouldDropSessionForPoison = poisonedPreviousMessageId || poisonedThinkingBlocks;
     const resolvedSessionId = shouldDropSessionForPoison ? null : rawResolvedSessionId;
     const resolvedSessionParams = resolvedSessionId
       ? ({
@@ -1185,6 +1192,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           ? "poisoned"
           : isClaudeImageProcessingError(initial.parsed)
           ? "image"
+          : isClaudeThinkingBlocksResumeError(initial.parsed)
+          ? "thinking"
           : null
         : null;
 
@@ -1194,12 +1203,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           ? "returned a poisoned message-id"
           : sessionErrorKind === "image"
           ? "contains an unprocessable image"
+          : sessionErrorKind === "thinking"
+          ? "has unmodifiable thinking blocks in its latest assistant message"
           : "is unavailable";
       await onLog(
         "stdout",
         `[paperclip] Claude resume session "${sessionId}" ${reason}; retrying with a fresh session.\n`,
       );
-      if (sessionErrorKind === "poisoned" && !executionTargetIsRemote) {
+      if (
+        (sessionErrorKind === "poisoned" || sessionErrorKind === "thinking") &&
+        !executionTargetIsRemote
+      ) {
         const claudeConfigDir = resolveSharedClaudeConfigDir(effectiveEnv);
         // Mirrors Claude Code's project-dir encoding: non-alphanumeric chars become "-"; existing hyphens pass through.
         const encodedCwd = effectiveExecutionCwd.replace(/[^a-zA-Z0-9-]/g, "-");

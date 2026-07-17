@@ -270,6 +270,26 @@ export function isClaudeImageProcessingError(parsed: Record<string, unknown>): b
   );
 }
 
+export function isClaudeThinkingBlocksResumeError(parsed: Record<string, unknown>): boolean {
+  const resultText = asString(parsed.result, "").trim();
+  const allMessages = [resultText, ...extractClaudeErrorMessages(parsed)]
+    .map((msg) => msg.trim())
+    .filter(Boolean);
+
+  // Anthropic rejects a resumed transcript whose latest assistant message still
+  // carries the original thinking / redacted_thinking blocks:
+  //   400 invalid_request_error — messages.N.content.M: thinking or
+  //   redacted_thinking blocks in the latest assistant message cannot be
+  //   modified. These blocks must remain as they were in the original response.
+  // This is deterministic (like the poisoned previous_message_id error): the
+  // persisted session is unrecoverable and must be dropped for a fresh session.
+  return allMessages.some((msg) =>
+    /(thinking|redacted_thinking) blocks in the latest assistant message cannot be modified/i.test(
+      msg,
+    ),
+  );
+}
+
 function buildClaudeTransientHaystack(input: {
   parsed?: Record<string, unknown> | null;
   stdout?: string | null;

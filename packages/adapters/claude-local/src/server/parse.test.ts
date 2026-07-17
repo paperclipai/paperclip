@@ -10,6 +10,7 @@ import {
   isClaudeRefusalResult,
   isClaudeUnknownSessionError,
   isClaudeImageProcessingError,
+  isClaudeThinkingBlocksResumeError,
 } from "./parse.js";
 
 describe("detectClaudeLoginRequired", () => {
@@ -186,6 +187,47 @@ describe("isClaudePoisonedPreviousMessageIdError", () => {
 
   it("returns false for empty parsed result", () => {
     expect(isClaudePoisonedPreviousMessageIdError({})).toBe(false);
+  });
+});
+
+describe("isClaudeThinkingBlocksResumeError", () => {
+  it("detects the thinking-blocks 400 error in the result field", () => {
+    expect(
+      isClaudeThinkingBlocksResumeError({
+        subtype: "success",
+        is_error: true,
+        result:
+          "API Error: 400 invalid_request_error — messages.3.content.0: thinking or redacted_thinking blocks in the latest assistant message cannot be modified. These blocks must remain as they were in the original response.",
+      }),
+    ).toBe(true);
+  });
+
+  it("detects the redacted_thinking variant in the errors array", () => {
+    expect(
+      isClaudeThinkingBlocksResumeError({
+        is_error: true,
+        result: "",
+        errors: [
+          {
+            message:
+              "400 messages.5.content.1: redacted_thinking blocks in the latest assistant message cannot be modified.",
+          },
+        ],
+      }),
+    ).toBe(true);
+  });
+
+  it("returns false for unrelated errors", () => {
+    expect(
+      isClaudeThinkingBlocksResumeError({
+        is_error: true,
+        result: "No conversation found with session id abc-123",
+      }),
+    ).toBe(false);
+  });
+
+  it("returns false for empty parsed result", () => {
+    expect(isClaudeThinkingBlocksResumeError({})).toBe(false);
   });
 });
 
