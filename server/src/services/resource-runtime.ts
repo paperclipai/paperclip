@@ -108,13 +108,7 @@ async function credentialContext(db: Db, resource: Resource): Promise<{ env: Nod
 
 async function resolveRemoteRef(resource: Resource, requestedRef: string, env: NodeJS.ProcessEnv) {
   if (isCommit(requestedRef)) {
-    const output = await runGit(["ls-remote", resource.repository], { env });
-    const commit = output
-      .split("\n")
-      .map((line) => line.split(/\s+/)[0])
-      .find((candidate) => candidate?.toLowerCase() === requestedRef.toLowerCase());
-    if (!commit) throw notFound(`Git commit not found: ${requestedRef}`);
-    return commit;
+    return requestedRef;
   }
 
   const candidates = [
