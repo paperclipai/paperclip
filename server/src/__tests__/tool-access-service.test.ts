@@ -775,6 +775,11 @@ describeEmbeddedPostgres("tool access service", () => {
       .update(toolCatalogEntries)
       .set({ status: "active", reviewedAt: new Date(), quarantineReason: null, quarantinedAt: null })
       .where(eq(toolCatalogEntries.toolName, "send_email"));
+    // remoteTools performs an `initialize` handshake before `tools/list`, so the
+    // updated payload must sit behind a handshake response in the mock queue.
+    fetchMock.mockResolvedValueOnce(
+      mcpHttpResponse({ jsonrpc: "2.0", id: "paperclip-mcp-initialize", result: {} }),
+    );
     fetchMock.mockResolvedValueOnce(mcpHttpResponse({
       jsonrpc: "2.0",
       id: "paperclip-catalog-refresh",
@@ -2780,7 +2785,8 @@ describeEmbeddedPostgres("tool access service", () => {
       .query({ state, code: "oauth-code" });
 
     expect(callbackRes.status).toBe(200);
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    // 1 token exchange + 2 catalog reads, each an `initialize` handshake + `tools/list`.
+    expect(fetchMock).toHaveBeenCalledTimes(5);
     expect(callbackRes.body.connection).toMatchObject({
       id: connectRes.body.connectionId,
       status: "active",
@@ -2812,7 +2818,8 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(redirectCallbackRes.headers.location).toBe(
       `/${company.issuePrefix}/apps/${redirectConnectRes.body.connectionId}/setup?oauth=connected`,
     );
-    expect(fetchMock).toHaveBeenCalledTimes(6);
+    // Second identical callback adds another 5 (1 token + 2×(initialize + tools/list)).
+    expect(fetchMock).toHaveBeenCalledTimes(10);
     await expect(db.select().from(toolOauthStates)).resolves.toHaveLength(0);
     await expect(db.select().from(companySecretBindings)).resolves.toHaveLength(6);
     const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, connectRes.body.connectionId));
@@ -3125,7 +3132,8 @@ describeEmbeddedPostgres("tool access service", () => {
 
     const health = await service.checkHealth(connection.id, { actorType: "system", actorId: "health-check" });
     expect(health.connection.healthStatus).toBe("ok");
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    // 1 token exchange + the catalog read's `initialize` handshake + `tools/list`.
+    expect(fetchMock).toHaveBeenCalledTimes(3);
     const [updated] = await db.select().from(toolConnections).where(eq(toolConnections.id, connection.id));
     expect(updated.credentialSecretRefs).toEqual([
       expect.objectContaining({ configPath: "oauth.access_token", label: "OAuth access token" }),
@@ -4243,7 +4251,8 @@ describeEmbeddedPostgres("tool access service", () => {
       credentialValues: { "credentials.authorization": "zap-secret" },
     }, { actorType: "user", actorId: "board" });
 
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    // 2 catalog reads, each an `initialize` handshake + `tools/list`.
+    expect(fetchMock).toHaveBeenCalledTimes(4);
     expect(fetchMock).toHaveBeenCalledWith(
       "https://mcp.zapier.com/api/mcp",
       expect.objectContaining({
@@ -4333,6 +4342,11 @@ describeEmbeddedPostgres("tool access service", () => {
       ]),
     );
 
+    // remoteTools performs an `initialize` handshake before `tools/list`, so the
+    // updated payload must sit behind a handshake response in the mock queue.
+    fetchMock.mockResolvedValueOnce(
+      mcpHttpResponse({ jsonrpc: "2.0", id: "paperclip-mcp-initialize", result: {} }),
+    );
     fetchMock.mockResolvedValueOnce(mcpHttpResponse({
       jsonrpc: "2.0",
       id: "paperclip-catalog-refresh",
