@@ -139,6 +139,10 @@ export function __inflightGetCount(): number {
   return inflightGets.size;
 }
 
+function isRequestOptions(value: unknown): value is RequestOptions {
+  return typeof value === "object" && value !== null && "signal" in value;
+}
+
 export const api = {
   get: <T>(path: string, options?: RequestOptions) => coalescedGet<T>(path, options),
   post: <T>(path: string, body: unknown, options?: RequestOptions) =>
@@ -149,8 +153,11 @@ export const api = {
     request<T>(path, { method: "PUT", body: JSON.stringify(body), signal: options?.signal }),
   patch: <T>(path: string, body: unknown, options?: RequestOptions) =>
     request<T>(path, { method: "PATCH", body: JSON.stringify(body), signal: options?.signal }),
-  delete: <T>(path: string, options?: RequestOptions) =>
-    request<T>(path, { method: "DELETE", signal: options?.signal }),
+  delete: <T>(path: string, bodyOrOptions?: unknown, options?: RequestOptions) => {
+    const requestOptions = isRequestOptions(bodyOrOptions) ? bodyOrOptions : options;
+    const body = bodyOrOptions === undefined || isRequestOptions(bodyOrOptions) ? undefined : JSON.stringify(bodyOrOptions);
+    return request<T>(path, { method: "DELETE", ...(body === undefined ? {} : { body }), signal: requestOptions?.signal });
+  },
   deleteWithBody: <T>(path: string, body: unknown, options?: RequestOptions) =>
     request<T>(path, { method: "DELETE", body: JSON.stringify(body), signal: options?.signal }),
 };

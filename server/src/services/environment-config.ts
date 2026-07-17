@@ -76,6 +76,7 @@ const fakeSandboxEnvironmentConfigSchema = z.object({
     .default("ubuntu:24.04"),
   reuseLease: z.boolean().optional().default(false),
   streamRunLogs: z.boolean().optional(),
+  archiveOnRelease: z.boolean().optional(),
 }).strict();
 
 const pluginSandboxProviderKeySchema = z.string()
@@ -91,6 +92,7 @@ const pluginSandboxEnvironmentConfigSchema = z.object({
   timeoutMs: z.coerce.number().int().min(1).max(86_400_000).optional(),
   reuseLease: z.boolean().optional().default(false),
   streamRunLogs: z.boolean().optional(),
+  archiveOnRelease: z.boolean().optional(),
 }).catchall(z.unknown());
 
 const pluginEnvironmentConfigSchema = z.object({
@@ -633,6 +635,10 @@ export async function resolveEnvironmentDriverConfigForRuntime(
             environmentId,
             baseConfig: parsed.config,
             runtimeConfig,
+            // Match the capture-time fingerprint exclusions: secret-ref paths
+            // are excluded when the template's source fingerprint is computed,
+            // so they must be excluded when re-checking it here.
+            secretRefExcludePaths: collectSecretRefPaths(schema),
           })
         : runtimeConfig,
     };

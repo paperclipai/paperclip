@@ -13,6 +13,7 @@ export { cliAuthChallenges } from "./cli_auth_challenges.js";
 export { companyMemberships } from "./company_memberships.js";
 export { companyUserSidebarPreferences } from "./company_user_sidebar_preferences.js";
 export { principalPermissionGrants } from "./principal_permission_grants.js";
+export { companySkillPolicies } from "./company_skill_policies.js";
 export { invites } from "./invites.js";
 export { joinRequests } from "./join_requests.js";
 export { budgetPolicies } from "./budget_policies.js";
@@ -34,6 +35,7 @@ export { workspaceOperations } from "./workspace_operations.js";
 export { workspaceRuntimeServices } from "./workspace_runtime_services.js";
 export { projectGoals } from "./project_goals.js";
 export { goals } from "./goals.js";
+export { folders } from "./folders.js";
 export { issues } from "./issues.js";
 export { issueWatchdogs } from "./issue_watchdogs.js";
 export { issuePlanDecompositions } from "./issue_plan_decompositions.js";
@@ -44,6 +46,14 @@ export { externalObjectMentions } from "./external_object_mentions.js";
 export { issueRelations } from "./issue_relations.js";
 export { routines, routineRevisions, routineTriggers, routineRuns } from "./routines.js";
 export { pipelines, pipelineStages, pipelineTransitions } from "./pipelines.js";
+export {
+  cases,
+  caseAttachments,
+  caseDocuments,
+  caseEvents,
+  caseIssueLinks,
+  caseLabels,
+} from "./cases.js";
 export {
   pipelineCases,
   pipelineCaseIssueLinks,
@@ -58,11 +68,13 @@ export { labels } from "./labels.js";
 export { issueLabels } from "./issue_labels.js";
 export { issueApprovals } from "./issue_approvals.js";
 export { issueComments } from "./issue_comments.js";
+export { issueCreateIdempotencyKeys } from "./issue_create_idempotency_keys.js";
 export { issueThreadInteractions } from "./issue_thread_interactions.js";
 export { issueTreeHolds } from "./issue_tree_holds.js";
 export { issueTreeHoldMembers } from "./issue_tree_hold_members.js";
 export { issueExecutionDecisions } from "./issue_execution_decisions.js";
 export { issueInboxArchives } from "./issue_inbox_archives.js";
+export { userInboxAgentPolicies } from "./user_inbox_agent_policies.js";
 export { inboxDismissals } from "./inbox_dismissals.js";
 export { feedbackVotes } from "./feedback_votes.js";
 export { feedbackExports } from "./feedback_exports.js";
@@ -79,6 +91,7 @@ export { documentAnnotationAnchorSnapshots } from "./document_annotation_anchor_
 export { heartbeatRuns } from "./heartbeat_runs.js";
 export { heartbeatRunEvents } from "./heartbeat_run_events.js";
 export { heartbeatRunWatchdogDecisions } from "./heartbeat_run_watchdog_decisions.js";
+export { smokeRuns, smokeRunSteps } from "./smoke_lab.js";
 export { costEvents } from "./cost_events.js";
 export { financeEvents } from "./finance_events.js";
 export { approvals } from "./approvals.js";
@@ -91,6 +104,30 @@ export { companySecretVersions } from "./company_secret_versions.js";
 export { companySecretBindings } from "./company_secret_bindings.js";
 export { userSecretDeclarations } from "./user_secret_declarations.js";
 export { secretAccessEvents } from "./secret_access_events.js";
+export {
+  toolApplications,
+  toolConnections,
+  toolConnectionInstalls,
+  toolOauthStates,
+  toolCatalogEntries,
+  toolProfiles,
+  toolProfileEntries,
+  toolProfileBindings,
+  toolMcpGateways,
+  toolMcpGatewayTokens,
+  toolPolicies,
+  toolRuntimeSlots,
+  toolRuntimeMetricCounters,
+  toolStdioCommandTemplates,
+  toolGatewaySessions,
+  connectionTokenIssuances,
+  toolInvocations,
+  toolActionRequests,
+  toolCallEvents,
+  toolRateLimitCounters,
+  toolGatewayRateLimitCounters,
+  toolAccessAuditEvents,
+} from "./tool_access.js";
 export {
   companySkills,
   companySkillVersions,

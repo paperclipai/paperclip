@@ -67,6 +67,11 @@ export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST: readonly SandboxCa
   { method: "PATCH", path: /^\/api\/issues\/[^/]+$/ },
   { method: "GET", path: /^\/api\/issues\/[^/]+\/approvals$/ },
 
+  // Work products: publish branch/commit/artifact metadata for completed work.
+  { method: "GET", path: /^\/api\/issues\/[^/]+\/work-products$/ },
+  { method: "POST", path: /^\/api\/issues\/[^/]+\/work-products$/ },
+  { method: "PATCH", path: /^\/api\/work-products\/[^/]+$/ },
+
   // Issue-thread interactions (suggest tasks, ask questions, request confirmation)
   { method: "GET", path: /^\/api\/issues\/[^/]+\/interactions(?:\/[^/]+)?$/ },
   { method: "POST", path: /^\/api\/issues\/[^/]+\/interactions$/ },

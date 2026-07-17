@@ -376,6 +376,11 @@ describe("IssueRunLedger", () => {
           createdAt: "2026-04-18T19:56:00.000Z",
         }),
         createRun({
+          runId: "run-background-task",
+          resultJson: { stopReason: "unmanaged_background_task_stopped" },
+          createdAt: "2026-04-18T19:55:30.000Z",
+        }),
+        createRun({
           runId: "run-paused",
           resultJson: { stopReason: "paused" },
           createdAt: "2026-04-18T19:55:00.000Z",
@@ -386,6 +391,7 @@ describe("IssueRunLedger", () => {
     expect(container.textContent).toContain("timeout (30s timeout)");
     expect(container.textContent).toContain("cancelled");
     expect(container.textContent).toContain("budget paused");
+    expect(container.textContent).toContain("unmanaged background task stopped");
     expect(container.textContent).toContain("paused by board");
   });
 

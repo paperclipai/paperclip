@@ -1597,6 +1597,7 @@ describe("environment routes", () => {
       companyId: null,
       pluginWorkerManager: undefined,
       applyCustomImageTemplate: false,
+      acquireSandboxRuntimeLease: false,
     });
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),
@@ -1693,9 +1694,10 @@ describe("environment routes", () => {
     expect(res.status).toBe(200);
     expect(res.body.driver).toBe("sandbox");
     expect(mockProbeEnvironment).toHaveBeenCalledWith(expect.anything(), environment, {
-      companyId: null,
+      companyId: "company-1",
       pluginWorkerManager: undefined,
       applyCustomImageTemplate: true,
+      acquireSandboxRuntimeLease: true,
     });
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),
@@ -1748,9 +1750,10 @@ describe("environment routes", () => {
     expect(res.status).toBe(200);
     expect(res.body.driver).toBe("sandbox");
     expect(mockProbeEnvironment).toHaveBeenCalledWith(expect.anything(), environment, {
-      companyId: null,
+      companyId: "company-1",
       pluginWorkerManager: undefined,
       applyCustomImageTemplate: true,
+      acquireSandboxRuntimeLease: true,
     });
   });
 

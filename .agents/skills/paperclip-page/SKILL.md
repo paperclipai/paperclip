@@ -1,10 +1,9 @@
 ---
 name: paperclip-page
 description: >
-  Publish static HTML pages and asset folders to the Paperclip-approved S3 and
-  CloudFront website host. Use when asked to deploy, publish, host, or share a
-  persistent Paperclip page, wireframe viewer, prototype, report, or other static
-  site without using here.now.
+  Publish static HTML pages and asset folders to the Paperclip S3/CloudFront page
+  host. Use when asked to deploy, host, or share a persistent page, viewer,
+  prototype, report, or static site without here.now.
 ---
 
 # Paperclip Page

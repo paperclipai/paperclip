@@ -1,7 +1,10 @@
 import { createServer } from "node:http";
-import { mkdir, mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import net from "node:net";
+import { execFile, spawn } from "node:child_process";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -16,12 +19,15 @@ import {
   resolveAdapterExecutionTargetTimeoutSec,
   runAdapterExecutionTargetProcess,
   runAdapterExecutionTargetShellCommand,
+  startAdapterExecutionTargetProcessSessionBridge,
   startAdapterExecutionTargetPaperclipBridge,
   type AdapterSandboxExecutionTarget,
 } from "./execution-target.js";
 import { createSandboxRunLogTailFactory } from "./sandbox-run-log-stream.js";
 import { runChildProcess } from "./server-utils.js";
 import { shellQuote } from "./ssh.js";
+
+const execFileAsync = promisify(execFile);
 
 describe("sandbox adapter execution targets", () => {
   const cleanupDirs: string[] = [];
@@ -90,13 +96,43 @@ describe("sandbox adapter execution targets", () => {
     ].join("\n");
   }
 
-  async function waitForCondition(predicate: () => boolean, message: string): Promise<void> {
-    const deadline = Date.now() + 1000;
+  async function waitForCondition(predicate: () => boolean, message: string, timeoutMs = 1000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       if (predicate()) return;
       await new Promise((resolve) => setTimeout(resolve, 5));
     }
     throw new Error(message);
+  }
+
+  async function runProxyWithInput(command: string, input: string): Promise<{ stdout: string; stderr: string; code: number | null }> {
+    const child = spawn(command, [], { stdio: ["pipe", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.stdin.end(input);
+    const code = await new Promise<number | null>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        child.kill("SIGKILL");
+        reject(new Error("Timed out waiting for process session proxy."));
+      }, 5000);
+      child.on("error", (error) => {
+        clearTimeout(timeout);
+        reject(error);
+      });
+      child.on("exit", (exitCode) => {
+        clearTimeout(timeout);
+        resolve(exitCode);
+      });
+    });
+    return { stdout, stderr, code };
   }
 
   function combinedStream(
@@ -156,6 +192,301 @@ describe("sandbox adapter execution targets", () => {
       leaseId: "lease-1",
       remoteCwd: "/workspace",
     });
+  });
+
+  it("bridges bidirectional sandbox process sessions through a local ACPX-spawnable proxy", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-"));
+    cleanupDirs.push(rootDir);
+    const childPath = path.join(rootDir, "fake-acp-child.mjs");
+    await writeFile(
+      childPath,
+      [
+        "process.stdin.on('data', (chunk) => {",
+        "  process.stdout.write('out:' + chunk.toString());",
+        "  process.stderr.write('err:' + chunk.toString());",
+        "});",
+      ].join("\n"),
+      "utf8",
+    );
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "local-test",
+      remoteCwd: rootDir,
+      timeoutMs: 30_000,
+      runner: createLocalSandboxRunner(),
+    };
+
+    const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+      runId: "run-process-session",
+      target,
+      runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+      adapterKey: "acpx",
+      command: process.execPath,
+      args: [childPath],
+      cwd: rootDir,
+      env: {},
+      timeoutSec: 5,
+      onLog: async () => {},
+    });
+    expect(bridge).not.toBeNull();
+
+    try {
+      const result = await runProxyWithInput(bridge!.agentCommand, "hello\n");
+      expect(result.code).toBe(0);
+      expect(result.stdout).toBe("out:hello\n");
+      expect(result.stderr).toBe("err:hello\n");
+    } finally {
+      await bridge?.stop();
+    }
+  });
+
+  it("buffers sandbox process session output until the local proxy connects", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-buffer-"));
+    cleanupDirs.push(rootDir);
+    const childPath = path.join(rootDir, "fast-acp-child.mjs");
+    await writeFile(
+      childPath,
+      [
+        "process.stdout.write('early-out\\n');",
+        "process.stderr.write('early-err\\n');",
+        "setTimeout(() => process.exit(0), 20);",
+      ].join("\n"),
+      "utf8",
+    );
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "local-test",
+      remoteCwd: rootDir,
+      timeoutMs: 30_000,
+      runner: createLocalSandboxRunner(),
+    };
+
+    const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+      runId: "run-process-session-buffer",
+      target,
+      runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+      adapterKey: "acpx",
+      command: process.execPath,
+      args: [childPath],
+      cwd: rootDir,
+      env: {},
+      timeoutSec: 5,
+      onLog: async () => {},
+    });
+    expect(bridge).not.toBeNull();
+
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      const result = await runProxyWithInput(bridge!.agentCommand, "");
+      expect(result.code).toBe(0);
+      expect(result.stdout).toBe("early-out\n");
+      expect(result.stderr).toBe("early-err\n");
+    } finally {
+      await bridge?.stop();
+    }
+  });
+
+  it("delivers full output when the sandbox child exits immediately after writing", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-fast-exit-"));
+    cleanupDirs.push(rootDir);
+    const childPath = path.join(rootDir, "instant-exit-acp-child.mjs");
+    await writeFile(
+      childPath,
+      [
+        "process.stdout.write('final-out\\n');",
+        "process.stderr.write('final-err\\n');",
+      ].join("\n"),
+      "utf8",
+    );
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "local-test",
+      remoteCwd: rootDir,
+      timeoutMs: 30_000,
+      runner: createLocalSandboxRunner(),
+    };
+
+    const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+      runId: "run-process-session-fast-exit",
+      target,
+      runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+      adapterKey: "acpx",
+      command: process.execPath,
+      args: [childPath],
+      cwd: rootDir,
+      env: {},
+      timeoutSec: 5,
+      onLog: async () => {},
+    });
+    expect(bridge).not.toBeNull();
+
+    try {
+      const result = await runProxyWithInput(bridge!.agentCommand, "");
+      expect(result.code).toBe(0);
+      expect(result.stdout).toBe("final-out\n");
+      expect(result.stderr).toBe("final-err\n");
+    } finally {
+      await bridge?.stop();
+    }
+  });
+
+  it("ignores unauthenticated connections to the process session bridge", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-auth-"));
+    cleanupDirs.push(rootDir);
+    const childPath = path.join(rootDir, "guarded-acp-child.mjs");
+    await writeFile(childPath, "process.stdout.write('guarded-out\\n');", "utf8");
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "local-test",
+      remoteCwd: rootDir,
+      timeoutMs: 30_000,
+      runner: createLocalSandboxRunner(),
+    };
+
+    const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+      runId: "run-process-session-auth",
+      target,
+      runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+      adapterKey: "acpx",
+      command: process.execPath,
+      args: [childPath],
+      cwd: rootDir,
+      env: {},
+      timeoutSec: 5,
+      onLog: async () => {},
+    });
+    expect(bridge).not.toBeNull();
+
+    let squatter: net.Socket | null = null;
+    try {
+      const proxySource = await readFile(bridge!.agentCommand, "utf8");
+      const port = Number(/port: (\d+)/.exec(proxySource)?.[1] ?? Number.NaN);
+      expect(Number.isFinite(port)).toBe(true);
+
+      // An idle local connection must not claim the session or see buffered output.
+      const squatterSocket = net.createConnection({ host: "127.0.0.1", port });
+      squatter = squatterSocket;
+      let squatterReceived = "";
+      squatterSocket.setEncoding("utf8");
+      squatterSocket.on("data", (chunk: string) => {
+        squatterReceived += chunk;
+      });
+      squatterSocket.on("error", () => undefined);
+      await new Promise<void>((resolve, reject) => {
+        squatterSocket.once("connect", () => resolve());
+        squatterSocket.once("error", reject);
+      });
+
+      // A peer presenting the wrong token is disconnected outright.
+      const badPeer = net.createConnection({ host: "127.0.0.1", port });
+      badPeer.on("error", () => undefined);
+      const badPeerClosed = new Promise<void>((resolve) => badPeer.once("close", () => resolve()));
+      badPeer.once("connect", () => badPeer.write(`${JSON.stringify({ token: "wrong-token", type: "stdinEnd" })}\n`));
+      await badPeerClosed;
+
+      // The authenticated proxy still attaches and receives the buffered output.
+      const result = await runProxyWithInput(bridge!.agentCommand, "");
+      expect(result.code).toBe(0);
+      expect(result.stdout).toBe("guarded-out\n");
+      expect(squatterReceived).toBe("");
+    } finally {
+      squatter?.destroy();
+      await bridge?.stop();
+    }
+  });
+
+  it("streams sandbox process session output before the remote child exits", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-stream-"));
+    cleanupDirs.push(rootDir);
+    const childPath = path.join(rootDir, "streaming-acp-child.mjs");
+    await writeFile(
+      childPath,
+      [
+        "process.stdin.setEncoding('utf8');",
+        "process.stdin.on('data', (chunk) => {",
+        "  if (chunk.includes('ping')) {",
+        "    process.stdout.write('delta:ping\\n');",
+        "    process.stderr.write('trace:ping\\n');",
+        "  }",
+        "  if (chunk.includes('finish')) process.exit(0);",
+        "});",
+        "process.stdin.resume();",
+      ].join("\n"),
+      "utf8",
+    );
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "local-test",
+      remoteCwd: rootDir,
+      timeoutMs: 30_000,
+      runner: createLocalSandboxRunner(),
+    };
+
+    const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+      runId: "run-process-session-stream",
+      target,
+      runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+      adapterKey: "acpx",
+      command: process.execPath,
+      args: [childPath],
+      cwd: rootDir,
+      env: {},
+      timeoutSec: 5,
+      onLog: async () => {},
+    });
+    expect(bridge).not.toBeNull();
+
+    const child = spawn(bridge!.agentCommand, [], { stdio: ["pipe", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    let exited = false;
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    const exitPromise = new Promise<number | null>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        child.kill("SIGKILL");
+        reject(new Error("Timed out waiting for streaming process session proxy."));
+      }, 5000);
+      child.on("error", (error) => {
+        clearTimeout(timeout);
+        reject(error);
+      });
+      child.on("exit", (exitCode) => {
+        exited = true;
+        clearTimeout(timeout);
+        resolve(exitCode);
+      });
+    });
+
+    try {
+      child.stdin.write("ping\n");
+      await waitForCondition(
+        () => stdout.includes("delta:ping\n") && stderr.includes("trace:ping\n"),
+        "Timed out waiting for live process session output.",
+        3000,
+      );
+      expect(exited).toBe(false);
+
+      child.stdin.end("finish\n");
+      await expect(exitPromise).resolves.toBe(0);
+    } finally {
+      if (!exited) {
+        child.kill("SIGKILL");
+        await exitPromise.catch(() => undefined);
+      }
+      await bridge?.stop();
+    }
   });
 
   it("applies the remote sandbox fallback when adapter timeoutSec is unset", () => {

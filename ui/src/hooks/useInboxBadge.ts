@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { accessApi } from "../api/access";
 import { ApiError } from "../api/client";
@@ -89,9 +89,28 @@ export function useInboxDismissals(companyId: string | null | undefined) {
     },
     onSettled: () => {
       if (!companyId) return;
-      queryClient.invalidateQueries({ queryKey });
-      queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(companyId) });
+      invalidateDismissalConsumers();
     },
+  });
+
+  function invalidateDismissalConsumers() {
+    if (!companyId) return;
+    queryClient.invalidateQueries({ queryKey });
+    queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(companyId) });
+    // The attention feed derives its rows from server-side dismissals, so any
+    // dismiss/snooze/restore must re-pull it to keep the queue and curtains in sync.
+    queryClient.invalidateQueries({ queryKey: queryKeys.attention(companyId) });
+  }
+
+  const snoozeMutation = useMutation({
+    mutationFn: ({ itemKey, snoozedUntil }: { itemKey: string; snoozedUntil: string }) =>
+      inboxDismissalsApi.snooze(companyId!, itemKey, snoozedUntil),
+    onSettled: invalidateDismissalConsumers,
+  });
+
+  const restoreMutation = useMutation({
+    mutationFn: ({ itemKey }: { itemKey: string }) => inboxDismissalsApi.restore(companyId!, itemKey),
+    onSettled: invalidateDismissalConsumers,
   });
 
   const dismissedAtByKey = useMemo(
@@ -99,11 +118,25 @@ export function useInboxDismissals(companyId: string | null | undefined) {
     [dismissals],
   );
 
+  // Stable identities (react-query keeps `mutate` referentially stable) so
+  // consumers can hand these to memoized rows without breaking memoization.
+  const dismissMutate = dismissMutation.mutate;
+  const snoozeMutate = snoozeMutation.mutate;
+  const restoreMutate = restoreMutation.mutate;
+  const dismiss = useCallback((itemKey: string) => dismissMutate({ itemKey }), [dismissMutate]);
+  const snooze = useCallback(
+    (itemKey: string, snoozedUntil: string) => snoozeMutate({ itemKey, snoozedUntil }),
+    [snoozeMutate],
+  );
+  const restore = useCallback((itemKey: string) => restoreMutate({ itemKey }), [restoreMutate]);
+
   return {
     dismissals,
     dismissedAtByKey,
-    dismiss: (itemKey: string) => dismissMutation.mutate({ itemKey }),
-    isPending: dismissMutation.isPending,
+    dismiss,
+    snooze,
+    restore,
+    isPending: dismissMutation.isPending || snoozeMutation.isPending || restoreMutation.isPending,
   };
 }
 

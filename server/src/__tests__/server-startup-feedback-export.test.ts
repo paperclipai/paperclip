@@ -35,6 +35,7 @@ const {
   }));
   const heartbeatServiceMock = {
     resolveSchedulingSuppression: resolveHeartbeatSchedulingSuppressionMock,
+    reconcileHotRestartAdoption: vi.fn(async () => ({ mode: "none" })),
     reapOrphanedRuns: vi.fn(async () => ({ reaped: 0, runIds: [] })),
     promoteDueScheduledRetries: vi.fn(async () => ({ promoted: 0, runIds: [] })),
     resumeQueuedRuns: vi.fn(async () => undefined),
@@ -190,6 +191,15 @@ vi.mock("../realtime/live-events-ws.js", () => ({
 }));
 
 vi.mock("../services/index.js", () => ({
+  backfillLegacyToolOAuthTokens: vi.fn(async () => ({
+    scannedConnections: 0,
+    migratedConnections: 0,
+    sanitizedConnections: 0,
+    createdSecrets: 0,
+    rotatedSecrets: 0,
+    accessTokensBackfilled: 0,
+    refreshTokensBackfilled: 0,
+  })),
   backfillPrincipalAccessCompatibility: vi.fn(async () => ({
     agentMembershipsInserted: 0,
     humanGrantsInserted: 0,
@@ -227,6 +237,14 @@ vi.mock("../services/index.js", () => ({
   reconcilePersistedRuntimeServicesOnStartup: vi.fn(async () => ({ reconciled: 0 })),
   resolveHeartbeatSchedulingSuppression: resolveHeartbeatSchedulingSuppressionMock,
   routineService: routineServiceFactoryMock,
+  toolAccessService: vi.fn(() => ({
+    sweepConnectionHealth: vi.fn(async () => ({
+      checked: 0,
+      healthy: 0,
+      needsAttention: 0,
+      failed: 0,
+    })),
+  })),
 }));
 
 vi.mock("../storage/index.js", () => ({
@@ -321,6 +339,22 @@ describe("startServer feedback export wiring", () => {
     } finally {
       setIntervalSpy.mockRestore();
     }
+  });
+
+  it("does not replay hot-restart adoption when the orphan reaper retries", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      heartbeatSchedulerEnabled: true,
+      heartbeatSchedulerIntervalMs: 30000,
+    }));
+    heartbeatServiceMock.reconcileHotRestartAdoption.mockRejectedValueOnce(new Error("partial adoption"));
+    heartbeatServiceMock.reapOrphanedRuns
+      .mockRejectedValueOnce(new Error("transient reap failure"))
+      .mockResolvedValueOnce({ reaped: 0, runIds: [] });
+
+    await startServer();
+
+    expect(heartbeatServiceMock.reconcileHotRestartAdoption).toHaveBeenCalledTimes(1);
+    expect(heartbeatServiceMock.reapOrphanedRuns).toHaveBeenCalledTimes(2);
   });
 
   it("refuses authenticated public startup without an external database URL", async () => {

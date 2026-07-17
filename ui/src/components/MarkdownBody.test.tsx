@@ -158,6 +158,46 @@ describe("MarkdownBody", () => {
     expect(html).toContain("Plain text");
   });
 
+  it("hides markdown HTML comments instead of rendering placeholder text", () => {
+    const html = renderMarkdown("Before\n\n<!-- -->\n\nAfter");
+
+    expect(html).toContain("Before");
+    expect(html).toContain("After");
+    expect(html).not.toContain("&lt;!--");
+    expect(html).not.toContain("--&gt;");
+  });
+
+  it("hides escaped HTML comment placeholders before attachment images", () => {
+    const html = renderMarkdown("\\<!-- --> ![](/api/attachments/57d0805a-1b95-4fa5-abb4-d0c33e2e649c/content)");
+
+    expect(html).toContain('<img src="/api/attachments/57d0805a-1b95-4fa5-abb4-d0c33e2e649c/content" alt=""/>');
+    expect(html).not.toContain("&lt;!--");
+    expect(html).not.toContain("--&gt;");
+  });
+
+  it("hides incomplete streamed HTML comment placeholders before attachment images", () => {
+    const html = renderMarkdown("\\<!-- ![](/api/attachments/57d0805a-1b95-4fa5-abb4-d0c33e2e649c/content)");
+
+    expect(html).toContain('<img src="/api/attachments/57d0805a-1b95-4fa5-abb4-d0c33e2e649c/content" alt=""/>');
+    expect(html).not.toContain("&lt;!--");
+  });
+
+  it("hides incomplete encoded HTML comment placeholders", () => {
+    const html = renderMarkdown("&lt;!-- -- ![](/api/attachments/57d0805a-1b95-4fa5-abb4-d0c33e2e649c/content)");
+
+    expect(html).toContain('<img src="/api/attachments/57d0805a-1b95-4fa5-abb4-d0c33e2e649c/content" alt=""/>');
+    expect(html).not.toContain("&lt;!--");
+    expect(html).not.toContain("&amp;lt;!--");
+  });
+
+  it("keeps HTML comment markers when they are literal code content", () => {
+    const inlineHtml = renderMarkdown("Use `<!-- -->` as a literal.");
+    const blockHtml = renderMarkdown("```html\n<!-- keep this example -->\n```");
+
+    expect(inlineHtml).toContain("&lt;!-- --&gt;");
+    expect(blockHtml).toContain("&lt;!-- keep this example --&gt;");
+  });
+
   it("uses soft-break styling by default", () => {
     const html = renderMarkdown("First line\nSecond line");
 

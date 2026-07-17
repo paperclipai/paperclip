@@ -424,6 +424,8 @@ describeEmbeddedPostgres("issue subtree diagnostics route", () => {
     const res = await request(createApp(db, agentActor(companyB, agentB, runB!.id)))
       .get(`/api/issues/${issueA.id}/diagnostics/subtree`);
 
-    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    // Uniform 404 so cross-tenant ids are indistinguishable from missing ones.
+    expect(res.status, JSON.stringify(res.body)).toBe(404);
+    expect(res.body.error).toBe("Issue not found");
   });
 });

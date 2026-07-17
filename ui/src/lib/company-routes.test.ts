@@ -36,6 +36,25 @@ describe("company routes", () => {
     expect(toCompanyRelativePath("/PAP/search?q=foo")).toBe("/search?q=foo");
   });
 
+  it("rewrites company package paths with the active prefix", () => {
+    expect(applyCompanyPrefix("/company/export", "NEU")).toBe("/NEU/company/export");
+    expect(applyCompanyPrefix("/company/import", "NEU")).toBe("/NEU/company/import");
+    expect(applyCompanyPrefix("/company/settings/cloud-upstream", "NEU")).toBe(
+      "/NEU/company/settings/cloud-upstream",
+    );
+    expect(applyCompanyPrefix("/org", "NEU")).toBe("/NEU/org");
+  });
+
+  it("does not double-apply the company prefix", () => {
+    expect(applyCompanyPrefix("/NEU/company/export", "NEU")).toBe("/NEU/company/export");
+  });
+
+  it("normalizes prefixed company export file URLs for parsing", () => {
+    expect(toCompanyRelativePath("/NEU/company/export/files/agents/ceo/AGENTS.md")).toBe(
+      "/company/export/files/agents/ceo/AGENTS.md",
+    );
+  });
+
   // Regression for PAP-10257: Team Catalog navigation (auto-select + row/file
   // clicks) produces company-relative `/teams-catalog/<key>` paths. Without
   // `teams-catalog` in the board-route allowlist, `extractCompanyPrefixFromPath`
@@ -70,6 +89,25 @@ describe("company routes", () => {
     expect(extractCompanyPrefixFromPath("/artifacts")).toBeNull();
     expect(applyCompanyPrefix("/artifacts", "PAP")).toBe("/PAP/artifacts");
     expect(toCompanyRelativePath("/PAP/artifacts")).toBe("/artifacts");
+  });
+
+  it("treats /tools routes as board routes that need a company prefix", () => {
+    expect(isBoardPathWithoutPrefix("/tools")).toBe(true);
+    expect(isBoardPathWithoutPrefix("/tools/runtime")).toBe(true);
+    expect(extractCompanyPrefixFromPath("/tools")).toBeNull();
+    expect(applyCompanyPrefix("/tools", "PAP")).toBe("/PAP/tools");
+    expect(applyCompanyPrefix("/tools/runtime", "PAP")).toBe("/PAP/tools/runtime");
+    expect(applyCompanyPrefix("/PAP/tools/runtime", "PAP")).toBe("/PAP/tools/runtime");
+    expect(toCompanyRelativePath("/PAP/tools/runtime")).toBe("/tools/runtime");
+  });
+
+  it("recognizes Decisions without retaining the legacy attention route", () => {
+    expect(isBoardPathWithoutPrefix("/decisions")).toBe(true);
+    expect(extractCompanyPrefixFromPath("/decisions")).toBeNull();
+    expect(applyCompanyPrefix("/decisions", "PAP")).toBe("/PAP/decisions");
+
+    expect(isBoardPathWithoutPrefix("/attention")).toBe(false);
+    expect(extractCompanyPrefixFromPath("/attention")).toBe("ATTENTION");
   });
 
   it("treats /timeline as a board route that needs a company prefix", () => {

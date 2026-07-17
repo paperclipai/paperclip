@@ -1,5 +1,7 @@
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, type ReactNode } from "react";
 import { useQuery, useQueryClient, type InfiniteData, type QueryClient } from "@tanstack/react-query";
+import { createCoalescingQueryClient, createInvalidationBatcher } from "../lib/query-invalidation-batcher";
+import { patchRunStatusInList, removeRunFromList } from "../lib/live-runs-cache";
 import type { Agent, Issue, IssueComment, LiveEvent } from "@paperclipai/shared";
 import type { RunForIssue } from "../api/activity";
 import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
@@ -587,6 +589,13 @@ const ROUTINE_DOCUMENT_ANNOTATION_ACTIVITY_ACTIONS = new Set([
   "routine.document_annotation_thread_reopened",
   "routine.document_annotation_remapped",
 ]);
+const CASE_DOCUMENT_ANNOTATION_ACTIVITY_ACTIONS = new Set([
+  "case.document_annotation_thread_created",
+  "case.document_annotation_comment_added",
+  "case.document_annotation_thread_resolved",
+  "case.document_annotation_thread_reopened",
+  "case.document_annotation_remapped",
+]);
 const AGENT_TOAST_STATUSES = new Set(["error"]);
 const RUN_TOAST_STATUSES = new Set(["failed", "timed_out", "cancelled"]);
 
@@ -789,12 +798,51 @@ function buildRunStatusToast(
   };
 }
 
+/**
+ * Event-source the company live-runs list from run-lifecycle events instead of
+ * invalidating + refetching it. Returns true when the cache was fully patched;
+ * false means a genuinely new run appeared that can't be reconstructed from the
+ * event, so the caller should refetch once to pick it up.
+ */
+function applyRunLifecycleToCompanyLiveRuns(
+  queryClient: QueryClient,
+  companyId: string,
+  payload: Record<string, unknown>,
+): boolean {
+  const runId = readString(payload.runId);
+  const status = readString(payload.status);
+  if (!runId || !status) return false;
+
+  if (TERMINAL_RUN_STATUSES.has(status)) {
+    queryClient.setQueryData(
+      queryKeys.liveRuns(companyId),
+      (current: LiveRunForIssue[] | undefined) => removeRunFromList(current, runId),
+    );
+    // Always "handled": a terminal run must never be in the live list, so if it
+    // wasn't present there is deliberately nothing to refetch (removeRunFromList
+    // was a no-op and we must not re-add it).
+    return true;
+  }
+
+  let present = false;
+  queryClient.setQueryData(
+    queryKeys.liveRuns(companyId),
+    (current: LiveRunForIssue[] | undefined) => {
+      const result = patchRunStatusInList(current, runId, status);
+      present = result.present;
+      return result.next;
+    },
+  );
+  return present;
+}
+
 function invalidateHeartbeatQueries(
   queryClient: ReturnType<typeof useQueryClient>,
   companyId: string,
   payload: Record<string, unknown>,
 ) {
-  queryClient.invalidateQueries({ queryKey: queryKeys.liveRuns(companyId) });
+  // Note: liveRuns(companyId) is intentionally NOT invalidated here — it is
+  // event-sourced via applyRunLifecycleToCompanyLiveRuns in the caller.
   queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(companyId) });
   queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(companyId) });
   queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(companyId) });
@@ -810,17 +858,12 @@ function invalidateHeartbeatQueries(
 
 function invalidateHeartbeatProgressQueries(
   queryClient: ReturnType<typeof useQueryClient>,
-  companyId: string,
+  _companyId: string,
   payload: Record<string, unknown>,
 ) {
-  queryClient.invalidateQueries({ queryKey: queryKeys.liveRuns(companyId) });
-  queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(companyId) });
-  queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(companyId) });
-
   const agentId = readString(payload.agentId);
   if (agentId) {
     queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentId) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(companyId, agentId) });
   }
 }
 
@@ -975,6 +1018,25 @@ function invalidateActivityQueries(
     return;
   }
 
+  if (entityType === "case") {
+    queryClient.invalidateQueries({ queryKey: queryKeys.cases.list(companyId) });
+    if (entityId) {
+      queryClient.invalidateQueries({ queryKey: queryKeys.cases.detail(entityId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.cases.events(entityId) });
+      if (action && CASE_DOCUMENT_ANNOTATION_ACTIVITY_ACTIONS.has(action)) {
+        const documentKey = readString(details?.key) ?? readString(details?.documentKey);
+        const caseInvalidationOptions = ownActorActivity ? { refetchType: "inactive" as const } : undefined;
+        queryClient.invalidateQueries({
+          queryKey: documentKey
+            ? ["cases", "document-annotations", entityId, documentKey]
+            : ["cases", "document-annotations", entityId],
+          ...caseInvalidationOptions,
+        });
+      }
+    }
+    return;
+  }
+
   if (entityType === "company") {
     queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
   }
@@ -1040,7 +1102,12 @@ function handleLiveEvent(
     event.type === "heartbeat.run.queued" ||
     event.type === "heartbeat.run.status"
   ) {
+    const liveRunsPatched = applyRunLifecycleToCompanyLiveRuns(queryClient, expectedCompanyId, payload);
     invalidateHeartbeatQueries(queryClient, expectedCompanyId, payload);
+    if (!liveRunsPatched) {
+      // A new run we couldn't reconstruct from the event — refetch once to add it.
+      queryClient.invalidateQueries({ queryKey: queryKeys.liveRuns(expectedCompanyId) });
+    }
     invalidateVisibleIssueRunQueries(queryClient, pathname, payload);
     if (event.type === "heartbeat.run.status") {
       const toast = buildRunStatusToast(payload, nameOf);
@@ -1138,6 +1205,7 @@ function closeSocketQuietly(target: LiveUpdatesSocketLike | null, reason: string
 }
 
 export const __liveUpdatesTestUtils = {
+  applyRunLifecycleToCompanyLiveRuns,
   buildAgentStatusToast,
   buildRunStatusToast,
   closeSocketQuietly,
@@ -1175,6 +1243,16 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
     userId: currentUserId,
     agentId: null,
   });
+
+  // Coalesce the per-event invalidation storm. Optimistic setQueryData writes
+  // still pass straight through (immediate); only invalidateQueries is batched
+  // and flushed at most a few times per second.
+  const invalidationBatcher = useMemo(() => createInvalidationBatcher(queryClient), [queryClient]);
+  const coalescingClient = useMemo(
+    () => createCoalescingQueryClient(queryClient, invalidationBatcher),
+    [queryClient, invalidationBatcher],
+  );
+  useEffect(() => () => invalidationBatcher.dispose(), [invalidationBatcher]);
 
   useEffect(() => {
     pathnameRef.current = location.pathname;
@@ -1227,6 +1305,9 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
         }
         if (reconnectAttempt > 0) {
           gateRef.current.suppressUntil = Date.now() + RECONNECT_SUPPRESS_MS;
+          // Reconcile after a gap: events missed while disconnected can't be
+          // replayed yet, so refetch the event-sourced live-runs list once.
+          queryClient.invalidateQueries({ queryKey: queryKeys.liveRuns(liveCompanyId) });
         }
         reconnectAttempt = 0;
       };
@@ -1237,7 +1318,7 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
 
         try {
           const parsed = JSON.parse(raw) as LiveEvent;
-          handleLiveEvent(queryClient, liveCompanyId, pathnameRef.current, parsed, pushToast, gateRef.current, {
+          handleLiveEvent(coalescingClient, liveCompanyId, pathnameRef.current, parsed, pushToast, gateRef.current, {
             userId: currentActorRef.current.userId,
             agentId: currentActorRef.current.agentId,
           });
@@ -1272,7 +1353,7 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
       socket = null;
       closeSocketQuietly(activeSocket, "provider_unmount");
     };
-  }, [queryClient, liveCompanyId, pushToast, canConnectSocket, socketAuthKey]);
+  }, [coalescingClient, liveCompanyId, pushToast, canConnectSocket, socketAuthKey]);
 
   return <>{children}</>;
 }

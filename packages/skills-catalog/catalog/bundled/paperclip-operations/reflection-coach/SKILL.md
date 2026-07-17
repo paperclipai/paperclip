@@ -1,6 +1,6 @@
 ---
 name: reflection-coach
-description: Reflect on another agent's recent execution record, name evidence-backed patterns, and propose the smallest durable change to their AGENTS.md, a reusable skill, or a tool description — as a reviewable, interaction-gated proposal, never a same-run hot-swap.
+description: Reflect on another agent's recent execution record and propose the smallest durable instruction, skill, or tool-description change. Use for evidence-backed coaching proposals, never hot-swaps.
 key: paperclipai/bundled/paperclip-operations/reflection-coach
 recommendedForRoles:
   - manager

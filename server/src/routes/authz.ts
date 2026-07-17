@@ -1,4 +1,4 @@
-import type { Request } from "express";
+import type { Request, Response } from "express";
 import { forbidden, HttpError, unauthorized } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { responsibleUserAuthzShadowMode } from "../services/authorization.js";
@@ -119,19 +119,96 @@ export function assertCompanyAccess(req: Request, companyId: string) {
   }
 }
 
+/**
+ * Non-throwing access check for routes that look up a resource by id
+ * before responding. Prefer this over `assertCompanyAccess` whenever the
+ * route can reach the access check only after a successful `getById`
+ * (i.e. after confirming the resource exists).
+ *
+ * Using `assertCompanyAccess` in that position leaks resource existence
+ * across tenants: a 404 means "no such resource" while a 403 means "exists
+ * in another tenant". Any authenticated user can enumerate IDs and
+ * distinguish the two responses.
+ *
+ * Most routes should use `getAccessibleResource` below, which wraps the
+ * whole pattern. When composing manually (bespoke not-found responses),
+ * the shape is:
+ *
+ *     const issue = await svc.getById(id);
+ *     if (!issue || !hasCompanyAccess(req, issue.companyId)) {
+ *       res.status(404).json({ error: "Issue not found" });
+ *       return;
+ *     }
+ *
+ * so both "does not exist" and "exists but cross-tenant" return the same
+ * 404, removing the oracle.
+ *
+ * Note: this intentionally does not replicate the write-path membership
+ * checks in `assertCompanyAccess` (active membership, viewer read-only).
+ * Routes that need those checks for authorized tenants should still call
+ * `assertCompanyAccess` after the 404 gate — the oracle concern is only
+ * about the existence check.
+ *
+ * The company-scope semantics must stay in lockstep with
+ * `assertCompanyAccess`: in particular, signed-in instance admins do NOT
+ * get blanket access to companies they are not a member of.
+ */
+export function hasCompanyAccess(req: Request, companyId: string): boolean {
+  if (req.actor.type === "none") return false;
+  if (req.actor.type === "agent") return req.actor.companyId === companyId;
+  if (req.actor.source === "local_implicit") return true;
+  return (req.actor.companyIds ?? []).includes(companyId);
+}
+
+/**
+ * Preferred way to fetch a company-scoped resource by id inside a route
+ * handler. Wraps the two-step pattern described on `hasCompanyAccess` so
+ * new routes cannot accidentally reintroduce the existence oracle:
+ *
+ *   - missing resource          → 404 `{ error: notFoundMessage }`, returns null
+ *   - exists but cross-tenant   → identical 404, returns null
+ *   - accessible                → runs `assertCompanyAccess` (write-path
+ *     membership checks on non-safe methods) and returns the resource
+ *
+ * Usage:
+ *
+ *     const goal = await getAccessibleResource(req, res, svc.getById(id), "Goal not found");
+ *     if (!goal) return;
+ *
+ * Routes with bespoke not-found behavior (legacy `200 []` contracts,
+ * audit-logged denials) should still compose `hasCompanyAccess` directly.
+ */
+export async function getAccessibleResource<T extends { companyId: string }>(
+  req: Request,
+  res: Response,
+  resource: T | null | undefined | Promise<T | null | undefined>,
+  notFoundMessage: string,
+): Promise<T | null> {
+  const resolved = await resource;
+  if (!resolved || !hasCompanyAccess(req, resolved.companyId)) {
+    res.status(404).json({ error: notFoundMessage });
+    return null;
+  }
+  assertCompanyAccess(req, resolved.companyId);
+  return resolved;
+}
+
 export function getActorInfo(req: Request): (
   {
     actorType: "agent";
     actorId: string;
     agentId: string | null;
     runId: string | null;
+    agentApiKeyId: string | null;
     actorSource: "agent_key" | "agent_jwt";
   }
   | {
     actorType: "user";
     actorId: string;
+    sessionId: string | null;
     agentId: null;
     runId: string | null;
+    agentApiKeyId: null;
     actorSource: "local_implicit" | "session" | "board_key" | "cloud_tenant";
   }
 ) {
@@ -143,6 +220,7 @@ export function getActorInfo(req: Request): (
       actorId: req.actor.agentId ?? "unknown-agent",
       agentId: req.actor.agentId ?? null,
       runId: req.actor.runId ?? null,
+      agentApiKeyId: req.actor.keyId ?? null,
       actorSource,
     };
   }
@@ -157,8 +235,10 @@ export function getActorInfo(req: Request): (
   return {
     actorType: "user" as const,
     actorId: req.actor.userId ?? "board",
+    sessionId: req.actor.sessionId ?? null,
     agentId: null,
     runId: req.actor.runId ?? null,
+    agentApiKeyId: null,
     actorSource,
   };
 }

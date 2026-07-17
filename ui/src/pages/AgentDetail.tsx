@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
-import { useParams, useNavigate, Link, Navigate, useBeforeUnload } from "@/lib/router";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useParams, useNavigate, Link, Navigate, useBeforeUnload, type NavigateFunction } from "@/lib/router";
+import { useQuery, useMutation, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import {
   agentsApi,
   type AgentKey,
@@ -33,6 +33,7 @@ import { useAdapterCapabilities } from "@/adapters/use-adapter-capabilities";
 import { redactCommandText as redactCommandSecretText } from "@paperclipai/adapter-utils";
 import { MarkdownEditor } from "../components/MarkdownEditor";
 import { assetsApi } from "../api/assets";
+import { toolsApi } from "../api/tools";
 import { getUIAdapter, buildTranscript, onAdapterChange } from "../adapters";
 import { StatusBadge } from "../components/StatusBadge";
 import { MarkdownBody } from "../components/MarkdownBody";
@@ -87,6 +88,13 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { Input } from "@/components/ui/input";
 import { AgentIcon, AgentIconPicker } from "../components/AgentIconPicker";
 import { RunTranscriptView, type TranscriptMode } from "../components/transcript/RunTranscriptView";
+import { AgentToolsTab } from "./AgentToolsTab";
+import {
+  appendCapped,
+  LIVE_TRANSCRIPT_RENDER_LIMIT,
+  MAX_LIVE_EVENTS,
+  MAX_LIVE_LOG_LINES,
+} from "../lib/live-log-buffer";
 import {
   isUuidLike,
   type Agent,
@@ -264,12 +272,13 @@ function scrollToContainerBottom(container: ScrollContainer, behavior: ScrollBeh
   container.scrollTo({ top: container.scrollHeight, behavior });
 }
 
-type AgentDetailView = "dashboard" | "instructions" | "configuration" | "skills" | "runs" | "budget";
+type AgentDetailView = "dashboard" | "instructions" | "configuration" | "skills" | "tools" | "runs" | "budget";
 
 function parseAgentDetailView(value: string | null): AgentDetailView {
   if (value === "instructions" || value === "prompts") return "instructions";
   if (value === "configure" || value === "configuration") return "configuration";
   if (value === "skills") return "skills";
+  if (value === "tools") return "tools";
   if (value === "budget") return "budget";
   if (value === "runs") return value;
   return "dashboard";
@@ -886,10 +895,12 @@ export function AgentDetail() {
           ? "configuration"
           : activeView === "skills"
             ? "skills"
-            : activeView === "runs"
-              ? "runs"
-              : activeView === "budget"
-                ? "budget"
+            : activeView === "tools"
+              ? "tools"
+              : activeView === "runs"
+                ? "runs"
+                : activeView === "budget"
+                  ? "budget"
               : "dashboard";
     if (routeAgentRef !== canonicalAgentRef || urlTab !== canonicalTab) {
       navigate(`/agents/${canonicalAgentRef}/${canonicalTab}`, { replace: true });
@@ -993,6 +1004,8 @@ export function AgentDetail() {
         crumbs.push({ label: "Configuration" });
       // } else if (activeView === "skills") { // TODO: bring back later
       //   crumbs.push({ label: "Skills" });
+      } else if (activeView === "tools") {
+        crumbs.push({ label: "Tools" });
       } else if (activeView === "runs") {
         crumbs.push({ label: "Runs" });
       } else if (activeView === "budget") {
@@ -1237,6 +1250,7 @@ export function AgentDetail() {
               { value: "instructions", label: "Instructions" },
               { value: "skills", label: "Skills" },
               { value: "configuration", label: "Configuration" },
+              { value: "tools", label: "Tools" },
               { value: "runs", label: "Runs" },
               { value: "budget", label: "Budget" },
             ]}
@@ -1352,6 +1366,10 @@ export function AgentDetail() {
           agent={agent}
           companyId={resolvedCompanyId ?? undefined}
         />
+      )}
+
+      {activeView === "tools" && resolvedCompanyId && (
+        <AgentToolsTab agent={agent} companyId={resolvedCompanyId} />
       )}
 
       {activeView === "runs" && (
@@ -1638,6 +1656,29 @@ function CostsSection({
 
 /* ---- Agent Configure Page ---- */
 
+/**
+ * Agent detail URLs use a name-derived key, so updates that change the agent's
+ * name (a rename or a config-revision rollback) can invalidate the reference
+ * currently in the URL. When that happens, refetching the old reference would
+ * 404 with "Agent not found". Instead, drop the stale cached queries and
+ * replace the URL with the new canonical reference. Returns true when a
+ * redirect happened.
+ */
+export function syncAgentRouteAfterRename(
+  queryClient: QueryClient,
+  navigate: NavigateFunction,
+  previous: { id: string; urlKey?: string | null; name?: string | null },
+  updated: { id: string; urlKey?: string | null; name?: string | null },
+  tab: string,
+): boolean {
+  const previousRef = agentRouteRef(previous);
+  const nextRef = agentRouteRef(updated);
+  if (nextRef === previousRef) return false;
+  queryClient.removeQueries({ queryKey: queryKeys.agents.detail(previousRef) });
+  navigate(`/agents/${nextRef}/${tab}`, { replace: true });
+  return true;
+}
+
 function AgentConfigurePage({
   agent,
   agentId,
@@ -1658,6 +1699,8 @@ function AgentConfigurePage({
   updatePermissions: { mutate: (permissions: AgentPermissionUpdate) => void; isPending: boolean };
 }) {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
+  const { tab: urlTab } = useParams<{ tab?: string }>();
   const [revisionsOpen, setRevisionsOpen] = useState(false);
 
   const { data: configRevisions } = useQuery({
@@ -1667,10 +1710,12 @@ function AgentConfigurePage({
 
   const rollbackConfig = useMutation({
     mutationFn: (revisionId: string) => agentsApi.rollbackConfigRevision(agent.id, revisionId, companyId),
-    onSuccess: () => {
+    onSuccess: (updated) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.configRevisions(agent.id) });
+      if (!syncAgentRouteAfterRename(queryClient, navigate, agent, updated, urlTab ?? "configuration")) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) });
+      }
     },
   });
 
@@ -1770,6 +1815,8 @@ function ConfigurationTab({
   hideInstructionsFile?: boolean;
 }) {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
+  const { tab: urlTab } = useParams<{ tab?: string }>();
   const { pushToast } = useToastActions();
   const [awaitingRefreshAfterSave, setAwaitingRefreshAfterSave] = useState(false);
   const lastAgentRef = useRef(agent);
@@ -1804,11 +1851,13 @@ function ConfigurationTab({
     onMutate: () => {
       setAwaitingRefreshAfterSave(true);
     },
-    onSuccess: () => {
+    onSuccess: (updated) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.configRevisions(agent.id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(agent.companyId) });
+      if (!syncAgentRouteAfterRename(queryClient, navigate, agent, updated, urlTab ?? "configuration")) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) });
+      }
       pushToast({ title: "Agent saved", tone: "success" });
     },
     onError: (err) => {
@@ -3461,7 +3510,11 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
     }
 
     if (parsed.length > 0) {
-      setLogLines((prev) => [...prev, ...parsed]);
+      // Live runs stream forever, so cap the retained tail. Terminated runs are
+      // paginated by the user via "Load more log" and keep their full history.
+      setLogLines((prev) =>
+        isLive ? appendCapped(prev, parsed, MAX_LIVE_LOG_LINES) : [...prev, ...parsed],
+      );
     }
   }
 
@@ -3630,7 +3683,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
       try {
         const newEvents = await heartbeatsApi.events(run.id, maxSeq, 100);
         if (newEvents.length > 0) {
-          setEvents((prev) => [...prev, ...newEvents]);
+          setEvents((prev) => appendCapped(prev, newEvents, MAX_LIVE_EVENTS));
         }
       } catch {
         // ignore polling errors
@@ -3707,7 +3760,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
           const streamRaw = asNonEmptyString(payload.stream);
           const stream = streamRaw === "stderr" || streamRaw === "system" ? streamRaw : "stdout";
           const ts = asNonEmptyString((payload as Record<string, unknown>).ts) ?? event.createdAt;
-          setLogLines((prev) => [...prev, { ts, stream, chunk }]);
+          setLogLines((prev) => appendCapped(prev, [{ ts, stream, chunk }], MAX_LIVE_LOG_LINES));
           return;
         }
 
@@ -3717,7 +3770,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
           const key = heartbeatProgressLogLineKey(line);
           if (seenProgressLogLineKeysRef.current.has(key)) return;
           seenProgressLogLineKeysRef.current.add(key);
-          setLogLines((prev) => [...prev, line]);
+          setLogLines((prev) => appendCapped(prev, [line], MAX_LIVE_LOG_LINES));
           return;
         }
 
@@ -3754,7 +3807,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
 
         setEvents((prev) => {
           if (prev.some((existing) => existing.seq === seq)) return prev;
-          return [...prev, liveEvent];
+          return appendCapped(prev, [liveEvent], MAX_LIVE_EVENTS);
         });
       };
 
@@ -3809,6 +3862,13 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
     () => buildTranscript(logLines, adapter, { censorUsernameInLogs }),
     [adapter, censorUsernameInLogs, logLines, parserTick],
   );
+  const toolDecisionLookup = useQuery({
+    queryKey: queryKeys.tools.runDecisions(run.companyId, run.id),
+    queryFn: () => toolsApi.getRunDecisionLookup(run.companyId, run.id),
+    enabled: Boolean(run.companyId && run.id),
+    refetchInterval: isLive ? 3000 : false,
+    staleTime: isLive ? 1000 : 30_000,
+  });
 
   useEffect(() => {
     setTranscriptMode("nice");
@@ -3895,8 +3955,10 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
       <div className="max-h-(--sz-38rem) overflow-y-auto rounded-2xl border border-border/70 bg-background/40 p-3 sm:p-4">
         <RunTranscriptView
           entries={transcript}
+          toolDecisions={toolDecisionLookup.data?.decisions ?? []}
           mode={transcriptMode}
           streaming={isLive}
+          limit={isLive ? LIVE_TRANSCRIPT_RENDER_LIMIT : undefined}
           emptyMessage={run.logRef ? "Waiting for transcript..." : "No persisted transcript for this run."}
         />
         {hasMoreLog && (

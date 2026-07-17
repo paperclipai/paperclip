@@ -8,6 +8,8 @@ import type {
   AskUserQuestionsInteraction,
   RequestCheckboxConfirmationInteraction,
   RequestConfirmationInteraction,
+  RequestConfirmationToolActionPayload,
+  RequestItemVerdictsInteraction,
   SuggestTasksInteraction,
 } from "../lib/issue-thread-interactions";
 
@@ -462,6 +464,24 @@ export const planApprovalAcceptedRequestConfirmationInteraction = createRequestC
   },
 });
 
+export const planApprovalResumeFailedRequestConfirmationInteraction = createRequestConfirmationInteraction({
+  ...planApprovalAcceptedRequestConfirmationInteraction,
+  id: "interaction-confirmation-plan-resume-failed",
+  result: {
+    version: 1,
+    outcome: "accepted",
+    resumeFailure: {
+      status: "needs_attention",
+      errorCode: "adapter_failed",
+      attempt: 3,
+      maxAttempts: 3,
+      runId: "11111111-1111-4111-8111-222222222222",
+      recoveryActionId: "33333333-3333-4333-8333-333333333333",
+      updatedAt: "2026-04-20T14:45:00.000Z",
+    },
+  },
+});
+
 export const rejectedRequestConfirmationInteraction = createRequestConfirmationInteraction({
   id: "interaction-confirmation-rejected",
   status: "rejected",
@@ -485,6 +505,181 @@ export const rejectedNoReasonRequestConfirmationInteraction = createRequestConfi
     version: 1,
     outcome: "rejected",
     reason: null,
+  },
+});
+
+// ---------------------------------------------------------------------------
+// MCP tool-approval fixtures (PAP-13745). A `request_confirmation` carrying a
+// `payload.toolAction` block renders as the dedicated tool-approval card. The
+// pending fixtures use a live `expiresAt` so the countdown renders meaningfully
+// in Storybook; the destructive one sits inside the ~5-min urgent window.
+// ---------------------------------------------------------------------------
+
+function expiresInMinutes(minutes: number): string {
+  return new Date(Date.now() + minutes * 60000).toISOString();
+}
+
+const sheetsToolActionBase: RequestConfirmationToolActionPayload = {
+  version: 1,
+  actionRequestId: "aaaaaaa1-1111-4111-8111-1111111111a1",
+  invocationId: "bbbbbbb2-2222-4222-8222-2222222222b2",
+  toolName: "google_sheets.append_row",
+  toolDisplayName: "Append row to spreadsheet",
+  connectionId: "ccccccc3-3333-4333-8333-3333333333c3",
+  applicationId: "ddddddd4-4444-4444-8444-4444444444d4",
+  appDisplayName: "Google Sheets",
+  risk: "write" as const,
+  previewMarkdown:
+    "Add **1 row** to the **Q3 Growth Leads** sheet:\n\n"
+    + "| Column | Value |\n| --- | --- |\n| Name | Priya Anand |\n| Company | Northwind |\n| Stage | Qualified |\n| Owner | growth-bot |",
+  argumentsSummaryJson: JSON.stringify(
+    {
+      spreadsheetId: "1AbC…xyz",
+      range: "Leads!A2:D2",
+      values: [["Priya Anand", "Northwind", "Qualified", "growth-bot"]],
+      apiKey: "[redacted]",
+    },
+    null,
+    2,
+  ),
+  argumentsHash: "sha256:9f2c1a7be4d0c8a3",
+  expiresAt: expiresInMinutes(42),
+};
+
+function createToolActionConfirmationInteraction(
+  overrides: Partial<RequestConfirmationInteraction> & {
+    toolAction?: Partial<RequestConfirmationToolActionPayload>;
+  },
+): RequestConfirmationInteraction {
+  const { toolAction: toolActionOverrides, payload, ...rest } = overrides;
+  return createRequestConfirmationInteraction({
+    id: "interaction-tool-action-default",
+    title: undefined,
+    summary: undefined,
+    createdByAgentId: "agent-codex",
+    payload: {
+      version: 1,
+      prompt: "Approve running this tool call?",
+      acceptLabel: "Approve & run",
+      rejectLabel: "Decline",
+      ...payload,
+      toolAction: { ...sheetsToolActionBase, ...toolActionOverrides },
+    },
+    ...rest,
+  });
+}
+
+export const pendingToolActionWriteInteraction = createToolActionConfirmationInteraction({
+  id: "interaction-tool-action-pending-write",
+});
+
+export const pendingToolActionDestructiveInteraction = createToolActionConfirmationInteraction({
+  id: "interaction-tool-action-pending-destructive",
+  toolAction: {
+    actionRequestId: "aaaaaaa5-5555-4555-8555-5555555555a5",
+    invocationId: "bbbbbbb6-6666-4666-8666-6666666666b6",
+    toolName: "google_sheets.delete_rows",
+    toolDisplayName: "Delete rows from spreadsheet",
+    risk: "destructive",
+    previewMarkdown:
+      "**Permanently delete 12 rows** (rows 30–41) from the **Q3 Growth Leads** sheet. "
+      + "This cannot be undone.",
+    argumentsSummaryJson: JSON.stringify(
+      { spreadsheetId: "1AbC…xyz", range: "Leads!A30:D41", rowCount: 12 },
+      null,
+      2,
+    ),
+    argumentsHash: "sha256:1c4e77aa90b3f2d1",
+    expiresAt: expiresInMinutes(4),
+  },
+});
+
+export const runningToolActionInteraction = createToolActionConfirmationInteraction({
+  id: "interaction-tool-action-running",
+  status: "accepted",
+  resolvedByUserId: issueThreadInteractionFixtureMeta.currentUserId,
+  resolvedAt: new Date("2026-04-20T15:02:00.000Z"),
+  updatedAt: new Date("2026-04-20T15:02:00.000Z"),
+  result: {
+    version: 1,
+    outcome: "accepted",
+    toolAction: {
+      version: 1,
+      status: "approved",
+      updatedAt: "2026-04-20T15:02:00.000Z",
+    },
+  },
+});
+
+export const executedToolActionInteraction = createToolActionConfirmationInteraction({
+  id: "interaction-tool-action-executed",
+  status: "accepted",
+  resolvedByUserId: issueThreadInteractionFixtureMeta.currentUserId,
+  resolvedAt: new Date("2026-04-20T15:02:00.000Z"),
+  updatedAt: new Date("2026-04-20T15:02:12.000Z"),
+  result: {
+    version: 1,
+    outcome: "accepted",
+    toolAction: {
+      version: 1,
+      status: "executed",
+      resultSummary: "Row 42 added to “Q3 Growth Leads”.",
+      resultHref: "https://docs.google.com/spreadsheets/d/1AbCxyz/edit#gid=0&range=A42",
+      updatedAt: "2026-04-20T15:02:12.000Z",
+    },
+  },
+});
+
+export const failedToolActionInteraction = createToolActionConfirmationInteraction({
+  id: "interaction-tool-action-failed",
+  status: "accepted",
+  resolvedByUserId: issueThreadInteractionFixtureMeta.currentUserId,
+  resolvedAt: new Date("2026-04-20T15:02:00.000Z"),
+  updatedAt: new Date("2026-04-20T15:02:09.000Z"),
+  result: {
+    version: 1,
+    outcome: "accepted",
+    toolAction: {
+      version: 1,
+      status: "failed",
+      errorCode: "insufficient_permission",
+      errorMessage:
+        "The caller does not have permission to edit this spreadsheet (Google API 403). "
+        + "Ask the sheet owner to grant edit access to the connected account.",
+      updatedAt: "2026-04-20T15:02:09.000Z",
+    },
+  },
+});
+
+export const declinedToolActionInteraction = createToolActionConfirmationInteraction({
+  id: "interaction-tool-action-declined",
+  status: "rejected",
+  resolvedByUserId: issueThreadInteractionFixtureMeta.currentUserId,
+  resolvedAt: new Date("2026-04-20T15:01:00.000Z"),
+  updatedAt: new Date("2026-04-20T15:01:00.000Z"),
+  result: {
+    version: 1,
+    outcome: "rejected",
+    reason: "We don't add leads to this sheet manually — use the CRM sync instead.",
+  },
+});
+
+export const expiredToolActionInteraction = createToolActionConfirmationInteraction({
+  id: "interaction-tool-action-expired",
+  status: "expired",
+  updatedAt: new Date("2026-04-20T16:00:00.000Z"),
+  resolvedAt: new Date("2026-04-20T16:00:00.000Z"),
+  toolAction: {
+    expiresAt: "2026-04-20T16:00:00.000Z",
+  },
+  result: {
+    version: 1,
+    outcome: "superseded_by_comment",
+    toolAction: {
+      version: 1,
+      status: "expired",
+      updatedAt: "2026-04-20T16:00:00.000Z",
+    },
   },
 });
 
@@ -678,6 +873,215 @@ export const staleTargetRequestCheckboxConfirmationInteraction =
       },
     },
   });
+
+// --- Per-item verdicts (C3, PAP-13249) ---------------------------------
+
+function createRequestItemVerdictsInteraction(
+  overrides: Partial<RequestItemVerdictsInteraction>,
+): RequestItemVerdictsInteraction {
+  return {
+    id: "interaction-verdicts-default",
+    companyId: issueThreadInteractionFixtureMeta.companyId,
+    issueId: issueThreadInteractionFixtureMeta.issueId,
+    kind: "request_item_verdicts",
+    title: "Review 5 blog posts",
+    summary:
+      "This task drafted five blog posts. Approve the ones that are ready and reject the rest with a reason — each decision fans out on its own.",
+    status: "pending",
+    continuationPolicy: "wake_assignee",
+    createdByAgentId: "agent-codex",
+    createdByUserId: null,
+    resolvedByAgentId: null,
+    resolvedByUserId: null,
+    createdAt: new Date("2026-04-20T15:02:00.000Z"),
+    updatedAt: new Date("2026-04-20T15:02:00.000Z"),
+    resolvedAt: null,
+    payload: {
+      version: 1,
+      prompt: "Review the 5 blog posts this task drafted.",
+      detailsMarkdown:
+        "Each approved post publishes immediately; rejected posts go back for a revision pass with your reason attached.",
+      items: [
+        {
+          id: "post-spring-recap",
+          label: "Spring launch recap",
+          description: "820 words · product marketing",
+          previewMarkdown: "**Spring launch recap** — a warm retrospective on the Q1 launch and what shipped.",
+          href: "/PAP/issues/PAP-9001",
+        },
+        {
+          id: "post-changelog-digest",
+          label: "Monthly changelog digest",
+          description: "540 words · engineering",
+          previewMarkdown: "A tidy digest of the month's shipped changes, grouped by area.",
+          href: "/PAP/issues/PAP-9002",
+        },
+        {
+          id: "post-founder-note",
+          label: "Founder's note on reliability",
+          description: "1,100 words · leadership",
+          previewMarkdown: "A candid note on the reliability push and the road ahead.",
+          href: "/PAP/issues/PAP-9003",
+        },
+        {
+          id: "post-customer-story",
+          label: "Customer story: Northwind",
+          description: "760 words · customer marketing",
+          previewMarkdown: "How Northwind cut review time in half with the new workflow.",
+          href: "/PAP/issues/PAP-9004",
+        },
+        {
+          id: "post-hiring-push",
+          label: "We're hiring: platform engineers",
+          description: "420 words · recruiting",
+          previewMarkdown: "An open call for platform engineers to join the team.",
+          href: "/PAP/issues/PAP-9005",
+        },
+      ],
+      verdicts: ["approve", "reject"],
+      requireReasonOn: ["reject"],
+      reasonLabel: "Why reject?",
+      allowBulkApprove: true,
+      supersedeOnUserComment: true,
+    },
+    result: null,
+    ...overrides,
+  };
+}
+
+/** S1 — expanded, all pending. */
+export const pendingRequestItemVerdictsInteraction = createRequestItemVerdictsInteraction({});
+
+/** S3/S4 — partial: two items applied (one approved, one rejected), three still actionable. */
+export const partialRequestItemVerdictsInteraction = createRequestItemVerdictsInteraction({
+  id: "interaction-verdicts-partial",
+  updatedAt: new Date("2026-04-20T15:08:00.000Z"),
+  result: {
+    version: 1,
+    outcome: "resolved",
+    complete: false,
+    items: [
+      {
+        id: "post-spring-recap",
+        verdict: "approve",
+        resolvedByUserId: issueThreadInteractionFixtureMeta.currentUserId,
+        resolvedAt: new Date("2026-04-20T15:08:00.000Z"),
+      },
+      {
+        id: "post-changelog-digest",
+        verdict: "reject",
+        reason: "Tone is off-brand — too dry. Warm it up and re-submit.",
+        resolvedByUserId: issueThreadInteractionFixtureMeta.currentUserId,
+        resolvedAt: new Date("2026-04-20T15:08:00.000Z"),
+      },
+    ],
+  },
+});
+
+/** S5 — complete: every item has a terminal verdict. */
+export const completeRequestItemVerdictsInteraction = createRequestItemVerdictsInteraction({
+  id: "interaction-verdicts-complete",
+  status: "answered",
+  resolvedByUserId: issueThreadInteractionFixtureMeta.currentUserId,
+  resolvedAt: new Date("2026-04-20T15:14:00.000Z"),
+  updatedAt: new Date("2026-04-20T15:14:00.000Z"),
+  result: {
+    version: 1,
+    outcome: "resolved",
+    complete: true,
+    items: [
+      {
+        id: "post-spring-recap",
+        verdict: "approve",
+        resolvedByUserId: issueThreadInteractionFixtureMeta.currentUserId,
+        resolvedAt: new Date("2026-04-20T15:08:00.000Z"),
+      },
+      {
+        id: "post-changelog-digest",
+        verdict: "reject",
+        reason: "Tone is off-brand — too dry. Warm it up and re-submit.",
+        resolvedByUserId: issueThreadInteractionFixtureMeta.currentUserId,
+        resolvedAt: new Date("2026-04-20T15:08:00.000Z"),
+      },
+      {
+        id: "post-founder-note",
+        verdict: "approve",
+        resolvedByUserId: issueThreadInteractionFixtureMeta.currentUserId,
+        resolvedAt: new Date("2026-04-20T15:14:00.000Z"),
+      },
+      {
+        id: "post-customer-story",
+        verdict: "approve",
+        resolvedByUserId: issueThreadInteractionFixtureMeta.currentUserId,
+        resolvedAt: new Date("2026-04-20T15:14:00.000Z"),
+      },
+      {
+        id: "post-hiring-push",
+        verdict: "reject",
+        reason: "Hold the recruiting post until the req is approved.",
+        resolvedByUserId: issueThreadInteractionFixtureMeta.currentUserId,
+        resolvedAt: new Date("2026-04-20T15:14:00.000Z"),
+      },
+    ],
+  },
+});
+
+/** S6 — superseded by a later comment after two items were already applied. */
+export const supersededRequestItemVerdictsInteraction = createRequestItemVerdictsInteraction({
+  id: "interaction-verdicts-superseded",
+  status: "expired",
+  resolvedByUserId: issueThreadInteractionFixtureMeta.currentUserId,
+  resolvedAt: new Date("2026-04-20T15:16:00.000Z"),
+  updatedAt: new Date("2026-04-20T15:16:00.000Z"),
+  result: {
+    version: 1,
+    outcome: "superseded_by_comment",
+    complete: false,
+    commentId: "33333333-3333-4333-8333-333333333333",
+    items: [
+      {
+        id: "post-spring-recap",
+        verdict: "approve",
+        resolvedByUserId: issueThreadInteractionFixtureMeta.currentUserId,
+        resolvedAt: new Date("2026-04-20T15:08:00.000Z"),
+      },
+      {
+        id: "post-changelog-digest",
+        verdict: "reject",
+        reason: "Tone is off-brand — too dry. Warm it up and re-submit.",
+        resolvedByUserId: issueThreadInteractionFixtureMeta.currentUserId,
+        resolvedAt: new Date("2026-04-20T15:08:00.000Z"),
+      },
+    ],
+  },
+});
+
+/** S7 — long list (24 items) that virtualizes/paginates in the expanded view. */
+const manyVerdictItems = Array.from({ length: 24 }, (_, index) => {
+  const number = index + 1;
+  return {
+    id: `draft-post-${number}`,
+    label: `Draft post #${number}`,
+    description: `${300 + number * 17} words · auto-generated series`,
+  };
+});
+
+export const manyItemsRequestItemVerdictsInteraction = createRequestItemVerdictsInteraction({
+  id: "interaction-verdicts-many",
+  title: "Review 24 generated posts",
+  summary: "A batch-generation task produced 24 posts. Decide them in passes; the card stays until all are decided.",
+  payload: {
+    version: 1,
+    prompt: "Review the 24 posts this batch produced.",
+    detailsMarkdown: "The expanded list scrolls. Approve all to accept the batch, or decide item by item.",
+    items: manyVerdictItems,
+    verdicts: ["approve", "reject"],
+    requireReasonOn: ["reject"],
+    reasonLabel: "Why reject?",
+    allowBulkApprove: true,
+    supersedeOnUserComment: true,
+  },
+});
 
 export const issueThreadInteractionComments: IssueChatComment[] = [
   createComment({

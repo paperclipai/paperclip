@@ -304,6 +304,7 @@ export type {
   PluginDatabaseClient,
   HumanCompanyMembershipRole,
   MembershipStatus,
+  EnvSecretRefBinding,
 } from "./types.js";
 
 // Manifest and constant types re-exported from @paperclipai/shared

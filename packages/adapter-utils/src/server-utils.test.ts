@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -16,9 +17,12 @@ import {
   runningProcesses,
   runChildProcess,
   sanitizeSshRemoteEnv,
+  signalRunningProcess,
   shapePaperclipWorkspaceEnvForExecution,
   rewriteWorkspaceCwdEnvVarsForExecution,
   stringifyPaperclipWakePayload,
+  UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
+  UNMANAGED_BACKGROUND_TASK_STOP_REASON,
   WATCHDOG_DEFAULT_MANDATE,
 } from "./server-utils.js";
 
@@ -470,6 +474,97 @@ describe("runChildProcess", () => {
     expect(await waitForPidExit(descendantPid!, 2_000)).toBe(true);
   });
 
+  it.skipIf(process.platform === "win32")(
+    "force-kills a child that ignores SIGTERM once the grace window elapses",
+    async () => {
+      // Residual hang case: a child that installs a SIGTERM handler which
+      // swallows the signal and keeps running. The timeout sends SIGTERM at
+      // timeoutSec, then must escalate to SIGKILL graceSec later. If the
+      // escalation were gated on `child.killed` (which is true the instant
+      // SIGTERM is *sent*, not when the process exits) the SIGKILL would be
+      // suppressed and this child would outlive its deadline.
+      const result = await runChildProcess(
+        randomUUID(),
+        process.execPath,
+        [
+          "-e",
+          [
+            "process.on('SIGTERM', () => {});",
+            "process.stdout.write(String(process.pid));",
+            "setInterval(() => {}, 1000);",
+          ].join(" "),
+        ],
+        {
+          cwd: process.cwd(),
+          env: {},
+          timeoutSec: 1,
+          graceSec: 1,
+          onLog: async () => {},
+          onSpawn: async () => {},
+        },
+      );
+
+      const childPid = Number.parseInt(result.stdout.trim(), 10);
+      expect(result.timedOut).toBe(true);
+      expect(result.signal).toBe("SIGKILL");
+      expect(Number.isInteger(childPid) && childPid > 0).toBe(true);
+      expect(await waitForPidExit(childPid, 2_000)).toBe(true);
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "signalRunningProcess escalates SIGKILL on the direct-child fallback after SIGTERM is sent",
+    async () => {
+      // Directly cover the branch this PR changed: the direct-child fallback
+      // (processGroupId === null), which runChildProcess's POSIX timeout tests
+      // never reach because they always spawn detached and take the
+      // process-group path. This reproduces the exact regression: once SIGTERM
+      // has been *sent*, `child.killed` is already true, so the old
+      // `!child.killed` guard would suppress the SIGKILL escalation and leave a
+      // SIGTERM-ignoring child alive. The liveness guard
+      // (exitCode === null && signalCode === null) must still let SIGKILL through.
+      const child = spawn(
+        process.execPath,
+        [
+          "-e",
+          [
+            "process.on('SIGTERM', () => {});",
+            "process.stdout.write(String(process.pid));",
+            "setInterval(() => {}, 1000);",
+          ].join(" "),
+        ],
+        { detached: false, stdio: ["ignore", "pipe", "ignore"] },
+      );
+      try {
+        const pid = await new Promise<number>((resolvePid, rejectPid) => {
+          child.stdout!.on("data", (d) => resolvePid(Number.parseInt(String(d).trim(), 10)));
+          child.on("error", rejectPid);
+        });
+        expect(Number.isInteger(pid) && pid > 0).toBe(true);
+
+        // First SIGTERM via the fallback (no process group). The child swallows
+        // it and stays alive — but child.killed is now true.
+        signalRunningProcess({ child, processGroupId: null }, "SIGTERM");
+        await new Promise((r) => setTimeout(r, 300));
+        expect(child.killed).toBe(true); // signal was sent…
+        expect(isPidAlive(pid)).toBe(true); // …but the process ignored it and lives
+
+        // Escalation: with the old `!child.killed` guard this would be a no-op
+        // and the child would survive. The liveness guard must still fire.
+        signalRunningProcess({ child, processGroupId: null }, "SIGKILL");
+        expect(await waitForPidExit(pid, 2_000)).toBe(true);
+      } finally {
+        if (child.exitCode === null && child.signalCode === null) {
+          try {
+            child.kill("SIGKILL");
+          } catch {
+            /* already gone */
+          }
+        }
+      }
+    },
+  );
+
   it.skipIf(process.platform === "win32")("cleans up a lingering process group after terminal output and child exit", async () => {
     const result = await runChildProcess(
       randomUUID(),
@@ -500,6 +595,13 @@ describe("runChildProcess", () => {
     const descendantPid = Number.parseInt(result.stdout.match(/descendant:(\d+)/)?.[1] ?? "", 10);
     expect(result.timedOut).toBe(false);
     expect(result.exitCode).toBe(0);
+    expect(result.terminalResultCleanup).toMatchObject({
+      kind: "terminal_result_cleanup",
+      stopped: true,
+      stopReason: UNMANAGED_BACKGROUND_TASK_STOP_REASON,
+      reason: UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
+      terminalResultSeen: true,
+    });
     expect(Number.isInteger(descendantPid) && descendantPid > 0).toBe(true);
     expect(await waitForPidExit(descendantPid, 2_000)).toBe(true);
   });
@@ -530,6 +632,14 @@ describe("runChildProcess", () => {
 
     expect(result.timedOut).toBe(false);
     expect(result.signal).toBe("SIGTERM");
+    expect(result.terminalResultCleanup).toMatchObject({
+      kind: "terminal_result_cleanup",
+      stopped: true,
+      stopReason: UNMANAGED_BACKGROUND_TASK_STOP_REASON,
+      reason: UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
+      terminalResultSeen: true,
+      signal: "SIGTERM",
+    });
     expect(result.stdout).toContain('"type":"result"');
   });
 
@@ -617,7 +727,7 @@ describe("renderPaperclipWakePrompt", () => {
     );
   });
 
-  it("adds the execution contract to scoped wake prompts", () => {
+  it("leaves the execution contract to the heartbeat template on fresh scoped wake prompts", () => {
     const prompt = renderPaperclipWakePrompt({
       reason: "issue_assigned",
       issue: {
@@ -636,11 +746,164 @@ describe("renderPaperclipWakePrompt", () => {
     });
 
     expect(prompt).toContain("## Paperclip Wake Payload");
-    expect(prompt).toContain("Execution contract: take concrete action in this heartbeat");
-    expect(prompt).toContain("clear final disposition");
-    expect(prompt).toContain("evidence, not valid liveness paths by themselves");
-    expect(prompt).toContain("Use child issues for long or parallel delegated work instead of polling");
-    expect(prompt).toContain("named unblock owner/action");
+    expect(prompt).not.toContain("Execution contract:");
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Execution contract:");
+  });
+
+  it("adds the execution contract to resume delta prompts and opted-in fresh prompts", () => {
+    const payload = {
+      reason: "issue_assigned",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-1580",
+        title: "Update prompts",
+        status: "in_progress",
+      },
+      commentWindow: {
+        requestedCount: 0,
+        includedCount: 0,
+        missingCount: 0,
+      },
+      comments: [],
+      fallbackFetchNeeded: false,
+    };
+
+    for (const prompt of [
+      renderPaperclipWakePrompt(payload, { resumedSession: true }),
+      renderPaperclipWakePrompt(payload, { includeExecutionContract: true }),
+    ]) {
+      expect(prompt).toContain("Execution contract: take concrete action in this heartbeat");
+      expect(prompt).toContain("clear final disposition");
+      expect(prompt).toContain("Immediately before returning, verify that Paperclip records one of those dispositions");
+      expect(prompt).toContain("a successful process exit or final response is not sufficient");
+      expect(prompt).toContain("If no valid disposition is recorded, record it now and do not end the run");
+      expect(prompt).toContain("evidence, not valid liveness paths by themselves");
+      expect(prompt).toContain("Use child issues for long or parallel delegated work instead of polling");
+      expect(prompt).toContain("named unblock owner/action");
+    }
+  });
+
+  it.each([
+    [
+      "process_lost",
+      "Try again — resume from durable progress; don't redo completed steps.",
+    ],
+    [
+      "successful_run_missing_state",
+      "Your run completed but left no final disposition.",
+    ],
+    [
+      "provider_quota",
+      "Verify or create the wait-recovery monitor for the provider quota reset",
+    ],
+    [
+      "codex_output_inactivity_monitor",
+      "Your run was killed by the output-inactivity monitor",
+    ],
+    [
+      "workspace_validation_failed",
+      "Recover/fix the workspace (worktree, branch, workspace link)",
+    ],
+    [
+      "stranded_assigned_issue",
+      "Fix the underlying problem (auth, config, adapter, budget…)",
+    ],
+  ])("replaces the generic execution contract for %s recovery wakes", (cause, instruction) => {
+    const prompt = renderPaperclipWakePrompt({
+      reason: "source_scoped_recovery_action",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-14092",
+        title: "Recover work",
+        status: "blocked",
+      },
+      recovery: {
+        cause,
+        failureSummary: "adapter stopped",
+        originalAssignee: { id: "agent-1", name: "Coder" },
+        attemptCount: 2,
+        maxAttempts: 3,
+        nextAction: "Restore the execution path.",
+      },
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      comments: [],
+      fallbackFetchNeeded: false,
+    }, { includeExecutionContract: true });
+
+    expect(prompt).toContain(
+      "Recovery contract: your job is to RECOVER this task, not to do the work. Do not produce the deliverable yourself.",
+    );
+    expect(prompt).toContain(instruction);
+    expect(prompt).toContain("Fallback preference order: (1) send back to Coder");
+    expect(prompt).toContain(`- recovery cause: ${cause}`);
+    expect(prompt).toContain("- failure summary: adapter stopped");
+    expect(prompt).toContain("- original assignee: Coder");
+    expect(prompt).toContain("- recovery attempt: 2/3");
+    expect(prompt).toContain("- next action: Restore the execution path.");
+    expect(prompt).not.toContain("Execution contract: take concrete action");
+  });
+
+  it("keeps exactly one execution contract in a composed fresh heartbeat prompt", () => {
+    const wakePrompt = renderPaperclipWakePrompt({
+      reason: "issue_assigned",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-1580",
+        title: "Update prompts",
+        status: "in_progress",
+      },
+      commentWindow: {
+        requestedCount: 0,
+        includedCount: 0,
+        missingCount: 0,
+      },
+      comments: [],
+      fallbackFetchNeeded: false,
+    });
+    const composed = [wakePrompt, DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE].join("\n\n");
+    expect(composed.match(/Execution contract/g)).toHaveLength(1);
+  });
+
+  it("trims comment-batch boilerplate on fresh wakes with zero pending comments", () => {
+    const base = {
+      reason: "issue_assigned",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-1580",
+        title: "Update prompts",
+        status: "in_progress",
+      },
+      commentWindow: {
+        requestedCount: 0,
+        includedCount: 0,
+        missingCount: 0,
+      },
+      comments: [],
+      fallbackFetchNeeded: false,
+    };
+
+    const zeroCommentPrompt = renderPaperclipWakePrompt(base);
+    expect(zeroCommentPrompt).not.toContain("acknowledge the latest comment");
+    expect(zeroCommentPrompt).not.toContain("Only fetch the API thread");
+    expect(zeroCommentPrompt).not.toContain("- pending comments:");
+    expect(zeroCommentPrompt).not.toContain("- latest comment id:");
+    expect(zeroCommentPrompt).toContain("- fallback fetch needed: no");
+
+    const commentPrompt = renderPaperclipWakePrompt({
+      ...base,
+      reason: "issue_commented",
+      commentWindow: { requestedCount: 1, includedCount: 1, missingCount: 0 },
+      comments: [{ id: "comment-1", body: "Please fix", authorType: "user" }],
+      latestCommentId: "comment-1",
+    });
+    expect(commentPrompt).toContain("acknowledge the latest comment");
+    expect(commentPrompt).toContain("Only fetch the API thread");
+    expect(commentPrompt).toContain("- pending comments: 1/1");
+    expect(commentPrompt).toContain("- latest comment id: comment-1");
+
+    const fallbackPrompt = renderPaperclipWakePrompt({ ...base, fallbackFetchNeeded: true });
+    expect(fallbackPrompt).toContain("Only fetch the API thread");
+    expect(fallbackPrompt).toContain("- fallback fetch needed: yes");
   });
 
   it("renders the execution workspace branch guard only on non-resumed sessions", () => {
@@ -1852,6 +2115,50 @@ describe("refreshPaperclipWorkspaceEnvForExecution", () => {
         workspaceId: "workspace-2",
       },
     ]);
+  });
+
+  it("forwards resolved adapter env but never overrides Paperclip runtime env", () => {
+    const env: Record<string, string> = {
+      PAPERCLIP_RUN_ID: "run-1",
+      PAPERCLIP_TASK_ID: "issue-1",
+      PAPERCLIP_API_URL: "http://runtime:3100",
+    };
+
+    refreshPaperclipWorkspaceEnvForExecution({
+      env,
+      envConfig: {
+        // Plain non-PAPERCLIP key.
+        OOGA_BOOGA_123: "plain-value",
+        // Server-resolved secret_ref value arrives as a plain string here.
+        OPENROUTER_API_KEY: "resolved-secret-value",
+        // Reserved-namespace keys must not clobber runtime identity/wake vars.
+        PAPERCLIP_TASK_ID: "attacker-issue",
+        PAPERCLIP_API_URL: "http://evil:9999",
+      },
+      workspaceCwd: null,
+    });
+
+    expect(env.OOGA_BOOGA_123).toBe("plain-value");
+    expect(env.OPENROUTER_API_KEY).toBe("resolved-secret-value");
+    expect(env.PAPERCLIP_TASK_ID).toBe("issue-1");
+    expect(env.PAPERCLIP_API_URL).toBe("http://runtime:3100");
+  });
+
+  it("applies a configured PAPERCLIP_* key only when Paperclip has not set it", () => {
+    const env: Record<string, string> = {};
+
+    refreshPaperclipWorkspaceEnvForExecution({
+      env,
+      envConfig: {
+        PAPERCLIP_API_KEY: "explicit-key",
+      },
+      workspaceCwd: null,
+    });
+
+    // Paperclip did not assign PAPERCLIP_API_KEY before the merge, so an
+    // explicitly configured value is allowed through (adapters apply the run
+    // token here only when no explicit key was configured).
+    expect(env.PAPERCLIP_API_KEY).toBe("explicit-key");
   });
 });
 

@@ -476,6 +476,30 @@ PATCH /api/issues/issue-200
 { "comment": "Your Mine inbox has 1 unread issue: [PAP-310](/PAP/issues/PAP-310)." }
 ```
 
+### Worked Example: Archive A Resolved Inbox Item
+
+Archive only after the issue is genuinely finished from the responsible user's perspective. Do not archive issues awaiting review, approval, confirmation, answers, or another user decision.
+
+```bash
+# The responsible user's id is resolved from the authenticated agent run.
+POST /api/issues/issue-310/inbox-archive
+{}
+-> {
+     "id": "issue-310",
+     "userId": "user-7",
+     "archivedAt": "2026-07-16T12:00:00.000Z"
+   }
+
+# Reverse the archive if it was premature or no longer desired.
+DELETE /api/issues/issue-310/inbox-archive
+{}
+-> { "ok": true, "userId": "user-7" }
+```
+
+Both mutations require `X-Paperclip-Run-Id` and write activity-log entries. Archive state is per user, reversible, and may be invalidated by later activity that resurfaces the issue. Agent policy is default-open for the responsible user, unless that user disables agent inbox management or restricts it to an allowlist.
+
+Pass `{ "userId": "user-9" }` only for an intentional cross-user operation. The agent must have `inbox:manage`, optionally scoped to that user. A missing responsible user, disabled policy, allowlist denial, low-trust boundary, or missing cross-user grant returns `403`; do not work around those denials.
+
 ### Worked Example: Reviewer / Approver Heartbeat
 
 When you wake up on an issue in `in_review`, inspect `executionState` first:
@@ -960,6 +984,116 @@ Best practice:
 - After creating a pending checkbox confirmation, move the source issue to `in_review` with a comment that names exactly what the board must decide. Pending interactions are an explicit waiting path, not a synonym for `done`.
 - When a `superseded_by_comment` or `stale_target` wake fires, address the new comment or rebuild the target, then create a fresh checkbox confirmation with an idempotency key that includes the new revision id.
 
+### Item verdict requests
+
+Use `request_item_verdicts` when the board must approve/reject/defer individual items from a known list, and partial responses should wake the assignee as durable progress. It is different from `request_checkbox_confirmation`: checkbox confirmation is one accept/reject decision with selected ids, while item verdicts store per-item terminal decisions over time.
+
+Create an item-verdict request:
+
+```json
+POST /api/issues/{issueId}/interactions
+{
+  "kind": "request_item_verdicts",
+  "idempotencyKey": "verdicts:{issueId}:generated-artifacts:{planRevisionId}",
+  "title": "Review generated artifacts",
+  "continuationPolicy": "wake_assignee",
+  "payload": {
+    "version": 1,
+    "prompt": "Review each generated artifact.",
+    "detailsMarkdown": "Approve artifacts that are ready. Reject items that need another pass.",
+    "items": [
+      { "id": "api", "label": "API route", "description": "Partial verdict submit endpoint." },
+      { "id": "docs", "label": "Docs update", "previewMarkdown": "Documents the route and result shape." }
+    ],
+    "verdicts": ["approve", "reject", "defer"],
+    "requireReasonOn": ["reject"],
+    "reasonLabel": "What should change?",
+    "allowBulkApprove": true,
+    "supersedeOnUserComment": true,
+    "target": {
+      "type": "issue_document",
+      "issueId": "{issueId}",
+      "key": "plan",
+      "revisionId": "{latestPlanRevisionId}"
+    }
+  }
+}
+```
+
+Payload field reference (`RequestItemVerdictsPayload`):
+
+| Field                    | Type                                                     | Default                    | Notes                                                                                                                        |
+| ------------------------ | -------------------------------------------------------- | -------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `version`                | `1`                                                      | required                   | Versioned for forward compatibility.                                                                                         |
+| `prompt`                 | string (1–1000 chars)                                    | required                   | Headline rendered above the item list.                                                                                        |
+| `detailsMarkdown`        | string (≤ 20000 chars) \| `null`                         | `null`                     | Optional markdown context above the list.                                                                                     |
+| `items`                  | `[{ id, label, description?, previewMarkdown?, href?, attachmentId? }]` | required, 1–200 entries | Item `id` and `label` are 1–120 chars. Item ids must be unique. `href` must be safe: root-relative, fragment, or http(s). |
+| `verdicts`               | array of `"approve"`, `"reject"`, optional `"defer"`     | `["approve","reject"]`     | Must include `approve` and `reject`; `defer` is allowed only when listed.                                                     |
+| `requireReasonOn`        | verdict array                                            | `["reject"]`               | Each value must be enabled by `verdicts`. Pending submissions with those verdicts require a non-empty `reason`.              |
+| `reasonLabel`            | string (1–160) \| `null`                                 | `null`                     | Field label for the verdict reason.                                                                                           |
+| `allowBulkApprove`       | boolean                                                  | `true`                     | UI hint for bulk-approve affordances. Server still validates each submitted item id.                                          |
+| `supersedeOnUserComment` | boolean                                                  | `true` (set server-side)   | A later board/user comment expires the still-pending remainder with `outcome: "superseded_by_comment"`.                      |
+| `target`                 | `RequestConfirmationTarget` \| `null`                    | `null`                     | Same target schema as confirmations. Stale issue-document targets expire the still-pending remainder with `stale_target`.     |
+
+Submit item verdicts (board action, requires board/user role; agents creating the interaction cannot submit verdicts):
+
+```json
+POST /api/issues/{issueId}/interactions/{interactionId}/verdicts
+{
+  "verdicts": [
+    { "id": "api", "verdict": "approve" },
+    { "id": "docs", "verdict": "reject", "reason": "Needs install instructions." }
+  ]
+}
+```
+
+Server behavior:
+
+- Unknown item ids return 422.
+- A verdict not listed in `payload.verdicts` returns 422.
+- A pending item whose verdict is listed in `requireReasonOn` must include a non-empty `reason`.
+- Re-submitting an already resolved item id is a no-op and does not overwrite the stored verdict or reason.
+- Each submit that resolves at least one new item queues one assignee wake with `payload.newlyResolvedItemIds` and `payload.itemVerdicts.newlyResolvedItemIds`. Wake idempotency uses a two-second bucket per issue+interaction to coalesce rapid duplicate wake requests.
+
+Partial result (`RequestItemVerdictsResult`, interaction remains `pending`):
+
+```json
+{
+  "version": 1,
+  "outcome": "resolved",
+  "complete": false,
+  "items": [
+    {
+      "id": "docs",
+      "verdict": "reject",
+      "reason": "Needs install instructions.",
+      "resolvedByUserId": "local-board",
+      "resolvedAt": "2026-07-09T12:00:00.000Z"
+    }
+  ]
+}
+```
+
+Complete result (interaction becomes `answered`):
+
+```json
+{
+  "version": 1,
+  "outcome": "resolved",
+  "complete": true,
+  "items": [
+    { "id": "api", "verdict": "approve", "resolvedByUserId": "local-board", "resolvedAt": "2026-07-09T12:00:00.000Z" },
+    { "id": "docs", "verdict": "reject", "reason": "Needs install instructions.", "resolvedByUserId": "local-board", "resolvedAt": "2026-07-09T12:00:00.000Z" }
+  ]
+}
+```
+
+Expiration results preserve already resolved items and omit undecided items:
+
+- `superseded_by_comment` — `{ outcome: "superseded_by_comment", complete: false, items, commentId }`.
+- `stale_target` — `{ outcome: "stale_target", complete: false, items, staleTarget }`.
+- `cancelled` is reserved for future explicit cancellation flows.
+
 ### Checking approval status
 
 ```
@@ -1068,11 +1202,14 @@ Terminal states: `done`, `cancelled`
 | GET    | `/api/issues/:issueId/comments`    | List comments                                                                            |
 | GET    | `/api/issues/:issueId/comments/:commentId` | Get a specific comment by ID                                                     |
 | POST   | `/api/issues/:issueId/comments`    | Add comment (@-mentions trigger wakeups)                                                 |
+| POST   | `/api/issues/:issueId/inbox-archive` | Archive issue from responsible user's inbox; optional `userId` requires cross-user grant |
+| DELETE | `/api/issues/:issueId/inbox-archive` | Reverse inbox archive; same target and policy rules                                    |
 | GET    | `/api/issues/:issueId/interactions` | List issue-thread interactions                                                          |
-| POST   | `/api/issues/:issueId/interactions` | Create issue-thread interaction (`suggest_tasks`, `ask_user_questions`, `request_confirmation`, `request_checkbox_confirmation`) |
+| POST   | `/api/issues/:issueId/interactions` | Create issue-thread interaction (`suggest_tasks`, `ask_user_questions`, `request_confirmation`, `request_checkbox_confirmation`, `request_item_verdicts`) |
 | POST   | `/api/issues/:issueId/interactions/:interactionId/accept` | Accept suggested tasks or confirmation (body: `selectedClientKeys` for `suggest_tasks`; `selectedOptionIds` for `request_checkbox_confirmation`) |
 | POST   | `/api/issues/:issueId/interactions/:interactionId/reject` | Reject suggested tasks or confirmation                                       |
 | POST   | `/api/issues/:issueId/interactions/:interactionId/respond` | Respond to structured questions                                             |
+| POST   | `/api/issues/:issueId/interactions/:interactionId/verdicts` | Submit partial item verdicts for `request_item_verdicts`                 |
 | GET    | `/api/issues/:issueId/documents`   | List issue documents                                                                     |
 | GET    | `/api/issues/:issueId/documents/:key` | Get issue document by key                                                            |
 | PUT    | `/api/issues/:issueId/documents/:key` | Create or update issue document (send `baseRevisionId` when updating)                |

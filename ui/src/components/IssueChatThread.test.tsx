@@ -794,6 +794,7 @@ describe("IssueChatThread", () => {
             onAdd={async () => {}}
             showComposer={false}
             showJumpToLatest={false}
+            autoScrollToHashOnInitialLoad
             enableLiveTranscriptPolling={false}
             transcriptsByRunId={issueChatLongThreadTranscriptsByRunId}
             hasOutputForRun={(runId) => issueChatLongThreadTranscriptsByRunId.has(runId)}
@@ -891,7 +892,7 @@ describe("IssueChatThread", () => {
     requestAnimationFrameMock.mockRestore();
   });
 
-  it("scrolls loaded hash targets through the virtualized message index", () => {
+  it("scrolls loaded hash targets through the virtualized message index when initial hash scrolling is enabled", () => {
     const root = createRoot(container);
     const targetComment = issueChatLongThreadComments.at(-1);
     expect(targetComment).toBeDefined();
@@ -910,6 +911,7 @@ describe("IssueChatThread", () => {
             onAdd={async () => {}}
             showComposer={false}
             showJumpToLatest={false}
+            autoScrollToHashOnInitialLoad
             enableLiveTranscriptPolling={false}
             transcriptsByRunId={issueChatLongThreadTranscriptsByRunId}
             hasOutputForRun={(runId) => issueChatLongThreadTranscriptsByRunId.has(runId)}
@@ -1071,8 +1073,8 @@ describe("IssueChatThread", () => {
     ) as HTMLButtonElement | undefined;
     expect(jump).toBeDefined();
 
-    // Flush the on-load auto-scroll-to-latest (PAP-97) so this test measures
-    // only the jump-to-latest interaction, not the initial mount scroll.
+    // Flush pending mount timers so this test measures only the explicit
+    // jump-to-latest interaction.
     act(() => {
       vi.advanceTimersByTime(500);
     });
@@ -1101,10 +1103,9 @@ describe("IssueChatThread", () => {
     scrollHost.remove();
   });
 
-  // PAP-97: on first thread load we land on the latest comment instead of the
-  // top of the thread (board rev-2 feedback for PAP-95). No deep-link hash and
-  // no user interaction — the scroll must happen purely from mounting.
-  it("auto-scrolls to the latest comment on initial load (PAP-97)", () => {
+  // PAP-12003: initial page load must not jump to the latest comment. If a
+  // user wants the newest message, the explicit Jump to latest control owns it.
+  it("does not auto-scroll to the latest comment on initial load", () => {
     vi.useFakeTimers();
     container.remove();
     const scrollHost = document.createElement("main");
@@ -1142,15 +1143,13 @@ describe("IssueChatThread", () => {
       );
     });
 
-    // No jump click — let the mount auto-scroll's rAF + settle ticks run.
+    // No jump click: initial render should preserve the page position.
     act(() => {
       vi.advanceTimersByTime(500);
     });
 
-    const scrolledToLatest =
-      elementScrollToMock.mock.calls.some(([arg]) => hasSmoothScrollBehavior(arg))
-      || scrollIntoViewMock.mock.calls.length > 0;
-    expect(scrolledToLatest).toBe(true);
+    expect(elementScrollToMock).not.toHaveBeenCalled();
+    expect(scrollIntoViewMock).not.toHaveBeenCalled();
 
     Element.prototype.scrollIntoView = originalScrollIntoView;
     act(() => {
@@ -1190,7 +1189,6 @@ describe("IssueChatThread", () => {
             agentMap={issueChatLongThreadAgentMap}
             currentUserId="user-board"
             onAdd={async () => {}}
-            autoScrollToLatestOnInitialLoad={false}
             enableLiveTranscriptPolling={false}
             transcriptsByRunId={issueChatLongThreadTranscriptsByRunId}
             hasOutputForRun={(runId) => issueChatLongThreadTranscriptsByRunId.has(runId)}
@@ -1225,6 +1223,60 @@ describe("IssueChatThread", () => {
       root.unmount();
     });
     scrollHost.remove();
+    vi.useRealTimers();
+  });
+
+  it("can keep the page at the top on initial load even when the URL has a comment hash", () => {
+    vi.useFakeTimers();
+    const originalScrollIntoView = Element.prototype.scrollIntoView;
+    const scrollIntoViewMock = vi.fn();
+    Object.defineProperty(Element.prototype, "scrollIntoView", {
+      configurable: true,
+      value: scrollIntoViewMock,
+    });
+
+    const root = createRoot(container);
+    act(() => {
+      root.render(
+        <MemoryRouter initialEntries={["/PAP/issues/PAP-12003#comment-comment-target"]}>
+          <IssueChatThread
+            comments={[{
+              id: "comment-target",
+              companyId: "company-1",
+              issueId: "issue-1",
+              authorAgentId: "agent-1",
+              authorUserId: null,
+              authorType: "agent",
+              body: "Previous done comment near the bottom.",
+              presentation: null,
+              metadata: null,
+              createdAt: new Date("2026-07-07T21:13:07.902Z"),
+              updatedAt: new Date("2026-07-07T21:13:07.902Z"),
+            }]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            showComposer={false}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    act(() => {
+      vi.advanceTimersByTime(500);
+    });
+
+    expect(scrollIntoViewMock).not.toHaveBeenCalled();
+
+    Object.defineProperty(Element.prototype, "scrollIntoView", {
+      configurable: true,
+      value: originalScrollIntoView,
+    });
+    act(() => {
+      root.unmount();
+    });
     vi.useRealTimers();
   });
 

@@ -5,6 +5,7 @@ import {
   type CurrentUserProfile,
   type UpdateCurrentUserProfile,
 } from "@paperclipai/shared";
+import { redactUrlSecrets } from "@/lib/redact-url-secrets";
 
 type AuthErrorBody =
   | {
@@ -60,15 +61,66 @@ function extractAuthError(payload: AuthErrorBody, status: number) {
   return new AuthApiError(message, status, payload, code);
 }
 
-async function authPost(path: string, body: Record<string, unknown>) {
-  const res = await fetch(`/api/auth${path}`, {
-    method: "POST",
+// Rich diagnostics for auth requests. Network-layer failures (Safari
+// "Load failed" / Chrome "Failed to fetch") throw a TypeError *before* any
+// HTTP response, so they are indistinguishable from a bad password in the UI
+// unless we log the resolved request URL + origin here. See PAP-13466.
+function resolveAuthUrl(path: string) {
+  const relative = `/api/auth${path}`;
+  try {
+    return new URL(relative, window.location.origin).href;
+  } catch {
+    return relative;
+  }
+}
+
+function logAuthNetworkFailure(method: string, path: string, error: unknown) {
+  // eslint-disable-next-line no-console
+  console.error("[auth] request failed at the network layer (no HTTP response)", {
+    method,
+    requestUrl: resolveAuthUrl(path),
+    pageOrigin: typeof window !== "undefined" ? window.location.origin : "(no window)",
+    pageHref: typeof window !== "undefined" ? redactUrlSecrets(window.location.href) : "(no window)",
     credentials: "include",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
+    online: typeof navigator !== "undefined" ? navigator.onLine : "(no navigator)",
+    errorName: error instanceof Error ? error.name : typeof error,
+    errorMessage: error instanceof Error ? error.message : String(error),
+    error,
+    hint:
+      "This means the browser never got a response from the server. Common causes: " +
+      "the page origin differs from the API host (mixed http/https, wrong hostname/port, " +
+      "or a proxy/tunnel that only forwards the page but not /api), an SSL error, or the " +
+      "connection was reset. A wrong password would instead return HTTP 401, not this.",
   });
+}
+
+function logAuthHttpError(method: string, path: string, status: number, statusText: string, body: unknown) {
+  // eslint-disable-next-line no-console
+  console.error("[auth] request returned an error status", {
+    method,
+    requestUrl: resolveAuthUrl(path),
+    status,
+    statusText,
+    body,
+  });
+}
+
+async function authPost(path: string, body: Record<string, unknown>) {
+  let res: Response;
+  try {
+    res = await fetch(`/api/auth${path}`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch (networkError) {
+    logAuthNetworkFailure("POST", path, networkError);
+    throw networkError;
+  }
   const payload = await res.json().catch(() => null);
   if (!res.ok) {
+    logAuthHttpError("POST", path, res.status, res.statusText, payload);
     throw extractAuthError(payload as AuthErrorBody, res.status);
   }
   return payload;
