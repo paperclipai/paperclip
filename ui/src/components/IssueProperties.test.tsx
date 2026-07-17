@@ -2063,6 +2063,15 @@ describe("IssueProperties", () => {
     expect(monitorRowText()).toContain("Today, 4:08 PM · Attempt 1");
 
     renderMonitor(createIssue({
+      executionPolicy: createExecutionPolicy({ monitor: { ...baseMonitorState, nextCheckAt: "2026-07-17T18:08:00.000Z" } }),
+      executionState: createExecutionState({ monitor: { ...baseMonitorState, nextCheckAt: "2026-07-17T16:08:00.000Z" } }),
+      monitorNextCheckAt: new Date("2026-07-17T17:08:00.000Z"),
+    }));
+    await flush();
+    expect(monitorRowText()).toContain("In 2h 12m");
+    expect(monitorRowText()).toContain("Today, 4:08 PM");
+
+    renderMonitor(createIssue({
       executionPolicy: createExecutionPolicy({ monitor: { ...baseMonitorState, serviceName: "vercel-deploy" } }),
       executionState: createExecutionState({ monitor: { ...baseMonitorState, attemptCount: 3 } }),
       monitorAttemptCount: 3,

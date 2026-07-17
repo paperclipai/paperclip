@@ -1004,7 +1004,7 @@ export function IssueProperties({
     setMonitorOpen(false);
   };
   const monitorState = issue.executionState?.monitor ?? null;
-  const monitorNextCheckAt = issue.executionPolicy?.monitor?.nextCheckAt ?? monitorState?.nextCheckAt ?? null;
+  const monitorNextCheckAt = monitorState?.nextCheckAt ?? issue.monitorNextCheckAt ?? issue.executionPolicy?.monitor?.nextCheckAt ?? null;
   const monitorAttemptCount = issue.monitorAttemptCount ?? monitorState?.attemptCount ?? 0;
   const monitorLastTriggeredAt = issue.monitorLastTriggeredAt ?? monitorState?.lastTriggeredAt ?? null;
   const monitorServiceName = issue.executionPolicy?.monitor?.serviceName ?? monitorState?.serviceName ?? null;
