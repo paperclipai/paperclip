@@ -1,4 +1,4 @@
-import { lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { resetLocalGitIndexToHead } from "./git-workspace-sync.js";
 
 import {
+  createRemoteTarballFromDirectoryCommand,
   mirrorDirectory,
   prepareSandboxManagedRuntime,
   type SandboxManagedRuntimeClient,
@@ -823,5 +824,134 @@ describe("sandbox managed runtime", () => {
     const emptyArchiveCommand = runCommands.find((command) => command.includes("dd if=/dev/zero"));
     expect(emptyArchiveCommand).toBeDefined();
     expect(emptyArchiveCommand).not.toContain("/dev/null");
+  });
+
+  describe("best-effort restore tar (--ignore-failed-read probe)", () => {
+    // Installs a fake `tar` ahead of the real one on PATH. `--help` advertises
+    // (or not) --ignore-failed-read so the remote capability probe can be
+    // exercised deterministically on any host tar; every invocation is logged,
+    // and real work is delegated to the system tar with the GNU-only flag
+    // stripped (the host tar may be BSD).
+    async function installTarShim(rootDir: string, input: { supportsIgnoreFailedRead: boolean }): Promise<{
+      binDir: string;
+      invocations: () => Promise<string[]>;
+    }> {
+      const binDir = path.join(rootDir, input.supportsIgnoreFailedRead ? "gnu-like-bin" : "bsd-like-bin");
+      const logPath = path.join(binDir, "tar-invocations.log");
+      await mkdir(binDir, { recursive: true });
+      const realTar = (await execFile("sh", ["-c", "command -v tar"])).stdout.trim();
+      const helpBody = input.supportsIgnoreFailedRead
+        ? "      --ignore-failed-read   do not exit with nonzero status on unreadable files"
+        : "      -c  Create  -f  Archive file";
+      await writeFile(
+        path.join(binDir, "tar"),
+        [
+          "#!/bin/sh",
+          `printf '%s\\n' "$*" >> '${logPath}'`,
+          `if [ "$1" = "--help" ]; then printf '%s\\n' 'Usage: tar [OPTION...]' '${helpBody}'; exit 0; fi`,
+          "for arg do",
+          "  shift",
+          '  if [ "$arg" = "--ignore-failed-read" ]; then continue; fi',
+          '  set -- "$@" "$arg"',
+          "done",
+          `exec '${realTar}' "$@"`,
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+      await chmod(path.join(binDir, "tar"), 0o755);
+      return {
+        binDir,
+        invocations: async () => (await readFile(logPath, "utf8")).split("\n").filter(Boolean),
+      };
+    }
+
+    async function runArchiveCommand(command: string, pathPrefix?: string): Promise<void> {
+      await execFile("sh", ["-c", command], {
+        maxBuffer: 32 * 1024 * 1024,
+        env: pathPrefix ? { ...process.env, PATH: `${pathPrefix}:${process.env.PATH}` } : process.env,
+      });
+    }
+
+    it("applies --ignore-failed-read when the remote tar advertises support", async () => {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-restore-tar-gnu-"));
+      cleanupDirs.push(rootDir);
+      const remoteDir = path.join(rootDir, "workspace");
+      const archivePath = path.join(rootDir, "out", "workspace.tar");
+      await mkdir(remoteDir, { recursive: true });
+      await writeFile(path.join(remoteDir, "data.txt"), "payload\n", "utf8");
+      const shim = await installTarShim(rootDir, { supportsIgnoreFailedRead: true });
+
+      await runArchiveCommand(createRemoteTarballFromDirectoryCommand({ remoteDir, archivePath }), shim.binDir);
+
+      const invocations = await shim.invocations();
+      expect(invocations).toContain("--help");
+      expect(invocations.some((line) => line.startsWith(`--ignore-failed-read -cf ${archivePath} `))).toBe(true);
+      const { stdout } = await execFile("tar", ["-tf", archivePath], { maxBuffer: 32 * 1024 * 1024 });
+      expect(stdout.split("\n").map((line) => line.trim()).filter(Boolean)).toEqual(["data.txt"]);
+    });
+
+    it("omits --ignore-failed-read when the remote tar does not support it", async () => {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-restore-tar-bsd-"));
+      cleanupDirs.push(rootDir);
+      const remoteDir = path.join(rootDir, "workspace");
+      const archivePath = path.join(rootDir, "out", "workspace.tar");
+      await mkdir(remoteDir, { recursive: true });
+      await writeFile(path.join(remoteDir, "data.txt"), "payload\n", "utf8");
+      const shim = await installTarShim(rootDir, { supportsIgnoreFailedRead: false });
+
+      await runArchiveCommand(createRemoteTarballFromDirectoryCommand({ remoteDir, archivePath }), shim.binDir);
+
+      const invocations = await shim.invocations();
+      expect(invocations.some((line) => line.includes("--ignore-failed-read"))).toBe(false);
+      expect(invocations.some((line) => line.startsWith(`-cf ${archivePath} `))).toBe(true);
+      const { stdout } = await execFile("tar", ["-tf", archivePath], { maxBuffer: 32 * 1024 * 1024 });
+      expect(stdout.split("\n").map((line) => line.trim()).filter(Boolean)).toEqual(["data.txt"]);
+    });
+
+    it("still fails loudly (without fabricating an archive) when an earlier step of the chain fails", async () => {
+      // Regression: the probe must not break the surrounding `&&` chain. A bare
+      // `;` before the probe made `case ... esac && if ... fi` run even after
+      // `cd` failed, so `dd` fabricated a zero-filled "empty" archive and the
+      // whole command exited 0 — masking the failure as a successful restore.
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-restore-tar-chain-"));
+      cleanupDirs.push(rootDir);
+      const remoteDir = path.join(rootDir, "missing", "workspace");
+      const archivePath = path.join(rootDir, "out", "workspace.tar");
+
+      await expect(runArchiveCommand(createRemoteTarballFromDirectoryCommand({ remoteDir, archivePath })))
+        .rejects.toThrow();
+      await expect(lstat(archivePath)).rejects.toMatchObject({ code: "ENOENT" });
+    });
+
+    it("tolerates files that become unreadable mid-archive on a real GNU tar", async (ctx) => {
+      const { stdout: tarHelp } = await execFile("sh", ["-c", "tar --help 2>&1 || true"], {
+        maxBuffer: 32 * 1024 * 1024,
+      });
+      const runningAsRoot = typeof process.geteuid === "function" && process.geteuid() === 0;
+      if (!tarHelp.includes("--ignore-failed-read") || runningAsRoot) {
+        // Needs a GNU/busybox tar and a non-root user (root can read mode-000 files).
+        ctx.skip();
+        return;
+      }
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-restore-tar-unreadable-"));
+      cleanupDirs.push(rootDir);
+      const remoteDir = path.join(rootDir, "workspace");
+      const archivePath = path.join(rootDir, "out", "workspace.tar");
+      await mkdir(remoteDir, { recursive: true });
+      await writeFile(path.join(remoteDir, "readable.txt"), "survives\n", "utf8");
+      await writeFile(path.join(remoteDir, "vanishing.txt"), "cannot be opened\n", "utf8");
+      await chmod(path.join(remoteDir, "vanishing.txt"), 0o000);
+
+      try {
+        // Without --ignore-failed-read GNU tar exits 2 here and the restore
+        // hard-fails; best-effort mode archives whatever is readable.
+        await runArchiveCommand(createRemoteTarballFromDirectoryCommand({ remoteDir, archivePath }));
+        const { stdout } = await execFile("tar", ["-tf", archivePath], { maxBuffer: 32 * 1024 * 1024 });
+        expect(stdout.split("\n").map((line) => line.trim()).filter(Boolean)).toContain("readable.txt");
+      } finally {
+        await chmod(path.join(remoteDir, "vanishing.txt"), 0o644).catch(() => undefined);
+      }
+    });
   });
 });
