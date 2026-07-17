@@ -112,6 +112,10 @@ export interface EnvironmentLease {
   executionWorkspaceId: string | null;
   issueId: string | null;
   heartbeatRunId: string | null;
+  actorAgentId: string | null;
+  actorUserId: string | null;
+  actorRunId: string | null;
+  responsibleUserId: string | null;
   status: EnvironmentLeaseStatus;
   leasePolicy: EnvironmentLeasePolicy;
   provider: string | null;

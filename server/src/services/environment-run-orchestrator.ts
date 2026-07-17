@@ -203,9 +203,16 @@ export function environmentRunOrchestrator(
     heartbeatRunId: string;
     persistedExecutionWorkspace: Pick<ExecutionWorkspace, "id" | "mode"> | null;
     adapterType: string | null;
+    responsibleUserId?: string | null;
   }): Promise<EnvironmentRuntimeLeaseRecord> {
     try {
-      return await environmentRuntime.acquireRunLease(input);
+      return await environmentRuntime.acquireRunLease({
+        ...input,
+        actorAgentId: input.agentId,
+        actorUserId: null,
+        actorRunId: input.heartbeatRunId,
+        responsibleUserId: input.responsibleUserId ?? null,
+      });
     } catch (err) {
       throw new EnvironmentRunError(
         "lease_acquire_failed",
@@ -262,6 +269,7 @@ export function environmentRunOrchestrator(
     heartbeatRunId: string;
     agentId: string;
     persistedExecutionWorkspace: Pick<ExecutionWorkspace, "id" | "mode"> | null;
+    responsibleUserId?: string | null;
   }): Promise<EnvironmentAcquisitionResult> {
     // Step 1: Resolve environment
     const environment = await resolveEnvironment({
@@ -279,6 +287,7 @@ export function environmentRunOrchestrator(
       heartbeatRunId: input.heartbeatRunId,
       persistedExecutionWorkspace: input.persistedExecutionWorkspace,
       adapterType: input.adapterType ?? null,
+      responsibleUserId: input.responsibleUserId ?? null,
     });
 
     // Step 3: Log lease acquisition activity

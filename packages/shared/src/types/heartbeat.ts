@@ -234,6 +234,10 @@ export interface AgentWakeupRequest {
   coalescedCount: number;
   requestedByActorType: "user" | "agent" | "system" | null;
   requestedByActorId: string | null;
+  requestedByAgentId: string | null;
+  requestedByUserId: string | null;
+  requestedByRunId: string | null;
+  responsibleUserId: string | null;
   idempotencyKey: string | null;
   runId: string | null;
   requestedAt: Date;

@@ -282,6 +282,13 @@ export interface WorkspaceRuntimeService {
   providerRef: string | null;
   ownerAgentId: string | null;
   startedByRunId: string | null;
+  startedByAgentId: string | null;
+  startedByUserId: string | null;
+  responsibleUserId: string | null;
+  lastControlledByAgentId: string | null;
+  lastControlledByUserId: string | null;
+  lastControlledByRunId: string | null;
+  lastControlledAt: Date | null;
   lastUsedAt: Date;
   startedAt: Date;
   stoppedAt: Date | null;

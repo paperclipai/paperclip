@@ -265,6 +265,10 @@ export interface IssueWakeDiagnosticWakeRequest {
   status: string;
   coalescedCount: number;
   runId: string | null;
+  requestedByAgentId: string | null;
+  requestedByUserId: string | null;
+  requestedByRunId: string | null;
+  responsibleUserId: string | null;
   requestedAt: string;
   claimedAt: string | null;
   finishedAt: string | null;
