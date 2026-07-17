@@ -312,7 +312,7 @@ export function sandboxCallbackBridgeDirectories(rootDir: string): SandboxCallba
 
 export function buildSandboxCallbackBridgeEnv(input: {
   queueDir: string;
-  bridgeToken: string;
+  bridgeToken?: string;
   host?: string;
   port?: number | null;
   pollIntervalMs?: number | null;
@@ -323,7 +323,7 @@ export function buildSandboxCallbackBridgeEnv(input: {
   return {
     PAPERCLIP_API_BRIDGE_MODE: "queue_v1",
     PAPERCLIP_BRIDGE_QUEUE_DIR: input.queueDir,
-    PAPERCLIP_BRIDGE_TOKEN: input.bridgeToken,
+    ...(input.bridgeToken ? { PAPERCLIP_BRIDGE_TOKEN: input.bridgeToken } : {}),
     PAPERCLIP_BRIDGE_HOST: input.host?.trim() || "127.0.0.1",
     PAPERCLIP_BRIDGE_PORT: String(input.port && input.port > 0 ? Math.trunc(input.port) : 0),
     PAPERCLIP_BRIDGE_POLL_INTERVAL_MS: String(
@@ -904,7 +904,6 @@ export async function startSandboxCallbackBridgeServer(input: {
   }
   const env = buildSandboxCallbackBridgeEnv({
     queueDir: input.queueDir,
-    bridgeToken: input.bridgeToken,
     host: input.host,
     port: input.port,
     pollIntervalMs: input.pollIntervalMs,
@@ -912,7 +911,6 @@ export async function startSandboxCallbackBridgeServer(input: {
     maxQueueDepth: input.maxQueueDepth,
     maxBodyBytes: input.maxBodyBytes,
   });
-  delete env.PAPERCLIP_BRIDGE_TOKEN;
   const nodeCommand = input.nodeCommand?.trim() || "node";
   const startResult = await input.runner.execute({
     command: shellCommand,
