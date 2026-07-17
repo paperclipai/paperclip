@@ -75,7 +75,10 @@ async function decideExitCode(sourcePath: string, destinationPath: string): Prom
  *
  * Sequence, all under `withDirectoryMergeLock` on the host target's directory
  * so a concurrent inbound restore or another copy-back can't interleave:
- *   1. Read the sandbox credential bytes (fail loud on read error).
+ *   1. Read the sandbox credential bytes. A genuinely absent sandbox
+ *      `auth.json` (ENOENT) means there is simply nothing to copy back, so it
+ *      resolves to `kept-host` (benign no-op, host untouched); every other read
+ *      error stays fail-loud.
  *   2. Stage them to a `0600` temp file on the **same filesystem** as the host
  *      target (its directory), which doubles as the predicate `source`.
  *   3. Run the Phase-3 decision predicate (`source` = sandbox temp, `destination`
@@ -89,9 +92,24 @@ async function decideExitCode(sourcePath: string, destinationPath: string): Prom
 export async function copyBackCodexAuth(input: CopyBackCodexAuthInput): Promise<CopyBackCodexAuthOutcome> {
   const { readSandboxAuth, hostAuthPath, log } = input;
 
-  // Read first (outside the lock) — a read failure is fail-loud and never
-  // mutates the host, so there is nothing to serialize yet.
-  const sandboxAuthBytes = await readSandboxAuth();
+  // Read first (outside the lock) — a read never mutates the host, so there is
+  // nothing to serialize yet. A genuinely absent sandbox `auth.json` (ENOENT —
+  // e.g. Codex removed it mid-run, or a non-provisioned edge) is a "nothing to
+  // copy back" no-op, not a teardown failure: return `kept-host` and log the
+  // benign outcome. Every other read error stays fail-loud so a real read fault
+  // is never silently mistaken for "nothing to copy back".
+  let sandboxAuthBytes: Buffer;
+  try {
+    sandboxAuthBytes = await readSandboxAuth();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException | null)?.code === "ENOENT") {
+      await log(
+        "[paperclip] Codex auth copy-back: no sandbox credential to copy back (absent auth.json); host credential kept.",
+      );
+      return "kept-host";
+    }
+    throw error;
+  }
 
   const hostDir = path.dirname(hostAuthPath);
   return withDirectoryMergeLock(hostDir, async () => {

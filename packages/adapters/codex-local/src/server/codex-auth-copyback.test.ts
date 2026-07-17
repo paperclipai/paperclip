@@ -228,6 +228,31 @@ describe("copyBackCodexAuth", () => {
     expect((await readdir(hostDir)).filter((name) => name !== "auth.json")).toEqual([]);
   });
 
+  it("treats an absent sandbox auth.json (ENOENT) as a keep-host no-op, host untouched, no throw", async () => {
+    const hostAuth = subscriptionAuth({ accountId: "acct-same", lastRefresh: OLDER, marker: "host-intact" });
+
+    // The real production `readSandboxAuth` is `readFile("${assetDir}/auth.json")`;
+    // a genuinely absent file surfaces a node ENOENT error. That must be a benign
+    // "nothing to copy back" outcome, not a fail-loud teardown error.
+    const enoent = Object.assign(new Error("ENOENT: no such file or directory, open 'auth.json'"), {
+      code: "ENOENT",
+    });
+
+    const result = await runCopyBack({
+      sandboxAuth: async () => {
+        throw enoent;
+      },
+      hostAuth,
+    });
+
+    expect(result.outcome).toBe("kept-host");
+    expect(result.finalHostAuth).toBe(hostAuth);
+    expect(result.finalHostMode).toBe(0o600);
+    // No staging temp is ever created on the ENOENT path.
+    expect(result.leftoverEntries).toEqual([]);
+    expect(result.logs.join("\n")).toContain("no sandbox credential to copy back");
+  });
+
   it("fails loud when the sandbox read errors and leaves the host untouched", async () => {
     const hostDir = await makeHostDir();
     const hostAuth = subscriptionAuth({ accountId: "acct-same", lastRefresh: OLDER, marker: "host-intact" });
