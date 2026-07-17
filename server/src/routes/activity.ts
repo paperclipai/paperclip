@@ -4,13 +4,17 @@ import type { Db } from "@paperclipai/db";
 import { normalizeIssueIdentifier } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { activityService, normalizeActivityLimit } from "../services/activity.js";
-import { assertAuthenticated, assertBoard, assertCompanyAccess, getAccessibleResource, hasCompanyAccess } from "./authz.js";
+import { assertAuthenticated, assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
 import { accessService, heartbeatService, issueService } from "../services/index.js";
+import { logActivity } from "../services/activity-log.js";
 import { sanitizeRecord } from "../redaction.js";
 
+// P6: `actorType`/`actorId`/`agentId` are accepted for backward compatibility
+// but IGNORED — the durable actor is always stamped from the authenticated
+// caller server-side so this endpoint can never forge audit attribution.
 const createActivitySchema = z.object({
-  actorType: z.enum(["agent", "user", "system", "plugin"]).optional().default("system"),
-  actorId: z.string().min(1),
+  actorType: z.enum(["agent", "user", "system", "plugin"]).optional(),
+  actorId: z.string().min(1).optional(),
   action: z.string().min(1),
   entityType: z.string().min(1),
   entityId: z.string().min(1),
@@ -92,12 +96,34 @@ export function activityRoutes(db: Db) {
     assertBoard(req);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    const event = await svc.create({
+    // Stamp the authenticated caller — the body's actor fields are not trusted.
+    // Routing through `logActivity` also resolves `responsibleUserId` and emits
+    // the live/plugin events that a raw insert would have skipped.
+    const actor = getActorInfo(req);
+    const entry = {
       companyId,
-      ...req.body,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      action: req.body.action as string,
+      entityType: req.body.entityType as string,
+      entityId: req.body.entityId as string,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
       details: req.body.details ? sanitizeRecord(req.body.details) : null,
+    };
+    await logActivity(db, entry);
+    res.status(201).json({
+      companyId: entry.companyId,
+      actorType: entry.actorType,
+      actorId: entry.actorId,
+      action: entry.action,
+      entityType: entry.entityType,
+      entityId: entry.entityId,
+      agentId: entry.agentId,
+      runId: entry.runId,
+      details: entry.details,
     });
-    res.status(201).json(event);
   });
 
   router.get("/issues/:id/activity", async (req, res) => {
