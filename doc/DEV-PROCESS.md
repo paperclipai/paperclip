@@ -38,7 +38,7 @@ before you run anything.
 | **Canonical agent source (project workspace)** | The shared `project_primary` source tree every issue resolves to and syncs back into — what agents actually edit. **Not** a running server. | `/home/ubuntu/.paperclip/instances/default/projects/0078c9af-…/8764704b-…/paperclip` — and `/home/ubuntu/.paperclip` is a **symlink to `/data/paperclip`**, so this is the same tree as `/data/paperclip/instances/…/paperclip`. | Promoted into the live runtime via §5. Shared across concurrent agents: never trash it (dirty git state, stray build/migrate, or a second server bound to it) and never make it a build/migrate target — use an isolated worktree instead. |
 | **Dev (per-issue worktree instance)** | Ephemeral, isolated Paperclip instance with its **own** Postgres DB and server port, created via the `worktree` CLI (`cli/src/commands/worktree.ts`). | Under the worktree home (separate DB + port, printed by `worktree env`) | This is **where agents actually build / run / migrate / seed / smoke-test.** One per issue. Cleaned up when done. |
 | **Execution remote (sandbox)** | The SSH box where the adapter process runs a **synced copy** of the source; changes are exported back to the canonical tree. | `brian@172.31.0.32:2022`, path `/mnt/c/inetpub/.paperclip-runtime/runs/<runId>/workspace` — the legacy **Neoreef Platform** box (`EC2AMAZ-V5Q175O`, IIS/ASP.NET) | **Source edits only.** It is **not** a Paperclip runtime. Do **not** start a Paperclip server/DB here and treat it as "the dev instance." Its `localhost`/ports are not the controller's. |
-| **Staging (`cortex-beta`)** | Longer-lived, human-reachable instance for testing and guiding development of Cortex *and* its plugins before promotion to live. Runs the `cortex-beta` branch **in place from the canonical tree** (NEO-250) — its own DB and plugin dir, not a worktree, not the live plane. | `https://cortex-beta.neoreef.com` → `paperclip-beta.service` on **`127.0.0.1:3200`**, own embedded Postgres (**:54330**), isolated plugin dir `~/.paperclip/instances/beta/plugins`. | Refreshed **manually, in controlled windows** (build → migrate-on-boot → restart) — see the refresh/promotion runbook **`doc/CORTEX-BETA-RUNBOOK.md`**. The one sanctioned exception to Hard Rule #5 (it builds the shared tree in place), gated behind `--yes`. Promotion of validated plugin commits to live goes through the §5 gate, never as a side effect. |
+| **Staging (`cortex-beta`)** | Longer-lived, human-reachable instance for testing and guiding development of Cortex *and* its plugins before promotion to live. Runs the `cortex-beta` branch **in place from its own deploy tree `/home/ubuntu/projects/cortex-beta`** (NOT the canonical agent-source tree) — its own DB and plugin dir, not a worktree, not the live plane. | `https://cortex-beta.neoreef.com` → `paperclip-beta.service` (`WorkingDirectory=/home/ubuntu/projects/cortex-beta/server`) on **`127.0.0.1:3200`** (loopback/private), server from **source** via `pnpm exec tsx src/index.ts` (no server build), UI from **`ui/dist`** (`pnpm build`), `NODE_ENV=production`, own embedded Postgres (**:54330**), isolated plugin dir `~/.paperclip/instances/beta/plugins`. | Deployed by the **pull-based on-host deploy agent** (`scripts/cortex-deploy.sh` + `cortex-deploy.timer`, [NEO-526](/NEO/issues/NEO-526)): ff `cortex-beta`→merged `origin/master` → `pnpm build` → restart → health + content-verify gate ([NEO-527](/NEO/issues/NEO-527)) with auto-rollback. Migrations **auto-apply on boot** (`PAPERCLIP_MIGRATION_AUTO_APPLY=true`). The one sanctioned exception to Hard Rule #5 (it builds its tree in place), serialized in controlled windows — see the deploy/promotion runbook **`doc/CORTEX-BETA-RUNBOOK.md`**. Promotion of validated plugin commits to live goes through the §5 gate, never as a side effect. |
 
 ### Why the distinction is load-bearing
 
@@ -74,6 +74,7 @@ execution-workspace (`GET /api/execution-workspaces/…`) and the live filesyste
 | **Live orchestrator runtime** (where `cortex.neoreef.com` actually runs) | `/home/ubuntu/projects/paperclip` — a **separate** tree from the canonical source above, served by `paperclip.service`. | `systemctl` unit `paperclip.service` (`WorkingDirectory=/home/ubuntu/projects/paperclip/server`, `PORT=3100`, `PUBLIC_URL=https://cortex.neoreef.com`); listening pid `cwd=/home/ubuntu/projects/paperclip`; Caddy `reverse_proxy 127.0.0.1:3100` (NEO-217) |
 | **Execution remote** (where the adapter process actually runs) | `brian@172.31.0.32:2022`, path `/mnt/c/inetpub` — the legacy **Neoreef Platform** box (`EC2AMAZ-V5Q175O`, IIS/ASP.NET `Neoreef OneNet 2023.sln`). **Not Paperclip.** | `workspaceRealization.remote = {host,port,username,path}`; `whoami=brian`, `hostname=EC2AMAZ-V5Q175O`; `/mnt/c/inetpub` is the Neoreef platform tree |
 | **Per-run workspace** | A **synced copy** of the canonical source, materialized on the remote at `/mnt/c/inetpub/.paperclip-runtime/runs/<runId>/workspace`, then exported back. | `workspaceRealization.sync.strategy = ssh_git_import_export` (prepare = import local→remote; syncBack = export remote→local) |
+| **Staging (`cortex-beta`) deploy tree** | `/home/ubuntu/projects/cortex-beta` — a **separate** tree from the canonical agent source, served by `paperclip-beta.service`. Server runs from **source** (`tsx`, no server build); UI is served from `ui/dist`. | `systemctl cat paperclip-beta.service` → `WorkingDirectory=/home/ubuntu/projects/cortex-beta/server`, `ExecStart=pnpm exec tsx src/index.ts`, `NODE_ENV=production`, `PORT=3200`, `HOST=127.0.0.1`; confirmed against `/proc/<MainPID>/cwd` (NEO-530) |
 | **Current workspace policy** | `mode = shared_workspace`, `strategyType = project_primary`, `providerType = local_fs`. | execution-workspace record (confirmed, not inferred) |
 
 > Note: the current `shared_workspace` / `project_primary` policy is the state these
@@ -162,9 +163,23 @@ npx paperclipai worktree:cleanup <name>
 - Review by Werner (CTO) or a designated reviewer. Large/untrusted diffs use the
   **Docker For Untrusted PR Review** flow (`doc/UNTRUSTED-PR-REVIEW.md`).
 - `check:no-git-push` guards accidental pushes — keep it on.
+- **If your change alters observable behavior on beta**, ship a release probe at
+  `release-probes/<ISSUE>.yaml` in the **same PR** (`bundle` / `route` / `db`). The beta deploy
+  agent runs it as a content-verify gate after each deploy — see `doc/CORTEX-BETA-RUNBOOK.md` §5.2
+  and [NEO-527](/NEO/issues/NEO-527). This is what proves your work actually reached beta
+  (content, never SHA ancestry).
 
 > The gates, the `master` trigger, and the fork-first flow above are verified with
 > file-level evidence in **§6**.
+
+> **Beta is the one sanctioned in-place-build exception to Hard Rule #5.** Everything above
+> builds/tests against an **isolated worktree instance**. The single exception is the
+> `cortex-beta` **Staging** instance (§2), which rebuilds its own deploy tree
+> (`/home/ubuntu/projects/cortex-beta`) in place — automated by the pull-based deploy agent
+> (`scripts/cortex-deploy.sh` + `cortex-deploy.timer`, [NEO-526](/NEO/issues/NEO-526)), serialized
+> in controlled windows. It never touches the live orchestrator or the canonical agent source.
+> Promotion of a validated beta build/plugin commit to **live** still goes through the governed
+> gate below — never as a side effect of a beta deploy. Full runbook: `doc/CORTEX-BETA-RUNBOOK.md`.
 
 ### Promotion to the live instance (governed, reversible)
 

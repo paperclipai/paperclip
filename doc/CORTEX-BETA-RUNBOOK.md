@@ -1,13 +1,22 @@
-# cortex-beta — Refresh & Promotion Runbook
+# cortex-beta — Deploy & Promotion Runbook
 
 Status: Canonical operating runbook for the `cortex-beta` staging instance
-Date: 2026-06-27
-Issue: [NEO-257](/NEO/issues/NEO-257) · Parent plan: [NEO-217](/NEO/issues/NEO-217#document-plan)
+Date: 2026-07-17
+Issue: [NEO-530](/NEO/issues/NEO-530) (522e topology truth-up) · Supersedes the NEO-257 refresh runbook · Parent plan: [NEO-522](/NEO/issues/NEO-522#document-plan)
 
-> **Branch hygiene (D8).** This document — and the `beta-refresh.sh` script, the `.gitmodules`
+> **Branch hygiene (D8).** This document — and the deploy tooling, the `.gitmodules`
 > plugin wiring, and the beta instance files it describes — lives on the **`cortex-beta`
 > branch only**. `Neoreef/plugin-*` may be private and Paperclip's `master` is public-facing,
 > so this wiring **must never be merged into public `master`**. See NEO-251 / D8.
+
+> **What changed (2026-07-17, NEO-530).** The old runbook described a `pnpm beta:refresh`
+> flow that built the **canonical agent-source tree** (`/home/ubuntu/.paperclip/instances/…/paperclip`)
+> in place. That was wrong: beta has never run from that tree. It runs from
+> **`/home/ubuntu/projects/cortex-beta`**, serves the server from **source** (`tsx`, no server
+> build) and the UI from **`ui/dist`**. The stale `scripts/beta-refresh.sh` gated on a dead
+> branch check and targeted the wrong tree — it never deployed beta. This runbook documents the
+> verified reality and the pull-based **deploy agent** ([NEO-526](/NEO/issues/NEO-526), 522a)
+> that replaces the manual refresh.
 
 ## 1. What cortex-beta is
 
@@ -19,91 +28,105 @@ and **not** a per-issue worktree.
 | Property | Value |
 |---|---|
 | Public URL | `https://cortex-beta.neoreef.com` (Caddy → loopback) |
-| Bind / port | `127.0.0.1:3200` (`PAPERCLIP_BIND=loopback`) |
-| Supervision | `systemd` unit **`paperclip-beta.service`** (D5) |
-| Source tree | runs **in place** from the shared canonical tree on branch **`cortex-beta`** (NEO-250) |
-| Database | own embedded Postgres, **port 54330**, data `~/.paperclip/instances/beta/db` |
-| Auth | `authenticated` + `private` (login required) (D3) |
+| Bind / port | `127.0.0.1:3200` (`HOST=127.0.0.1`, `PAPERCLIP_BIND=loopback`) — loopback/private, not internet-reachable except via Caddy |
+| Supervision | `systemd` unit **`paperclip-beta.service`**, `WorkingDirectory=/home/ubuntu/projects/cortex-beta/server` |
+| **Deploy tree** | runs **in place** from **`/home/ubuntu/projects/cortex-beta`** on branch **`cortex-beta`** (verified via `systemctl cat` + `/proc/<MainPID>/cwd`). **NOT** the canonical agent-source tree. |
+| Server | runs from **source**: `ExecStart=pnpm exec tsx src/index.ts` — **no server build step** |
+| UI | served **statically from `ui/dist`** (`server/app.ts` resolves `../../ui/dist`); rebuilt by `pnpm build` |
+| Runtime env | `NODE_ENV=production` (⚠️ see caveat below) |
+| Database | own embedded Postgres, **port 54330**, data under `~/.paperclip/instances/beta` |
+| Auth | `PAPERCLIP_DEPLOYMENT_MODE=authenticated` + `PAPERCLIP_DEPLOYMENT_EXPOSURE=private` (login required) |
 | Migrations | **auto-applied at boot** — `PAPERCLIP_MIGRATION_AUTO_APPLY=true`, `PAPERCLIP_MIGRATION_PROMPT=never` |
-| Instance home | `PAPERCLIP_INSTANCE_ID=beta`, config `~/.paperclip/instances/beta/config.json` |
+| Instance home | `PAPERCLIP_INSTANCE_ID=beta`, config under `~/.paperclip/instances/beta` |
 | Plugin dir | isolated `~/.paperclip/instances/beta/plugins` (NOT live's `~/.paperclip/plugins`) (D6/D7) |
-| Seed | empty / `--seed-mode minimal` — public-repo secret hygiene (D2) |
+| MCP client | `PAPERCLIP_MCP_CLIENT_ENABLED=true` |
 
-> **Load-bearing caveat — beta runs from the *shared canonical agent source*, not a
-> worktree.** A refresh therefore **builds that shared tree in place**. This is the single
-> sanctioned exception to DEV-PROCESS Hard Rule #5, and the reason refreshes happen only in
-> **controlled windows** when no other agent is mid-build against the tree. The refresh
-> script gates the build behind `--yes` / `BETA_REFRESH_CONFIRM=1` for exactly this reason.
+> **Load-bearing caveat — beta builds its own tree in place.** A deploy **rebuilds
+> `/home/ubuntu/projects/cortex-beta` in place** (only `ui/dist` is a build product; the server
+> runs from source). This is the single sanctioned exception to DEV-PROCESS Hard Rule #5, and
+> the reason deploys run in **controlled windows** — the deploy agent serializes them. Because
+> the unit exports `NODE_ENV=production`, `pnpm install` here **skips devDependencies**, and
+> `NODE_ENV=production` also breaks Vitest's `act()` — **run any UI tests with `NODE_ENV=test`**,
+> never in the deploy shell.
 
-## 2. Refresh runbook (`beta:refresh`)
+## 2. Deploy — the pull-based deploy agent (522a)
 
-A refresh is **build → migrate beta DB → restart** (plan decision **D1**). The migrate step
-is performed by the **runtime at boot**: because the unit sets `PAPERCLIP_MIGRATION_AUTO_APPLY=true`,
-every restart runs `applyPendingMigrations` (`server/src/index.ts` → `packages/db/src/client.ts`)
-against beta's own DB. There is **no** separate `pnpm db:migrate` step, and (per the
-hand-authored-migrations note, NEO-262) you should not run `drizzle-kit generate` here.
+A deploy is **fast-forward `cortex-beta` to merged `origin/master` → build `ui/dist` →
+restart → health-gate → content-verify**. It is performed by the **on-host deploy agent**
+([NEO-526](/NEO/issues/NEO-526), 522a): `scripts/cortex-deploy.sh`, driven by a systemd timer
+(`cortex-deploy.timer` → `cortex-deploy.service`, a `oneshot`) that polls `origin/master`.
+It is **`journalctl`-observable** and needs no human in the loop for the merged-tip case.
 
-### Steps
+The migrate step is performed by the **runtime at boot**: because the unit sets
+`PAPERCLIP_MIGRATION_AUTO_APPLY=true`, every restart runs `applyPendingMigrations` against
+beta's own DB (`:54330`). There is **no** separate `pnpm db:migrate` step, and (per the
+hand-authored-migrations note, NEO-262) you do not run `drizzle-kit generate` here.
+
+### What `scripts/cortex-deploy.sh` does, in order
+
+1. `git -C /home/ubuntu/projects/cortex-beta fetch` and **fast-forward** the `cortex-beta`
+   working tree to merged `origin/master` (**ff-only**; abort + alert on non-ff or a dirty tree).
+2. `pnpm build` — produces **`ui/dist`** (the server runs from source via `tsx`, so there is no
+   server build to consume).
+3. `sudo systemctl restart paperclip-beta.service` — migrations auto-apply on boot.
+4. **Health gate:** poll `http://127.0.0.1:3200/api/health` until `ok` (bounded); capture the
+   last-known-good ref for rollback.
+5. **Content-verify gate (522b):** run the tip's release probes via `scripts/verify-content.mjs`
+   (see §5.2). **Green → keep. Red → auto-rollback** to the last-known-good ref, restart,
+   re-verify, and alert.
+
+### Observe / drive it manually
 
 ```bash
-# 0. Land the change on the cortex-beta branch (merge/cherry-pick into this tree's HEAD,
-#    or bump a submodule pin). The service serves whatever is built from cortex-beta HEAD.
-
-# 1. (Recommended) snapshot beta's DB first, so a bad migration is recoverable.
-#    Backups also run hourly via config.json (retentionDays: 30).
-#    A manual point-in-time backup:
-PAPERCLIP_INSTANCE_ID=beta PAPERCLIP_CONFIG=~/.paperclip/instances/beta/config.json \
-  pnpm db:backup        # → ~/.paperclip/instances/beta/data/backups
-
-# 2. Pre-flight only (no build/restart) — verify branch, tree, submodule pins, health:
-pnpm beta:refresh -- --check
-
-# 3. Refresh in a controlled window (builds the shared tree, restarts, gates on health):
-pnpm beta:refresh -- --yes
-#    Equivalent: BETA_REFRESH_CONFIRM=1 ./scripts/beta-refresh.sh
+systemctl status  cortex-deploy.timer          # schedule + last run
+systemctl start   cortex-deploy.service        # force a deploy now (oneshot)
+journalctl -u cortex-deploy.service -n 200 --no-pager   # deploy logs
 ```
 
-`scripts/beta-refresh.sh --yes` does, in order: assert branch is `cortex-beta` → sync
-submodules to their pinned commits → `pnpm install` → `pnpm build` →
-`sudo systemctl restart paperclip-beta.service` (migrations auto-apply on boot) → poll
-`http://127.0.0.1:3200/api/health` for up to 60s. On health failure it tails the beta log
-and tells you to roll back.
+### Manual deploy (fallback if the agent is unavailable)
 
-### Manual equivalent (if the script is unavailable)
+Deploy the same way the agent does, from the real tree. Do this only in a controlled window.
 
 ```bash
-cd /home/ubuntu/.paperclip/instances/default/projects/0078c9af-…/8764704b-…/paperclip
-git rev-parse --abbrev-ref HEAD          # must be cortex-beta
-git submodule update --init --recursive
-pnpm install && pnpm build               # NOTE: no NODE_ENV=production — build needs devDeps
+cd /home/ubuntu/projects/cortex-beta
+git rev-parse --abbrev-ref HEAD               # expect cortex-beta (or the in-flight deploy branch)
+git status --porcelain                        # must be clean — build is in-place
+git fetch && git merge --ff-only origin/master
+pnpm install                                  # NOTE: NODE_ENV=production skips devDeps in this shell
+pnpm build                                    # rebuilds ui/dist (UI-only change: `cd ui && pnpm build`)
+sudo systemctl restart paperclip-beta.service # migrations auto-apply on boot
+curl -fsS http://127.0.0.1:3200/api/health    # expect {"status":"ok",...,"bootstrapStatus":"ready"}
+node scripts/verify-content.mjs --base http://127.0.0.1:3200   # run the tip's probes (522b)
+```
+
+> **`scripts/beta-refresh.sh` is retired** — it targeted the canonical agent-source tree and
+> gated on a dead branch check, so it never deployed beta. Its removal happens in
+> [NEO-526](/NEO/issues/NEO-526) (522a); **do not** run `pnpm beta:refresh` / `beta-refresh.sh`.
+
+## 3. Rollback
+
+Rollback is built into the deploy agent: on a failed health or content-verify gate it
+**auto-rolls-back** to the last-known-good ref, restarts, and re-verifies (§2 step 5). To roll
+back manually to a chosen good ref:
+
+```bash
+cd /home/ubuntu/projects/cortex-beta
+git stash            # or commit — checkout is non-forcing; clean the tree first
+git checkout <last-good-ref>
+pnpm install && pnpm build
 sudo systemctl restart paperclip-beta.service
-curl -fsS http://127.0.0.1:3200/api/health      # expect {"status":"ok",...,"bootstrapStatus":"ready"}
+curl -fsS http://127.0.0.1:3200/api/health
+node scripts/verify-content.mjs --base http://127.0.0.1:3200
 ```
 
-## 3. Rollback (D1 manual refresh to a known-good ref)
-
-Rollback is the **same manual `beta:refresh` mechanism**, pointed at the last known-good
-commit instead of HEAD. There is no separate rollback machine — that is the whole point of
-D1 being a *manual* refresh: forward and back are the same controlled operation.
+If a **migration** (not just code) caused the failure, rolling code back does **not** undo an
+applied migration: stop the service, restore the pre-deploy DB backup (below), then restart on
+the rolled-back code.
 
 ```bash
-# Identify the last good commit (e.g. from the previous refresh's log line) and roll back:
-pnpm beta:rollback <last-good-ref> -- --yes
-#    Equivalent: ./scripts/beta-refresh.sh --rollback <last-good-ref> --yes
+# Point-in-time backup before a risky deploy (backups also run hourly via config, retention 30d):
+PAPERCLIP_INSTANCE_ID=beta pnpm db:backup
 ```
-
-The script's `--rollback` path does a **non-forcing** `git checkout <ref>` (it refuses if the
-tree has uncommitted tracked changes — clean them first), re-syncs submodules, rebuilds, and
-restarts. If a *migration* (not just code) caused the failure, also restore the DB backup
-taken in step 1 of §2 before restarting, since rolling code back does not undo an applied
-migration.
-
-**Rollback checklist**
-1. `git stash`/commit any stray tracked changes (checkout is non-forcing).
-2. `pnpm beta:rollback <last-good-ref> -- --yes`.
-3. If a migration was the culprit: stop the service, restore the pre-refresh DB backup, then
-   restart on the rolled-back code.
-4. Confirm `curl -fsS http://127.0.0.1:3200/api/health` is `ok` and report.
 
 ## 4. Plugin-promotion procedure (validated submodule commit → live install bump)
 
@@ -113,15 +136,15 @@ each plugin at the in-tree submodule folder via a `file:` dependency, fully deco
 the live install at `~/.paperclip/plugins`.
 
 Promotion is the deliberate act of moving a **submodule commit you validated on beta** into
-the **live** plugin install. It is **never an incidental side effect** of a refresh — it is a
+the **live** plugin install. It is **never an incidental side effect** of a deploy — it is a
 governed, CTO-approved §5-style update, the same gate that governs promoting Paperclip itself.
 
 ### Procedure
 
 1. **Validate on beta.** Bump the relevant submodule under `plugins/<name>` to the candidate
-   commit on the `cortex-beta` branch, `pnpm beta:refresh -- --yes`, and exercise the plugin
-   on `https://cortex-beta.neoreef.com`. Record the exact validated commit SHA
-   (`git submodule status`).
+   commit on the `cortex-beta` branch, let the deploy agent (or a manual deploy, §2) pick it up,
+   and exercise the plugin on `https://cortex-beta.neoreef.com`. Record the exact validated
+   commit SHA (`git submodule status`).
 2. **Open the governed update** (DEV-PROCESS §5 "Promotion to the live instance"): this is a
    discrete, CTO-approved operation, not a task side effect.
 3. **Back up live first** — `npx paperclipai db:backup` against the live instance.
@@ -136,21 +159,61 @@ governed, CTO-approved §5-style update, the same gate that governs promoting Pa
 > (public refs), beta uses `file:` into the in-tree submodules. Promotion translates a
 > validated beta submodule SHA into the corresponding live `github:`/`file:` pin.
 
-## 5. Verify / health
+## 5. Verify — health + content probes
+
+### 5.1 Health
 
 ```bash
 systemctl is-active paperclip-beta.service                 # active
 curl -fsS http://127.0.0.1:3200/api/health                 # loopback
 curl -fsS https://cortex-beta.neoreef.com/api/health       # via Caddy
-tail -n 50 ~/.paperclip/instances/beta/logs/server.log     # boot + migration lines
+journalctl -u paperclip-beta.service -n 50 --no-pager      # boot + migration lines
 ```
 
 A healthy response is `{"status":"ok","deploymentMode":"authenticated","deploymentExposure":"private","bootstrapStatus":"ready",...}`.
 
+### 5.2 Content-verify probes — the per-issue probe convention (522b)
+
+Health only proves the server is up; it does **not** prove your change is actually live. Beta
+verifies **content/behavior, never SHA ancestry** — branches re-land the same work under new
+SHAs, so commit lineage is meaningless. This is the guard that would have caught the Brand Kit
+deploy gap (NEO-138 shipped code but never reached beta).
+
+**Convention — add a probe with your PR.** Each issue that changes observable behavior on beta
+ships a probe file at **`release-probes/<ISSUE>.yaml`** (e.g. `release-probes/NEO-521.yaml`).
+A probe is one of three types, run by `scripts/verify-content.mjs` against the running instance
+([NEO-527](/NEO/issues/NEO-527), 522b):
+
+| Type | What it does |
+|---|---|
+| `bundle` | `curl <base>/…/<asset>` then grep for a required marker (e.g. `BrandKitPanel`) — proves the built UI carries your change. |
+| `route`  | `curl <base>/api/<route>` and assert an expected shape/field — proves a server route is live. |
+| `db`     | assert a migration/table/column/seed row **via the CLI** (never raw `psql` — Hard Rule #1) — proves a schema/data change applied. |
+
+The deploy agent runs the full probe set as its post-deploy gate (§2 step 5); a red probe
+triggers auto-rollback. To run probes by hand:
+
+```bash
+node scripts/verify-content.mjs --base http://127.0.0.1:3200            # all probes
+node scripts/verify-content.mjs --base http://127.0.0.1:3200 --issue NEO-521   # one issue
+```
+
+Add your `release-probes/<ISSUE>.yaml` in the **same PR** as the behavior change so the pipeline
+can prove your work landed. This is the contributor-facing half of the pipeline; the tooling is
+introduced by [NEO-526](/NEO/issues/NEO-526) / [NEO-527](/NEO/issues/NEO-527).
+
 ## 6. References
 
-- `doc/DEV-PROCESS.md` — §2 Staging row points here; §5 governs the live promotion gate.
-- `scripts/beta-refresh.sh` — the refresh/rollback implementation (cortex-beta branch only).
-- Plan & decisions: [NEO-217](/NEO/issues/NEO-217#document-plan) (D1 refresh, D2–D8).
+- `doc/DEV-PROCESS.md` — §2 Staging row points here; §5 governs the live promotion gate and
+  cross-links this deploy agent as beta's single sanctioned in-place-build exception.
+- Deploy tooling: [NEO-526](/NEO/issues/NEO-526) (522a `scripts/cortex-deploy.sh` +
+  `cortex-deploy.timer`/`.service`; retires `beta-refresh.sh`).
+- Content-verify gate: [NEO-527](/NEO/issues/NEO-527) (522b `release-probes/<ISSUE>.yaml` +
+  `scripts/verify-content.mjs` + auto-rollback).
+- Drift guard: [NEO-528](/NEO/issues/NEO-528) (522c done⇒on-beta reconciliation routine).
+- Canary + fleet weekly train: [NEO-529](/NEO/issues/NEO-529) (522d, §5-gated live promotion).
+- Pipeline plan & decisions: [NEO-522](/NEO/issues/NEO-522#document-plan).
 - Beta service topology: NEO-253 (systemd unit, isolated DB/plugins). Vendoring: NEO-251.
 - Live promotion + rollback runbook: [NEO-198](/NEO/issues/NEO-198) (the §5 gate this reuses).
+</content>
+</invoke>
