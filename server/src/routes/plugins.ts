@@ -54,6 +54,7 @@ import {
   REPO_ROOT,
 } from "../services/plugin-loader.js";
 import { logActivity } from "../services/activity-log.js";
+import { instanceActorFromActorInfo, logInstanceActivity } from "../services/instance-activity-log.js";
 import { publishGlobalLiveEvent } from "../services/live-events.js";
 import { issueService } from "../services/issues.js";
 import type { PluginJobScheduler } from "../services/plugin-job-scheduler.js";
@@ -685,11 +686,25 @@ export function pluginRoutes(
     action: string,
     entityId: string,
     details: Record<string, unknown>,
+    opts: { instanceScoped?: boolean } = {},
   ): Promise<void> {
+    const actor = getActorInfo(req);
+    // Instance-scoped lifecycle actions (install/enable/disable/upgrade/
+    // uninstall) also get one durable instance row so a zero-company
+    // instance still records them. Company-scoped mutations (per-company
+    // config) pass instanceScoped: false.
+    if (opts.instanceScoped !== false) {
+      await logInstanceActivity(db, {
+        ...instanceActorFromActorInfo(actor),
+        action,
+        entityType: "plugin",
+        entityId,
+        details,
+      });
+    }
     const companyIds = await resolvePluginAuditCompanyIds(req);
     if (companyIds.length === 0) return;
 
-    const actor = getActorInfo(req);
     await Promise.all(companyIds.map((companyId) =>
       logActivity(db, {
         companyId,
@@ -2301,7 +2316,7 @@ export function pluginRoutes(
         companyId,
         secretRefCount: secretRefs.length,
         configKeyCount: Object.keys(body.configJson).length,
-      });
+      }, { instanceScoped: false });
 
       // Notify the running worker about the config change (PLUGIN_SPEC §25.4.4).
       // If the worker implements onConfigChanged, send the new config via RPC.
@@ -2884,7 +2899,7 @@ export function pluginRoutes(
       companyId,
       folderKey,
       healthy: status.healthy,
-    });
+    }, { instanceScoped: false });
 
     res.json(status);
   });

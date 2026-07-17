@@ -9,6 +9,7 @@ import {
 import { forbidden } from "../errors.js";
 import { validate } from "../middleware/validate.js";
 import { heartbeatService, instanceSettingsService, logActivity } from "../services/index.js";
+import { instanceActorFromRequest, logInstanceActivity } from "../services/instance-activity-log.js";
 import { environmentService } from "../services/environments.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import { assertBoardOrgAccess, getActorInfo } from "./authz.js";
@@ -29,6 +30,24 @@ export function instanceSettingsRoutes(db: Db) {
   const environments = environmentService(db);
   const heartbeat = heartbeatService(db);
 
+  // Instance settings are instance-scoped: the per-company fan-out below keeps
+  // tenant feeds informed, while this single row is the durable audit record
+  // (and the only record on a zero-company instance).
+  async function logInstanceSettingsActivity(
+    req: Request,
+    action: string,
+    entityId: string,
+    details: Record<string, unknown>,
+  ) {
+    await logInstanceActivity(db, {
+      ...instanceActorFromRequest(req),
+      action,
+      entityType: "instance_settings",
+      entityId,
+      details,
+    });
+  }
+
   router.get("/instance/settings", async (req, res) => {
     assertBoardOrgAccess(req);
     res.json(await svc.get());
@@ -48,6 +67,10 @@ export function instanceSettingsRoutes(db: Db) {
       }
       const updated = await svc.update(req.body);
       const actor = getActorInfo(req);
+      await logInstanceSettingsActivity(req, "instance.settings.updated", updated.id, {
+        defaultEnvironmentId: updated.defaultEnvironmentId,
+        changedKeys: Object.keys(req.body).sort(),
+      });
       const companyIds = await svc.listCompanyIds();
       await Promise.all(
         companyIds.map((companyId) =>
@@ -86,6 +109,10 @@ export function instanceSettingsRoutes(db: Db) {
       assertCanManageInstanceSettings(req);
       const updated = await svc.updateGeneral(req.body);
       const actor = getActorInfo(req);
+      await logInstanceSettingsActivity(req, "instance.settings.general_updated", updated.id, {
+        general: updated.general,
+        changedKeys: Object.keys(req.body).sort(),
+      });
       const companyIds = await svc.listCompanyIds();
       await Promise.all(
         companyIds.map((companyId) =>
@@ -125,6 +152,10 @@ export function instanceSettingsRoutes(db: Db) {
       assertCanManageInstanceSettings(req);
       const updated = await svc.updateExperimental(req.body);
       const actor = getActorInfo(req);
+      await logInstanceSettingsActivity(req, "instance.settings.experimental_updated", updated.id, {
+        experimental: updated.experimental,
+        changedKeys: Object.keys(req.body).sort(),
+      });
       const companyIds = await svc.listCompanyIds();
       await Promise.all(
         companyIds.map((companyId) =>
@@ -171,6 +202,18 @@ export function instanceSettingsRoutes(db: Db) {
         force: true,
         lookbackHours: req.body.lookbackHours,
       });
+      await logInstanceSettingsActivity(
+        req,
+        "instance.settings.issue_graph_liveness_auto_recovery_run",
+        "default",
+        {
+          lookbackHours: result.lookbackHours,
+          escalationsCreated: result.escalationsCreated,
+          existingEscalations: result.existingEscalations,
+          skippedOutsideLookback: result.skippedOutsideLookback,
+          escalationIssueIds: result.escalationIssueIds,
+        },
+      );
       const companyIds = await svc.listCompanyIds();
       await Promise.all(
         companyIds.map((companyId) =>
