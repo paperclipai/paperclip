@@ -1,10 +1,12 @@
 import { Router } from "express";
+import { and, desc, eq, lt, type SQL } from "drizzle-orm";
 import { z } from "zod";
 import type { Db } from "@paperclipai/db";
+import { instanceActivityLog } from "@paperclipai/db";
 import { normalizeIssueIdentifier } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { activityService, normalizeActivityLimit } from "../services/activity.js";
-import { assertAuthenticated, assertBoard, assertCompanyAccess, getAccessibleResource, hasCompanyAccess } from "./authz.js";
+import { assertAuthenticated, assertBoard, assertCompanyAccess, assertInstanceAdmin, getAccessibleResource, hasCompanyAccess } from "./authz.js";
 import { accessService, heartbeatService, issueService } from "../services/index.js";
 import { sanitizeRecord } from "../redaction.js";
 
@@ -116,6 +118,34 @@ export function activityRoutes(db: Db) {
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const result = await svc.runsForIssue(issue.companyId, issue.id);
     res.json(result);
+  });
+
+  // Instance-scoped audit stream (adapter lifecycle, instance admin changes,
+  // company deletions, pre-auth surfaces). Instance-admin only: rows span
+  // tenants and include actions with no company scope at all.
+  router.get("/instance/activity", async (req, res) => {
+    assertInstanceAdmin(req);
+    const limit = normalizeActivityLimit(Number(req.query.limit));
+    const conditions: SQL[] = [];
+    if (typeof req.query.action === "string" && req.query.action.trim()) {
+      conditions.push(eq(instanceActivityLog.action, req.query.action.trim()));
+    }
+    if (typeof req.query.companyId === "string" && req.query.companyId.trim()) {
+      conditions.push(eq(instanceActivityLog.companyId, req.query.companyId.trim()));
+    }
+    if (typeof req.query.actorType === "string" && req.query.actorType.trim()) {
+      conditions.push(eq(instanceActivityLog.actorType, req.query.actorType.trim()));
+    }
+    if (typeof req.query.before === "string" && !Number.isNaN(Date.parse(req.query.before))) {
+      conditions.push(lt(instanceActivityLog.createdAt, new Date(req.query.before)));
+    }
+    const rows = await db
+      .select()
+      .from(instanceActivityLog)
+      .where(conditions.length > 0 ? and(...conditions) : undefined)
+      .orderBy(desc(instanceActivityLog.createdAt))
+      .limit(limit);
+    res.json(rows);
   });
 
   router.get("/heartbeat-runs/:runId/issues", async (req, res) => {

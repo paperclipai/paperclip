@@ -2886,6 +2886,23 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: "get",
+  path: "/api/instance/activity",
+  tags: ["activity"],
+  summary: "List instance-scoped audit activity (instance admin only)",
+  request: {
+    query: z.object({
+      action: z.string().optional(),
+      companyId: z.string().optional(),
+      actorType: z.string().optional(),
+      before: z.string().optional(),
+      limit: z.coerce.number().optional(),
+    }),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
   method: "post",
   path: "/api/companies/{companyId}/activity",
   tags: ["activity"],

@@ -272,7 +272,7 @@ export async function createApp(
   api.use(inboxDismissalRoutes(db));
   api.use(instanceSettingsRoutes(db));
   if (opts.databaseBackupService) {
-    api.use(instanceDatabaseBackupRoutes(opts.databaseBackupService));
+    api.use(instanceDatabaseBackupRoutes(opts.databaseBackupService, db));
   }
   const pluginRegistry = pluginRegistryService(db);
   const eventBus = createPluginEventBus();
@@ -373,7 +373,7 @@ export async function createApp(
       { toolGateway },
     ),
   );
-  api.use(adapterRoutes());
+  api.use(adapterRoutes(db));
   api.use(
     accessRoutes(db, {
       deploymentMode: opts.deploymentMode,

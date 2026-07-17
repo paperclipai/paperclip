@@ -17,13 +17,8 @@ import {
 import { conflict, forbidden, unprocessable } from "../errors.js";
 import { validate } from "../middleware/validate.js";
 import { logger } from "../middleware/logger.js";
-import {
-  environmentCustomImageService,
-  issueService,
-  instanceSettingsService,
-  logActivity,
-  projectService,
-} from "../services/index.js";
+import { environmentCustomImageService, issueService, instanceSettingsService, logActivity, projectService } from "../services/index.js";
+import { instanceActorFromActorInfo, logInstanceActivity } from "../services/instance-activity-log.js";
 import {
   environmentCustomImageTerminalConnectionRegistry,
   environmentCustomImageTerminalSessionStore,
@@ -134,6 +129,15 @@ export function environmentRoutes(
     entityId: string;
     details: Record<string, unknown>;
   }) {
+    // Environments are instance-scoped: one durable instance row (present
+    // even with zero companies) plus the per-company fan-out for tenant feeds.
+    await logInstanceActivity(db, {
+      ...instanceActorFromActorInfo(input.actor),
+      action: input.action,
+      entityType: "environment",
+      entityId: input.entityId,
+      details: input.details,
+    });
     const companyIds = await instanceSettings.listCompanyIds();
     await Promise.all(
       companyIds.map((companyId) =>

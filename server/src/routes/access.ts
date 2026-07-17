@@ -71,6 +71,7 @@ import {
   logActivity,
   notifyHireApproved
 } from "../services/index.js";
+import { instanceActorFromRequest, logInstanceActivity } from "../services/instance-activity-log.js";
 import {
   grantsForHumanRole,
   normalizeHumanRole,
@@ -2690,6 +2691,12 @@ export function accessRoutes(
         "Board claim challenge expired. Restart server to generate a new one."
       );
     if (claimed.status === "claimed") {
+      await logInstanceActivity(db, {
+        ...instanceActorFromRequest(req),
+        action: "instance.board_ownership_claimed",
+        entityType: "user",
+        entityId: claimed.claimedByUserId ?? req.actor.userId,
+      });
       res.json({
         claimed: true,
         userId: claimed.claimedByUserId ?? req.actor.userId
@@ -2722,6 +2729,13 @@ export function accessRoutes(
       throw conflict("Someone else has already claimed this instance");
     }
 
+    await logInstanceActivity(db, {
+      ...instanceActorFromRequest(req),
+      action: "instance.first_admin_claimed",
+      entityType: "user",
+      entityId: claimed.userId,
+      details: { via: "bootstrap_claim" },
+    });
     res.json({ claimed: true, userId: claimed.userId });
   });
 
@@ -2730,6 +2744,17 @@ export function accessRoutes(
     validate(createCliAuthChallengeSchema),
     async (req, res) => {
       const created = await boardAuth.createCliAuthChallenge(req.body);
+      await logInstanceActivity(db, {
+        ...instanceActorFromRequest(req),
+        action: "cli_auth.challenge_created",
+        entityType: "cli_auth_challenge",
+        entityId: created.challenge.id,
+        details: {
+          clientName: created.challenge.clientName ?? null,
+          requestedAccess: created.challenge.requestedAccess,
+          requestedCompanyId: created.challenge.requestedCompanyId ?? null,
+        },
+      });
       const approvalPath = buildCliAuthApprovalPath(
         created.challenge.id,
         created.challengeSecret,
@@ -2794,6 +2819,17 @@ export function accessRoutes(
       );
 
       if (approved.status === "approved") {
+        await logInstanceActivity(db, {
+          ...instanceActorFromRequest(req),
+          action: "cli_auth.challenge_approved",
+          entityType: "cli_auth_challenge",
+          entityId: approved.challenge.id,
+          details: {
+            boardApiKeyId: approved.challenge.boardApiKeyId,
+            requestedAccess: approved.challenge.requestedAccess,
+            requestedCompanyId: approved.challenge.requestedCompanyId,
+          },
+        });
         const companyIds = await boardAuth.resolveBoardActivityCompanyIds({
           userId,
           requestedCompanyId: approved.challenge.requestedCompanyId,
@@ -2833,6 +2869,14 @@ export function accessRoutes(
     async (req, res) => {
       const id = (req.params.id as string).trim();
       const cancelled = await boardAuth.cancelCliAuthChallenge(id, req.body.token);
+      if (cancelled.status === "cancelled") {
+        await logInstanceActivity(db, {
+          ...instanceActorFromRequest(req),
+          action: "cli_auth.challenge_cancelled",
+          entityType: "cli_auth_challenge",
+          entityId: id,
+        });
+      }
       res.json({
         status: cancelled.status,
         cancelled: cancelled.status === "cancelled",
@@ -3662,6 +3706,13 @@ export function accessRoutes(
           throw conflict("Someone else has already claimed this instance");
         }
         const updatedInvite = claimed.value ?? invite;
+        await logInstanceActivity(db, {
+          ...instanceActorFromRequest(req),
+          action: "instance.first_admin_claimed",
+          entityType: "user",
+          entityId: userId,
+          details: { via: "bootstrap_invite", inviteId: updatedInvite.id },
+        });
         res.status(202).json({
           inviteId: updatedInvite.id,
           inviteType: updatedInvite.inviteType,
@@ -4758,6 +4809,12 @@ export function accessRoutes(
       await assertInstanceAdmin(req);
       const userId = req.params.userId as string;
       const result = await access.promoteInstanceAdmin(userId);
+      await logInstanceActivity(db, {
+        ...instanceActorFromRequest(req),
+        action: "instance_admin.promoted",
+        entityType: "user",
+        entityId: userId,
+      });
       res.status(201).json(result);
     }
   );
@@ -4829,6 +4886,12 @@ export function accessRoutes(
       const userId = req.params.userId as string;
       const removed = await access.demoteInstanceAdmin(userId);
       if (!removed) throw notFound("Instance admin role not found");
+      await logInstanceActivity(db, {
+        ...instanceActorFromRequest(req),
+        action: "instance_admin.demoted",
+        entityType: "user",
+        entityId: userId,
+      });
       res.json(removed);
     }
   );
@@ -4850,6 +4913,13 @@ export function accessRoutes(
         req.body.companyIds ?? [],
         { actorUserId: req.actor.userId ?? null },
       );
+      await logInstanceActivity(db, {
+        ...instanceActorFromRequest(req),
+        action: "user.company_access_updated",
+        entityType: "user",
+        entityId: userId,
+        details: { companyIds: req.body.companyIds ?? [] },
+      });
       res.json(await loadUserCompanyAccessResponse(db, access, userId));
     }
   );
