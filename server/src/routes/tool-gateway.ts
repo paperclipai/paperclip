@@ -325,7 +325,17 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
         return;
       }
       const { companyId: _companyId, ...body } = parsed.data as typeof parsed.data & { companyId?: string };
-      res.json(await toolGateway.updateNamedGateway({ companyId, gatewayId: req.params.gatewayId, body }));
+      const actor = getActorInfo(req);
+      res.json(await toolGateway.updateNamedGateway({
+        companyId,
+        gatewayId: req.params.gatewayId,
+        body,
+        actor: {
+          agentId: actor.agentId,
+          userId: req.actor.type === "board" ? req.actor.userId : null,
+          runId: actor.runId,
+        },
+      }));
     } catch (err) {
       sendGatewayError(res, err);
     }
@@ -366,7 +376,16 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
         return;
       }
       await assertBoardPermission(req, companyId, "tools:admin");
-      res.json(await toolGateway.revokeNamedGatewayToken({ companyId, tokenId: req.params.tokenId }));
+      const actor = getActorInfo(req);
+      res.json(await toolGateway.revokeNamedGatewayToken({
+        companyId,
+        tokenId: req.params.tokenId,
+        actor: {
+          agentId: actor.agentId,
+          userId: req.actor.type === "board" ? req.actor.userId : null,
+          runId: actor.runId,
+        },
+      }));
     } catch (err) {
       sendGatewayError(res, err);
     }
@@ -598,6 +617,7 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
         slotId: req.params.slotId,
         actor: {
           agentId: actor.agentId,
+          userId: req.actor.type === "board" ? req.actor.userId : null,
           runId: req.actor.type === "agent" ? req.actor.runId : null,
         },
       }));
@@ -625,6 +645,7 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
         slotId: req.params.slotId,
         actor: {
           agentId: actor.agentId,
+          userId: req.actor.type === "board" ? req.actor.userId : null,
           runId: req.actor.type === "agent" ? req.actor.runId : null,
         },
       }));

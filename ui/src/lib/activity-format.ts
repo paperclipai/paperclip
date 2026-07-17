@@ -82,6 +82,13 @@ const ACTIVITY_ROW_VERBS: Record<string, string> = {
   "company.archived": "archived",
   "company.reactivated": "reactivated",
   "company.budget_updated": "updated budget for",
+  "tool_gateway.gateway_reconfigured": "reconfigured tool gateway",
+  "tool_gateway.token_minted": "minted a token for tool gateway",
+  "tool_gateway.token_revoked": "revoked a tool gateway token",
+  "tool_gateway.approval_resolved": "resolved a tool approval request",
+  "tool_runtime_slot.operator_stopped": "stopped tool runtime slot",
+  "tool_runtime_slot.operator_restarted": "restarted tool runtime slot",
+  "tool_access.policy_tested": "ran a tool policy test",
 };
 
 const ISSUE_ACTIVITY_LABELS: Record<string, string> = {
@@ -129,6 +136,13 @@ const ISSUE_ACTIVITY_LABELS: Record<string, string> = {
   "approval.created": "requested approval",
   "approval.approved": "approved",
   "approval.rejected": "rejected",
+  "tool_gateway.gateway_reconfigured": "reconfigured a tool gateway",
+  "tool_gateway.token_minted": "minted a tool gateway token",
+  "tool_gateway.token_revoked": "revoked a tool gateway token",
+  "tool_gateway.approval_resolved": "resolved a tool approval request",
+  "tool_runtime_slot.operator_stopped": "stopped a tool runtime slot",
+  "tool_runtime_slot.operator_restarted": "restarted a tool runtime slot",
+  "tool_access.policy_tested": "ran a tool policy test",
 };
 
 function asRecord(value: unknown): Record<string, unknown> | null {
