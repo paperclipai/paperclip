@@ -13,6 +13,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
 import { Settings, CloudUpload, Download, Upload } from "lucide-react";
 import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
+import { BrandKitEditor } from "../components/brand-kit/BrandKitEditor";
 import {
   Field,
   ToggleField,
@@ -349,6 +350,14 @@ export function CompanySettings() {
           )}
         </div>
       )}
+
+      {/* Brand Kit — structured DESIGN.md editor (NEO-271) */}
+      <div className="space-y-4">
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Brand Kit
+        </div>
+        <BrandKitEditor companyId={selectedCompany.id} />
+      </div>
 
       {/* Hiring */}
       <div className="space-y-4" data-testid="company-settings-team-section">

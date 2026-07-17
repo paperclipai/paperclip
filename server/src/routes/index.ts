@@ -4,6 +4,7 @@ export { companySkillRoutes } from "./company-skills.js";
 export { builtInAgentRoutes } from "./built-in-agents.js";
 export { teamsCatalogRoutes } from "./teams-catalog.js";
 export { agentRoutes } from "./agents.js";
+export { brandKitRoutes } from "./brand-kits.js";
 export { projectRoutes } from "./projects.js";
 export { issueRoutes } from "./issues.js";
 export { issueTreeControlRoutes } from "./issue-tree-control.js";

@@ -19,6 +19,21 @@ export {
 } from "./built-in-agents.js";
 export { agentInstructionsService, syncInstructionsBundleConfigFromFilePath } from "./agent-instructions.js";
 export { assetService } from "./assets.js";
+export {
+  brandKitService,
+  slugifyBrandKitName,
+  BrandKitConflictError,
+  type BrandKitRow,
+  type BrandKitAssetView,
+  type BrandKitWriteResult,
+} from "./brand-kits.js";
+export {
+  resolveBrandKit,
+  assetContentPath,
+  type BrandKitResolveContext,
+  type ResolvedBrandKit,
+  type ResolvedBrandKitAsset,
+} from "./brand-kit-resolver.js";
 export { documentService, extractLegacyPlanBody } from "./documents.js";
 export { documentAnnotationService } from "./document-annotations.js";
 export {

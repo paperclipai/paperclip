@@ -1058,6 +1058,13 @@
       "when": 1783663200000,
       "tag": "10005_mcp_tool_clearance",
       "breakpoints": true
+    },
+    {
+      "idx": 10006,
+      "version": "7",
+      "when": 1783666800000,
+      "tag": "10006_brand_kits",
+      "breakpoints": true
     }
   ]
 }
