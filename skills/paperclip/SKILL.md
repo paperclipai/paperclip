@@ -450,6 +450,15 @@ PUT /api/issues/{issueId}/documents/plan
 
 If `plan` already exists, fetch the current document first and send its latest `baseRevisionId` when you update it.
 
+**Save documents through `scripts/paperclip-save-document.sh` — do not hand-roll the PUT.** `PUT /api/issues/{id}/documents/{key}` uses optimistic concurrency: it returns **HTTP 409** (not a silent no-op) when `baseRevisionId` is missing or stale, with `details.currentRevisionId` in the body. A bare curl that ignores the status will report false success while the document never advances. The helper reads the current revision, sends `baseRevisionId`, retries once on 409 with `details.currentRevisionId`, refuses success on any non-2xx, and verifies the revision advanced by re-reading:
+
+```bash
+scripts/paperclip-save-document.sh --key plan --title Plan \
+  --body-file plan.md --change-summary "initial plan"
+```
+
+If you must write the document manually, you MUST check the HTTP status yourself and never report a save as successful without a verified 2xx and a confirmed revision advance (GET the document back).
+
 ## Key Endpoints (Hot Routes)
 
 | Action                                | Endpoint                                                                                                                        |
