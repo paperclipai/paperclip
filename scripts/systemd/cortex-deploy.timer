@@ -1,0 +1,19 @@
+# cortex-deploy.timer — polls origin/master and drives cortex-deploy.service.
+#
+# NEO-526 (subtask 522a of NEO-522). A merge to master results in beta serving the new build
+# within one interval, with no manual step. The service's own lock + ff-only + already-at-target
+# short-circuit make an idle tick a cheap no-op, so a tight interval is safe.
+
+[Unit]
+Description=Poll origin/master and deploy cortex-beta (cortex-deploy.service)
+
+[Timer]
+# First run shortly after boot, then every 5 minutes.
+OnBootSec=3min
+OnUnitActiveSec=5min
+# If the host was asleep/off across a scheduled tick, run once on resume.
+Persistent=true
+Unit=cortex-deploy.service
+
+[Install]
+WantedBy=timers.target
