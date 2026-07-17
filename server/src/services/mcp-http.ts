@@ -97,6 +97,31 @@ export async function initializeMcpSession(
   return sessionId;
 }
 
+/**
+ * Best-effort teardown of a session opened by {@link initializeMcpSession}.
+ *
+ * The MCP spec says a client SHOULD `DELETE` the session once it is no longer
+ * needed; without this, stateful servers accumulate a dead session for every
+ * catalog refresh / connection check. Failures — including servers that don't
+ * support explicit termination and answer `405` — are ignored, since the
+ * session will expire server-side regardless.
+ */
+export async function closeMcpSession(
+  endpoint: string | URL,
+  headers: Record<string, string> | undefined,
+  sessionId: string,
+): Promise<void> {
+  try {
+    const response = await fetch(endpoint, {
+      method: "DELETE",
+      headers: { ...mcpHttpRequestHeaders(headers), [MCP_SESSION_ID_HEADER]: sessionId },
+    });
+    await response.body?.cancel().catch(() => undefined);
+  } catch {
+    // Teardown is best-effort.
+  }
+}
+
 function looksLikeJsonRpcMessage(value: unknown): boolean {
   if (typeof value !== "object" || value === null) return false;
   const record = value as Record<string, unknown>;

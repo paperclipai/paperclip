@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  closeMcpSession,
   initializeMcpSession,
   MCP_HTTP_ACCEPT,
   MCP_PROTOCOL_VERSION,
@@ -75,6 +76,35 @@ describe("initializeMcpSession", () => {
       throw new TypeError("fetch failed");
     }) as typeof fetch;
     expect(await initializeMcpSession("https://mcp.example/mcp")).toBeNull();
+  });
+});
+
+describe("closeMcpSession", () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    vi.restoreAllMocks();
+  });
+
+  it("sends DELETE with the session id to tear the session down", async () => {
+    let request: { method?: string; headers: Record<string, string> } | undefined;
+    globalThis.fetch = vi.fn(async (_url: unknown, init: RequestInit) => {
+      request = { method: init.method, headers: init.headers as Record<string, string> };
+      return new Response(null, { status: 204 });
+    }) as typeof fetch;
+
+    await closeMcpSession("https://mcp.example/mcp", { Authorization: "Bearer x" }, "sess-123");
+
+    expect(request?.method).toBe("DELETE");
+    expect(request?.headers["mcp-session-id"]).toBe("sess-123");
+    expect(request?.headers.Authorization).toBe("Bearer x");
+  });
+
+  it("swallows errors (teardown is best-effort)", async () => {
+    globalThis.fetch = vi.fn(async () => {
+      throw new TypeError("fetch failed");
+    }) as typeof fetch;
+    await expect(closeMcpSession("https://mcp.example/mcp", undefined, "sess-123")).resolves.toBeUndefined();
   });
 });
 
