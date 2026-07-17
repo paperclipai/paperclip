@@ -95,6 +95,31 @@ describe("openai_compatible adapter execute", () => {
     expect(result.resultJson?.error).toContain("no assistant content");
   });
 
+  it("fails closed and cancels the response body on endpoint HTTP errors", async () => {
+    const response = new Response("server unavailable", { status: 503 });
+    const cancel = vi.spyOn(response.body!, "cancel").mockResolvedValue(undefined);
+    vi.stubGlobal("fetch", vi.fn(async () => response));
+
+    const result = await execute(makeContext({}));
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("openai_compatible_http_error");
+    expect(result.errorMessage).toContain("HTTP 503");
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+
+  it("fails closed on network-level fetch errors", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      throw new TypeError("fetch failed");
+    }));
+
+    const result = await execute(makeContext({}));
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("openai_compatible_network_error");
+    expect(result.resultJson?.error).toContain("network error");
+  });
+
   it("fails closed on invalid endpoint JSON response", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response("not json", { status: 200 })));
 

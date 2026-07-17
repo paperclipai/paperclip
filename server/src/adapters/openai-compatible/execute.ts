@@ -170,6 +170,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     });
 
     if (!response.ok) {
+      await response.body?.cancel().catch(() => undefined);
       return failClosed({
         errorCode: "openai_compatible_http_error",
         errorMessage: `OpenAI-compatible endpoint returned HTTP ${response.status}`,
@@ -255,7 +256,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         },
       };
     }
-    throw err;
+    return failClosed({
+      errorCode: "openai_compatible_network_error",
+      errorMessage: "OpenAI-compatible endpoint request failed with a network error.",
+    });
   } finally {
     if (timer) clearTimeout(timer);
   }
