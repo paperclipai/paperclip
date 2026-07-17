@@ -9,6 +9,7 @@ import {
   activityLog,
   agents,
   agentRuntimeState,
+  agentTaskSessions,
   agentWakeupRequests,
   budgetPolicies,
   companySecretBindings,
@@ -361,6 +362,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await new Promise((resolve) => setTimeout(resolve, 100));
     await db.delete(activityLog);
     await db.delete(agentRuntimeState);
+    await db.delete(agentTaskSessions);
     await db.delete(companySkills);
     await db.delete(costEvents);
     await db.delete(workspaceOperations);
@@ -1182,6 +1184,301 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     return { companyId, agentId, runId, wakeupRequestId, issueId };
   }
+
+  it("suppresses an explicit source-run resume when a cheap recovery profile resets the task session", async () => {
+    const { companyId, agentId, runId: sourceRunId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      livenessState: "advanced",
+    });
+    const sourceSessionId = "primary-sol-session";
+
+    await db
+      .update(agents)
+      .set({ adapterConfig: { model: "gpt-5.5" }, updatedAt: new Date() })
+      .where(eq(agents.id, agentId));
+    await db
+      .update(heartbeatRuns)
+      .set({
+        sessionIdAfter: sourceSessionId,
+        resultJson: { sessionId: sourceSessionId },
+        updatedAt: new Date(),
+      })
+      .where(eq(heartbeatRuns.id, sourceRunId));
+    await db.insert(agentTaskSessions).values({
+      companyId,
+      agentId,
+      adapterType: "codex_local",
+      taskKey: issueId,
+      sessionParamsJson: {
+        sessionId: sourceSessionId,
+        __paperclipConfiguredModel: "gpt-5.5",
+      },
+      sessionDisplayId: sourceSessionId,
+      lastRunId: sourceRunId,
+    });
+    mockAdapterExecute.mockImplementationOnce(async () => {
+      await db
+        .update(issues)
+        .set({ status: "done", completedAt: new Date(), updatedAt: new Date() })
+        .where(eq(issues.id, issueId));
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "Status-only recovery completed without resuming the primary model session.",
+        provider: "test",
+        model: "gpt-5.3-codex-spark",
+      };
+    });
+    const heartbeat = heartbeatService(db);
+
+    const recoveryRun = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "status_only_recovery",
+      payload: {
+        issueId,
+        modelProfile: "cheap",
+        resumeFromRunId: sourceRunId,
+        allowDeliverableWork: false,
+        allowDocumentUpdates: false,
+        resumeRequiresNormalModel: true,
+      },
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "status_only_recovery",
+      },
+    });
+
+    expect(recoveryRun).not.toBeNull();
+    const settledRun = await waitForRunToSettle(heartbeat, recoveryRun!.id, 5_000);
+    expect(settledRun?.status).toBe("succeeded");
+    expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
+
+    const adapterInput = mockAdapterExecute.mock.calls[0]?.[0] as {
+      runtime: {
+        sessionId: string | null;
+        sessionParams: Record<string, unknown> | null;
+        sessionDisplayId: string | null;
+      };
+    };
+    expect(adapterInput.runtime).toMatchObject({
+      sessionId: null,
+      sessionParams: null,
+      sessionDisplayId: null,
+    });
+
+    const persistedContext = settledRun?.contextSnapshot as Record<string, unknown>;
+    expect(persistedContext).toMatchObject({
+      resumeFromRunId: sourceRunId,
+      resumeSessionDisplayId: sourceSessionId,
+      resumeSessionParams: {
+        sessionId: sourceSessionId,
+      },
+      paperclipModelProfile: {
+        requested: "cheap",
+        applied: "cheap",
+      },
+    });
+    expect(settledRun?.resultJson).toMatchObject({
+      configFreshness: {
+        session: {
+          reset: true,
+          resetReasons: expect.arrayContaining([
+            'configured model changed from "gpt-5.5" to "gpt-5.3-codex-spark"',
+          ]),
+          taskSessionAvailable: true,
+          taskSessionReused: false,
+        },
+      },
+      modelProfile: {
+        requested: "cheap",
+        applied: "cheap",
+      },
+    });
+  });
+
+  it.each([
+    {
+      name: "starts fresh for an older explicit session that used a different model",
+      sourceRunStatus: "succeeded" as const,
+      sourceModel: "gpt-5.3-codex-spark",
+      taskSessionKind: "verified-current" as const,
+      shouldResume: false,
+      expectedResetReason: 'explicit resume session model changed from "gpt-5.3-codex-spark" to "gpt-5.5"',
+    },
+    {
+      name: "resumes an older explicit session that used the same model",
+      sourceRunStatus: "succeeded" as const,
+      sourceModel: "gpt-5.5",
+      taskSessionKind: "verified-current" as const,
+      shouldResume: true,
+      expectedResetReason: null,
+    },
+    {
+      name: "resumes a compatible source session when the current task session is missing",
+      sourceRunStatus: "succeeded" as const,
+      sourceModel: "gpt-5.5",
+      taskSessionKind: "none" as const,
+      shouldResume: true,
+      expectedResetReason: null,
+    },
+    {
+      name: "fails closed when a failed source run only records an attempted compatible model",
+      sourceRunStatus: "failed" as const,
+      sourceModel: "gpt-5.5",
+      taskSessionKind: "none" as const,
+      shouldResume: false,
+      expectedResetReason: "explicit Codex resume session compatibility cannot be verified",
+    },
+    {
+      name: "fails closed for a failed source run sharing an unverified legacy task session",
+      sourceRunStatus: "failed" as const,
+      sourceModel: "gpt-5.5",
+      taskSessionKind: "legacy-source" as const,
+      shouldResume: false,
+      expectedResetReason: "explicit Codex resume session compatibility cannot be verified",
+    },
+  ])("$name", async ({
+    sourceRunStatus,
+    sourceModel,
+    taskSessionKind,
+    shouldResume,
+    expectedResetReason,
+  }) => {
+    const { companyId, agentId, runId: sourceRunId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: sourceRunStatus,
+      livenessState: "advanced",
+    });
+    const currentSolSessionId = "current-sol-session";
+    const sourceSessionId = "selected-source-session";
+
+    await db
+      .update(agents)
+      .set({ adapterConfig: { model: "gpt-5.5" }, updatedAt: new Date() })
+      .where(eq(agents.id, agentId));
+    await db
+      .update(heartbeatRuns)
+      .set({
+        sessionIdAfter: sourceSessionId,
+        resultJson: {
+          sessionId: sourceSessionId,
+          model: sourceModel,
+        },
+        updatedAt: new Date(),
+      })
+      .where(eq(heartbeatRuns.id, sourceRunId));
+    const hasTaskSession = taskSessionKind !== "none";
+    if (hasTaskSession) {
+      const taskSessionId = taskSessionKind === "legacy-source"
+        ? sourceSessionId
+        : currentSolSessionId;
+      await db.insert(agentTaskSessions).values({
+        companyId,
+        agentId,
+        adapterType: "codex_local",
+        taskKey: issueId,
+        sessionParamsJson: taskSessionKind === "legacy-source"
+          ? { sessionId: taskSessionId }
+          : {
+              sessionId: taskSessionId,
+              __paperclipConfiguredModel: "gpt-5.5",
+            },
+        sessionDisplayId: taskSessionId,
+        lastRunId: null,
+      });
+    }
+    mockAdapterExecute.mockImplementationOnce(async () => {
+      await db
+        .update(issues)
+        .set({ status: "done", completedAt: new Date(), updatedAt: new Date() })
+        .where(eq(issues.id, issueId));
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: shouldResume
+          ? "Resumed the selected compatible source session."
+          : "Started fresh instead of resuming the incompatible source session.",
+        provider: "test",
+        model: "gpt-5.5",
+      };
+    });
+    const heartbeat = heartbeatService(db);
+
+    const recoveryRun = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_blockers_resolved",
+      payload: {
+        issueId,
+        resumeFromRunId: sourceRunId,
+        interactionId: "accepted-plan-continuation",
+        interactionKind: "request_confirmation",
+        interactionStatus: "accepted",
+        mutation: "interaction",
+      },
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "issue_blockers_resolved",
+        workspaceRefreshReason: "accepted_plan_confirmation",
+      },
+    });
+
+    expect(recoveryRun).not.toBeNull();
+    const settledRun = await waitForRunToSettle(heartbeat, recoveryRun!.id, 5_000);
+    expect(settledRun?.status).toBe("succeeded");
+    expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
+
+    const adapterInput = mockAdapterExecute.mock.calls[0]?.[0] as {
+      runtime: {
+        sessionId: string | null;
+        sessionParams: Record<string, unknown> | null;
+        sessionDisplayId: string | null;
+      };
+    };
+    expect(adapterInput.runtime).toMatchObject(shouldResume
+      ? {
+          sessionId: sourceSessionId,
+          sessionParams: { sessionId: sourceSessionId },
+          sessionDisplayId: sourceSessionId,
+        }
+      : {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+        });
+
+    const persistedContext = settledRun?.contextSnapshot as Record<string, unknown>;
+    expect(persistedContext).toMatchObject({
+      resumeFromRunId: sourceRunId,
+      resumeSessionDisplayId: sourceSessionId,
+      resumeSessionParams: {
+        sessionId: sourceSessionId,
+      },
+    });
+    if (sourceRunStatus === "succeeded") {
+      expect(persistedContext).toMatchObject({ resumeSessionConfiguredModel: sourceModel });
+    } else {
+      expect(persistedContext).not.toHaveProperty("resumeSessionConfiguredModel");
+    }
+    expect(settledRun?.resultJson).toMatchObject({
+      configFreshness: {
+        session: {
+          reset: !shouldResume,
+          resetReasons: expectedResetReason ? [expectedResetReason] : [],
+          taskSessionAvailable: hasTaskSession,
+          taskSessionReused: shouldResume && hasTaskSession,
+        },
+      },
+    });
+  });
 
   it("keeps a local run active when the recorded pid is still alive", async () => {
     const child = spawnAliveProcess();

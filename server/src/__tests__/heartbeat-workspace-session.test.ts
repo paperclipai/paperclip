@@ -16,6 +16,7 @@ import {
   buildEffectiveRunSessionConfigMetadata,
   buildEffectiveRunWorkspaceConfigMetadata,
   buildWorkspaceConfigFreshnessOperation,
+  decodePersistedTaskSessionParams,
   deriveTaskKeyWithHeartbeatFallback,
   extractWakeCommentIds,
   formatRuntimeWorkspaceWarningLog,
@@ -28,6 +29,7 @@ import {
   resolveExecutionWorkspaceConfigFreshness,
   resolveExecutionWorkspaceReuseRequestForIssue,
   resolveExecutionWorkspaceReuseProvisioningPolicy,
+  resolveExplicitResumeSessionCompatibility,
   resolveNextSessionState,
   resolveTaskSessionConfigFreshness,
   requiresPushCapabilityPreflight,
@@ -1685,7 +1687,7 @@ describe("shouldResetTaskSessionForModelChange", () => {
     ).toBe(false);
   });
 
-  it("does not reset when configured model is missing", () => {
+  it("resets when an explicit session model returns to the adapter/CLI default", () => {
     expect(
       shouldResetTaskSessionForModelChange({
         configuredModel: null,
@@ -1694,7 +1696,7 @@ describe("shouldResetTaskSessionForModelChange", () => {
           __paperclipConfiguredModel: "gpt-5.4-mini",
         },
       }),
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it("does not reset when task session params are missing", () => {
@@ -1797,6 +1799,49 @@ function sessionParamsWithConfigMetadata(
 }
 
 describe("effective run session config freshness", () => {
+  it("keeps Paperclip metadata outside the Codex resume codec and resets cheap sessions before implicit-default runs", async () => {
+    const cheap = await buildSessionConfigMetadata({
+      effectiveAdapterConfig: {
+        command: "codex",
+        model: "gpt-5.3-codex-spark",
+      },
+      modelProfile: {
+        requested: "cheap",
+        requestedBy: "wake_context",
+        applied: "cheap",
+        configSource: "adapter_default",
+        fallbackReason: null,
+      },
+    });
+    const normal = await buildSessionConfigMetadata({
+      effectiveAdapterConfig: {
+        command: "codex",
+      },
+      modelProfile: null,
+    });
+    const persistedParams = sessionParamsWithConfigMetadata(cheap, "gpt-5.3-codex-spark");
+    const params = decodePersistedTaskSessionParams({
+      sessionCodec: codexSessionCodec,
+      sessionParamsJson: persistedParams,
+    });
+
+    expect(params.resumeParams).toEqual({ sessionId: "thread-1" });
+    expect(params.freshnessParams).toEqual(persistedParams);
+
+    const decision = resolveTaskSessionConfigFreshness({
+      hasTaskSession: true,
+      configuredModel: null,
+      taskSessionParams: params.freshnessParams,
+      configMetadata: normal,
+    });
+
+    expect(decision.reset).toBe(true);
+    expect(decision.changedCategories).toEqual(expect.arrayContaining(["adapterConfig", "modelProfile"]));
+    expect(decision.reasons).toContain(
+      'configured model changed from "gpt-5.3-codex-spark" to the adapter/CLI default',
+    );
+  });
+
   it("resets when effective adapter config changes after model/profile/env resolution", async () => {
     const base = await buildSessionConfigMetadata();
     const next = await buildSessionConfigMetadata({
@@ -2167,6 +2212,148 @@ describe("comment wake batching", () => {
     );
 
     expect(merged.forceFreshSession).toBe(true);
+  });
+});
+
+describe("resolveExplicitResumeSessionCompatibility", () => {
+  it("allows an explicit resume when it identifies the current task session", () => {
+    expect(resolveExplicitResumeSessionCompatibility({
+      adapterType: "codex_local",
+      explicitResumeRequested: true,
+      explicitResumeSessionParams: { sessionId: "same-session" },
+      explicitResumeSessionDisplayId: "same-session",
+      explicitResumeConfigFingerprint: null,
+      explicitResumeConfiguredModel: null,
+      taskSessionParams: { sessionId: "same-session" },
+      taskSessionDisplayId: "same-session",
+      taskSessionConfigVerified: true,
+      currentConfigFingerprint: "current-fingerprint",
+      currentConfiguredModel: "gpt-5.5",
+    })).toEqual({ reset: false, reason: null });
+  });
+
+  it("does not trust a matching Codex session identity without verified task metadata", () => {
+    expect(resolveExplicitResumeSessionCompatibility({
+      adapterType: "codex_local",
+      explicitResumeRequested: true,
+      explicitResumeSessionParams: { sessionId: "same-session" },
+      explicitResumeSessionDisplayId: "same-session",
+      explicitResumeConfigFingerprint: null,
+      explicitResumeConfiguredModel: null,
+      taskSessionParams: { sessionId: "same-session" },
+      taskSessionDisplayId: "same-session",
+      taskSessionConfigVerified: false,
+      currentConfigFingerprint: "current-fingerprint",
+      currentConfiguredModel: "gpt-5.5",
+    })).toEqual({
+      reset: true,
+      reason: "explicit Codex resume session compatibility cannot be verified",
+    });
+  });
+
+  it("allows an older explicit session when its persisted effective config matches", () => {
+    expect(resolveExplicitResumeSessionCompatibility({
+      adapterType: "codex_local",
+      explicitResumeRequested: true,
+      explicitResumeSessionParams: { sessionId: "older-session" },
+      explicitResumeSessionDisplayId: "older-session",
+      explicitResumeConfigFingerprint: "same-fingerprint",
+      explicitResumeConfiguredModel: null,
+      taskSessionParams: { sessionId: "current-session" },
+      taskSessionDisplayId: "current-session",
+      taskSessionConfigVerified: true,
+      currentConfigFingerprint: "same-fingerprint",
+      currentConfiguredModel: "gpt-5.5",
+    })).toEqual({ reset: false, reason: null });
+  });
+
+  it("resets an older explicit session when its persisted effective config differs", () => {
+    expect(resolveExplicitResumeSessionCompatibility({
+      adapterType: "codex_local",
+      explicitResumeRequested: true,
+      explicitResumeSessionParams: { sessionId: "older-session" },
+      explicitResumeSessionDisplayId: "older-session",
+      explicitResumeConfigFingerprint: "older-fingerprint",
+      explicitResumeConfiguredModel: "gpt-5.5",
+      taskSessionParams: { sessionId: "current-session" },
+      taskSessionDisplayId: "current-session",
+      taskSessionConfigVerified: true,
+      currentConfigFingerprint: "current-fingerprint",
+      currentConfiguredModel: "gpt-5.5",
+    })).toEqual({
+      reset: true,
+      reason: "explicit resume session effective configuration differs from the current run",
+    });
+  });
+
+  it("fails closed when an older explicit session used a different model", () => {
+    expect(resolveExplicitResumeSessionCompatibility({
+      adapterType: "codex_local",
+      explicitResumeRequested: true,
+      explicitResumeSessionParams: { sessionId: "older-session" },
+      explicitResumeSessionDisplayId: "older-session",
+      explicitResumeConfigFingerprint: null,
+      explicitResumeConfiguredModel: "gpt-5.3-codex-spark",
+      taskSessionParams: { sessionId: "current-session" },
+      taskSessionDisplayId: "current-session",
+      taskSessionConfigVerified: true,
+      currentConfigFingerprint: "current-fingerprint",
+      currentConfiguredModel: "gpt-5.5",
+    })).toEqual({
+      reset: true,
+      reason: 'explicit resume session model changed from "gpt-5.3-codex-spark" to "gpt-5.5"',
+    });
+  });
+
+  it("allows a verified compatible source session when no current task session exists", () => {
+    expect(resolveExplicitResumeSessionCompatibility({
+      adapterType: "codex_local",
+      explicitResumeRequested: true,
+      explicitResumeSessionParams: { sessionId: "older-session" },
+      explicitResumeSessionDisplayId: "older-session",
+      explicitResumeConfigFingerprint: "same-fingerprint",
+      explicitResumeConfiguredModel: null,
+      taskSessionParams: null,
+      taskSessionDisplayId: null,
+      taskSessionConfigVerified: false,
+      currentConfigFingerprint: "same-fingerprint",
+      currentConfiguredModel: "gpt-5.5",
+    })).toEqual({ reset: false, reason: null });
+  });
+
+  it("fails closed for an unverifiable historical Codex session", () => {
+    expect(resolveExplicitResumeSessionCompatibility({
+      adapterType: "codex_local",
+      explicitResumeRequested: true,
+      explicitResumeSessionParams: { sessionId: "older-session" },
+      explicitResumeSessionDisplayId: "older-session",
+      explicitResumeConfigFingerprint: null,
+      explicitResumeConfiguredModel: null,
+      taskSessionParams: null,
+      taskSessionDisplayId: null,
+      taskSessionConfigVerified: false,
+      currentConfigFingerprint: "current-fingerprint",
+      currentConfiguredModel: "gpt-5.5",
+    })).toEqual({
+      reset: true,
+      reason: "explicit Codex resume session compatibility cannot be verified",
+    });
+  });
+
+  it("preserves unverifiable historical resumes for other adapters", () => {
+    expect(resolveExplicitResumeSessionCompatibility({
+      adapterType: "claude_local",
+      explicitResumeRequested: true,
+      explicitResumeSessionParams: { sessionId: "older-session" },
+      explicitResumeSessionDisplayId: "older-session",
+      explicitResumeConfigFingerprint: null,
+      explicitResumeConfiguredModel: null,
+      taskSessionParams: null,
+      taskSessionDisplayId: null,
+      taskSessionConfigVerified: false,
+      currentConfigFingerprint: "current-fingerprint",
+      currentConfiguredModel: "claude-opus-4-1",
+    })).toEqual({ reset: false, reason: null });
   });
 });
 
