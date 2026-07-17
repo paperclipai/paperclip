@@ -51,6 +51,34 @@ export const queryKeys = {
         filters.search ?? "",
       ] as const,
   },
+  audit: {
+    agentActions: (
+      companyId: string,
+      filters: {
+        agentId?: string | null;
+        responsibleUserId?: string | null;
+        runId?: string | null;
+        entityType?: string | null;
+        action?: string | null;
+        from?: string | null;
+        to?: string | null;
+        actorType?: string | null;
+      },
+    ) =>
+      [
+        "audit",
+        companyId,
+        "agent-actions",
+        filters.agentId ?? "__all",
+        filters.responsibleUserId ?? "__all",
+        filters.runId ?? "__all",
+        filters.entityType ?? "__all",
+        filters.action ?? "__all",
+        filters.actorType ?? "__all",
+        filters.from ?? "",
+        filters.to ?? "",
+      ] as const,
+  },
   smokeLab: {
     services: (companyId: string) => ["smoke-lab", companyId, "services"] as const,
     runs: (companyId: string) => ["smoke-lab", companyId, "runs"] as const,
