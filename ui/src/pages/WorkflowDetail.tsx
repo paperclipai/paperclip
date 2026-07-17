@@ -13,6 +13,7 @@ import {
   ChevronDown,
   ChevronRight,
   Download,
+  GitBranch,
   LoaderCircle,
   Play,
   Repeat,
@@ -32,8 +33,15 @@ import type {
   WorkflowPhase,
   WorkflowRunConsoleChunk,
   WorkflowRunDetail,
+  Resource,
+  ResourceAttachmentMode,
+  ResourceOutputAction,
+  ResourceOutputResult,
+  WorkflowResourceManifest,
+  ResourceVersionReference,
 } from "@paperclipai/shared";
 import { workflowsApi } from "../api/workflows";
+import { resourcesApi } from "../api/resources";
 import { buildTranscript, getUIAdapter } from "../adapters";
 import {
   RunTranscriptView,
@@ -991,6 +999,169 @@ function GraphHumanNode({
   );
 }
 
+function WorkflowResourceManifestEditor({
+  manifest,
+  resources,
+  onChange,
+}: {
+  manifest: WorkflowResourceManifest;
+  resources: Resource[];
+  onChange: (manifest: WorkflowResourceManifest) => void;
+}) {
+  const selectedIds = new Set(manifest.resources.map((attachment) => attachment.resourceId));
+  const availableResources = resources.filter((resource) => resource.status === "active");
+  const addResource = () => {
+    const next = availableResources.find((resource) => !selectedIds.has(resource.id));
+    if (!next) return;
+    onChange({
+      ...manifest,
+      resources: [
+        ...manifest.resources,
+        { resourceId: next.id, mode: "input" },
+      ],
+    });
+  };
+
+  const updateResource = (resourceId: string, patch: Partial<WorkflowResourceManifest["resources"][number]>) => {
+    onChange({
+      ...manifest,
+      resources: manifest.resources.map((attachment) =>
+        attachment.resourceId === resourceId ? { ...attachment, ...patch } : attachment,
+      ),
+    });
+  };
+
+  const removeResource = (resourceId: string) => {
+    onChange({
+      ...manifest,
+      resources: manifest.resources.filter((attachment) => attachment.resourceId !== resourceId),
+    });
+  };
+
+  return (
+    <div className="space-y-3 rounded-xl border border-border/60 bg-background/30 p-3">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <Label className="text-sm font-semibold">Resources</Label>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Choose the Resources to materialize for this run.
+          </p>
+        </div>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={addResource}
+          disabled={availableResources.length === selectedIds.size}
+        >
+          Add Resource
+        </Button>
+      </div>
+
+      {manifest.resources.length === 0 ? (
+        <div className="rounded-lg border border-dashed border-border p-4 text-xs text-muted-foreground">
+            No Resources selected. This run will start without Resource workspace preparation.
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {manifest.resources.map((attachment) => {
+            const resource = resources.find((candidate) => candidate.id === attachment.resourceId);
+            return (
+              <div key={attachment.resourceId} className="space-y-3 rounded-lg border border-border/60 p-3">
+                <div className="flex items-center gap-2">
+                  <select
+                    aria-label="Workflow Resource"
+                    value={attachment.resourceId}
+                    onChange={(event) => updateResource(attachment.resourceId, { resourceId: event.target.value })}
+                    className="h-9 min-w-0 flex-1 rounded-md border border-input bg-background px-3 text-sm"
+                  >
+                    {availableResources
+                      .filter((candidate) => candidate.id === attachment.resourceId || !selectedIds.has(candidate.id))
+                      .map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.key} · {candidate.type}</option>)}
+                  </select>
+                  <Button type="button" variant="ghost" size="icon" aria-label={`Remove ${resource?.key ?? "Resource"}`} onClick={() => removeResource(attachment.resourceId)}>
+                    <X className="h-4 w-4" />
+                  </Button>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-3">
+                  <div className="space-y-1.5">
+                    <Label className="text-xs text-muted-foreground">Mode</Label>
+                    <select
+                      aria-label="Resource mode"
+                      value={attachment.mode}
+                      onChange={(event) => updateResource(attachment.resourceId, { mode: event.target.value as ResourceAttachmentMode })}
+                      className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+                    >
+                      <option value="input">Input only</option>
+                      <option value="output">Output only</option>
+                      <option value="input_output">Input + output</option>
+                    </select>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label className="text-xs text-muted-foreground">Input ref</Label>
+                    <Input
+                      value={attachment.version ?? ""}
+                      onChange={(event) => updateResource(attachment.resourceId, { version: event.target.value.trim() || undefined })}
+                      placeholder={resource?.defaultRef ?? "latest"}
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label className="text-xs text-muted-foreground">Output action</Label>
+                    <select
+                      aria-label="Resource output action"
+                      value={attachment.output?.action ?? "none"}
+                      onChange={(event) => updateResource(attachment.resourceId, { output: { ...attachment.output, action: event.target.value as ResourceOutputAction } })}
+                      disabled={attachment.mode === "input"}
+                      className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+                    >
+                      <option value="none">Discard changes</option>
+                      <option value="push">Commit + push</option>
+                      <option value="pull_request">Create pull request</option>
+                    </select>
+                  </div>
+                </div>
+                {attachment.output?.action === "push" || attachment.output?.action === "pull_request" ? (
+                  <div className="space-y-1.5">
+                    <Label className="text-xs text-muted-foreground">Target ref</Label>
+                    <Input
+                      value={attachment.output.targetRef ?? ""}
+                      onChange={(event) => updateResource(attachment.resourceId, { output: { ...attachment.output, action: attachment.output?.action ?? "none", targetRef: event.target.value.trim() || undefined } })}
+                      placeholder={resource?.defaultRef ?? "main"}
+                    />
+                  </div>
+                ) : null}
+                {attachment.output?.action === "pull_request" ? (
+                  <div className="grid gap-3 sm:grid-cols-3">
+                    <div className="space-y-1.5">
+                      <Label className="text-xs text-muted-foreground">Branch (optional)</Label>
+                      <Input value={attachment.output.branch ?? ""} onChange={(event) => updateResource(attachment.resourceId, { output: { ...attachment.output, action: "pull_request", branch: event.target.value.trim() || undefined } })} placeholder="Generated by BizBox" />
+                    </div>
+                    <div className="space-y-1.5 sm:col-span-2">
+                      <Label className="text-xs text-muted-foreground">PR title</Label>
+                      <Input value={attachment.output.title ?? ""} onChange={(event) => updateResource(attachment.resourceId, { output: { ...attachment.output, action: "pull_request", title: event.target.value || undefined } })} placeholder={`Update ${resource?.key ?? "Resource"}`} />
+                    </div>
+                    <div className="space-y-1.5 sm:col-span-3">
+                      <Label className="text-xs text-muted-foreground">PR body</Label>
+                      <Textarea value={attachment.output.body ?? ""} onChange={(event) => updateResource(attachment.resourceId, { output: { ...attachment.output, action: "pull_request", body: event.target.value || undefined } })} placeholder="Describe the workflow output." rows={3} />
+                    </div>
+                  </div>
+                ) : null}
+                {resource ? (
+                  <p className="text-[11px] text-muted-foreground">
+                    Mounts at <span className="font-mono">{resource.mountPath}</span>
+                  </p>
+                ) : (
+                  <p className="text-xs text-destructive">This Resource is no longer available in the selected company.</p>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function WorkflowDetail() {
   const { workflowId } = useParams<{ workflowId: string }>();
   const { selectedCompanyId } = useCompany();
@@ -998,6 +1169,7 @@ export function WorkflowDetail() {
   const { pushToast } = useToastActions();
   const queryClient = useQueryClient();
   const [editDraft, setEditDraft] = useState<WorkflowEditDraft | null>(null);
+  const [runResourceManifest, setRunResourceManifest] = useState<WorkflowResourceManifest | null>(null);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [inputMarkdown, setInputMarkdown] = useState("");
   const [handoffResponses, setHandoffResponses] = useState<
@@ -1015,6 +1187,11 @@ export function WorkflowDetail() {
     queryFn: () => workflowsApi.listSchedules(workflowId!),
     enabled: !!workflowId,
     refetchInterval: 5000,
+  });
+  const resourcesQuery = useQuery({
+    queryKey: queryKeys.resources.list(selectedCompanyId ?? ""),
+    queryFn: () => resourcesApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
   });
 
   const latestRunId = workflowQuery.data?.latestRun?.id ?? null;
@@ -1071,7 +1248,14 @@ export function WorkflowDetail() {
 
   useEffect(() => {
     setSelectedRunId(null);
+    setRunResourceManifest(null);
   }, [workflowId]);
+
+  useEffect(() => {
+    if (runResourceManifest === null && editDraft) {
+      setRunResourceManifest({ version: 1, resources: [] });
+    }
+  }, [editDraft, runResourceManifest]);
 
   const refreshWorkflowData = async () => {
     if (!workflowId || !selectedCompanyId) return;
@@ -1138,7 +1322,10 @@ export function WorkflowDetail() {
 
   const runMutation = useMutation({
     mutationFn: () =>
-      workflowsApi.run(workflowId!, { inputMarkdown: inputMarkdown.trim() }),
+      workflowsApi.run(workflowId!, {
+        inputMarkdown: inputMarkdown.trim(),
+        resourceManifest: runResourceManifest ?? { version: 1, resources: [] },
+      }),
     onSuccess: async () => {
       setInputMarkdown("");
       setSelectedRunId(null);
@@ -1395,6 +1582,11 @@ export function WorkflowDetail() {
                   placeholder="Provide the markdown input that should seed this workflow run."
                   rows={8}
                 />
+                <WorkflowResourceManifestEditor
+                  manifest={runResourceManifest ?? { version: 1, resources: [] }}
+                  resources={resourcesQuery.data ?? []}
+                  onChange={setRunResourceManifest}
+                />
                 <div className="flex justify-end">
                   <Button
                     onClick={() => runMutation.mutate()}
@@ -1424,6 +1616,7 @@ export function WorkflowDetail() {
               activeRunId={activeRunId}
               onSelectRun={setSelectedRunId}
             />
+            <WorkflowRunResourcesCard runDetail={runDetail} />
 
             <ActivityCard
               events={activityQuery.data ?? []}
@@ -1969,6 +2162,88 @@ function WorkflowRunInputCard({
   );
 }
 
+function readRunResourceVersions(run: { contextSnapshot: Record<string, unknown> | null }): ResourceVersionReference[] {
+  const raw = run.contextSnapshot?.resourceVersions;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((value): value is ResourceVersionReference => {
+    if (!value || typeof value !== "object") return false;
+    const candidate = value as Partial<ResourceVersionReference>;
+    return typeof candidate.resourceId === "string" &&
+      typeof candidate.resourceKey === "string" &&
+      typeof candidate.commit === "string" &&
+      typeof candidate.mountPath === "string";
+  });
+}
+
+function readRunResourceOutputs(run: { contextSnapshot: Record<string, unknown> | null }): ResourceOutputResult[] {
+  const raw = run.contextSnapshot?.resourceOutputs;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((value): value is ResourceOutputResult => {
+    if (!value || typeof value !== "object") return false;
+    const candidate = value as Partial<ResourceOutputResult>;
+    return typeof candidate.resourceId === "string" &&
+      typeof candidate.inputCommit === "string" &&
+      typeof candidate.action === "string" &&
+      typeof candidate.status === "string";
+  });
+}
+
+function WorkflowRunResourcesCard({ runDetail }: { runDetail: WorkflowRunDetail | null }) {
+  const versions = runDetail ? readRunResourceVersions(runDetail) : [];
+  const outputs = runDetail ? readRunResourceOutputs(runDetail) : [];
+  return (
+    <Card className={workflowPanelClassName}>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-sm font-semibold">
+          <GitBranch className="h-4 w-4" />
+          Run Resources
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        {!runDetail ? (
+          <div className="text-sm text-muted-foreground">Select a run to inspect its Resource mounts.</div>
+        ) : versions.length === 0 && outputs.length === 0 ? (
+          <div className="text-sm text-muted-foreground">No Resources were attached to this run.</div>
+        ) : (
+          <div className="space-y-2">
+            {versions.map((version) => (
+              <div key={version.resourceId} className="rounded-xl border border-border/60 bg-background/40 p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="font-mono text-sm font-medium">{version.resourceKey}</span>
+                  <span className="rounded-full border border-border/60 px-2 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">
+                    {version.published ? "Published" : "Materialized"}
+                  </span>
+                </div>
+                <div className="mt-2 grid gap-1 text-xs text-muted-foreground sm:grid-cols-2">
+                  <span>Mount: <code>{version.mountPath}</code></span>
+                  <span>Commit: <code>{version.commit.slice(0, 12)}</code></span>
+                  <span>Requested: <code>{version.requestedRef}</code></span>
+                  <span>Resolved: <code>{version.resolvedRef}</code></span>
+                </div>
+              </div>
+            ))}
+            {outputs.map((output) => (
+              <div key={`output-${output.resourceId}`} className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                  <span className="font-mono font-medium">Output · {output.action}</span>
+                  <span className="text-muted-foreground">{output.status.replaceAll("_", " ")}</span>
+                </div>
+                <div className="mt-2 grid gap-1 text-xs text-muted-foreground sm:grid-cols-2">
+                  {output.outputCommit ? <span>Commit: <code>{output.outputCommit.slice(0, 12)}</code></span> : null}
+                  {output.branch ? <span>Branch: <code>{output.branch}</code></span> : null}
+                  {output.targetRef ? <span>Target: <code>{output.targetRef}</code></span> : null}
+                  {output.pullRequestUrl ? <a className="text-cyan-700 underline dark:text-cyan-300" href={output.pullRequestUrl} target="_blank" rel="noreferrer">Pull request</a> : null}
+                  {output.changedFiles ? <span>Files: {output.changedFiles.length}</span> : null}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 function RunHistoryCard({
   workflow,
   activeRunId,
@@ -1992,6 +2267,7 @@ function RunHistoryCard({
           workflow.runs.map((run) => {
             const isSelected = activeRunId === run.id;
             const isLatest = latestRunId === run.id;
+            const resourceCount = readRunResourceVersions(run).length;
             return (
               <button
                 key={run.id}
@@ -2013,6 +2289,12 @@ function RunHistoryCard({
                     {isLatest ? (
                       <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-amber-700 dark:text-amber-300">
                         Latest
+                      </span>
+                    ) : null}
+                    {resourceCount > 0 ? (
+                      <span className="inline-flex items-center gap-1 rounded-full border border-cyan-500/30 bg-cyan-500/10 px-1.5 py-0.5 text-[10px] font-medium text-cyan-700 dark:text-cyan-300">
+                        <GitBranch className="h-3 w-3" />
+                        {resourceCount} Resource{resourceCount === 1 ? "" : "s"}
                       </span>
                     ) : null}
                   </div>

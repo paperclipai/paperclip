@@ -441,3 +441,4 @@ export {
   type ApplyBuilderProposal,
   type RejectBuilderProposal,
 } from "./builder.js";
+export * from "./resource.js";

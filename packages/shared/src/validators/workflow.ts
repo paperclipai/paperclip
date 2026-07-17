@@ -7,6 +7,7 @@ import {
   workflowInvocationTargetSelectorSchema,
   routineWorkflowInvocationRequestSchema,
 } from "./workflow-invocation.js";
+import { resourceRunOverridesSchema, workflowResourceManifestSchema } from "./resource.js";
 
 export const workflowRunnerTypeSchema = z.literal("google_adk");
 export const workflowStatusSchema = z.enum(["active", "paused", "archived"]);
@@ -115,6 +116,8 @@ export {
 
 export const runWorkflowSchema = z.object({
   inputMarkdown: z.string().trim().min(1).max(200_000),
+  resourceManifest: workflowResourceManifestSchema.optional(),
+  resourceOverrides: resourceRunOverridesSchema.optional(),
 });
 export type RunWorkflow = z.infer<typeof runWorkflowSchema>;
 

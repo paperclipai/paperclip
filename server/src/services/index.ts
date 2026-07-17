@@ -31,6 +31,8 @@ export { budgetService } from "./budgets.js";
 export { secretService } from "./secrets.js";
 export { routineService } from "./routines.js";
 export { workflowService } from "./workflows.js";
+export { resourceService } from "./resources.js";
+export { resourceRuntimeService } from "./resource-runtime.js";
 export { workflowInvocationService } from "./workflow-invocations.js";
 export { workflowScheduleService } from "./workflow-schedules.js";
 export { workflowHandoffBridgeService } from "./workflow-handoff-bridge.js";

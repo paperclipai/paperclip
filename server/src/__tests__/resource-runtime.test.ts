@@ -1,0 +1,163 @@
+import { execFile as execFileCallback } from "node:child_process";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { promisify } from "node:util";
+import { randomUUID } from "node:crypto";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { companies, createDb, resources } from "@paperclipai/db";
+import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
+import { githubPullRequestProvider, resourceRuntimeService } from "../services/resource-runtime.ts";
+
+const execFile = promisify(execFileCallback);
+const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+
+async function git(args: string[], cwd?: string) {
+  await execFile("git", args, { cwd });
+}
+
+describeEmbeddedPostgres("resourceRuntimeService", () => {
+  let db!: ReturnType<typeof createDb>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  let fixtureRoot = "";
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-resource-runtime-");
+    db = createDb(tempDb.connectionString);
+    fixtureRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-resource-git-"));
+  }, 20_000);
+
+  afterAll(async () => {
+    await fs.rm(fixtureRoot, { recursive: true, force: true });
+    await tempDb?.cleanup();
+  });
+
+  it("checks out a configured ref, mounts files, and publishes edits", async () => {
+    const remotePath = path.join(fixtureRoot, "remote.git");
+    const seedPath = path.join(fixtureRoot, "seed");
+    await git(["init", "--bare", remotePath]);
+    await git(["clone", remotePath, seedPath]);
+    await git(["config", "user.name", "Fixture"], seedPath);
+    await git(["config", "user.email", "fixture@example.com"], seedPath);
+    await fs.writeFile(path.join(seedPath, "context.md"), "before\n", "utf8");
+    await git(["add", "."], seedPath);
+    await git(["commit", "-m", "initial"], seedPath);
+    await git(["branch", "-M", "main"], seedPath);
+    await git(["push", "origin", "main"], seedPath);
+    const initialCommit = (await execFile("git", ["rev-parse", "HEAD"], { cwd: seedPath })).stdout.trim();
+
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Git Company",
+      issuePrefix: `G${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    const resourceId = randomUUID();
+    await db.insert(resources).values({
+      id: resourceId,
+      companyId,
+      key: "context",
+      type: "git",
+      repository: remotePath,
+      sourcePath: null,
+      defaultRef: "main",
+      mountPath: "context",
+      credentialRef: null,
+      labels: {},
+      status: "active",
+    });
+
+    const workspaceRoot = path.join(fixtureRoot, "workspace");
+    const prepared = await resourceRuntimeService(db).prepare({
+      companyId,
+      runId: "run-resource-test",
+      workspaceRoot,
+      manifest: { version: 1, resources: [{ resourceId, mode: "input_output", version: "latest", output: { action: "push", targetRef: "main" } }] },
+    });
+    expect(prepared).not.toBeNull();
+    const mountPath = prepared!.inputVersions[0]!.mountPath;
+    expect(mountPath).toBe("context");
+    const materializedPath = path.join(workspaceRoot, "resources", mountPath);
+    expect((await fs.stat(path.join(materializedPath, ".git"))).isDirectory()).toBe(true);
+    await expect(fs.access(path.join(workspaceRoot, ".resources"))).rejects.toThrow();
+    expect(await fs.readFile(path.join(materializedPath, "context.md"), "utf8")).toBe("before\n");
+    await fs.writeFile(path.join(materializedPath, "context.md"), "after\n", "utf8");
+
+    const published = await prepared!.publish();
+    expect(published[0]).toMatchObject({ resourceId, action: "push", status: "pushed", targetRef: "main" });
+
+    const checkPath = path.join(fixtureRoot, "check");
+    await git(["clone", "--branch", "main", remotePath, checkPath]);
+    expect(await fs.readFile(path.join(checkPath, "context.md"), "utf8")).toBe("after\n");
+
+    const commitWorkspace = path.join(fixtureRoot, "commit-workspace");
+    const commitPrepared = await resourceRuntimeService(db).prepare({
+      companyId,
+      runId: "run-commit-ref-test",
+      workspaceRoot: commitWorkspace,
+      manifest: { version: 1, resources: [{ resourceId, mode: "input", version: `commit:${initialCommit}` }] },
+    });
+    expect(commitPrepared!.inputVersions[0]!.commit).toBe(initialCommit);
+
+    const invalidBranchWorkspace = path.join(fixtureRoot, "invalid-branch-workspace");
+    const invalidBranchPrepared = await resourceRuntimeService(db).prepare({
+      companyId,
+      runId: "run-invalid-branch-test",
+      workspaceRoot: invalidBranchWorkspace,
+      manifest: { version: 1, resources: [{ resourceId, mode: "input_output", output: { action: "pull_request", branch: "feat[scope" } }] },
+    });
+    await fs.writeFile(path.join(invalidBranchWorkspace, "resources", "context", "context.md"), "invalid\n", "utf8");
+    await expect(invalidBranchPrepared!.publish()).rejects.toThrow("Invalid Git output branch");
+
+    const noChangeWorkspace = path.join(fixtureRoot, "no-change-workspace");
+    const noChangePrepared = await resourceRuntimeService(db).prepare({
+      companyId,
+      runId: "run-no-change-test",
+      workspaceRoot: noChangeWorkspace,
+      manifest: { version: 1, resources: [{ resourceId, mode: "input_output", output: { action: "push", targetRef: "main" } }] },
+    });
+    const noChange = await noChangePrepared!.publish();
+    expect(noChange[0]).toMatchObject({ action: "push", status: "no_changes" });
+  });
+
+  it("creates pull requests through the provider without exposing credentials", async () => {
+    let request: RequestInit | undefined;
+    const provider = githubPullRequestProvider(async (_url, init) => {
+      request = init;
+      return new Response(JSON.stringify({ number: 42, html_url: "https://github.com/acme/repo/pull/42" }), { status: 201 });
+    });
+    const result = await provider.create({
+      repository: "https://github.com/acme/repo.git",
+      token: "secret-token",
+      head: "bizbox/update",
+      base: "main",
+      title: "Update",
+      body: "Generated",
+    });
+    expect(result).toEqual({ id: "42", url: "https://github.com/acme/repo/pull/42" });
+    expect(String(request?.body)).not.toContain("secret-token");
+    expect((request?.headers as Record<string, string>).authorization).toBe("Bearer secret-token");
+  });
+
+  it("redacts provider failure details", async () => {
+    const provider = githubPullRequestProvider(async () => new Response("token=secret-token", { status: 500 }));
+    await expect(provider.create({
+      repository: "git@github.com:acme/repo.git",
+      token: "secret-token",
+      head: "branch",
+      base: "main",
+      title: "Update",
+      body: "",
+    })).rejects.toThrow("GitHub pull request creation failed");
+    await expect(provider.create({
+      repository: "git@github.com:acme/repo.git",
+      token: "secret-token",
+      head: "branch",
+      base: "main",
+      title: "Update",
+      body: "",
+    })).rejects.not.toThrow("secret-token");
+  });
+});
