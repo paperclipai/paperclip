@@ -53,11 +53,11 @@ import {
   pluginLoader,
   REPO_ROOT,
 } from "../services/plugin-loader.js";
-import { logActivity } from "../services/activity-log.js";
+import { logActivity, resolveResponsibleUserIdForActivity } from "../services/activity-log.js";
 import { publishGlobalLiveEvent } from "../services/live-events.js";
 import { issueService } from "../services/issues.js";
 import type { PluginJobScheduler } from "../services/plugin-job-scheduler.js";
-import type { PluginJobStore } from "../services/plugin-job-store.js";
+import type { JobRunAttributionInput, PluginJobStore } from "../services/plugin-job-store.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import type { PluginStreamBus } from "../services/plugin-stream-bus.js";
 import type { PluginToolDispatcher } from "../services/plugin-tool-dispatcher.js";
@@ -686,7 +686,19 @@ export function pluginRoutes(
     entityId: string,
     details: Record<string, unknown>,
   ): Promise<void> {
-    const companyIds = await resolvePluginAuditCompanyIds(req);
+    await logPluginAuditActivity(req, action, entityId, details);
+  }
+
+  async function logPluginAuditActivity(
+    req: Request,
+    action: string,
+    entityId: string,
+    details: Record<string, unknown>,
+    options: { companyId?: string | null; entityType?: string } = {},
+  ): Promise<void> {
+    const companyIds = options.companyId
+      ? [options.companyId]
+      : await resolvePluginAuditCompanyIds(req);
     if (companyIds.length === 0) return;
 
     const actor = getActorInfo(req);
@@ -699,10 +711,69 @@ export function pluginRoutes(
         runId: actor.runId,
         agentApiKeyId: actor.agentApiKeyId,
         action,
-        entityType: "plugin",
+        entityType: options.entityType ?? "plugin",
         entityId,
         details,
       })));
+  }
+
+  async function logResolvedPluginActivity(
+    req: Request,
+    action: string,
+    plugin: { id: string; pluginKey: string },
+    details: Record<string, unknown>,
+    options: { companyId?: string | null; entityType?: string; entityId?: string } = {},
+  ): Promise<void> {
+    await logPluginAuditActivity(req, action, options.entityId ?? plugin.id, {
+      pluginId: plugin.id,
+      pluginKey: plugin.pluginKey,
+      ...details,
+    }, {
+      companyId: options.companyId,
+      entityType: options.entityType,
+    });
+  }
+
+  async function buildPluginJobRunAttribution(
+    req: Request,
+    companyId: string | null,
+    jobId: string,
+  ): Promise<JobRunAttributionInput> {
+    const actor = getActorInfo(req);
+    const responsibleUserId = companyId
+      ? await resolveResponsibleUserIdForActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
+        action: "plugin.job.triggered",
+        entityType: "plugin_job",
+        entityId: jobId,
+      })
+      : actor.actorType === "user"
+        ? actor.actorId
+        : null;
+
+    return {
+      triggeredByActorType: actor.actorType,
+      triggeredByActorId: actor.actorId,
+      triggeredByAgentId: actor.agentId,
+      triggeredByUserId: actor.actorType === "user" ? actor.actorId : null,
+      triggeredByRunId: actor.runId,
+      responsibleUserId,
+    };
+  }
+
+  function readOptionalCompanyId(req: Request, value: unknown): string | undefined {
+    if (value === undefined || value === null) return undefined;
+    if (typeof value !== "string" || value.trim().length === 0) {
+      throw badRequest('"companyId" must be a non-empty string when provided');
+    }
+    const companyId = value.trim();
+    assertCompanyAccess(req, companyId);
+    return companyId;
   }
 
   function assertPluginBridgeScope(req: Request, companyId: unknown): string | undefined {
@@ -1308,6 +1379,36 @@ export function pluginRoutes(
     (res as any).err = rootError;
   }
 
+  async function logPluginBridgeDataRead(
+    req: Request,
+    plugin: { id: string; pluginKey: string },
+    input: { companyId?: string; dataKey: string; routeStyle: "legacy" | "url"; outcome: "success" | "error"; bridgeCode?: string },
+  ): Promise<void> {
+    await logResolvedPluginActivity(req, "plugin.bridge.data_read", plugin, {
+      companyId: input.companyId ?? null,
+      bridgeMethod: "getData",
+      dataKey: input.dataKey,
+      routeStyle: input.routeStyle,
+      outcome: input.outcome,
+      ...(input.bridgeCode ? { bridgeCode: input.bridgeCode } : {}),
+    }, { companyId: input.companyId ?? null });
+  }
+
+  async function logPluginBridgeAction(
+    req: Request,
+    plugin: { id: string; pluginKey: string },
+    input: { companyId?: string; actionKey: string; routeStyle: "legacy" | "url"; outcome: "success" | "error"; bridgeCode?: string },
+  ): Promise<void> {
+    await logResolvedPluginActivity(req, "plugin.bridge.action_performed", plugin, {
+      companyId: input.companyId ?? null,
+      bridgeMethod: "performAction",
+      actionKey: input.actionKey,
+      routeStyle: input.routeStyle,
+      outcome: input.outcome,
+      ...(input.bridgeCode ? { bridgeCode: input.bridgeCode } : {}),
+    }, { companyId: input.companyId ?? null });
+  }
+
   /**
    * POST /api/plugins/:pluginId/bridge/data
    *
@@ -1388,6 +1489,12 @@ export function pluginRoutes(
           renderEnvironment: body.renderEnvironment ?? null,
         },
       );
+      await logPluginBridgeDataRead(req, plugin, {
+        companyId,
+        dataKey: body.key,
+        routeStyle: "legacy",
+        outcome: "success",
+      });
       res.json({ data: result });
     } catch (err) {
       const bridgeError = mapRpcErrorToBridgeError(err);
@@ -1396,6 +1503,13 @@ export function pluginRoutes(
         pluginKey: plugin.pluginKey,
         bridgeMethod: "getData",
         dataKey: body.key,
+      });
+      await logPluginBridgeDataRead(req, plugin, {
+        companyId,
+        dataKey: body.key,
+        routeStyle: "legacy",
+        outcome: "error",
+        bridgeCode: bridgeError.code,
       });
       res.status(502).json(bridgeError);
     }
@@ -1481,6 +1595,12 @@ export function pluginRoutes(
           renderEnvironment: body.renderEnvironment ?? null,
         },
       );
+      await logPluginBridgeAction(req, plugin, {
+        companyId,
+        actionKey: body.key,
+        routeStyle: "legacy",
+        outcome: "success",
+      });
       res.json({ data: result });
     } catch (err) {
       const bridgeError = mapRpcErrorToBridgeError(err);
@@ -1489,6 +1609,13 @@ export function pluginRoutes(
         pluginKey: plugin.pluginKey,
         bridgeMethod: "performAction",
         actionKey: body.key,
+      });
+      await logPluginBridgeAction(req, plugin, {
+        companyId,
+        actionKey: body.key,
+        routeStyle: "legacy",
+        outcome: "error",
+        bridgeCode: bridgeError.code,
       });
       res.status(502).json(bridgeError);
     }
@@ -1575,6 +1702,12 @@ export function pluginRoutes(
           renderEnvironment: body?.renderEnvironment ?? null,
         },
       );
+      await logPluginBridgeDataRead(req, plugin, {
+        companyId,
+        dataKey: key,
+        routeStyle: "url",
+        outcome: "success",
+      });
       res.json({ data: result });
     } catch (err) {
       const bridgeError = mapRpcErrorToBridgeError(err);
@@ -1583,6 +1716,13 @@ export function pluginRoutes(
         pluginKey: plugin.pluginKey,
         bridgeMethod: "getData",
         dataKey: key,
+      });
+      await logPluginBridgeDataRead(req, plugin, {
+        companyId,
+        dataKey: key,
+        routeStyle: "url",
+        outcome: "error",
+        bridgeCode: bridgeError.code,
       });
       res.status(502).json(bridgeError);
     }
@@ -1665,6 +1805,12 @@ export function pluginRoutes(
           renderEnvironment: body?.renderEnvironment ?? null,
         },
       );
+      await logPluginBridgeAction(req, plugin, {
+        companyId,
+        actionKey: key,
+        routeStyle: "url",
+        outcome: "success",
+      });
       res.json({ data: result });
     } catch (err) {
       const bridgeError = mapRpcErrorToBridgeError(err);
@@ -1673,6 +1819,13 @@ export function pluginRoutes(
         pluginKey: plugin.pluginKey,
         bridgeMethod: "performAction",
         actionKey: key,
+      });
+      await logPluginBridgeAction(req, plugin, {
+        companyId,
+        actionKey: key,
+        routeStyle: "url",
+        outcome: "error",
+        bridgeCode: bridgeError.code,
       });
       res.status(502).json(bridgeError);
     }
@@ -1809,6 +1962,8 @@ export function pluginRoutes(
       return;
     }
 
+    let scopedApiAudit: { companyId: string; routeKey: string; routePath: string; method: string } | null = null;
+
     try {
       assertScopedApiAuth(req, match.route);
       const companyId = await resolveScopedApiCompanyId(match.route, match.params, req);
@@ -1817,6 +1972,12 @@ export function pluginRoutes(
         return;
       }
       assertCompanyAccess(req, companyId);
+      scopedApiAudit = {
+        companyId,
+        routeKey: match.route.routeKey,
+        routePath: match.route.path,
+        method: req.method,
+      };
       await enforceScopedApiCheckout(req, match.route, match.params, companyId);
       if (req.method !== "GET" && req.headers["content-type"] && !req.is("application/json")) {
         res.status(415).json({ error: "Plugin API routes accept JSON requests only" });
@@ -1856,6 +2017,16 @@ export function pluginRoutes(
       const status = Number.isInteger(result.status) && Number(result.status) >= 200 && Number(result.status) <= 599
         ? Number(result.status)
         : 200;
+      if (scopedApiAudit) {
+        await logResolvedPluginActivity(req, "plugin.api_route.proxied", plugin, {
+          companyId: scopedApiAudit.companyId,
+          routeKey: scopedApiAudit.routeKey,
+          routePath: scopedApiAudit.routePath,
+          method: scopedApiAudit.method,
+          status,
+          outcome: status >= 400 ? "error" : "success",
+        }, { companyId: scopedApiAudit.companyId });
+      }
       applyPluginScopedApiResponseHeaders(res, result.headers);
       if (status === 204) {
         res.status(status).end();
@@ -1875,6 +2046,16 @@ export function pluginRoutes(
             : err instanceof JsonRpcCallError
               ? 502
               : 500;
+      if (scopedApiAudit) {
+        await logResolvedPluginActivity(req, "plugin.api_route.proxied", plugin, {
+          companyId: scopedApiAudit.companyId,
+          routeKey: scopedApiAudit.routeKey,
+          routePath: scopedApiAudit.routePath,
+          method: scopedApiAudit.method,
+          status,
+          outcome: "error",
+        }, { companyId: scopedApiAudit.companyId });
+      }
       res.status(status).json({
         error: err instanceof Error ? err.message : String(err),
       });
@@ -2119,15 +2300,18 @@ export function pluginRoutes(
     const limit = Math.min(Math.max(parseInt(req.query.limit as string, 10) || 25, 1), 500);
     const level = req.query.level as string | undefined;
     const since = req.query.since as string | undefined;
+    const companyId = requirePluginConfigCompanyId(req, req.query.companyId);
 
-    const conditions = [eq(pluginLogs.pluginId, plugin.id)];
+    const conditions = [eq(pluginLogs.pluginId, plugin.id), eq(pluginLogs.companyId, companyId)];
     if (level) {
       conditions.push(eq(pluginLogs.level, level));
     }
+    let sinceIso: string | null = null;
     if (since) {
       const sinceDate = new Date(since);
       if (!isNaN(sinceDate.getTime())) {
         conditions.push(gte(pluginLogs.createdAt, sinceDate));
+        sinceIso = sinceDate.toISOString();
       }
     }
 
@@ -2138,6 +2322,13 @@ export function pluginRoutes(
       .orderBy(desc(pluginLogs.createdAt))
       .limit(limit);
 
+    await logResolvedPluginActivity(req, "plugin.logs.read", plugin, {
+      companyId,
+      limit,
+      level: level ?? null,
+      since: sinceIso,
+      resultCount: rows.length,
+    }, { companyId });
     res.json(rows);
   });
 
@@ -2220,6 +2411,13 @@ export function pluginRoutes(
     }
 
     const config = await registry.getConfig(plugin.id, companyId);
+    await logResolvedPluginActivity(req, "plugin.config.read", plugin, {
+      companyId,
+      configPresent: Boolean(config),
+      configKeyCount: config?.configJson && typeof config.configJson === "object"
+        ? Object.keys(config.configJson).length
+        : 0,
+    }, { companyId });
     res.json(config);
   });
 
@@ -2401,8 +2599,9 @@ export function pluginRoutes(
       }
     }
 
+    const secretRefs = extractSecretRefBindingsFromConfig(body.configJson, schema);
+
     try {
-      const secretRefs = extractSecretRefBindingsFromConfig(body.configJson, schema);
       await validatePluginSecretRefsForCompany(companyId, secretRefs);
 
       const result = await bridgeDeps.workerManager.call(
@@ -2417,11 +2616,29 @@ export function pluginRoutes(
         const warningText = result.warnings?.length
           ? `Warnings: ${result.warnings.join("; ")}`
           : undefined;
+        await logResolvedPluginActivity(req, "plugin.config.tested", plugin, {
+          companyId,
+          supported: true,
+          valid: true,
+          warningCount: result.warnings?.length ?? 0,
+          errorCount: 0,
+          secretRefCount: secretRefs.length,
+          configKeyCount: Object.keys(body.configJson).length,
+        }, { companyId });
         res.json({ valid: true, message: warningText });
       } else {
         const errorText = result.errors?.length
           ? result.errors.join("; ")
           : "Configuration validation failed.";
+        await logResolvedPluginActivity(req, "plugin.config.tested", plugin, {
+          companyId,
+          supported: true,
+          valid: false,
+          warningCount: result.warnings?.length ?? 0,
+          errorCount: result.errors?.length ?? 0,
+          secretRefCount: secretRefs.length,
+          configKeyCount: Object.keys(body.configJson).length,
+        }, { companyId });
         res.json({ valid: false, message: errorText });
       }
     } catch (err) {
@@ -2430,6 +2647,16 @@ export function pluginRoutes(
         err instanceof JsonRpcCallError &&
         err.code === PLUGIN_RPC_ERROR_CODES.METHOD_NOT_IMPLEMENTED
       ) {
+        await logResolvedPluginActivity(req, "plugin.config.tested", plugin, {
+          companyId,
+          supported: false,
+          valid: false,
+          warningCount: 0,
+          errorCount: 0,
+          secretRefCount: secretRefs.length,
+          configKeyCount: Object.keys(body.configJson).length,
+          outcome: "unsupported",
+        }, { companyId });
         res.json({
           valid: false,
           supported: false,
@@ -2440,6 +2667,15 @@ export function pluginRoutes(
 
       // Worker unavailable or other RPC errors
       const bridgeError = mapRpcErrorToBridgeError(err);
+      await logResolvedPluginActivity(req, "plugin.config.tested", plugin, {
+        companyId,
+        supported: true,
+        valid: false,
+        secretRefCount: secretRefs.length,
+        configKeyCount: Object.keys(body.configJson).length,
+        outcome: "bridge_error",
+        bridgeCode: bridgeError.code,
+      }, { companyId });
       res.status(502).json(bridgeError);
     }
   });
@@ -2561,6 +2797,8 @@ export function pluginRoutes(
     }
 
     const { pluginId, jobId } = req.params;
+    const body = req.body as { companyId?: unknown } | undefined;
+    const companyId = readOptionalCompanyId(req, body?.companyId);
     const plugin = await resolvePlugin(registry, pluginId);
     if (!plugin) {
       res.status(404).json({ error: "Plugin not found" });
@@ -2574,7 +2812,18 @@ export function pluginRoutes(
     }
 
     try {
-      const result = await jobDeps.scheduler.triggerJob(jobId, "manual");
+      const attribution = await buildPluginJobRunAttribution(req, companyId ?? null, job.id);
+      const result = await jobDeps.scheduler.triggerJob(jobId, "manual", {
+        companyId: companyId ?? null,
+        attribution,
+      });
+      await logResolvedPluginActivity(req, "plugin.job.triggered", plugin, {
+        companyId: companyId ?? null,
+        jobId: job.id,
+        jobKey: typeof job.jobKey === "string" ? job.jobKey : null,
+        trigger: "manual",
+        pluginJobRunId: result.runId,
+      }, { companyId: companyId ?? null, entityType: "plugin_job", entityId: job.id });
       res.json(result);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

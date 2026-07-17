@@ -2,8 +2,10 @@ import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  agents,
   companies,
   createDb,
+  heartbeatRuns,
   pluginEntities,
   pluginJobs,
   pluginJobRuns,
@@ -12,6 +14,7 @@ import {
   plugins,
 } from "@paperclipai/db";
 import { buildHostServices, flushPluginLogBuffer } from "../services/plugin-host-services.js";
+import { pluginJobStore } from "../services/plugin-job-store.js";
 import { pluginRegistryService } from "../services/plugin-registry.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -59,6 +62,8 @@ describeEmbeddedPostgres("plugin tenant isolation (company_id FK)", () => {
     await db.delete(pluginLogs);
     await db.delete(pluginWebhookDeliveries);
     await db.delete(plugins);
+    await db.delete(heartbeatRuns);
+    await db.delete(agents);
     await db.delete(companies);
   });
 
@@ -186,6 +191,68 @@ describeEmbeddedPostgres("plugin tenant isolation (company_id FK)", () => {
     expect(deliveries.map((r) => r.companyId).sort((a, b) => String(a).localeCompare(String(b)))).toEqual(
       [companyB, null].sort((a, b) => String(a).localeCompare(String(b))),
     );
+  });
+
+  it("persists host-derived attribution on plugin_job_runs", async () => {
+    const pluginId = await seedPlugin();
+    const companyId = await seedCompany();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const jobId = randomUUID();
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Plugin Runner",
+      role: "engineer",
+      status: "running",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+      responsibleUserId: "run-user",
+    });
+    await db.insert(pluginJobs).values({
+      id: jobId,
+      pluginId,
+      jobKey: "manual-sync",
+      schedule: "* * * * *",
+    });
+
+    const run = await pluginJobStore(db).createRun({
+      jobId,
+      pluginId,
+      companyId,
+      trigger: "manual",
+      triggeredByActorType: "agent",
+      triggeredByActorId: agentId,
+      triggeredByAgentId: agentId,
+      triggeredByRunId: runId,
+      responsibleUserId: "run-user",
+    });
+
+    const row = await db
+      .select()
+      .from(pluginJobRuns)
+      .where(eq(pluginJobRuns.id, run.id))
+      .then((rows) => rows[0]);
+
+    expect(row).toMatchObject({
+      companyId,
+      trigger: "manual",
+      triggeredByActorType: "agent",
+      triggeredByActorId: agentId,
+      triggeredByAgentId: agentId,
+      triggeredByUserId: null,
+      triggeredByRunId: runId,
+      responsibleUserId: "run-user",
+    });
   });
 
   it("plugin_entities unique index is scoped per company — two tenants can share (pluginId, entityType, externalId)", async () => {

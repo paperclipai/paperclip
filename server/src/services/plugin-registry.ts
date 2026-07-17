@@ -676,6 +676,14 @@ export function pluginRegistryService(db: Db) {
       jobId: string,
       trigger: PluginJobRunTrigger,
       companyId: string | null,
+      attribution?: {
+        triggeredByActorType?: "agent" | "user" | "system" | "plugin" | null;
+        triggeredByActorId?: string | null;
+        triggeredByAgentId?: string | null;
+        triggeredByUserId?: string | null;
+        triggeredByRunId?: string | null;
+        responsibleUserId?: string | null;
+      },
     ) => {
       return db
         .insert(pluginJobRuns)
@@ -684,6 +692,12 @@ export function pluginRegistryService(db: Db) {
           jobId,
           companyId,
           trigger,
+          triggeredByActorType: attribution?.triggeredByActorType ?? null,
+          triggeredByActorId: attribution?.triggeredByActorId ?? null,
+          triggeredByAgentId: attribution?.triggeredByAgentId ?? null,
+          triggeredByUserId: attribution?.triggeredByUserId ?? null,
+          triggeredByRunId: attribution?.triggeredByRunId ?? null,
+          responsibleUserId: attribution?.responsibleUserId ?? null,
           status: "pending",
         })
         .returning()

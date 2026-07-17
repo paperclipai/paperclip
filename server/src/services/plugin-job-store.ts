@@ -52,14 +52,31 @@ type JobDefinitionStatus = PluginJobRecord["status"];
 // Types
 // ---------------------------------------------------------------------------
 
+export interface JobRunAttributionInput {
+  /** Host-derived actor type that triggered this run. */
+  triggeredByActorType?: "agent" | "user" | "system" | "plugin" | null;
+  /** Host-derived actor id that triggered this run. */
+  triggeredByActorId?: string | null;
+  /** Host-derived agent id that triggered this run, when applicable. */
+  triggeredByAgentId?: string | null;
+  /** Host-derived board/user id that triggered this run, when applicable. */
+  triggeredByUserId?: string | null;
+  /** Host-derived heartbeat run id that triggered this run, when applicable. */
+  triggeredByRunId?: string | null;
+  /** Responsible user resolved by the host for this run, when known. */
+  responsibleUserId?: string | null;
+}
+
 /**
  * Input for creating a job run record.
  */
-export interface CreateJobRunInput {
+export interface CreateJobRunInput extends JobRunAttributionInput {
   /** FK to the plugin_jobs row. */
   jobId: string;
   /** FK to the plugins row. */
   pluginId: string;
+  /** Company scope for company-owned manual runs; null/omitted means instance scope. */
+  companyId?: string | null;
   /** What triggered this run. */
   trigger: PluginJobRunTrigger;
 }
@@ -356,7 +373,14 @@ export function pluginJobStore(db: Db) {
         .values({
           jobId: input.jobId,
           pluginId: input.pluginId,
+          companyId: input.companyId ?? null,
           trigger: input.trigger,
+          triggeredByActorType: input.triggeredByActorType ?? null,
+          triggeredByActorId: input.triggeredByActorId ?? null,
+          triggeredByAgentId: input.triggeredByAgentId ?? null,
+          triggeredByUserId: input.triggeredByUserId ?? null,
+          triggeredByRunId: input.triggeredByRunId ?? null,
+          responsibleUserId: input.responsibleUserId ?? null,
           status: "queued",
         })
         .returning();

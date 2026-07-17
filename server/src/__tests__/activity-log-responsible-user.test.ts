@@ -231,4 +231,65 @@ describeEmbeddedPostgres("logActivity responsible-user stamping", () => {
 
     expect(row?.responsibleUserId).toBe("key-user");
   });
+
+  it("persists plugin audit run attribution from heartbeat responsible user", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const pluginId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      defaultResponsibleUserId: "default-user",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "running",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+      responsibleUserId: "run-user",
+    });
+
+    await logActivity(db, activityInput({
+      companyId,
+      actorType: "agent",
+      actorId: agentId,
+      agentId,
+      runId,
+      action: "plugin.bridge.action_performed",
+      entityType: "plugin",
+      entityId: pluginId,
+      details: { pluginId, actionKey: "sync" },
+    }));
+
+    const row = await db
+      .select({
+        agentId: activityLog.agentId,
+        runId: activityLog.runId,
+        responsibleUserId: activityLog.responsibleUserId,
+      })
+      .from(activityLog)
+      .where(eq(activityLog.companyId, companyId))
+      .then((rows) => rows[0]);
+
+    expect(row).toMatchObject({
+      agentId,
+      runId,
+      responsibleUserId: "run-user",
+    });
+  });
 });

@@ -384,7 +384,7 @@ export const queryKeys = {
     localFolders: (pluginId: string, companyId: string) =>
       ["plugins", pluginId, "companies", companyId, "local-folders"] as const,
     dashboard: (pluginId: string) => ["plugins", pluginId, "dashboard"] as const,
-    logs: (pluginId: string) => ["plugins", pluginId, "logs"] as const,
+    logs: (pluginId: string, companyId: string) => ["plugins", pluginId, "companies", companyId, "logs"] as const,
   },
   adapters: {
     all: ["adapters"] as const,

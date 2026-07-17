@@ -82,6 +82,13 @@ const ACTIVITY_ROW_VERBS: Record<string, string> = {
   "company.archived": "archived",
   "company.reactivated": "reactivated",
   "company.budget_updated": "updated budget for",
+  "plugin.config.read": "read configuration for",
+  "plugin.config.tested": "tested configuration for",
+  "plugin.bridge.data_read": "read bridge data from",
+  "plugin.bridge.action_performed": "performed bridge action on",
+  "plugin.api_route.proxied": "proxied API route for",
+  "plugin.job.triggered": "triggered job for",
+  "plugin.logs.read": "read logs for",
 };
 
 const ISSUE_ACTIVITY_LABELS: Record<string, string> = {
@@ -129,6 +136,13 @@ const ISSUE_ACTIVITY_LABELS: Record<string, string> = {
   "approval.created": "requested approval",
   "approval.approved": "approved",
   "approval.rejected": "rejected",
+  "plugin.config.read": "read plugin configuration",
+  "plugin.config.tested": "tested plugin configuration",
+  "plugin.bridge.data_read": "read plugin bridge data",
+  "plugin.bridge.action_performed": "performed plugin bridge action",
+  "plugin.api_route.proxied": "proxied a plugin API route",
+  "plugin.job.triggered": "triggered a plugin job",
+  "plugin.logs.read": "read plugin logs",
 };
 
 function asRecord(value: unknown): Record<string, unknown> | null {
