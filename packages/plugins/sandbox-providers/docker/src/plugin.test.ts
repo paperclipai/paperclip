@@ -48,6 +48,13 @@ describe("Docker sandbox provider", () => {
     await expect(plugin.definition.onEnvironmentExecute?.({ driverKey: "docker", companyId: "company-1", environmentId: "env-1", config, lease: { providerLeaseId: "container-1" }, command: "pwd", cwd: "/etc" })).rejects.toThrow("inside /workspace");
   });
 
+  it("rejects workspace path traversal before running Docker", async () => {
+    const runner = vi.fn() as unknown as DockerRunner;
+    const plugin = createDockerSandboxPlugin(runner);
+    await expect(plugin.definition.onEnvironmentExecute?.({ driverKey: "docker", companyId: "company-1", environmentId: "env-1", config, lease: { providerLeaseId: "container-1" }, command: "pwd", cwd: "/workspace/../../etc" })).rejects.toThrow("inside /workspace");
+    expect(runner).not.toHaveBeenCalled();
+  });
+
   it("refuses cleanup when ownership labels do not exactly match", async () => {
     const runner = vi.fn(async (args: string[]) => {
       if (args[0] === "inspect") return { exitCode: 0, signal: null, timedOut: false, stdout: dockerInspect({ "com.paperclip.managed": "true", "com.paperclip.provider": "docker" }), stderr: "", stdoutTruncated: false, stderrTruncated: false };

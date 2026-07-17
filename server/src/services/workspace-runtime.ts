@@ -4150,6 +4150,25 @@ async function startLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
   return started.record;
 }
 
+async function waitForProviderRuntimeServiceHealth(input: {
+  service: Record<string, unknown>;
+  providerRuntime: RuntimeServiceProvider;
+  request: Parameters<RuntimeServiceProvider["health"]>[0];
+}): Promise<Awaited<ReturnType<RuntimeServiceProvider["health"]>>> {
+  const timeoutSec = resolveWorkspaceRuntimeReadinessTimeoutSec(input.service);
+  const readiness = parseObject(input.service.readiness);
+  const intervalMs = Math.max(100, asNumber(readiness.intervalMs, 500));
+  const deadline = Date.now() + timeoutSec * 1000;
+  let health = await input.providerRuntime.health(input.request);
+
+  while (!health.healthy && Date.now() < deadline) {
+    await delay(intervalMs);
+    health = await input.providerRuntime.health(input.request);
+  }
+
+  return health;
+}
+
 async function startProviderRuntimeService(input: StartLocalRuntimeServiceInput & { providerRuntime: RuntimeServiceProvider }): Promise<RuntimeServiceRecord> {
   const identity = resolveRuntimeServiceReuseIdentity({
     service: input.service,
@@ -4190,11 +4209,15 @@ async function startProviderRuntimeService(input: StartLocalRuntimeServiceInput 
     readinessUrl,
     env,
   });
-  const health = await input.providerRuntime.health({
-    serviceName: identity.serviceName,
-    providerRef: started.providerRef,
-    url: started.url ?? url,
-    readinessUrl,
+  const health = await waitForProviderRuntimeServiceHealth({
+    service: input.service,
+    providerRuntime: input.providerRuntime,
+    request: {
+      serviceName: identity.serviceName,
+      providerRef: started.providerRef,
+      url: started.url ?? url,
+      readinessUrl,
+    },
   });
   if (!health.healthy) {
     await input.providerRuntime.stop({ serviceName: identity.serviceName, providerRef: started.providerRef }).catch(() => undefined);
@@ -4240,24 +4263,30 @@ async function stopRuntimeService(serviceId: string) {
   if (record.reuseKey && runtimeServicesByReuseKey.get(record.reuseKey) === record.id) {
     runtimeServicesByReuseKey.delete(record.reuseKey);
   }
-  if (record.providerLifecycle) {
-    await record.providerLifecycle.stop({ serviceName: record.serviceName, providerRef: record.providerRef });
-  } else if (record.child && record.child.pid) {
-    await terminateLocalService({
-      pid: record.child.pid,
-      processGroupId: record.processGroupId ?? record.child.pid,
-    });
-  } else if (record.providerRef) {
-    const pid = Number.parseInt(record.providerRef, 10);
-    if (Number.isInteger(pid) && pid > 0) {
+  try {
+    if (record.providerLifecycle) {
+      await record.providerLifecycle.stop({ serviceName: record.serviceName, providerRef: record.providerRef });
+    } else if (record.child && record.child.pid) {
       await terminateLocalService({
-        pid,
-        processGroupId: record.processGroupId,
+        pid: record.child.pid,
+        processGroupId: record.processGroupId ?? record.child.pid,
       });
+    } else if (record.providerRef) {
+      const pid = Number.parseInt(record.providerRef, 10);
+      if (Number.isInteger(pid) && pid > 0) {
+        await terminateLocalService({
+          pid,
+          processGroupId: record.processGroupId,
+        });
+      }
+    }
+  } finally {
+    try {
+      if (record.provider === "local_process") await removeLocalServiceRegistryRecord(record.serviceKey);
+    } finally {
+      await persistRuntimeServiceRecord(record.db, record);
     }
   }
-  if (record.provider === "local_process") await removeLocalServiceRegistryRecord(record.serviceKey);
-  await persistRuntimeServiceRecord(record.db, record);
 }
 
 async function markPersistedRuntimeServicesStoppedForExecutionWorkspace(input: {
@@ -4587,12 +4616,17 @@ async function startRuntimeServicesForWorkspaceControlUnlocked(
 
     // Manually controlled services are not tied to a heartbeat run lifecycle, so they do not
     // retain a run lease and never persist a startedByRunId foreign key.
-    const started = options?.deferReadiness
-      ? await spawnLocalRuntimeService(startInput)
-      : {
-          record: await startLocalRuntimeService(startInput),
+    const started = input.providerRuntime
+      ? {
+          record: await startProviderRuntimeService({ ...startInput, providerRuntime: input.providerRuntime }),
           readiness: Promise.resolve(),
-        };
+        }
+      : options?.deferReadiness
+        ? await spawnLocalRuntimeService(startInput)
+        : {
+            record: await startLocalRuntimeService(startInput),
+            readiness: Promise.resolve(),
+          };
     registerRuntimeService(registryDb, started.record);
     await persistRuntimeServiceRecord(persistenceDb, started.record);
     refs.push(toRuntimeServiceRef(started.record));
@@ -4621,7 +4655,7 @@ export async function startRuntimeServicesForWorkspaceControl(
   });
   const invocationId = input.invocationId ?? randomUUID();
 
-  if (rawServices.length === 0 || !input.db || (!input.executionWorkspaceId && !input.workspace.workspaceId)) {
+  if (rawServices.length === 0 || input.providerRuntime || !input.db || (!input.executionWorkspaceId && !input.workspace.workspaceId)) {
     const batch = await startRuntimeServicesForWorkspaceControlUnlocked(input, rawServices, invocationId);
     return batch.refs;
   }

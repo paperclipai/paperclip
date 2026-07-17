@@ -130,6 +130,11 @@
     "publishFromCi": true
   },
   {
+    "dir": "packages/plugins/sandbox-providers/docker",
+    "name": "@paperclipai/plugin-docker",
+    "publishFromCi": true
+  },
+  {
     "dir": "packages/plugins/sandbox-providers/exe-dev",
     "name": "@paperclipai/plugin-exe-dev",
     "publishFromCi": true
