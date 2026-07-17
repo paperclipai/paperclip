@@ -3319,6 +3319,7 @@ describe("ensureRuntimeServicesForRun", () => {
           url: "https://runtime.example.test",
           readinessUrl: "https://runtime.example.test/health",
         });
+        expect(service.env).toEqual({ SAFE_RUNTIME_VALUE: "from-adapter" });
         return {
           providerRef: "docker-runtime-service-1",
           url: "https://runtime.example.test",
@@ -3354,12 +3355,13 @@ describe("ensureRuntimeServicesForRun", () => {
               name: "remote-web",
               command: "pnpm dev",
               cwd: ".",
+              env: { SAFE_RUNTIME_VALUE: "{{workspace.env.RUNTIME_SAFE_VALUE}}" },
               expose: { type: "url", urlTemplate: "https://runtime.example.test" },
               readiness: { type: "http", url: "https://runtime.example.test/health" },
             }],
           },
         },
-        adapterEnv: {},
+        adapterEnv: { RUNTIME_SAFE_VALUE: "from-adapter", DATABASE_URL: "postgres://must-not-forward.example.test/paperclip" },
         providerRuntime: provider,
       });
 

@@ -4197,8 +4197,11 @@ async function startProviderRuntimeService(input: StartLocalRuntimeServiceInput 
       ? renderTemplate(readinessUrlTemplate, templateData)
       : asString(readiness.url, url ?? "") || null;
   const env = {
-    ...sanitizeRuntimeServiceBaseEnv(process.env),
-    ...input.adapterEnv,
+    // A provider runtime executes in a different trust boundary. Unlike a
+    // local runtime service, it must never inherit the Paperclip server or
+    // adapter environment wholesale: either can contain deployment secrets.
+    // `identity.envConfig` is the explicit per-service allow-list and may use
+    // template values from adapterEnv while rendering.
     ...renderRuntimeServiceEnv({ envConfig: identity.envConfig, templateData }),
   } as Record<string, string>;
   const started = await input.providerRuntime.start({
@@ -4655,7 +4658,7 @@ export async function startRuntimeServicesForWorkspaceControl(
   });
   const invocationId = input.invocationId ?? randomUUID();
 
-  if (rawServices.length === 0 || input.providerRuntime || !input.db || (!input.executionWorkspaceId && !input.workspace.workspaceId)) {
+  if (rawServices.length === 0 || !input.db || (!input.executionWorkspaceId && !input.workspace.workspaceId)) {
     const batch = await startRuntimeServicesForWorkspaceControlUnlocked(input, rawServices, invocationId);
     return batch.refs;
   }

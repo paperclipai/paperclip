@@ -27,8 +27,29 @@ const WORKSPACE_PATH = "/workspace";
 const SERVICE_PORT = 3107;
 const MAX_OUTPUT_BYTES = 256 * 1024;
 const MAX_TIMEOUT_MS = 10 * 60_000;
+const MAX_SERVICE_COMMAND_BYTES = 32 * 1024;
+const MAX_ENV_VALUE_BYTES = 8 * 1024;
+const MAX_ENV_TOTAL_BYTES = 64 * 1024;
+const MAX_ENV_ENTRIES = 64;
 const SAFE_ENV_KEY = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const SAFE_IMAGE = /^[A-Za-z0-9][A-Za-z0-9._:/@-]*$/;
+const SAFE_SERVICE_NAME = /^[A-Za-z0-9_-]{1,80}$/;
+const SAFE_LEASE_ID = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
+const RESERVED_ENV_KEYS = new Set([
+  "HOME", "PATH", "SHELL", "ENV", "BASH_ENV", "CDPATH", "IFS", "NODE_OPTIONS", "NODE_PATH",
+]);
+
+function isReservedEnvKey(key: string): boolean {
+  const normalized = key.toUpperCase();
+  return (
+    RESERVED_ENV_KEYS.has(normalized)
+    || normalized.startsWith("PAPERCLIP_")
+    || normalized.startsWith("LD_")
+    || normalized === "DATABASE_URL"
+    || normalized === "REDIS_URL"
+    || /(?:SECRET|TOKEN|PASSWORD|CREDENTIAL|PRIVATE_KEY|ACCESS_KEY)/.test(normalized)
+  );
+}
 
 export interface DockerDriverConfig {
   image: string;
@@ -64,6 +85,8 @@ type DockerInspect = {
   Config?: { Labels?: Record<string, string> };
   NetworkSettings?: { Ports?: Record<string, Array<{ HostIp?: string; HostPort?: string }> | null> };
 };
+
+type LeaseLabels = Record<string, string>;
 
 function boundedNumber(value: unknown, fallback: number, min: number, max: number): number {
   if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
@@ -197,19 +220,45 @@ async function inspectLease(runner: DockerRunner, providerLeaseId: string): Prom
   }
 }
 
-function expectedLeaseLabels(params: { companyId: string; environmentId: string; config: DockerDriverConfig }) {
-  return {
-    "com.paperclip.managed": "true",
-    "com.paperclip.provider": "docker",
-    "com.paperclip.company": labelPart(params.companyId),
-    "com.paperclip.environment": labelPart(params.environmentId),
-    "com.paperclip.config-fingerprint": fingerprint(params.config),
-  };
-}
-
 function isOwnedLease(inspect: DockerInspect | null, expected: Record<string, string>): boolean {
   const labels = inspect?.Config?.Labels;
-  return Boolean(labels && Object.entries(expected).every(([key, value]) => labels[key] === value));
+  if (!labels || !inspect?.Id) return false;
+  const actualPaperclipKeys = Object.keys(labels).filter((key) => key.startsWith("com.paperclip."));
+  return (
+    actualPaperclipKeys.length === Object.keys(expected).length
+    && actualPaperclipKeys.every((key) => labels[key] === expected[key])
+    && Object.entries(expected).every(([key, value]) => labels[key] === value)
+  );
+}
+
+function leaseLabelsFromMetadata(metadata: Record<string, unknown> | undefined): LeaseLabels | null {
+  const candidate = metadata?.dockerLeaseLabels;
+  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return null;
+  const labels = Object.fromEntries(
+    Object.entries(candidate).filter((entry): entry is [string, string] => typeof entry[0] === "string" && typeof entry[1] === "string"),
+  );
+  const expectedKeys = [
+    "com.paperclip.managed", "com.paperclip.provider", "com.paperclip.company", "com.paperclip.environment",
+    "com.paperclip.workspace", "com.paperclip.run", "com.paperclip.lease", "com.paperclip.config-fingerprint",
+  ];
+  return expectedKeys.every((key) => typeof labels[key] === "string") ? labels : null;
+}
+
+async function assertOwnedRunningLease(input: {
+  runner: DockerRunner;
+  providerLeaseId: string | null | undefined;
+  leaseMetadata?: Record<string, unknown>;
+}): Promise<DockerInspect> {
+  if (!input.providerLeaseId || !SAFE_LEASE_ID.test(input.providerLeaseId)) {
+    throw new Error("Docker sandbox lease id is invalid");
+  }
+  const expected = leaseLabelsFromMetadata(input.leaseMetadata);
+  if (!expected) throw new Error("Docker sandbox lease ownership metadata is missing");
+  const inspect = await inspectLease(input.runner, input.providerLeaseId);
+  if (!inspect || inspect.Id !== input.providerLeaseId || !inspect.State?.Running || !isOwnedLease(inspect, expected)) {
+    throw new Error("Docker sandbox lease is unavailable or does not exactly match its Paperclip ownership");
+  }
+  return inspect;
 }
 
 function hostPort(inspect: DockerInspect): number | null {
@@ -220,24 +269,37 @@ function hostPort(inspect: DockerInspect): number | null {
 }
 
 function validContainerCwd(cwd: string | undefined): string {
-  const selected = path.posix.normalize(cwd?.trim() || WORKSPACE_PATH);
+  const raw = cwd?.trim() || WORKSPACE_PATH;
+  if (raw.includes("\0")) throw new Error("Docker sandbox cwd contains a null byte");
+  const selected = path.posix.normalize(raw);
   if (!selected.startsWith(`${WORKSPACE_PATH}/`) && selected !== WORKSPACE_PATH) {
     throw new Error(`Docker sandbox cwd must be inside ${WORKSPACE_PATH}`);
   }
-  if (selected.includes("\0")) throw new Error("Docker sandbox cwd contains a null byte");
   return selected;
 }
 
 function validCommand(command: string, args: string[] | undefined, env: Record<string, string> | undefined) {
-  if (!command || command.includes("\0")) throw new Error("Docker sandbox command must be non-empty and contain no null bytes");
+  if (!command || command.includes("\0") || Buffer.byteLength(command) > MAX_SERVICE_COMMAND_BYTES) {
+    throw new Error("Docker sandbox command must be non-empty, bounded, and contain no null bytes");
+  }
   for (const arg of args ?? []) if (arg.includes("\0")) throw new Error("Docker sandbox argument contains a null byte");
-  for (const [key, value] of Object.entries(env ?? {})) {
-    if (!SAFE_ENV_KEY.test(key) || value.includes("\0")) throw new Error("Docker sandbox environment contains an invalid key or null byte");
+  const entries = Object.entries(env ?? {});
+  if (entries.length > MAX_ENV_ENTRIES) throw new Error("Docker sandbox environment has too many entries");
+  let totalBytes = 0;
+  for (const [key, value] of entries) {
+    if (!SAFE_ENV_KEY.test(key) || isReservedEnvKey(key)) {
+      throw new Error("Docker sandbox environment contains a reserved or invalid key");
+    }
+    if (value.includes("\0") || Buffer.byteLength(value) > MAX_ENV_VALUE_BYTES) {
+      throw new Error("Docker sandbox environment contains an invalid value");
+    }
+    totalBytes += Buffer.byteLength(key) + Buffer.byteLength(value);
+    if (totalBytes > MAX_ENV_TOTAL_BYTES) throw new Error("Docker sandbox environment is too large");
   }
 }
 
 function servicePidPath(serviceName: string): string {
-  if (!/^[A-Za-z0-9_-]{1,80}$/.test(serviceName)) throw new Error("Docker runtime service name is invalid");
+  if (!SAFE_SERVICE_NAME.test(serviceName)) throw new Error("Docker runtime service name is invalid");
   return `/tmp/paperclip-services/${serviceName}.pid`;
 }
 
@@ -247,24 +309,25 @@ function servicePidPath(serviceName: string): string {
  * by the trusted host process.
  */
 export async function startDockerRuntimeService(runner: DockerRunner, service: DockerRuntimeService): Promise<{ providerRef: string }> {
-  if (!service.providerLeaseId || service.providerLeaseId.includes("\0") || service.command.includes("\0")) {
+  if (!service.providerLeaseId || !SAFE_LEASE_ID.test(service.providerLeaseId)) {
     throw new Error("Docker runtime service has an invalid lease id or command");
   }
   validCommand(service.command, undefined, service.env);
   const pidPath = servicePidPath(service.serviceName);
   const cwd = validContainerCwd(service.cwd);
-  const script = "mkdir -p /tmp/paperclip-services; (exec /bin/sh -lc \"$1\") >/tmp/paperclip-services/$2.log 2>&1 & pid=$!; echo \"$pid\" >\"$3\"; wait \"$pid\"";
+  const script = "mkdir -p /tmp/paperclip-services; (exec /bin/sh -c \"$1\") >/tmp/paperclip-services/$2.log 2>&1 & pid=$!; echo \"$pid\" >\"$3\"; wait \"$pid\"";
   const args = ["exec", "--detach", "--workdir", cwd, "--user", "paperclip"];
   for (const [key, value] of Object.entries(service.env ?? {})) args.push("--env", `${key}=${value}`);
-  args.push(service.providerLeaseId, "/bin/sh", "-lc", script, "paperclip-service", service.command, service.serviceName, pidPath);
+  args.push(service.providerLeaseId, "/bin/sh", "-c", script, "paperclip-service", service.command, service.serviceName, pidPath);
   await mustRun(runner, args, { timeoutMs: 30_000 });
   return { providerRef: `${service.providerLeaseId}:${service.serviceName}` };
 }
 
 export async function stopDockerRuntimeService(runner: DockerRunner, service: Pick<DockerRuntimeService, "providerLeaseId" | "serviceName">): Promise<void> {
+  if (!SAFE_LEASE_ID.test(service.providerLeaseId)) throw new Error("Docker runtime service has an invalid lease id");
   const pidPath = servicePidPath(service.serviceName);
   const script = "if test -r \"$1\"; then pid=$(cat \"$1\"); kill \"$pid\" 2>/dev/null || true; rm -f \"$1\"; fi";
-  const result = await runner(["exec", "--user", "paperclip", service.providerLeaseId, "/bin/sh", "-lc", script, "paperclip-service-stop", pidPath], { timeoutMs: 30_000 });
+  const result = await runner(["exec", "--user", "paperclip", service.providerLeaseId, "/bin/sh", "-c", script, "paperclip-service-stop", pidPath], { timeoutMs: 30_000 });
   if (result.exitCode !== 0 && !result.timedOut) throw failure(result, "docker exec service stop");
 }
 
@@ -282,7 +345,7 @@ export async function healthDockerRuntimeService(url: string, fetchImpl: typeof 
   }
 }
 
-function metadata(params: { providerLeaseId: string; inspect: DockerInspect; config: DockerDriverConfig }) {
+function metadata(params: { providerLeaseId: string; inspect: DockerInspect; config: DockerDriverConfig; leaseLabels: LeaseLabels }) {
   const port = hostPort(params.inspect);
   return {
     provider: "docker",
@@ -292,20 +355,22 @@ function metadata(params: { providerLeaseId: string; inspect: DockerInspect; con
     port3107HostPort: port,
     port3107Url: port ? `http://127.0.0.1:${port}` : null,
     containerId: params.providerLeaseId,
+    dockerLeaseLabels: params.leaseLabels,
   };
 }
 
 async function releaseDockerLease(input: {
   runner: DockerRunner;
-  companyId: string;
-  environmentId: string;
-  config: DockerDriverConfig;
   providerLeaseId: string | null;
+  leaseMetadata?: Record<string, unknown>;
 }): Promise<void> {
   if (!input.providerLeaseId) return;
+  if (!SAFE_LEASE_ID.test(input.providerLeaseId)) throw new Error("Docker sandbox lease id is invalid");
+  const expectedLabels = leaseLabelsFromMetadata(input.leaseMetadata);
+  if (!expectedLabels) throw new Error("Docker sandbox lease ownership metadata is missing");
   const inspect = await inspectLease(input.runner, input.providerLeaseId);
   if (!inspect) return;
-  if (!isOwnedLease(inspect, expectedLeaseLabels(input))) {
+  if (inspect.Id !== input.providerLeaseId || !isOwnedLease(inspect, expectedLabels)) {
     throw new Error("Refusing to remove a Docker container that is not this exact Paperclip lease");
   }
   await mustRun(input.runner, ["rm", "--force", input.providerLeaseId], { timeoutMs: 30_000 });
@@ -338,43 +403,45 @@ export function createDockerSandboxPlugin(runner: DockerRunner = runDockerCli) {
       const providerLeaseId = created.stdout.trim();
       if (!providerLeaseId) throw new Error("Docker did not return a container id for the new lease");
       const inspect = await inspectLease(runner, providerLeaseId);
-      if (!isOwnedLease(inspect, expectedLeaseLabels({ companyId: params.companyId, environmentId: params.environmentId, config }))) {
-        await runner(["rm", "--force", providerLeaseId], { timeoutMs: 20_000 }).catch(() => undefined);
+      if (inspect?.Id !== providerLeaseId || !inspect?.State?.Running || !isOwnedLease(inspect, labels)) {
         throw new Error("Created Docker container did not have the expected Paperclip ownership labels");
       }
-      return { providerLeaseId, metadata: metadata({ providerLeaseId, inspect: inspect!, config }) };
+      return { providerLeaseId, metadata: metadata({ providerLeaseId, inspect, config, leaseLabels: labels }) };
     },
     async onEnvironmentResumeLease(params: PluginEnvironmentResumeLeaseParams): Promise<PluginEnvironmentLease> {
       const config = parseDockerDriverConfig(params.config);
-      const inspect = await inspectLease(runner, params.providerLeaseId);
-      if (!isOwnedLease(inspect, expectedLeaseLabels({ companyId: params.companyId, environmentId: params.environmentId, config })) || !inspect?.State?.Running) {
-        throw new Error("Docker sandbox lease has expired or no longer matches its Paperclip identity");
-      }
-      return { providerLeaseId: params.providerLeaseId, metadata: metadata({ providerLeaseId: params.providerLeaseId, inspect, config }) };
+      const inspect = await assertOwnedRunningLease({
+        runner,
+        providerLeaseId: params.providerLeaseId,
+        leaseMetadata: params.leaseMetadata,
+      });
+      const leaseLabels = leaseLabelsFromMetadata(params.leaseMetadata)!;
+      return { providerLeaseId: params.providerLeaseId, metadata: metadata({ providerLeaseId: params.providerLeaseId, inspect, config, leaseLabels }) };
     },
     async onEnvironmentReleaseLease(params: PluginEnvironmentReleaseLeaseParams): Promise<void> {
-      const config = parseDockerDriverConfig(params.config);
-      await releaseDockerLease({ runner, companyId: params.companyId, environmentId: params.environmentId, config, providerLeaseId: params.providerLeaseId });
+      await releaseDockerLease({ runner, providerLeaseId: params.providerLeaseId, leaseMetadata: params.leaseMetadata });
     },
     async onEnvironmentDestroyLease(params: PluginEnvironmentDestroyLeaseParams): Promise<void> {
-      const config = parseDockerDriverConfig(params.config);
-      await releaseDockerLease({ runner, companyId: params.companyId, environmentId: params.environmentId, config, providerLeaseId: params.providerLeaseId });
+      await releaseDockerLease({ runner, providerLeaseId: params.providerLeaseId, leaseMetadata: params.leaseMetadata });
     },
     async onEnvironmentRealizeWorkspace(params: PluginEnvironmentRealizeWorkspaceParams): Promise<PluginEnvironmentRealizeWorkspaceResult> {
       const config = parseDockerDriverConfig(params.config);
       if (!params.lease.providerLeaseId) throw new Error("Docker sandbox lease id is required to realize a workspace");
-      const inspect = await inspectLease(runner, params.lease.providerLeaseId);
-      if (!isOwnedLease(inspect, expectedLeaseLabels({ companyId: params.companyId, environmentId: params.environmentId, config })) || !inspect?.State?.Running) {
-        throw new Error("Docker sandbox lease is unavailable for workspace realization");
-      }
+      const inspect = await assertOwnedRunningLease({ runner, providerLeaseId: params.lease.providerLeaseId, leaseMetadata: params.lease.metadata });
       await mustRun(runner, ["exec", "--user", "paperclip", params.lease.providerLeaseId, "mkdir", "-p", WORKSPACE_PATH], { timeoutMs: 20_000 });
-      return { cwd: WORKSPACE_PATH, metadata: metadata({ providerLeaseId: params.lease.providerLeaseId, inspect, config }) };
+      return { cwd: WORKSPACE_PATH, metadata: metadata({
+        providerLeaseId: params.lease.providerLeaseId,
+        inspect,
+        config,
+        leaseLabels: leaseLabelsFromMetadata(params.lease.metadata)!,
+      }) };
     },
     async onEnvironmentExecute(params: PluginEnvironmentExecuteParams): Promise<PluginEnvironmentExecuteResult> {
       const config = parseDockerDriverConfig(params.config);
       if (!params.lease.providerLeaseId) throw new Error("Docker sandbox lease id is required to execute a command");
       validCommand(params.command, params.args, params.env);
       const cwd = validContainerCwd(params.cwd);
+      await assertOwnedRunningLease({ runner, providerLeaseId: params.lease.providerLeaseId, leaseMetadata: params.lease.metadata });
       const args = ["exec", "--workdir", cwd, "--user", "paperclip"];
       for (const [key, value] of Object.entries(params.env ?? {})) args.push("--env", `${key}=${value}`);
       args.push(params.lease.providerLeaseId, params.command, ...(params.args ?? []));
@@ -383,6 +450,7 @@ export function createDockerSandboxPlugin(runner: DockerRunner = runDockerCli) {
     },
     async onEnvironmentStartRuntimeService(params: PluginEnvironmentStartRuntimeServiceParams): Promise<PluginEnvironmentStartRuntimeServiceResult> {
       if (!params.lease.providerLeaseId) throw new Error("Docker sandbox lease id is required to start a runtime service");
+      await assertOwnedRunningLease({ runner, providerLeaseId: params.lease.providerLeaseId, leaseMetadata: params.lease.metadata });
       const started = await startDockerRuntimeService(runner, {
         providerLeaseId: params.lease.providerLeaseId,
         serviceName: params.service.serviceName,
@@ -394,9 +462,17 @@ export function createDockerSandboxPlugin(runner: DockerRunner = runDockerCli) {
     },
     async onEnvironmentStopRuntimeService(params: PluginEnvironmentStopRuntimeServiceParams): Promise<void> {
       if (!params.lease.providerLeaseId) throw new Error("Docker sandbox lease id is required to stop a runtime service");
+      await assertOwnedRunningLease({ runner, providerLeaseId: params.lease.providerLeaseId, leaseMetadata: params.lease.metadata });
+      if (params.providerRef && params.providerRef !== `${params.lease.providerLeaseId}:${params.serviceName}`) {
+        throw new Error("Docker runtime service provider reference does not belong to this lease");
+      }
       await stopDockerRuntimeService(runner, { providerLeaseId: params.lease.providerLeaseId, serviceName: params.serviceName });
     },
     async onEnvironmentHealthRuntimeService(params: PluginEnvironmentHealthRuntimeServiceParams): Promise<PluginEnvironmentHealthRuntimeServiceResult> {
+      await assertOwnedRunningLease({ runner, providerLeaseId: params.lease.providerLeaseId, leaseMetadata: params.lease.metadata });
+      if (params.providerRef && params.providerRef !== `${params.lease.providerLeaseId}:${params.serviceName}`) {
+        throw new Error("Docker runtime service provider reference does not belong to this lease");
+      }
       const url = params.readinessUrl ?? params.url ?? null;
       return { healthy: url ? await healthDockerRuntimeService(url) : true, url, metadata: { provider: "docker" } };
     },

@@ -9,6 +9,18 @@ function dockerInspect(labels: Record<string, string>, running = true) {
   return JSON.stringify([{ Id: "container-1", State: { Running: running }, Config: { Labels: labels }, NetworkSettings: { Ports: { "3107/tcp": [{ HostIp: "127.0.0.1", HostPort: "45123" }] } } }]);
 }
 
+function leaseMetadata(labels: Record<string, string>) {
+  return { dockerLeaseLabels: labels };
+}
+
+function lease(labels: Record<string, string>) {
+  return { providerLeaseId: "container-1", metadata: leaseMetadata(labels) };
+}
+
+function labelsForLease() {
+  return buildLeaseLabels({ companyId: "company-1", environmentId: "env-1", executionWorkspaceId: "ws-1", runId: "run-1", leaseNonce: "lease-1", config });
+}
+
 describe("Docker sandbox provider", () => {
   it("declares the stable first-party provider identity", () => {
     expect(manifest.id).toBe("paperclip.docker-sandbox-provider");
@@ -32,11 +44,14 @@ describe("Docker sandbox provider", () => {
   });
 
   it("keeps untrusted command, argument, and environment values out of a host shell", async () => {
-    const runner = vi.fn(async () => ({ exitCode: 0, signal: null, timedOut: false, stdout: "ok", stderr: "", stdoutTruncated: false, stderrTruncated: false })) satisfies DockerRunner;
+    const labels = labelsForLease();
+    const runner = vi.fn(async (args: string[]) => args[0] === "inspect"
+      ? { exitCode: 0, signal: null, timedOut: false, stdout: dockerInspect(labels), stderr: "", stdoutTruncated: false, stderrTruncated: false }
+      : { exitCode: 0, signal: null, timedOut: false, stdout: "ok", stderr: "", stdoutTruncated: false, stderrTruncated: false }) satisfies DockerRunner;
     const plugin = createDockerSandboxPlugin(runner);
     const result = await plugin.definition.onEnvironmentExecute?.({
       driverKey: "docker", companyId: "company-1", environmentId: "env-1", issueId: "issue-1", config,
-      lease: { providerLeaseId: "container-1" }, command: "printf", args: ["$(not-expanded); --not-option"], env: { MESSAGE: "hello; $(not-expanded)" }, cwd: "/workspace/app",
+      lease: lease(labels), command: "printf", args: ["$(not-expanded); --not-option"], env: { MESSAGE: "hello; $(not-expanded)" }, cwd: "/workspace/app",
     });
     expect(result?.exitCode).toBe(0);
     expect(runner).toHaveBeenCalledWith(expect.arrayContaining(["exec", "--workdir", "/workspace/app", "--user", "paperclip", "--env", "MESSAGE=hello; $(not-expanded)", "container-1", "printf", "$(not-expanded); --not-option"]), expect.any(Object));
@@ -61,15 +76,15 @@ describe("Docker sandbox provider", () => {
       return { exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "", stdoutTruncated: false, stderrTruncated: false };
     }) satisfies DockerRunner;
     const plugin = createDockerSandboxPlugin(runner);
-    await expect(plugin.definition.onEnvironmentReleaseLease?.({ driverKey: "docker", companyId: "company-1", environmentId: "env-1", config, providerLeaseId: "container-1" })).rejects.toThrow("Refusing to remove");
+    await expect(plugin.definition.onEnvironmentReleaseLease?.({ driverKey: "docker", companyId: "company-1", environmentId: "env-1", config, providerLeaseId: "container-1", leaseMetadata: leaseMetadata(labelsForLease()) })).rejects.toThrow("Refusing to remove");
     expect(runner).not.toHaveBeenCalledWith(expect.arrayContaining(["rm"]), expect.anything());
   });
 
   it("resumes only a running container with the matching identity fingerprint", async () => {
-    const labels = buildLeaseLabels({ companyId: "company-1", environmentId: "env-1", runId: "run-1", leaseNonce: "lease-1", config });
+    const labels = labelsForLease();
     const runner = vi.fn(async () => ({ exitCode: 0, signal: null, timedOut: false, stdout: dockerInspect(labels), stderr: "", stdoutTruncated: false, stderrTruncated: false })) satisfies DockerRunner;
     const plugin = createDockerSandboxPlugin(runner);
-    const resumed = await plugin.definition.onEnvironmentResumeLease?.({ driverKey: "docker", companyId: "company-1", environmentId: "env-1", config, providerLeaseId: "container-1" });
+    const resumed = await plugin.definition.onEnvironmentResumeLease?.({ driverKey: "docker", companyId: "company-1", environmentId: "env-1", config, providerLeaseId: "container-1", leaseMetadata: leaseMetadata(labels) });
     expect(resumed?.metadata).toMatchObject({ port3107Url: "http://127.0.0.1:45123", remoteCwd: "/workspace" });
   });
 
@@ -83,19 +98,22 @@ describe("Docker sandbox provider", () => {
   });
 
   it("exposes provider-managed service lifecycle hooks", async () => {
-    const runner = vi.fn(async () => ({ exitCode: 0, signal: null, timedOut: false, stdout: "exec-1", stderr: "", stdoutTruncated: false, stderrTruncated: false })) satisfies DockerRunner;
+    const labels = labelsForLease();
+    const runner = vi.fn(async (args: string[]) => args[0] === "inspect"
+      ? { exitCode: 0, signal: null, timedOut: false, stdout: dockerInspect(labels), stderr: "", stdoutTruncated: false, stderrTruncated: false }
+      : { exitCode: 0, signal: null, timedOut: false, stdout: "exec-1", stderr: "", stdoutTruncated: false, stderrTruncated: false }) satisfies DockerRunner;
     const plugin = createDockerSandboxPlugin(runner);
     const start = await plugin.definition.onEnvironmentStartRuntimeService?.({
       driverKey: "docker", companyId: "company-1", environmentId: "env-1", config,
-      lease: { providerLeaseId: "container-1" }, service: { serviceName: "web", command: "node server.js", cwd: "/workspace/app", url: "http://127.0.0.1:45123", env: { PORT: "3107" } },
+      lease: lease(labels), service: { serviceName: "web", command: "node server.js", cwd: "/workspace/app", url: "http://127.0.0.1:45123", env: { PORT: "3107" } },
     });
     await plugin.definition.onEnvironmentStopRuntimeService?.({
       driverKey: "docker", companyId: "company-1", environmentId: "env-1", config,
-      lease: { providerLeaseId: "container-1" }, serviceName: "web", providerRef: start?.providerRef,
+      lease: lease(labels), serviceName: "web", providerRef: start?.providerRef,
     });
     expect(start).toMatchObject({ providerRef: "container-1:web", metadata: { provider: "docker" } });
-    expect(runner.mock.calls[0]?.[0]).toEqual(expect.arrayContaining(["--env", "PORT=3107"]));
-    expect(runner).toHaveBeenCalledTimes(2);
+    expect(runner.mock.calls[1]?.[0]).toEqual(expect.arrayContaining(["--env", "PORT=3107"]));
+    expect(runner).toHaveBeenCalledTimes(4);
   });
 
   it("health-checks only the loopback managed URL", async () => {
@@ -105,12 +123,37 @@ describe("Docker sandbox provider", () => {
     expect(request).toHaveBeenCalledOnce();
   });
 
-  it("ships the reproducible Noble image profile and sudo probe prerequisites", async () => {
+  it("ships the reproducible Noble image profile without runtime elevation", async () => {
     const dockerfile = await readFile(new URL("../Dockerfile.noble", import.meta.url), "utf8");
     expect(dockerfile).toContain("FROM ubuntu:24.04");
     expect(dockerfile).toContain("--uid 1000 --gid 1000");
     expect(dockerfile).toContain("/workspace");
-    expect(dockerfile).toContain("ca-certificates curl git nodejs npm sudo tini");
-    expect(dockerfile).toContain("NOPASSWD");
+    expect(dockerfile).toContain("chromium");
+    expect(dockerfile).not.toContain("sudo");
+    expect(dockerfile).not.toContain("NOPASSWD");
+  });
+
+  it("fails closed before Docker operations for mismatched lease labels and unsafe service inputs", async () => {
+    const labels = labelsForLease();
+    const runner = vi.fn(async () => ({ exitCode: 0, signal: null, timedOut: false, stdout: dockerInspect({ ...labels, "com.paperclip.lease": "other" }), stderr: "", stdoutTruncated: false, stderrTruncated: false })) satisfies DockerRunner;
+    const plugin = createDockerSandboxPlugin(runner);
+
+    await expect(plugin.definition.onEnvironmentStartRuntimeService?.({
+      driverKey: "docker", companyId: "company-1", environmentId: "env-1", config, lease: lease(labels),
+      service: { serviceName: "web", command: "node server.js" },
+    })).rejects.toThrow("does not exactly match");
+    expect(runner).toHaveBeenCalledTimes(1);
+    await expect(startDockerRuntimeService(vi.fn() as unknown as DockerRunner, {
+      providerLeaseId: "container-1", serviceName: "../web", command: "node server.js",
+    })).rejects.toThrow("service name");
+    await expect(startDockerRuntimeService(vi.fn() as unknown as DockerRunner, {
+      providerLeaseId: "container-1", serviceName: "web", command: "",
+    })).rejects.toThrow("non-empty");
+    await expect(startDockerRuntimeService(vi.fn() as unknown as DockerRunner, {
+      providerLeaseId: "container-1", serviceName: "web", command: "node server.js", env: { DATABASE_URL: "postgres://secret.example.test/db" },
+    })).rejects.toThrow("reserved");
+    await expect(startDockerRuntimeService(vi.fn() as unknown as DockerRunner, {
+      providerLeaseId: "container-1", serviceName: "web", command: "x".repeat(32 * 1024 + 1),
+    })).rejects.toThrow("bounded");
   });
 });
