@@ -1,7 +1,7 @@
-import { and, desc, eq, gte, inArray, isNotNull, lt, lte, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { activityLog, heartbeatRuns, issueComments, issueDocuments, issues } from "@paperclipai/db";
-import { redactActivityDetails } from "./activity-log.js";
+import { createActivityDetailsRedactor } from "./activity-log.js";
 
 export interface AgentActionAuditFilters {
   companyId: string;
@@ -49,7 +49,13 @@ export function agentActionAuditService(db: Db) {
       const effectiveResponsibleUserId = sql<string | null>`coalesce(${activityLog.responsibleUserId}, ${heartbeatRuns.responsibleUserId})`;
       const conditions = [eq(activityLog.companyId, filters.companyId), isNotNull(activityLog.agentId)];
       if (filters.agentId) conditions.push(eq(activityLog.agentId, filters.agentId));
-      if (filters.responsibleUserId) conditions.push(eq(effectiveResponsibleUserId, filters.responsibleUserId));
+      if (filters.responsibleUserId) conditions.push(or(
+        eq(activityLog.responsibleUserId, filters.responsibleUserId),
+        and(
+          isNull(activityLog.responsibleUserId),
+          eq(heartbeatRuns.responsibleUserId, filters.responsibleUserId),
+        ),
+      )!);
       if (filters.runId) conditions.push(eq(activityLog.runId, filters.runId));
       if (filters.entityType) conditions.push(eq(activityLog.entityType, filters.entityType));
       if (filters.entityId) conditions.push(eq(activityLog.entityId, filters.entityId));
@@ -108,7 +114,8 @@ export function agentActionAuditService(db: Db) {
         documents.set(row.documentId, row);
       }
 
-      const items = await Promise.all(page.map(async (row) => {
+      const redactDetails = await createActivityDetailsRedactor(db);
+      const items = page.map((row) => {
         const comment = comments.get(row.entityId);
         const issue = issueMap.get(row.entityId);
         const document = documents.get(row.entityId);
@@ -119,14 +126,14 @@ export function agentActionAuditService(db: Db) {
             : issue ? { id: issue.id, identifier: issue.identifier, title: issue.title } : null;
         return {
           ...row,
-          details: await redactActivityDetails(db, row.details),
+          details: redactDetails(row.details),
           entity: {
             issue: issueSnippet,
             comment: comment ? { id: comment.id, excerpt: excerpt(comment.body) } : null,
             document: document ? { id: document.documentId, key: document.key } : null,
           },
         };
-      }));
+      });
       const last = page.at(-1);
       return {
         items,

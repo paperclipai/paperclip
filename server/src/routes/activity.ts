@@ -7,7 +7,7 @@ import { activityService, normalizeActivityLimit } from "../services/activity.js
 import { assertAuthenticated, assertBoard, assertCompanyAccess, getAccessibleResource, hasCompanyAccess } from "./authz.js";
 import { accessService, heartbeatService, issueService } from "../services/index.js";
 import { sanitizeRecord } from "../redaction.js";
-import { forbidden } from "../errors.js";
+import { badRequest, forbidden } from "../errors.js";
 import { agentActionAuditService } from "../services/agent-action-audit.js";
 
 const createActivitySchema = z.object({
@@ -116,9 +116,12 @@ export function activityRoutes(db: Db) {
   router.get("/companies/:companyId/audit/agent-actions", async (req, res) => {
     const companyId = req.params.companyId as string;
     await assertAgentAuditPermission(req, companyId);
-    const query = agentActionAuditQuerySchema.parse(req.query);
+    const parsedQuery = agentActionAuditQuerySchema.safeParse(req.query);
+    if (!parsedQuery.success) {
+      throw badRequest("Invalid agent action audit query", parsedQuery.error.issues);
+    }
     try {
-      res.json(await agentAudit.list({ companyId, ...query }));
+      res.json(await agentAudit.list({ companyId, ...parsedQuery.data }));
     } catch (error) {
       if (error instanceof Error && error.message === "Invalid audit cursor") {
         res.status(400).json({ error: error.message });

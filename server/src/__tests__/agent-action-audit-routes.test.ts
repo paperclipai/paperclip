@@ -128,6 +128,15 @@ describePostgres("agent action audit routes", () => {
     expect(boardResponse.body.error).toContain("audit:view_agent_actions");
   });
 
+  it("returns a client error for invalid audit query parameters", async () => {
+    const { company } = await seed();
+    const response = await request(await createApp(db, {
+      type: "board", userId: "local-board", companyIds: [company.id], source: "local_implicit", isInstanceAdmin: false,
+    })).get(`/api/companies/${company.id}/audit/agent-actions?limit=invalid`);
+    expect(response.status).toBe(400);
+    expect(response.body.error).toBe("Invalid agent action audit query");
+  });
+
   it("paginates, filters, enriches entities, and falls back to the run responsible user", async () => {
     const { company, agent, otherAgent, issue, comment, issueDocument, run } = await seed();
     const app = await createApp(db, { type: "board", userId: "local-board", companyIds: [company.id], source: "local_implicit", isInstanceAdmin: false });
