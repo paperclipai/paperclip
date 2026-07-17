@@ -1,0 +1,25 @@
+# cortex-deploy.service — one deploy cycle of the cortex-beta pull-based deploy agent.
+#
+# NEO-526 (subtask 522a of NEO-522). Oneshot unit driven by cortex-deploy.timer. Every run is
+# journalctl-observable:  journalctl -u cortex-deploy -f
+#
+# Runs as the `ubuntu` user (owner of the beta tree, so build artifacts are ubuntu-owned).
+# The script escalates only for `systemctl restart paperclip-beta.service` via sudo, which
+# ubuntu already has passwordless. See scripts/systemd/README.md for install.
+
+[Unit]
+Description=Cortex beta pull-based deploy agent (ff origin/master → build → restart → health)
+After=network-online.target
+Wants=network-online.target
+# Never race the beta service's own startup.
+After=paperclip-beta.service
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/projects/cortex-beta
+ExecStart=/home/ubuntu/projects/cortex-beta/scripts/cortex-deploy.sh
+# A deploy (install + build) can take a few minutes; never let systemd kill it mid-build.
+TimeoutStartSec=1200
+# Keep the deploy env minimal — the script unsets NODE_ENV around the build itself so devDeps
+# install. Do NOT set NODE_ENV=production here.
