@@ -7,10 +7,35 @@ import {
   releaseIssueTreeHoldSchema,
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
-import { heartbeatService, issueService, issueTreeControlService, logActivity } from "../services/index.js";
-import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
+import {
+  accessService,
+  heartbeatService,
+  issueService,
+  issueTreeControlService,
+  issueVisibilityService,
+  logActivity,
+  type VisibilityPrincipal,
+} from "../services/index.js";
+import { notFound } from "../errors.js";
+import {
+  assertBoard,
+  assertCompanyAccess,
+  getActorInfo,
+  requirePermissionOrProjectPermission,
+  requireProjectAccess,
+} from "./authz.js";
 
 const TREE_RUN_CANCELLATION_RESPONSE_WAIT_MS = 1_000;
+type TreeAuthorizationIssue = {
+  id: string;
+  companyId: string;
+  projectId: string | null;
+  visibility: string;
+  createdByUserId: string | null;
+  createdByAgentId: string | null;
+  assigneeUserId: string | null;
+  assigneeAgentId: string | null;
+};
 
 function errorToMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
@@ -35,6 +60,80 @@ export function issueTreeControlRoutes(db: Db) {
   const issuesSvc = issueService(db);
   const treeControlSvc = issueTreeControlService(db);
   const heartbeat = heartbeatService(db);
+  const access = accessService(db);
+  const visibility = issueVisibilityService(db);
+
+  function visibilityPrincipal(req: Request): VisibilityPrincipal {
+    if (req.actor.type === "agent") return { kind: "agent", agentId: req.actor.agentId ?? "" };
+    if (req.actor.type === "board" && req.actor.source === "local_implicit") return { kind: "system" };
+    return {
+      kind: "user",
+      userId: req.actor.type === "board" ? req.actor.userId ?? "" : "",
+      isInstanceAdmin: req.actor.type === "board" && Boolean(req.actor.isInstanceAdmin),
+    };
+  }
+
+  async function authorizeIssueBoundary(
+    req: Request,
+    companyId: string,
+    tree: TreeAuthorizationIssue[],
+    options: { mutation: boolean },
+  ) {
+    assertCompanyAccess(req, companyId);
+    const projectIds = [...new Set(tree
+      .map((issue) => issue.projectId)
+      .filter((projectId): projectId is string => typeof projectId === "string"))];
+    for (const projectId of projectIds) {
+      await requireProjectAccess(req, access, companyId, projectId);
+    }
+    const visible = await visibility.filterVisibleIssues(visibilityPrincipal(req), tree);
+    if (visible.length !== tree.length) {
+      throw notFound("Issue subtree not found");
+    }
+    if (options.mutation) {
+      const mutationScopes = new Set<string | null>(tree.map((issue) => issue.projectId ?? null));
+      for (const projectId of mutationScopes) {
+        await requirePermissionOrProjectPermission(
+          req,
+          access,
+          companyId,
+          "issues:manage",
+          projectId,
+          "project:issues:edit",
+        );
+      }
+    }
+    return tree;
+  }
+
+  async function authorizeTreeBoundary(
+    req: Request,
+    root: NonNullable<Awaited<ReturnType<typeof issuesSvc.getById>>>,
+    options: { mutation: boolean },
+  ) {
+    const tree = await treeControlSvc.listTreeIssues(root.companyId, root.id);
+    return authorizeIssueBoundary(req, root.companyId, tree, options);
+  }
+
+  async function authorizeHoldMemberBoundary(
+    req: Request,
+    companyId: string,
+    holds: Array<{ members?: Array<{ issueId: string }> }>,
+    options: { mutation: boolean },
+  ) {
+    const issueIds = [...new Set(holds.flatMap((hold) => hold.members?.map((member) => member.issueId) ?? []))];
+    if (issueIds.length === 0) return;
+    const memberIssues = await Promise.all(issueIds.map((issueId) => issuesSvc.getById(issueId)));
+    if (memberIssues.some((issue) => !issue || issue.companyId !== companyId)) {
+      throw notFound("Issue tree hold not found");
+    }
+    await authorizeIssueBoundary(
+      req,
+      companyId,
+      memberIssues as TreeAuthorizationIssue[],
+      options,
+    );
+  }
 
   async function resolveRootIssue(req: Request) {
     const rootIssueId = req.params.id as string;
@@ -49,9 +148,12 @@ export function issueTreeControlRoutes(db: Db) {
       res.status(404).json({ error: "Root issue not found" });
       return;
     }
-    assertCompanyAccess(req, root.companyId);
+    const authorizedTree = await authorizeTreeBoundary(req, root, { mutation: false });
 
-    const preview = await treeControlSvc.preview(root.companyId, root.id, req.body);
+    const preview = await treeControlSvc.preview(root.companyId, root.id, {
+      ...req.body,
+      expectedIssueIds: authorizedTree.map((issue) => issue.id),
+    });
     const actor = getActorInfo(req);
     await logActivity(db, {
       companyId: root.companyId,
@@ -79,7 +181,7 @@ export function issueTreeControlRoutes(db: Db) {
       res.status(404).json({ error: "Root issue not found" });
       return;
     }
-    assertCompanyAccess(req, root.companyId);
+    const authorizedTree = await authorizeTreeBoundary(req, root, { mutation: true });
 
     const actor = getActorInfo(req);
     const actorInput = {
@@ -92,6 +194,10 @@ export function issueTreeControlRoutes(db: Db) {
     let result = await treeControlSvc.createHold(root.companyId, root.id, {
       ...req.body,
       actor: actorInput,
+      expectedIssueIds: authorizedTree.map((issue) => issue.id),
+      authorizeLockedBoundary: async () => {
+        await authorizeTreeBoundary(req, root, { mutation: true });
+      },
     });
     await logActivity(db, {
       companyId: root.companyId,
@@ -183,7 +289,7 @@ export function issueTreeControlRoutes(db: Db) {
     }
 
     if (result.hold.mode === "cancel") {
-      const statusUpdate = await treeControlSvc.cancelIssueStatusesForHold(root.companyId, root.id, result.hold.id);
+      const statusUpdate = result.statusUpdate ?? { updatedIssueIds: [], updatedIssues: [] };
       await logActivity(db, {
         companyId: root.companyId,
         actorType: actor.actorType,
@@ -206,22 +312,14 @@ export function issueTreeControlRoutes(db: Db) {
     }
 
     if (result.hold.mode === "restore") {
-      let statusUpdate;
-      try {
-        statusUpdate = await treeControlSvc.restoreIssueStatusesForHold(root.companyId, root.id, result.hold.id, {
-          reason: result.hold.reason,
-          actor: actorInput,
-        });
-      } catch (error) {
-        await treeControlSvc.releaseHold(root.companyId, root.id, result.hold.id, {
-          reason: "Restore operation failed before subtree status updates completed",
-          metadata: {
-            cleanup: "restore_failed_before_apply",
-          },
-          actor: actorInput,
-        }).catch(() => null);
-        throw error;
-      }
+      const statusUpdate = result.statusUpdate && "releasedCancelHoldIds" in result.statusUpdate
+        ? result.statusUpdate
+        : {
+            updatedIssueIds: [],
+            updatedIssues: [],
+            releasedCancelHoldIds: [],
+            restoreHold: result.hold,
+          };
       if (statusUpdate.restoreHold) {
         result = { ...result, hold: statusUpdate.restoreHold };
       }
@@ -304,8 +402,13 @@ export function issueTreeControlRoutes(db: Db) {
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
+    await authorizeTreeBoundary(req, issue, { mutation: false });
     const activePauseHold = await treeControlSvc.getActivePauseHoldGate(issue.companyId, issue.id);
+    if (activePauseHold && activePauseHold.rootIssueId !== issue.id) {
+      const holdRoot = await issuesSvc.getById(activePauseHold.rootIssueId);
+      if (!holdRoot || holdRoot.companyId !== issue.companyId) throw notFound("Issue not found");
+      await authorizeTreeBoundary(req, holdRoot, { mutation: false });
+    }
     res.json({ activePauseHold });
   });
 
@@ -316,7 +419,7 @@ export function issueTreeControlRoutes(db: Db) {
       res.status(404).json({ error: "Root issue not found" });
       return;
     }
-    assertCompanyAccess(req, root.companyId);
+    await authorizeTreeBoundary(req, root, { mutation: false });
     const statusParam = typeof req.query.status === "string" ? req.query.status : null;
     const modeParam = typeof req.query.mode === "string" ? req.query.mode : null;
     const includeMembers = req.query.includeMembers === "true";
@@ -328,6 +431,7 @@ export function issueTreeControlRoutes(db: Db) {
           : undefined,
       includeMembers,
     });
+    if (includeMembers) await authorizeHoldMemberBoundary(req, root.companyId, holds, { mutation: false });
     res.json(holds);
   });
 
@@ -338,13 +442,14 @@ export function issueTreeControlRoutes(db: Db) {
       res.status(404).json({ error: "Root issue not found" });
       return;
     }
-    assertCompanyAccess(req, root.companyId);
+    await authorizeTreeBoundary(req, root, { mutation: false });
 
     const hold = await treeControlSvc.getHold(root.companyId, req.params.holdId as string);
     if (!hold || hold.rootIssueId !== root.id) {
       res.status(404).json({ error: "Issue tree hold not found" });
       return;
     }
+    await authorizeHoldMemberBoundary(req, root.companyId, [hold], { mutation: false });
     res.json(hold);
   });
 
@@ -358,11 +463,34 @@ export function issueTreeControlRoutes(db: Db) {
         res.status(404).json({ error: "Root issue not found" });
         return;
       }
-      assertCompanyAccess(req, root.companyId);
+      const authorizedTree = await authorizeTreeBoundary(req, root, { mutation: true });
+      const existingHold = await treeControlSvc.getHold(root.companyId, req.params.holdId as string);
+      if (!existingHold || existingHold.rootIssueId !== root.id) {
+        res.status(404).json({ error: "Issue tree hold not found" });
+        return;
+      }
+      await authorizeHoldMemberBoundary(req, root.companyId, [existingHold], { mutation: true });
 
       const actor = getActorInfo(req);
       const hold = await treeControlSvc.releaseHold(root.companyId, root.id, req.params.holdId as string, {
         ...req.body,
+        expectedIssueIds: authorizedTree.map((issue) => issue.id),
+        authorizeLockedBoundary: async () => {
+          await authorizeTreeBoundary(req, root, { mutation: true });
+          const lockedBoundaryHold = await treeControlSvc.getHold(
+            root.companyId,
+            req.params.holdId as string,
+          );
+          if (!lockedBoundaryHold || lockedBoundaryHold.rootIssueId !== root.id) {
+            throw notFound("Issue tree hold not found");
+          }
+          await authorizeHoldMemberBoundary(
+            req,
+            root.companyId,
+            [lockedBoundaryHold],
+            { mutation: true },
+          );
+        },
         actor: {
           actorType: actor.actorType,
           actorId: actor.actorId,

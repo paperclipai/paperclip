@@ -10,6 +10,7 @@ import type {
   CompanySkillProjectScanResult,
   CompanySkillSourceBadge,
   CompanySkillUpdateStatus,
+  CompanyAiFactoryPolicyView,
 } from "@paperclipai/shared";
 import { companySkillsApi } from "../api/companySkills";
 import { useCompany } from "../context/CompanyContext";
@@ -56,6 +57,7 @@ import {
   Save,
   Search,
   Trash2,
+  Workflow,
 } from "lucide-react";
 
 type SkillTreeNode = {
@@ -517,6 +519,11 @@ function SkillPane({
   deletePending,
   onSave,
   savePending,
+  aiFactoryPolicy,
+  onSelectAiFactoryPolicy,
+  selectAiFactoryPolicyPending,
+  onResetAiFactoryPolicy,
+  resetAiFactoryPolicyPending,
 }: {
   loading: boolean;
   detail: CompanySkillDetail | null | undefined;
@@ -538,6 +545,11 @@ function SkillPane({
   deletePending: boolean;
   onSave: () => void;
   savePending: boolean;
+  aiFactoryPolicy: CompanyAiFactoryPolicyView | null | undefined;
+  onSelectAiFactoryPolicy: () => void;
+  selectAiFactoryPolicyPending: boolean;
+  onResetAiFactoryPolicy: () => void;
+  resetAiFactoryPolicyPending: boolean;
 }) {
   if (!detail) {
     if (loading) {
@@ -558,10 +570,19 @@ function SkillPane({
   const currentPin = shortRef(detail.sourceRef);
   const latestPin = shortRef(updateStatus?.latestRef);
   const displaySourcePath = detail.sourcePath ? middleTruncate(detail.sourcePath) : null;
-  const removeBlocked = usedBy.length > 0;
+  const isActiveFactoryPolicy = aiFactoryPolicy?.overlaySkillId === detail.id;
+  const isManagedDefaultFactoryPolicy = detail.slug === "ai-factory-policy"
+    && detail.key.startsWith("company/");
+  const removeBlocked = usedBy.length > 0 || isActiveFactoryPolicy || isManagedDefaultFactoryPolicy;
   const removeDisabledReason = removeBlocked
-    ? "Detach this skill from all agents before removing it."
+    ? isActiveFactoryPolicy
+      ? "Select another valid AI Factory policy before removing this skill."
+      : isManagedDefaultFactoryPolicy
+        ? "Paperclip keeps the default company policy available for reset."
+        : "Detach this skill from all agents before removing it."
     : null;
+  const canUseAsFactoryPolicy = detail.editable
+    && detail.fileInventory.some((entry) => entry.path === "factory-policy.yaml");
 
   return (
     <div className="min-w-0">
@@ -581,7 +602,7 @@ function SkillPane({
               variant="ghost"
               size="sm"
               onClick={onDelete}
-              disabled={deletePending}
+              disabled={deletePending || removeBlocked}
               title={removeDisabledReason ?? undefined}
             >
               <Trash2 className="mr-1.5 h-3.5 w-3.5" />
@@ -602,6 +623,67 @@ function SkillPane({
         </div>
 
         <div className="mt-4 space-y-3 border-t border-border pt-4 text-sm">
+          {(isActiveFactoryPolicy || canUseAsFactoryPolicy) && (
+            <div className="rounded-md border border-border bg-accent/20 p-3">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex min-w-0 items-start gap-2">
+                  <Workflow className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+                  <div>
+                    <div className="font-medium">AI Factory policy</div>
+                    <div className="text-xs text-muted-foreground">
+                      {isActiveFactoryPolicy
+                        ? aiFactoryPolicy.differsFromDefault
+                          ? "Active company policy · customized from the Paperclip default"
+                          : "Active company policy · matches the Paperclip default"
+                        : "Valid policy file detected. Select it to force-sync this workflow to every company agent."}
+                    </div>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  {!isActiveFactoryPolicy && canUseAsFactoryPolicy && (
+                    <Button
+                      size="sm"
+                      onClick={onSelectAiFactoryPolicy}
+                      disabled={selectAiFactoryPolicyPending}
+                    >
+                      {selectAiFactoryPolicyPending ? "Selecting..." : "Use as AI Factory policy"}
+                    </Button>
+                  )}
+                  {isActiveFactoryPolicy && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={onResetAiFactoryPolicy}
+                      disabled={resetAiFactoryPolicyPending}
+                    >
+                      {resetAiFactoryPolicyPending ? "Resetting..." : "Reset to Paperclip default"}
+                    </Button>
+                  )}
+                </div>
+              </div>
+              {isActiveFactoryPolicy && aiFactoryPolicy.differsFromDefault && (
+                <details className="mt-3 border-t border-border pt-3 text-xs">
+                  <summary className="cursor-pointer text-muted-foreground hover:text-foreground">
+                    Compare effective policy with default
+                  </summary>
+                  <div className="mt-3 grid gap-3 lg:grid-cols-2">
+                    <div>
+                      <div className="mb-1 font-medium">Paperclip default</div>
+                      <pre className="max-h-72 overflow-auto bg-background p-2 font-mono">
+                        {JSON.stringify(aiFactoryPolicy.defaultPolicy, null, 2)}
+                      </pre>
+                    </div>
+                    <div>
+                      <div className="mb-1 font-medium">Effective company policy</div>
+                      <pre className="max-h-72 overflow-auto bg-background p-2 font-mono">
+                        {JSON.stringify(aiFactoryPolicy.compiled.policy, null, 2)}
+                      </pre>
+                    </div>
+                  </div>
+                </details>
+              )}
+            </div>
+          )}
           <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
             <div className="flex min-w-0 items-center gap-2">
               <span className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Source</span>
@@ -808,6 +890,12 @@ export function CompanySkills() {
     enabled: Boolean(selectedCompanyId),
   });
 
+  const aiFactoryPolicyQuery = useQuery({
+    queryKey: queryKeys.companySkills.aiFactoryPolicy(selectedCompanyId ?? ""),
+    queryFn: () => companySkillsApi.aiFactoryPolicy(selectedCompanyId!),
+    enabled: Boolean(selectedCompanyId),
+  });
+
   const selectedSkillId = useMemo(() => {
     if (!routeSkillId) return skillsQuery.data?.[0]?.id ?? null;
     return routeSkillId;
@@ -996,6 +1084,7 @@ export function CompanySkills() {
     onSuccess: async (result) => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.list(selectedCompanyId!) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.aiFactoryPolicy(selectedCompanyId!) }),
         queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.detail(selectedCompanyId!, selectedSkillId!) }),
         queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.file(selectedCompanyId!, selectedSkillId!, selectedPath) }),
       ]);
@@ -1012,6 +1101,58 @@ export function CompanySkills() {
         tone: "error",
         title: "Save failed",
         body: error instanceof Error ? error.message : "Failed to save skill file.",
+      });
+    },
+  });
+
+  const selectAiFactoryPolicy = useMutation({
+    mutationFn: () => companySkillsApi.selectAiFactoryPolicy(selectedCompanyId!, selectedSkillId!),
+    onSuccess: async (result) => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.aiFactoryPolicy(selectedCompanyId!) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.list(selectedCompanyId!) }),
+      ]);
+      pushToast({
+        tone: "success",
+        title: "AI Factory policy selected",
+        body: `${result.overlaySkillName} is required for every company agent.`,
+      });
+    },
+    onError: (error) => {
+      pushToast({
+        tone: "error",
+        title: "Policy selection failed",
+        body: error instanceof Error ? error.message : "Failed to select AI Factory policy.",
+      });
+    },
+  });
+
+  const resetAiFactoryPolicy = useMutation({
+    mutationFn: () => companySkillsApi.resetAiFactoryPolicy(selectedCompanyId!),
+    onSuccess: async (result) => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.aiFactoryPolicy(selectedCompanyId!) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.list(selectedCompanyId!) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.detail(selectedCompanyId!, result.overlaySkillId) }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.companySkills.file(
+            selectedCompanyId!,
+            result.overlaySkillId,
+            "factory-policy.yaml",
+          ),
+        }),
+      ]);
+      pushToast({
+        tone: "success",
+        title: "AI Factory policy reset",
+        body: "The editable company overlay now matches the Paperclip default.",
+      });
+    },
+    onError: (error) => {
+      pushToast({
+        tone: "error",
+        title: "Policy reset failed",
+        body: error instanceof Error ? error.message : "Failed to reset AI Factory policy.",
       });
     },
   });
@@ -1304,6 +1445,11 @@ export function CompanySkills() {
             deletePending={deleteSkill.isPending}
             onSave={() => saveFile.mutate()}
             savePending={saveFile.isPending}
+            aiFactoryPolicy={aiFactoryPolicyQuery.data}
+            onSelectAiFactoryPolicy={() => selectAiFactoryPolicy.mutate()}
+            selectAiFactoryPolicyPending={selectAiFactoryPolicy.isPending}
+            onResetAiFactoryPolicy={() => resetAiFactoryPolicy.mutate()}
+            resetAiFactoryPolicyPending={resetAiFactoryPolicy.isPending}
           />
         </div>
       </div>

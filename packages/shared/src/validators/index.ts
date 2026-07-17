@@ -5,6 +5,20 @@ export {
   type UpdateGithubConnection,
 } from "./github-connection.js";
 export {
+  deliveryStageSchema,
+  deliveryEventStateSchema,
+  createDeliveryEventSchema,
+  createExternalOperationSchema,
+  updateExternalOperationSchema,
+  legacyDeliveryBackfillSchema,
+  createDeliveryControlUpdateSchema,
+  type CreateDeliveryEvent,
+  type CreateExternalOperation,
+  type UpdateExternalOperation,
+  type LegacyDeliveryBackfill,
+  type CreateDeliveryControlUpdate,
+} from "./delivery.js";
+export {
   instanceGeneralSettingsSchema,
   patchInstanceGeneralSettingsSchema,
   type InstanceGeneralSettings,
@@ -90,6 +104,14 @@ export {
   type CompanySkillCreate,
   type CompanySkillFileUpdate,
 } from "./company-skill.js";
+export {
+  FACTORY_STAGE_TYPES,
+  factoryPolicyStageV1Schema,
+  factoryPolicyV1Schema,
+  companyAiFactoryPolicySelectSchema,
+  type FactoryPolicyV1Input,
+  type CompanyAiFactoryPolicySelectInput,
+} from "./ai-factory-policy.js";
 export {
   agentSkillStateSchema,
   agentSkillSyncModeSchema,
@@ -208,6 +230,7 @@ export {
   upsertIssueCollaboratorSchema,
   issueExecutionContractSchema,
   issueExecutionPolicySchema,
+  issueFactoryExecutionPolicySchema,
   issueExecutionStateSchema,
   issueRecoveryActionReadModelSchema,
   resolveIssueRecoveryActionSchema,
@@ -229,6 +252,8 @@ export {
   suggestTasksResultSchema,
   askUserQuestionsQuestionOptionSchema,
   askUserQuestionsQuestionSchema,
+  capabilityPreflightCheckSchema,
+  capabilityPreflightSchema,
   askUserQuestionsPayloadSchema,
   askUserQuestionsAnswerSchema,
   askUserQuestionsResultSchema,

@@ -6,6 +6,7 @@ import { normalizeIssueExecutionPolicy } from "../services/issue-execution-polic
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
   assertCheckoutOwner: vi.fn(),
+  create: vi.fn(),
   update: vi.fn(),
   createChild: vi.fn(),
   addComment: vi.fn(),
@@ -15,6 +16,42 @@ const mockIssueService = vi.hoisted(() => ({
   listWakeableBlockedDependents: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
 }));
+
+const FACTORY_CONTROL_ID = "99999999-9999-4999-8999-999999999999";
+const FACTORY_CTO_ID = "11111111-1111-4111-8111-111111111111";
+const FACTORY_DEVOPS_ID = "22222222-2222-4222-8222-222222222222";
+
+function managedFactoryPolicyFixture() {
+  return normalizeIssueExecutionPolicy({
+    mode: "normal",
+    commentRequired: true,
+    stages: [
+      {
+        id: "88888888-8888-4888-8888-888888888888",
+        key: "contract",
+        type: "work",
+        role: "cto",
+        participants: [{
+          id: "77777777-7777-4777-8777-777777777777",
+          type: "agent",
+          agentId: FACTORY_CTO_ID,
+        }],
+      },
+    ],
+    factory: {
+      schemaVersion: 1,
+      laneKind: "execution",
+      topologyMode: "same_issue_only",
+      controlIssueId: FACTORY_CONTROL_ID,
+      coordinator: { type: "agent", agentId: FACTORY_CTO_ID },
+      policyKey: "company/acme/ai-factory-policy",
+      policyVersion: "1",
+      policyHash: "deadbeef",
+      maxExecutionLanes: 1,
+      production: false,
+    },
+  })!;
+}
 
 const mockHeartbeatService = vi.hoisted(() => ({
   wakeup: vi.fn(async () => undefined),
@@ -28,6 +65,18 @@ const mockHeartbeatService = vi.hoisted(() => ({
 const mockAccessService = vi.hoisted(() => ({
   canUser: vi.fn(async () => false),
   hasPermission: vi.fn(async () => false),
+  isCompanyOwner: vi.fn(async () => false),
+  hasProjectPermission: vi.fn(async () => false),
+  canUserAccessProject: vi.fn(async () => false),
+}));
+
+const mockIssueVisibilityService = vi.hoisted(() => ({
+  canSeeIssue: vi.fn(async () => true),
+  filterVisibleIssues: vi.fn(async (_principal, issues) => issues),
+  ensureCollaborator: vi.fn(async () => undefined),
+  resolveMentionsToCollaborators: vi.fn(async () => undefined),
+  listCollaborators: vi.fn(async () => []),
+  removeCollaborator: vi.fn(async () => undefined),
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
@@ -38,6 +87,7 @@ const mockValidateDelegatedIssueExecutionContract = vi.hoisted(() => vi.fn(() =>
 const mockIssueThreadInteractionService = vi.hoisted(() => ({
   listForIssue: vi.fn(async () => []),
   expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
+  cancelPendingForTerminalIssue: vi.fn(async () => []),
 }));
 const mockIssueApprovalService = vi.hoisted(() => ({
   listApprovalsForIssue: vi.fn(async () => []),
@@ -117,14 +167,7 @@ function registerModuleMocks() {
     }),
     validateDelegatedIssueExecutionContract: mockValidateDelegatedIssueExecutionContract,
     workProductService: () => ({}),
-    issueVisibilityService: () => ({
-      canSeeIssue: vi.fn(async () => true),
-      filterVisibleIssues: vi.fn(async (_principal, issues) => issues),
-      ensureCollaborator: vi.fn(async () => undefined),
-      resolveMentionsToCollaborators: vi.fn(async () => undefined),
-      listCollaborators: vi.fn(async () => []),
-      removeCollaborator: vi.fn(async () => undefined),
-    }),
+    issueVisibilityService: () => mockIssueVisibilityService,
     webPushService: () => ({
       sendToUser: vi.fn(async () => undefined),
       sendToUsers: vi.fn(async () => undefined),
@@ -138,8 +181,13 @@ type TestActor =
       type: "board";
       userId: string;
       companyIds: string[];
-      source: "local_implicit";
+      source: "local_implicit" | "session";
       isInstanceAdmin: boolean;
+      memberships?: Array<{
+        companyId: string;
+        membershipRole: "owner" | "admin" | "operator" | "viewer";
+        status: "active" | "inactive";
+      }>;
     }
   | {
       type: "agent";
@@ -165,7 +213,12 @@ async function createApp(actor?: TestActor) {
     };
     next();
   });
-  app.use("/api", issueRoutes({} as any, {} as any));
+  const db = {
+    transaction: async (work: (tx: unknown) => Promise<unknown>) => work({
+      insert: () => ({ values: async () => [] }),
+    }),
+  };
+  app.use("/api", issueRoutes(db as any, {} as any));
   app.use(errorHandler);
   return app;
 }
@@ -185,8 +238,15 @@ describe("issue execution policy routes", () => {
     mockIssueService.list.mockResolvedValue([]);
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
+    mockIssueService.addComment.mockImplementation(async (issueId: string, body: string) => ({
+      id: `comment-${issueId}`,
+      issueId,
+      body,
+      createdAt: new Date(),
+    }));
     mockIssueThreadInteractionService.listForIssue.mockResolvedValue([]);
     mockIssueThreadInteractionService.expireRequestConfirmationsSupersededByComment.mockResolvedValue([]);
+    mockIssueThreadInteractionService.cancelPendingForTerminalIssue.mockResolvedValue([]);
     mockIssueApprovalService.listApprovalsForIssue.mockResolvedValue([]);
     mockAgentService.getById.mockResolvedValue(null);
     mockAgentService.list.mockResolvedValue([]);
@@ -207,6 +267,572 @@ describe("issue execution policy routes", () => {
     });
     mockAccessService.canUser.mockResolvedValue(false);
     mockAccessService.hasPermission.mockResolvedValue(false);
+    mockAccessService.isCompanyOwner.mockResolvedValue(false);
+    mockAccessService.hasProjectPermission.mockResolvedValue(false);
+    mockAccessService.canUserAccessProject.mockResolvedValue(false);
+    mockIssueVisibilityService.canSeeIssue.mockResolvedValue(true);
+  });
+
+  it("hides a private issue from an unauthorized board PATCH", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      projectId: null,
+      visibility: "private",
+      status: "todo",
+      assigneeAgentId: null,
+      assigneeUserId: null,
+      createdByUserId: "different-user",
+      createdByAgentId: null,
+      identifier: "PAP-1000",
+      title: "Private issue",
+      executionPolicy: null,
+      executionState: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockAccessService.canUser.mockResolvedValue(true);
+    mockIssueVisibilityService.canSeeIssue.mockResolvedValue(false);
+
+    const res = await request(await createApp({
+      type: "board",
+      userId: "board-user",
+      companyIds: ["company-1"],
+      memberships: [{ companyId: "company-1", membershipRole: "operator", status: "active" }],
+      source: "session",
+      isInstanceAdmin: false,
+    }))
+      .patch(`/api/issues/${issue.id}`)
+      .send({ priority: "high" });
+
+    expect(res.status).toBe(404);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("requires board issue-edit permission before a generic PATCH", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      projectId: null,
+      visibility: "public",
+      status: "todo",
+      assigneeAgentId: null,
+      assigneeUserId: null,
+      createdByUserId: "board-user",
+      createdByAgentId: null,
+      identifier: "PAP-1000",
+      title: "Public issue",
+      executionPolicy: null,
+      executionState: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+
+    const res = await request(await createApp({
+      type: "board",
+      userId: "board-user",
+      companyIds: ["company-1"],
+      memberships: [{ companyId: "company-1", membershipRole: "operator", status: "active" }],
+      source: "session",
+      isInstanceAdmin: false,
+    }))
+      .patch(`/api/issues/${issue.id}`)
+      .send({ priority: "high" });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("issues:manage");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects visibility changes through generic PATCH instead of bypassing mediation", async () => {
+    const res = await request(await createApp())
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ visibility: "company" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Validation error");
+    expect(mockIssueService.getById).not.toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("keeps private-to-company visibility changes behind board confirmation", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      projectId: null,
+      visibility: "private",
+      status: "todo",
+      assigneeAgentId: null,
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      createdByAgentId: null,
+      identifier: "PAP-1000",
+      title: "Private issue",
+      executionPolicy: null,
+      executionState: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockResolvedValue({ ...issue, visibility: "company" });
+
+    const unconfirmed = await request(await createApp())
+      .post(`/api/issues/${issue.id}/visibility`)
+      .send({ visibility: "company" });
+    expect(unconfirmed.status).toBe(400);
+    expect(unconfirmed.body).toMatchObject({ requiresConfirmation: true });
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+
+    const confirmed = await request(await createApp())
+      .post(`/api/issues/${issue.id}/visibility`)
+      .send({ visibility: "company", confirmed: true });
+    expect(confirmed.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(issue.id, { visibility: "company" });
+  });
+
+  it("does not let agents use the dedicated visibility route", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      projectId: null,
+      visibility: "private",
+      status: "todo",
+      assigneeAgentId: FACTORY_CTO_ID,
+      assigneeUserId: null,
+      createdByUserId: null,
+      createdByAgentId: FACTORY_CTO_ID,
+      identifier: "PAP-1000",
+      title: "Private issue",
+      executionPolicy: null,
+      executionState: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: FACTORY_CTO_ID,
+      companyId: "company-1",
+      runId: "run-1",
+    }))
+      .post(`/api/issues/${issue.id}/visibility`)
+      .send({ visibility: "company", confirmed: true });
+
+    expect(res.status).toBe(403);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects first-time factory attachment through generic issue creation", async () => {
+    const res = await request(await createApp())
+      .post("/api/companies/company-1/issues")
+      .send({
+        title: "Forged factory control",
+        executionPolicy: managedFactoryPolicyFixture(),
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body.details).toMatchObject({
+      code: "factory_managed_route_required",
+      reason: "factory_snapshot_attach",
+    });
+    expect(mockIssueService.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects first-time factory attachment through generic child creation", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_progress",
+      assigneeAgentId: FACTORY_CTO_ID,
+      assigneeUserId: null,
+      identifier: "PAP-1001",
+      title: "Control issue",
+      executionPolicy: null,
+      executionState: null,
+    });
+
+    const res = await request(await createApp())
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/children")
+      .send({
+        title: "Forged execution lane",
+        executionPolicy: managedFactoryPolicyFixture(),
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body.details).toMatchObject({
+      code: "factory_managed_route_required",
+      reason: "factory_snapshot_attach",
+      managedRoute: "POST /api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/execution-lanes",
+    });
+    expect(mockIssueService.createChild).not.toHaveBeenCalled();
+  });
+
+  it("rejects first-time factory attachment through generic issue PATCH", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "todo",
+      assigneeAgentId: FACTORY_CTO_ID,
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1002",
+      title: "Ordinary issue",
+      executionPolicy: null,
+      executionState: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+
+    const res = await request(await createApp())
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ executionPolicy: managedFactoryPolicyFixture() });
+
+    expect(res.status).toBe(422);
+    expect(res.body.details).toMatchObject({
+      code: "factory_managed_route_required",
+      reason: "factory_snapshot_attach",
+    });
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("allows a monitor-only PATCH when the existing factory snapshot is unchanged", async () => {
+    const executionPolicy = managedFactoryPolicyFixture();
+    const currentStage = executionPolicy.stages[0]!;
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_progress",
+      assigneeAgentId: FACTORY_CTO_ID,
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1003",
+      title: "Managed execution lane",
+      executionPolicy,
+      executionState: {
+        status: "pending",
+        currentStageId: currentStage.id,
+        currentStageIndex: 0,
+        currentStageType: "work",
+        stageRevision: 3,
+        currentParticipant: { type: "agent", agentId: FACTORY_CTO_ID, userId: null },
+        returnAssignee: { type: "agent", agentId: FACTORY_CTO_ID, userId: null },
+        reviewRequest: null,
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+        monitor: null,
+      },
+      monitorAttemptCount: 0,
+      monitorNextCheckAt: null,
+      monitorLastTriggeredAt: null,
+      monitorNotes: null,
+      monitorScheduledBy: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+    const nextPolicy = structuredClone(executionPolicy);
+    nextPolicy.monitor = {
+      nextCheckAt: "2026-07-20T12:00:00.000Z",
+      notes: "Wait for provider evidence.",
+      scheduledBy: "board",
+    };
+
+    const res = await request(await createApp())
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ executionPolicy: nextPolicy });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issue.id,
+      expect.objectContaining({
+        factoryManagedTransition: expect.objectContaining({
+          expectedStageRevision: 3,
+          decisionId: null,
+        }),
+        monitorNextCheckAt: new Date("2026-07-20T12:00:00.000Z"),
+      }),
+    );
+  });
+
+  it("lets the active CTO complete technical acceptance before its server-generated ledger event exists", async () => {
+    const technicalStageId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1";
+    const deploymentStageId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2";
+    const executionPolicy = normalizeIssueExecutionPolicy({
+      mode: "normal",
+      commentRequired: true,
+      stages: [
+        {
+          id: technicalStageId,
+          key: "technical_acceptance",
+          type: "review",
+          role: "cto",
+          evidenceGates: [
+            "delivery:functional_qa:succeeded",
+            "delivery:technical_acceptance:accepted:paperclip_verified",
+          ],
+          approvalsNeeded: 1,
+          participants: [{ type: "agent", agentId: FACTORY_CTO_ID }],
+        },
+        {
+          id: deploymentStageId,
+          key: "deployment",
+          type: "deployment",
+          role: "devops",
+          evidenceGates: ["delivery:deployment:succeeded:provider_verified"],
+          approvalsNeeded: 1,
+          participants: [{ type: "agent", agentId: FACTORY_DEVOPS_ID }],
+        },
+      ],
+      factory: {
+        schemaVersion: 1,
+        laneKind: "execution",
+        topologyMode: "same_issue_only",
+        controlIssueId: FACTORY_CONTROL_ID,
+        coordinator: { type: "agent", agentId: FACTORY_CTO_ID },
+        policyKey: "company/acme/ai-factory-policy",
+        policyVersion: "1",
+        policyHash: "deadbeef",
+        maxExecutionLanes: 1,
+        production: true,
+      },
+    })!;
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      projectId: null,
+      visibility: "public",
+      status: "in_review",
+      assigneeAgentId: FACTORY_CTO_ID,
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      createdByAgentId: null,
+      identifier: "PAP-1013",
+      title: "Technical acceptance",
+      executionPolicy,
+      executionState: {
+        status: "pending",
+        currentStageId: technicalStageId,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        stageRevision: 4,
+        currentStageActivatedAt: "2026-07-17T03:00:00.000Z",
+        completedStageRevisions: {},
+        currentParticipant: { type: "agent", agentId: FACTORY_CTO_ID, userId: null },
+        returnAssignee: { type: "agent", agentId: FACTORY_CTO_ID, userId: null },
+        reviewRequest: null,
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+        monitor: null,
+      },
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockHeartbeatService.getRun.mockResolvedValue({
+      id: "run-technical-acceptance",
+      companyId: issue.companyId,
+      agentId: FACTORY_CTO_ID,
+      status: "running",
+      contextSnapshot: { issueId: issue.id },
+    });
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: FACTORY_CTO_ID,
+      companyId: issue.companyId,
+      runId: "run-technical-acceptance",
+    }))
+      .patch(`/api/issues/${issue.id}`)
+      .send({ status: "done", comment: "Approved this exact candidate for deployment." });
+
+    expect(res.status).toBe(200);
+    const patch = mockIssueService.update.mock.calls[0]?.[1] as any;
+    expect(patch).toMatchObject({
+      status: "in_progress",
+      assigneeAgentId: FACTORY_DEVOPS_ID,
+      executionState: {
+        currentStageId: deploymentStageId,
+        stageRevision: 5,
+        completedStageIds: [technicalStageId],
+        lastDecisionOutcome: "approved",
+      },
+      factoryManagedTransition: { expectedStageRevision: 4 },
+    });
+    expect(patch.factoryManagedTransition.decisionId).toBeTypeOf("string");
+    expect(patch.executionState.lastDecisionId).toBe(patch.factoryManagedTransition.decisionId);
+  });
+
+  it("lets the active CTO complete final acceptance before its server-generated ledger event exists", async () => {
+    const finalStageId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1";
+    const executionPolicy = normalizeIssueExecutionPolicy({
+      mode: "normal",
+      commentRequired: true,
+      stages: [{
+        id: finalStageId,
+        key: "final_acceptance",
+        type: "approval",
+        role: "cto",
+        evidenceGates: [
+          "delivery:deployment:succeeded:provider_verified",
+          "delivery:smoke:succeeded",
+          "delivery:business_acceptance:accepted:paperclip_verified",
+        ],
+        approvalsNeeded: 1,
+        participants: [{ type: "agent", agentId: FACTORY_CTO_ID }],
+      }],
+      factory: {
+        schemaVersion: 1,
+        laneKind: "execution",
+        topologyMode: "same_issue_only",
+        controlIssueId: FACTORY_CONTROL_ID,
+        coordinator: { type: "agent", agentId: FACTORY_CTO_ID },
+        policyKey: "company/acme/ai-factory-policy",
+        policyVersion: "1",
+        policyHash: "deadbeef",
+        maxExecutionLanes: 1,
+        production: true,
+      },
+    })!;
+    const issue = {
+      id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      companyId: "company-1",
+      projectId: null,
+      visibility: "public",
+      status: "in_review",
+      assigneeAgentId: FACTORY_CTO_ID,
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      createdByAgentId: null,
+      identifier: "PAP-1014",
+      title: "Final acceptance",
+      executionPolicy,
+      executionState: {
+        status: "pending",
+        currentStageId: finalStageId,
+        currentStageIndex: 0,
+        currentStageType: "approval",
+        stageRevision: 7,
+        currentStageActivatedAt: "2026-07-17T06:00:00.000Z",
+        completedStageRevisions: {},
+        currentParticipant: { type: "agent", agentId: FACTORY_CTO_ID, userId: null },
+        returnAssignee: { type: "agent", agentId: FACTORY_CTO_ID, userId: null },
+        reviewRequest: null,
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+        monitor: null,
+      },
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockHeartbeatService.getRun.mockResolvedValue({
+      id: "run-final-acceptance",
+      companyId: issue.companyId,
+      agentId: FACTORY_CTO_ID,
+      status: "running",
+      contextSnapshot: { issueId: issue.id },
+    });
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: FACTORY_CTO_ID,
+      companyId: issue.companyId,
+      runId: "run-final-acceptance",
+    }))
+      .patch(`/api/issues/${issue.id}`)
+      .send({ status: "done", comment: "Final acceptance approved for the verified production target." });
+
+    expect(res.status).toBe(200);
+    const patch = mockIssueService.update.mock.calls[0]?.[1] as any;
+    expect(patch).toMatchObject({
+      status: "done",
+      executionState: {
+        status: "completed",
+        currentStageId: null,
+        completedStageIds: [finalStageId],
+        lastDecisionOutcome: "approved",
+      },
+      factoryManagedTransition: { expectedStageRevision: 7 },
+    });
+    expect(patch.factoryManagedTransition.decisionId).toBeTypeOf("string");
+    expect(patch.executionState.lastDecisionId).toBe(patch.factoryManagedTransition.decisionId);
+  });
+
+  it("rejects factory-lane agent mutations without a heartbeat run", async () => {
+    const executionPolicy = managedFactoryPolicyFixture();
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      projectId: null,
+      visibility: "public",
+      status: "in_review",
+      assigneeAgentId: FACTORY_CTO_ID,
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      createdByAgentId: null,
+      identifier: "PAP-1004",
+      title: "Managed execution lane",
+      executionPolicy,
+      executionState: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: FACTORY_CTO_ID,
+      companyId: "company-1",
+      runId: null,
+    }))
+      .patch(`/api/issues/${issue.id}`)
+      .send({ priority: "high" });
+
+    expect(res.status).toBe(401);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects factory-lane agent mutations from a stale or differently scoped run", async () => {
+    const executionPolicy = managedFactoryPolicyFixture();
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      projectId: null,
+      visibility: "public",
+      status: "in_review",
+      assigneeAgentId: FACTORY_CTO_ID,
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      createdByAgentId: null,
+      identifier: "PAP-1004",
+      title: "Managed execution lane",
+      executionPolicy,
+      executionState: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockHeartbeatService.getRun.mockResolvedValueOnce({
+      id: "run-stale",
+      companyId: "company-1",
+      agentId: FACTORY_CTO_ID,
+      status: "succeeded",
+      contextSnapshot: { issueId: issue.id },
+    });
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: FACTORY_CTO_ID,
+      companyId: "company-1",
+      runId: "run-stale",
+    }))
+      .patch(`/api/issues/${issue.id}`)
+      .send({ priority: "high" });
+
+    expect(res.status).toBe(403);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
   it("rejects an agent-authored in_review transition without a review path", async () => {

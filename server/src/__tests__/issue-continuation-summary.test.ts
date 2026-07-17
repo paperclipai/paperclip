@@ -2,8 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   ISSUE_CONTINUATION_SUMMARY_MAX_BODY_CHARS,
   buildContinuationSummaryMarkdown,
-  continuationSummaryParksExecutor,
-  extractContinuationSummaryNextAction,
 } from "../services/issue-continuation-summary.js";
 
 describe("issue continuation summaries", () => {
@@ -45,11 +43,12 @@ describe("issue continuation summaries", () => {
     });
 
     expect(body).toContain("# Continuation Summary");
+    expect(body).toContain("Advisory generated hint (`generated_hint`)");
     expect(body).toContain("## Objective");
     expect(body).toContain("Keep work resumable after adapter session reset.");
     expect(body).toContain("## Acceptance Criteria");
     expect(body).toContain("- Summary is issue-local");
-    expect(body).toContain("## Recent Concrete Actions");
+    expect(body).toContain("## Recent Agent-Reported Actions");
     expect(body).toContain("Run `run-1` finished with status `succeeded`");
     expect(body).toContain("`server/src/services/heartbeat.ts`");
     expect(body).toContain("## Commands Run");
@@ -86,30 +85,33 @@ describe("issue continuation summaries", () => {
     expect(body).toContain("Inspect the failed run, fix the cause");
   });
 
-  it("detects continuation summaries that explicitly park executor work for review", () => {
-    const body = [
-      "# Continuation Summary",
-      "",
-      "## Next Action",
-      "",
-      "- Wait for reviewer feedback or approval before continuing executor work.",
-    ].join("\n");
+  it("uses hidden execution-contract acceptance checks when the description omits them", () => {
+    const body = buildContinuationSummaryMarkdown({
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-1579",
+        title: "Add continuation summaries",
+        description: "Keep the handoff truthful.",
+        status: "in_review",
+        priority: "medium",
+        executionContract: {
+          core: {
+            objective: "Preserve authoritative delivery evidence.",
+            acceptanceChecks: ["Deployment fact comes from provider evidence", "Review remains a separate stage"],
+          },
+        },
+      },
+      run: {
+        id: "run-3",
+        status: "succeeded",
+        error: null,
+        resultJson: { summary: "Agent claimed that nothing was deployed." },
+      },
+      agent: { id: "agent-1", name: "CodexCoder", adapterType: "codex_local" },
+    });
 
-    expect(extractContinuationSummaryNextAction(body)).toBe(
-      "Wait for reviewer feedback or approval before continuing executor work.",
-    );
-    expect(continuationSummaryParksExecutor(body)).toBe(true);
-  });
-
-  it("does not park executor work when the next action is still runnable", () => {
-    const body = [
-      "# Continuation Summary",
-      "",
-      "## Next Action",
-      "",
-      "- Re-check run `25145432006`, then move the issue to `in_review` if the final step is green.",
-    ].join("\n");
-
-    expect(continuationSummaryParksExecutor(body)).toBe(false);
+    expect(body).toContain("- Deployment fact comes from provider evidence");
+    expect(body).toContain("- Review remains a separate stage");
+    expect(body).toContain("Confirm the current structured review, interaction, and delivery state");
   });
 });

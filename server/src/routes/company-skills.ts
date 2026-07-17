@@ -1,3 +1,4 @@
+import path from "node:path";
 import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
 import {
@@ -5,6 +6,7 @@ import {
   companySkillFileUpdateSchema,
   companySkillImportSchema,
   companySkillProjectScanRequestSchema,
+  companyAiFactoryPolicySelectSchema,
 } from "@paperclipai/shared";
 import { trackSkillImported } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
@@ -12,6 +14,7 @@ import { accessService, agentService, companySkillService, logActivity } from ".
 import { forbidden } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { getTelemetryClient } from "../telemetry.js";
+import { AI_FACTORY_POLICY_FILE } from "../services/ai-factory-policy.js";
 
 type SkillTelemetryInput = {
   key: string;
@@ -81,6 +84,17 @@ export function companySkillRoutes(db: Db) {
     throw forbidden("Missing permission: can create agents");
   }
 
+  async function assertCanManageAiFactoryPolicy(req: Request, companyId: string) {
+    assertCompanyAccess(req, companyId);
+    if (req.actor.type !== "board") {
+      throw forbidden("Board access required to change AI Factory policy");
+    }
+    if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
+    if (await access.isCompanyOwner(companyId, req.actor.userId)) return;
+    const allowed = await access.canUser(companyId, req.actor.userId, "ai_factory:manage");
+    if (!allowed) throw forbidden("Missing permission: ai_factory:manage");
+  }
+
   router.get("/companies/:companyId/skills", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
@@ -103,6 +117,62 @@ export function companySkillRoutes(db: Db) {
       entityType: "company",
       entityId: companyId,
       details: { skillCount: result.length },
+    });
+    res.json(result);
+  });
+
+  router.get("/companies/:companyId/ai-factory-policy", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    res.json(await svc.getAiFactoryPolicyView(companyId));
+  });
+
+  router.put(
+    "/companies/:companyId/ai-factory-policy",
+    validate(companyAiFactoryPolicySelectSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      await assertCanManageAiFactoryPolicy(req, companyId);
+      const result = await svc.selectAiFactoryPolicy(companyId, String(req.body.skillId));
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "company.ai_factory_policy_selected",
+        entityType: "company_skill",
+        entityId: result.overlaySkillId,
+        details: {
+          skillKey: result.overlaySkillKey,
+          contentHash: result.compiled.contentHash,
+          version: result.compiled.version,
+        },
+      });
+      res.json(result);
+    },
+  );
+
+  router.post("/companies/:companyId/ai-factory-policy/reset", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    await assertCanManageAiFactoryPolicy(req, companyId);
+    const result = await svc.resetAiFactoryPolicy(companyId);
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: "company.ai_factory_policy_reset",
+      entityType: "company_skill",
+      entityId: result.overlaySkillId,
+      details: {
+        skillKey: result.overlaySkillKey,
+        contentHash: result.compiled.contentHash,
+        version: result.compiled.version,
+      },
     });
     res.json(result);
   });
@@ -178,13 +248,28 @@ export function companySkillRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const skillId = req.params.skillId as string;
-      await assertCanMutateCompanySkills(req, companyId);
-      const result = await svc.updateFile(
-        companyId,
-        skillId,
-        String(req.body.path ?? ""),
-        String(req.body.content ?? ""),
-      );
+      const relativePath = String(req.body.path ?? "");
+      const normalizedPath = path.posix
+        .normalize(relativePath.replace(/\\/g, "/"))
+        .replace(/^\.\/+/, "");
+      const isFactoryPolicyFile = normalizedPath === AI_FACTORY_POLICY_FILE;
+      if (isFactoryPolicyFile) {
+        await assertCanManageAiFactoryPolicy(req, companyId);
+      } else {
+        await assertCanMutateCompanySkills(req, companyId);
+      }
+      const result = isFactoryPolicyFile
+        ? await svc.updateAiFactoryPolicyFile(
+          companyId,
+          skillId,
+          String(req.body.content ?? ""),
+        )
+        : await svc.updateFile(
+          companyId,
+          skillId,
+          relativePath,
+          String(req.body.content ?? ""),
+        );
 
       const actor = getActorInfo(req);
       await logActivity(db, {

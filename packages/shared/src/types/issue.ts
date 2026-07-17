@@ -10,6 +10,8 @@ import type {
   IssueExecutionDecisionOutcome,
   IssueMonitorScheduledBy,
   IssueExecutionPolicyMode,
+  IssueFactoryLaneKind,
+  IssueFactoryTopologyMode,
   IssueReferenceSourceKind,
   IssueExecutionStageType,
   IssueExecutionStateStatus,
@@ -32,6 +34,7 @@ import type { Project, ProjectWorkspace } from "./project.js";
 import type { WorkCycle } from "./work-cycle.js";
 import type { ExecutionWorkspace, IssueExecutionWorkspaceSettings } from "./workspace-runtime.js";
 import type { IssueWorkProduct } from "./work-product.js";
+import type { FactoryPolicyV1 } from "./ai-factory-policy.js";
 
 export type { IssueWorkItemType, IssueWorkMode };
 
@@ -347,9 +350,35 @@ export interface IssueExecutionStageParticipant extends IssueExecutionStagePrinc
 
 export interface IssueExecutionStage {
   id: string;
+  /** Stable company-policy key (for example implementation or live_qa). */
+  key?: string | null;
   type: IssueExecutionStageType;
+  /** Human-readable role selector retained in the snapshotted policy. */
+  role?: string | null;
+  /** Require a participant other than the lane coordinator/return assignee. */
+  independent?: boolean;
+  /** Stage key to reactivate when this stage requests changes. */
+  returnToStageKey?: string | null;
+  /** Structured delivery gates that must be satisfied before this stage advances. */
+  evidenceGates?: string[];
   approvalsNeeded: 1;
   participants: IssueExecutionStageParticipant[];
+}
+
+export interface IssueFactoryExecutionPolicy {
+  schemaVersion: 1;
+  laneKind: IssueFactoryLaneKind;
+  topologyMode: IssueFactoryTopologyMode;
+  controlIssueId?: string | null;
+  coordinator: IssueExecutionStagePrincipal;
+  policyKey: string;
+  policyVersion: string;
+  policyHash: string;
+  maxExecutionLanes: number;
+  /** Frozen company-policy input used to construct this execution lane. */
+  policySnapshot?: FactoryPolicyV1;
+  /** Whether production-only stages were selected for this lane. */
+  production?: boolean;
 }
 
 export interface IssueExecutionMonitorPolicy {
@@ -369,6 +398,7 @@ export interface IssueExecutionPolicy {
   commentRequired: boolean;
   stages: IssueExecutionStage[];
   monitor?: IssueExecutionMonitorPolicy | null;
+  factory?: IssueFactoryExecutionPolicy | null;
 }
 
 export interface IssueExecutionMonitorState {
@@ -397,6 +427,14 @@ export interface IssueExecutionState {
   currentStageId: string | null;
   currentStageIndex: number | null;
   currentStageType: IssueExecutionStageType | null;
+  /**
+   * Monotonic activation revision for typed workflow stages. Delivery evidence
+   * is stamped with this value so evidence from a prior QA/fix iteration cannot
+   * be replayed after the workflow rewinds.
+   */
+  stageRevision?: number;
+  currentStageActivatedAt?: string | null;
+  completedStageRevisions?: Record<string, number>;
   currentParticipant: IssueExecutionStagePrincipal | null;
   returnAssignee: IssueExecutionStagePrincipal | null;
   reviewRequest: IssueReviewRequest | null;
@@ -665,12 +703,37 @@ export interface AskUserQuestionsQuestion {
   options: AskUserQuestionsQuestionOption[];
 }
 
+export type CapabilityPreflightReasonKind =
+  | "missing_capability"
+  | "missing_authority"
+  | "policy_approval"
+  | "irreversible_action"
+  | "user_requested";
+
+export type CapabilityPreflightCheckStatus = "available" | "unavailable" | "not_applicable";
+
+export interface CapabilityPreflightCheck {
+  capability: string;
+  status: CapabilityPreflightCheckStatus;
+  evidence: string;
+}
+
+/** Machine-auditable proof that an agent exhausted safe execution paths before pausing. */
+export interface CapabilityPreflightV1 {
+  version: 1;
+  reasonKind: CapabilityPreflightReasonKind;
+  checks: CapabilityPreflightCheck[];
+  alternativesConsidered: string[];
+  minimumDecision: string;
+}
+
 export interface AskUserQuestionsPayload {
   version: 1;
   title?: string | null;
   submitLabel?: string | null;
   /** Machine-readable context for the decision without overloading user-facing copy. */
   context?: Record<string, unknown> | null;
+  capabilityPreflight?: CapabilityPreflightV1 | null;
   questions: AskUserQuestionsQuestion[];
 }
 
@@ -723,6 +786,7 @@ export interface RequestConfirmationPayload {
   detailsMarkdown?: string | null;
   supersedeOnUserComment?: boolean;
   target?: RequestConfirmationTarget | null;
+  capabilityPreflight?: CapabilityPreflightV1 | null;
 }
 
 export interface RequestConfirmationResult {

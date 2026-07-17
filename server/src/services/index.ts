@@ -2,6 +2,22 @@ export { companyService } from "./companies.js";
 export { companySearchService } from "./company-search.js";
 export { feedbackService } from "./feedback.js";
 export { companySkillService } from "./company-skills.js";
+export {
+  AI_FACTORY_POLICY_FILE,
+  AI_FACTORY_POLICY_SETTING_KEY,
+  DEFAULT_FACTORY_POLICY_V1,
+  FACTORY_POLICY_PRECEDENCE,
+  FACTORY_POLICY_SERVER_INVARIANTS_V1,
+  PAPERCLIP_AI_FACTORY_BASE_SKILL_KEY,
+  compileFactoryPolicyV1,
+  defaultCompanyAiFactoryPolicySkillKey,
+  readCompanyAiFactoryPolicySkillKey,
+} from "./ai-factory-policy.js";
+export {
+  aiFactoryExecutionLaneService,
+  type CreateFactoryExecutionLaneInput,
+  type FactoryExecutionLaneIdempotency,
+} from "./ai-factory-execution-lanes.js";
 export { improvementSuggestionService } from "./improvement-suggestions.js";
 export { agentService, deduplicateAgentName } from "./agents.js";
 export { agentInstructionsService, syncInstructionsBundleConfigFromFilePath } from "./agent-instructions.js";
@@ -19,6 +35,10 @@ export {
   clampIssueListLimit,
   ISSUE_LIST_DEFAULT_LIMIT,
   ISSUE_LIST_MAX_LIMIT,
+  FACTORY_IRREVERSIBLE_ACTION_APPROVAL_TARGET_KEY,
+  authorizeFactoryManagedCreate,
+  authorizeFactoryManagedPolicyPin,
+  authorizeFactoryManagedTransition,
   issueService,
   validateDelegatedIssueExecutionContract,
   type IssueFilters,
@@ -69,6 +89,28 @@ export { environmentService } from "./environments.js";
 export { executionWorkspaceService } from "./execution-workspaces.js";
 export { workspaceOperationService } from "./workspace-operations.js";
 export { workProductService } from "./work-products.js";
+export {
+  deliveryService,
+  acquireIssueDeliveryLock,
+  candidateShasMatch,
+  buildFactoryDeliveryEvidenceExpectations,
+  applyFactoryDeliverySnapshotFreshness,
+  normalizeCandidateSha,
+  evaluateDeliveryEvidenceGate,
+  evaluateDeliveryEvidenceGates,
+  projectDeliverySnapshot,
+  type DeliveryEvidenceGateResult,
+  type DeliveryActor,
+  type AppendVerifiedDeliveryEvent,
+  type DeliveryCredentialResolver,
+} from "./delivery.js";
+export {
+  createGithubActionsVerifier,
+  createCloudflarePagesVerifier,
+  defaultExternalOperationVerifiers,
+  type ExternalOperationVerifier,
+  type ExternalProviderVerification,
+} from "./delivery-verifiers.js";
 export { logActivity, type LogActivityInput } from "./activity-log.js";
 export { notifyHireApproved, type NotifyHireApprovedInput } from "./hire-hook.js";
 export { publishLiveEvent, subscribeCompanyLiveEvents } from "./live-events.js";

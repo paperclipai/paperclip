@@ -5,9 +5,12 @@ import {
   authUsers,
   companyMemberships,
   issueCollaborators,
+  issues,
   principalPermissionGrants,
 } from "@paperclipai/db";
 import { extractAgentMentionIds, extractUserMentionIds } from "@paperclipai/shared";
+import { conflict } from "../errors.js";
+import { issueTreeControlService } from "./issue-tree-control.js";
 
 export type VisibilityPrincipal =
   | { kind: "user"; userId: string; isInstanceAdmin?: boolean }
@@ -56,6 +59,42 @@ export function decidePrivateIssueAccess(
 }
 
 export function issueVisibilityService(db: Db) {
+  async function withIssueMutationMediation<T>(
+    issueId: string,
+    work: (executor: Db) => Promise<T>,
+  ) {
+    return db.transaction(async (rawTx) => {
+      const tx = rawTx as unknown as Db;
+      const issue = await tx
+        .select({ id: issues.id, companyId: issues.companyId })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      if (!issue) return work(tx);
+      const treeControl = issueTreeControlService(tx);
+      const pauseHold = await treeControl.getActivePauseHoldGate(issue.companyId, issue.id);
+      if (pauseHold) {
+        throw conflict("Issue collaborator mutation is blocked by an active subtree pause hold", {
+          code: "issue_tree_paused",
+          holdId: pauseHold.holdId,
+          rootIssueId: pauseHold.rootIssueId,
+          issueId: issue.id,
+        });
+      }
+      const cancelHold = await treeControl.getActiveCancelHoldGate(issue.companyId, issue.id);
+      if (cancelHold) {
+        throw conflict("Issue collaborator mutation is blocked by an active subtree cancel hold", {
+          code: "issue_tree_cancelled",
+          holdId: cancelHold.holdId,
+          rootIssueId: cancelHold.rootIssueId,
+          issueId: issue.id,
+        });
+      }
+      return work(tx);
+    });
+  }
+
   async function getMembershipRole(
     companyId: string,
     principalType: "user" | "agent",
@@ -210,24 +249,26 @@ export function issueVisibilityService(db: Db) {
     addedByUserId?: string | null;
     addedByAgentId?: string | null;
   }): Promise<void> {
-    await db
-      .insert(issueCollaborators)
-      .values({
-        companyId: params.companyId,
-        issueId: params.issueId,
-        principalType: params.principalType,
-        principalId: params.principalId,
-        reason: params.reason,
-        addedByUserId: params.addedByUserId ?? null,
-        addedByAgentId: params.addedByAgentId ?? null,
-      })
-      .onConflictDoNothing({
-        target: [
-          issueCollaborators.issueId,
-          issueCollaborators.principalType,
-          issueCollaborators.principalId,
-        ],
-      });
+    await withIssueMutationMediation(params.issueId, async (executor) => {
+      await executor
+        .insert(issueCollaborators)
+        .values({
+          companyId: params.companyId,
+          issueId: params.issueId,
+          principalType: params.principalType,
+          principalId: params.principalId,
+          reason: params.reason,
+          addedByUserId: params.addedByUserId ?? null,
+          addedByAgentId: params.addedByAgentId ?? null,
+        })
+        .onConflictDoNothing({
+          target: [
+            issueCollaborators.issueId,
+            issueCollaborators.principalType,
+            issueCollaborators.principalId,
+          ],
+        });
+    });
   }
 
   async function listCollaborators(issueId: string) {
@@ -263,15 +304,17 @@ export function issueVisibilityService(db: Db) {
     principalType: "user" | "agent";
     principalId: string;
   }) {
-    await db
-      .delete(issueCollaborators)
-      .where(
-        and(
-          eq(issueCollaborators.issueId, params.issueId),
-          eq(issueCollaborators.principalType, params.principalType),
-          eq(issueCollaborators.principalId, params.principalId),
-        ),
-      );
+    await withIssueMutationMediation(params.issueId, async (executor) => {
+      await executor
+        .delete(issueCollaborators)
+        .where(
+          and(
+            eq(issueCollaborators.issueId, params.issueId),
+            eq(issueCollaborators.principalType, params.principalType),
+            eq(issueCollaborators.principalId, params.principalId),
+          ),
+        );
+    });
   }
 
   async function resolveMentionsToCollaborators(params: {

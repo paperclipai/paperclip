@@ -120,4 +120,48 @@ describe("issue thread interaction schemas", () => {
       })).toThrow("href must not use javascript:, data:, or protocol-relative URLs");
     }
   });
+
+  it("accepts a structured capability preflight and rejects unsupported missing-capability claims", () => {
+    const base = {
+      kind: "ask_user_questions",
+      payload: {
+        version: 1,
+        capabilityPreflight: {
+          version: 1,
+          reasonKind: "missing_capability",
+          checks: [{
+            capability: "production deploy credentials",
+            status: "unavailable",
+            evidence: "Credential broker returned no binding for this environment.",
+          }],
+          alternativesConsidered: ["Use the existing deployment provider binding."],
+          minimumDecision: "Choose the authorized deployment owner.",
+        },
+        questions: [{
+          id: "owner",
+          prompt: "Who should own the production deployment?",
+          selectionMode: "single",
+          options: [{ id: "devops", label: "DevOps" }],
+        }],
+      },
+    } as const;
+
+    expect(createIssueThreadInteractionSchema.parse(base)).toMatchObject({
+      payload: { capabilityPreflight: { reasonKind: "missing_capability" } },
+    });
+    expect(() => createIssueThreadInteractionSchema.parse({
+      ...base,
+      payload: {
+        ...base.payload,
+        capabilityPreflight: {
+          ...base.payload.capabilityPreflight,
+          checks: [{
+            capability: "production deploy credentials",
+            status: "available",
+            evidence: "A provider binding exists.",
+          }],
+        },
+      },
+    })).toThrow("missing_capability requires at least one unavailable capability check");
+  });
 });

@@ -149,7 +149,7 @@ export const issuesApi = {
         isRoot: boolean;
         mode: "pause";
         reason: string | null;
-        releasePolicy: { strategy: "manual" | "after_active_runs_finish"; note?: string | null } | null;
+        releasePolicy: { strategy: "manual"; note?: string | null } | null;
       } | null;
     }>(`/issues/${id}/tree-control/state`),
   releaseTreeHold: (id: string, holdId: string, data: ReleaseIssueTreeHold) =>

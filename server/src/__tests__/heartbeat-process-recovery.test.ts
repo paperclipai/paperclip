@@ -16,6 +16,7 @@ import {
   documents,
   environmentLeases,
   environments,
+  externalOperations,
   heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
@@ -2267,6 +2268,58 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(activity.some((event) => event.action === "issue.successful_run_handoff_required")).toBe(true);
   });
 
+  it("does not enqueue a finish-handoff wake when the run registered a bounded external operation", async () => {
+    const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
+    mockAdapterExecute.mockImplementationOnce(async (ctx: { runId: string }) => {
+      await db.insert(issueComments).values({
+        companyId,
+        issueId,
+        authorAgentId: agentId,
+        createdByRunId: ctx.runId,
+        body: "Deployment started and is waiting for provider verification.",
+      });
+      const now = new Date();
+      await db.insert(externalOperations).values({
+        companyId,
+        issueId,
+        kind: "custom",
+        provider: "deployment-test",
+        stage: "deployment",
+        externalId: `deployment-${ctx.runId}`,
+        state: "running",
+        nextCheckAt: new Date(now.getTime() + 5 * 60_000),
+        timeoutAt: new Date(now.getTime() + 30 * 60_000),
+        metadata: { paperclipController: { attemptCount: 0, maxAttempts: 3 } },
+      });
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "Deployment started and is waiting for provider verification.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId, 5_000);
+    await waitForHeartbeatIdle(db, 5_000);
+
+    const handoffWakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(and(
+        eq(agentWakeupRequests.agentId, agentId),
+        eq(agentWakeupRequests.reason, "finish_successful_run_handoff"),
+      ));
+    expect(handoffWakeups).toHaveLength(0);
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments.some((comment) => comment.body === SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY))
+      .toBe(false);
+  });
+
   it("requeues a missing-disposition handoff when the previous corrective wake was cancelled", async () => {
     const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
     const idempotencyKey = `finish_successful_run_handoff:${issueId}:${runId}:1`;
@@ -3916,6 +3969,64 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
     expect(sourceRun?.id).not.toBe(runId);
     expect(sourceRun?.livenessState).toBe("plan_only");
+  });
+
+  it("does not enqueue plan-only continuation after the run registers a bounded external operation", async () => {
+    const { agentId, companyId, issueId, runId: strandedRunId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+    });
+    mockAdapterExecute.mockImplementationOnce(async (ctx: { runId: string }) => {
+      const now = new Date();
+      await db.insert(externalOperations).values({
+        companyId,
+        issueId,
+        kind: "custom",
+        provider: "deployment-test",
+        stage: "deployment",
+        externalId: `deployment-${ctx.runId}`,
+        state: "running",
+        nextCheckAt: new Date(now.getTime() + 5 * 60_000),
+        timeoutAt: new Date(now.getTime() + 30 * 60_000),
+        metadata: { paperclipController: { attemptCount: 0, maxAttempts: 3 } },
+      });
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "I will inspect the repo next and then implement the fix.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.reconcileStrandedAssignedIssues();
+    await waitForHeartbeatIdle(db, 5_000);
+
+    const planOnlyRun = await waitForValue(async () => {
+      const rows = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(and(
+          eq(heartbeatRuns.agentId, agentId),
+          eq(heartbeatRuns.livenessState, "plan_only"),
+        ));
+      return rows.find((row) =>
+        row.id !== strandedRunId
+        && row.livenessReason?.includes("continuation held by external operation")
+      ) ?? null;
+    }, 5_000);
+    expect(planOnlyRun?.livenessReason).toContain("continuation held by external operation");
+    const continuationWakes = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(and(
+        eq(agentWakeupRequests.agentId, agentId),
+        eq(agentWakeupRequests.reason, "run_liveness_continuation"),
+      ));
+    expect(continuationWakes).toHaveLength(0);
   });
 
   it("treats a plan document update as progress and does not enqueue liveness continuation", async () => {

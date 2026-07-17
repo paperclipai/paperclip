@@ -26,10 +26,28 @@ const mockInteractionService = vi.hoisted(() => ({
 const mockAccessService = vi.hoisted(() => ({
   canUser: vi.fn(async () => true),
   hasPermission: vi.fn(async () => true),
+  canUserAccessProject: vi.fn(async () => true),
+  isCompanyOwner: vi.fn(async () => false),
+  hasProjectPermission: vi.fn(async () => false),
+}));
+
+const mockIssueVisibilityService = vi.hoisted(() => ({
+  canSeeIssue: vi.fn(async () => true),
+  filterVisibleIssues: vi.fn(async (_principal, issues) => issues),
+  ensureCollaborator: vi.fn(async () => undefined),
+  resolveMentionsToCollaborators: vi.fn(async () => undefined),
+  listCollaborators: vi.fn(async () => []),
+  removeCollaborator: vi.fn(async () => undefined),
 }));
 
 const mockHeartbeatService = vi.hoisted(() => ({
   wakeup: vi.fn(async () => undefined),
+  getRun: vi.fn(async () => null),
+}));
+
+const mockTreeControlService = vi.hoisted(() => ({
+  getActivePauseHoldGate: vi.fn(async () => null),
+  getActiveCancelHoldGate: vi.fn(async () => null),
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
@@ -98,20 +116,15 @@ function registerModuleMocks() {
     }),
     issueService: () => mockIssueService,
     issueThreadInteractionService: () => mockInteractionService,
+    issueTreeControlService: () => mockTreeControlService,
+    FACTORY_IRREVERSIBLE_ACTION_APPROVAL_TARGET_KEY: "ai-factory-production-deployment",
     logActivity: mockLogActivity,
     projectService: () => ({}),
     routineService: () => ({
       syncRunStatusForIssue: vi.fn(async () => undefined),
     }),
     workProductService: () => ({}),
-    issueVisibilityService: () => ({
-      canSeeIssue: vi.fn(async () => true),
-      filterVisibleIssues: vi.fn(async (_principal, issues) => issues),
-      ensureCollaborator: vi.fn(async () => undefined),
-      resolveMentionsToCollaborators: vi.fn(async () => undefined),
-      listCollaborators: vi.fn(async () => []),
-      removeCollaborator: vi.fn(async () => undefined),
-    }),
+    issueVisibilityService: () => mockIssueVisibilityService,
     webPushService: () => ({
       sendToUser: vi.fn(async () => undefined),
       sendToUsers: vi.fn(async () => undefined),
@@ -137,6 +150,7 @@ function createIssue(overrides: Record<string, unknown> = {}) {
     executionPolicy: null,
     executionState: null,
     hiddenAt: null,
+    visibility: "public",
     ...overrides,
   };
 }
@@ -174,17 +188,24 @@ describe.sequential("issue thread interaction routes", () => {
     vi.clearAllMocks();
     mockIssueService.getById.mockResolvedValue(createIssue());
     mockInteractionService.listForIssue.mockResolvedValue([]);
-    mockInteractionService.getById.mockResolvedValue({
-      id: "interaction-2",
+    mockInteractionService.getById.mockImplementation(async (interactionId: string) => ({
+      id: interactionId,
       companyId: "company-1",
       issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-      kind: "ask_user_questions",
+      kind: interactionId === "interaction-1" ? "suggest_tasks" : "ask_user_questions",
       status: "pending",
       createdByAgentId: null,
       createdByUserId: "local-board",
-    });
+    }));
     mockAccessService.canUser.mockResolvedValue(true);
     mockAccessService.hasPermission.mockResolvedValue(true);
+    mockAccessService.canUserAccessProject.mockResolvedValue(true);
+    mockAccessService.isCompanyOwner.mockResolvedValue(false);
+    mockAccessService.hasProjectPermission.mockResolvedValue(false);
+    mockIssueVisibilityService.canSeeIssue.mockResolvedValue(true);
+    mockHeartbeatService.getRun.mockResolvedValue(null);
+    mockTreeControlService.getActivePauseHoldGate.mockResolvedValue(null);
+    mockTreeControlService.getActiveCancelHoldGate.mockResolvedValue(null);
     mockInteractionService.create.mockResolvedValue({
       id: "interaction-1",
       companyId: "company-1",
@@ -350,6 +371,82 @@ describe.sequential("issue thread interaction routes", () => {
         }),
       }),
     );
+  });
+
+  it("does not expose interactions for a private issue the actor cannot see", async () => {
+    mockIssueService.getById.mockResolvedValueOnce(createIssue({ visibility: "private" }));
+    mockIssueVisibilityService.canSeeIssue.mockResolvedValueOnce(false);
+    const app = await createApp({
+      type: "board",
+      userId: "viewer-user",
+      companyIds: ["company-1"],
+      source: "session",
+      isInstanceAdmin: false,
+    });
+
+    const res = await request(app)
+      .get("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions");
+
+    expect(res.status).toBe(404);
+    expect(mockInteractionService.listForIssue).not.toHaveBeenCalled();
+  });
+
+  it("does not expose project interactions without project access", async () => {
+    mockIssueService.getById.mockResolvedValueOnce(createIssue({ projectId: "project-1" }));
+    mockAccessService.canUserAccessProject.mockResolvedValueOnce(false);
+    const app = await createApp({
+      type: "board",
+      userId: "viewer-user",
+      companyIds: ["company-1"],
+      source: "session",
+      isInstanceAdmin: false,
+    });
+
+    const res = await request(app)
+      .get("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions");
+
+    expect(res.status).toBe(403);
+    expect(mockInteractionService.listForIssue).not.toHaveBeenCalled();
+  });
+
+  it("requires AI Factory management authority to accept an irreversible production gate", async () => {
+    mockInteractionService.getById.mockResolvedValueOnce({
+      id: "interaction-production",
+      companyId: "company-1",
+      issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      kind: "request_confirmation",
+      status: "pending",
+      payload: {
+        version: 1,
+        prompt: "Deploy candidate?",
+        target: {
+          type: "custom",
+          key: "ai-factory-production-deployment",
+          revisionId: "0123456789abcdef0123456789abcdef01234567",
+        },
+      },
+    });
+    mockAccessService.canUser.mockImplementation(async (_companyId, _userId, permission) =>
+      permission !== "ai_factory:manage");
+    const app = await createApp({
+      type: "board",
+      userId: "viewer-user",
+      companyIds: ["company-1"],
+      source: "session",
+      isInstanceAdmin: false,
+    });
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-production/accept")
+      .send({});
+
+    expect(res.status).toBe(403);
+    expect(mockAccessService.canUser).toHaveBeenCalledWith(
+      "company-1",
+      "viewer-user",
+      "ai_factory:manage",
+    );
+    expect(mockInteractionService.acceptInteraction).not.toHaveBeenCalled();
   });
 
   it("accepts suggested tasks and wakes created assignees plus the current assignee", async () => {

@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { applyIssueExecutionPolicyTransition, normalizeIssueExecutionPolicy, parseIssueExecutionState } from "../services/issue-execution-policy.ts";
+import {
+  applyIssueExecutionPolicyTransition,
+  buildInitialIssueExecutionWorkflow,
+  normalizeIssueExecutionPolicy,
+  parseIssueExecutionState,
+} from "../services/issue-execution-policy.ts";
 import type { IssueExecutionPolicy, IssueExecutionState } from "@paperclipai/shared";
 
 const coderAgentId = "11111111-1111-4111-8111-111111111111";
@@ -130,6 +135,46 @@ describe("normalizeIssueExecutionPolicy", () => {
         scheduledBy: "assignee",
         externalRef: "[redacted]",
       },
+    });
+  });
+
+  it("preserves a factory snapshot and keyed delivery-stage metadata", () => {
+    const result = normalizeIssueExecutionPolicy({
+      mode: "normal",
+      stages: [{
+        key: "implementation",
+        type: "work",
+        role: "engineer",
+        independent: false,
+        evidenceGates: ["commit", "tests"],
+        participants: [{ type: "agent", agentId: coderAgentId }],
+      }],
+      factory: {
+        schemaVersion: 1,
+        laneKind: "execution",
+        topologyMode: "direct_execution_lanes",
+        controlIssueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        coordinator: { type: "agent", agentId: ctoAgentId },
+        policyKey: "paperclip-ai-factory",
+        policyVersion: "1",
+        policyHash: "deadbeef",
+        maxExecutionLanes: 3,
+      },
+    });
+
+    expect(result).toMatchObject({
+      factory: {
+        laneKind: "execution",
+        coordinator: { type: "agent", agentId: ctoAgentId },
+        policyHash: "deadbeef",
+      },
+      stages: [{
+        key: "implementation",
+        type: "work",
+        role: "engineer",
+        independent: false,
+        evidenceGates: ["commit", "tests"],
+      }],
     });
   });
 });
@@ -566,7 +611,7 @@ describe("issue execution policy transitions", () => {
           actor: { agentId: coderAgentId },
           commentBody: "Trying to bypass review",
         }),
-      ).toThrow("Only the active reviewer or approver can advance");
+      ).toThrow("Only the active execution-stage participant can advance");
     });
 
     it("non-participant can still post non-advancing updates", () => {
@@ -597,6 +642,203 @@ describe("issue execution policy transitions", () => {
 
       // No error — just no patch modifications
       expect(result.patch).toEqual({});
+    });
+  });
+
+  describe("factory delivery stages", () => {
+    const policy = normalizeIssueExecutionPolicy({
+      mode: "normal",
+      stages: [
+        {
+          key: "technical_plan",
+          type: "work",
+          role: "cto",
+          participants: [{ type: "agent", agentId: ctoAgentId }],
+        },
+        {
+          key: "implementation",
+          type: "work",
+          role: "engineer",
+          participants: [{ type: "agent", agentId: coderAgentId }],
+        },
+        {
+          key: "independent_qa",
+          type: "verification",
+          role: "qa",
+          independent: true,
+          returnToStageKey: "implementation",
+          participants: [{ type: "agent", agentId: qaAgentId }],
+        },
+        {
+          key: "technical_acceptance",
+          type: "review",
+          role: "cto",
+          independent: false,
+          participants: [{ type: "agent", agentId: ctoAgentId }],
+        },
+      ],
+      factory: {
+        schemaVersion: 1,
+        laneKind: "execution",
+        topologyMode: "direct_execution_lanes",
+        controlIssueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        coordinator: { type: "agent", agentId: ctoAgentId },
+        policyKey: "paperclip-ai-factory",
+        policyVersion: "1",
+        policyHash: "deadbeef",
+        maxExecutionLanes: 3,
+      },
+    })!;
+
+    it("starts with the lane coordinator and advances work to independent QA", () => {
+      const initial = buildInitialIssueExecutionWorkflow({ policy })!;
+      expect(initial).toMatchObject({
+        status: "in_progress",
+        assigneeAgentId: ctoAgentId,
+        executionState: {
+          currentStageId: policy.stages[0].id,
+          currentStageType: "work",
+          stageRevision: 1,
+          currentParticipant: { type: "agent", agentId: ctoAgentId },
+          returnAssignee: { type: "agent", agentId: ctoAgentId },
+        },
+      });
+
+      const planned = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_progress",
+          assigneeAgentId: ctoAgentId,
+          assigneeUserId: null,
+          executionPolicy: policy,
+          executionState: initial.executionState,
+        },
+        policy,
+        requestedStatus: "done",
+        requestedAssigneePatch: {},
+        actor: { agentId: ctoAgentId },
+        commentBody: "Technical plan and acceptance contract are complete.",
+      });
+      expect(planned.patch).toMatchObject({
+        status: "in_progress",
+        assigneeAgentId: coderAgentId,
+        executionState: {
+          currentStageId: policy.stages[1].id,
+          stageRevision: 2,
+          completedStageRevisions: { [policy.stages[0].id]: 1 },
+        },
+      });
+
+      const implemented = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_progress",
+          assigneeAgentId: coderAgentId,
+          assigneeUserId: null,
+          executionPolicy: policy,
+          executionState: planned.patch.executionState,
+        },
+        policy,
+        requestedStatus: "done",
+        requestedAssigneePatch: {},
+        actor: { agentId: coderAgentId },
+        commentBody: "Implementation and automated tests are complete.",
+      });
+      expect(implemented.patch).toMatchObject({
+        status: "in_review",
+        assigneeAgentId: qaAgentId,
+        executionState: {
+          currentStageId: policy.stages[2].id,
+          currentStageType: "verification",
+          stageRevision: 3,
+          completedStageRevisions: {
+            [policy.stages[0].id]: 1,
+            [policy.stages[1].id]: 2,
+          },
+        },
+      });
+    });
+
+    it("rewinds a failed QA gate to implementation instead of ending the lane", () => {
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_review",
+          assigneeAgentId: qaAgentId,
+          assigneeUserId: null,
+          executionPolicy: policy,
+          executionState: {
+            status: "pending",
+            currentStageId: policy.stages[2].id,
+            currentStageIndex: 2,
+            currentStageType: "verification",
+            currentParticipant: { type: "agent", agentId: qaAgentId },
+            returnAssignee: { type: "agent", agentId: ctoAgentId },
+            reviewRequest: null,
+            stageRevision: 3,
+            currentStageActivatedAt: "2026-07-17T00:00:00.000Z",
+            completedStageRevisions: {
+              [policy.stages[0].id]: 1,
+              [policy.stages[1].id]: 2,
+            },
+            completedStageIds: [policy.stages[0].id, policy.stages[1].id],
+            lastDecisionId: null,
+            lastDecisionOutcome: null,
+            monitor: null,
+          },
+        },
+        policy,
+        requestedStatus: "in_progress",
+        requestedAssigneePatch: {},
+        actor: { agentId: qaAgentId },
+        commentBody: "Regression replay failed; fix the implementation and rerun QA.",
+      });
+
+      expect(result.patch).toMatchObject({
+        status: "in_progress",
+        assigneeAgentId: coderAgentId,
+        executionState: {
+          currentStageId: policy.stages[1].id,
+          stageRevision: 4,
+          completedStageIds: [policy.stages[0].id],
+          completedStageRevisions: { [policy.stages[0].id]: 1 },
+          lastDecisionOutcome: "changes_requested",
+        },
+      });
+      expect(result.decision).toMatchObject({
+        stageId: policy.stages[2].id,
+        outcome: "changes_requested",
+      });
+    });
+
+    it("allows the coordinator to perform the explicit final technical acceptance stage", () => {
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_review",
+          assigneeAgentId: ctoAgentId,
+          assigneeUserId: null,
+          executionPolicy: policy,
+          executionState: {
+            status: "pending",
+            currentStageId: policy.stages[3].id,
+            currentStageIndex: 3,
+            currentStageType: "review",
+            currentParticipant: { type: "agent", agentId: ctoAgentId },
+            returnAssignee: { type: "agent", agentId: ctoAgentId },
+            reviewRequest: null,
+            completedStageIds: policy.stages.slice(0, 3).map((stage) => stage.id),
+            lastDecisionId: null,
+            lastDecisionOutcome: null,
+            monitor: null,
+          },
+        },
+        policy,
+        requestedStatus: "done",
+        requestedAssigneePatch: {},
+        actor: { agentId: ctoAgentId },
+        commentBody: "Technical acceptance passed against the contract.",
+      });
+      expect(result.patch.executionState).toMatchObject({
+        status: "completed",
+        completedStageIds: policy.stages.map((stage) => stage.id),
+      });
     });
   });
 

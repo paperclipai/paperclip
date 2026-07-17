@@ -6,6 +6,7 @@ export const queryKeys = {
   },
   companySkills: {
     list: (companyId: string) => ["company-skills", companyId] as const,
+    aiFactoryPolicy: (companyId: string) => ["company-skills", companyId, "ai-factory-policy"] as const,
     detail: (companyId: string, skillId: string) => ["company-skills", companyId, skillId] as const,
     updateStatus: (companyId: string, skillId: string) =>
       ["company-skills", companyId, skillId, "update-status"] as const,
@@ -83,6 +84,8 @@ export const queryKeys = {
     activeRun: (issueId: string) => ["issues", "active-run", issueId] as const,
     workProducts: (issueId: string) => ["issues", "work-products", issueId] as const,
     collaborators: (issueId: string) => ["issues", "collaborators", issueId] as const,
+    deliverySnapshot: (issueId: string) => ["issues", "delivery-snapshot", issueId] as const,
+    externalOperations: (issueId: string) => ["issues", "external-operations", issueId] as const,
   },
   routines: {
     list: (companyId: string, filters?: { projectId?: string | null }) =>

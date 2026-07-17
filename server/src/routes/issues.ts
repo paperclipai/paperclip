@@ -44,6 +44,7 @@ import {
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
   PAPERCLIP_IMAGE_MAX_REFERENCE_INPUTS,
   rejectIssueThreadInteractionSchema,
+  requestConfirmationPayloadSchema,
   restoreIssueDocumentRevisionSchema,
   respondIssueThreadInteractionSchema,
   updateIssueWorkProductSchema,
@@ -82,6 +83,7 @@ import {
   issueReferenceService,
   issueService,
   issueVisibilityService,
+  FACTORY_IRREVERSIBLE_ACTION_APPROVAL_TARGET_KEY,
   clampIssueListLimit,
   validateDelegatedIssueExecutionContract,
   documentService,
@@ -95,7 +97,13 @@ import {
 } from "../services/index.js";
 import { logger } from "../middleware/logger.js";
 import { conflict, forbidden, HttpError, notFound, unauthorized, unprocessable } from "../errors.js";
-import { assertBoard, assertCompanyAccess, getActorInfo, requireProjectAccess } from "./authz.js";
+import {
+  assertBoard,
+  assertCompanyAccess,
+  getActorInfo,
+  requirePermissionOrProjectPermission,
+  requireProjectAccess,
+} from "./authz.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
   collectIssueWorkspaceCommandPaths,
@@ -140,6 +148,8 @@ import {
   redactIssueMonitorExternalRef,
   setIssueExecutionPolicyMonitorScheduledBy,
 } from "../services/issue-execution-policy.js";
+import { assertFactoryPolicyManagedRouteMutation } from "../services/ai-factory-policy.js";
+import { authorizeFactoryManagedTransition } from "../services/issues.js";
 import { parseIssueExecutionWorkspaceSettings } from "../services/execution-workspace-policy.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { routineRecoveryTriggerDispositionMarker } from "../services/routines.js";
@@ -206,14 +216,26 @@ type ActivityExecutionParticipant = Pick<
   "type" | "agentId" | "userId"
 >;
 type ExecutionStageWakeContext = {
-  wakeRole: "reviewer" | "approver" | "executor";
+  wakeRole: "worker" | "verifier" | "deployer" | "reviewer" | "approver" | "executor";
   stageId: string | null;
+  stageKey: string | null;
   stageType: ParsedExecutionState["currentStageType"];
+  stageRole: string | null;
+  stageRevision: number;
+  evidenceGates: string[];
   currentParticipant: ParsedExecutionState["currentParticipant"];
   returnAssignee: ParsedExecutionState["returnAssignee"];
   reviewRequest: ParsedExecutionState["reviewRequest"];
   lastDecisionOutcome: ParsedExecutionState["lastDecisionOutcome"];
   allowedActions: string[];
+  factory: {
+    laneKind: "execution";
+    controlIssueId: string | null;
+    policyKey: string;
+    policyVersion: string;
+    policyHash: string;
+    production: boolean;
+  } | null;
 };
 type SuccessfulRunHandoffActivityRow = {
   entityId: string;
@@ -1157,18 +1179,35 @@ function executionPrincipalsEqual(
 
 function buildExecutionStageWakeContext(input: {
   state: ParsedExecutionState;
+  policy: NormalizedExecutionPolicy | null;
   wakeRole: ExecutionStageWakeContext["wakeRole"];
   allowedActions: string[];
 }): ExecutionStageWakeContext {
+  const stage = input.policy?.stages.find((candidate) => candidate.id === input.state.currentStageId) ?? null;
+  const factory = input.policy?.factory?.laneKind === "execution"
+    ? {
+        laneKind: "execution" as const,
+        controlIssueId: input.policy.factory.controlIssueId ?? null,
+        policyKey: input.policy.factory.policyKey,
+        policyVersion: input.policy.factory.policyVersion,
+        policyHash: input.policy.factory.policyHash,
+        production: input.policy.factory.production ?? false,
+      }
+    : null;
   return {
     wakeRole: input.wakeRole,
     stageId: input.state.currentStageId,
+    stageKey: stage?.key ?? null,
     stageType: input.state.currentStageType,
+    stageRole: stage?.role ?? null,
+    stageRevision: input.state.stageRevision ?? 0,
+    evidenceGates: [...(stage?.evidenceGates ?? [])],
     currentParticipant: input.state.currentParticipant,
     returnAssignee: input.state.returnAssignee,
     reviewRequest: input.state.reviewRequest ?? null,
     lastDecisionOutcome: input.state.lastDecisionOutcome,
     allowedActions: input.allowedActions,
+    factory,
   };
 }
 
@@ -1430,6 +1469,7 @@ function diffExecutionParticipants(
 
 function buildExecutionStageWakeup(input: {
   issueId: string;
+  policy: NormalizedExecutionPolicy | null;
   previousState: ParsedExecutionState | null;
   nextState: ParsedExecutionState | null;
   interruptedRunId: string | null;
@@ -1448,12 +1488,43 @@ function buildExecutionStageWakeup(input: {
       !executionPrincipalsEqual(previousState?.currentParticipant ?? null, nextState.currentParticipant ?? null);
     if (!agentId || !stageChanged) return null;
 
-    const reason =
-      nextState.currentStageType === "approval" ? "execution_approval_requested" : "execution_review_requested";
+    const stageWake = {
+      work: {
+        reason: "execution_work_requested",
+        wakeRole: "worker",
+        allowedActions: ["complete_stage", "block"],
+      },
+      verification: {
+        reason: "execution_verification_requested",
+        wakeRole: "verifier",
+        allowedActions: ["pass", "request_changes", "block"],
+      },
+      deployment: {
+        reason: "execution_deployment_requested",
+        wakeRole: "deployer",
+        allowedActions: ["complete_stage", "block"],
+      },
+      review: {
+        reason: "execution_review_requested",
+        wakeRole: "reviewer",
+        allowedActions: ["approve", "request_changes"],
+      },
+      approval: {
+        reason: "execution_approval_requested",
+        wakeRole: "approver",
+        allowedActions: ["approve", "request_changes"],
+      },
+    }[nextState.currentStageType ?? "review"] as {
+      reason: string;
+      wakeRole: ExecutionStageWakeContext["wakeRole"];
+      allowedActions: string[];
+    };
+    const reason = stageWake.reason;
     const executionStage = buildExecutionStageWakeContext({
       state: nextState,
-      wakeRole: nextState.currentStageType === "approval" ? "approver" : "reviewer",
-      allowedActions: ["approve", "request_changes"],
+      policy: input.policy,
+      wakeRole: stageWake.wakeRole,
+      allowedActions: stageWake.allowedActions,
     });
 
     return {
@@ -1492,6 +1563,7 @@ function buildExecutionStageWakeup(input: {
 
     const executionStage = buildExecutionStageWakeContext({
       state: nextState,
+      policy: input.policy,
       wakeRole: "executor",
       allowedActions: ["address_changes", "resubmit"],
     });
@@ -1617,6 +1689,7 @@ export function issueRoutes(
     : undefined;
   const treeControlSvc = issueTreeControlFactory?.(db) ?? {
     getActivePauseHoldGate: async () => null,
+    getActiveCancelHoldGate: async () => null,
   };
   const feedbackExportService = opts?.feedbackExportService;
   const environmentsSvc = environmentService(db);
@@ -2239,6 +2312,176 @@ export function issueRoutes(
     return true;
   }
 
+  async function gateIssueThreadInteractionAccess(req: Request, res: Response, issue: {
+    id: string;
+    companyId: string;
+    projectId: string | null;
+    visibility: string;
+    createdByUserId: string | null;
+    createdByAgentId: string | null;
+    assigneeUserId: string | null;
+    assigneeAgentId: string | null;
+  }) {
+    if (issue.projectId) {
+      await requireProjectAccess(req, access, issue.companyId, issue.projectId);
+    } else {
+      assertCompanyAccess(req, issue.companyId);
+    }
+    return gateIssueVisibility(req, res, issue);
+  }
+
+  async function assertIssueMutationNotHeld(
+    issue: { id: string; companyId: string },
+    holdService: Pick<
+      ReturnType<NonNullable<typeof issueTreeControlFactory>>,
+      "getActivePauseHoldGate" | "getActiveCancelHoldGate"
+    > = treeControlSvc as Pick<
+      ReturnType<NonNullable<typeof issueTreeControlFactory>>,
+      "getActivePauseHoldGate" | "getActiveCancelHoldGate"
+    >,
+  ) {
+    const pauseHold = await holdService.getActivePauseHoldGate(issue.companyId, issue.id);
+    if (pauseHold) {
+      throw conflict("Issue mutation is blocked by an active subtree pause hold", {
+        code: "issue_tree_paused",
+        holdId: pauseHold.holdId,
+        rootIssueId: pauseHold.rootIssueId,
+        issueId: issue.id,
+      });
+    }
+    const cancelHold = await holdService.getActiveCancelHoldGate(issue.companyId, issue.id);
+    if (cancelHold) {
+      throw conflict("Issue mutation is blocked by an active subtree cancel hold", {
+        code: "issue_tree_cancelled",
+        holdId: cancelHold.holdId,
+        rootIssueId: cancelHold.rootIssueId,
+        issueId: issue.id,
+      });
+    }
+  }
+
+  type InteractionMutationIssue = NonNullable<Awaited<ReturnType<typeof svc.getById>>>;
+  type InteractionMutationService = ReturnType<typeof issueThreadInteractionService>;
+
+  /**
+   * Issue-thread interactions can create issues, advance a factory approval,
+   * or wake an executor. Serialize those side effects with issue/tree holds.
+   * Rechecking the issue's access-relevant fields under the row lock prevents
+   * a project/private-boundary change from racing the already-authorized API
+   * request.
+   */
+  async function withMediatedInteractionMutation<T>(
+    issue: InteractionMutationIssue,
+    mutation: (interactions: InteractionMutationService, lockedIssue: InteractionMutationIssue) => Promise<T>,
+  ): Promise<T> {
+    const runMutation = async (tx: Db, lockedIssue: InteractionMutationIssue) => {
+      const txTreeControl = issueTreeControlFactory?.(tx) ?? treeControlSvc;
+      await assertIssueMutationNotHeld(lockedIssue, txTreeControl as Parameters<typeof assertIssueMutationNotHeld>[1]);
+      return mutation(issueThreadInteractionService(tx), lockedIssue);
+    };
+
+    // Lightweight route-unit harnesses use a service-only DB stub. Production
+    // Db instances always expose transaction; the fallback still exercises the
+    // same hold gate through the mocked service.
+    if (typeof (db as unknown as { transaction?: unknown }).transaction !== "function") {
+      return runMutation(db, issue);
+    }
+
+    return db.transaction(async (rawTx) => {
+      const tx = rawTx as unknown as Db;
+      const lockedIssue = await tx
+        .select()
+        .from(issueRows)
+        .where(and(eq(issueRows.id, issue.id), eq(issueRows.companyId, issue.companyId)))
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      if (!lockedIssue) throw notFound("Issue not found");
+
+      const accessBoundaryChanged =
+        lockedIssue.projectId !== issue.projectId
+        || lockedIssue.visibility !== issue.visibility
+        || lockedIssue.createdByUserId !== issue.createdByUserId
+        || lockedIssue.createdByAgentId !== issue.createdByAgentId
+        || lockedIssue.assigneeUserId !== issue.assigneeUserId
+        || lockedIssue.assigneeAgentId !== issue.assigneeAgentId;
+      if (accessBoundaryChanged) {
+        throw conflict("Issue access boundary changed after authorization", {
+          code: "issue_access_boundary_conflict",
+          issueId: issue.id,
+        });
+      }
+
+      return runMutation(tx, lockedIssue as InteractionMutationIssue);
+    });
+  }
+
+  async function requireBoardInteractionEditPermission(
+    req: Request,
+    issue: { companyId: string; projectId: string | null },
+  ) {
+    assertBoard(req);
+    await requirePermissionOrProjectPermission(
+      req,
+      access,
+      issue.companyId,
+      "issues:manage",
+      issue.projectId,
+      "project:issues:edit",
+    );
+  }
+
+  async function requireSuggestedTaskAcceptancePermission(
+    req: Request,
+    issue: { companyId: string; projectId: string | null },
+  ) {
+    await requirePermissionOrProjectPermission(
+      req,
+      access,
+      issue.companyId,
+      "tasks:assign",
+      issue.projectId,
+      "project:issues:assign",
+    );
+  }
+
+  async function requireFactoryIrreversibleInteractionApproval(
+    req: Request,
+    issue: {
+      id: string;
+      companyId: string;
+      projectId: string | null;
+    },
+    interactionId: string,
+    preloaded?: Awaited<ReturnType<InteractionMutationService["getById"]>>,
+  ) {
+    const current = preloaded ?? await issueThreadInteractionService(db).getById(interactionId);
+    if (
+      !current
+      || current.id !== interactionId
+      || current.companyId !== issue.companyId
+      || current.issueId !== issue.id
+    ) {
+      throw notFound("Interaction not found");
+    }
+    if (current.kind !== "request_confirmation") return;
+    const parsed = requestConfirmationPayloadSchema.safeParse(current.payload);
+    if (
+      !parsed.success
+      || parsed.data.target?.type !== "custom"
+      || parsed.data.target.key !== FACTORY_IRREVERSIBLE_ACTION_APPROVAL_TARGET_KEY
+    ) {
+      return;
+    }
+    await requirePermissionOrProjectPermission(
+      req,
+      access,
+      issue.companyId,
+      "ai_factory:manage",
+      issue.projectId,
+      "project:issues:edit",
+    );
+  }
+
   function canCreateAgentsLegacy(agent: { permissions: Record<string, unknown> | null | undefined; role: string }) {
     if (agent.role === "ceo") return true;
     if (!agent.permissions || typeof agent.permissions !== "object") return false;
@@ -2561,6 +2804,39 @@ export function issueRoutes(
           reason: "stale_checkout_run",
         },
       });
+    }
+    return true;
+  }
+
+  async function assertActiveFactoryAgentMutationRun(
+    req: Request,
+    res: Response,
+    issue: {
+      id: string;
+      companyId: string;
+      executionPolicy?: unknown;
+    },
+  ) {
+    if (req.actor.type !== "agent") return true;
+    const policy = normalizeIssueExecutionPolicy(issue.executionPolicy ?? null);
+    if (policy?.factory?.laneKind !== "execution") return true;
+    const actorAgentId = req.actor.agentId;
+    if (!actorAgentId) {
+      res.status(403).json({ error: "Agent authentication required" });
+      return false;
+    }
+    const runId = requireAgentRunId(req, res);
+    if (!runId) return false;
+    const run = await heartbeat.getRun(runId);
+    const context = recoveryRecord(run?.contextSnapshot);
+    if (
+      !run
+      || run.companyId !== issue.companyId
+      || run.agentId !== actorAgentId
+      || run.status !== "running"
+      || ![context.issueId, context.taskId, context.sourceIssueId].includes(issue.id)
+    ) {
+      throw forbidden("Factory agent mutations require an active run scoped to this execution lane");
     }
     return true;
   }
@@ -4581,6 +4857,10 @@ export function issueRoutes(
       normalizeIssueExecutionPolicy(req.body.executionPolicy),
       actor.actorType,
     );
+    assertFactoryPolicyManagedRouteMutation({
+      previous: null,
+      next: executionPolicy,
+    });
     assertCanManageIssueMonitor(req, req.body.assigneeAgentId ?? null, Boolean(executionPolicy?.monitor));
     // Master fork: auto-promote backlog → todo when an assignee is set at creation,
     // so the agent actually gets woken up (backlog items otherwise never start).
@@ -4779,6 +5059,11 @@ export function issueRoutes(
       normalizeIssueExecutionPolicy(req.body.executionPolicy),
       actor.actorType,
     );
+    assertFactoryPolicyManagedRouteMutation({
+      previous: null,
+      next: executionPolicy,
+      managedRoute: `POST /api/issues/${parent.id}/execution-lanes`,
+    });
     assertCanManageIssueMonitor(req, req.body.assigneeAgentId ?? null, Boolean(executionPolicy?.monitor));
     const { budgetLimits, ...childBody } = req.body;
     const { issue, parentBlockerAdded } = await svc.createChild(parent.id, {
@@ -4921,9 +5206,25 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, existing.companyId);
+    if (existing.projectId) {
+      await requireProjectAccess(req, access, existing.companyId, existing.projectId);
+    } else {
+      assertCompanyAccess(req, existing.companyId);
+    }
+    if (!(await gateIssueVisibility(req, res, existing))) return;
+    if (req.actor.type === "board") {
+      await requirePermissionOrProjectPermission(
+        req,
+        access,
+        existing.companyId,
+        "issues:manage",
+        existing.projectId,
+        "project:issues:edit",
+      );
+    }
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
     if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+    if (!(await assertActiveFactoryAgentMutationRun(req, res, existing))) return;
 
     const actor = getActorInfo(req);
     const isClosed = isClosedIssueStatus(existing.status);
@@ -5063,6 +5364,16 @@ export function issueRoutes(
       updateFields.executionPolicy !== undefined
         ? (updateFields.executionPolicy as NormalizedExecutionPolicy | null)
         : previousExecutionPolicy;
+    if (req.body.executionPolicy !== undefined) {
+      const controlIssueId = previousExecutionPolicy?.factory?.laneKind === "execution"
+        ? previousExecutionPolicy.factory.controlIssueId ?? existing.id
+        : existing.id;
+      assertFactoryPolicyManagedRouteMutation({
+        previous: previousExecutionPolicy,
+        next: nextExecutionPolicy,
+        managedRoute: `POST /api/issues/${controlIssueId}/execution-lanes`,
+      });
+    }
     if (normalizedAssigneeAgentId !== undefined) {
       updateFields.assigneeAgentId = normalizedAssigneeAgentId;
     }
@@ -5165,6 +5476,12 @@ export function issueRoutes(
     }
 
     let issueResult: Awaited<ReturnType<typeof svc.update>> = null;
+    const factoryManagedTransition = previousExecutionPolicy?.factory?.laneKind === "execution"
+      ? authorizeFactoryManagedTransition(
+          parseIssueExecutionState(existing.executionState)?.stageRevision ?? 0,
+          decisionId,
+        )
+      : undefined;
     try {
       if (transition.decision && decisionId) {
         const decision = transition.decision;
@@ -5175,6 +5492,7 @@ export function issueRoutes(
               ...updateFields,
               actorAgentId: actor.agentId ?? null,
               actorUserId: actor.actorType === "user" ? actor.actorId : null,
+              ...(factoryManagedTransition ? { factoryManagedTransition } : {}),
             },
             tx,
           );
@@ -5200,6 +5518,7 @@ export function issueRoutes(
           ...updateFields,
           actorAgentId: actor.agentId ?? null,
           actorUserId: actor.actorType === "user" ? actor.actorId : null,
+          ...(factoryManagedTransition ? { factoryManagedTransition } : {}),
         });
       }
     } catch (err) {
@@ -5702,6 +6021,7 @@ export function issueRoutes(
     const nextExecutionState = parseIssueExecutionState(issue.executionState);
     const executionStageWakeup = buildExecutionStageWakeup({
       issueId: issue.id,
+      policy: normalizeIssueExecutionPolicy(issue.executionPolicy ?? null),
       previousState: previousExecutionState,
       nextState: nextExecutionState,
       interruptedRunId,
@@ -6309,8 +6629,21 @@ export function issueRoutes(
         res.status(404).json({ error: "Issue not found" });
         return;
       }
-      assertCompanyAccess(req, existing.companyId);
+      if (existing.projectId) {
+        await requireProjectAccess(req, access, existing.companyId, existing.projectId);
+      } else {
+        assertCompanyAccess(req, existing.companyId);
+      }
       if (!(await gateIssueVisibility(req, res, existing))) return;
+      assertBoard(req);
+      await requirePermissionOrProjectPermission(
+        req,
+        access,
+        existing.companyId,
+        "issues:manage",
+        existing.projectId,
+        "project:issues:edit",
+      );
 
       const { visibility: nextVisibility, confirmed } = req.body as {
         visibility: "private" | "company";
@@ -6330,6 +6663,7 @@ export function issueRoutes(
         return;
       }
 
+      await assertIssueMutationNotHeld(existing);
       const actor = getActorInfo(req);
       const updated = await svc.update(id, { visibility: nextVisibility } as Partial<typeof existing>);
       if (!updated) {
@@ -6364,7 +6698,11 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
+    if (issue.projectId) {
+      await requireProjectAccess(req, access, issue.companyId, issue.projectId);
+    } else {
+      assertCompanyAccess(req, issue.companyId);
+    }
     if (!(await gateIssueVisibility(req, res, issue))) return;
     const rows = await visibility.listCollaborators(issue.id);
     res.json(rows);
@@ -6380,8 +6718,22 @@ export function issueRoutes(
         res.status(404).json({ error: "Issue not found" });
         return;
       }
-      assertCompanyAccess(req, issue.companyId);
+      if (issue.projectId) {
+        await requireProjectAccess(req, access, issue.companyId, issue.projectId);
+      } else {
+        assertCompanyAccess(req, issue.companyId);
+      }
       if (!(await gateIssueVisibility(req, res, issue))) return;
+      assertBoard(req);
+      await requirePermissionOrProjectPermission(
+        req,
+        access,
+        issue.companyId,
+        "issues:manage",
+        issue.projectId,
+        "project:issues:edit",
+      );
+      await assertIssueMutationNotHeld(issue);
       const actor = getActorInfo(req);
       const { principalType, principalId } = req.body as {
         principalType: "user" | "agent";
@@ -6416,8 +6768,22 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
+    if (issue.projectId) {
+      await requireProjectAccess(req, access, issue.companyId, issue.projectId);
+    } else {
+      assertCompanyAccess(req, issue.companyId);
+    }
     if (!(await gateIssueVisibility(req, res, issue))) return;
+    assertBoard(req);
+    await requirePermissionOrProjectPermission(
+      req,
+      access,
+      issue.companyId,
+      "issues:manage",
+      issue.projectId,
+      "project:issues:edit",
+    );
+    await assertIssueMutationNotHeld(issue);
     await visibility.removeCollaborator({
       issueId: issue.id,
       principalType,
@@ -6433,8 +6799,22 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, existing.companyId);
-    if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+    if (existing.projectId) {
+      await requireProjectAccess(req, access, existing.companyId, existing.projectId);
+    } else {
+      assertCompanyAccess(req, existing.companyId);
+    }
+    if (!(await gateIssueVisibility(req, res, existing))) return;
+    assertBoard(req);
+    await requirePermissionOrProjectPermission(
+      req,
+      access,
+      existing.companyId,
+      "issues:manage",
+      existing.projectId,
+      "project:issues:edit",
+    );
+    await assertIssueMutationNotHeld(existing);
     const attachments = await svc.listAttachments(id);
 
     const issue = await svc.remove(id);
@@ -6675,7 +7055,7 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
+    if (!(await gateIssueThreadInteractionAccess(req, res, issue))) return;
     const interactions = await issueThreadInteractionService(db).listForIssue(id);
     res.json(interactions);
   });
@@ -6687,24 +7067,26 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
-    assertCompanyAccess(req, issue.companyId);
+    if (!(await gateIssueThreadInteractionAccess(req, res, issue))) return;
     if (req.actor.type === "agent") {
       if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+      if (!(await assertActiveFactoryAgentMutationRun(req, res, issue))) return;
     } else {
-      assertBoard(req);
+      await requireBoardInteractionEditPermission(req, issue);
     }
 
     const actor = getActorInfo(req);
     const agentSourceRunId = req.actor.type === "agent" ? requireAgentRunId(req, res) : null;
     if (req.actor.type === "agent" && !agentSourceRunId) return;
 
-    const interaction = await issueThreadInteractionService(db).create(issue, {
-      ...req.body,
-      sourceRunId: req.actor.type === "agent" ? agentSourceRunId : req.body.sourceRunId ?? null,
-    }, {
-      agentId: actor.agentId,
-      userId: actor.actorType === "user" ? actor.actorId : null,
-    });
+    const interaction = await withMediatedInteractionMutation(issue, (interactions, lockedIssue) =>
+      interactions.create(lockedIssue, {
+        ...req.body,
+        sourceRunId: req.actor.type === "agent" ? agentSourceRunId : req.body.sourceRunId ?? null,
+      }, {
+        agentId: actor.agentId,
+        userId: actor.actorType === "user" ? actor.actorId : null,
+      }));
 
     await logActivity(db, {
       companyId: issue.companyId,
@@ -6737,14 +7119,35 @@ export function issueRoutes(
         res.status(404).json({ error: "Issue not found" });
         return;
       }
-      assertCompanyAccess(req, issue.companyId);
-      assertBoard(req);
+      if (!(await gateIssueThreadInteractionAccess(req, res, issue))) return;
+      await requireBoardInteractionEditPermission(req, issue);
+      const currentInteraction = await issueThreadInteractionService(db).getById(interactionId);
+      if (
+        !currentInteraction
+        || currentInteraction.id !== interactionId
+        || currentInteraction.companyId !== issue.companyId
+        || currentInteraction.issueId !== issue.id
+      ) {
+        throw notFound("Interaction not found");
+      }
+      if (currentInteraction.kind === "suggest_tasks") {
+        await requireSuggestedTaskAcceptancePermission(req, issue);
+      }
+      await requireFactoryIrreversibleInteractionApproval(req, issue, interactionId, currentInteraction);
 
       const actor = getActorInfo(req);
-      const { interaction, createdIssues, continuationIssue } = await issueThreadInteractionService(db).acceptInteraction(issue, interactionId, req.body, {
-        agentId: actor.agentId,
-        userId: actor.actorType === "user" ? actor.actorId : null,
-      });
+      const { interaction, createdIssues, continuationIssue } = await withMediatedInteractionMutation(
+        issue,
+        (interactions, lockedIssue) => interactions.acceptInteraction(
+          lockedIssue,
+          interactionId,
+          req.body,
+          {
+            agentId: actor.agentId,
+            userId: actor.actorType === "user" ? actor.actorId : null,
+          },
+        ),
+      );
       const continuationWakeIssue = continuationIssue ?? issue;
 
       await logActivity(db, {
@@ -6834,14 +7237,22 @@ export function issueRoutes(
         res.status(404).json({ error: "Issue not found" });
         return;
       }
-      assertCompanyAccess(req, issue.companyId);
-      assertBoard(req);
+      if (!(await gateIssueThreadInteractionAccess(req, res, issue))) return;
+      await requireBoardInteractionEditPermission(req, issue);
 
       const actor = getActorInfo(req);
-      const interaction = await issueThreadInteractionService(db).rejectInteraction(issue, interactionId, req.body, {
-        agentId: actor.agentId,
-        userId: actor.actorType === "user" ? actor.actorId : null,
-      });
+      const interaction = await withMediatedInteractionMutation(
+        issue,
+        (interactions, lockedIssue) => interactions.rejectInteraction(
+          lockedIssue,
+          interactionId,
+          req.body,
+          {
+            agentId: actor.agentId,
+            userId: actor.actorType === "user" ? actor.actorId : null,
+          },
+        ),
+      );
 
       await logActivity(db, {
         companyId: issue.companyId,
@@ -6890,14 +7301,22 @@ export function issueRoutes(
         res.status(404).json({ error: "Issue not found" });
         return;
       }
-      assertCompanyAccess(req, issue.companyId);
-      assertBoard(req);
+      if (!(await gateIssueThreadInteractionAccess(req, res, issue))) return;
+      await requireBoardInteractionEditPermission(req, issue);
 
       const actor = getActorInfo(req);
-      const interaction = await issueThreadInteractionService(db).answerQuestions(issue, interactionId, req.body, {
-        agentId: actor.agentId,
-        userId: actor.actorType === "user" ? actor.actorId : null,
-      });
+      const interaction = await withMediatedInteractionMutation(
+        issue,
+        (interactions, lockedIssue) => interactions.answerQuestions(
+          lockedIssue,
+          interactionId,
+          req.body,
+          {
+            agentId: actor.agentId,
+            userId: actor.actorType === "user" ? actor.actorId : null,
+          },
+        ),
+      );
 
       await logActivity(db, {
         companyId: issue.companyId,
@@ -6942,7 +7361,7 @@ export function issueRoutes(
         res.status(404).json({ error: "Issue not found" });
         return;
       }
-      assertCompanyAccess(req, issue.companyId);
+      if (!(await gateIssueThreadInteractionAccess(req, res, issue))) return;
 
       const interactions = issueThreadInteractionService(db);
       let cancellationAuthority: "board" | "creator" | "issues_manage" | "issue_control" = "board";
@@ -6950,6 +7369,7 @@ export function issueRoutes(
         const actorAgentId = req.actor.agentId;
         if (!actorAgentId) throw forbidden("Agent authentication required");
         if (!requireAgentRunId(req, res)) return;
+        if (!(await assertActiveFactoryAgentMutationRun(req, res, issue))) return;
 
         const current = await interactions.getById(interactionId);
         if (!current || current.companyId !== issue.companyId || current.issueId !== issue.id) {
@@ -6967,14 +7387,22 @@ export function issueRoutes(
           throw forbidden("Agent cannot cancel this interaction");
         }
       } else {
-        assertBoard(req);
+        await requireBoardInteractionEditPermission(req, issue);
       }
 
       const actor = getActorInfo(req);
-      const interaction = await interactions.cancelInteraction(issue, interactionId, req.body, {
-        agentId: actor.agentId,
-        userId: actor.actorType === "user" ? actor.actorId : null,
-      });
+      const interaction = await withMediatedInteractionMutation(
+        issue,
+        (mediatedInteractions, lockedIssue) => mediatedInteractions.cancelInteraction(
+          lockedIssue,
+          interactionId,
+          req.body,
+          {
+            agentId: actor.agentId,
+            userId: actor.actorType === "user" ? actor.actorId : null,
+          },
+        ),
+      );
 
       await logActivity(db, {
         companyId: issue.companyId,

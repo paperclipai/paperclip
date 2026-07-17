@@ -14,6 +14,7 @@ import {
   goals,
   heartbeatRuns,
   executionWorkspaces,
+  externalOperations,
   issueApprovals,
   issueAttachments,
   issueInboxArchives,
@@ -53,6 +54,8 @@ import {
   issueExecutionContractSchema,
   isUuidLike,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
+  requestConfirmationPayloadSchema,
+  requestConfirmationResultSchema,
 } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { parseObject } from "../adapters/utils.js";
@@ -68,7 +71,20 @@ import {
   assertIssueCompletionEvidence,
   assertIssueCompletionEvidenceOnCreate,
 } from "./issue-completion-evidence.js";
-import { buildInitialIssueMonitorFields, normalizeIssueExecutionPolicy } from "./issue-execution-policy.js";
+import {
+  buildInitialIssueMonitorFields,
+  normalizeIssueExecutionPolicy,
+  parseIssueExecutionState,
+  stripMonitorFromExecutionPolicy,
+} from "./issue-execution-policy.js";
+import {
+  acquireIssueDeliveryLock,
+  buildFactoryDeliveryEvidenceExpectations,
+  candidateShasMatch,
+  deliveryService,
+  evaluateDeliveryEvidenceGates,
+} from "./delivery.js";
+import { assertFactoryExecutionPolicySnapshotConsistent } from "./ai-factory-policy.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallback.js";
@@ -291,6 +307,206 @@ function assertAgentAssignmentAllowedForWorkItem(workItemType: unknown, assignee
   throw unprocessable("Initiatives and human tasks cannot be assigned to AI agents. Create a linked AI execution issue instead.");
 }
 
+export type IssueChildTopologyPolicy = {
+  mode: "same_issue_only" | "single_execution_lane" | "direct_execution_lanes";
+  maxExecutionLanes: number;
+  source: "execution_contract" | "execution_policy" | "legacy_contract_constraint" | "default";
+};
+
+function readFactoryExtension(executionContract: unknown) {
+  if (!isRecord(executionContract) || !isRecord(executionContract.extensions)) return null;
+  const extension = executionContract.extensions.aiFactory ?? executionContract.extensions.ai_factory;
+  return isRecord(extension) ? extension : null;
+}
+
+function readFactoryTopologyMode(value: unknown): IssueChildTopologyPolicy["mode"] | null {
+  return value === "same_issue_only" || value === "single_execution_lane" || value === "direct_execution_lanes"
+    ? value
+    : null;
+}
+
+function boundedExecutionLaneCount(value: unknown) {
+  return typeof value === "number" && Number.isInteger(value) && value >= 1
+    ? Math.min(value, MAX_DIRECT_CHILD_ISSUES_PER_PARENT)
+    : MAX_DIRECT_CHILD_ISSUES_PER_PARENT;
+}
+
+function collectContractConstraintText(value: unknown, depth = 0): string[] {
+  if (depth > 5 || value == null) return [];
+  if (typeof value === "string") return [value];
+  if (Array.isArray(value)) return value.flatMap((entry) => collectContractConstraintText(entry, depth + 1));
+  if (!isRecord(value)) return [];
+  return Object.values(value).flatMap((entry) => collectContractConstraintText(entry, depth + 1));
+}
+
+function legacyContractForbidsChildren(executionContract: unknown) {
+  if (!isRecord(executionContract) || !isRecord(executionContract.core)) return false;
+  const constraintText = collectContractConstraintText(executionContract.core.constraints).join("\n").toLowerCase();
+  return [
+    /\bsame[- ]issue[- ]only\b/,
+    /\b(?:create|spawn|open|make)\s+(?:no|zero)\s+(?:child(?:ren)?|child issues?|sub[- ]?issues?)\b/,
+    /\bno\s+(?:child(?:ren)?|child issues?|sub[- ]?issues?)\s+(?:are\s+)?(?:allowed|permitted|required)\b/,
+    /\bmust\s+not\s+(?:create|spawn|open|make)\s+(?:child(?:ren)?|child issues?|sub[- ]?issues?)\b/,
+  ].some((pattern) => pattern.test(constraintText));
+}
+
+/**
+ * Resolves the immutable topology contract used by every child-creation path.
+ * A frozen factory control snapshot is an upper bound: an issue contract may
+ * make its topology stricter, but can never loosen the snapshotted lane cap.
+ * Legacy prose is recognized only for unambiguous no-child phrases.
+ */
+export function resolveIssueChildTopologyPolicy(input: {
+  executionContract: unknown;
+  executionPolicy: unknown;
+}): IssueChildTopologyPolicy {
+  const executionPolicy = normalizeIssueExecutionPolicy(input.executionPolicy);
+  const frozenControlTopology: IssueChildTopologyPolicy | null =
+    executionPolicy?.factory?.laneKind === "control"
+      ? {
+          mode: executionPolicy.factory.topologyMode,
+          maxExecutionLanes: executionPolicy.factory.topologyMode === "same_issue_only"
+            ? 0
+            : executionPolicy.factory.topologyMode === "single_execution_lane"
+              ? 1
+              : boundedExecutionLaneCount(executionPolicy.factory.maxExecutionLanes),
+          source: "execution_policy",
+        }
+      : null;
+  const extension = readFactoryExtension(input.executionContract);
+  const extensionMode = readFactoryTopologyMode(extension?.topologyMode ?? extension?.topology_mode);
+  const extensionForbidsChildren = extension?.childrenAllowed === false || extension?.children_allowed === false;
+  if (extensionMode || extensionForbidsChildren) {
+    const mode = extensionForbidsChildren ? "same_issue_only" : extensionMode!;
+    const contractTopology: IssueChildTopologyPolicy = {
+      mode,
+      maxExecutionLanes: mode === "same_issue_only"
+        ? 0
+        : mode === "single_execution_lane"
+          ? 1
+          : boundedExecutionLaneCount(extension?.maxExecutionLanes ?? extension?.max_execution_lanes),
+      source: "execution_contract",
+    };
+    if (
+      frozenControlTopology
+      && frozenControlTopology.maxExecutionLanes <= contractTopology.maxExecutionLanes
+    ) {
+      return frozenControlTopology;
+    }
+    return contractTopology;
+  }
+
+  if (executionPolicy?.factory) {
+    const mode = executionPolicy.factory.topologyMode;
+    return {
+      mode,
+      maxExecutionLanes: mode === "same_issue_only"
+        ? 0
+        : mode === "single_execution_lane"
+          ? 1
+          : boundedExecutionLaneCount(executionPolicy.factory.maxExecutionLanes),
+      source: "execution_policy",
+    };
+  }
+
+  if (legacyContractForbidsChildren(input.executionContract)) {
+    return {
+      mode: "same_issue_only",
+      maxExecutionLanes: 0,
+      source: "legacy_contract_constraint",
+    };
+  }
+
+  return {
+    mode: "direct_execution_lanes",
+    maxExecutionLanes: MAX_DIRECT_CHILD_ISSUES_PER_PARENT,
+    source: "default",
+  };
+}
+
+export function assertFactoryExecutionPolicySnapshotPreserved(input: {
+  previous: unknown;
+  next: unknown;
+}) {
+  const previous = normalizeIssueExecutionPolicy(input.previous);
+  if (!previous?.factory) return;
+  const next = normalizeIssueExecutionPolicy(input.next);
+  if (
+    next?.factory
+    && isDeepStrictEqual(
+      stripMonitorFromExecutionPolicy(previous),
+      stripMonitorFromExecutionPolicy(next),
+    )
+  ) {
+    return;
+  }
+  throw conflict(
+    "The AI Factory execution snapshot is immutable after it is attached to an issue.",
+    {
+      code: "factory_policy_frozen",
+      policyKey: previous.factory.policyKey,
+      policyVersion: previous.factory.policyVersion,
+      policyHash: previous.factory.policyHash,
+    },
+  );
+}
+
+/**
+ * A factory snapshot is compiled against one issue access and project
+ * context. Once that snapshot exists (including the transaction that first
+ * pins it), moving the control/lane or changing its visibility would detach
+ * execution and provider evidence from the boundary that was authorized.
+ */
+export function assertFactoryIssueAccessBoundaryPreserved(input: {
+  existing: {
+    projectId: string | null;
+    visibility: string;
+    executionPolicy: unknown;
+  };
+  patch: {
+    projectId?: string | null;
+    visibility?: string;
+    executionPolicy?: unknown;
+  };
+}) {
+  const existingPolicy = normalizeIssueExecutionPolicy(input.existing.executionPolicy);
+  const proposedPolicy = Object.prototype.hasOwnProperty.call(input.patch, "executionPolicy")
+    ? normalizeIssueExecutionPolicy(input.patch.executionPolicy)
+    : existingPolicy;
+  const factory = existingPolicy?.factory ?? proposedPolicy?.factory;
+  if (!factory) return;
+
+  const changedFields: Array<"projectId" | "visibility"> = [];
+  if (
+    Object.prototype.hasOwnProperty.call(input.patch, "projectId")
+    && input.patch.projectId !== input.existing.projectId
+  ) {
+    changedFields.push("projectId");
+  }
+  if (
+    Object.prototype.hasOwnProperty.call(input.patch, "visibility")
+    && input.patch.visibility !== input.existing.visibility
+  ) {
+    changedFields.push("visibility");
+  }
+  if (changedFields.length === 0) return;
+
+  throw conflict(
+    "The AI Factory project and visibility boundary is immutable after its policy is pinned.",
+    {
+      code: "factory_access_boundary_frozen",
+      fields: changedFields,
+      laneKind: factory.laneKind,
+      controlIssueId: factory.controlIssueId ?? null,
+      policyKey: factory.policyKey,
+      policyVersion: factory.policyVersion,
+      policyHash: factory.policyHash,
+      projectId: input.existing.projectId,
+      visibility: input.existing.visibility,
+    },
+  );
+}
+
 async function assertChildIssueCreationAllowed(
   dbOrTx: DbReader,
   companyId: string,
@@ -298,16 +514,48 @@ async function assertChildIssueCreationAllowed(
   options: { lockParent?: boolean } = {},
 ) {
   const parentSelection = dbOrTx
-    .select({ id: issues.id, companyId: issues.companyId, parentId: issues.parentId })
+    .select({
+      id: issues.id,
+      companyId: issues.companyId,
+      parentId: issues.parentId,
+      executionContract: issues.executionContract,
+      executionPolicy: issues.executionPolicy,
+    })
     .from(issues)
     .where(and(eq(issues.id, parentIssueId), eq(issues.companyId, companyId)));
   const parent = options.lockParent
     ? await parentSelection.for("update").then((rows) => rows[0] ?? null)
     : await parentSelection.then((rows) => rows[0] ?? null);
   if (!parent) throw notFound("Parent issue not found");
+  const activeCancelHold = await issueTreeControlService(dbOrTx as unknown as Db).getActiveCancelHoldGate(
+    companyId,
+    parent.id,
+  );
+  if (activeCancelHold) {
+    throw conflict("Issue creation is blocked by an active subtree cancel hold", {
+      code: "issue_tree_cancelled",
+      holdId: activeCancelHold.holdId,
+      rootIssueId: activeCancelHold.rootIssueId,
+      issueId: parent.id,
+    });
+  }
   if (parent.parentId) {
     throw unprocessable(
       "Execution lanes cannot create sub-issues. Paperclip supports only one child level under a main parent issue.",
+    );
+  }
+
+  const topology = resolveIssueChildTopologyPolicy(parent);
+  if (topology.mode === "same_issue_only") {
+    throw unprocessable(
+      "This issue's execution contract requires work to stay on the same issue; execution lanes are not allowed.",
+      {
+        code: "factory_policy_conflict",
+        rule: "issue_topology",
+        topologyMode: topology.mode,
+        policySource: topology.source,
+        parentIssueId: parent.id,
+      },
     );
   }
 
@@ -315,9 +563,17 @@ async function assertChildIssueCreationAllowed(
     .select({ childCount: sql<number>`count(*)::int` })
     .from(issues)
     .where(and(eq(issues.companyId, companyId), eq(issues.parentId, parent.id)));
-  if (childCount >= MAX_DIRECT_CHILD_ISSUES_PER_PARENT) {
+  if (childCount >= topology.maxExecutionLanes) {
     throw unprocessable(
-      `Parent issue already has the maximum ${MAX_DIRECT_CHILD_ISSUES_PER_PARENT} direct execution lanes.`,
+      `Parent issue already has the maximum ${topology.maxExecutionLanes} direct execution lane${topology.maxExecutionLanes === 1 ? "" : "s"}.`,
+      {
+        code: "factory_policy_conflict",
+        rule: "max_execution_lanes",
+        topologyMode: topology.mode,
+        maxExecutionLanes: topology.maxExecutionLanes,
+        policySource: topology.source,
+        parentIssueId: parent.id,
+      },
     );
   }
 
@@ -333,9 +589,20 @@ async function assertIssueParentUpdateAllowed(
   if (nextParentId === existing.id) {
     throw unprocessable("An issue cannot be its own parent");
   }
-  await assertChildIssueCreationAllowed(dbOrTx, existing.companyId, nextParentId, {
+  const parent = await assertChildIssueCreationAllowed(dbOrTx, existing.companyId, nextParentId, {
     lockParent: options.lockRows,
   });
+  const existingPolicy = normalizeIssueExecutionPolicy(existing.executionPolicy);
+  const parentPolicy = normalizeIssueExecutionPolicy(parent.executionPolicy);
+  if (existingPolicy?.factory || parentPolicy?.factory?.laneKind === "control") {
+    throw unprocessable(
+      "AI Factory execution-lane topology is server-managed. Use the typed execution-lane route.",
+      {
+        code: "factory_managed_route_required",
+        managedRoute: `POST /api/issues/${nextParentId}/execution-lanes`,
+      },
+    );
+  }
 
   const childSelection = dbOrTx
     .select({ id: issues.id })
@@ -400,11 +667,86 @@ type IssueUserContextInput = {
 };
 type ProjectGoalReader = Pick<Db, "select">;
 type DbReader = Pick<Db, "select">;
+const FACTORY_ORCHESTRATION_AUTHORITY = Symbol("paperclip.factory-orchestration-authority");
+export const FACTORY_IRREVERSIBLE_ACTION_APPROVAL_TARGET_KEY =
+  "ai-factory-production-deployment" as const;
+
+async function assertFactoryIrreversibleActionApproval(input: {
+  executor: Db;
+  companyId: string;
+  issueId: string;
+  candidateSha: string | null;
+}) {
+  if (!input.candidateSha) {
+    throw unprocessable(
+      "Production deployment approval requires an implementation candidate SHA.",
+      {
+        code: "factory_irreversible_action_approval_required",
+        reason: "missing_candidate",
+        targetKey: FACTORY_IRREVERSIBLE_ACTION_APPROVAL_TARGET_KEY,
+      },
+    );
+  }
+  const candidates = await input.executor
+    .select({
+      payload: issueThreadInteractions.payload,
+      result: issueThreadInteractions.result,
+      resolvedByUserId: issueThreadInteractions.resolvedByUserId,
+    })
+    .from(issueThreadInteractions)
+    .where(and(
+      eq(issueThreadInteractions.companyId, input.companyId),
+      eq(issueThreadInteractions.issueId, input.issueId),
+      eq(issueThreadInteractions.kind, "request_confirmation"),
+      eq(issueThreadInteractions.status, "accepted"),
+    ));
+  const accepted = candidates.some((row) => {
+    if (!row.resolvedByUserId) return false;
+    const payload = requestConfirmationPayloadSchema.safeParse(row.payload);
+    const result = requestConfirmationResultSchema.safeParse(row.result);
+    if (!payload.success || !result.success || result.data.outcome !== "accepted") return false;
+    const target = payload.data.target;
+    const reasonKind = payload.data.capabilityPreflight?.reasonKind;
+    return target?.type === "custom"
+      && target.key === FACTORY_IRREVERSIBLE_ACTION_APPROVAL_TARGET_KEY
+      && candidateShasMatch(target.revisionId, input.candidateSha)
+      && (reasonKind === "irreversible_action" || reasonKind === "policy_approval");
+  });
+  if (accepted) return;
+  throw unprocessable(
+    "A board user must approve this exact production candidate before the deployment stage can start.",
+    {
+      code: "factory_irreversible_action_approval_required",
+      reason: "accepted_board_confirmation_missing",
+      targetKey: FACTORY_IRREVERSIBLE_ACTION_APPROVAL_TARGET_KEY,
+      candidateSha: input.candidateSha,
+      requiredReasonKinds: ["irreversible_action", "policy_approval"],
+    },
+  );
+}
+
+export function authorizeFactoryManagedCreate(policyHash: string, controlIssueId: string) {
+  return { token: FACTORY_ORCHESTRATION_AUTHORITY, policyHash, controlIssueId };
+}
+
+export function authorizeFactoryManagedPolicyPin(policyHash: string) {
+  return { token: FACTORY_ORCHESTRATION_AUTHORITY, policyHash };
+}
+
+export function authorizeFactoryManagedTransition(
+  expectedStageRevision: number,
+  decisionId?: string | null,
+) {
+  return { token: FACTORY_ORCHESTRATION_AUTHORITY, expectedStageRevision, decisionId };
+}
+
 type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
   labelIds?: string[];
   blockedByIssueIds?: string[];
   inheritExecutionWorkspaceFromIssueId?: string | null;
   budgetLimits?: unknown;
+  /** Server-internal authorization issued by the typed factory lane route. */
+  factoryManagedCreate?: ReturnType<typeof authorizeFactoryManagedCreate>;
 };
 type IssueChildCreateInput = IssueCreateInput & {
   acceptanceCriteria?: string[];
@@ -412,6 +754,209 @@ type IssueChildCreateInput = IssueCreateInput & {
   actorAgentId?: string | null;
   actorUserId?: string | null;
 };
+
+type FactoryManagedTransitionAuthorization = {
+  token: symbol;
+  expectedStageRevision: number;
+  decisionId?: string | null;
+};
+
+function stageStateWithoutMonitor(input: unknown) {
+  const state = parseIssueExecutionState(input);
+  if (!state) return null;
+  const { monitor: _monitor, ...stageState } = state;
+  return stageState;
+}
+
+function factoryExecutionStageMutation(input: {
+  existing: typeof issues.$inferSelect;
+  patch: Partial<typeof issues.$inferInsert>;
+}) {
+  const statusChanged = input.patch.status !== undefined && input.patch.status !== input.existing.status;
+  const agentChanged = input.patch.assigneeAgentId !== undefined
+    && input.patch.assigneeAgentId !== input.existing.assigneeAgentId;
+  const userChanged = input.patch.assigneeUserId !== undefined
+    && input.patch.assigneeUserId !== input.existing.assigneeUserId;
+  const stateChanged = input.patch.executionState !== undefined
+    && !isDeepStrictEqual(
+      stageStateWithoutMonitor(input.patch.executionState),
+      stageStateWithoutMonitor(input.existing.executionState),
+    );
+  return statusChanged || agentChanged || userChanged || stateChanged;
+}
+
+function assertFactoryCompletionState(input: {
+  policy: NonNullable<ReturnType<typeof normalizeIssueExecutionPolicy>>;
+  state: ReturnType<typeof parseIssueExecutionState>;
+}) {
+  if (input.policy.factory?.laneKind !== "execution") return;
+  const state = input.state;
+  const requiredStageIds = input.policy.stages.map((stage) => stage.id);
+  const completed = new Set(state?.completedStageIds ?? []);
+  if (
+    !state
+    || state.status !== "completed"
+    || state.currentStageId !== null
+    || requiredStageIds.some((stageId) => !completed.has(stageId))
+  ) {
+    throw unprocessable(
+      "AI Factory execution lanes can only finish through the typed stage transition engine.",
+      {
+        code: "factory_transition_required",
+        missingStageIds: requiredStageIds.filter((stageId) => !completed.has(stageId)),
+      },
+    );
+  }
+}
+
+async function assertFactoryControlBlockerEdgesPreserved(input: {
+  executor: Db;
+  controlIssue: typeof issues.$inferSelect;
+  proposedBlockerIssueIds: string[];
+}) {
+  const controlPolicy = normalizeIssueExecutionPolicy(input.controlIssue.executionPolicy);
+  if (controlPolicy?.factory?.laneKind !== "control") return;
+  const currentBlockerIds = await input.executor
+    .select({ issueId: issueRelations.issueId })
+    .from(issueRelations)
+    .where(and(
+      eq(issueRelations.companyId, input.controlIssue.companyId),
+      eq(issueRelations.relatedIssueId, input.controlIssue.id),
+      eq(issueRelations.type, "blocks"),
+    ))
+    .then((rows) => rows.map((row) => row.issueId));
+  if (currentBlockerIds.length === 0) return;
+  const blockerIssues = await input.executor
+    .select({ id: issues.id, parentId: issues.parentId, executionPolicy: issues.executionPolicy })
+    .from(issues)
+    .where(and(
+      eq(issues.companyId, input.controlIssue.companyId),
+      inArray(issues.id, currentBlockerIds),
+    ));
+  const immutableLaneBlockerIds = blockerIssues
+    .filter((candidate) => {
+      const policy = normalizeIssueExecutionPolicy(candidate.executionPolicy);
+      return candidate.parentId === input.controlIssue.id
+        && policy?.factory?.laneKind === "execution"
+        && policy.factory.controlIssueId === input.controlIssue.id;
+    })
+    .map((candidate) => candidate.id);
+  const proposed = new Set(input.proposedBlockerIssueIds);
+  const removed = immutableLaneBlockerIds.filter((issueId) => !proposed.has(issueId));
+  if (removed.length > 0) {
+    throw conflict("AI Factory lane blocker relations cannot be removed through generic issue mutation.", {
+      code: "factory_lane_blocker_frozen",
+      controlIssueId: input.controlIssue.id,
+      laneIssueIds: removed,
+    });
+  }
+}
+
+async function assertFactoryControlCompletion(input: {
+  executor: Db;
+  controlIssue: typeof issues.$inferSelect;
+}) {
+  const controlPolicy = normalizeIssueExecutionPolicy(input.controlIssue.executionPolicy);
+  if (controlPolicy?.factory?.laneKind !== "control") return;
+  const children = await input.executor
+    .select({
+      id: issues.id,
+      status: issues.status,
+      executionPolicy: issues.executionPolicy,
+      executionState: issues.executionState,
+    })
+    .from(issues)
+    .where(and(
+      eq(issues.companyId, input.controlIssue.companyId),
+      eq(issues.parentId, input.controlIssue.id),
+    ))
+    .orderBy(asc(issues.id))
+    .for("update");
+  const lanes = children.filter((candidate) => {
+    const policy = normalizeIssueExecutionPolicy(candidate.executionPolicy);
+    return policy?.factory?.laneKind === "execution"
+      && policy.factory.controlIssueId === input.controlIssue.id;
+  });
+  const expectedLaneCount = controlPolicy.factory.policySnapshot?.topology.defaultExecutionLanes ?? 1;
+  const unfinishedLaneIds = lanes
+    .filter((lane) => lane.status !== "done")
+    .map((lane) => lane.id);
+  if (lanes.length < expectedLaneCount || unfinishedLaneIds.length > 0) {
+    throw unprocessable(
+      "AI Factory control issues can only finish after every required execution lane is done.",
+      {
+        code: "factory_control_incomplete",
+        controlIssueId: input.controlIssue.id,
+        expectedLaneCount,
+        actualLaneCount: lanes.length,
+        unfinishedLaneIds,
+      },
+    );
+  }
+  const readiness = await listIssueDependencyReadinessMap(
+    input.executor,
+    input.controlIssue.companyId,
+    [input.controlIssue.id],
+  ).then((rows) => rows.get(input.controlIssue.id));
+  if (readiness && readiness.unresolvedBlockerIssueIds.length > 0) {
+    throw unprocessable("AI Factory control issue still has unresolved blockers.", {
+      code: "factory_control_incomplete",
+      controlIssueId: input.controlIssue.id,
+      unresolvedBlockerIssueIds: readiness.unresolvedBlockerIssueIds,
+    });
+  }
+  if (lanes.length === 0) return;
+  for (const lane of [...lanes].sort((left, right) => left.id.localeCompare(right.id))) {
+    const lanePolicy = normalizeIssueExecutionPolicy(lane.executionPolicy);
+    const laneState = parseIssueExecutionState(lane.executionState);
+    if (!lanePolicy || lanePolicy.factory?.laneKind !== "execution" || !laneState) {
+      throw unprocessable("AI Factory control issue has a lane without a valid execution snapshot.", {
+        code: "factory_control_incomplete",
+        controlIssueId: input.controlIssue.id,
+        laneIssueId: lane.id,
+      });
+    }
+    await acquireIssueDeliveryLock(input.executor, input.controlIssue.companyId, lane.id);
+    const snapshot = await deliveryService(input.executor).getSnapshot(
+      input.controlIssue.companyId,
+      lane.id,
+    );
+    const gates = [...new Set(lanePolicy.stages.flatMap((stage) => stage.evidenceGates ?? []))];
+    const expectations = buildFactoryDeliveryEvidenceExpectations({
+      policy: lanePolicy,
+      state: laneState,
+      candidateSha: snapshot.candidateSha,
+    });
+    const missing = evaluateDeliveryEvidenceGates(snapshot, gates, expectations)
+      .filter((result) => !result.satisfied);
+    if (missing.length > 0) {
+      throw unprocessable("AI Factory control issue cannot finish with stale or missing lane delivery evidence.", {
+        code: "factory_control_incomplete",
+        controlIssueId: input.controlIssue.id,
+        laneIssueId: lane.id,
+        snapshotRevision: snapshot.revision,
+        missing,
+      });
+    }
+  }
+  const activeOperationIssueIds = await input.executor
+    .select({ issueId: externalOperations.issueId })
+    .from(externalOperations)
+    .where(and(
+      eq(externalOperations.companyId, input.controlIssue.companyId),
+      inArray(externalOperations.issueId, lanes.map((lane) => lane.id)),
+      isNull(externalOperations.terminalAt),
+      notInArray(externalOperations.state, ["succeeded", "failed", "cancelled", "timed_out"]),
+    ))
+    .then((rows) => [...new Set(rows.map((row) => row.issueId))]);
+  if (activeOperationIssueIds.length > 0) {
+    throw unprocessable("AI Factory control issue still has active external operations.", {
+      code: "factory_control_incomplete",
+      controlIssueId: input.controlIssue.id,
+      activeOperationIssueIds,
+    });
+  }
+}
 type IssueRelationSummaryMap = {
   blockedBy: IssueRelationIssueSummary[];
   blocks: IssueRelationIssueSummary[];
@@ -3921,8 +4466,25 @@ export function issueService(db: Db) {
         blockedByIssueIds,
         inheritExecutionWorkspaceFromIssueId,
         budgetLimits: _budgetLimits,
+        factoryManagedCreate,
         ...issueData
       } = data;
+      const initialExecutionPolicy = normalizeIssueExecutionPolicy(issueData.executionPolicy ?? null);
+      if (initialExecutionPolicy?.factory) {
+        const factory = initialExecutionPolicy.factory;
+        if (
+          !factoryManagedCreate
+          || factoryManagedCreate.token !== FACTORY_ORCHESTRATION_AUTHORITY
+          || factory.laneKind !== "execution"
+          || factoryManagedCreate.policyHash !== factory.policyHash
+          || factoryManagedCreate.controlIssueId !== factory.controlIssueId
+        ) {
+          throw unprocessable(
+            "AI Factory snapshots can only be attached by the typed execution-lane service.",
+            { code: "factory_managed_route_required" },
+          );
+        }
+      }
       const contractFields = resolveExecutionContractFields({
         description: issueData.description,
         executionContract: issueData.executionContract,
@@ -3938,7 +4500,7 @@ export function issueService(db: Db) {
           parentId: issueData.parentId,
         });
       }
-      if (issueData.status === "done") {
+      if (issueData.status === "done" && !initialExecutionPolicy?.factory) {
         assertIssueCompletionEvidenceOnCreate(
           normalizeExecutionContractValue(issueData.executionContract),
         );
@@ -3964,7 +4526,50 @@ export function issueService(db: Db) {
       }
       return db.transaction(async (tx) => {
         if (issueData.parentId) {
-          await assertChildIssueCreationAllowed(tx, companyId, issueData.parentId, { lockParent: true });
+          const lockedParent = await assertChildIssueCreationAllowed(
+            tx,
+            companyId,
+            issueData.parentId,
+            { lockParent: true },
+          );
+          const parentPolicy = normalizeIssueExecutionPolicy(lockedParent.executionPolicy);
+          if (
+            parentPolicy?.factory?.laneKind === "control"
+            && initialExecutionPolicy?.factory?.laneKind !== "execution"
+          ) {
+            throw unprocessable(
+              "Children of an AI Factory control issue must be created through the typed execution-lane route.",
+              {
+                code: "factory_managed_route_required",
+                managedRoute: `POST /api/issues/${lockedParent.id}/execution-lanes`,
+              },
+            );
+          }
+          if (initialExecutionPolicy?.factory?.laneKind === "execution") {
+            if (
+              parentPolicy?.factory?.laneKind !== "control"
+              || parentPolicy.factory.policyHash !== initialExecutionPolicy.factory.policyHash
+              || initialExecutionPolicy.factory.controlIssueId !== lockedParent.id
+            ) {
+              throw conflict("The execution lane does not match its locked control policy snapshot.", {
+                code: "factory_control_snapshot_conflict",
+                controlIssueId: lockedParent.id,
+                controlPolicyHash: parentPolicy?.factory?.policyHash ?? null,
+                lanePolicyHash: initialExecutionPolicy.factory.policyHash,
+              });
+            }
+            const hold = await issueTreeControlService(tx as unknown as Db).getActivePauseHoldGate(
+              companyId,
+              lockedParent.id,
+            );
+            if (hold) {
+              throw conflict("AI Factory execution-lane creation is paused by an active issue-tree hold.", {
+                code: "factory_execution_paused",
+                holdId: hold.holdId,
+                rootIssueId: hold.rootIssueId,
+              });
+            }
+          }
         }
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
         const projectGoalId = await getProjectDefaultGoalId(tx, companyId, issueData.projectId);
@@ -4180,6 +4785,10 @@ export function issueService(db: Db) {
         blockedByIssueIds?: string[];
         actorAgentId?: string | null;
         actorUserId?: string | null;
+        /** Server-internal authorization for the first immutable control snapshot. */
+        factoryManagedPolicyPin?: ReturnType<typeof authorizeFactoryManagedPolicyPin>;
+        /** Server-internal CAS proof produced by the typed transition route. */
+        factoryManagedTransition?: FactoryManagedTransitionAuthorization;
       },
       dbOrTx: any = db,
     ) => {
@@ -4195,6 +4804,8 @@ export function issueService(db: Db) {
         blockedByIssueIds,
         actorAgentId,
         actorUserId,
+        factoryManagedPolicyPin,
+        factoryManagedTransition,
         ...issueData
       } = data;
       const contractFields = resolveExecutionContractFields({
@@ -4219,6 +4830,69 @@ export function issueService(db: Db) {
           issueData.executionContract = preparedContract.value;
         } else {
           delete issueData.executionContract;
+        }
+      }
+      const executionPolicyWillChange = Object.prototype.hasOwnProperty.call(issueData, "executionPolicy");
+      if (executionPolicyWillChange) {
+        const previousPolicy = normalizeIssueExecutionPolicy(existing.executionPolicy);
+        const proposedPolicy = normalizeIssueExecutionPolicy(issueData.executionPolicy);
+        if (!previousPolicy?.factory && proposedPolicy?.factory) {
+          if (
+            !factoryManagedPolicyPin
+            || factoryManagedPolicyPin.token !== FACTORY_ORCHESTRATION_AUTHORITY
+            || factoryManagedPolicyPin.policyHash !== proposedPolicy.factory.policyHash
+            || proposedPolicy.factory.laneKind !== "control"
+          ) {
+            throw unprocessable(
+              "AI Factory snapshots can only be attached by the typed execution-lane service.",
+              { code: "factory_managed_route_required" },
+            );
+          }
+        } else {
+          assertFactoryExecutionPolicySnapshotPreserved({
+            previous: existing.executionPolicy,
+            next: issueData.executionPolicy,
+          });
+        }
+      }
+      const effectiveExecutionPolicy = normalizeIssueExecutionPolicy(
+        issueData.executionPolicy !== undefined ? issueData.executionPolicy : existing.executionPolicy,
+      );
+      assertFactoryIssueAccessBoundaryPreserved({
+        existing,
+        patch: issueData,
+      });
+      const factoryStageMutation = effectiveExecutionPolicy?.factory?.laneKind === "execution"
+        && factoryExecutionStageMutation({ existing, patch: issueData });
+      if (factoryStageMutation) {
+        assertFactoryExecutionPolicySnapshotConsistent({
+          executionPolicy: effectiveExecutionPolicy,
+          expectedControlIssueId: effectiveExecutionPolicy.factory?.controlIssueId ?? undefined,
+        });
+        const existingState = parseIssueExecutionState(existing.executionState);
+        if (
+          !factoryManagedTransition
+          || factoryManagedTransition.token !== FACTORY_ORCHESTRATION_AUTHORITY
+          || factoryManagedTransition.expectedStageRevision !== (existingState?.stageRevision ?? 0)
+        ) {
+          throw unprocessable(
+            "AI Factory execution state can only change through the typed transition service.",
+            {
+              code: "factory_transition_required",
+              expectedStageRevision: existingState?.stageRevision ?? 0,
+            },
+          );
+        }
+        const nextState = parseIssueExecutionState(
+          issueData.executionState !== undefined ? issueData.executionState : existing.executionState,
+        );
+        if (
+          factoryManagedTransition.decisionId
+          && nextState?.lastDecisionId !== factoryManagedTransition.decisionId
+        ) {
+          throw conflict("Factory transition decision id does not match the execution state.", {
+            code: "factory_execution_revision_conflict",
+          });
         }
       }
       const parentWillChange = issueData.parentId !== undefined && issueData.parentId !== existing.parentId;
@@ -4346,17 +5020,353 @@ export function issueService(db: Db) {
       }
 
       const completionRequested = issueData.status === "done";
+      const factoryExecutionControlIssueId = effectiveExecutionPolicy?.factory?.laneKind === "execution"
+        ? effectiveExecutionPolicy.factory.controlIssueId
+        : null;
       const runUpdate = async (tx: any) => {
+        let factoryDeliveryGatesChecked = false;
         let lockedExisting = existing;
-        if (parentWillChange || executionContractWillChange || completionRequested) {
-          const lockedRow = await tx
+        let lockedFactoryControl: typeof issues.$inferSelect | null = null;
+        if (factoryExecutionControlIssueId) {
+          // Factory topology mutations lock control before lane everywhere.
+          // This serializes lane reopen against control completion/lane creation
+          // and avoids parent-child lock inversion.
+          lockedFactoryControl = await tx
             .select()
             .from(issues)
-            .where(and(eq(issues.id, id), eq(issues.companyId, existing.companyId)))
+            .where(and(
+              eq(issues.id, factoryExecutionControlIssueId),
+              eq(issues.companyId, existing.companyId),
+            ))
             .for("update")
             .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
-          if (!lockedRow) return null;
-          lockedExisting = lockedRow;
+          const controlPolicy = normalizeIssueExecutionPolicy(lockedFactoryControl?.executionPolicy);
+          if (
+            !lockedFactoryControl
+            || controlPolicy?.factory?.laneKind !== "control"
+            || controlPolicy.factory.policyHash !== effectiveExecutionPolicy?.factory?.policyHash
+          ) {
+            throw conflict("AI Factory execution lane has no matching locked control issue.", {
+              code: "factory_control_snapshot_conflict",
+              controlIssueId: factoryExecutionControlIssueId,
+              issueId: existing.id,
+            });
+          }
+        }
+        // Every issue update takes the row lock before consulting cancel holds.
+        // If a subtree cancel wins the lock, a stale update cannot commit after
+        // the atomic cancel and silently revive or alter the issue.
+        const lockedRow = await tx
+          .select()
+          .from(issues)
+          .where(and(eq(issues.id, id), eq(issues.companyId, existing.companyId)))
+          .for("update")
+          .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
+        if (!lockedRow) return null;
+        lockedExisting = lockedRow;
+        const lockedExistingPolicy = normalizeIssueExecutionPolicy(lockedExisting.executionPolicy);
+        // Re-evaluate against the locked row. This closes the race where a
+        // factory snapshot is pinned after the optimistic read but before a
+        // stale generic update attempts to move or declassify the issue.
+        assertFactoryIssueAccessBoundaryPreserved({
+          existing: lockedExisting,
+          patch: issueData,
+        });
+        if (
+          lockedExistingPolicy?.factory?.laneKind === "control"
+          && ["done", "cancelled"].includes(lockedExisting.status)
+          && (
+            (issueData.status !== undefined && issueData.status !== lockedExisting.status)
+            || blockedByIssueIds !== undefined
+          )
+        ) {
+          throw conflict("Terminal AI Factory control topology is immutable.", {
+            code: "factory_control_terminal",
+            controlIssueId: lockedExisting.id,
+            status: lockedExisting.status,
+          });
+        }
+        if (
+          lockedExistingPolicy?.factory?.laneKind === "control"
+          && issueData.status === "cancelled"
+          && lockedExisting.status !== "cancelled"
+        ) {
+          throw conflict(
+            "AI Factory control issues must be cancelled through typed subtree control.",
+            {
+              code: "factory_tree_control_required",
+              controlIssueId: lockedExisting.id,
+              managedRoute: `/api/issues/${lockedExisting.id}/tree-control`,
+            },
+          );
+        }
+        const treeControl = issueTreeControlService(tx as Db);
+        if (lockedExistingPolicy?.factory) {
+          const activePauseHold = await treeControl.getActivePauseHoldGate(
+            lockedExisting.companyId,
+            lockedExisting.id,
+          );
+          if (activePauseHold) {
+            throw conflict("AI Factory issue mutation is blocked by an active subtree pause hold", {
+              code: "issue_tree_paused",
+              holdId: activePauseHold.holdId,
+              rootIssueId: activePauseHold.rootIssueId,
+              issueId: lockedExisting.id,
+            });
+          }
+        }
+        const activeCancelHold = await treeControl.getActiveCancelHoldGate(
+          lockedExisting.companyId,
+          lockedExisting.id,
+        );
+        if (activeCancelHold) {
+          throw conflict("Issue mutation is blocked by an active subtree cancel hold", {
+            code: "issue_tree_cancelled",
+            holdId: activeCancelHold.holdId,
+            rootIssueId: activeCancelHold.rootIssueId,
+            issueId: lockedExisting.id,
+          });
+        }
+        if (
+          lockedFactoryControl
+          && ["done", "cancelled"].includes(lockedFactoryControl.status)
+          && ["done", "cancelled"].includes(lockedExisting.status)
+          && issueData.status !== undefined
+          && !["done", "cancelled"].includes(issueData.status)
+        ) {
+          throw conflict("A factory lane cannot reopen after its control issue is terminal.", {
+            code: "factory_control_terminal",
+            controlIssueId: lockedFactoryControl.id,
+            controlStatus: lockedFactoryControl.status,
+            issueId: lockedExisting.id,
+          });
+        }
+        if (blockedByIssueIds !== undefined) {
+          await assertFactoryControlBlockerEdgesPreserved({
+            executor: tx as Db,
+            controlIssue: lockedExisting,
+            proposedBlockerIssueIds: blockedByIssueIds,
+          });
+        }
+        if (executionPolicyWillChange) {
+          const lockedPolicy = normalizeIssueExecutionPolicy(lockedExisting.executionPolicy);
+          const proposedPolicy = normalizeIssueExecutionPolicy(issueData.executionPolicy);
+          if (lockedPolicy?.factory) {
+            assertFactoryExecutionPolicySnapshotPreserved({
+              previous: lockedExisting.executionPolicy,
+              next: issueData.executionPolicy,
+            });
+          } else if (proposedPolicy?.factory) {
+            if (
+              !factoryManagedPolicyPin
+              || factoryManagedPolicyPin.token !== FACTORY_ORCHESTRATION_AUTHORITY
+              || factoryManagedPolicyPin.policyHash !== proposedPolicy.factory.policyHash
+              || proposedPolicy.factory.laneKind !== "control"
+            ) {
+              throw unprocessable(
+                "AI Factory snapshots can only be attached by the typed execution-lane service.",
+                { code: "factory_managed_route_required" },
+              );
+            }
+          }
+        }
+        if (factoryStageMutation) {
+          if (
+            lockedExisting.status !== existing.status
+            || lockedExisting.assigneeAgentId !== existing.assigneeAgentId
+            || lockedExisting.assigneeUserId !== existing.assigneeUserId
+            || !isDeepStrictEqual(lockedExisting.executionState, existing.executionState)
+          ) {
+            throw conflict("AI Factory execution state changed while this transition was being applied.", {
+              code: "factory_execution_revision_conflict",
+              expectedStageRevision: factoryManagedTransition?.expectedStageRevision ?? null,
+              currentStageRevision: parseIssueExecutionState(lockedExisting.executionState)?.stageRevision ?? 0,
+            });
+          }
+          const hold = await issueTreeControlService(tx as Db).getActivePauseHoldGate(
+            lockedExisting.companyId,
+            lockedExisting.id,
+          );
+          if (hold) {
+            throw conflict("This AI Factory lane is paused by an active issue-tree hold.", {
+              code: "issue_tree_paused",
+              holdId: hold.holdId,
+              rootIssueId: hold.rootIssueId,
+            });
+          }
+
+          const nextState = parseIssueExecutionState(
+            issueData.executionState !== undefined ? issueData.executionState : lockedExisting.executionState,
+          );
+          const previousState = parseIssueExecutionState(lockedExisting.executionState);
+          const nextStage = nextState?.currentStageId
+            ? effectiveExecutionPolicy.stages.find((stage) => stage.id === nextState.currentStageId) ?? null
+            : null;
+          const enteringDeploymentStage = nextStage?.type === "deployment"
+            && previousState?.currentStageId !== nextState?.currentStageId;
+          const requiresIrreversibleActionApproval = enteringDeploymentStage
+            && effectiveExecutionPolicy.factory?.production === true
+            && effectiveExecutionPolicy.factory.policySnapshot?.productionAuthority
+              .requireBoardApprovalForIrreversibleActions === true;
+          let lockedDeliverySnapshot: Awaited<ReturnType<ReturnType<typeof deliveryService>["getSnapshot"]>> | null = null;
+          const getLockedDeliverySnapshot = async () => {
+            if (lockedDeliverySnapshot) return lockedDeliverySnapshot;
+            // The approval target and the evidence gates must observe the same
+            // immutable candidate while this issue transition is committed.
+            await acquireIssueDeliveryLock(tx as Db, lockedExisting.companyId, lockedExisting.id);
+            lockedDeliverySnapshot = await deliveryService(tx as Db).getSnapshot(
+              lockedExisting.companyId,
+              lockedExisting.id,
+            );
+            return lockedDeliverySnapshot;
+          };
+          if (requiresIrreversibleActionApproval) {
+            const snapshot = await getLockedDeliverySnapshot();
+            await assertFactoryIrreversibleActionApproval({
+              executor: tx as Db,
+              companyId: lockedExisting.companyId,
+              issueId: lockedExisting.id,
+              candidateSha: snapshot.candidateSha,
+            });
+          }
+          const newlyCompletedStageIds = (nextState?.completedStageIds ?? [])
+            .filter((stageId) => !(previousState?.completedStageIds ?? []).includes(stageId));
+          if (newlyCompletedStageIds.length > 0) {
+            const completedStageIds = new Set(nextState?.completedStageIds ?? []);
+            const gatedStages = effectiveExecutionPolicy.stages
+              .filter((stage) => completedStageIds.has(stage.id));
+            const newlyAcceptedStage = effectiveExecutionPolicy.stages.find((stage) =>
+              newlyCompletedStageIds.includes(stage.id)
+              && (stage.key === "technical_acceptance" || stage.key === "final_acceptance"));
+            if (newlyAcceptedStage) {
+              if (
+                !factoryManagedTransition?.decisionId
+                || nextState?.lastDecisionId !== factoryManagedTransition.decisionId
+                || nextState.lastDecisionOutcome !== "approved"
+                || previousState?.currentStageId !== newlyAcceptedStage.id
+                || !previousState.currentParticipant
+              ) {
+                throw conflict("Factory acceptance must be backed by the current typed approval decision.", {
+                  code: "factory_acceptance_decision_required",
+                  stageId: newlyAcceptedStage.id,
+                  stageKey: newlyAcceptedStage.key,
+                });
+              }
+              const snapshot = await getLockedDeliverySnapshot();
+              if (!snapshot.candidateSha) {
+                throw unprocessable("Factory acceptance requires an exact implementation candidate.", {
+                  code: "factory_candidate_required",
+                  stageId: newlyAcceptedStage.id,
+                });
+              }
+              const isFinalAcceptance = newlyAcceptedStage.key === "final_acceptance";
+              const deployment = snapshot.stages.deployment;
+              if (
+                isFinalAcceptance
+                && (
+                  deployment.state !== "succeeded"
+                  || deployment.authority !== "provider_verified"
+                  || deployment.stale
+                  || deployment.environment?.trim().toLowerCase() !== "production"
+                  || !deployment.providerExternalId
+                  || !deployment.providerUrl
+                )
+              ) {
+                throw conflict("Final acceptance requires the exact provider-verified production deployment target.", {
+                  code: "factory_final_acceptance_target_required",
+                  stageId: newlyAcceptedStage.id,
+                });
+              }
+              const acceptanceDeliveryStage = isFinalAcceptance
+                ? "business_acceptance" as const
+                : "technical_acceptance" as const;
+              const participant = previousState.currentParticipant;
+              await deliveryService(tx as Db).appendPaperclipAction(
+                lockedExisting.companyId,
+                lockedExisting.id,
+                {
+                  stage: acceptanceDeliveryStage,
+                  state: "accepted",
+                  candidateSha: snapshot.candidateSha,
+                  environment: isFinalAcceptance ? "production" : snapshot.environment,
+                  provider: isFinalAcceptance ? deployment.provider : null,
+                  providerExternalId: isFinalAcceptance ? deployment.providerExternalId : null,
+                  providerUrl: isFinalAcceptance ? deployment.providerUrl : null,
+                  summary: isFinalAcceptance
+                    ? "Paperclip recorded final business acceptance for the verified production candidate"
+                    : "Paperclip recorded technical acceptance for the verified candidate",
+                  metadata: {
+                    decisionId: factoryManagedTransition.decisionId,
+                    acceptanceKind: acceptanceDeliveryStage,
+                    paperclipFactory: {
+                      version: 1,
+                      stageId: newlyAcceptedStage.id,
+                      stageKey: newlyAcceptedStage.key ?? null,
+                      stageRevision: previousState.stageRevision ?? 0,
+                      stageActivatedAt: previousState.currentStageActivatedAt ?? null,
+                      participant: {
+                        type: participant.type,
+                        agentId: participant.type === "agent" ? participant.agentId ?? null : null,
+                        userId: participant.type === "user" ? participant.userId ?? null : null,
+                      },
+                    },
+                    ...(isFinalAcceptance ? {
+                      verifiedDeploymentEventId: deployment.eventId,
+                      verifiedDeploymentTarget: {
+                        environment: "production",
+                        provider: deployment.provider,
+                        externalId: deployment.providerExternalId,
+                        url: deployment.providerUrl,
+                      },
+                    } : {}),
+                  },
+                  observedAt: new Date(),
+                  sourceFingerprint: [
+                    "factory-acceptance",
+                    lockedExisting.id,
+                    newlyAcceptedStage.id,
+                    String(previousState.stageRevision ?? 0),
+                    factoryManagedTransition.decisionId,
+                  ].join(":"),
+                },
+                actorUserId
+                  ? { actorType: "user", userId: actorUserId }
+                  : actorAgentId
+                    ? { actorType: "agent", agentId: actorAgentId }
+                    : { actorType: "system" },
+              );
+              // The acceptance event was appended inside this transaction;
+              // force gate evaluation to project the new immutable ledger row.
+              lockedDeliverySnapshot = null;
+            }
+            const gates = [...new Set(gatedStages.flatMap((stage) => stage.evidenceGates ?? []))];
+            if (gates.length > 0 && nextState) {
+              // Delivery mutations, corrections, and workflow advancement share
+              // this lock. No contradictory event can land between this read
+              // and the issue-state commit below.
+              const snapshot = await getLockedDeliverySnapshot();
+              const expectations = buildFactoryDeliveryEvidenceExpectations({
+                policy: effectiveExecutionPolicy,
+                state: nextState,
+                candidateSha: snapshot.candidateSha,
+              });
+              const missing = evaluateDeliveryEvidenceGates(snapshot, gates, expectations)
+                .filter((result) => !result.satisfied);
+              if (missing.length > 0) {
+                throw unprocessable(
+                  "The AI Factory lane cannot advance until all completed-stage delivery evidence gates pass.",
+                  {
+                    code: "delivery_evidence_gate_unsatisfied",
+                    newlyCompletedStageIds,
+                    requiredStageKeys: gatedStages.map((stage) => stage.key ?? stage.id),
+                    snapshotRevision: snapshot.revision,
+                    missing,
+                  },
+                );
+              }
+            }
+            factoryDeliveryGatesChecked = true;
+          }
         }
         if (executionContractWillChange) {
           if (!isDeepStrictEqual(lockedExisting.executionContract, existing.executionContract)) {
@@ -4386,13 +5396,52 @@ export function issueService(db: Db) {
           }
         }
         if (completionRequested && lockedExisting.status !== "done") {
-          await assertIssueCompletionEvidence(tx, {
-            companyId: lockedExisting.companyId,
-            issueId: lockedExisting.id,
-            executionContract: executionContractWillChange
-              ? normalizeExecutionContractValue(issueData.executionContract)
-              : normalizeExecutionContractValue(lockedExisting.executionContract),
-          });
+          if (effectiveExecutionPolicy?.factory?.laneKind === "execution") {
+            const nextState = parseIssueExecutionState(
+              issueData.executionState !== undefined ? issueData.executionState : lockedExisting.executionState,
+            );
+            assertFactoryCompletionState({ policy: effectiveExecutionPolicy, state: nextState });
+            const gates = [...new Set(effectiveExecutionPolicy.stages.flatMap((stage) => stage.evidenceGates ?? []))];
+            if (gates.length > 0 && !factoryDeliveryGatesChecked) {
+              await acquireIssueDeliveryLock(tx as Db, lockedExisting.companyId, lockedExisting.id);
+              const snapshot = await deliveryService(tx as Db).getSnapshot(
+                lockedExisting.companyId,
+                lockedExisting.id,
+              );
+              const expectations = nextState
+                ? buildFactoryDeliveryEvidenceExpectations({
+                    policy: effectiveExecutionPolicy,
+                    state: nextState,
+                    candidateSha: snapshot.candidateSha,
+                  })
+                : {};
+              const missing = evaluateDeliveryEvidenceGates(snapshot, gates, expectations)
+                .filter((result) => !result.satisfied);
+              if (missing.length > 0) {
+                throw unprocessable(
+                  "AI Factory completion requires current delivery evidence for every completed stage.",
+                  {
+                    code: "delivery_evidence_gate_unsatisfied",
+                    snapshotRevision: snapshot.revision,
+                    missing,
+                  },
+                );
+              }
+            }
+          } else if (effectiveExecutionPolicy?.factory?.laneKind === "control") {
+            await assertFactoryControlCompletion({
+              executor: tx as Db,
+              controlIssue: lockedExisting,
+            });
+          } else {
+            await assertIssueCompletionEvidence(tx, {
+              companyId: lockedExisting.companyId,
+              issueId: lockedExisting.id,
+              executionContract: executionContractWillChange
+                ? normalizeExecutionContractValue(issueData.executionContract)
+                : normalizeExecutionContractValue(lockedExisting.executionContract),
+            });
+          }
         }
 
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, existing.companyId);
@@ -4605,6 +5654,47 @@ export function issueService(db: Db) {
 
     remove: (id: string) =>
       db.transaction(async (tx) => {
+        const lockedIssue = await tx
+          .select()
+          .from(issues)
+          .where(eq(issues.id, id))
+          .for("update")
+          .then((rows) => rows[0] ?? null);
+        if (!lockedIssue) return null;
+        if (normalizeIssueExecutionPolicy(lockedIssue.executionPolicy)?.factory) {
+          throw conflict(
+            "AI Factory control and execution issues cannot be deleted through the generic issue API.",
+            {
+              code: "factory_teardown_required",
+              issueId: lockedIssue.id,
+            },
+          );
+        }
+        const treeControl = issueTreeControlService(tx as unknown as Db);
+        const pauseHold = await treeControl.getActivePauseHoldGate(
+          lockedIssue.companyId,
+          lockedIssue.id,
+        );
+        if (pauseHold) {
+          throw conflict("Issue deletion is blocked by an active subtree pause hold", {
+            code: "issue_tree_paused",
+            holdId: pauseHold.holdId,
+            rootIssueId: pauseHold.rootIssueId,
+            issueId: lockedIssue.id,
+          });
+        }
+        const cancelHold = await treeControl.getActiveCancelHoldGate(
+          lockedIssue.companyId,
+          lockedIssue.id,
+        );
+        if (cancelHold) {
+          throw conflict("Issue deletion is blocked by an active subtree cancel hold", {
+            code: "issue_tree_cancelled",
+            holdId: cancelHold.holdId,
+            rootIssueId: cancelHold.rootIssueId,
+            issueId: lockedIssue.id,
+          });
+        }
         const attachmentAssetIds = await tx
           .select({ assetId: issueAttachments.assetId })
           .from(issueAttachments)

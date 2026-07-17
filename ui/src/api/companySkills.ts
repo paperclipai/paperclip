@@ -8,10 +8,25 @@ import type {
   CompanySkillProjectScanRequest,
   CompanySkillProjectScanResult,
   CompanySkillUpdateStatus,
+  CompanyAiFactoryPolicyView,
 } from "@paperclipai/shared";
 import { api } from "./client";
 
 export const companySkillsApi = {
+  aiFactoryPolicy: (companyId: string) =>
+    api.get<CompanyAiFactoryPolicyView>(
+      `/companies/${encodeURIComponent(companyId)}/ai-factory-policy`,
+    ),
+  selectAiFactoryPolicy: (companyId: string, skillId: string) =>
+    api.put<CompanyAiFactoryPolicyView>(
+      `/companies/${encodeURIComponent(companyId)}/ai-factory-policy`,
+      { skillId },
+    ),
+  resetAiFactoryPolicy: (companyId: string) =>
+    api.post<CompanyAiFactoryPolicyView>(
+      `/companies/${encodeURIComponent(companyId)}/ai-factory-policy/reset`,
+      {},
+    ),
   list: (companyId: string) =>
     api.get<CompanySkillListItem[]>(`/companies/${encodeURIComponent(companyId)}/skills`),
   detail: (companyId: string, skillId: string) =>

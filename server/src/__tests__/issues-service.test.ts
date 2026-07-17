@@ -8,6 +8,7 @@ import {
   assets,
   companies,
   createDb,
+  deliveryEvents,
   environments,
   executionWorkspaces,
   goals,
@@ -17,6 +18,7 @@ import {
   issueAttachments,
   issueInboxArchives,
   issueRelations,
+  issueThreadInteractions,
   issueWorkProducts,
   issues,
   projectWorkspaces,
@@ -31,13 +33,31 @@ import { workProductService } from "../services/work-products.ts";
 import {
   clampIssueListLimit,
   deriveIssueCommentRunLogAttribution,
+  assertFactoryExecutionPolicySnapshotPreserved,
+  assertFactoryIssueAccessBoundaryPreserved,
+  authorizeFactoryManagedCreate,
+  authorizeFactoryManagedTransition,
+  FACTORY_IRREVERSIBLE_ACTION_APPROVAL_TARGET_KEY,
   ISSUE_LIST_MAX_LIMIT,
   MAX_DIRECT_CHILD_ISSUES_PER_PARENT,
   issueService,
   parseWorkItemTypeFilter,
+  resolveIssueChildTopologyPolicy,
   validateDelegatedIssueExecutionContract,
 } from "../services/issues.ts";
-import { buildProjectMentionHref, MAX_ISSUE_REQUEST_DEPTH } from "@paperclipai/shared";
+import {
+  buildProjectMentionHref,
+  MAX_ISSUE_REQUEST_DEPTH,
+  type IssueExecutionPolicy,
+} from "@paperclipai/shared";
+import {
+  DEFAULT_FACTORY_POLICY_V1,
+  effectiveFactoryExecutionLaneMaximum,
+  factoryPolicyStageIsSelected,
+  factoryPolicyContentHash,
+  factoryStageEvidenceGates,
+  factoryStageReturnTarget,
+} from "../services/ai-factory-policy.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -51,6 +71,216 @@ describe("issue list limit helpers", () => {
 
   it("parses comma-separated work item filters and ignores unknown values", () => {
     expect(parseWorkItemTypeFilter("initiative,human_task,unknown")).toEqual(["initiative", "human_task"]);
+  });
+});
+
+describe("resolveIssueChildTopologyPolicy", () => {
+  it("gives an explicit execution-contract topology precedence over a policy snapshot", () => {
+    expect(resolveIssueChildTopologyPolicy({
+      executionContract: {
+        extensions: {
+          aiFactory: { topologyMode: "same_issue_only" },
+        },
+      },
+      executionPolicy: {
+        mode: "normal",
+        stages: [],
+        factory: {
+          schemaVersion: 1,
+          laneKind: "control",
+          topologyMode: "direct_execution_lanes",
+          coordinator: { type: "agent", agentId: randomUUID() },
+          policyKey: "paperclip-ai-factory",
+          policyVersion: "1",
+          policyHash: "deadbeef",
+          maxExecutionLanes: 8,
+        },
+      },
+    })).toEqual({
+      mode: "same_issue_only",
+      maxExecutionLanes: 0,
+      source: "execution_contract",
+    });
+  });
+
+  it("recognizes the legacy create-no-children constraint without scanning unrelated prose", () => {
+    expect(resolveIssueChildTopologyPolicy({
+      executionContract: {
+        core: {
+          objective: "Document the child component behavior",
+          constraints: ["Complete this on the same issue; create no children."],
+        },
+      },
+      executionPolicy: null,
+    })).toEqual({
+      mode: "same_issue_only",
+      maxExecutionLanes: 0,
+      source: "legacy_contract_constraint",
+    });
+
+    expect(resolveIssueChildTopologyPolicy({
+      executionContract: {
+        core: {
+          objective: "Document the child component behavior",
+          constraints: ["Keep the existing component hierarchy."],
+        },
+      },
+      executionPolicy: null,
+    }).mode).toBe("direct_execution_lanes");
+  });
+
+  it("uses the snapshotted policy lane cap when no contract override exists", () => {
+    expect(resolveIssueChildTopologyPolicy({
+      executionContract: null,
+      executionPolicy: {
+        mode: "normal",
+        stages: [],
+        factory: {
+          schemaVersion: 1,
+          laneKind: "control",
+          topologyMode: "single_execution_lane",
+          coordinator: { type: "agent", agentId: randomUUID() },
+          policyKey: "paperclip-ai-factory",
+          policyVersion: "1",
+          policyHash: "deadbeef",
+          maxExecutionLanes: 9,
+        },
+      },
+    })).toMatchObject({
+      mode: "single_execution_lane",
+      maxExecutionLanes: 1,
+      source: "execution_policy",
+    });
+  });
+
+  it("does not let a looser execution contract override a frozen control lane cap", () => {
+    expect(resolveIssueChildTopologyPolicy({
+      executionContract: {
+        extensions: {
+          aiFactory: {
+            topologyMode: "direct_execution_lanes",
+            maxExecutionLanes: 10,
+          },
+        },
+      },
+      executionPolicy: {
+        mode: "normal",
+        stages: [],
+        factory: {
+          schemaVersion: 1,
+          laneKind: "control",
+          topologyMode: "single_execution_lane",
+          coordinator: { type: "agent", agentId: randomUUID() },
+          policyKey: "paperclip-ai-factory",
+          policyVersion: "1",
+          policyHash: "deadbeef",
+          maxExecutionLanes: 1,
+        },
+      },
+    })).toEqual({
+      mode: "single_execution_lane",
+      maxExecutionLanes: 1,
+      source: "execution_policy",
+    });
+  });
+});
+
+describe("assertFactoryExecutionPolicySnapshotPreserved", () => {
+  const factoryPolicy = {
+    mode: "normal" as const,
+    commentRequired: true,
+    stages: [{
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      key: "implementation",
+      type: "work" as const,
+      role: "engineer",
+      approvalsNeeded: 1 as const,
+      participants: [{
+        id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        type: "agent" as const,
+        agentId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      }],
+    }],
+    factory: {
+      schemaVersion: 1 as const,
+      laneKind: "execution" as const,
+      topologyMode: "direct_execution_lanes" as const,
+      coordinator: { type: "agent" as const, agentId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd" },
+      policyKey: "paperclip-ai-factory",
+      policyVersion: "1",
+      policyHash: "deadbeef",
+      maxExecutionLanes: 3,
+    },
+  };
+
+  it("allows monitor-only edits while rejecting removal or stage replacement", () => {
+    expect(() => assertFactoryExecutionPolicySnapshotPreserved({
+      previous: factoryPolicy,
+      next: {
+        ...factoryPolicy,
+        monitor: {
+          nextCheckAt: "2026-07-17T10:00:00.000Z",
+          notes: "Check the external operation.",
+          scheduledBy: "assignee",
+          maxAttempts: 3,
+        },
+      },
+    })).not.toThrow();
+    for (const next of [null, { ...factoryPolicy, stages: [] }]) {
+      expect(() => assertFactoryExecutionPolicySnapshotPreserved({
+        previous: factoryPolicy,
+        next,
+      })).toThrowError(expect.objectContaining({
+        status: 409,
+        details: expect.objectContaining({ code: "factory_policy_frozen" }),
+      }));
+    }
+  });
+
+  it("freezes project and visibility when a factory snapshot already exists", () => {
+    const existing = {
+      projectId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      visibility: "private",
+      executionPolicy: factoryPolicy,
+    };
+
+    expect(() => assertFactoryIssueAccessBoundaryPreserved({
+      existing,
+      patch: { projectId: existing.projectId, visibility: existing.visibility },
+    })).not.toThrow();
+    expect(() => assertFactoryIssueAccessBoundaryPreserved({
+      existing,
+      patch: {
+        projectId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+        visibility: "company",
+      },
+    })).toThrowError(expect.objectContaining({
+      status: 409,
+      details: expect.objectContaining({
+        code: "factory_access_boundary_frozen",
+        fields: ["projectId", "visibility"],
+      }),
+    }));
+  });
+
+  it("freezes the current boundary in the same mutation that first pins a factory snapshot", () => {
+    expect(() => assertFactoryIssueAccessBoundaryPreserved({
+      existing: {
+        projectId: null,
+        visibility: "company",
+        executionPolicy: null,
+      },
+      patch: {
+        projectId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+        executionPolicy: factoryPolicy,
+      },
+    })).toThrowError(expect.objectContaining({
+      status: 409,
+      details: expect.objectContaining({
+        code: "factory_access_boundary_frozen",
+        fields: ["projectId"],
+      }),
+    }));
   });
 });
 
@@ -1686,6 +1916,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
 
   afterEach(async () => {
     await db.delete(issueComments);
+    await db.delete(issueThreadInteractions);
     await db.delete(issueRelations);
     await db.delete(issueInboxArchives);
     await db.delete(activityLog);
@@ -3530,6 +3761,61 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     });
   });
 
+  it("enforces same-issue-only topology through direct, helper, and reparent creation paths", async () => {
+    const companyId = randomUUID();
+    const parentIssueId = randomUUID();
+    const movableIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values([
+      {
+        id: parentIssueId,
+        companyId,
+        title: "Same issue only",
+        status: "todo",
+        priority: "medium",
+        executionContract: {
+          schemaVersion: 1,
+          revision: 1,
+          extensions: { aiFactory: { topologyMode: "same_issue_only" } },
+        },
+      },
+      {
+        id: movableIssueId,
+        companyId,
+        title: "Movable issue",
+        status: "todo",
+        priority: "medium",
+      },
+    ]);
+
+    const expectedError = {
+      status: 422,
+      details: expect.objectContaining({
+        code: "factory_policy_conflict",
+        rule: "issue_topology",
+        topologyMode: "same_issue_only",
+      }),
+    };
+    await expect(svc.create(companyId, {
+      parentId: parentIssueId,
+      title: "Direct bypass attempt",
+      status: "todo",
+    })).rejects.toMatchObject(expectedError);
+    await expect(svc.createChild(parentIssueId, {
+      title: "Helper bypass attempt",
+      status: "todo",
+    })).rejects.toMatchObject(expectedError);
+    await expect(svc.update(movableIssueId, {
+      parentId: parentIssueId,
+    })).rejects.toMatchObject(expectedError);
+  });
+
   it("caps direct execution lanes under a parent issue", async () => {
     const companyId = randomUUID();
     const parentIssueId = randomUUID();
@@ -3614,6 +3900,1009 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
 
     const children = await svc.list(companyId, { parentId: parentIssueId });
     expect(children).toHaveLength(MAX_DIRECT_CHILD_ISSUES_PER_PARENT);
+  });
+
+  it("serializes concurrent creation against the frozen factory cap even when the contract is looser", async () => {
+    const companyId = randomUUID();
+    const parentIssueId = randomUUID();
+    const coordinatorAgentId = randomUUID();
+    const policyHash = factoryPolicyContentHash(DEFAULT_FACTORY_POLICY_V1);
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values({
+      id: parentIssueId,
+      companyId,
+      title: "Frozen single-lane control",
+      status: "todo",
+      priority: "medium",
+      executionContract: {
+        schemaVersion: 2,
+        revision: 1,
+        extensions: {
+          aiFactory: {
+            topologyMode: "direct_execution_lanes",
+            maxExecutionLanes: 10,
+          },
+        },
+      },
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: true,
+        stages: [],
+        factory: {
+          schemaVersion: 1,
+          laneKind: "control",
+          topologyMode: "single_execution_lane",
+          controlIssueId: null,
+          coordinator: { type: "agent", agentId: coordinatorAgentId },
+          policyKey: "company/acme/ai-factory-policy",
+          policyVersion: "1",
+          policyHash,
+          maxExecutionLanes: 1,
+          policySnapshot: DEFAULT_FACTORY_POLICY_V1,
+        },
+      },
+    });
+
+    const qaAgentId = randomUUID();
+    const engineerAgentId = randomUUID();
+    const selectedPolicyStages = DEFAULT_FACTORY_POLICY_V1.stages
+      .filter((stage) => factoryPolicyStageIsSelected(stage, false));
+    const laneExecutionPolicy = {
+      mode: "normal",
+      commentRequired: true,
+      stages: selectedPolicyStages.map((stage, index) => ({
+        id: randomUUID(),
+        key: stage.key,
+        type: stage.type,
+        role: stage.role,
+        independent: stage.independent ?? false,
+        returnToStageKey: factoryStageReturnTarget(selectedPolicyStages, index),
+        evidenceGates: factoryStageEvidenceGates(stage),
+        approvalsNeeded: 1 as const,
+        participants: [{
+          id: randomUUID(),
+          type: "agent" as const,
+          agentId: stage.role === "qa"
+            ? qaAgentId
+            : stage.role === "engineer"
+              ? engineerAgentId
+              : coordinatorAgentId,
+        }],
+      })),
+      factory: {
+        schemaVersion: 1,
+        laneKind: "execution",
+        topologyMode: "same_issue_only",
+        controlIssueId: parentIssueId,
+        coordinator: { type: "agent", agentId: coordinatorAgentId },
+        policyKey: "company/acme/ai-factory-policy",
+        policyVersion: "1",
+        policyHash,
+        maxExecutionLanes: 1,
+        policySnapshot: DEFAULT_FACTORY_POLICY_V1,
+        production: false,
+      },
+    } satisfies IssueExecutionPolicy;
+
+    const attempts = await Promise.allSettled([
+      svc.create(companyId, {
+        parentId: parentIssueId,
+        title: "Frozen lane A",
+        status: "todo",
+        executionPolicy: laneExecutionPolicy,
+        factoryManagedCreate: authorizeFactoryManagedCreate(policyHash, parentIssueId),
+      }),
+      svc.create(companyId, {
+        parentId: parentIssueId,
+        title: "Frozen lane B",
+        status: "todo",
+        executionPolicy: laneExecutionPolicy,
+        factoryManagedCreate: authorizeFactoryManagedCreate(policyHash, parentIssueId),
+      }),
+    ]);
+
+    expect(attempts.filter((attempt) => attempt.status === "fulfilled")).toHaveLength(1);
+    expect(attempts.filter((attempt) => attempt.status === "rejected")).toHaveLength(1);
+    expect(attempts.find((attempt) => attempt.status === "rejected")).toMatchObject({
+      reason: {
+        status: 422,
+        details: expect.objectContaining({
+          code: "factory_policy_conflict",
+          rule: "max_execution_lanes",
+          maxExecutionLanes: 1,
+          policySource: "execution_policy",
+        }),
+      },
+    });
+    expect(await svc.list(companyId, { parentId: parentIssueId })).toHaveLength(1);
+  });
+
+  it("requires the typed lane route for every child of a factory control issue", async () => {
+    const companyId = randomUUID();
+    const controlIssueId = randomUUID();
+    const movableIssueId = randomUUID();
+    const coordinatorAgentId = randomUUID();
+    const policyHash = factoryPolicyContentHash(DEFAULT_FACTORY_POLICY_V1);
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values([
+      {
+        id: controlIssueId,
+        companyId,
+        title: "Factory control",
+        status: "todo",
+        priority: "medium",
+        executionPolicy: {
+          mode: "normal",
+          commentRequired: true,
+          stages: [],
+          factory: {
+            schemaVersion: 1,
+            laneKind: "control",
+            topologyMode: "single_execution_lane",
+            controlIssueId: null,
+            coordinator: { type: "agent", agentId: coordinatorAgentId },
+            policyKey: "company/acme/ai-factory-policy",
+            policyVersion: "1",
+            policyHash,
+            maxExecutionLanes: 1,
+            policySnapshot: DEFAULT_FACTORY_POLICY_V1,
+          },
+        },
+      },
+      {
+        id: movableIssueId,
+        companyId,
+        title: "Ordinary issue",
+        status: "todo",
+        priority: "medium",
+      },
+    ]);
+    const expected = {
+      status: 422,
+      details: expect.objectContaining({
+        code: "factory_managed_route_required",
+        managedRoute: `POST /api/issues/${controlIssueId}/execution-lanes`,
+      }),
+    };
+
+    await expect(svc.create(companyId, {
+      parentId: controlIssueId,
+      title: "Generic bypass",
+      status: "todo",
+    })).rejects.toMatchObject(expected);
+    await expect(svc.createChild(controlIssueId, {
+      title: "Helper bypass",
+      status: "todo",
+    })).rejects.toMatchObject(expected);
+    await expect(svc.update(movableIssueId, { parentId: controlIssueId })).rejects.toMatchObject(expected);
+    expect(await svc.list(companyId, { parentId: controlIssueId })).toHaveLength(0);
+  });
+
+  it("keeps a pinned factory issue in its authorized project and visibility boundary", async () => {
+    const companyId = randomUUID();
+    const controlIssueId = randomUUID();
+    const coordinatorAgentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values({
+      id: controlIssueId,
+      companyId,
+      projectId: null,
+      visibility: "company",
+      title: "Pinned factory control",
+      status: "todo",
+      priority: "medium",
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: true,
+        stages: [],
+        factory: {
+          schemaVersion: 1,
+          laneKind: "control",
+          topologyMode: "single_execution_lane",
+          controlIssueId: null,
+          coordinator: { type: "agent", agentId: coordinatorAgentId },
+          policyKey: "company/acme/ai-factory-policy",
+          policyVersion: "1",
+          policyHash: "deadbeef",
+          maxExecutionLanes: 1,
+        },
+      },
+    });
+
+    for (const patch of [
+      { projectId: randomUUID() },
+      { visibility: "private" },
+    ]) {
+      await expect(svc.update(controlIssueId, patch)).rejects.toMatchObject({
+        status: 409,
+        details: expect.objectContaining({ code: "factory_access_boundary_frozen" }),
+      });
+    }
+
+    await expect(svc.update(controlIssueId, { priority: "high" })).resolves.toMatchObject({
+      projectId: null,
+      visibility: "company",
+      priority: "high",
+    });
+  });
+
+  it("rejects an authorized transition when a legacy execution snapshot was forged", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const controlIssueId = randomUUID();
+    const stageId = randomUUID();
+    const participantId = randomUUID();
+    const participantAgentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Forged legacy execution lane",
+      status: "in_progress",
+      priority: "medium",
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: true,
+        stages: [{
+          id: stageId,
+          key: "contract",
+          type: "work",
+          role: "cto",
+          independent: false,
+          returnToStageKey: null,
+          evidenceGates: [],
+          approvalsNeeded: 1,
+          participants: [{ id: participantId, type: "agent", agentId: participantAgentId }],
+        }],
+        factory: {
+          schemaVersion: 1,
+          laneKind: "execution",
+          topologyMode: "same_issue_only",
+          controlIssueId,
+          coordinator: { type: "agent", agentId: participantAgentId },
+          policyKey: "company/acme/ai-factory-policy",
+          policyVersion: "1",
+          policyHash: "deadbeef",
+          maxExecutionLanes: 1,
+          policySnapshot: DEFAULT_FACTORY_POLICY_V1,
+          production: false,
+        },
+      },
+      executionState: {
+        status: "pending",
+        currentStageId: stageId,
+        currentStageIndex: 0,
+        currentStageType: "work",
+        stageRevision: 0,
+        currentStageActivatedAt: "2026-07-17T00:00:00.000Z",
+        completedStageRevisions: {},
+        currentParticipant: { type: "agent", agentId: participantAgentId, userId: null },
+        returnAssignee: { type: "agent", agentId: participantAgentId, userId: null },
+        reviewRequest: null,
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+        monitor: null,
+      },
+    });
+
+    await expect(svc.update(issueId, {
+      status: "in_review",
+      factoryManagedTransition: authorizeFactoryManagedTransition(0, null),
+    })).rejects.toMatchObject({
+      status: 409,
+      details: expect.objectContaining({
+        code: "factory_snapshot_inconsistent",
+        rule: "policy_hash",
+      }),
+    });
+
+    expect(await svc.getById(issueId)).toMatchObject({
+      status: "in_progress",
+      executionState: expect.objectContaining({ stageRevision: 0 }),
+    });
+  });
+
+  it("checks completed factory stages against exact delivery lineage inside the transition transaction", async () => {
+    const companyId = randomUUID();
+    const controlIssueId = randomUUID();
+    const laneIssueId = randomUUID();
+    const ctoAgentId = randomUUID();
+    const engineerAgentId = randomUUID();
+    const qaAgentId = randomUUID();
+    const candidateSha = "5fa761a27c7d8cfc285057e6997b04b9831a07c4";
+    const selectedPolicyStages = DEFAULT_FACTORY_POLICY_V1.stages
+      .filter((stage) => factoryPolicyStageIsSelected(stage, false));
+    const agentForRole = (role: string) => role === "qa"
+      ? qaAgentId
+      : role === "engineer"
+        ? engineerAgentId
+        : ctoAgentId;
+    const stages = selectedPolicyStages.map((stage, index) => ({
+      id: randomUUID(),
+      key: stage.key,
+      type: stage.type,
+      role: stage.role,
+      independent: stage.independent ?? false,
+      returnToStageKey: factoryStageReturnTarget(selectedPolicyStages, index),
+      evidenceGates: factoryStageEvidenceGates(stage),
+      approvalsNeeded: 1 as const,
+      participants: [{ id: randomUUID(), type: "agent" as const, agentId: agentForRole(stage.role) }],
+    }));
+    const executionPolicy = {
+      mode: "normal",
+      commentRequired: true,
+      stages,
+      factory: {
+        schemaVersion: 1,
+        laneKind: "execution",
+        topologyMode: "same_issue_only",
+        controlIssueId,
+        coordinator: { type: "agent", agentId: ctoAgentId },
+        policyKey: "company/acme/ai-factory-policy",
+        policyVersion: String(DEFAULT_FACTORY_POLICY_V1.version),
+        policyHash: factoryPolicyContentHash(DEFAULT_FACTORY_POLICY_V1),
+        maxExecutionLanes: effectiveFactoryExecutionLaneMaximum(DEFAULT_FACTORY_POLICY_V1),
+        policySnapshot: DEFAULT_FACTORY_POLICY_V1,
+        production: false,
+      },
+    } satisfies IssueExecutionPolicy;
+    const contractStage = stages[0]!;
+    const implementationStage = stages[1]!;
+    const qaStage = stages[2]!;
+    const implementationActivatedAt = "2026-07-17T01:00:00.000Z";
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values([
+      { id: ctoAgentId, companyId, name: "CTO", role: "cto", status: "active", adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} },
+      { id: engineerAgentId, companyId, name: "Engineer", role: "engineer", status: "active", adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} },
+      { id: qaAgentId, companyId, name: "QA", role: "qa", status: "active", adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} },
+    ]);
+    await db.insert(issues).values([
+      {
+        id: controlIssueId,
+        companyId,
+        title: "Factory control",
+        status: "in_progress",
+        priority: "medium",
+        executionPolicy: {
+          mode: "normal",
+          commentRequired: true,
+          stages: [],
+          factory: {
+            schemaVersion: 1,
+            laneKind: "control",
+            topologyMode: "single_execution_lane",
+            controlIssueId: null,
+            coordinator: executionPolicy.factory.coordinator,
+            policyKey: executionPolicy.factory.policyKey,
+            policyVersion: executionPolicy.factory.policyVersion,
+            policyHash: executionPolicy.factory.policyHash,
+            maxExecutionLanes: executionPolicy.factory.maxExecutionLanes,
+            policySnapshot: DEFAULT_FACTORY_POLICY_V1,
+          },
+        },
+      },
+      {
+        id: laneIssueId,
+        companyId,
+        parentId: controlIssueId,
+        title: "Factory lane",
+        status: "in_progress",
+        priority: "medium",
+        assigneeAgentId: engineerAgentId,
+        executionPolicy,
+        executionState: {
+          status: "pending",
+          currentStageId: implementationStage.id,
+          currentStageIndex: 1,
+          currentStageType: implementationStage.type,
+          stageRevision: 2,
+          currentStageActivatedAt: implementationActivatedAt,
+          completedStageRevisions: { [contractStage.id]: 1 },
+          currentParticipant: { type: "agent", agentId: engineerAgentId, userId: null },
+          returnAssignee: { type: "agent", agentId: ctoAgentId, userId: null },
+          reviewRequest: null,
+          completedStageIds: [contractStage.id],
+          lastDecisionId: null,
+          lastDecisionOutcome: null,
+          monitor: null,
+        },
+      },
+    ]);
+    await db.insert(deliveryEvents).values({
+      companyId,
+      issueId: laneIssueId,
+      stage: "implementation",
+      state: "succeeded",
+      candidateSha,
+      sourceKind: "agent_submission",
+      authority: "agent_claim",
+      metadata: {
+        paperclipFactory: {
+          version: 1,
+          stageId: implementationStage.id,
+          stageKey: implementationStage.key,
+          // Deliberately stale: this evidence came from a prior activation.
+          stageRevision: 1,
+          stageActivatedAt: "2026-07-17T00:00:00.000Z",
+          participant: { type: "agent", agentId: engineerAgentId, userId: null },
+        },
+      },
+    });
+
+    const nextExecutionState = {
+      status: "pending" as const,
+      currentStageId: qaStage.id,
+      currentStageIndex: 2,
+      currentStageType: qaStage.type,
+      stageRevision: 3,
+      currentStageActivatedAt: "2026-07-17T02:00:00.000Z",
+      completedStageRevisions: { [contractStage.id]: 1, [implementationStage.id]: 2 },
+      currentParticipant: { type: "agent" as const, agentId: qaAgentId, userId: null },
+      returnAssignee: { type: "agent" as const, agentId: ctoAgentId, userId: null },
+      reviewRequest: null,
+      completedStageIds: [contractStage.id, implementationStage.id],
+      lastDecisionId: null,
+      lastDecisionOutcome: null,
+      monitor: null,
+    };
+    const transition = {
+      assigneeAgentId: qaAgentId,
+      executionState: nextExecutionState,
+      factoryManagedTransition: authorizeFactoryManagedTransition(2, null),
+    };
+    await expect(svc.update(laneIssueId, transition)).rejects.toMatchObject({
+      status: 422,
+      details: expect.objectContaining({
+        code: "delivery_evidence_gate_unsatisfied",
+        missing: expect.arrayContaining([
+          expect.objectContaining({ reason: "stale_event" }),
+        ]),
+      }),
+    });
+    expect(await svc.getById(laneIssueId)).toMatchObject({
+      assigneeAgentId: engineerAgentId,
+      executionState: expect.objectContaining({ stageRevision: 2 }),
+    });
+
+    await db.insert(deliveryEvents).values({
+      companyId,
+      issueId: laneIssueId,
+      stage: "implementation",
+      state: "succeeded",
+      candidateSha,
+      sourceKind: "agent_submission",
+      authority: "agent_claim",
+      metadata: {
+        paperclipFactory: {
+          version: 1,
+          stageId: implementationStage.id,
+          stageKey: implementationStage.key,
+          stageRevision: 2,
+          stageActivatedAt: implementationActivatedAt,
+          participant: { type: "agent", agentId: engineerAgentId, userId: null },
+        },
+      },
+      observedAt: new Date("2026-07-17T01:30:00.000Z"),
+    });
+    await db.insert(deliveryEvents).values({
+      companyId,
+      issueId: laneIssueId,
+      stage: "ci",
+      state: "succeeded",
+      candidateSha,
+      provider: "github",
+      providerExternalId: "ci-current-implementation",
+      providerUrl: "https://github.example/actions/runs/ci-current-implementation",
+      sourceKind: "provider_observation",
+      authority: "provider_verified",
+      metadata: {
+        paperclipFactory: {
+          version: 1,
+          stageId: implementationStage.id,
+          stageKey: implementationStage.key,
+          stageRevision: 2,
+          stageActivatedAt: implementationActivatedAt,
+          participant: { type: "agent", agentId: engineerAgentId, userId: null },
+        },
+      },
+      observedAt: new Date("2026-07-17T01:31:00.000Z"),
+    });
+    await expect(svc.update(laneIssueId, transition)).resolves.toMatchObject({
+      assigneeAgentId: qaAgentId,
+      executionState: expect.objectContaining({
+        currentStageId: qaStage.id,
+        stageRevision: 3,
+        completedStageIds: [contractStage.id, implementationStage.id],
+      }),
+    });
+  });
+
+  it("requires a board-accepted candidate-bound confirmation before production deployment starts", async () => {
+    const companyId = randomUUID();
+    const controlIssueId = randomUUID();
+    const laneIssueId = randomUUID();
+    const ctoAgentId = randomUUID();
+    const engineerAgentId = randomUUID();
+    const qaAgentId = randomUUID();
+    const devopsAgentId = randomUUID();
+    const candidateSha = "5fa761a27c7d8cfc285057e6997b04b9831a07c4";
+    const selectedPolicyStages = DEFAULT_FACTORY_POLICY_V1.stages
+      .filter((stage) => factoryPolicyStageIsSelected(stage, true));
+    const agentForRole = (role: string) => role === "qa"
+      ? qaAgentId
+      : role === "engineer"
+        ? engineerAgentId
+        : role === "devops"
+          ? devopsAgentId
+          : ctoAgentId;
+    const stages = selectedPolicyStages.map((stage, index) => ({
+      id: randomUUID(),
+      key: stage.key,
+      type: stage.type,
+      role: stage.role,
+      independent: stage.independent ?? false,
+      returnToStageKey: factoryStageReturnTarget(selectedPolicyStages, index),
+      evidenceGates: factoryStageEvidenceGates(stage),
+      approvalsNeeded: 1 as const,
+      participants: [{ id: randomUUID(), type: "agent" as const, agentId: agentForRole(stage.role) }],
+    }));
+    const executionPolicy = {
+      mode: "normal",
+      commentRequired: true,
+      stages,
+      factory: {
+        schemaVersion: 1,
+        laneKind: "execution",
+        topologyMode: "same_issue_only",
+        controlIssueId,
+        coordinator: { type: "agent", agentId: ctoAgentId },
+        policyKey: "company/acme/ai-factory-policy",
+        policyVersion: String(DEFAULT_FACTORY_POLICY_V1.version),
+        policyHash: factoryPolicyContentHash(DEFAULT_FACTORY_POLICY_V1),
+        maxExecutionLanes: effectiveFactoryExecutionLaneMaximum(DEFAULT_FACTORY_POLICY_V1),
+        policySnapshot: DEFAULT_FACTORY_POLICY_V1,
+        production: true,
+      },
+    } satisfies IssueExecutionPolicy;
+    const contractStage = stages.find((stage) => stage.key === "contract")!;
+    const implementationStage = stages.find((stage) => stage.key === "implementation")!;
+    const qaStage = stages.find((stage) => stage.key === "independent_qa")!;
+    const acceptanceStage = stages.find((stage) => stage.key === "technical_acceptance")!;
+    const deploymentStage = stages.find((stage) => stage.key === "deployment")!;
+    const liveQaStage = stages.find((stage) => stage.key === "live_qa")!;
+    const finalAcceptanceStage = stages.find((stage) => stage.key === "final_acceptance")!;
+    const implementationActivatedAt = "2026-07-17T01:00:00.000Z";
+    const qaActivatedAt = "2026-07-17T02:00:00.000Z";
+    const deploymentActivatedAt = "2026-07-17T04:00:00.000Z";
+    const liveQaActivatedAt = "2026-07-17T05:00:00.000Z";
+    const finalAcceptanceActivatedAt = "2026-07-17T06:00:00.000Z";
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values([
+      { id: ctoAgentId, companyId, name: "CTO", role: "cto", status: "active", adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} },
+      { id: engineerAgentId, companyId, name: "Engineer", role: "engineer", status: "active", adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} },
+      { id: qaAgentId, companyId, name: "QA", role: "qa", status: "active", adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} },
+      { id: devopsAgentId, companyId, name: "DevOps", role: "devops", status: "active", adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} },
+    ]);
+    await db.insert(issues).values([
+      {
+        id: controlIssueId,
+        companyId,
+        title: "Factory control",
+        status: "in_progress",
+        priority: "medium",
+        executionPolicy: {
+          mode: "normal",
+          commentRequired: true,
+          stages: [],
+          factory: {
+            schemaVersion: 1,
+            laneKind: "control",
+            topologyMode: "single_execution_lane",
+            controlIssueId: null,
+            coordinator: executionPolicy.factory.coordinator,
+            policyKey: executionPolicy.factory.policyKey,
+            policyVersion: executionPolicy.factory.policyVersion,
+            policyHash: executionPolicy.factory.policyHash,
+            maxExecutionLanes: executionPolicy.factory.maxExecutionLanes,
+            policySnapshot: DEFAULT_FACTORY_POLICY_V1,
+          },
+        },
+      },
+      {
+        id: laneIssueId,
+        companyId,
+        parentId: controlIssueId,
+        title: "Production factory lane",
+        status: "in_review",
+        priority: "medium",
+        assigneeAgentId: ctoAgentId,
+        executionPolicy,
+        executionState: {
+          status: "pending",
+          currentStageId: acceptanceStage.id,
+          currentStageIndex: 3,
+          currentStageType: acceptanceStage.type,
+          stageRevision: 4,
+          currentStageActivatedAt: "2026-07-17T03:00:00.000Z",
+          completedStageRevisions: {
+            [contractStage.id]: 1,
+            [implementationStage.id]: 2,
+            [qaStage.id]: 3,
+          },
+          currentParticipant: { type: "agent", agentId: ctoAgentId, userId: null },
+          returnAssignee: { type: "agent", agentId: ctoAgentId, userId: null },
+          reviewRequest: null,
+          completedStageIds: [contractStage.id, implementationStage.id, qaStage.id],
+          lastDecisionId: null,
+          lastDecisionOutcome: null,
+          monitor: null,
+        },
+      },
+    ]);
+    await db.insert(deliveryEvents).values([
+      {
+        companyId,
+        issueId: laneIssueId,
+        stage: "implementation",
+        state: "succeeded",
+        candidateSha,
+        sourceKind: "agent_submission",
+        authority: "agent_claim",
+        metadata: {
+          paperclipFactory: {
+            version: 1,
+            stageId: implementationStage.id,
+            stageKey: implementationStage.key,
+            stageRevision: 2,
+            stageActivatedAt: implementationActivatedAt,
+            participant: { type: "agent", agentId: engineerAgentId, userId: null },
+          },
+        },
+      },
+      {
+        companyId,
+        issueId: laneIssueId,
+        stage: "ci",
+        state: "succeeded",
+        candidateSha,
+        provider: "github",
+        providerExternalId: "ci-production-candidate",
+        providerUrl: "https://github.example/actions/runs/ci-production-candidate",
+        sourceKind: "provider_observation",
+        authority: "provider_verified",
+        metadata: {
+          paperclipFactory: {
+            version: 1,
+            stageId: implementationStage.id,
+            stageKey: implementationStage.key,
+            stageRevision: 2,
+            stageActivatedAt: implementationActivatedAt,
+            participant: { type: "agent", agentId: engineerAgentId, userId: null },
+          },
+        },
+      },
+      {
+        companyId,
+        issueId: laneIssueId,
+        stage: "functional_qa",
+        state: "succeeded",
+        candidateSha,
+        sourceKind: "agent_submission",
+        authority: "agent_claim",
+        metadata: {
+          paperclipFactory: {
+            version: 1,
+            stageId: qaStage.id,
+            stageKey: qaStage.key,
+            stageRevision: 3,
+            stageActivatedAt: qaActivatedAt,
+            participant: { type: "agent", agentId: qaAgentId, userId: null },
+          },
+        },
+      },
+    ]);
+
+    const decisionId = randomUUID();
+    const nextExecutionState = {
+      status: "pending" as const,
+      currentStageId: deploymentStage.id,
+      currentStageIndex: 4,
+      currentStageType: deploymentStage.type,
+      stageRevision: 5,
+      currentStageActivatedAt: deploymentActivatedAt,
+      completedStageRevisions: {
+        [contractStage.id]: 1,
+        [implementationStage.id]: 2,
+        [qaStage.id]: 3,
+        [acceptanceStage.id]: 4,
+      },
+      currentParticipant: { type: "agent" as const, agentId: devopsAgentId, userId: null },
+      returnAssignee: { type: "agent" as const, agentId: ctoAgentId, userId: null },
+      reviewRequest: null,
+      completedStageIds: [contractStage.id, implementationStage.id, qaStage.id, acceptanceStage.id],
+      lastDecisionId: decisionId,
+      lastDecisionOutcome: "approved" as const,
+      monitor: null,
+    };
+    const transition = {
+      status: "in_progress",
+      assigneeAgentId: devopsAgentId,
+      executionState: nextExecutionState,
+      factoryManagedTransition: authorizeFactoryManagedTransition(4, decisionId),
+    };
+    await expect(svc.update(laneIssueId, transition)).rejects.toMatchObject({
+      status: 422,
+      details: expect.objectContaining({
+        code: "factory_irreversible_action_approval_required",
+        candidateSha,
+      }),
+    });
+    expect(await svc.getById(laneIssueId)).toMatchObject({
+      status: "in_review",
+      assigneeAgentId: ctoAgentId,
+      executionState: expect.objectContaining({ stageRevision: 4 }),
+    });
+    expect(
+      await db.select().from(deliveryEvents).where(eq(deliveryEvents.issueId, laneIssueId)),
+    ).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ stage: "technical_acceptance", state: "accepted" }),
+    ]));
+
+    await db.insert(issueThreadInteractions).values({
+      companyId,
+      issueId: laneIssueId,
+      kind: "request_confirmation",
+      status: "accepted",
+      continuationPolicy: "wake_assignee_on_accept",
+      idempotencyKey: `factory-deploy:${candidateSha}`,
+      createdByAgentId: ctoAgentId,
+      resolvedByUserId: "board-user",
+      payload: {
+        version: 1,
+        prompt: "Authorize this exact production candidate for deployment?",
+        target: {
+          type: "custom",
+          key: FACTORY_IRREVERSIBLE_ACTION_APPROVAL_TARGET_KEY,
+          revisionId: candidateSha,
+          label: `Production candidate ${candidateSha.slice(0, 12)}`,
+        },
+        capabilityPreflight: {
+          version: 1,
+          reasonKind: "irreversible_action",
+          checks: [{
+            capability: "production deployment",
+            status: "available",
+            evidence: "Provider credentials and rollback path were checked.",
+          }],
+          alternativesConsidered: ["Stop at a non-production preview."],
+          minimumDecision: "Approve or reject this exact candidate for production.",
+        },
+      },
+      result: { version: 1, outcome: "accepted" },
+      resolvedAt: new Date(),
+    });
+
+    await expect(svc.update(laneIssueId, transition)).resolves.toMatchObject({
+      status: "in_progress",
+      assigneeAgentId: devopsAgentId,
+      executionState: expect.objectContaining({
+        currentStageId: deploymentStage.id,
+        stageRevision: 5,
+      }),
+    });
+    expect(
+      await db.select().from(deliveryEvents).where(eq(deliveryEvents.issueId, laneIssueId)),
+    ).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        stage: "technical_acceptance",
+        state: "accepted",
+        candidateSha,
+        sourceKind: "paperclip_action",
+        authority: "paperclip_verified",
+        metadata: expect.objectContaining({ decisionId }),
+      }),
+    ]));
+
+    await db.insert(deliveryEvents).values({
+      companyId,
+      issueId: laneIssueId,
+      stage: "deployment",
+      state: "succeeded",
+      candidateSha,
+      environment: "production",
+      provider: "cloudflare",
+      providerExternalId: "production-deployment-1",
+      providerUrl: "https://paperclip.example/deployments/production-deployment-1",
+      sourceKind: "provider_observation",
+      authority: "provider_verified",
+      metadata: {
+        paperclipFactory: {
+          version: 1,
+          stageId: deploymentStage.id,
+          stageKey: deploymentStage.key,
+          stageRevision: 5,
+          stageActivatedAt: deploymentActivatedAt,
+          participant: { type: "agent", agentId: devopsAgentId, userId: null },
+        },
+      },
+    });
+    const liveQaState = {
+      status: "pending" as const,
+      currentStageId: liveQaStage.id,
+      currentStageIndex: 5,
+      currentStageType: liveQaStage.type,
+      stageRevision: 6,
+      currentStageActivatedAt: liveQaActivatedAt,
+      completedStageRevisions: {
+        ...nextExecutionState.completedStageRevisions,
+        [deploymentStage.id]: 5,
+      },
+      currentParticipant: { type: "agent" as const, agentId: qaAgentId, userId: null },
+      returnAssignee: { type: "agent" as const, agentId: ctoAgentId, userId: null },
+      reviewRequest: null,
+      completedStageIds: [...nextExecutionState.completedStageIds, deploymentStage.id],
+      lastDecisionId: decisionId,
+      lastDecisionOutcome: "approved" as const,
+      monitor: null,
+    };
+    await expect(svc.update(laneIssueId, {
+      status: "in_review",
+      assigneeAgentId: qaAgentId,
+      executionState: liveQaState,
+      factoryManagedTransition: authorizeFactoryManagedTransition(5, null),
+    })).resolves.toMatchObject({
+      status: "in_review",
+      assigneeAgentId: qaAgentId,
+      executionState: expect.objectContaining({
+        currentStageId: liveQaStage.id,
+        stageRevision: 6,
+      }),
+    });
+
+    await db.insert(deliveryEvents).values({
+      companyId,
+      issueId: laneIssueId,
+      stage: "smoke",
+      state: "succeeded",
+      candidateSha,
+      environment: "production",
+      provider: "cloudflare",
+      providerExternalId: "production-deployment-1",
+      providerUrl: "https://paperclip.example/deployments/production-deployment-1",
+      sourceKind: "agent_submission",
+      authority: "agent_claim",
+      metadata: {
+        paperclipFactory: {
+          version: 1,
+          stageId: liveQaStage.id,
+          stageKey: liveQaStage.key,
+          stageRevision: 6,
+          stageActivatedAt: liveQaActivatedAt,
+          participant: { type: "agent", agentId: qaAgentId, userId: null },
+        },
+      },
+    });
+    const liveQaDecisionId = randomUUID();
+    const finalAcceptanceState = {
+      status: "pending" as const,
+      currentStageId: finalAcceptanceStage.id,
+      currentStageIndex: 6,
+      currentStageType: finalAcceptanceStage.type,
+      stageRevision: 7,
+      currentStageActivatedAt: finalAcceptanceActivatedAt,
+      completedStageRevisions: {
+        ...liveQaState.completedStageRevisions,
+        [liveQaStage.id]: 6,
+      },
+      currentParticipant: { type: "agent" as const, agentId: ctoAgentId, userId: null },
+      returnAssignee: { type: "agent" as const, agentId: ctoAgentId, userId: null },
+      reviewRequest: null,
+      completedStageIds: [...liveQaState.completedStageIds, liveQaStage.id],
+      lastDecisionId: liveQaDecisionId,
+      lastDecisionOutcome: "approved" as const,
+      monitor: null,
+    };
+    await expect(svc.update(laneIssueId, {
+      assigneeAgentId: ctoAgentId,
+      executionState: finalAcceptanceState,
+      factoryManagedTransition: authorizeFactoryManagedTransition(6, liveQaDecisionId),
+    })).resolves.toMatchObject({
+      status: "in_review",
+      assigneeAgentId: ctoAgentId,
+      executionState: expect.objectContaining({
+        currentStageId: finalAcceptanceStage.id,
+        stageRevision: 7,
+      }),
+    });
+
+    const finalDecisionId = randomUUID();
+    const completedState = {
+      status: "completed" as const,
+      currentStageId: null,
+      currentStageIndex: null,
+      currentStageType: null,
+      stageRevision: 7,
+      currentStageActivatedAt: null,
+      completedStageRevisions: {
+        ...finalAcceptanceState.completedStageRevisions,
+        [finalAcceptanceStage.id]: 7,
+      },
+      currentParticipant: null,
+      returnAssignee: { type: "agent" as const, agentId: ctoAgentId, userId: null },
+      reviewRequest: null,
+      completedStageIds: [...finalAcceptanceState.completedStageIds, finalAcceptanceStage.id],
+      lastDecisionId: finalDecisionId,
+      lastDecisionOutcome: "approved" as const,
+      monitor: null,
+    };
+    await expect(svc.update(laneIssueId, {
+      status: "done",
+      executionState: completedState,
+      factoryManagedTransition: authorizeFactoryManagedTransition(7, finalDecisionId),
+    })).resolves.toMatchObject({
+      status: "done",
+      executionState: expect.objectContaining({
+        status: "completed",
+        completedStageIds: completedState.completedStageIds,
+      }),
+    });
+    expect(
+      await db.select().from(deliveryEvents).where(eq(deliveryEvents.issueId, laneIssueId)),
+    ).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        stage: "business_acceptance",
+        state: "accepted",
+        candidateSha,
+        environment: "production",
+        provider: "cloudflare",
+        providerExternalId: "production-deployment-1",
+        providerUrl: "https://paperclip.example/deployments/production-deployment-1",
+        sourceKind: "paperclip_action",
+        authority: "paperclip_verified",
+        metadata: expect.objectContaining({
+          decisionId: finalDecisionId,
+          verifiedDeploymentTarget: {
+            environment: "production",
+            provider: "cloudflare",
+            externalId: "production-deployment-1",
+            url: "https://paperclip.example/deployments/production-deployment-1",
+          },
+        }),
+      }),
+    ]));
   });
 });
 

@@ -2032,6 +2032,7 @@ describe("company portability", () => {
     const textOnlyFiles = Object.fromEntries(Object.entries(exported.files).filter(([, v]) => typeof v === "string"));
     expect(companySkillSvc.importPackageFiles).toHaveBeenCalledWith("company-imported", textOnlyFiles, {
       onConflict: "replace",
+      protectedFactorySkills: "reuse_target",
     });
     expect(agentSvc.create).toHaveBeenCalledWith("company-imported", expect.objectContaining({
       adapterConfig: expect.objectContaining({
@@ -2179,6 +2180,7 @@ describe("company portability", () => {
     const textOnlyFiles = Object.fromEntries(Object.entries(exported.files).filter(([, v]) => typeof v === "string"));
     expect(companySkillSvc.importPackageFiles).toHaveBeenCalledWith("company-imported", textOnlyFiles, {
       onConflict: "rename",
+      protectedFactorySkills: "reuse_target",
     });
   });
 
@@ -2294,6 +2296,7 @@ describe("company portability", () => {
       }),
       {
         onConflict: "replace",
+        protectedFactorySkills: "reuse_target",
       },
     );
     expect(companySkillSvc.importPackageFiles).toHaveBeenCalledWith(
@@ -2303,6 +2306,7 @@ describe("company portability", () => {
       }),
       {
         onConflict: "replace",
+        protectedFactorySkills: "reuse_target",
       },
     );
     expect(agentSvc.create).toHaveBeenCalledTimes(1);

@@ -9,12 +9,18 @@ const mockAgentService = vi.hoisted(() => ({
 const mockAccessService = vi.hoisted(() => ({
   canUser: vi.fn(),
   hasPermission: vi.fn(),
+  isCompanyOwner: vi.fn(),
 }));
 
 const mockCompanySkillService = vi.hoisted(() => ({
   importFromSource: vi.fn(),
   deleteSkill: vi.fn(),
+  updateFile: vi.fn(),
+  updateAiFactoryPolicyFile: vi.fn(),
   refreshInventory: vi.fn(),
+  getAiFactoryPolicyView: vi.fn(),
+  selectAiFactoryPolicy: vi.fn(),
+  resetAiFactoryPolicy: vi.fn(),
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
@@ -98,10 +104,34 @@ describe("company skill mutation permissions", () => {
       slug: "find-skills",
       name: "Find Skills",
     });
+    mockCompanySkillService.updateFile.mockResolvedValue({
+      path: "factory-policy.yaml",
+      markdown: "version: 1",
+    });
+    mockCompanySkillService.updateAiFactoryPolicyFile.mockResolvedValue({
+      path: "factory-policy.yaml",
+      markdown: "version: 1",
+    });
     mockCompanySkillService.refreshInventory.mockResolvedValue([]);
+    mockCompanySkillService.getAiFactoryPolicyView.mockResolvedValue({
+      overlaySkillId: "0f4a8b3e-7ac4-4acf-aa6d-3f937b92425e",
+      overlaySkillKey: "company/company-1/ai-factory-policy",
+      compiled: { version: 1, contentHash: "hash" },
+    });
+    mockCompanySkillService.selectAiFactoryPolicy.mockResolvedValue({
+      overlaySkillId: "0f4a8b3e-7ac4-4acf-aa6d-3f937b92425e",
+      overlaySkillKey: "company/company-1/ai-factory-policy",
+      compiled: { version: 1, contentHash: "hash" },
+    });
+    mockCompanySkillService.resetAiFactoryPolicy.mockResolvedValue({
+      overlaySkillId: "0f4a8b3e-7ac4-4acf-aa6d-3f937b92425e",
+      overlaySkillKey: "company/company-1/ai-factory-policy",
+      compiled: { version: 1, contentHash: "hash" },
+    });
     mockLogActivity.mockResolvedValue(undefined);
     mockAccessService.canUser.mockResolvedValue(true);
     mockAccessService.hasPermission.mockResolvedValue(false);
+    mockAccessService.isCompanyOwner.mockResolvedValue(false);
   });
 
   it("allows local board operators to mutate company skills", async () => {
@@ -139,6 +169,116 @@ describe("company skill mutation permissions", () => {
       action: "company.skills_inventory_refreshed",
       entityId: "company-1",
     }));
+  });
+
+  it("selects a validated company AI Factory policy and records its compiled identity", async () => {
+    const skillId = "0f4a8b3e-7ac4-4acf-aa6d-3f937b92425e";
+    const res = await request(await createApp({
+      type: "board",
+      userId: "local-board",
+      companyIds: ["company-1"],
+      source: "local_implicit",
+      isInstanceAdmin: false,
+    }))
+      .put("/api/companies/company-1/ai-factory-policy")
+      .send({ skillId });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockCompanySkillService.selectAiFactoryPolicy).toHaveBeenCalledWith("company-1", skillId);
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "company.ai_factory_policy_selected",
+      entityId: skillId,
+      details: expect.objectContaining({ contentHash: "hash", version: 1 }),
+    }));
+  });
+
+  it("requires the dedicated company AI Factory policy permission", async () => {
+    mockAccessService.canUser.mockResolvedValue(false);
+    const skillId = "0f4a8b3e-7ac4-4acf-aa6d-3f937b92425e";
+    const res = await request(await createApp({
+      type: "board",
+      userId: "company-operator",
+      companyIds: ["company-1"],
+      memberships: [{ companyId: "company-1", membershipRole: "operator", status: "active" }],
+      source: "session",
+      isInstanceAdmin: false,
+    }))
+      .put("/api/companies/company-1/ai-factory-policy")
+      .send({ skillId });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("ai_factory:manage");
+    expect(mockAccessService.canUser).toHaveBeenCalledWith(
+      "company-1",
+      "company-operator",
+      "ai_factory:manage",
+    );
+    expect(mockCompanySkillService.selectAiFactoryPolicy).not.toHaveBeenCalled();
+  });
+
+  it("does not let an agent use skill-management authority to change factory policy", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      id: "agent-1",
+      companyId: "company-1",
+      permissions: { canCreateAgents: true },
+    });
+    mockAccessService.hasPermission.mockResolvedValue(true);
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      runId: "run-1",
+    }))
+      .post("/api/companies/company-1/ai-factory-policy/reset")
+      .send({});
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("Board access required");
+    expect(mockCompanySkillService.resetAiFactoryPolicy).not.toHaveBeenCalled();
+  });
+
+  it("applies the factory-policy permission to direct YAML edits too", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      id: "agent-1",
+      companyId: "company-1",
+      permissions: { canCreateAgents: true },
+    });
+    mockAccessService.hasPermission.mockResolvedValue(true);
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      runId: "run-1",
+    }))
+      .patch("/api/companies/company-1/skills/policy-skill/files")
+      .send({ path: "factory-policy.yaml", content: "version: 1" });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("Board access required");
+    expect(mockCompanySkillService.updateAiFactoryPolicyFile).not.toHaveBeenCalled();
+  });
+
+  it("routes board-authorized policy edits through the dedicated service path", async () => {
+    const res = await request(await createApp({
+      type: "board",
+      userId: "local-board",
+      companyIds: ["company-1"],
+      source: "local_implicit",
+      isInstanceAdmin: false,
+    }))
+      .patch("/api/companies/company-1/skills/policy-skill/files")
+      .send({
+        path: "references/../factory-policy.yaml",
+        content: "version: 1",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockCompanySkillService.updateAiFactoryPolicyFile).toHaveBeenCalledWith(
+      "company-1",
+      "policy-skill",
+      "version: 1",
+    );
+    expect(mockCompanySkillService.updateFile).not.toHaveBeenCalled();
   });
 
   it("tracks public GitHub skill imports with an explicit skill reference", async () => {

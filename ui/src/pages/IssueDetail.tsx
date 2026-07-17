@@ -69,6 +69,7 @@ import { ApprovalCard } from "../components/ApprovalCard";
 import { InlineEditor } from "../components/InlineEditor";
 import { IssueChatThread, type IssueChatComposerHandle } from "../components/IssueChatThread";
 import { IssueContinuationHandoff } from "../components/IssueContinuationHandoff";
+import { IssueDeliveryTruthPanel } from "../components/IssueDeliveryTruthPanel";
 import { IssueDocumentsSection } from "../components/IssueDocumentsSection";
 import { IssuesList } from "../components/IssuesList";
 import { AgentIcon } from "../components/AgentIconPicker";
@@ -3363,7 +3364,7 @@ export function IssueDetail() {
       <IssueProperties
         issue={panelIssue}
         childIssues={panelChildIssues}
-        onAddSubIssue={panelIssue.parentId ? undefined : openNewSubIssue}
+        onAddSubIssue={panelIssue.parentId || panelIssue.executionPolicy?.factory ? undefined : openNewSubIssue}
         onUpdate={handleIssuePropertiesUpdate}
       />
     );
@@ -4389,6 +4390,10 @@ export function IssueDetail() {
         />
         <IssuePlanningStrip issue={issue} childIssues={childIssues} />
         <IssueExecutionContractPanel contract={issue.executionContract} defaultOpen={!issue.description?.trim()} />
+        <IssueDeliveryTruthPanel
+          issueId={issue.id}
+          canPublishControlUpdate={canBoardResolveRecoveryAction(issue.companyId, boardAccess)}
+        />
       </div>
 
       <PluginSlotOutlet
@@ -4940,7 +4945,7 @@ export function IssueDetail() {
               <IssueProperties
                 issue={issue}
                 childIssues={childIssues}
-                onAddSubIssue={issue.parentId ? undefined : openNewSubIssue}
+                onAddSubIssue={issue.parentId || issue.executionPolicy?.factory ? undefined : openNewSubIssue}
                 onUpdate={(data) => updateIssue.mutate(data)}
                 inline
               />

@@ -365,9 +365,13 @@ type PaperclipWakeExecutionPrincipal = {
 };
 
 type PaperclipWakeExecutionStage = {
-  wakeRole: "reviewer" | "approver" | "executor" | null;
+  wakeRole: "worker" | "verifier" | "deployer" | "reviewer" | "approver" | "executor" | null;
   stageId: string | null;
+  stageKey: string | null;
   stageType: string | null;
+  stageRole: string | null;
+  stageRevision: number | null;
+  evidenceGates: string[];
   currentParticipant: PaperclipWakeExecutionPrincipal | null;
   returnAssignee: PaperclipWakeExecutionPrincipal | null;
   reviewRequest: {
@@ -375,6 +379,14 @@ type PaperclipWakeExecutionStage = {
   } | null;
   lastDecisionOutcome: string | null;
   allowedActions: string[];
+  factory: {
+    laneKind: string | null;
+    controlIssueId: string | null;
+    policyKey: string | null;
+    policyVersion: string | null;
+    policyHash: string | null;
+    production: boolean;
+  } | null;
 };
 
 type PaperclipWakeAttachment = {
@@ -465,6 +477,8 @@ type PaperclipWakePayload = {
   unresolvedBlockerSummaries: PaperclipWakeBlockerSummary[];
   executionStage: PaperclipWakeExecutionStage | null;
   continuationSummary: PaperclipWakeContinuationSummary | null;
+  canonicalDeliverySnapshot: Record<string, unknown> | null;
+  canonicalSnapshotRevision: string | null;
   livenessContinuation: PaperclipWakeLivenessContinuation | null;
   interactionKind: string | null;
   interactionStatus: string | null;
@@ -477,6 +491,9 @@ type PaperclipWakePayload = {
   requestedCount: number;
   includedCount: number;
   missingCount: number;
+  wakeDeltaComplete: boolean;
+  wakeDeltaTruncated: boolean;
+  historyCoverage: string;
   truncated: boolean;
   fallbackFetchNeeded: boolean;
 };
@@ -624,12 +641,16 @@ function normalizePaperclipWakeExecutionPrincipal(value: unknown): PaperclipWake
 function normalizePaperclipWakeExecutionStage(value: unknown): PaperclipWakeExecutionStage | null {
   const stage = parseObject(value);
   const wakeRoleRaw = asString(stage.wakeRole, "").trim().toLowerCase();
-  const wakeRole =
-    wakeRoleRaw === "reviewer" || wakeRoleRaw === "approver" || wakeRoleRaw === "executor"
-      ? wakeRoleRaw
-      : null;
+  const wakeRole = ["worker", "verifier", "deployer", "reviewer", "approver", "executor"].includes(wakeRoleRaw)
+    ? wakeRoleRaw as PaperclipWakeExecutionStage["wakeRole"]
+    : null;
   const allowedActions = Array.isArray(stage.allowedActions)
     ? stage.allowedActions
+        .filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+        .map((entry) => entry.trim())
+    : [];
+  const evidenceGates = Array.isArray(stage.evidenceGates)
+    ? stage.evidenceGates
         .filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
         .map((entry) => entry.trim())
     : [];
@@ -639,22 +660,44 @@ function normalizePaperclipWakeExecutionStage(value: unknown): PaperclipWakeExec
   const reviewInstructions = asString(reviewRequestRaw.instructions, "").trim();
   const reviewRequest = reviewInstructions ? { instructions: reviewInstructions } : null;
   const stageId = asString(stage.stageId, "").trim() || null;
+  const stageKey = asString(stage.stageKey, "").trim() || null;
   const stageType = asString(stage.stageType, "").trim() || null;
+  const stageRole = asString(stage.stageRole, "").trim() || null;
+  const stageRevisionRaw = typeof stage.stageRevision === "number" ? stage.stageRevision : null;
+  const stageRevision = stageRevisionRaw !== null && Number.isFinite(stageRevisionRaw)
+    ? Math.max(0, Math.floor(stageRevisionRaw))
+    : null;
   const lastDecisionOutcome = asString(stage.lastDecisionOutcome, "").trim() || null;
+  const factoryRaw = parseObject(stage.factory);
+  const factory = Object.keys(factoryRaw).length > 0
+    ? {
+        laneKind: asString(factoryRaw.laneKind, "").trim() || null,
+        controlIssueId: asString(factoryRaw.controlIssueId, "").trim() || null,
+        policyKey: asString(factoryRaw.policyKey, "").trim() || null,
+        policyVersion: asString(factoryRaw.policyVersion, "").trim() || null,
+        policyHash: asString(factoryRaw.policyHash, "").trim() || null,
+        production: asBoolean(factoryRaw.production, false),
+      }
+    : null;
 
-  if (!wakeRole && !stageId && !stageType && !currentParticipant && !returnAssignee && !reviewRequest && !lastDecisionOutcome && allowedActions.length === 0) {
+  if (!wakeRole && !stageId && !stageKey && !stageType && !stageRole && stageRevision === null && !currentParticipant && !returnAssignee && !reviewRequest && !lastDecisionOutcome && allowedActions.length === 0 && evidenceGates.length === 0 && !factory) {
     return null;
   }
 
   return {
     wakeRole,
     stageId,
+    stageKey,
     stageType,
+    stageRole,
+    stageRevision,
+    evidenceGates,
     currentParticipant,
     returnAssignee,
     reviewRequest,
     lastDecisionOutcome,
     allowedActions,
+    factory,
   };
 }
 
@@ -701,6 +744,12 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
         ? executionContractFromIssue
         : null;
   const continuationSummary = normalizePaperclipWakeContinuationSummary(payload.continuationSummary);
+  const canonicalDeliverySnapshotRaw = parseObject(
+    payload.canonicalDeliverySnapshot ?? payload.deliverySnapshot,
+  );
+  const canonicalDeliverySnapshot = Object.keys(canonicalDeliverySnapshotRaw).length > 0
+    ? canonicalDeliverySnapshotRaw
+    : null;
   const livenessContinuation = normalizePaperclipWakeLivenessContinuation(payload.livenessContinuation);
   const childIssueSummaries = Array.isArray(payload.childIssueSummaries)
     ? payload.childIssueSummaries
@@ -723,6 +772,14 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     return null;
   }
 
+  const legacyFallbackFetchNeeded = asBoolean(payload.fallbackFetchNeeded, false);
+  const legacyTruncated = asBoolean(payload.truncated, false);
+  const wakeDeltaTruncated = asBoolean(
+    payload.wakeDeltaTruncated,
+    legacyTruncated || legacyFallbackFetchNeeded,
+  );
+  const wakeDeltaComplete = asBoolean(payload.wakeDeltaComplete, !wakeDeltaTruncated);
+
   return {
     reason: asString(payload.reason, "").trim() || null,
     recoveryActionId: asString(payload.recoveryActionId, "").trim() || null,
@@ -742,6 +799,11 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     unresolvedBlockerSummaries,
     executionStage,
     continuationSummary,
+    canonicalDeliverySnapshot,
+    canonicalSnapshotRevision:
+      asString(payload.canonicalSnapshotRevision, "").trim() ||
+      asString(canonicalDeliverySnapshot?.revision, "").trim() ||
+      null,
     livenessContinuation,
     interactionKind: asString(payload.interactionKind, "").trim() || null,
     interactionStatus: asString(payload.interactionStatus, "").trim() || null,
@@ -757,8 +819,11 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     requestedCount: asNumber(commentWindow.requestedCount, comments.length || commentIds.length),
     includedCount: asNumber(commentWindow.includedCount, comments.length),
     missingCount: asNumber(commentWindow.missingCount, 0),
-    truncated: asBoolean(payload.truncated, false),
-    fallbackFetchNeeded: asBoolean(payload.fallbackFetchNeeded, false),
+    wakeDeltaComplete,
+    wakeDeltaTruncated,
+    historyCoverage: asString(payload.historyCoverage, "").trim() || "wake_delta_only",
+    truncated: legacyTruncated || wakeDeltaTruncated,
+    fallbackFetchNeeded: legacyFallbackFetchNeeded || wakeDeltaTruncated,
   };
 }
 
@@ -797,6 +862,20 @@ export function renderPaperclipWakePrompt(
   const liveBrowserRequested = normalized.comments.some((comment) =>
     /\b(?:live|native|managed|new)\s+browser\b|\bbrowser\s+(?:live|visibly)\b|\bsee\s+(?:you\s+)?(?:navigate|working|browse)\b/i.test(comment.body),
   );
+  const factualStatusQuestion = normalized.comments.some((comment) =>
+    /\b(?:what|which|whether|was|is|did|has|status|state|proof|evidence)\b.{0,100}\b(?:deploy(?:ed|ment)?|release(?:d)?|build|test(?:ed|ing)?|qa|status|state|complete(?:d)?|done)\b|\b(?:deploy(?:ed|ment)?|release(?:d)?|build|qa)\b.{0,100}\b(?:what|which|whether|status|state|proof|evidence)\b/i.test(comment.body),
+  );
+  const canonicalStages = parseObject(normalized.canonicalDeliverySnapshot?.stages);
+  const hasCurrentVerifiedDeliveryEvidence = Object.values(canonicalStages).some((value) => {
+    const stage = parseObject(value);
+    const authority = asString(stage.authority, "").trim();
+    return (
+      (authority === "provider_verified" || authority === "paperclip_verified")
+      && asString(stage.eventId, "").trim().length > 0
+      && asString(stage.state, "unknown").trim() !== "unknown"
+      && !asBoolean(stage.stale, false)
+    );
+  });
   const principalLabel = (principal: PaperclipWakeExecutionPrincipal | null) => {
     if (!principal || !principal.type) return "unknown";
     if (principal.type === "agent") return principal.agentId ? `agent ${principal.agentId}` : "agent";
@@ -810,7 +889,8 @@ export function renderPaperclipWakePrompt(
         "You are resuming an existing Paperclip session.",
         "This heartbeat is scoped to the issue below. Do not switch to another issue until you have handled this wake.",
         "Focus on the new wake delta below and continue the current task without restating the full heartbeat boilerplate.",
-        "Fetch the API thread only when `fallbackFetchNeeded` is true or you need broader history than this batch.",
+        "This payload is a wake delta, not proof of complete issue history. `fallbackFetchNeeded=false` only means the requested delta was loaded.",
+        "Fetch canonical issue/delivery state whenever factual status, deployment, release, QA, or completion claims are needed and the canonical snapshot below is absent or stale.",
         "",
         "Execution contract: take concrete action in this heartbeat when the issue is actionable; do not stop at a plan unless planning was requested. Leave durable progress and then give the issue a clear final disposition before ending the heartbeat: `done`, `in_review` with a real reviewer/approval/interaction path (worker review routes to `reportsTo`; default board/user review is reserved for top-level C-level work), `blocked` with first-class blockers or a named unblock owner/action, direct child execution lanes with blockers only from main parent issues, or `in_progress` only when a live continuation path exists. Use direct child issues only for bounded parent-level parallelism; if this issue already has `parentId`, coordinate inside this issue, never create grandchildren, and explicitly route blockers/recovery to the parent manager lane. Comments, documents, screenshots, work products, and `Remaining` bullets are evidence, not valid liveness paths by themselves.",
         "",
@@ -819,6 +899,10 @@ export function renderPaperclipWakePrompt(
         `- pending comments: ${normalized.includedCount}/${normalized.requestedCount}`,
         `- latest comment id: ${normalized.latestCommentId ?? "unknown"}`,
         `- fallback fetch needed: ${normalized.fallbackFetchNeeded ? "yes" : "no"}`,
+        `- wake delta complete: ${normalized.wakeDeltaComplete ? "yes" : "no"}`,
+        `- wake delta truncated: ${normalized.wakeDeltaTruncated ? "yes" : "no"}`,
+        `- history coverage: ${normalized.historyCoverage}`,
+        `- canonical snapshot revision: ${normalized.canonicalSnapshotRevision ?? "none"}`,
       ]
     : [
         "## Paperclip Wake Payload",
@@ -827,7 +911,8 @@ export function renderPaperclipWakePrompt(
         "This heartbeat is scoped to the issue below. Do not switch to another issue until you have handled this wake.",
         "Before generic repo exploration or boilerplate heartbeat updates, acknowledge the latest comment and explain how it changes your next action.",
         "Use this inline wake data first before refetching the issue thread.",
-        "Only fetch the API thread when `fallbackFetchNeeded` is true or you need broader history than this batch.",
+        "This payload is a wake delta, not proof of complete issue history. `fallbackFetchNeeded=false` only means the requested delta was loaded.",
+        "Fetch canonical issue/delivery state whenever factual status, deployment, release, QA, or completion claims are needed and the canonical snapshot below is absent or stale.",
         "",
         "Execution contract: take concrete action in this heartbeat when the issue is actionable; do not stop at a plan unless planning was requested. Leave durable progress and then give the issue a clear final disposition before ending the heartbeat: `done`, `in_review` with a real reviewer/approval/interaction path (worker review routes to `reportsTo`; default board/user review is reserved for top-level C-level work), `blocked` with first-class blockers or a named unblock owner/action, direct child execution lanes with blockers only from main parent issues, or `in_progress` only when a live continuation path exists. Use direct child issues only for bounded parent-level parallelism; if this issue already has `parentId`, coordinate inside this issue, never create grandchildren, and explicitly route blockers/recovery to the parent manager lane. Comments, documents, screenshots, work products, and `Remaining` bullets are evidence, not valid liveness paths by themselves.",
         "",
@@ -836,6 +921,10 @@ export function renderPaperclipWakePrompt(
         `- pending comments: ${normalized.includedCount}/${normalized.requestedCount}`,
         `- latest comment id: ${normalized.latestCommentId ?? "unknown"}`,
         `- fallback fetch needed: ${normalized.fallbackFetchNeeded ? "yes" : "no"}`,
+        `- wake delta complete: ${normalized.wakeDeltaComplete ? "yes" : "no"}`,
+        `- wake delta truncated: ${normalized.wakeDeltaTruncated ? "yes" : "no"}`,
+        `- history coverage: ${normalized.historyCoverage}`,
+        `- canonical snapshot revision: ${normalized.canonicalSnapshotRevision ?? "none"}`,
       ];
 
   if (normalized.issue?.status) {
@@ -846,6 +935,24 @@ export function renderPaperclipWakePrompt(
   }
   if (normalized.issue?.priority) {
     lines.push(`- issue priority: ${normalized.issue.priority}`);
+  }
+  if (normalized.canonicalDeliverySnapshot) {
+    lines.push(
+      "",
+      "Canonical delivery snapshot (authoritative structured state):",
+      JSON.stringify(normalized.canonicalDeliverySnapshot, null, 2),
+      "Use provider-verified fields in this snapshot for factual delivery claims. Keep deployment, live QA, technical acceptance, and business acceptance separate.",
+    );
+  }
+  if (factualStatusQuestion && !hasCurrentVerifiedDeliveryEvidence) {
+    lines.push(
+      "",
+      "HARD FACTUAL-STATUS GATE:",
+      normalized.canonicalDeliverySnapshot
+        ? "- The wake asks about delivery/status, but its canonical snapshot has no current provider- or Paperclip-verified delivery evidence. Refresh provider-backed evidence before answering."
+        : "- The wake asks about delivery/status but contains no canonical delivery snapshot. Fetch the issue delivery snapshot and relevant provider-backed evidence before answering.",
+      "- Do not infer 'not deployed', 'failed', or 'done' from a continuation summary, missing recent comment, or the current issue status alone.",
+    );
   }
   if (normalized.reason === "source_scoped_recovery_action") {
     lines.push(
@@ -1001,11 +1108,26 @@ export function renderPaperclipWakePrompt(
   if (executionStage) {
     lines.push(
       `- execution wake role: ${executionStage.wakeRole ?? "unknown"}`,
-      `- execution stage: ${executionStage.stageType ?? "unknown"}`,
+      `- execution stage key: ${executionStage.stageKey ?? "unknown"}`,
+      `- execution stage type: ${executionStage.stageType ?? "unknown"}`,
+      `- execution stage role: ${executionStage.stageRole ?? "unknown"}`,
+      `- execution stage revision: ${executionStage.stageRevision ?? "unknown"}`,
       `- execution participant: ${principalLabel(executionStage.currentParticipant)}`,
       `- execution return assignee: ${principalLabel(executionStage.returnAssignee)}`,
       `- last decision outcome: ${executionStage.lastDecisionOutcome ?? "none"}`,
     );
+    if (executionStage.evidenceGates.length > 0) {
+      lines.push(`- required evidence gates: ${executionStage.evidenceGates.join(", ")}`);
+    }
+    if (executionStage.factory) {
+      lines.push(
+        `- factory lane kind: ${executionStage.factory.laneKind ?? "unknown"}`,
+        `- factory control issue: ${executionStage.factory.controlIssueId ?? "unknown"}`,
+        `- factory policy: ${executionStage.factory.policyKey ?? "unknown"}@${executionStage.factory.policyVersion ?? "unknown"}`,
+        `- factory policy hash: ${executionStage.factory.policyHash ?? "unknown"}`,
+        `- factory production delivery: ${executionStage.factory.production ? "required" : "not required"}`,
+      );
+    }
     if (executionStage.allowedActions.length > 0) {
       lines.push(`- allowed actions: ${executionStage.allowedActions.join(", ")}`);
     }
@@ -1017,7 +1139,64 @@ export function renderPaperclipWakePrompt(
       );
     }
     lines.push("");
-    if (executionStage.wakeRole === "reviewer" || executionStage.wakeRole === "approver") {
+    if (executionStage.wakeRole === "executor") {
+      lines.push(
+        "You are waking because changes were requested in the execution workflow.",
+        "Address only the requested changes for the current stage on this issue and resubmit when the evidence gates are satisfied.",
+        "",
+      );
+    } else if (executionStage.stageKey === "contract") {
+      lines.push(
+        "You are waking as the contract owner for this factory lane.",
+        "Define and finalize the executable contract: scope, constraints, acceptance criteria, production intent, and explicit exclusions.",
+        "Leave a concrete contract revision on the issue. Do not implement the product or invent candidate delivery evidence in this stage.",
+        "Do not create a child issue from this execution lane.",
+        "",
+      );
+    } else if (executionStage.stageKey === "implementation") {
+      lines.push(
+        "You are waking as the active implementation worker for this factory stage.",
+        "Implement the frozen contract, produce one exact candidate, record candidate-bound implementation evidence, and register the board-pinned CI workflow run for that same candidate.",
+        "Implementation is not complete until both implementation evidence and provider-verified CI pass for the active stage revision.",
+        "Do not create a child issue from this execution lane.",
+        "",
+      );
+    } else if (executionStage.stageKey === "independent_qa") {
+      lines.push(
+        "You are waking as the independent verifier for this factory stage.",
+        "Test the exact current candidate against the frozen contract and record candidate-bound functional QA evidence in the delivery ledger.",
+        "Do not treat the implementation agent's claim or continuation summary as verification.",
+        "",
+      );
+    } else if (executionStage.stageKey === "technical_acceptance") {
+      lines.push(
+        "You are waking as the technical acceptance reviewer for this factory lane.",
+        "Review the frozen contract, exact candidate, independent QA, and required CI evidence. Approve that candidate or request concrete changes.",
+        "Do not implement the task or substitute prose for the required canonical evidence.",
+        "",
+      );
+    } else if (executionStage.stageKey === "deployment") {
+      lines.push(
+        "You are waking as the active deployment operator for this factory stage.",
+        "Register the authorized external operation for the exact candidate and production environment, then wait for provider-verified success.",
+        "A submitted deployment or an agent claim is not provider-verified success.",
+        "",
+      );
+    } else if (executionStage.stageKey === "live_qa") {
+      lines.push(
+        "You are waking as the independent live-QA verifier for this factory lane.",
+        "Test the exact provider-verified production deployment target and record a smoke result bound to its candidate, environment, and URL/target.",
+        "A local test, preview environment, different URL, or deployment claim does not satisfy live QA.",
+        "",
+      );
+    } else if (executionStage.stageKey === "final_acceptance") {
+      lines.push(
+        "You are waking as the final business acceptance owner for this factory lane.",
+        "Review the exact candidate's provider-verified production deployment and bound live-QA result, then approve or request concrete changes.",
+        "Do not report delivery complete until this candidate-specific acceptance is durably recorded.",
+        "",
+      );
+    } else if (executionStage.wakeRole === "reviewer" || executionStage.wakeRole === "approver") {
       lines.push(
         `You are waking as the active ${executionStage.wakeRole} for this issue.`,
         "Do not execute the task itself or continue executor work.",
@@ -1025,10 +1204,25 @@ export function renderPaperclipWakePrompt(
         "If you request changes, the workflow routes back to the stored return assignee.",
         "",
       );
-    } else if (executionStage.wakeRole === "executor") {
+    } else if (executionStage.wakeRole === "worker") {
       lines.push(
-        "You are waking because changes were requested in the execution workflow.",
-        "Address the requested changes on this issue and resubmit when the work is ready.",
+        "You are waking as the active worker for this factory stage.",
+        "Execute only the current stage contract and satisfy its canonical evidence gates.",
+        "Do not create a child issue from this execution lane.",
+        "",
+      );
+    } else if (executionStage.wakeRole === "verifier") {
+      lines.push(
+        "You are waking as the independent verifier for this factory stage.",
+        "Test the exact current candidate against the contract and record the required candidate-bound evidence.",
+        "Do not treat an agent claim or continuation summary as verification.",
+        "",
+      );
+    } else if (executionStage.wakeRole === "deployer") {
+      lines.push(
+        "You are waking as the active deployment operator for this factory stage.",
+        "Register the external operation and wait for provider-verified evidence for the exact candidate before completing the stage.",
+        "A submitted deployment or an agent claim is not provider-verified success.",
         "",
       );
     }
@@ -1037,7 +1231,7 @@ export function renderPaperclipWakePrompt(
   if (normalized.continuationSummary) {
     lines.push(
       "",
-      "Issue continuation summary:",
+      "Advisory issue continuation hint (`generated_hint`; never control state or authoritative fact):",
       normalized.continuationSummary.body,
     );
     if (normalized.continuationSummary.bodyTruncated) {
