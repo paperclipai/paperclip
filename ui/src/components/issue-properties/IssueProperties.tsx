@@ -30,7 +30,9 @@ import {
   formatMonitorAbsolute,
   formatMonitorAbsoluteFull,
   formatMonitorEta,
+  formatMonitorEtaLabel,
   formatMonitorOffset,
+  useMonitorCountdown,
 } from "../../lib/issue-monitor";
 import { extractProviderIdWithFallback } from "../../lib/model-utils";
 import { formatRetryReason } from "../../lib/runRetryState";
@@ -1007,22 +1009,19 @@ export function IssueProperties({
   const monitorLastTriggeredAt = issue.monitorLastTriggeredAt ?? monitorState?.lastTriggeredAt ?? null;
   const monitorServiceName = issue.executionPolicy?.monitor?.serviceName ?? monitorState?.serviceName ?? null;
   const monitorNotes = issue.executionPolicy?.monitor?.notes ?? monitorState?.notes ?? null;
-  const monitorRelative = monitorNextCheckAt ? formatMonitorEta(monitorNextCheckAt, new Date(Date.now())) : null;
+  const monitorNow = useMonitorCountdown(monitorNextCheckAt);
+  const monitorRelative = monitorNextCheckAt ? formatMonitorEta(monitorNextCheckAt, monitorNow) : null;
   const monitorIsDueNow = monitorRelative === "due now";
   const monitorIsOverdue = Boolean(monitorRelative?.startsWith("overdue by "));
   const monitorPrimary = monitorNextCheckAt
-    ? monitorIsDueNow
-      ? "Due now"
-      : monitorIsOverdue
-        ? `Overdue by ${monitorRelative!.slice("overdue by ".length)}`
-        : `In ${monitorRelative!.slice("in ".length)}`
+    ? formatMonitorEtaLabel(monitorNextCheckAt, monitorNow)
     : monitorState?.status === "cleared"
       ? "Cleared"
       : "None";
   const monitorSecondary = monitorNextCheckAt
     ? monitorIsDueNow
       ? "checking momentarily…"
-      : `${formatMonitorAbsolute(monitorNextCheckAt, {}, new Date(Date.now()))}${monitorIsOverdue ? " · fires on next tick" : monitorAttemptCount > 0 ? ` · Attempt ${monitorAttemptCount}` : ""}`
+      : `${formatMonitorAbsolute(monitorNextCheckAt, {}, monitorNow)}${monitorIsOverdue ? " · fires on next tick" : monitorAttemptCount > 0 ? ` · Attempt ${monitorAttemptCount}` : ""}`
     : monitorState?.status === "cleared"
       ? [
           monitorLastTriggeredAt ? `last checked ${timeAgo(monitorLastTriggeredAt)}` : null,

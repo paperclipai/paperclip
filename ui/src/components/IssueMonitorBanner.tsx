@@ -63,6 +63,7 @@ export function buildMonitorSurfaceCopy(
 
   const eta = formatMonitorEta(derived.nextCheckAt, now); // "in 2h 12m" | "due now" | "overdue by 18m"
   const absolute = formatMonitorAbsolute(derived.nextCheckAt, {}, now); // local time, e.g. "Today, 4:08 PM"
+  const isScheduledRetryOnly = derived.source === "scheduled-retry";
 
   let bannerTitle: string;
   let stripTitle: string;
@@ -70,17 +71,17 @@ export function buildMonitorSurfaceCopy(
   switch (derived.state) {
     case "scheduled":
     case "retrying":
-      bannerTitle = `Waiting on monitor — resumes ${eta}`;
+      bannerTitle = isScheduledRetryOnly ? `Agent resumes ${eta}` : `Waiting on monitor — resumes ${eta}`;
       stripTitle = `Resumes ${eta}`;
       break;
     case "due-now":
-      bannerTitle = "Waiting on monitor — due now";
+      bannerTitle = isScheduledRetryOnly ? "Agent retry due now" : "Waiting on monitor — due now";
       stripTitle = "Due now";
       statusHint = "Checking momentarily…";
       break;
     case "overdue":
     default:
-      bannerTitle = `Waiting on monitor — ${eta}`;
+      bannerTitle = isScheduledRetryOnly ? `Agent retry ${eta}` : `Waiting on monitor — ${eta}`;
       stripTitle = capitalize(eta);
       statusHint = "Fires on next tick";
       break;

@@ -44,6 +44,7 @@ export type MonitorDisplayState =
 
 export interface DerivedMonitorState {
   state: MonitorDisplayState;
+  source: "monitor" | "scheduled-retry" | "none";
   nextCheckAt: MonitorDate | null;
   attemptCount: number;
   serviceName: string | null;
@@ -83,6 +84,11 @@ export function formatMonitorEta(nextCheckAt: MonitorDate, now: MonitorDate = ne
   if (deltaMs > 0) return `in ${formatDuration(deltaMs)}`;
   if (deltaMs > -DUE_NOW_GRACE_MS) return "due now";
   return `overdue by ${formatDuration(Math.abs(deltaMs))}`;
+}
+
+export function formatMonitorEtaLabel(nextCheckAt: MonitorDate, now: MonitorDate = new Date()): string {
+  const eta = formatMonitorEta(nextCheckAt, now);
+  return `${eta.charAt(0).toUpperCase()}${eta.slice(1)}`;
 }
 
 function zonedYmd(
@@ -181,6 +187,7 @@ export function deriveMonitorState(issue: MonitorIssueLike, now: MonitorDate = n
     (retryIsActive ? scheduledRetry?.scheduledRetryAt : null) ??
     null;
   const hasMonitor = runtimeMonitor !== null || policyMonitor !== null || issue.monitorNextCheckAt != null;
+  const source = hasMonitor ? "monitor" : retryIsActive ? "scheduled-retry" : "none";
   const attemptCount =
     runtimeMonitor?.attemptCount ??
     (hasMonitor ? issue.monitorAttemptCount : null) ??
@@ -189,25 +196,26 @@ export function deriveMonitorState(issue: MonitorIssueLike, now: MonitorDate = n
   const serviceName = runtimeMonitor?.serviceName ?? policyMonitor?.serviceName ?? null;
 
   if (runtimeMonitor?.status === "cleared") {
-    return { state: "cleared", nextCheckAt, attemptCount, serviceName };
+    return { state: "cleared", source, nextCheckAt, attemptCount, serviceName };
   }
 
   if (!hasMonitor && !retryIsActive) {
-    return { state: "none", nextCheckAt: null, attemptCount: 0, serviceName: null };
+    return { state: "none", source, nextCheckAt: null, attemptCount: 0, serviceName: null };
   }
   if (!nextCheckAt) {
-    return { state: retryIsActive || attemptCount > 1 ? "retrying" : "scheduled", nextCheckAt, attemptCount, serviceName };
+    return { state: retryIsActive || attemptCount > 1 ? "retrying" : "scheduled", source, nextCheckAt, attemptCount, serviceName };
   }
 
   const deltaMs = toTimestamp(nextCheckAt) - toTimestamp(now);
   if (deltaMs <= -DUE_NOW_GRACE_MS) {
-    return { state: "overdue", nextCheckAt, attemptCount, serviceName };
+    return { state: "overdue", source, nextCheckAt, attemptCount, serviceName };
   }
   if (deltaMs <= 0) {
-    return { state: "due-now", nextCheckAt, attemptCount, serviceName };
+    return { state: "due-now", source, nextCheckAt, attemptCount, serviceName };
   }
   return {
     state: retryIsActive || attemptCount > 1 ? "retrying" : "scheduled",
+    source,
     nextCheckAt,
     attemptCount,
     serviceName,
@@ -220,11 +228,11 @@ function countdownCadence(nextCheckAt: MonitorDate): number {
 }
 
 export function useMonitorCountdown(nextCheckAt: MonitorDate | null | undefined): Date {
-  const [now, setNow] = useState(() => new Date());
+  const [now, setNow] = useState(() => new Date(Date.now()));
   const nextCheckTimestamp = nextCheckAt == null ? null : toTimestamp(nextCheckAt);
 
   useEffect(() => {
-    setNow(new Date());
+    setNow(new Date(Date.now()));
     if (nextCheckTimestamp === null) return;
 
     let timeoutId: ReturnType<typeof setTimeout> | null = null;
@@ -232,7 +240,7 @@ export function useMonitorCountdown(nextCheckAt: MonitorDate | null | undefined)
     const scheduleNextTick = () => {
       timeoutId = setTimeout(() => {
         if (cancelled) return;
-        setNow(new Date());
+        setNow(new Date(Date.now()));
         scheduleNextTick();
       }, countdownCadence(new Date(nextCheckTimestamp)));
     };

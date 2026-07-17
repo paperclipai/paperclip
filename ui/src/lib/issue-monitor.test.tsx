@@ -8,6 +8,7 @@ import {
   formatMonitorAbsolute,
   formatMonitorAbsoluteFull,
   formatMonitorEta,
+  formatMonitorEtaLabel,
   useMonitorCountdown,
 } from "./issue-monitor";
 
@@ -31,6 +32,12 @@ describe("monitor time formatting", () => {
     expect(formatMonitorEta(new Date(now.getTime() - 59_999), now)).toBe("due now");
     expect(formatMonitorEta(new Date(now.getTime() - 60_000), now)).toBe("overdue by 1m");
     expect(formatMonitorEta(new Date(now.getTime() - 12 * 60_000), now)).toBe("overdue by 12m");
+  });
+
+  it("formats sentence-case ETA labels without slicing prefixes", () => {
+    expect(formatMonitorEtaLabel(new Date(now.getTime() + (2 * 60 + 12) * 60_000), now)).toBe("In 2h 12m");
+    expect(formatMonitorEtaLabel(now, now)).toBe("Due now");
+    expect(formatMonitorEtaLabel(new Date(now.getTime() - 18 * 60_000), now)).toBe("Overdue by 18m");
   });
 
   it("formats the full local timestamp with weekday, year and zone", () => {
@@ -92,6 +99,7 @@ describe("deriveMonitorState", () => {
       ),
     ).toEqual({
       state: "scheduled",
+      source: "monitor",
       nextCheckAt: "2026-07-17T22:12:00.000Z",
       attemptCount: 1,
       serviceName: "API",
@@ -129,6 +137,7 @@ describe("deriveMonitorState", () => {
     ).toMatchObject({ state: "cleared", attemptCount: 2 });
     expect(deriveMonitorState({}, now)).toEqual({
       state: "none",
+      source: "none",
       nextCheckAt: null,
       attemptCount: 0,
       serviceName: null,
@@ -145,7 +154,7 @@ describe("deriveMonitorState", () => {
         },
         now,
       ),
-    ).toMatchObject({ state: "retrying", attemptCount: 2 });
+    ).toMatchObject({ state: "retrying", source: "scheduled-retry", attemptCount: 2 });
   });
 });
 
