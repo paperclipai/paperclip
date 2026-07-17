@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
-import { buildCodexAuthInboundProvision } from "@paperclipai/adapter-utils/codex-auth-merge-scripts";
+import { buildCodexAuthInboundProvision } from "./codex-auth-merge-scripts.js";
 import {
   adapterExecutionTargetIsRemote,
   adapterExecutionTargetRemoteCwd,

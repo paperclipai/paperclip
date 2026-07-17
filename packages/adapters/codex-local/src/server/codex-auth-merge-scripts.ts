@@ -1,12 +1,12 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { shellQuote } from "./ssh.js";
-import type { SandboxManagedRuntimeAssetProvision } from "./sandbox-managed-runtime.js";
+import { shellQuote } from "@paperclipai/adapter-utils/ssh";
+import type { SandboxManagedRuntimeAssetProvision } from "@paperclipai/adapter-utils/sandbox-managed-runtime";
 
-// Codex-specific inbound auth-merge assets. These physically live in
-// `adapter-utils/src` in Phase 1 of the generic-asset-lifecycle-seam work;
-// a follow-on phase will relocate this module and the two script files
-// into the `codex-local` adapter. The sandbox runtime *core*
+// Codex-specific inbound auth-merge assets. These live alongside the Codex
+// adapter server code; the two script files (`codex-auth-merge-extract.sh` and
+// `codex-auth-merge-decision.cjs`) are read from this directory at runtime and
+// staged into the sandbox. The sandbox runtime *core*
 // (`sandbox-managed-runtime.ts`) is intentionally free of any Codex knowledge —
 // the adapter supplies this contribution through the generic `provision` seam.
 
