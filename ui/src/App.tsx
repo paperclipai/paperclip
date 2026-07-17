@@ -5,6 +5,7 @@ import { Layout } from "./components/Layout";
 import { ConferenceRoomChatGate } from "./components/ConferenceRoomChatGate";
 import { PipelinesExperimentalGate } from "./components/PipelinesExperimentalGate";
 import { CasesExperimentalGate } from "./components/CasesExperimentalGate";
+import { AppsExperimentalGate } from "./components/AppsExperimentalGate";
 import { Cases } from "./pages/Cases";
 import { CaseDetail } from "./pages/CaseDetail";
 import { OnboardingWizardVariant } from "./components/OnboardingWizardVariant";
@@ -47,6 +48,17 @@ import { BootstrapSetupUxLab } from "./pages/BootstrapSetupUxLab";
 import { ResponsibleUserDenialUxLab } from "./pages/ResponsibleUserDenialUxLab";
 import { CompanySettingsPluginPage } from "./pages/CompanySettingsPluginPage";
 import { CompanyAccess, CompanyAccessLegacyRoute } from "./pages/CompanyAccess";
+import { AdvancedToolsRoute } from "./pages/tools/AdvancedToolsRoute";
+import { ProfileWizardRoute } from "./pages/tools/profiles/ProfileWizardRoute";
+import { ProfileDetailRoute } from "./pages/tools/profiles/ProfileDetailRoute";
+import { Connections } from "./pages/apps/Connections";
+import { Browse } from "./pages/apps/Browse";
+import { AppsConnect } from "./pages/apps/AppsConnect";
+import { AppsReview } from "./pages/apps/AppsReview";
+import { AppDetail } from "./pages/apps/AppDetail";
+import { AppNotConnected } from "./pages/apps/AppNotConnected";
+import { GatewaysList } from "./pages/apps/gateways/GatewaysList";
+import { GatewayDetail } from "./pages/apps/gateways/GatewayDetail";
 import { CompanyInvites } from "./pages/CompanyInvites";
 import { CompanySkills } from "./pages/CompanySkills";
 import { SkillStudio } from "./pages/SkillStudio";
@@ -94,11 +106,36 @@ function boardRoutes() {
       <Route path="company/settings/cloud-upstream" element={<CloudUpstream />} />
       <Route path="company/settings/members" element={<CompanyAccess />} />
       <Route path="company/settings/access" element={<CompanyAccessLegacyRoute />} />
-      <Route path="company/settings/cloud-upstream" element={<CloudUpstream />} />
       <Route path="company/settings/invites" element={<CompanyInvites />} />
       <Route path="company/export/*" element={<CompanyExport />} />
       <Route path="company/import" element={<CompanyImport />} />
       <Route path="company/settings/secrets" element={<Secrets />} />
+      <Route path="company/settings/tools" element={<LegacyToolsSettingsRedirect />} />
+      <Route path="company/settings/tools/:tab" element={<LegacyToolsSettingsRedirect />} />
+      <Route path="tools" element={<LegacyToolsRedirect />} />
+      <Route path="tools/:tab" element={<LegacyToolsRedirect />} />
+      <Route element={<AppsExperimentalGate />}>
+        <Route path="apps" element={<Connections />} />
+        <Route path="apps/browse" element={<Browse />} />
+        <Route path="apps/connect" element={<AppsConnectEntryRoute />} />
+        <Route path="apps/connect/:appKey" element={<Navigate to="/apps/browse" replace />} />
+        <Route path="apps/connect/:appKey/:stage" element={<Navigate to="/apps/browse" replace />} />
+        <Route path="apps/review" element={<AppsReview />} />
+        {/* Needs attention folded into Connections (PAP-13254); keep legacy links working. */}
+        <Route path="apps/attention" element={<Navigate to="/apps" replace />} />
+        <Route path="apps/gateways" element={<GatewaysList />} />
+        <Route path="apps/gateways/:gatewayId" element={<Navigate to="overview" replace />} />
+        <Route path="apps/gateways/:gatewayId/:tab" element={<GatewayDetail />} />
+        <Route path="apps/advanced" element={<AdvancedToolsRoute />} />
+        <Route path="apps/advanced/profiles/new" element={<ProfileWizardRoute mode="new" />} />
+        <Route path="apps/advanced/profiles/:profileId/edit" element={<ProfileWizardRoute mode="edit" />} />
+        <Route path="apps/advanced/profiles/:profileId" element={<ProfileDetailRoute />} />
+        <Route path="apps/advanced/:tab" element={<AdvancedToolsRoute />} />
+        <Route path="apps/app/:applicationId" element={<AppNotConnected />} />
+        <Route path="apps/app/:applicationId/:tab" element={<AppNotConnected />} />
+        <Route path="apps/:connectionId" element={<Navigate to="setup" replace />} />
+        <Route path="apps/:connectionId/:tab" element={<AppDetail />} />
+      </Route>
       <Route path="company/settings/instance" element={<Navigate to="general" replace />} />
       <Route path="company/settings/instance/profile" element={<ProfileSettings />} />
       <Route path="company/settings/instance/general" element={<InstanceGeneralSettings />} />
@@ -235,6 +272,12 @@ function boardRoutes() {
   );
 }
 
+function AppsConnectEntryRoute() {
+  const location = useLocation();
+  const searchParams = new URLSearchParams(location.search);
+  return searchParams.get("byo") === "1" ? <AppsConnect /> : <Navigate to="/apps/browse" replace />;
+}
+
 function InboxRootRedirect() {
   return <Navigate to={`/inbox/${loadLastInboxTab()}`} replace />;
 }
@@ -305,6 +348,24 @@ function LegacySettingsRedirect() {
       replace
     />
   );
+}
+
+function LegacyToolsSettingsRedirect() {
+  const { tab } = useParams<{ tab?: string }>();
+  return <Navigate to={legacyToolsRedirectTarget(tab)} replace />;
+}
+
+// The developer "Tools" surface moved under the Apps "Advanced setup" door
+// (PAP-10862). `/tools` and `/tools/:tab` redirect to their new home.
+function LegacyToolsRedirect() {
+  const { tab } = useParams<{ tab?: string }>();
+  return <Navigate to={legacyToolsRedirectTarget(tab)} replace />;
+}
+
+function legacyToolsRedirectTarget(tab?: string) {
+  if (!tab) return "/apps/advanced/profiles";
+  if (tab === "applications" || tab === "connections" || tab === "overview" || tab === "examples") return "/apps";
+  return `/apps/advanced/${tab}`;
 }
 
 function OnboardingRoutePage() {

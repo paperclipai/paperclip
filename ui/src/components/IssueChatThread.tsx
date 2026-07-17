@@ -45,6 +45,7 @@ import type {
 } from "@paperclipai/shared";
 import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
 import { useLiveRunTranscripts } from "./transcript/useLiveRunTranscripts";
+import { useSecondTick } from "../hooks/useSecondTick";
 import { usePaperclipIssueRuntime, type PaperclipIssueRuntimeReassignment } from "../hooks/usePaperclipIssueRuntime";
 import { useOptionalToastActions } from "../context/ToastContext";
 import { copyTextToClipboard } from "../lib/clipboard";
@@ -165,7 +166,7 @@ import {
 } from "../lib/transcriptPresentation";
 import { buildAgentMentionHref } from "@paperclipai/shared";
 import { cn, formatDateTime, formatShortDate } from "../lib/utils";
-import { brandChipBadge } from "../lib/status-colors";
+import { liveBlueBadge } from "../lib/status-colors";
 import { nextWorkMode, titleForPendingWorkMode, workModeMetaFor, workModeMetaList } from "../lib/work-mode-meta";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -305,12 +306,10 @@ function findCoTSegmentIndex(
 }
 
 function useLiveElapsed(startMs: number | null | undefined, active: boolean): string | null {
-  const [, rerender] = useState(0);
-  useEffect(() => {
-    if (!active || !startMs) return;
-    const interval = setInterval(() => rerender((n) => n + 1), 1000);
-    return () => clearInterval(interval);
-  }, [active, startMs]);
+  // Drive the 1s refresh from the shared page-wide ticker instead of a
+  // per-instance setInterval, so a thread with many live elements uses one
+  // timer rather than one per element.
+  useSecondTick(Boolean(active && startMs));
   if (!active || !startMs) return null;
   return formatDurationWords(Date.now() - startMs);
 }
@@ -1928,12 +1927,12 @@ function IssueChatAssistantMessage({
                 </Badge>
               ) : null}
               {isRunning ? (
-                // Gallery feedback r1: running chip uses the canonical brand blue
-                // (brandChipBadge.blue), not cyan; layout/size classes unchanged.
+                // Running chip shares the liveness-blue badge recipe with the
+                // issue header's "Live" badge (one live/running blue).
                 <Badge variant="outline"
                   className={cn(
                     "text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow)",
-                    brandChipBadge.blue,
+                    liveBlueBadge,
                   )}
                 >
                   <Loader2 className="h-3 w-3 animate-spin" />

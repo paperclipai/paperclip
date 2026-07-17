@@ -38,6 +38,7 @@ import {
 import { sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
 import { preferredShellForSandbox, shellCommandArgs } from "./sandbox-shell.js";
 import type { RuntimeProgressSink, RuntimeStatusSink } from "./runtime-progress.js";
+import type { LocalProcessSandboxOptions } from "./local-process-sandbox.js";
 
 export type { RuntimeProgressSink } from "./runtime-progress.js";
 
@@ -108,6 +109,7 @@ export interface AdapterExecutionTargetProcessOptions {
    * onLog is suppressed and incremental chunks flow through `onLog` instead.
    */
   runLogTail?: SandboxRunLogTailFactory | null;
+  localProcessSandbox?: LocalProcessSandboxOptions | null;
 }
 
 export interface AdapterExecutionTargetShellOptions {
@@ -583,6 +585,7 @@ export async function runAdapterExecutionTargetProcess(
     onLog: options.onLog,
     onSpawn: options.onSpawn,
     terminalResultCleanup: options.terminalResultCleanup,
+    localProcessSandbox: target?.kind === "local" || !target ? options.localProcessSandbox : null,
     remoteExecution: adapterExecutionTargetToRemoteSpec(target),
   });
 }

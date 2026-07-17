@@ -169,6 +169,8 @@ Use it for:
 
 Blocked issues should stay idle while blockers remain unresolved. Paperclip should not create a queued heartbeat run for that issue until the final blocker is done and the `issue_blockers_resolved` wake can start real work.
 
+`cancelled` is terminal for the blocker issue itself, but it does not satisfy the dependency. A cancelled blocker edge remains unresolved until the edge is removed or replaced, and Paperclip must surface blocker attention on the dependent regardless of whether that dependent is currently displayed as `blocked`, `todo`, `backlog`, or another non-terminal agent-owned status.
+
 If a parent is truly waiting on a child, model that with blockers. Do not rely on the parent/child relationship alone.
 
 ## 7. Accepted-Plan Decomposition
@@ -265,6 +267,8 @@ An external wait counts as a live or waiting path only when the next move surviv
 - a one-shot issue monitor or other persisted scheduled wake that names the responsible assignee, next check time, and bounded timeout/attempt policy
 - a first-class blocker or `blocked` disposition that names the external owner and concrete action required to unblock the issue
 - a delegated child issue with a responsible owner and its own healthy action path, plus a blocker edge when the source issue must wait for that child; `parentId` alone is not a dependency
+
+A one-shot issue monitor consumes its persisted `nextCheckAt` when it dispatches the assignee wake. If that monitor-consuming run is lost before it records a new disposition or future monitor, Paperclip restores exactly one bounded continuation using the existing process-loss retry limit; if that continuation is also lost, the normal recovery-action escalation owns the next step instead of creating another monitor loop.
 
 An unmanaged local process is not a durable action path. Shell jobs started with `&`, `nohup`, local polling loops, detached PTY sessions, adapter child processes, or similar background watchers do not keep an issue live unless Paperclip persists them as a run or pairs a managed runtime service with a monitor, scheduled wake, blocker, or delegated issue that owns the next check. A PID, session id, log file, comment, or promise to check later is evidence only. The process may be killed when the adapter invocation or heartbeat exits and cannot be assumed observable or recoverable by another worker.
 
@@ -511,6 +515,8 @@ Recovery rule for a parked-for-review continuation:
 
 - if the issue has a real waiting target — open (non-terminal) sub-tasks or existing unresolved blockers — Paperclip converts the deliberate wait into a first-class dependency wait: it sets the issue `blocked` by those issues, keeps the original assignee, and posts a plain-language comment explaining that the task will resume automatically when its dependencies finish. The issue then self-resumes through the normal `issue_blockers_resolved` path; no recovery action or escalation owner is involved
 - if the issue has no waiting target, the park is indistinguishable from a genuine strand and falls through to the standard §9.2 escalation, preserving stranded detection
+
+An accepted interaction supersedes a continuation park recorded before that acceptance. A queued continuation carrying a parseable `interactionResolvedAt` must not be cancelled solely because an older continuation summary says to wait for review or approval. Interaction-continuation recovery is bounded: after three consecutive continuation wakes are cancelled without a run starting, recovery converts a real dependency wait when one exists or escalates the missing execution path visibly instead of requeueing forever.
 
 This keeps the post-decomposition umbrella (§7) on a real waiting path instead of relying on `parentId` rollup, which §6 does not treat as a dependency.
 

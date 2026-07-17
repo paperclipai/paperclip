@@ -9,6 +9,7 @@ import {
   parseObject,
   readPaperclipIssueWorkModeFromContext,
   renderPaperclipWakePrompt,
+  isPaperclipRecoveryWakePayload,
   stringifyPaperclipWakePayload,
 } from "@paperclipai/adapter-utils/server-utils";
 import {
@@ -277,12 +278,16 @@ function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string | null
     ...(paperclipApiUrl ? [`- Paperclip API URL: ${paperclipApiUrl}`] : []),
     ...(issueWorkMode ? [`- Issue work mode: ${issueWorkMode}`] : []),
     "",
-    "Execution contract:",
-    "- Take concrete action in this run when the task is actionable.",
-    "- Do not stop at a plan unless the issue asks for planning only.",
-    "- Leave durable progress and update the issue to a clear final disposition.",
-    "- Use X-Paperclip-Run-Id on mutating Paperclip API requests when a Paperclip API key is available.",
-    "",
+    ...(isPaperclipRecoveryWakePayload(ctx.context.paperclipWake)
+      ? []
+      : [
+          "Execution contract:",
+          "- Take concrete action in this run when the task is actionable.",
+          "- Do not stop at a plan unless the issue asks for planning only.",
+          "- Leave durable progress and update the issue to a clear final disposition.",
+          "- Use X-Paperclip-Run-Id on mutating Paperclip API requests when a Paperclip API key is available.",
+          "",
+        ]),
     wakePrompt,
     ...(sessionHandoff ? ["", sessionHandoff] : []),
     ...(taskMarkdown ? ["", taskMarkdown] : []),

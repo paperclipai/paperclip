@@ -170,6 +170,11 @@ export function InstanceExperimentalSettings() {
   const [previewDialogOpen, setPreviewDialogOpen] = useState(false);
   const [pendingPreview, setPendingPreview] = useState<IssueGraphLivenessAutoRecoveryPreview | null>(null);
 
+  function closeRecoveryPreview() {
+    setPreviewDialogOpen(false);
+    setPendingPreview(null);
+  }
+
   useEffect(() => {
     setBreadcrumbs([
       { label: "Settings", href: "/company/settings" },
@@ -239,7 +244,7 @@ export function InstanceExperimentalSettings() {
       instanceSettingsApi.runIssueGraphLivenessAutoRecovery({ lookbackHours }),
     onSuccess: async () => {
       setActionError(null);
-      setPreviewDialogOpen(false);
+      closeRecoveryPreview();
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.instance.experimentalSettings }),
         queryClient.invalidateQueries({ queryKey: queryKeys.health }),
@@ -279,6 +284,7 @@ export function InstanceExperimentalSettings() {
   );
   const enableEnvironments = experimentalQuery.data?.enableEnvironments === true;
   const enableIsolatedWorkspaces = experimentalQuery.data?.enableIsolatedWorkspaces === true;
+  const enableApps = experimentalQuery.data?.enableApps === true;
   // Streamlined left navigation is now the standard sidebar (PAP-12472); the
   // experimental opt-out was retired, so it no longer surfaces a toggle here.
   const enableConferenceRoomChat = experimentalQuery.data?.enableConferenceRoomChat === true;
@@ -294,6 +300,7 @@ export function InstanceExperimentalSettings() {
   const enableGoalsSidebarLink = experimentalQuery.data?.enableGoalsSidebarLink === true;
   const enableCases = experimentalQuery.data?.enableCases === true;
   const enableServerInfoDebugView = experimentalQuery.data?.enableServerInfoDebugView === true;
+  const enableSmokeLab = experimentalQuery.data?.enableSmokeLab === true;
   const autoRestartDevServerWhenIdle = experimentalQuery.data?.autoRestartDevServerWhenIdle === true;
   const enableIssueGraphLivenessAutoRecovery =
     experimentalQuery.data?.enableIssueGraphLivenessAutoRecovery === true;
@@ -310,21 +317,22 @@ export function InstanceExperimentalSettings() {
       setActionError("Lookback hours must be a whole number from 1 to 720.");
       return;
     }
+    closeRecoveryPreview();
     previewMutation.mutate(parsedLookbackHours);
   }
 
   function enableOnly() {
     if (!lookbackHoursIsValid) return;
+    closeRecoveryPreview();
     toggleMutation.mutate({
       enableIssueGraphLivenessAutoRecovery: true,
       issueGraphLivenessAutoRecoveryLookbackHours: parsedLookbackHours,
-    }, {
-      onSuccess: () => setPreviewDialogOpen(false),
     });
   }
 
   function enableAndRun() {
     if (!lookbackHoursIsValid) return;
+    closeRecoveryPreview();
     toggleMutation.mutate({
       enableIssueGraphLivenessAutoRecovery: true,
       issueGraphLivenessAutoRecoveryLookbackHours: parsedLookbackHours,
@@ -419,6 +427,26 @@ export function InstanceExperimentalSettings() {
           </div>
         </Card>
       ) : null}
+
+      <Card className="block p-5">
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-1.5">
+            <div className="flex items-center gap-2">
+              <h2 className="text-sm font-semibold">Apps</h2>
+              <Badge variant="secondary">Experimental</Badge>
+            </div>
+            <p className="max-w-2xl text-sm text-muted-foreground">
+              Show the Apps navigation and allow access to app connections, gateways, and advanced app tooling.
+            </p>
+          </div>
+          <ToggleSwitch
+            checked={enableApps}
+            onCheckedChange={() => toggleMutation.mutate({ enableApps: !enableApps })}
+            disabled={toggleMutation.isPending}
+            aria-label="Toggle apps experimental setting"
+          />
+        </div>
+      </Card>
 
       <Card className="block p-5">
         <div className="flex items-start justify-between gap-4">
@@ -683,6 +711,25 @@ export function InstanceExperimentalSettings() {
       <Card className="block p-5">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1.5">
+            <h2 className="text-sm font-semibold">Smoke Lab</h2>
+            <p className="max-w-2xl text-sm text-muted-foreground">
+              Add a "Smoke Lab" tab under Apps → Developer and an "Integration smoke" card on the
+              dashboard for exercising every integration path against deterministic local fixtures
+              (fake OAuth provider + loopback MCP servers). Private (non-public) deployments only.
+            </p>
+          </div>
+          <ToggleSwitch
+            checked={enableSmokeLab}
+            onCheckedChange={() => toggleMutation.mutate({ enableSmokeLab: !enableSmokeLab })}
+            disabled={toggleMutation.isPending}
+            aria-label="Toggle smoke lab experimental setting"
+          />
+        </div>
+      </Card>
+
+      <Card className="block p-5">
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-1.5">
             <h2 className="text-sm font-semibold">Auto-Restart Dev Server When Idle</h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
               In `pnpm dev:once`, wait for all queued and running local agent runs to finish, then restart the server
@@ -784,14 +831,20 @@ export function InstanceExperimentalSettings() {
         </div>
       </Card>
 
-      <RecoveryPreviewDialog
-        open={previewDialogOpen}
-        onOpenChange={setPreviewDialogOpen}
-        preview={pendingPreview}
-        onEnableOnly={enableOnly}
-        onEnableAndRun={enableAndRun}
-        isPending={recoveryActionPending}
-      />
+      {previewDialogOpen ? (
+        <RecoveryPreviewDialog
+          open
+          onOpenChange={(open) => {
+            if (!open) {
+              closeRecoveryPreview();
+            }
+          }}
+          preview={pendingPreview}
+          onEnableOnly={enableOnly}
+          onEnableAndRun={enableAndRun}
+          isPending={recoveryActionPending}
+        />
+      ) : null}
     </div>
   );
 }

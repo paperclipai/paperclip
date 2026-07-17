@@ -3,8 +3,14 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readdirSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { loadShardDurations, selectGeneralServerShard } from "./general-server-shard.mjs";
 
 const repoRoot = process.cwd();
+const scriptsDir = path.dirname(fileURLToPath(import.meta.url));
+const generalServerShardDurations = loadShardDurations(
+  path.join(scriptsDir, "general-server-shard-durations.json"),
+);
 const serverRoot = path.join(repoRoot, "server");
 const serverSrcDir = path.join(repoRoot, "server", "src");
 const serverTestsDir = path.join(repoRoot, "server", "src", "__tests__");
@@ -288,8 +294,11 @@ function runProjectGroup(projects, groupName) {
 function runGeneralGroup(routeTests, groupName, shardIndex = null, shardCount = null) {
   if (groupName === generalServerGroupName) {
     if (shardCount !== null && shardCount > 1) {
-      const shardFiles = generalServerTestFiles.filter(
-        (_, index) => index % shardCount === shardIndex,
+      const shardFiles = selectGeneralServerShard(
+        generalServerTestFiles,
+        shardIndex,
+        shardCount,
+        generalServerShardDurations,
       );
       console.log(
         `\n[test:run] general-server shard ${shardIndex + 1}/${shardCount} running ${shardFiles.length} of ${generalServerTestFiles.length} suites`,
@@ -369,6 +378,8 @@ const routeTests = walk(serverTestsDir)
 // dedicated serialized shards. Sharding this list across runners is what keeps
 // the general-server lane from becoming the PR critical path: the server vitest
 // config pins maxWorkers to 1, so the only way to parallelize is across jobs.
+// Suites are partitioned by recorded duration (scripts/general-server-shard.mjs)
+// rather than round-robin, so one slow suite cluster can't stretch a single shard.
 const generalServerTestFiles = walk(serverSrcDir)
   .map((file) => toRepoPath(file))
   .filter((repoPath) => repoPath.endsWith(".test.ts"))
@@ -396,8 +407,11 @@ if (options.dryRun) {
           options.mode === generalModeName &&
           options.group === generalServerGroupName &&
           options.shardCount !== null
-            ? generalServerTestFiles.filter(
-                (_, index) => index % options.shardCount === options.shardIndex,
+            ? selectGeneralServerShard(
+                generalServerTestFiles,
+                options.shardIndex,
+                options.shardCount,
+                generalServerShardDurations,
               )
             : null,
       },

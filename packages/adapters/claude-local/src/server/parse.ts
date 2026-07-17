@@ -111,7 +111,7 @@ export function parseClaudeStreamJson(stdout: string) {
     usage,
     // modelUsage covers exactly this CLI invocation, so mark it per-run to
     // keep the server from applying its session-cumulative delta heuristic.
-    usageBasis: modelUsageTotals ? ("per_run" as const) : null,
+    usageBasis: "per_run" as const,
     summary,
     resultJson: finalResult,
   };

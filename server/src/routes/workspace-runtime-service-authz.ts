@@ -3,8 +3,8 @@ import type { Db } from "@paperclipai/db";
 import { agents, heartbeatRuns, issues, projects } from "@paperclipai/db";
 import { isUuidLike } from "@paperclipai/shared";
 import type { Request } from "express";
-import { forbidden } from "../errors.js";
-import { assertCompanyAccess } from "./authz.js";
+import { forbidden, notFound } from "../errors.js";
+import { assertCompanyAccess, hasCompanyAccess } from "./authz.js";
 import { parseProjectExecutionWorkspacePolicy } from "../services/execution-workspace-policy.js";
 import { isLowTrustRuntimeManagementAllowed } from "../services/low-trust-runtime-containment.js";
 import { resolveCoreTrustPreset, type TrustPresetResolution } from "../services/trust-preset-resolver.js";
@@ -305,6 +305,9 @@ export async function assertCanManageProjectWorkspaceRuntimeServices(
     projectWorkspaceId: string;
   },
 ) {
+  if (!hasCompanyAccess(req, input.companyId)) {
+    throw notFound("Project workspace not found");
+  }
   assertCompanyAccess(req, input.companyId);
   if (req.actor.type === "board") return;
   await assertAgentCanManageRuntimeServicesForWorkspace(db, req, input);
@@ -319,6 +322,9 @@ export async function assertCanManageExecutionWorkspaceRuntimeServices(
     sourceIssueId?: string | null;
   },
 ) {
+  if (!hasCompanyAccess(req, input.companyId)) {
+    throw notFound("Execution workspace not found");
+  }
   assertCompanyAccess(req, input.companyId);
   if (req.actor.type === "board") return;
   await assertAgentCanManageRuntimeServicesForWorkspace(db, req, input);

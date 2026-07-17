@@ -9,6 +9,10 @@ import type {
   AdapterExecutionContext,
   AdapterExecutionResult,
 } from "@paperclipai/adapter-utils";
+import {
+  parseLocalProcessFilesystemScope,
+  parseLocalProcessNetworkScope,
+} from "@paperclipai/adapter-utils/local-process-sandbox";
 import { inferOpenAiCompatibleBiller } from "@paperclipai/adapter-utils";
 import {
   ensureAdapterExecutionTargetCommandResolvable,
@@ -27,6 +31,7 @@ import {
   asString,
   parseObject,
 } from "@paperclipai/adapter-utils/server-utils";
+import { classifyCodexAuthRefreshFailure } from "./parse.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const packageRootDir = path.resolve(moduleDir, "../..");
@@ -66,6 +71,20 @@ export async function resolveCodexExecutionEngineForRun(
   input: CodexEngineResolutionInput,
 ): Promise<CodexEngineSelection> {
   const selection = normalizeEngine(input.config.engine);
+  const filesystemScope = parseLocalProcessFilesystemScope(input.config.filesystemScope);
+  const networkScope = parseLocalProcessNetworkScope(input.config.networkScope);
+  if (filesystemScope || networkScope) {
+    if (selection.explicit && selection.engine === "acp") {
+      throw new Error("Local filesystem/network confinement requires the Codex CLI engine; ACP confinement is not supported.");
+    }
+    return {
+      engine: "cli",
+      explicit: selection.explicit,
+      ...(!selection.explicit
+        ? { fallbackReason: "Local filesystem/network scope requires spawn-level confinement in the CLI lane." }
+        : {}),
+    };
+  }
   if (selection.explicit || selection.engine !== "acp") return selection;
 
   const fallbackReason = await defaultCodexAcpFallbackReason(input);
@@ -123,6 +142,29 @@ function withCodexAcpDefaults(options: CodexAcpExecutorOptions): AcpxEngineExecu
   };
 }
 
+function withCodexAuthRefreshFailureClassification(result: AdapterExecutionResult): AdapterExecutionResult {
+  if ((result.exitCode ?? 0) === 0) return result;
+  const resultJson = parseObject(result.resultJson);
+  const stopReason = asString(resultJson.stopReason, "");
+  const authFailure = classifyCodexAuthRefreshFailure({
+    errorMessage: [result.errorMessage ?? "", result.summary ?? "", stopReason]
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .join("\n"),
+  });
+  if (!authFailure) return result;
+
+  return {
+    ...result,
+    errorCode: authFailure,
+    errorFamily: authFailure,
+    resultJson: {
+      ...(result.resultJson ?? {}),
+      errorFamily: authFailure,
+    },
+  };
+}
+
 /**
  * Classify billing the same way the Codex CLI lane does so ACP runs land in
  * the cost ledger with a real provider/billingType instead of acpx/unknown.
@@ -166,10 +208,11 @@ export function createCodexAcpExecutor(options: CodexAcpExecutorOptions = {}): C
       currentExecutor = createAcpxEngineExecutor(withCodexAcpDefaults(options));
       executor = currentExecutor;
     }
-    return currentExecutor({
+    const result = await currentExecutor({
       ...ctx,
       config: buildCodexAcpConfig(ctx.config),
     });
+    return withCodexAuthRefreshFailureClassification(result);
   };
 }
 

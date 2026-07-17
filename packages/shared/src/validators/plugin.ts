@@ -1135,25 +1135,27 @@ export const installPluginSchema = z.object({
 export type InstallPlugin = z.infer<typeof installPluginSchema>;
 
 // ---------------------------------------------------------------------------
-// Plugin config (instance configuration) schemas
+// Plugin config (company-scoped configuration) schemas
 // ---------------------------------------------------------------------------
 
 /**
- * Schema for creating or updating a plugin's instance configuration.
+ * Schema for creating or updating a plugin's company-scoped configuration.
  * configJson is validated permissively here; runtime validation against
  * the plugin's instanceConfigSchema is done at the service layer.
  */
 export const upsertPluginConfigSchema = z.object({
+  companyId: z.string().uuid(),
   configJson: z.record(z.string(), z.unknown()),
 });
 
 export type UpsertPluginConfig = z.infer<typeof upsertPluginConfigSchema>;
 
 /**
- * Schema for partially updating a plugin's instance configuration.
+ * Schema for partially updating a plugin's company-scoped configuration.
  * Allows a partial merge of config values.
  */
 export const patchPluginConfigSchema = z.object({
+  companyId: z.string().uuid(),
   configJson: z.record(z.string(), z.unknown()),
 });
 

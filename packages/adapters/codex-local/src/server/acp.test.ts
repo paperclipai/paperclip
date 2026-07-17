@@ -246,6 +246,41 @@ describe("codex_local ACP lane", () => {
     ).resolves.toEqual({ engine: "acp", explicit: true });
   });
 
+  it("selects the confined CLI lane for local filesystem or network scope", async () => {
+    await expect(
+      resolveCodexExecutionEngineForRun({
+        config: { filesystemScope: "workspace" },
+        executionTarget: null,
+      }),
+    ).resolves.toMatchObject({
+      engine: "cli",
+      explicit: false,
+      fallbackReason: expect.stringContaining("spawn-level confinement"),
+    });
+    await expect(
+      resolveCodexExecutionEngineForRun({
+        config: { engine: "acp", filesystemScope: "workspace" },
+        executionTarget: null,
+      }),
+    ).rejects.toThrow("ACP confinement is not supported");
+    await expect(
+      resolveCodexExecutionEngineForRun({
+        config: { networkScope: "allowlist" },
+        executionTarget: null,
+      }),
+    ).resolves.toMatchObject({
+      engine: "cli",
+      explicit: false,
+      fallbackReason: expect.stringContaining("network scope"),
+    });
+    await expect(
+      resolveCodexExecutionEngineForRun({
+        config: { filesystemScope: "workpace" },
+        executionTarget: null,
+      }),
+    ).rejects.toThrow('filesystemScope must be "workspace"');
+  });
+
   it("uses ACP for bridged sandbox auto runs when the ACP command is configured as a shell command", async () => {
     setNodeVersion("v22.13.0");
     await expect(
@@ -442,14 +477,37 @@ describe("codex_local ACP lane", () => {
       mode: "persistent",
       cwd: root,
     });
-    expect(runtimes[0]?.setConfigInputs.map((input) => [input.key, input.value])).toEqual([
-      ["model", "gpt-5.5"],
-      ["reasoning_effort", "high"],
-      ["service_tier", "fast"],
-      ["features.fast_mode", "true"],
-    ]);
+    expect(runtimes[0]?.setConfigInputs).toEqual([]);
     expect(meta[0]?.commandNotes?.join("\n")).toContain("Prepared ACPX Codex skill home");
     expect(meta[0]?.env?.CODEX_HOME).toBe(path.join(root, "codex-home"));
+    expect(JSON.parse(String(meta[0]?.env?.CODEX_CONFIG))).toEqual({
+      model: "gpt-5.5",
+      model_reasoning_effort: "high",
+      service_tier: "fast",
+      features: { fast_mode: true },
+    });
+  });
+
+  it("classifies ACP refresh-token auth failures", async () => {
+    const root = await makeTempRoot("paperclip-codex-acp-refresh-token-");
+    const execute = createCodexAcpExecutor({
+      createRuntime: (options: FakeRuntimeOptions) => new FakeRuntime(
+        options,
+        [],
+        {
+          status: "failed",
+          error: { message: "OAuth failed: refresh_token_invalidated" },
+        } as unknown as FakeRuntimeTurnResult,
+      ) as never,
+    });
+
+    const result = await execute(buildContext(root));
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("refresh_token_invalidated");
+    expect(result.errorFamily).toBe("refresh_token_invalidated");
+    expect(result.resultJson?.errorFamily).toBe("refresh_token_invalidated");
+    expect(result.resultJson).not.toHaveProperty("codexCredentialTelemetry");
   });
 
   it("resumes compatible ACP sessions on later Codex ACP runs", async () => {

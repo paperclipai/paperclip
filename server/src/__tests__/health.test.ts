@@ -16,6 +16,7 @@ const testServerInfo = {
     available: true,
     fullSha: "0123456789abcdef0123456789abcdef01234567",
     shortSha: "0123456",
+    branchName: "master",
     subject: "Add server info debug view",
     committedAt: "2026-06-25T23:00:00.000Z",
     localChanges: {
@@ -72,7 +73,7 @@ describe("GET /health", () => {
     const app = createApp();
     const res = await request(app).get("/health");
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ status: "ok", version: serverVersion, serverInfo: testServerInfo });
+    expect(res.body).toEqual({ status: "ok", version: serverVersion, serverVersion: serverVersion, serverInfo: testServerInfo });
   }, 15_000);
 
   it("returns 200 when the database probe succeeds", async () => {
@@ -104,6 +105,7 @@ describe("GET /health", () => {
     expect(res.body).toEqual({
       status: "unhealthy",
       version: serverVersion,
+      serverVersion,
       error: "database_unreachable",
       serverInfo: testServerInfo,
     });
@@ -411,6 +413,7 @@ describe("GET /health", () => {
     expect(res.body).toMatchObject({
       status: "ok",
       version: serverVersion,
+      serverVersion,
       deploymentMode: "authenticated",
       deploymentExposure: "public",
       authReady: true,

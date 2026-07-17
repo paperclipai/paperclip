@@ -410,11 +410,20 @@ const createIssueBaseSchema = z.object({
   }).strict().optional().nullable(),
 });
 
+const createIssueDuplicateGuardSchema = {
+  idempotencyKey: z.string().trim().min(1).max(255).optional().nullable(),
+  allowDuplicate: z.boolean()
+    .describe("Bypasses recent-title duplicate detection; idempotency keys always replay their original issue")
+    .optional()
+    .default(false),
+};
+
 export const createIssueInputSchema = createIssueBaseSchema.extend({
   status: createIssueBaseSchema.shape.status.optional(),
+  ...createIssueDuplicateGuardSchema,
 });
 
-export const createIssueSchema = withCreateIssueStatusDefault(createIssueBaseSchema);
+export const createIssueSchema = withCreateIssueStatusDefault(createIssueBaseSchema.extend(createIssueDuplicateGuardSchema));
 
 export type CreateIssue = z.infer<typeof createIssueSchema>;
 
@@ -742,6 +751,22 @@ export const requestConfirmationTargetSchema = z.discriminatedUnion("type", [
   requestConfirmationCustomTargetSchema,
 ]);
 
+export const requestConfirmationToolActionPayloadSchema = z.object({
+  version: z.literal(1),
+  actionRequestId: z.string().uuid(),
+  invocationId: z.string().uuid(),
+  toolName: z.string().trim().min(1).max(500),
+  toolDisplayName: z.string().trim().min(1).max(500),
+  connectionId: z.string().uuid().nullable(),
+  applicationId: z.string().uuid().nullable(),
+  appDisplayName: z.string().trim().min(1).max(500).nullable(),
+  risk: z.enum(["write", "destructive"]),
+  previewMarkdown: z.string().trim().min(1).max(20000),
+  argumentsSummaryJson: z.string().max(20000),
+  argumentsHash: z.string().trim().min(1).max(255),
+  expiresAt: z.string().datetime({ offset: true }),
+});
+
 export const requestConfirmationPayloadSchema = z.object({
   version: z.literal(1),
   prompt: z.string().trim().min(1).max(1000),
@@ -754,6 +779,7 @@ export const requestConfirmationPayloadSchema = z.object({
   detailsMarkdown: z.string().max(20000).nullable().optional(),
   supersedeOnUserComment: z.boolean().optional(),
   target: requestConfirmationTargetSchema.nullable().optional(),
+  toolAction: requestConfirmationToolActionPayloadSchema.optional(),
 });
 
 export const requestCheckboxConfirmationOptionSchema = z.object({
@@ -867,6 +893,19 @@ export const requestConfirmationResumeFailureSchema = z.object({
   updatedAt: z.string().trim().min(1).nullable().optional(),
 });
 
+export const requestConfirmationToolActionResultSchema = z.object({
+  version: z.literal(1),
+  status: z.enum(["approved", "executing", "executed", "failed", "expired"]),
+  errorCode: z.string().trim().min(1).max(120).nullable().optional(),
+  errorMessage: z.string().trim().min(1).max(4000).nullable().optional(),
+  // Populated on `executed` so the card can report the outcome (e.g. "Row 42
+  // added") instead of a bare checkmark, with an optional deep-link when the
+  // connector returns a URL (PAP-13745 §5 Executed / Peak-End).
+  resultSummary: z.string().trim().min(1).max(4000).nullable().optional(),
+  resultHref: z.string().trim().url().max(2000).nullable().optional(),
+  updatedAt: z.string().datetime({ offset: true }),
+});
+
 export const requestConfirmationResultSchema = z.object({
   version: z.literal(1),
   outcome: z.enum(["accepted", "rejected", "superseded_by_comment", "stale_target"]),
@@ -874,6 +913,7 @@ export const requestConfirmationResultSchema = z.object({
   commentId: z.string().uuid().nullable().optional(),
   staleTarget: requestConfirmationTargetSchema.nullable().optional(),
   resumeFailure: requestConfirmationResumeFailureSchema.nullable().optional(),
+  toolAction: requestConfirmationToolActionResultSchema.optional(),
 });
 
 export const requestCheckboxConfirmationResultSchema = requestConfirmationResultSchema.extend({

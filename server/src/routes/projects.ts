@@ -17,7 +17,7 @@ import { accessService, projectService, logActivity, workspaceOperationService }
 import { conflict, forbidden } from "../errors.js";
 import { externalObjectService } from "../services/external-objects.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
-import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
 import {
   buildWorkspaceRuntimeDesiredStatePatch,
   listConfiguredRuntimeServiceEntries,
@@ -135,24 +135,16 @@ export function projectRoutes(db: Db) {
 
   router.get("/projects/:id", async (req, res) => {
     const id = req.params.id as string;
-    const project = await svc.getById(id);
-    if (!project) {
-      res.status(404).json({ error: "Project not found" });
-      return;
-    }
-    assertCompanyAccess(req, project.companyId);
+    const project = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
+    if (!project) return;
     if (!(await assertProjectReadAllowed(req, res, project))) return;
     res.json(project);
   });
 
   router.get("/projects/:id/external-object-summary", async (req, res) => {
     const id = req.params.id as string;
-    const project = await svc.getById(id);
-    if (!project) {
-      res.status(404).json({ error: "Project not found" });
-      return;
-    }
-    assertCompanyAccess(req, project.companyId);
+    const project = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
+    if (!project) return;
     const summary = await externalObjectsSvc.getProjectSummary(project.id);
     res.json(summary);
   });
@@ -227,12 +219,8 @@ export function projectRoutes(db: Db) {
 
   router.patch("/projects/:id", validate(updateProjectSchema), async (req, res) => {
     const id = req.params.id as string;
-    const existing = await svc.getById(id);
-    if (!existing) {
-      res.status(404).json({ error: "Project not found" });
-      return;
-    }
-    assertCompanyAccess(req, existing.companyId);
+    const existing = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
+    if (!existing) return;
     const body = { ...req.body };
     assertNoAgentHostWorkspaceCommandMutation(
       req,
@@ -287,24 +275,16 @@ export function projectRoutes(db: Db) {
 
   router.get("/projects/:id/workspaces", async (req, res) => {
     const id = req.params.id as string;
-    const existing = await svc.getById(id);
-    if (!existing) {
-      res.status(404).json({ error: "Project not found" });
-      return;
-    }
-    assertCompanyAccess(req, existing.companyId);
+    const existing = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
+    if (!existing) return;
     const workspaces = await svc.listWorkspaces(id);
     res.json(workspaces);
   });
 
   router.post("/projects/:id/workspaces", validate(createProjectWorkspaceSchema), async (req, res) => {
     const id = req.params.id as string;
-    const existing = await svc.getById(id);
-    if (!existing) {
-      res.status(404).json({ error: "Project not found" });
-      return;
-    }
-    assertCompanyAccess(req, existing.companyId);
+    const existing = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
+    if (!existing) return;
     assertNoAgentHostWorkspaceCommandMutation(
       req,
       collectProjectWorkspaceCommandPaths(req.body),
@@ -341,12 +321,8 @@ export function projectRoutes(db: Db) {
     async (req, res) => {
       const id = req.params.id as string;
       const workspaceId = req.params.workspaceId as string;
-      const existing = await svc.getById(id);
-      if (!existing) {
-        res.status(404).json({ error: "Project not found" });
-        return;
-      }
-      assertCompanyAccess(req, existing.companyId);
+      const existing = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
+      if (!existing) return;
       assertNoAgentHostWorkspaceCommandMutation(
         req,
         collectProjectWorkspaceCommandPaths(req.body),
@@ -390,12 +366,8 @@ export function projectRoutes(db: Db) {
       return;
     }
 
-    const project = await svc.getById(id);
-    if (!project) {
-      res.status(404).json({ error: "Project not found" });
-      return;
-    }
-    assertCompanyAccess(req, project.companyId);
+    const project = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
+    if (!project) return;
 
     const workspace = project.workspaces.find((entry) => entry.id === workspaceId) ?? null;
     if (!workspace) {
@@ -662,12 +634,8 @@ export function projectRoutes(db: Db) {
   router.delete("/projects/:id/workspaces/:workspaceId", async (req, res) => {
     const id = req.params.id as string;
     const workspaceId = req.params.workspaceId as string;
-    const existing = await svc.getById(id);
-    if (!existing) {
-      res.status(404).json({ error: "Project not found" });
-      return;
-    }
-    assertCompanyAccess(req, existing.companyId);
+    const existing = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
+    if (!existing) return;
     const workspace = await svc.removeWorkspace(id, workspaceId);
     if (!workspace) {
       res.status(404).json({ error: "Project workspace not found" });
@@ -694,12 +662,8 @@ export function projectRoutes(db: Db) {
 
   router.delete("/projects/:id", async (req, res) => {
     const id = req.params.id as string;
-    const existing = await svc.getById(id);
-    if (!existing) {
-      res.status(404).json({ error: "Project not found" });
-      return;
-    }
-    assertCompanyAccess(req, existing.companyId);
+    const existing = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
+    if (!existing) return;
     const project = await svc.remove(id);
     if (!project) {
       res.status(404).json({ error: "Project not found" });
