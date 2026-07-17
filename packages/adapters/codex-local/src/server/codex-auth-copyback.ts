@@ -46,9 +46,6 @@ export interface CopyBackCodexAuthInput {
 async function decideExitCode(sourcePath: string, destinationPath: string): Promise<number> {
   try {
     await execFile("node", [DECISION_SCRIPT_PATH, sourcePath, destinationPath]);
-    // The predicate always exits 10 or 20; a clean exit 0 is unexpected and is
-    // treated as a failure rather than silently interpreted as a decision.
-    throw new Error("codex auth copy-back decision predicate exited 0 (expected 10 or 20)");
   } catch (error) {
     const code = (error as { code?: unknown }).code;
     if (code === USE_SOURCE_EXIT || code === KEEP_DESTINATION_EXIT) {
@@ -67,6 +64,12 @@ async function decideExitCode(sourcePath: string, destinationPath: string): Prom
         : String(error);
     throw new Error(`codex auth copy-back decision predicate failed: ${detail}`);
   }
+
+  // Reached only when `execFile` resolved — i.e. the predicate exited 0. The
+  // predicate always exits 10 or 20, so a clean exit 0 is unexpected; throw
+  // directly here, outside the try/catch, so this already self-explanatory
+  // message is not re-wrapped by the catch's "...failed:" prefix.
+  throw new Error("codex auth copy-back decision predicate exited 0 (expected 10 or 20)");
 }
 
 /**
