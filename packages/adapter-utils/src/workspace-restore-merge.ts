@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { constants as fsConstants, promises as fs } from "node:fs";
 import path from "node:path";
@@ -106,48 +106,124 @@ function entriesMatch(left: SnapshotEntry | null | undefined, right: SnapshotEnt
   return false;
 }
 
-async function isHolderAlive(lockDir: string): Promise<boolean> {
-  try {
-    const raw = await fs.readFile(path.join(lockDir, "owner.json"), "utf8");
-    const owner = JSON.parse(raw) as { pid?: unknown };
-    const pid = typeof owner.pid === "number" && Number.isFinite(owner.pid) && owner.pid > 0 ? owner.pid : null;
-    if (pid === null) {
-      // Owner record is unparseable / missing pid — treat as stale.
-      return false;
-    }
+// The restore lock is only ever legitimately held by the *current* server process.
+// That process runs as the same low in-container PID (e.g. 7) across restarts, so a
+// bare process.kill(pid, 0) liveness check can never reclaim a lock left by a crashed
+// prior incarnation whose PID the new process reuses — restores then deadlock forever.
+// We disambiguate incarnations with a per-process token and keep an age backstop for
+// legacy locks written before the token existed.
+//
+// INVARIANT: exactly one live server process holds this lock at a time, so a foreign
+// token is always a dead prior incarnation and is reclaimed immediately. The token
+// MUST rotate per process start and must NOT be derived from pid/hostname, or the
+// collision returns. If the deployment ever runs two live servers against the same
+// lock directory (blue/green overlap), a genuinely-held lock would be reclaimed
+// without grace — switch to an OS-attested advisory lock (flock/OFD) before then.
+const RESTORE_LOCK_INSTANCE_ID = `${process.pid}:${randomUUID()}`;
+const RESTORE_LOCK_STALE_TTL_MS = 15 * 60_000;
+
+function parseCreatedAtMs(createdAt: unknown): number | null {
+  if (typeof createdAt === "number" && Number.isFinite(createdAt)) return createdAt;
+  if (typeof createdAt === "string") {
+    const ms = Date.parse(createdAt);
+    return Number.isFinite(ms) ? ms : null;
+  }
+  return null;
+}
+
+async function readLockOwner(
+  lockDir: string,
+): Promise<{ pid?: unknown; createdAt?: unknown; instanceId?: unknown } | null> {
+  // Retry briefly on a missing owner.json: the lock dir may have just been created by
+  // another acquirer that has not yet written owner.json. This avoids stealing a lock
+  // mid-claim, while still returning null (=> treat as stale) if the creator crashed
+  // between the mkdir and the owner.json write.
+  for (let attempt = 0; ; attempt += 1) {
     try {
-      process.kill(pid, 0);
-      return true;
-    } catch {
+      const raw = await fs.readFile(path.join(lockDir, "owner.json"), "utf8");
+      return JSON.parse(raw) as { pid?: unknown; createdAt?: unknown; instanceId?: unknown };
+    } catch (error) {
+      const code = error && typeof error === "object" ? (error as { code?: unknown }).code : null;
+      if (code !== "ENOENT" || attempt >= 4) return null; // absent-after-grace / corrupt => stale
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  }
+}
+
+async function isHolderAlive(lockDir: string): Promise<boolean> {
+  const owner = await readLockOwner(lockDir);
+  if (owner === null) return false;
+
+  const instanceId = typeof owner.instanceId === "string" ? owner.instanceId : null;
+  if (instanceId !== null) {
+    // Written by the current lock protocol. A token from another incarnation is a
+    // crashed prior process (whose PID the current server may have reused), so the
+    // lock is stale; a matching token is our own live restore, which we respect.
+    return instanceId === RESTORE_LOCK_INSTANCE_ID;
+  }
+
+  // Legacy lock (no instanceId): reclaim once it ages past the TTL. A present-but-
+  // unparseable createdAt cannot vouch for the holder, so treat it as stale rather
+  // than trusting the PID (which collides across restarts) and deadlocking forever.
+  if (owner.createdAt !== undefined) {
+    const createdMs = parseCreatedAtMs(owner.createdAt);
+    if (createdMs === null || Date.now() - createdMs > RESTORE_LOCK_STALE_TTL_MS) {
       return false;
     }
+  }
+  const pid = typeof owner.pid === "number" && Number.isFinite(owner.pid) && owner.pid > 0 ? owner.pid : null;
+  if (pid === null) {
+    // Owner record is missing a usable pid — treat as stale.
+    return false;
+  }
+  try {
+    process.kill(pid, 0);
+    return true;
   } catch {
-    // owner.json missing or unreadable — treat as stale.
     return false;
   }
 }
 
 async function acquireDirectoryMergeLock(lockDir: string): Promise<() => Promise<void>> {
   const deadline = Date.now() + 30_000;
+  const nonce = randomUUID();
   while (true) {
     try {
       await fs.mkdir(lockDir);
       await fs.writeFile(
         path.join(lockDir, "owner.json"),
-        `${JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() })}\n`,
+        `${JSON.stringify({ pid: process.pid, instanceId: RESTORE_LOCK_INSTANCE_ID, nonce, createdAt: new Date().toISOString() })}\n`,
         "utf8",
       );
       return async () => {
+        // Ownership-checked release: only remove the lock if this exact acquisition
+        // still owns it (same incarnation AND same nonce), so a slow release can't
+        // delete a lock a later restore has since acquired.
+        try {
+          const raw = await fs.readFile(path.join(lockDir, "owner.json"), "utf8");
+          const owner = JSON.parse(raw) as { instanceId?: unknown; nonce?: unknown };
+          if (owner.instanceId !== RESTORE_LOCK_INSTANCE_ID || owner.nonce !== nonce) return;
+        } catch {
+          return; // owner.json gone/unreadable — nothing of ours to remove
+        }
         await fs.rm(lockDir, { recursive: true, force: true }).catch(() => undefined);
       };
     } catch (error) {
       const code = error && typeof error === "object" ? (error as { code?: unknown }).code : null;
       if (code !== "EEXIST") throw error;
-      // Stale-lock detection: if the owner PID is dead (SIGKILL / OOM / crash),
-      // the lockDir would otherwise persist forever and stall restores. Mirror
-      // the materializePaperclipSkillCopy lock pattern — remove and retry.
+      // Stale-lock detection: a lock left by a crashed prior incarnation (SIGKILL /
+      // OOM / restart) must be reclaimed or it stalls restores forever.
       if (!(await isHolderAlive(lockDir))) {
-        await fs.rm(lockDir, { recursive: true, force: true }).catch(() => undefined);
+        // Reclaim atomically: whoever wins the rename owns the removal, so two racing
+        // acquirers can never both delete-and-recreate the same lockDir. The loser
+        // gets ENOENT here and simply retries the atomic mkdir on the next iteration.
+        const reclaimPath = `${lockDir}.reclaiming-${RESTORE_LOCK_INSTANCE_ID}-${randomUUID()}`;
+        try {
+          await fs.rename(lockDir, reclaimPath);
+        } catch {
+          continue; // another acquirer already reclaimed/replaced it — retry
+        }
+        await fs.rm(reclaimPath, { recursive: true, force: true }).catch(() => undefined);
         continue;
       }
       if (Date.now() >= deadline) {

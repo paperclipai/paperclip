@@ -10,7 +10,7 @@ import {
   prepareSandboxManagedRuntime,
   type SandboxManagedRuntimeClient,
 } from "./sandbox-managed-runtime.js";
-import { captureDirectorySnapshot, mergeDirectoryWithBaseline } from "./workspace-restore-merge.js";
+import { captureDirectorySnapshot, mergeDirectoryWithBaseline, withDirectoryMergeLock } from "./workspace-restore-merge.js";
 
 const execFile = promisify(execFileCallback);
 
@@ -420,4 +420,76 @@ describe("codex home auth merge on sandbox asset extract", () => {
       expect(result.commandText, entry.name).not.toContain("SENTINEL");
     }
   });
+
+  it("reclaims a stale lock whose live PID belongs to a different process incarnation", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-restore-lock-"));
+    cleanupDirs.push(rootDir);
+    const targetDir = path.join(rootDir, "target");
+    await mkdir(targetDir, { recursive: true });
+    const lockDir = `${targetDir}.paperclip-restore.lock`;
+    await mkdir(lockDir, { recursive: true });
+    // Live PID (this test process) but a token from another incarnation: the classic
+    // container PID-reuse case that a bare process.kill(pid, 0) check cannot detect.
+    await writeFile(
+      path.join(lockDir, "owner.json"),
+      JSON.stringify({ pid: process.pid, instanceId: "prior-incarnation", createdAt: new Date().toISOString() }),
+      "utf8",
+    );
+    let ran = false;
+    let ownerDuringRun: string | null = null;
+    await withDirectoryMergeLock(targetDir, async () => {
+      ownerDuringRun = await readFile(path.join(lockDir, "owner.json"), "utf8");
+      ran = true;
+    });
+    expect(ran).toBe(true);
+    // Binds the assertion to real contention: the planted lock was reclaimed and a
+    // fresh owner.json written, not merely coexisting with an uncontended acquire.
+    expect(ownerDuringRun).not.toBeNull();
+    expect(ownerDuringRun as unknown as string).not.toContain("prior-incarnation");
+    await expect(lstat(lockDir)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("reclaims a legacy stale lock (no instanceId) via the age backstop when its PID was reused", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-restore-lock-legacy-"));
+    cleanupDirs.push(rootDir);
+    const targetDir = path.join(rootDir, "target");
+    await mkdir(targetDir, { recursive: true });
+    const lockDir = `${targetDir}.paperclip-restore.lock`;
+    await mkdir(lockDir, { recursive: true });
+    const twentyMinutesAgo = new Date(Date.now() - 20 * 60_000).toISOString();
+    await writeFile(
+      path.join(lockDir, "owner.json"),
+      JSON.stringify({ pid: process.pid, createdAt: twentyMinutesAgo }),
+      "utf8",
+    );
+    let ran = false;
+    await withDirectoryMergeLock(targetDir, async () => {
+      ran = true;
+    });
+    expect(ran).toBe(true);
+  });
+
+  it("serializes two concurrent restores of the same target (own-instance lock is respected)", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-restore-lock-serialize-"));
+    cleanupDirs.push(rootDir);
+    const targetDir = path.join(rootDir, "target");
+    await mkdir(targetDir, { recursive: true });
+    let inFlight = 0;
+    let maxInFlight = 0;
+    let completed = 0;
+    const run = () =>
+      withDirectoryMergeLock(targetDir, async () => {
+        inFlight += 1;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        inFlight -= 1;
+        completed += 1;
+      });
+    await Promise.all([run(), run()]);
+    // A lock bearing THIS process's own instanceId must be respected, so the second
+    // acquirer waits instead of reclaiming — the two restores never overlap.
+    expect(maxInFlight).toBe(1);
+    expect(completed).toBe(2);
+  });
+
 });
