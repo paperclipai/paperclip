@@ -2,6 +2,7 @@ import {
   redactEventPayloadWithMetadata,
   redactSensitiveText,
   redactSensitiveTextWithMetadata,
+  type CredentialRedactionResult,
 } from "./redaction.js";
 
 export const TRANSCRIPT_QUARANTINE_MARKER =
@@ -24,6 +25,33 @@ export interface TranscriptSecurityMetadata {
 export interface TranscriptSecurityResult<T> {
   value: T;
   metadata: TranscriptSecurityMetadata | null;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
+function redactTranscriptStrings(value: unknown): CredentialRedactionResult<unknown> {
+  if (typeof value === "string") return redactSensitiveTextWithMetadata(value);
+  if (Array.isArray(value)) {
+    const entries = value.map(redactTranscriptStrings);
+    return {
+      value: entries.map((entry) => entry.value),
+      matchCount: entries.reduce((total, entry) => total + entry.matchCount, 0),
+    };
+  }
+  if (!isPlainObject(value)) return { value, matchCount: 0 };
+
+  const entries = Object.entries(value).map(([key, entry]) => [
+    key,
+    redactTranscriptStrings(entry),
+  ] as const);
+  return {
+    value: Object.fromEntries(entries.map(([key, entry]) => [key, entry.value])),
+    matchCount: entries.reduce((total, [, entry]) => total + entry.matchCount, 0),
+  };
 }
 
 export function transcriptCredentialQuarantineEnabled(env = process.env) {
@@ -69,7 +97,12 @@ export function secureTranscriptPayload(
   boundary: TranscriptSecurityBoundary,
   options?: { quarantineEnabled?: boolean },
 ): TranscriptSecurityResult<Record<string, unknown> | null> {
-  const result = redactEventPayloadWithMetadata(input);
+  const keyResult = redactEventPayloadWithMetadata(input);
+  const textResult = redactTranscriptStrings(keyResult.value);
+  const result = {
+    value: textResult.value as Record<string, unknown> | null,
+    matchCount: keyResult.matchCount + textResult.matchCount,
+  };
   const metadata = metadataFor(
     boundary,
     result.matchCount,
@@ -96,7 +129,7 @@ export function redactTranscriptDiagnosticValue<T>(value: T): T {
     return value.map((entry) => redactTranscriptDiagnosticValue(entry)) as T;
   }
   if (!value || typeof value !== "object") return value;
-  const proto = Object.getPrototypeOf(value);
-  if (proto !== Object.prototype && proto !== null) return value;
-  return redactEventPayloadWithMetadata(value as Record<string, unknown>).value as T;
+  if (!isPlainObject(value)) return value;
+  const keyRedacted = redactEventPayloadWithMetadata(value).value;
+  return redactTranscriptStrings(keyRedacted).value as T;
 }

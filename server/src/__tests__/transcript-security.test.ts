@@ -51,6 +51,24 @@ describe("transcript credential security boundaries", () => {
     expect(JSON.stringify(result.metadata)).not.toContain(SYNTHETIC_CREDENTIAL);
   });
 
+  it("preserves secret metadata identifiers while redacting credential-shaped values", () => {
+    const result = secureTranscriptPayload(
+      {
+        secretId: "11111111-1111-1111-1111-111111111111",
+        secretName: "unbound-runtime-secret",
+        output: SYNTHETIC_CREDENTIAL,
+      },
+      "run_summary",
+    );
+
+    expect(result.value).toMatchObject({
+      secretId: "11111111-1111-1111-1111-111111111111",
+      secretName: "unbound-runtime-secret",
+      output: "***REDACTED***",
+    });
+    expect(result.metadata?.matchCount).toBe(1);
+  });
+
   it("redacts legacy credential content at the normal diagnostic rendering boundary", () => {
     const rendered = redactTranscriptDiagnosticValue({
       error: `request failed with ${SYNTHETIC_CREDENTIAL}`,

@@ -310,8 +310,6 @@ const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 50;
 const LIVENESS_BOOKKEEPING_ACTIVITY_ACTIONS = [
   "environment.lease_acquired",
   "environment.lease_released",
-  "heartbeat_run.transcript_credential_quarantined",
-  "heartbeat_run.transcript_credential_redacted",
 ];
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const WAKE_COMMENT_IDS_KEY = "wakeCommentIds";
@@ -8267,6 +8265,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         ? {
           ...messageSecurity.metadata,
           matchCount: messageSecurity.metadata.matchCount + payloadSecurity.metadata.matchCount,
+          disposition:
+            messageSecurity.metadata.disposition === "quarantined" ||
+            payloadSecurity.metadata.disposition === "quarantined"
+              ? "quarantined" as const
+              : "redacted" as const,
         }
         : messageSecurity.metadata ?? payloadSecurity.metadata;
     const issueId = readRuntimeStatusIssueIdCandidate(run) ?? null;
