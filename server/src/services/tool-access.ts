@@ -107,7 +107,7 @@ import type {
 import { CLASS3_STATIC_LEASE_ALLOWLIST, getToolAppGalleryEntry, isToolConnectionAttentionHealth } from "@paperclipai/shared";
 import { badRequest, conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { logActivity } from "./activity-log.js";
-import { mcpHttpRequestHeaders, parseMcpHttpResponseBody } from "./mcp-http.js";
+import { initializeMcpSession, mcpHttpRequestHeaders, parseMcpHttpResponseBody } from "./mcp-http.js";
 import { assertPublicRemoteHttpEndpoint, parseRemoteHttpEndpoint } from "./remote-http-endpoint-guard.js";
 import { secretService } from "./secrets.js";
 import { toolAccessPolicyService } from "./tool-access-policy.js";
@@ -2715,11 +2715,20 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
   async function remoteTools(connection: typeof toolConnections.$inferSelect): Promise<McpToolDescriptor[]> {
     const headers = await resolveCredentialHeaders(connection);
     const endpoint = await assertRemoteEndpointAllowed(connection.config);
+    // MCP requires an `initialize` handshake before any other request. Stateful
+    // Streamable HTTP servers return an `Mcp-Session-Id` we must echo back (they
+    // answer `400 Server not initialized` otherwise); stateless servers omit it.
+    // initializeMcpSession is best-effort and returns null for both stateless
+    // servers and failures, so the tools/list request below stays the
+    // authoritative error path (OAuth challenges, etc.).
+    const sessionId = await initializeMcpSession(endpoint, headers);
+    const requestHeaders = mcpHttpRequestHeaders(headers);
+    if (sessionId) requestHeaders["mcp-session-id"] = sessionId;
     const response = await fetch(endpoint, {
       method: "POST",
       // MCP Streamable HTTP requires advertising that we accept both a JSON body
       // and an SSE stream; spec-compliant servers 406 without it (see mcp-http.ts).
-      headers: mcpHttpRequestHeaders(headers),
+      headers: requestHeaders,
       body: JSON.stringify({
         jsonrpc: "2.0",
         id: "paperclip-catalog-refresh",
