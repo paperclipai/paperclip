@@ -7,7 +7,7 @@ usage() {
 Usage:
   paperclip-upload-artifact.sh FILE [options]
 
-Uploads a generated file from the current workspace to the current Paperclip
+Uploads a generated file from the current workspace to the current Cortex
 issue, then creates an attachment-backed artifact work product by default.
 
 Required environment for live uploads:

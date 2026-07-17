@@ -625,7 +625,7 @@ export function SecretsSection() {
           <div>
             <p className="font-medium">{secretMessage.title}</p>
             <p className="text-xs text-muted-foreground">
-              Save this now. Paperclip will not show the secret value again.
+              Save this now. Cortex will not show the secret value again.
             </p>
           </div>
           <div className="space-y-3">

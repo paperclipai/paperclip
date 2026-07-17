@@ -163,7 +163,7 @@ export interface RemarkLinkIssueReferencesOptions {
    * Company issue prefixes that are eligible for auto-linking. When provided
    * and non-empty, a bare IDENT-123 token only becomes an issue link if its
    * prefix is in this set -- this keeps foreign tracker keys (e.g. a Jira
-   * "TREE-604") from linking to non-existent Paperclip issues. Omit or pass an
+   * "TREE-604") from linking to non-existent Cortex issues. Omit or pass an
    * empty list to keep the legacy permissive behavior (link any IDENT-123).
    */
   knownPrefixes?: string[];

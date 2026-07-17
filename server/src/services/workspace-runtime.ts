@@ -3202,7 +3202,7 @@ export async function restartDesiredRuntimeServicesOnStartup(db: Db) {
     try {
       const refs = await startRuntimeServicesForWorkspaceControl({
         db,
-        actor: { id: null, name: "Paperclip", companyId: row.companyId },
+        actor: { id: null, name: "Cortex", companyId: row.companyId },
         issue: row.sourceIssueId
           ? {
               id: row.sourceIssueId,

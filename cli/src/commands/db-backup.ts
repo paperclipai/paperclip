@@ -48,7 +48,7 @@ function resolveBackupDir(raw: string): string {
 
 export async function dbBackupCommand(opts: DbBackupOptions): Promise<void> {
   printPaperclipCliBanner();
-  p.intro(pc.bgCyan(pc.black(" paperclip db:backup ")));
+  p.intro(pc.bgCyan(pc.black(" cortex db:backup ")));
 
   const configPath = resolveConfigPath(opts.config);
   const config = readConfig(opts.config);

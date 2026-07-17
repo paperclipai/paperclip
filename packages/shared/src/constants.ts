@@ -1,3 +1,12 @@
+/**
+ * Canonical product/brand name — the single source of truth for every
+ * user-visible surface (UI wordmark + document title, CLI banner/help text).
+ * Internal contracts (env vars, package scopes, storage keys, filesystem paths)
+ * deliberately keep the historical `paperclip` identifier and are NOT derived
+ * from this constant. See NEO-436 / NEO-439 (Bucket A rebrand).
+ */
+export const PRODUCT_NAME = "Cortex";
+
 export const COMPANY_STATUSES = ["active", "paused", "archived"] as const;
 export type CompanyStatus = (typeof COMPANY_STATUSES)[number];
 

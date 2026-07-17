@@ -709,7 +709,7 @@ export function executionWorkspaceService(db: Db) {
           plannedActions.push({
             kind: "remove_local_directory",
             label: "Remove runtime-created directory",
-            description: `Paperclip will remove the runtime-created directory at ${workspacePath}.`,
+            description: `Cortex will remove the runtime-created directory at ${workspacePath}.`,
             command: `rm -rf ${workspacePath}`,
           });
         }

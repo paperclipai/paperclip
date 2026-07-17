@@ -55,15 +55,15 @@ const KIND_LABEL: Record<IssueRecoveryActionKind, string> = {
 const KIND_HEADLINE: Record<IssueRecoveryActionKind, string> = {
   missing_disposition: "This task's run finished, but no next step was chosen.",
   stranded_assigned_issue:
-    "Paperclip retried this task's last run and it still has no live execution path.",
+    "Cortex retried this task's last run and it still has no live execution path.",
   workspace_validation:
-    "Paperclip stopped this run because the task's git workspace could not be validated.",
+    "Cortex stopped this run because the task's git workspace could not be validated.",
   configuration_validation:
-    "Paperclip stopped before dispatching this run because required secret/env bindings are missing.",
+    "Cortex stopped before dispatching this run because required secret/env bindings are missing.",
   active_run_watchdog:
     "The active run has been silent. Recovery is observing without interrupting it.",
   issue_graph_liveness:
-    "Paperclip detected this task lost a live action path. A recovery owner needs to act.",
+    "Cortex detected this task lost a live action path. A recovery owner needs to act.",
 };
 
 const STATE_TONE: Record<RecoveryCardCardState, {

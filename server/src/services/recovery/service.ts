@@ -2986,7 +2986,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
               previousStatus: "in_progress",
               latestRun,
               comment:
-                "Paperclip automatically retried continuation for this assigned `in_progress` issue after its live " +
+                "Cortex automatically retried continuation for this assigned `in_progress` issue after its live " +
                 `execution disappeared, but it still has no live execution path${attemptCopy}.${causeCopy}${failureSummary ?? ""} ` +
                 "Moving it to `blocked` so it is visible for intervention.",
             });

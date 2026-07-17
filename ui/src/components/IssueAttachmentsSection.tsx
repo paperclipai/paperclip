@@ -1,7 +1,7 @@
 import { useMemo, useState, type DragEvent, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { IssueAttachment } from "@paperclipai/shared";
-import { Download, ExternalLink, FileText, Paperclip, Trash2 } from "lucide-react";
+import { Download, ExternalLink, FileText, Cortex, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { FoldCurtain } from "./FoldCurtain";
 import { MarkdownBody } from "./MarkdownBody";
@@ -241,7 +241,7 @@ export function IssueAttachmentsSection({
     >
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2">
-          <Paperclip className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
+          <Cortex className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
           <h3 className="text-sm font-medium text-muted-foreground">Attachments</h3>
           <span className="text-xs text-muted-foreground">{attachments.length}</span>
         </div>

@@ -55,7 +55,7 @@ export function llmRoutes(db: Db) {
   router.get("/llms/agent-icons.txt", async (req, res) => {
     await assertCanRead(req);
     const lines = [
-      "# Paperclip Agent Icon Names",
+      "# Cortex Agent Icon Names",
       "",
       "Set the `icon` field on hire/create payloads to one of:",
       ...AGENT_ICON_NAMES.map((name) => `- ${name}`),
