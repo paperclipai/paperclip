@@ -13243,13 +13243,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .where(eq(heartbeatRuns.id, runId));
 
       const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
+      // One audit row per disposition for the stream path. Chunk cadence can be
+      // hundreds/sec; unbounded activity inserts would amplify a noisy or hostile
+      // credential-shaped stream into a database write DoS.
+      const streamSecurityAuditLogged = new Set<"redacted" | "quarantined">();
       const onLog = async (stream: "stdout" | "stderr", chunk: string) => {
         const securedChunk = secureTranscriptText(
           redactCurrentUserText(chunk, currentUserRedactionOptions),
           "run_log",
         );
         const sanitizedChunk = compactRunLogChunk(securedChunk.value);
-        if (securedChunk.metadata) {
+        if (
+          securedChunk.metadata
+          && !streamSecurityAuditLogged.has(securedChunk.metadata.disposition)
+        ) {
+          streamSecurityAuditLogged.add(securedChunk.metadata.disposition);
           await recordTranscriptSecurityEvent(
             currentRun,
             securedChunk.metadata,

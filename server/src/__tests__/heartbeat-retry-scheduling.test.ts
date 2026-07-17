@@ -107,6 +107,9 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     await db.delete(executionWorkspaces);
     await db.delete(projects);
     await db.delete(heartbeatRunEvents);
+    // Late async writers (for example transcript-security audit rows) can land after
+    // the first activity_log wipe; clear again before deleting heartbeat_runs.
+    await db.delete(activityLog);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(agentRuntimeState);
