@@ -386,4 +386,42 @@ describeEmbeddedPostgres("workflow invocation bridge", () => {
       }));
     }, 10_000);
   });
+
+  it("preserves the agent result when Resource publication fails", async () => {
+    const companyId = await seedCompany(db);
+    const { routineId, routineRunId } = await seedRoutine(db, companyId);
+    await seedWorkflow(db, companyId, {
+      title: "Publishing workflow",
+      workflowKey: "publishing-workflow",
+    });
+    mockPrepareResources.mockResolvedValueOnce({
+      environment: {},
+      inputVersions: [],
+      publish: vi.fn(async () => {
+        throw new Error("Resource publication failed");
+      }),
+    });
+
+    const result = await workflowInvocationService(db).invokeFromRoutine({
+      routineId,
+      sourceRoutineRunId: routineRunId,
+      envelope: {
+        contractVersion: "workflow-invocation/v1",
+        target: { workflowKey: "publishing-workflow" },
+        payload: {
+          kind: "json",
+          inputJson: { resourceManifest: { version: 1 as const, resources: [] } },
+        },
+      },
+    });
+
+    await vi.waitFor(async () => {
+      const run = await db.select().from(workflowRuns).where(eq(workflowRuns.id, result.workflowRunId!)).then((rows) => rows[0] ?? null);
+      expect(run?.status).toBe("failed");
+      expect(run?.contextSnapshot).toMatchObject({
+        resultJson: { ok: true },
+        resourceOutputError: "Resource publication failed",
+      });
+    }, 10_000);
+  });
 });

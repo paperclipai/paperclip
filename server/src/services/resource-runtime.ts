@@ -12,11 +12,13 @@ import { conflict, notFound, unprocessable } from "../errors.js";
 import { secretService } from "./secrets.js";
 
 const execFile = promisify(execFileCallback);
+const GIT_COMMAND_TIMEOUT_MS = 120_000;
 
 type GitCommandOptions = {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   redact?: string[];
+  timeoutMs?: number;
 };
 
 async function runGit(args: string[], options: GitCommandOptions = {}) {
@@ -25,6 +27,8 @@ async function runGit(args: string[], options: GitCommandOptions = {}) {
       cwd: options.cwd,
       env: options.env ?? process.env,
       maxBuffer: 10 * 1024 * 1024,
+      timeout: options.timeoutMs ?? GIT_COMMAND_TIMEOUT_MS,
+      killSignal: "SIGKILL",
     });
     return result.stdout.trim();
   } catch (error) {

@@ -808,9 +808,12 @@ export function workflowService(db: Db) {
         notInArray(workflowRuns.status, ["succeeded", "failed", "cancelled"]),
       ));
     } catch (err) {
-      contextSnapshot.resultJson = {
-        error: err instanceof Error ? err.message : String(err),
-      };
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      if (contextSnapshot.resultJson === null || contextSnapshot.resultJson === undefined) {
+        contextSnapshot.resultJson = { error: errorMessage };
+      } else {
+        contextSnapshot.resourceOutputError = errorMessage;
+      }
       if (err instanceof Error && err.message) {
         await appendConsoleChunk("stderr", `${err.message}\n`);
       } else {
