@@ -12,6 +12,7 @@ import type { PluginEventBus } from "./plugin-event-bus.js";
 import { instanceSettingsService } from "./instance-settings.js";
 
 const PLUGIN_EVENT_SET: ReadonlySet<string> = new Set(PLUGIN_EVENT_TYPES);
+export const MAX_ACTIVITY_DETAILS_BYTES = 64 * 1024;
 const ACTIVITY_ACTION_TO_PLUGIN_EVENT: Readonly<Record<string, PluginEventType>> = {
   issue_comment_added: "issue.comment.created",
   issue_comment_created: "issue.comment.created",
@@ -67,6 +68,46 @@ export interface LogActivityInput {
 
 function readNonEmptyString(value: unknown) {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+export function capActivityDetails(
+  details: Record<string, unknown> | null,
+  maxBytes: number = MAX_ACTIVITY_DETAILS_BYTES,
+): Record<string, unknown> | null {
+  if (!details) return null;
+
+  const serialized = JSON.stringify(details);
+  const originalBytes = Buffer.byteLength(serialized, "utf8");
+  if (originalBytes <= maxBytes) return details;
+
+  const buildMarker = (preview: string) => ({
+    _paperclipTruncated: true,
+    _paperclipOriginalBytes: originalBytes,
+    _paperclipMaxBytes: maxBytes,
+    _paperclipPreview: preview,
+  });
+
+  let low = 0;
+  let high = serialized.length;
+  while (low < high) {
+    const midpoint = Math.ceil((low + high) / 2);
+    const candidate = buildMarker(serialized.slice(0, midpoint));
+    if (Buffer.byteLength(JSON.stringify(candidate), "utf8") <= maxBytes) {
+      low = midpoint;
+    } else {
+      high = midpoint - 1;
+    }
+  }
+
+  const finalCodeUnit = serialized.charCodeAt(low - 1);
+  const nextCodeUnit = serialized.charCodeAt(low);
+  const splitsSurrogatePair = finalCodeUnit >= 0xd800
+    && finalCodeUnit <= 0xdbff
+    && nextCodeUnit >= 0xdc00
+    && nextCodeUnit <= 0xdfff;
+  const previewEnd = splitsSurrogatePair ? low - 1 : low;
+
+  return buildMarker(serialized.slice(0, previewEnd));
 }
 
 export async function resolveResponsibleUserIdForActivity(db: Db, input: LogActivityInput) {
@@ -132,6 +173,7 @@ export async function logActivity(db: Db, input: LogActivityInput) {
   const redactedDetails = sanitizedDetails
     ? redactCurrentUserValue(sanitizedDetails, currentUserRedactionOptions)
     : null;
+  const cappedDetails = capActivityDetails(redactedDetails);
   const responsibleUserId = await resolveResponsibleUserIdForActivity(db, input);
   await db.insert(activityLog).values({
     companyId: input.companyId,
@@ -143,7 +185,7 @@ export async function logActivity(db: Db, input: LogActivityInput) {
     agentId: input.agentId ?? null,
     runId: input.runId ?? null,
     responsibleUserId,
-    details: redactedDetails,
+    details: cappedDetails,
   });
 
   publishLiveEvent({
@@ -158,7 +200,7 @@ export async function logActivity(db: Db, input: LogActivityInput) {
       agentId: input.agentId ?? null,
       runId: input.runId ?? null,
       responsibleUserId,
-      details: redactedDetails,
+      details: cappedDetails,
     },
   });
 
@@ -174,7 +216,7 @@ export async function logActivity(db: Db, input: LogActivityInput) {
       entityType: input.entityType,
       companyId: input.companyId,
       payload: {
-        ...redactedDetails,
+        ...cappedDetails,
         agentId: input.agentId ?? null,
         runId: input.runId ?? null,
         responsibleUserId,

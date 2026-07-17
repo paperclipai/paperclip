@@ -51,6 +51,7 @@ import {
   toolAccessService,
 } from "./services/index.js";
 import { resolveWorktreeRunExecutionActivationState } from "./services/instance-settings.js";
+import { startActivityLogRetention } from "./services/activity-log-retention.js";
 import {
   parseAdapterRegistryEnv,
   reconcileAdapterAvailability,
@@ -826,6 +827,7 @@ export async function startServer(): Promise<StartedServer> {
   let prepareHotRestartShutdown: ((signal: "SIGINT" | "SIGTERM") => Promise<{ skipDrain: boolean }>) | null = null;
   let heartbeatSchedulerStopped = false;
   let heartbeatSchedulerInterval: ReturnType<typeof setInterval> | null = null;
+  const stopActivityLogRetention = startActivityLogRetention(db);
   const heartbeatSchedulerInFlight = new Set<Promise<void>>();
   const trackHeartbeatSchedulerWork = (work: Promise<unknown>) => {
     let tracked: Promise<void>;
@@ -1200,6 +1202,7 @@ export async function startServer(): Promise<StartedServer> {
   {
     const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
       heartbeatSchedulerStopped = true;
+      stopActivityLogRetention();
       if (heartbeatSchedulerInterval) {
         clearInterval(heartbeatSchedulerInterval);
         heartbeatSchedulerInterval = null;

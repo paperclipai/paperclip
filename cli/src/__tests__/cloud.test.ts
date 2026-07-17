@@ -215,6 +215,7 @@ function portabilityExport(): CompanyPortabilityExportResult {
         brandColor: null,
         logoPath: null,
         attachmentMaxBytes: null,
+        activityLogRetentionDays: null,
         requireBoardApprovalForNewAgents: false,
         feedbackDataSharingEnabled: false,
         feedbackDataSharingConsentAt: null,

@@ -2669,6 +2669,10 @@ function buildManifestFromPackageFiles(
         typeof paperclipCompany.attachmentMaxBytes === "number" && Number.isFinite(paperclipCompany.attachmentMaxBytes)
           ? Math.max(1, Math.floor(paperclipCompany.attachmentMaxBytes))
           : null,
+      activityLogRetentionDays:
+        typeof paperclipCompany.activityLogRetentionDays === "number" && Number.isFinite(paperclipCompany.activityLogRetentionDays)
+          ? Math.max(1, Math.min(36_500, Math.floor(paperclipCompany.activityLogRetentionDays)))
+          : null,
       requireBoardApprovalForNewAgents:
         typeof paperclipCompany.requireBoardApprovalForNewAgents === "boolean"
           ? paperclipCompany.requireBoardApprovalForNewAgents
@@ -3896,6 +3900,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           brandColor: company.brandColor ?? null,
           logoPath: companyLogoPath,
           attachmentMaxBytes: company.attachmentMaxBytes,
+          activityLogRetentionDays: company.activityLogRetentionDays,
           requireBoardApprovalForNewAgents: company.requireBoardApprovalForNewAgents ? true : undefined,
           feedbackDataSharingEnabled: company.feedbackDataSharingEnabled ? true : undefined,
           feedbackDataSharingConsentAt: company.feedbackDataSharingConsentAt?.toISOString() ?? null,
@@ -4433,6 +4438,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       name: string;
       requireBoardApprovalForNewAgents?: boolean | null;
       attachmentMaxBytes?: number | null;
+      activityLogRetentionDays?: number | null;
     } | null = null;
     let companyAction: "created" | "updated" | "unchanged" = "unchanged";
 
@@ -4457,6 +4463,9 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         brandColor: include.company ? (sourceManifest.company?.brandColor ?? null) : null,
         attachmentMaxBytes: include.company
           ? (sourceManifest.company?.attachmentMaxBytes ?? undefined)
+          : undefined,
+        activityLogRetentionDays: include.company
+          ? (sourceManifest.company?.activityLogRetentionDays ?? undefined)
           : undefined,
         requireBoardApprovalForNewAgents: include.company
           ? (sourceManifest.company?.requireBoardApprovalForNewAgents ?? false)
@@ -4497,6 +4506,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           description: sourceManifest.company.description,
           brandColor: sourceManifest.company.brandColor,
           attachmentMaxBytes: sourceManifest.company.attachmentMaxBytes ?? undefined,
+          activityLogRetentionDays: sourceManifest.company.activityLogRetentionDays,
           requireBoardApprovalForNewAgents: sourceManifest.company.requireBoardApprovalForNewAgents,
           feedbackDataSharingEnabled: sourceManifest.company.feedbackDataSharingEnabled,
           feedbackDataSharingConsentAt: sourceManifest.company.feedbackDataSharingConsentAt

@@ -27,6 +27,7 @@ function makeCompany(overrides: Partial<Company>): Company {
     createdAt: new Date(),
     updatedAt: new Date(),
     ...overrides,
+    activityLogRetentionDays: overrides.activityLogRetentionDays ?? null,
   };
 }
 

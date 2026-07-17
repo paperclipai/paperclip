@@ -1233,6 +1233,13 @@
       "when": 1784241826832,
       "tag": "0177_activity_log_responsible_user",
       "breakpoints": true
+    },
+    {
+      "idx": 178,
+      "version": "7",
+      "when": 1784241827832,
+      "tag": "0178_activity_log_retention",
+      "breakpoints": true
     }
   ]
 }

@@ -18,6 +18,7 @@ import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY } from "@paperclipai/shared";
 import { logger } from "../middleware/logger.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
 import { classifyRunLiveness } from "./run-liveness.js";
+import { capActivityDetails } from "./activity-log.js";
 
 export interface ActivityFilters {
   companyId: string;
@@ -582,7 +583,10 @@ export function activityService(db: Db) {
     create: (data: typeof activityLog.$inferInsert) =>
       db
         .insert(activityLog)
-        .values(data)
+        .values({
+          ...data,
+          details: capActivityDetails(data.details ?? null),
+        })
         .returning()
         .then((rows) => rows[0]),
   };

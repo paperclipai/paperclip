@@ -644,6 +644,25 @@ pnpm dev
 
 If you set `DATABASE_URL`, the server will use that instead of embedded PostgreSQL.
 
+## Activity Log Retention
+
+Activity log rows are kept forever by default. Board users can set a company-specific
+retention window through the company update API:
+
+```json
+{ "activityLogRetentionDays": 30 }
+```
+
+Set `activityLogRetentionDays` to `null` to restore keep-forever behavior. Accepted
+retention values are whole days from 1 through 36500. The server runs one sweep at
+startup and then hourly, deleting only rows strictly older than the configured window
+in bounded, company-scoped batches.
+
+The `activity_log.details` payload is capped at 64 KiB of serialized UTF-8 JSON.
+Oversized details do not reject the activity write; they are replaced with a marker
+containing `_paperclipTruncated`, `_paperclipOriginalBytes`,
+`_paperclipMaxBytes`, and a bounded `_paperclipPreview` string.
+
 ## Automatic DB Backups
 
 Paperclip can run automatic logical database backups on a timer. These backups cover

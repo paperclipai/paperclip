@@ -18,6 +18,7 @@ import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
 import { boardAuthService } from "../services/board-auth.js";
 import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compatibility.js";
+import { capActivityDetails } from "../services/activity-log.js";
 import { forbidden, unprocessable } from "../errors.js";
 
 function hashToken(token: string) {
@@ -91,12 +92,12 @@ async function auditAgentJwtRunHeaderMismatch(
       entityId: input.claimRunId,
       ...(isUuidLike(input.agentId) ? { agentId: input.agentId } : {}),
       ...(isUuidLike(input.claimRunId) ? { runId: input.claimRunId } : {}),
-      details: {
+      details: capActivityDetails({
         claimRunId: input.claimRunId,
         headerRunId: input.headerRunId,
         method: input.method,
         url: input.url,
-      },
+      }),
     });
   } catch (err) {
     logger.warn(
@@ -119,10 +120,10 @@ async function auditAgentKeyMissingResponsibleUser(
       entityType: "agent_api_key",
       entityId: input.keyId,
       ...(isUuidLike(input.agentId) ? { agentId: input.agentId } : {}),
-      details: {
+      details: capActivityDetails({
         method: input.method,
         url: input.url,
-      },
+      }),
     });
   } catch (err) {
     logger.warn(

@@ -12,12 +12,14 @@ const attachmentMaxBytesSchema = z
   .int()
   .min(1)
   .max(MAX_COMPANY_ATTACHMENT_MAX_BYTES);
+const activityLogRetentionDaysSchema = z.number().int().min(1).max(36_500).nullable();
 
 export const createCompanySchema = z.object({
   name: z.string().min(1),
   description: z.string().optional().nullable(),
   budgetMonthlyCents: z.number().int().nonnegative().optional().default(0),
   attachmentMaxBytes: attachmentMaxBytesSchema.optional(),
+  activityLogRetentionDays: activityLogRetentionDaysSchema.optional(),
   defaultResponsibleUserId: z.string().min(1).nullable().optional(),
 });
 
@@ -36,6 +38,7 @@ export const updateCompanySchema = createCompanySchema
     brandColor: brandColorSchema,
     logoAssetId: logoAssetIdSchema,
     attachmentMaxBytes: attachmentMaxBytesSchema.optional(),
+    activityLogRetentionDays: activityLogRetentionDaysSchema.optional(),
   });
 
 export type UpdateCompany = z.infer<typeof updateCompanySchema>;
