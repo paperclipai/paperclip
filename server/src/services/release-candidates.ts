@@ -451,6 +451,7 @@ export function releaseCandidateService(db: Db) {
       continuationPolicy: "wake_assignee" as const,
       payload: {
         version: 1 as const,
+        supersedeOnUserComment: false,
         prompt: `Approve scanner deploy candidate ${candidate.sequence} for ${candidate.environment} on ${candidate.targetHost}?`,
         acceptLabel: "Approve deploy",
         rejectLabel: "Reject",

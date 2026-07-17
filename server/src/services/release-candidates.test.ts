@@ -144,6 +144,7 @@ describe("release candidate approval relay", () => {
       key: `release_candidate:${candidate.id}`,
       revisionId: candidate.imageDigest,
     });
+    expect(input.payload.supersedeOnUserComment).toBe(false);
     expect(input.payload.detailsMarkdown).toContain(candidate.sbomHash);
     expect(input.payload.detailsMarkdown).toContain(candidate.signatureBundleSha256);
   });
