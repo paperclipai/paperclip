@@ -700,6 +700,111 @@ describeEmbeddedPostgres("authorization service", () => {
     });
   });
 
+  it("lets a direct-child assignee comment on its parent without granting parent mutation (BRO-1290)", async () => {
+    const company = await createCompany(db, "ChildParentComment");
+    const parentAssignee = await createAgent(db, company.id, { role: "engineer" });
+    const childAssignee = await createAgent(db, company.id, { role: "engineer" });
+    const unrelatedAgent = await createAgent(db, company.id, { role: "engineer" });
+    const parentIssue = await createIssue(db, company.id, {
+      title: "Parent issue",
+      assigneeAgentId: parentAssignee.id,
+    });
+    await createIssue(db, company.id, {
+      title: "Child issue",
+      parentId: parentIssue.id,
+      assigneeAgentId: childAssignee.id,
+    });
+
+    const authorization = authorizationService(db);
+    const parentResource = {
+      type: "issue",
+      companyId: company.id,
+      issueId: parentIssue.id,
+      projectId: parentIssue.projectId,
+      parentIssueId: parentIssue.parentId,
+      assigneeAgentId: parentAssignee.id,
+      status: parentIssue.status,
+    } as const;
+    const childActor = { type: "agent", agentId: childAssignee.id, companyId: company.id, source: "agent_key" } as const;
+
+    // The child's assignee can comment on the direct parent.
+    await expect(authorization.decide({
+      actor: childActor,
+      action: "issue:comment",
+      resource: parentResource,
+    })).resolves.toMatchObject({
+      allowed: true,
+      reason: "allow_parent_of_assigned_child",
+    });
+
+    // ...but must NOT be able to mutate (status / assignee / title) the parent.
+    await expect(authorization.decide({
+      actor: childActor,
+      action: "issue:mutate",
+      resource: parentResource,
+    })).resolves.toMatchObject({ allowed: false });
+
+    // An agent with no child under the parent is still denied.
+    await expect(authorization.decide({
+      actor: { type: "agent", agentId: unrelatedAgent.id, companyId: company.id, source: "agent_key" },
+      action: "issue:comment",
+      resource: parentResource,
+    })).resolves.toMatchObject({ allowed: false });
+  });
+
+  it("does not extend the child-parent comment grant to non-direct ancestors (BRO-1290)", async () => {
+    const company = await createCompany(db, "ChildAncestorComment");
+    const midAssignee = await createAgent(db, company.id, { role: "engineer" });
+    const childAssignee = await createAgent(db, company.id, { role: "engineer" });
+    const grandparent = await createIssue(db, company.id, {
+      title: "Grandparent issue",
+      assigneeAgentId: midAssignee.id,
+    });
+    const parent = await createIssue(db, company.id, {
+      title: "Parent issue",
+      parentId: grandparent.id,
+      assigneeAgentId: midAssignee.id,
+    });
+    await createIssue(db, company.id, {
+      title: "Child issue",
+      parentId: parent.id,
+      assigneeAgentId: childAssignee.id,
+    });
+
+    const authorization = authorizationService(db);
+    const childActor = { type: "agent", agentId: childAssignee.id, companyId: company.id, source: "agent_key" } as const;
+
+    // Direct parent: allowed.
+    await expect(authorization.decide({
+      actor: childActor,
+      action: "issue:comment",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: parent.id,
+        projectId: parent.projectId,
+        parentIssueId: parent.parentId,
+        assigneeAgentId: midAssignee.id,
+        status: parent.status,
+      },
+    })).resolves.toMatchObject({ allowed: true, reason: "allow_parent_of_assigned_child" });
+
+    // Grandparent (two hops up): denied — the grant is a single direct hop only.
+    await expect(authorization.decide({
+      actor: childActor,
+      action: "issue:comment",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: grandparent.id,
+        projectId: grandparent.projectId,
+        parentIssueId: grandparent.parentId,
+        assigneeAgentId: midAssignee.id,
+        status: grandparent.status,
+      },
+    })).resolves.toMatchObject({ allowed: false });
+  });
+
   it("limits low-trust issue reads to the configured project and root issue boundary", async () => {
     const company = await createCompany(db, "LowTrustIssueReads");
     const project = await createProject(db, company.id, "Allowed");
