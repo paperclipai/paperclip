@@ -90,4 +90,19 @@ describe("hermes-local stderr classification", () => {
     expect(result.exitCode).toBe(1);
     expect(result.errorMessage).toContain("git gc");
   });
+
+  it("preserves stderr diagnostics when the Hermes child times out", async () => {
+    runChildProcessMock.mockResolvedValueOnce({
+      exitCode: null,
+      signal: "SIGTERM",
+      timedOut: true,
+      stdout: "",
+      stderr: recoverableCheckpointError,
+    });
+
+    const result = await execute(makeCtx() as any);
+
+    expect(result.timedOut).toBe(true);
+    expect(result.errorMessage).toContain("git gc");
+  });
 });
