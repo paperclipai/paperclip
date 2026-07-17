@@ -18,6 +18,13 @@ const mockIssueService = vi.hoisted(() => ({
   getWakeableParentAfterChildCompletion: vi.fn(),
   findMentionedAgents: vi.fn(async () => []),
 }));
+const mockDb = vi.hoisted(() => ({
+  select: vi.fn(() => ({
+    from: vi.fn(() => ({
+      where: vi.fn(async () => []),
+    })),
+  })),
+}));
 
 vi.mock("../services/index.js", () => ({
   accessService: () => ({
@@ -114,7 +121,7 @@ vi.mock("../services/index.js", () => ({
   }),
 }));
 
-async function createApp() {
+async function createApp(actorOverride?: Record<string, unknown>) {
   const [{ issueRoutes }, { errorHandler }] = await Promise.all([
     vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
@@ -122,7 +129,7 @@ async function createApp() {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    (req as any).actor = {
+    (req as any).actor = actorOverride ?? {
       type: "board",
       userId: "local-board",
       companyIds: ["company-1"],
@@ -131,7 +138,7 @@ async function createApp() {
     };
     next();
   });
-  app.use("/api", issueRoutes({} as any, {} as any));
+  app.use("/api", issueRoutes(mockDb as any, {} as any));
   app.use(errorHandler);
   return app;
 }
@@ -243,6 +250,84 @@ describe("assigned backlog creation contract", () => {
           statusDefaultReason: "assigned_omitted_status",
           assignmentWakeSkipped: false,
         }),
+      }),
+    );
+  });
+
+  it("does not enqueue a duplicate assignment wake when an agent creates work assigned to itself", async () => {
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: assigneeAgentId,
+      companyId: "company-1",
+      runId: "run-1",
+    }))
+      .post("/api/companies/company-1/issues")
+      .send({
+        title: "Agent-created self-assigned report",
+        assigneeAgentId,
+        status: "todo",
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        title: "Agent-created self-assigned report",
+        assigneeAgentId,
+        status: "todo",
+        createdByAgentId: assigneeAgentId,
+      }),
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.created",
+        entityId: "issue-1",
+        agentId: assigneeAgentId,
+        runId: "run-1",
+        details: expect.objectContaining({
+          status: "todo",
+          assignmentWakeSkipped: true,
+          assignmentWakeSkipReason: "self_assignment",
+        }),
+      }),
+    );
+    expect(mockWakeup).not.toHaveBeenCalled();
+  });
+
+  it("keeps the assignment wake for agent-key self-assignment without an active run", async () => {
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: assigneeAgentId,
+      companyId: "company-1",
+    }))
+      .post("/api/companies/company-1/issues")
+      .send({
+        title: "External agent-key self-assigned work",
+        assigneeAgentId,
+        status: "todo",
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.created",
+        entityId: "issue-1",
+        agentId: assigneeAgentId,
+        runId: null,
+        details: expect.objectContaining({
+          status: "todo",
+          assignmentWakeSkipped: false,
+        }),
+      }),
+    );
+    expect(mockWakeup).toHaveBeenCalledWith(
+      assigneeAgentId,
+      expect.objectContaining({
+        source: "assignment",
+        reason: "issue_assigned",
+        payload: expect.objectContaining({ mutation: "create" }),
       }),
     );
   });

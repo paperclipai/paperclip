@@ -31,6 +31,7 @@ vi.hoisted(() => {
 });
 
 vi.mock("../services/issue-assignment-wakeup.js", () => ({
+  issueAssignmentWakeupSkipReason: vi.fn(() => null),
   queueIssueAssignmentWakeup: vi.fn(),
 }));
 

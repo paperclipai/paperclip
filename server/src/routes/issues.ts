@@ -142,7 +142,10 @@ import {
   normalizeContentType,
   SVG_CONTENT_TYPE,
 } from "../attachment-types.js";
-import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
+import {
+  issueAssignmentWakeupSkipReason,
+  queueIssueAssignmentWakeup,
+} from "../services/issue-assignment-wakeup.js";
 import {
   ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
   buildIssueBlockersResolvedWakeIdempotencyKey,
@@ -393,21 +396,23 @@ const attachmentArtifactMetadataInputSchema = z.object({
 function buildCreateIssueActivityStatusDetails(
   issue: { assigneeAgentId: string | null; status: string },
   res: Response,
+  actor?: { actorType: "user" | "agent"; actorId: string; runId?: string | null },
 ) {
   const statusDefault = res.locals.createIssueStatusDefault as
     | ReturnType<typeof resolveCreateIssueStatusDefault>
     | undefined;
-  const assignmentWakeSkipped = !issue.assigneeAgentId || issue.status === "backlog";
+  const assignmentWakeSkipReason = issueAssignmentWakeupSkipReason({
+    issue,
+    requestedByActorType: actor?.actorType,
+    requestedByActorId: actor?.actorId,
+    requestedByActorRunId: actor?.runId,
+  });
   return {
     status: issue.status,
     statusDefaulted: statusDefault?.defaulted ?? false,
     statusDefaultReason: statusDefault?.reason ?? "explicit",
-    assignmentWakeSkipped,
-    assignmentWakeSkipReason: assignmentWakeSkipped
-      ? issue.assigneeAgentId
-        ? "assigned_backlog"
-        : "no_agent_assignee"
-      : null,
+    assignmentWakeSkipped: Boolean(assignmentWakeSkipReason),
+    assignmentWakeSkipReason,
   };
 }
 
@@ -7121,7 +7126,7 @@ export function issueRoutes(
             },
           }
           : {}),
-        ...buildCreateIssueActivityStatusDetails(issue, res),
+        ...buildCreateIssueActivityStatusDetails(issue, res, actor),
         ...(Array.isArray(req.body.blockedByIssueIds) ? { blockedByIssueIds: req.body.blockedByIssueIds } : {}),
         ...summarizeIssueReferenceActivityDetails({
           addedReferencedIssues: referenceDiff.addedReferencedIssues.map(summarizeIssueRelationForActivity),
@@ -7183,6 +7188,7 @@ export function issueRoutes(
       contextSource: "issue.create",
       requestedByActorType: actor.actorType,
       requestedByActorId: actor.actorId,
+      requestedByActorRunId: actor.runId,
     });
     await queueTaskWatchdogEvaluation(issue, actor.runId);
 
@@ -7281,7 +7287,7 @@ export function issueRoutes(
         parentId: parent.id,
         identifier: issue.identifier,
         title: issue.title,
-        ...buildCreateIssueActivityStatusDetails(issue, res),
+        ...buildCreateIssueActivityStatusDetails(issue, res, actor),
         inheritedExecutionWorkspaceFromIssueId: parent.id,
         ...(Array.isArray(req.body.blockedByIssueIds) ? { blockedByIssueIds: req.body.blockedByIssueIds } : {}),
         ...(parentBlockerAdded ? { parentBlockerAdded: true } : {}),
@@ -7349,6 +7355,7 @@ export function issueRoutes(
         contextSource: "issue.child_create",
         requestedByActorType: actor.actorType,
         requestedByActorId: actor.actorId,
+        requestedByActorRunId: actor.runId,
       });
     }
     await blockWatchdogParentOnCurrentChild({
@@ -7506,7 +7513,7 @@ export function issueRoutes(
           title: issue.title,
           inheritedExecutionWorkspaceFromIssueId: sourceIssue.id,
           acceptedPlanRevisionId: req.body.acceptedPlanRevisionId,
-          ...buildCreateIssueActivityStatusDetails(issue, res),
+          ...buildCreateIssueActivityStatusDetails(issue, res, actor),
           ...(serializationContext
             ? {
               watchdogFollowUpsSerialized: true,
@@ -7552,6 +7559,7 @@ export function issueRoutes(
           contextSource: "issue.accepted_plan_decomposition",
           requestedByActorType: actor.actorType,
           requestedByActorId: actor.actorId,
+          requestedByActorRunId: actor.runId,
         });
       }
       await queueTaskWatchdogEvaluation(issue, actor.runId);
@@ -9186,6 +9194,7 @@ export function issueRoutes(
           contextSource: "issue.interaction.accept",
           requestedByActorType: actor.actorType,
           requestedByActorId: actor.actorId,
+          requestedByActorRunId: actor.runId,
         });
       }
 

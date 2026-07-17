@@ -1891,7 +1891,7 @@ describe("agent issue mutation checkout ownership", () => {
       );
     });
 
-    it("preserves normal accepted-plan decomposition parallel wakeups outside watchdog context", async () => {
+    it("preserves normal accepted-plan decomposition parallel children outside watchdog context", async () => {
       mockAgentService.resolveByReference.mockImplementation(async (_companyId: string, reference: string) => ({
         ambiguous: false,
         agent: reference === ownerAgentId ? makeAgent(ownerAgentId) : null,
@@ -1914,21 +1914,7 @@ describe("agent issue mutation checkout ownership", () => {
       expect(children[0]).toEqual(expect.objectContaining({ status: "todo" }));
       expect(children[1]).toEqual(expect.objectContaining({ status: "todo" }));
       expect(children[1]?.blockedByIssueIds).toBeUndefined();
-      expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(2);
-      expect(mockHeartbeatService.wakeup).toHaveBeenNthCalledWith(
-        1,
-        ownerAgentId,
-        expect.objectContaining({
-          payload: expect.objectContaining({ issueId: children[0]?.id }),
-        }),
-      );
-      expect(mockHeartbeatService.wakeup).toHaveBeenNthCalledWith(
-        2,
-        ownerAgentId,
-        expect.objectContaining({
-          payload: expect.objectContaining({ issueId: children[1]?.id }),
-        }),
-      );
+      expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
       expect(mockIssueService.update).not.toHaveBeenCalledWith(
         watchdogReportIssueId,
         expect.anything(),
