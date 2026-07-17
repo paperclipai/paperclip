@@ -1,4 +1,0 @@
-interface:
-  display_name: "Paperclip AI Factory"
-  short_description: "Run verified work from contract to delivery"
-  default_prompt: "Use $paperclip-ai-factory to execute this issue through verified delivery."

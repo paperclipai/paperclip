@@ -9,6 +9,8 @@ export const ISSUE_CONTINUATION_SUMMARY_TITLE = "Continuation Summary";
 export const ISSUE_CONTINUATION_SUMMARY_MAX_BODY_CHARS = 8_000;
 const SUMMARY_SECTION_MAX_CHARS = 1_200;
 const PATH_CANDIDATE_RE = /(?:^|[\s`"'(])((?:server|ui|packages|doc|scripts|\.github)\/[A-Za-z0-9._/-]+)/g;
+const WAITING_FOR_REVIEW_OR_APPROVAL_RE =
+  /\bwait(?:ing)? for\b.{0,160}\b(?:review(?:er)?(?: feedback)?|approval|board|human|user|operator)\b/i;
 
 type IssueSummaryInput = {
   id: string;
@@ -17,7 +19,6 @@ type IssueSummaryInput = {
   description: string | null;
   status: string;
   priority: string;
-  executionContract?: Record<string, unknown> | null;
 };
 
 type RunSummaryInput = {
@@ -76,43 +77,6 @@ function extractMarkdownSection(markdown: string | null | undefined, heading: st
   return section ? truncateText(section, SUMMARY_SECTION_MAX_CHARS) : null;
 }
 
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : null;
-}
-
-function contractField(record: Record<string, unknown> | null, ...keys: string[]) {
-  if (!record) return undefined;
-  for (const key of keys) {
-    if (Object.prototype.hasOwnProperty.call(record, key)) return record[key];
-  }
-  return undefined;
-}
-
-function renderContractContent(value: unknown): string | null {
-  if (typeof value === "string") return value.trim() || null;
-  if (!Array.isArray(value) || value.length === 0) return null;
-  const lines = value
-    .map((entry) => {
-      if (typeof entry === "string") return entry.trim();
-      const record = asRecord(entry);
-      if (!record) return "";
-      return asNonEmptyString(record.label) ??
-        asNonEmptyString(record.check) ??
-        asNonEmptyString(record.description) ??
-        asNonEmptyString(record.title) ??
-        truncateText(JSON.stringify(record), 300);
-    })
-    .filter(Boolean)
-    .map((entry) => `- ${entry}`);
-  return lines.length > 0 ? truncateText(lines.join("\n"), SUMMARY_SECTION_MAX_CHARS) : null;
-}
-
-function readExecutionContractCore(issue: IssueSummaryInput) {
-  return asRecord(contractField(issue.executionContract ?? null, "core"));
-}
-
 function extractPathCandidates(...texts: Array<string | null | undefined>) {
   const seen = new Set<string>();
   for (const text of texts) {
@@ -134,19 +98,38 @@ function inferMode(issue: IssueSummaryInput, run: RunSummaryInput) {
   return "implementation";
 }
 
-function inferNextAction(issue: IssueSummaryInput, run: RunSummaryInput) {
-  if (issue.status === "done") return "Verify the current structured issue state and close any remaining follow-up comments.";
-  if (issue.status === "in_review") return "Confirm the current structured review, interaction, and delivery state before choosing the next action.";
+function inferNextAction(issue: IssueSummaryInput, run: RunSummaryInput, previousNextAction: string | null) {
+  if (issue.status === "done") return "Review the completed issue output and close any remaining follow-up comments.";
+  if (issue.status === "in_review") return "Wait for reviewer feedback or approval before continuing executor work.";
   if (run.status === "failed" || run.status === "timed_out") {
     return "Inspect the failed run, fix the cause, and resume from the most recent concrete action above.";
   }
   if (run.status === "cancelled") return "Confirm the cancellation reason before starting another run.";
-  return "Resume from the execution contract, canonical delivery state, and latest issue comments; use this generated hint only as orientation.";
+  return previousNextAction ?? "Resume implementation from the acceptance criteria, latest comments, and this summary.";
 }
 
 function bulletList(items: string[], empty: string) {
   if (items.length === 0) return `- ${empty}`;
   return items.map((item) => `- ${item}`).join("\n");
+}
+
+function extractPreviousNextAction(previousBody: string | null | undefined) {
+  const section = extractMarkdownSection(previousBody, "Next Action");
+  if (!section) return null;
+  return section
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^[-*]\s+/, "").trim())
+    .find(Boolean) ?? null;
+}
+
+export function extractContinuationSummaryNextAction(body: string | null | undefined) {
+  return extractPreviousNextAction(body);
+}
+
+export function continuationSummaryParksExecutor(body: string | null | undefined) {
+  const nextAction = extractContinuationSummaryNextAction(body);
+  if (!nextAction) return false;
+  return WAITING_FOR_REVIEW_OR_APPROVAL_RE.test(nextAction);
 }
 
 export function buildContinuationSummaryMarkdown(input: {
@@ -165,24 +148,14 @@ export function buildContinuationSummaryMarkdown(input: {
     recentActions.push(`Latest run error${run.errorCode ? ` (${run.errorCode})` : ""}: ${truncateText(run.error, 500)}`);
   }
 
-  const paths = extractPathCandidates(resultSummary, run.stdoutExcerpt, run.stderrExcerpt);
-  const contractCore = readExecutionContractCore(issue);
-  const objective =
-    extractMarkdownSection(issue.description, "Objective") ??
-    asNonEmptyString(contractField(contractCore, "objective")) ??
-    issue.description?.trim() ??
-    "No objective captured.";
-  const acceptanceCriteria =
-    extractMarkdownSection(issue.description, "Acceptance Criteria") ??
-    renderContractContent(contractField(contractCore, "acceptanceChecks", "acceptance_checks")) ??
-    "No explicit acceptance criteria captured in the description or execution contract.";
+  const paths = extractPathCandidates(resultSummary, run.stdoutExcerpt, run.stderrExcerpt, input.previousSummaryBody);
+  const objective = extractMarkdownSection(issue.description, "Objective") ?? issue.description?.trim() ?? "No objective captured.";
+  const acceptanceCriteria = extractMarkdownSection(issue.description, "Acceptance Criteria") ?? "No explicit acceptance criteria captured.";
   const mode = inferMode(issue, run);
-  const nextAction = inferNextAction(issue, run);
+  const nextAction = inferNextAction(issue, run, extractPreviousNextAction(input.previousSummaryBody));
 
   const body = [
     "# Continuation Summary",
-    "",
-    "> Advisory generated hint (`generated_hint`). It may contain incomplete or stale agent-reported claims. It must never override the execution contract, canonical delivery snapshot, provider observations, current interactions, or current issue state.",
     "",
     `- Issue: ${issue.identifier ?? issue.id} — ${issue.title}`,
     `- Status: ${issue.status}`,
@@ -199,7 +172,7 @@ export function buildContinuationSummaryMarkdown(input: {
     "",
     acceptanceCriteria,
     "",
-    "## Recent Agent-Reported Actions",
+    "## Recent Concrete Actions",
     "",
     bulletList(recentActions, "No recent actions captured."),
     "",
@@ -279,7 +252,6 @@ export async function refreshIssueContinuationSummary(input: {
         description: issues.description,
         status: issues.status,
         priority: issues.priority,
-        executionContract: issues.executionContract,
       })
       .from(issues)
       .where(eq(issues.id, issueId))

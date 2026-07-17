@@ -731,22 +731,8 @@ export async function startServer(): Promise<StartedServer> {
         }
 
         const promotion = await heartbeat.promoteDueScheduledRetries();
-        if (phase === "startup") {
-          try {
-            await heartbeat.reconcileDueExternalOperations();
-          } catch (error) {
-            logger.error(
-              { err: error },
-              "startup external operation controller reconciliation failed before queued-run resume",
-            );
-          }
-        }
         await heartbeat.resumeQueuedRuns();
-        const reconciled = await heartbeat.reconcileStrandedAssignedIssues({
-          // Startup already reconciled providers before queued-run resume. Do
-          // not immediately poll the same due operation a second time.
-          includeExternalOperationController: phase !== "startup",
-        });
+        const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
         if (
           promotion.promoted > 0 ||
           reconciled.assignmentDispatched > 0 ||

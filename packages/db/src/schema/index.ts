@@ -41,8 +41,6 @@ export { issueRelations } from "./issue_relations.js";
 export { issueCollaborators } from "./issue_collaborators.js";
 export { routines, routineRevisions, routineTriggers, routineRuns } from "./routines.js";
 export { issueWorkProducts } from "./issue_work_products.js";
-export { deliveryEvents } from "./delivery_events.js";
-export { externalOperations } from "./external_operations.js";
 export { labels } from "./labels.js";
 export { issueLabels } from "./issue_labels.js";
 export { issueApprovals } from "./issue_approvals.js";

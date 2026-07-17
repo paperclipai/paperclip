@@ -26,8 +26,6 @@ import type {
   CompanySkillTrustLevel,
   CompanySkillUpdateStatus,
   CompanySkillUsageAgent,
-  CompanyAiFactoryPolicyView,
-  CompiledFactoryPolicyV1,
 } from "@paperclipai/shared";
 import { normalizeAgentUrlKey } from "@paperclipai/shared";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
@@ -35,18 +33,6 @@ import { notFound, unprocessable } from "../errors.js";
 import { ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
 import { agentService } from "./agents.js";
 import { projectService } from "./projects.js";
-import {
-  AI_FACTORY_POLICY_FILE,
-  AI_FACTORY_POLICY_SKILL_SLUG,
-  DEFAULT_FACTORY_POLICY_V1,
-  PAPERCLIP_AI_FACTORY_BASE_SKILL_KEY,
-  compileFactoryPolicyV1,
-  defaultCompanyAiFactoryPolicySkillKey,
-  factoryPolicyContentHash,
-  readCompanyAiFactoryPolicySkillKey,
-  serializeFactoryPolicyV1,
-  withCompanyAiFactoryPolicySkillKey,
-} from "./ai-factory-policy.js";
 
 type CompanySkillRow = typeof companySkills.$inferSelect;
 type CompanySkillListDbRow = Pick<
@@ -118,13 +104,6 @@ type ImportedSkill = {
 
 type PackageSkillConflictStrategy = "replace" | "rename" | "skip";
 
-type PackageProtectedFactorySkillStrategy = "reject" | "reuse_target";
-
-type FactorySkillUpsertAuthority =
-  | "generic"
-  | "paperclip_bundled_sync"
-  | "managed_factory_overlay_sync";
-
 export type ImportPackageSkillResult = {
   skill: CompanySkill;
   action: "created" | "updated" | "skipped";
@@ -180,54 +159,11 @@ const skillInventoryRefreshState = new Map<string, {
 }>();
 const DEFAULT_SKILL_INVENTORY_REFRESH_TTL_MS = 60_000;
 
-const COMPANY_AI_FACTORY_OVERLAY_SKILL_MARKDOWN = [
-  "---",
-  "name: Company AI Factory Policy",
-  "description: Customize role routing, delivery stages, production authority, and bounded recovery for this company while extending Paperclip's immutable AI Factory base.",
-  "---",
-  "",
-  "# Company AI Factory Policy",
-  "",
-  "Edit `factory-policy.yaml` to customize this company's delivery workflow.",
-  "Paperclip validates the policy before saving or selecting it and always applies server invariants and explicit issue contracts first.",
-  "",
-].join("\n");
-
 export type CompanySkillServiceOptions = {
   inventoryRefreshTtlMs?: number;
   now?: () => number;
   onInventoryScan?: (companyId: string) => void;
 };
-
-function protectedFactorySkillKeys(
-  companyId: string,
-  settings: Record<string, unknown> | null | undefined,
-) {
-  return new Set([
-    PAPERCLIP_AI_FACTORY_BASE_SKILL_KEY,
-    defaultCompanyAiFactoryPolicySkillKey(companyId),
-    readCompanyAiFactoryPolicySkillKey(settings ?? {}, companyId),
-  ]);
-}
-
-function protectedFactorySkillMutationError(
-  key: string,
-  action: "upsert" | "update" | "delete" | "install_update",
-) {
-  const verb = action === "install_update"
-    ? "updated from its source"
-    : action === "upsert"
-      ? "upserted"
-      : `${action}d`;
-  return unprocessable(
-    `Company skill ${key} is protected by the AI Factory control plane and cannot be ${verb} through generic skill management.`,
-    {
-      skillKey: key,
-      action,
-      requiredRoute: "company_ai_factory_policy",
-    },
-  );
-}
 
 function selectCompanySkillColumns() {
   return {
@@ -1687,68 +1623,6 @@ export function companySkillService(db: Db, options: CompanySkillServiceOptions 
   );
   const now = options.now ?? Date.now;
 
-  async function loadCompanySettings(
-    companyId: string,
-    dbOrTx: Db = db,
-    options: { lock?: boolean } = {},
-  ) {
-    const selection = dbOrTx
-      .select({ settings: companies.settings })
-      .from(companies)
-      .where(eq(companies.id, companyId));
-    const company = await (options.lock ? selection.for("update") : selection)
-      .then((rows) => rows[0] ?? null);
-    if (!company) throw notFound("Company not found");
-    return company.settings;
-  }
-
-  function assertFactorySkillUpsertsAllowedWithSettings(
-    companyId: string,
-    imported: ImportedSkill[],
-    authority: FactorySkillUpsertAuthority,
-    settings: Record<string, unknown> | null | undefined,
-  ) {
-    if (imported.length === 0) return;
-    const protectedKeys = protectedFactorySkillKeys(companyId, settings);
-    for (const skill of imported) {
-      if (!protectedKeys.has(skill.key)) continue;
-      const sourceKind = asString(skill.metadata?.sourceKind);
-      const authorizedBundledSync = authority === "paperclip_bundled_sync"
-        && skill.key === PAPERCLIP_AI_FACTORY_BASE_SKILL_KEY
-        && sourceKind === "paperclip_bundled";
-      const authorizedOverlaySync = authority === "managed_factory_overlay_sync"
-        && skill.key === defaultCompanyAiFactoryPolicySkillKey(companyId)
-        && sourceKind === "managed_ai_factory_policy";
-      if (!authorizedBundledSync && !authorizedOverlaySync) {
-        throw protectedFactorySkillMutationError(skill.key, "upsert");
-      }
-    }
-  }
-
-  async function assertFactorySkillUpsertsAllowed(
-    companyId: string,
-    imported: ImportedSkill[],
-    authority: FactorySkillUpsertAuthority,
-    dbOrTx: Db = db,
-  ) {
-    if (imported.length === 0) return;
-    const settings = await loadCompanySettings(companyId, dbOrTx);
-    assertFactorySkillUpsertsAllowedWithSettings(companyId, imported, authority, settings);
-  }
-
-  async function assertGenericFactorySkillMutationAllowed(
-    companyId: string,
-    skillKey: string,
-    action: "update" | "delete" | "install_update",
-    dbOrTx: Db = db,
-    settings?: Record<string, unknown> | null,
-  ) {
-    const companySettings = settings ?? await loadCompanySettings(companyId, dbOrTx);
-    if (protectedFactorySkillKeys(companyId, companySettings).has(skillKey)) {
-      throw protectedFactorySkillMutationError(skillKey, action);
-    }
-  }
-
   async function ensureBundledSkills(companyId: string, input: {
     previousContentVersion: string | null;
     force: boolean;
@@ -1780,63 +1654,10 @@ export function companySkillService(db: Db, options: CompanySkillServiceOptions 
       }
       return {
         contentVersion,
-        skills: await upsertImportedSkills(companyId, bundledSkills, "paperclip_bundled_sync"),
+        skills: await upsertImportedSkills(companyId, bundledSkills),
       };
     }
     return { contentVersion: null, skills: [] as CompanySkill[] };
-  }
-
-  async function ensureCompanyAiFactoryPolicyOverlay(companyId: string) {
-    const company = await db
-      .select({ settings: companies.settings })
-      .from(companies)
-      .where(eq(companies.id, companyId))
-      .then((rows) => rows[0] ?? null);
-    if (!company) throw notFound("Company not found");
-
-    const managedRoot = resolveManagedSkillsRoot(companyId);
-    const skillDir = path.resolve(managedRoot, AI_FACTORY_POLICY_SKILL_SLUG);
-    const skillFilePath = path.resolve(skillDir, "SKILL.md");
-    const policyFilePath = path.resolve(skillDir, AI_FACTORY_POLICY_FILE);
-    await fs.mkdir(skillDir, { recursive: true });
-    if (!(await statPath(skillFilePath))?.isFile()) {
-      await fs.writeFile(skillFilePath, COMPANY_AI_FACTORY_OVERLAY_SKILL_MARKDOWN, "utf8");
-    }
-    if (!(await statPath(policyFilePath))?.isFile()) {
-      await fs.writeFile(policyFilePath, serializeFactoryPolicyV1(DEFAULT_FACTORY_POLICY_V1), "utf8");
-    }
-
-    const imported = await readLocalSkillImportFromDirectory(companyId, skillDir, {
-      metadata: { sourceKind: "managed_ai_factory_policy" },
-    });
-    imported.key = defaultCompanyAiFactoryPolicySkillKey(companyId);
-    imported.metadata = {
-      ...(imported.metadata ?? {}),
-      skillKey: imported.key,
-      sourceKind: "managed_ai_factory_policy",
-      extends: PAPERCLIP_AI_FACTORY_BASE_SKILL_KEY,
-    };
-    const [overlay] = await upsertImportedSkills(
-      companyId,
-      [imported],
-      "managed_factory_overlay_sync",
-    );
-    if (!overlay) throw notFound("Failed to seed company AI Factory policy");
-
-    await db.transaction(async (tx) => {
-      const txDb = tx as unknown as Db;
-      const companySettings = await loadCompanySettings(companyId, txDb, { lock: true });
-      const configuredKey = companySettings?.aiFactoryPolicySkillKey;
-      if (typeof configuredKey === "string" && configuredKey.trim().length > 0) return;
-      await txDb
-        .update(companies)
-        .set({
-          settings: withCompanyAiFactoryPolicySkillKey(companySettings, overlay.key),
-          updatedAt: new Date(),
-        })
-        .where(eq(companies.id, companyId));
-    });
-    return overlay;
   }
 
   async function pruneMissingLocalPathSkills(companyId: string) {
@@ -1857,40 +1678,11 @@ export function companySkillService(db: Db, options: CompanySkillServiceOptions 
     const missingIds = new Set(await findMissingLocalSkillIds(skills));
     if (missingIds.size === 0) return;
 
-    const deletedSkills = await db.transaction(async (tx) => {
-      const txDb = tx as unknown as Db;
-      const companySettings = await loadCompanySettings(companyId, txDb, { lock: true });
-      const protectedKeys = protectedFactorySkillKeys(companyId, companySettings);
-      const lockedRows = await txDb
-        .select({
-          id: companySkills.id,
-          key: companySkills.key,
-          slug: companySkills.slug,
-          sourceType: companySkills.sourceType,
-          sourceLocator: companySkills.sourceLocator,
-        })
-        .from(companySkills)
-        .where(and(
-          eq(companySkills.companyId, companyId),
-          inArray(companySkills.id, Array.from(missingIds)),
-        ))
-        .for("update");
-      const deletable = lockedRows.filter((skill) => !protectedKeys.has(skill.key));
-      if (deletable.length > 0) {
-        await txDb
-          .delete(companySkills)
-          .where(and(
-            eq(companySkills.companyId, companyId),
-            inArray(companySkills.id, deletable.map((skill) => skill.id)),
-          ));
-      }
-      return deletable.map((skill) => ({
-        ...skill,
-        sourceType: skill.sourceType as CompanySkillSourceType,
-      }));
-    });
-
-    for (const skill of deletedSkills) {
+    for (const skill of skills) {
+      if (!missingIds.has(skill.id)) continue;
+      await db
+        .delete(companySkills)
+        .where(eq(companySkills.id, skill.id));
       await fs.rm(resolveRuntimeSkillMaterializedPath(companyId, skill), { recursive: true, force: true });
     }
   }
@@ -1921,7 +1713,6 @@ export function companySkillService(db: Db, options: CompanySkillServiceOptions 
         previousContentVersion: previousState?.bundledContentVersion ?? null,
         force,
       });
-      await ensureCompanyAiFactoryPolicyOverlay(companyId);
       await pruneMissingLocalPathSkills(companyId);
       skillInventoryRefreshState.set(companyId, {
         freshUntil: now() + inventoryRefreshTtlMs,
@@ -1969,22 +1760,11 @@ export function companySkillService(db: Db, options: CompanySkillServiceOptions 
       .orderBy(asc(companySkills.name), asc(companySkills.key))
       .then((entries) => entries.map((entry) => toCompanySkillListRow(entry as CompanySkillListDbRow)));
     const agentRows = await agents.list(companyId);
-    const companySettings = await db
-      .select({ settings: companies.settings })
-      .from(companies)
-      .where(eq(companies.id, companyId))
-      .then((entries) => entries[0]?.settings ?? {});
-    const requiredFactorySkillKeys = new Set([
-      PAPERCLIP_AI_FACTORY_BASE_SKILL_KEY,
-      readCompanyAiFactoryPolicySkillKey(companySettings, companyId),
-    ]);
     return rows.map((skill) => {
-      const attachedAgentCount = requiredFactorySkillKeys.has(skill.key)
-        ? agentRows.length
-        : agentRows.filter((agent) => {
-          const desiredSkills = resolveDesiredSkillKeys(rows, agent.adapterConfig as Record<string, unknown>);
-          return desiredSkills.includes(skill.key);
-        }).length;
+      const attachedAgentCount = agentRows.filter((agent) => {
+        const desiredSkills = resolveDesiredSkillKeys(rows, agent.adapterConfig as Record<string, unknown>);
+        return desiredSkills.includes(skill.key);
+      }).length;
       return toCompanySkillListItem(skill, attachedAgentCount);
     });
   }
@@ -2032,21 +1812,10 @@ export function companySkillService(db: Db, options: CompanySkillServiceOptions 
   async function usage(companyId: string, key: string): Promise<CompanySkillUsageAgent[]> {
     const skills = await listReferenceTargets(companyId);
     const agentRows = await agents.list(companyId);
-    const companySettings = await db
-      .select({ settings: companies.settings })
-      .from(companies)
-      .where(eq(companies.id, companyId))
-      .then((entries) => entries[0]?.settings ?? {});
-    const requiredFactorySkillKeys = new Set([
-      PAPERCLIP_AI_FACTORY_BASE_SKILL_KEY,
-      readCompanyAiFactoryPolicySkillKey(companySettings, companyId),
-    ]);
-    const desiredAgents = requiredFactorySkillKeys.has(key)
-      ? agentRows
-      : agentRows.filter((agent) => {
-        const desiredSkills = resolveDesiredSkillKeys(skills, agent.adapterConfig as Record<string, unknown>);
-        return desiredSkills.includes(key);
-      });
+    const desiredAgents = agentRows.filter((agent) => {
+      const desiredSkills = resolveDesiredSkillKeys(skills, agent.adapterConfig as Record<string, unknown>);
+      return desiredSkills.includes(key);
+    });
 
     return desiredAgents.map((agent) => ({
       id: agent.id,
@@ -2111,36 +1880,6 @@ export function companySkillService(db: Db, options: CompanySkillServiceOptions 
     };
   }
 
-  async function readSkillFileContent(skill: CompanySkill, normalizedPath: string) {
-    if (skill.sourceType === "local_path" || skill.sourceType === "catalog") {
-      const absolutePath = resolveLocalSkillFilePath(skill, normalizedPath);
-      if (absolutePath) {
-        return fs.readFile(absolutePath, "utf8");
-      }
-      if (normalizedPath === "SKILL.md") return skill.markdown;
-      throw notFound("Skill file not found");
-    } else if (skill.sourceType === "github" || skill.sourceType === "skills_sh") {
-      const metadata = getSkillMeta(skill);
-      const owner = asString(metadata.owner);
-      const repo = asString(metadata.repo);
-      const hostname = asString(metadata.hostname) || "github.com";
-      const ref = skill.sourceRef ?? asString(metadata.ref) ?? "main";
-      const repoSkillDir = normalizeGitHubSkillDirectory(asString(metadata.repoSkillDir), skill.slug);
-      if (!owner || !repo) {
-        throw unprocessable("Skill source metadata is incomplete.");
-      }
-      const repoPath = normalizePortablePath(path.posix.join(repoSkillDir, normalizedPath));
-      return fetchText(resolveRawGitHubUrl(hostname, owner, repo, ref, repoPath));
-    } else if (skill.sourceType === "url") {
-      if (normalizedPath !== "SKILL.md") {
-        throw notFound("This skill source only exposes SKILL.md");
-      }
-      return skill.markdown;
-    } else {
-      throw unprocessable("Unsupported skill source.");
-    }
-  }
-
   async function readFile(companyId: string, skillId: string, relativePath: string): Promise<CompanySkillFileDetail | null> {
     await ensureSkillInventoryCurrent(companyId);
     const skill = await getById(companyId, skillId);
@@ -2153,7 +1892,37 @@ export function companySkillService(db: Db, options: CompanySkillServiceOptions 
     }
 
     const source = deriveSkillSourceInfo(skill);
-    const content = await readSkillFileContent(skill, normalizedPath);
+    let content = "";
+
+    if (skill.sourceType === "local_path" || skill.sourceType === "catalog") {
+      const absolutePath = resolveLocalSkillFilePath(skill, normalizedPath);
+      if (absolutePath) {
+        content = await fs.readFile(absolutePath, "utf8");
+      } else if (normalizedPath === "SKILL.md") {
+        content = skill.markdown;
+      } else {
+        throw notFound("Skill file not found");
+      }
+    } else if (skill.sourceType === "github" || skill.sourceType === "skills_sh") {
+      const metadata = getSkillMeta(skill);
+      const owner = asString(metadata.owner);
+      const repo = asString(metadata.repo);
+      const hostname = asString(metadata.hostname) || "github.com";
+      const ref = skill.sourceRef ?? asString(metadata.ref) ?? "main";
+      const repoSkillDir = normalizeGitHubSkillDirectory(asString(metadata.repoSkillDir), skill.slug);
+      if (!owner || !repo) {
+        throw unprocessable("Skill source metadata is incomplete.");
+      }
+      const repoPath = normalizePortablePath(path.posix.join(repoSkillDir, normalizedPath));
+      content = await fetchText(resolveRawGitHubUrl(hostname, owner, repo, ref, repoPath));
+    } else if (skill.sourceType === "url") {
+      if (normalizedPath !== "SKILL.md") {
+        throw notFound("This skill source only exposes SKILL.md");
+      }
+      content = skill.markdown;
+    } else {
+      throw unprocessable("Unsupported skill source.");
+    }
 
     return {
       skillId: skill.id,
@@ -2168,28 +1937,6 @@ export function companySkillService(db: Db, options: CompanySkillServiceOptions 
 
   async function createLocalSkill(companyId: string, input: CompanySkillCreateRequest): Promise<CompanySkill> {
     const slug = normalizeSkillSlug(input.slug ?? input.name) ?? "skill";
-    const skillKey = `company/${companyId}/${slug}`;
-    await assertFactorySkillUpsertsAllowed(companyId, [{
-      key: skillKey,
-      slug,
-      name: input.name,
-      description: input.description?.trim() ?? null,
-      markdown: input.markdown ?? "",
-      sourceType: "local_path",
-      sourceLocator: null,
-      sourceRef: null,
-      trustLevel: "markdown_only",
-      compatibility: "compatible",
-      fileInventory: [],
-      metadata: { sourceKind: "managed_local" },
-    }], "generic");
-    const existing = await getByKey(companyId, skillKey);
-    if (existing) {
-      throw unprocessable(`Company skill ${skillKey} already exists.`, {
-        skillId: existing.id,
-        skillKey,
-      });
-    }
     const managedRoot = resolveManagedSkillsRoot(companyId);
     const skillDir = path.resolve(managedRoot, slug);
     const skillFilePath = path.resolve(skillDir, "SKILL.md");
@@ -2214,7 +1961,7 @@ export function companySkillService(db: Db, options: CompanySkillServiceOptions 
 
     const parsed = parseFrontmatterMarkdown(markdown);
     const imported = await upsertImportedSkills(companyId, [{
-      key: skillKey,
+      key: `company/${companyId}/${slug}`,
       slug,
       name: asString(parsed.frontmatter.name) ?? input.name,
       description: asString(parsed.frontmatter.description) ?? input.description?.trim() ?? null,
@@ -2231,226 +1978,50 @@ export function companySkillService(db: Db, options: CompanySkillServiceOptions 
     return imported[0]!;
   }
 
-  async function updateSkillFile(
-    companyId: string,
-    skillId: string,
-    relativePath: string,
-    content: string,
-    authority: "generic" | "company_ai_factory_policy",
-  ): Promise<CompanySkillFileDetail> {
+  async function updateFile(companyId: string, skillId: string, relativePath: string, content: string): Promise<CompanySkillFileDetail> {
     await ensureSkillInventoryCurrent(companyId);
+    const skill = await getById(companyId, skillId);
+    if (!skill) throw notFound("Skill not found");
+
+    const source = deriveSkillSourceInfo(skill);
+    if (!source.editable || skill.sourceType !== "local_path") {
+      throw unprocessable(source.editableReason ?? "This skill cannot be edited.");
+    }
+
     const normalizedPath = normalizePortablePath(relativePath);
-    if (authority === "company_ai_factory_policy" && normalizedPath !== AI_FACTORY_POLICY_FILE) {
-      throw unprocessable(`The dedicated AI Factory policy path may only update ${AI_FACTORY_POLICY_FILE}.`, {
-        path: normalizedPath,
-      });
-    }
-    if (authority === "generic" && normalizedPath === AI_FACTORY_POLICY_FILE) {
-      throw unprocessable(`Updates to ${AI_FACTORY_POLICY_FILE} require the company AI Factory policy path.`, {
-        path: normalizedPath,
-        requiredRoute: "company_ai_factory_policy",
-      });
-    }
+    const absolutePath = resolveLocalSkillFilePath(skill, normalizedPath);
+    if (!absolutePath) throw notFound("Skill file not found");
 
-    return db.transaction(async (tx) => {
-      const txDb = tx as unknown as Db;
-      const companySettings = await loadCompanySettings(companyId, txDb, { lock: true });
-      const skillRow = await txDb
-        .select(selectCompanySkillColumns())
-        .from(companySkills)
-        .where(and(eq(companySkills.companyId, companyId), eq(companySkills.id, skillId)))
-        .for("update")
-        .then((rows) => rows[0] ?? null);
-      if (!skillRow) throw notFound("Skill not found");
-      const skill = toCompanySkill(skillRow);
+    await fs.mkdir(path.dirname(absolutePath), { recursive: true });
+    await fs.writeFile(absolutePath, content, "utf8");
 
-      if (authority === "generic") {
-        await assertGenericFactorySkillMutationAllowed(
-          companyId,
-          skill.key,
-          "update",
-          txDb,
-          companySettings,
-        );
-      }
-
-      const source = deriveSkillSourceInfo(skill);
-      if (!source.editable || skill.sourceType !== "local_path") {
-        throw unprocessable(source.editableReason ?? "This skill cannot be edited.");
-      }
-
-      const fileEntry = skill.fileInventory.find((entry) => entry.path === normalizedPath);
-      if (!fileEntry) throw notFound("Skill file not found");
-
-      const absolutePath = resolveLocalSkillFilePath(skill, normalizedPath);
-      if (!absolutePath) throw notFound("Skill file not found");
-
-      if (normalizedPath === AI_FACTORY_POLICY_FILE) {
-        compileFactoryPolicyV1(content, skill.key);
-      }
-
-      await fs.mkdir(path.dirname(absolutePath), { recursive: true });
-      await fs.writeFile(absolutePath, content, "utf8");
-
-      if (normalizedPath === "SKILL.md") {
-        const parsed = parseFrontmatterMarkdown(content);
-        await txDb
-          .update(companySkills)
-          .set({
-            name: asString(parsed.frontmatter.name) ?? skill.name,
-            description: asString(parsed.frontmatter.description) ?? skill.description,
-            markdown: content,
-            updatedAt: new Date(),
-          })
-          .where(and(eq(companySkills.id, skill.id), eq(companySkills.companyId, companyId)));
-      } else {
-        await txDb
-          .update(companySkills)
-          .set({ updatedAt: new Date() })
-          .where(and(eq(companySkills.id, skill.id), eq(companySkills.companyId, companyId)));
-      }
-
-      return {
-        skillId: skill.id,
-        path: normalizedPath,
-        kind: fileEntry.kind,
-        content,
-        language: inferLanguageFromPath(normalizedPath),
-        markdown: isMarkdownPath(normalizedPath),
-        editable: source.editable,
-      };
-    });
-  }
-
-  async function updateFile(
-    companyId: string,
-    skillId: string,
-    relativePath: string,
-    content: string,
-  ) {
-    return updateSkillFile(companyId, skillId, relativePath, content, "generic");
-  }
-
-  async function updateAiFactoryPolicyFile(
-    companyId: string,
-    skillId: string,
-    content: string,
-  ) {
-    return updateSkillFile(
-      companyId,
-      skillId,
-      AI_FACTORY_POLICY_FILE,
-      content,
-      "company_ai_factory_policy",
-    );
-  }
-
-  async function compileSkillFactoryPolicy(skill: CompanySkill): Promise<CompiledFactoryPolicyV1> {
-    const policyFile = skill.fileInventory.find((entry) => entry.path === AI_FACTORY_POLICY_FILE);
-    if (!policyFile) {
-      throw unprocessable(`Skill "${skill.name}" does not contain ${AI_FACTORY_POLICY_FILE}.`, {
-        skillId: skill.id,
-        skillKey: skill.key,
-      });
-    }
-    const content = await readSkillFileContent(skill, AI_FACTORY_POLICY_FILE);
-    return compileFactoryPolicyV1(content, skill.key);
-  }
-
-  async function resolveSelectedFactoryPolicySkill(companyId: string): Promise<CompanySkill> {
-    await ensureSkillInventoryCurrent(companyId);
-    const company = await db
-      .select({ settings: companies.settings })
-      .from(companies)
-      .where(eq(companies.id, companyId))
-      .then((rows) => rows[0] ?? null);
-    if (!company) throw notFound("Company not found");
-    const selectedKey = readCompanyAiFactoryPolicySkillKey(company.settings, companyId);
-    const selected = await getByKey(companyId, selectedKey);
-    if (!selected) {
-      throw unprocessable("The selected company AI Factory policy skill is missing.", {
-        selectedKey,
-        resetAvailable: true,
-      });
-    }
-    return selected;
-  }
-
-  async function getAiFactoryPolicy(companyId: string): Promise<CompiledFactoryPolicyV1> {
-    return compileSkillFactoryPolicy(await resolveSelectedFactoryPolicySkill(companyId));
-  }
-
-  async function getAiFactoryPolicyView(companyId: string): Promise<CompanyAiFactoryPolicyView> {
-    const selected = await resolveSelectedFactoryPolicySkill(companyId);
-    const compiled = await compileSkillFactoryPolicy(selected);
-    return buildAiFactoryPolicyView(selected, compiled);
-  }
-
-  function buildAiFactoryPolicyView(
-    selected: CompanySkill,
-    compiled: CompiledFactoryPolicyV1,
-  ): CompanyAiFactoryPolicyView {
-    return {
-      baseSkillKey: PAPERCLIP_AI_FACTORY_BASE_SKILL_KEY,
-      overlaySkillKey: selected.key,
-      overlaySkillId: selected.id,
-      overlaySkillName: selected.name,
-      compiled,
-      defaultPolicy: DEFAULT_FACTORY_POLICY_V1,
-      differsFromDefault: compiled.contentHash !== factoryPolicyContentHash(DEFAULT_FACTORY_POLICY_V1),
-    };
-  }
-
-  async function selectAiFactoryPolicy(companyId: string, skillId: string): Promise<CompanyAiFactoryPolicyView> {
-    await ensureSkillInventoryCurrent(companyId);
-    return db.transaction(async (tx) => {
-      const txDb = tx as unknown as Db;
-      const companySettings = await loadCompanySettings(companyId, txDb, { lock: true });
-      const skillRow = await txDb
-        .select(selectCompanySkillColumns())
-        .from(companySkills)
-        .where(and(eq(companySkills.companyId, companyId), eq(companySkills.id, skillId)))
-        .for("update")
-        .then((rows) => rows[0] ?? null);
-      if (!skillRow) throw notFound("Skill not found");
-      const skill = toCompanySkill(skillRow);
-      const source = deriveSkillSourceInfo(skill);
-      if (!source.editable || skill.sourceType !== "local_path") {
-        throw unprocessable("AI Factory policy overlays must be editable company skills.", {
-          skillId,
-          reason: source.editableReason,
-        });
-      }
-      const compiled = await compileSkillFactoryPolicy(skill);
-      await txDb
-        .update(companies)
+    if (normalizedPath === "SKILL.md") {
+      const parsed = parseFrontmatterMarkdown(content);
+      await db
+        .update(companySkills)
         .set({
-          settings: withCompanyAiFactoryPolicySkillKey(companySettings, skill.key),
+          name: asString(parsed.frontmatter.name) ?? skill.name,
+          description: asString(parsed.frontmatter.description) ?? skill.description,
+          markdown: content,
           updatedAt: new Date(),
         })
-        .where(eq(companies.id, companyId));
-      return buildAiFactoryPolicyView(skill, compiled);
-    });
-  }
+        .where(eq(companySkills.id, skill.id));
+    } else {
+      await db
+        .update(companySkills)
+        .set({ updatedAt: new Date() })
+        .where(eq(companySkills.id, skill.id));
+    }
 
-  async function resetAiFactoryPolicy(companyId: string): Promise<CompanyAiFactoryPolicyView> {
-    await ensureSkillInventoryCurrent(companyId);
-    const defaultKey = defaultCompanyAiFactoryPolicySkillKey(companyId);
-    const overlay = await getByKey(companyId, defaultKey);
-    if (!overlay) throw notFound("Company AI Factory policy overlay not found");
-    await updateAiFactoryPolicyFile(
-      companyId,
-      overlay.id,
-      serializeFactoryPolicyV1(DEFAULT_FACTORY_POLICY_V1),
-    );
-    return selectAiFactoryPolicy(companyId, overlay.id);
+    const detail = await readFile(companyId, skillId, normalizedPath);
+    if (!detail) throw notFound("Skill file not found");
+    return detail;
   }
 
   async function installUpdate(companyId: string, skillId: string): Promise<CompanySkill | null> {
     await ensureSkillInventoryCurrent(companyId);
     const skill = await getById(companyId, skillId);
     if (!skill) return null;
-    await assertGenericFactorySkillMutationAllowed(companyId, skill.key, "install_update");
 
     const status = await updateStatus(companyId, skillId);
     if (!status?.supported) {
@@ -2573,8 +2144,6 @@ export function companySkillService(db: Db, options: CompanySkillServiceOptions 
           });
           continue;
         }
-
-        await assertFactorySkillUpsertsAllowed(companyId, [nextSkill], "generic");
 
         const normalizedSourceDir = normalizeSourceLocatorDirectory(nextSkill.sourceLocator);
         const existingByKey = acceptedByKey.get(nextSkill.key) ?? null;
@@ -2702,12 +2271,6 @@ export function companySkillService(db: Db, options: CompanySkillServiceOptions 
     options: RuntimeSkillEntryOptions = {},
   ): Promise<PaperclipSkillEntry[]> {
     const skills = await listFull(companyId);
-    const companySettings = await db
-      .select({ settings: companies.settings })
-      .from(companies)
-      .where(eq(companies.id, companyId))
-      .then((rows) => rows[0]?.settings ?? {});
-    const factoryPolicySkillKey = readCompanyAiFactoryPolicySkillKey(companySettings, companyId);
 
     // metadata.required is only honored for skills with a real plugin-managed
     // binding, so stale or frontmatter-injected metadata can never force-sync
@@ -2741,8 +2304,7 @@ export function companySkillService(db: Db, options: CompanySkillServiceOptions 
       const managedByPluginKey = managedPluginKeyBySkillId.get(skill.id) ?? null;
       const bundledRequired = sourceKind === "paperclip_bundled" && meta.required !== false;
       const pluginRequired = Boolean(managedByPluginKey) && meta.required === true;
-      const factoryPolicyRequired = skill.key === factoryPolicySkillKey;
-      const required = bundledRequired || pluginRequired || factoryPolicyRequired;
+      const required = bundledRequired || pluginRequired;
       out.push({
         key: skill.key,
         runtimeName: buildSkillRuntimeName(skill.key, skill.slug),
@@ -2752,9 +2314,7 @@ export function companySkillService(db: Db, options: CompanySkillServiceOptions 
           ? "Bundled Paperclip skills are always available for local adapters."
           : pluginRequired
             ? `Required for all agents by the ${managedByPluginKey} plugin.`
-            : factoryPolicyRequired
-              ? "Selected as the company AI Factory policy by Paperclip."
-              : null,
+            : null,
       });
     }
 
@@ -2767,7 +2327,6 @@ export function companySkillService(db: Db, options: CompanySkillServiceOptions 
     files: Record<string, string>,
     options?: {
       onConflict?: PackageSkillConflictStrategy;
-      protectedFactorySkills?: PackageProtectedFactorySkillStrategy;
     },
   ): Promise<ImportPackageSkillResult[]> {
     await ensureSkillInventoryCurrent(companyId);
@@ -2776,53 +2335,7 @@ export function companySkillService(db: Db, options: CompanySkillServiceOptions 
     if (importedSkills.length === 0) return [];
     assertUniqueImportedSkillKeys(importedSkills);
 
-    const reusedProtectedSkills: ImportPackageSkillResult[] = [];
-    let importableSkills = importedSkills;
-    if (options?.protectedFactorySkills === "reuse_target") {
-      const companySettings = await loadCompanySettings(companyId);
-      const targetPolicyKey = readCompanyAiFactoryPolicySkillKey(companySettings, companyId);
-      const targetProtectedKeys = protectedFactorySkillKeys(companyId, companySettings);
-      const existingSkills = await listFull(companyId);
-      const existingByKey = new Map(existingSkills.map((skill) => [skill.key, skill]));
-      const bundledBase = existingByKey.get(PAPERCLIP_AI_FACTORY_BASE_SKILL_KEY) ?? null;
-      const targetPolicy = existingByKey.get(targetPolicyKey) ?? null;
-      if (!bundledBase || !targetPolicy) {
-        throw unprocessable(
-          "Target AI Factory control-plane skills are unavailable; protected package skills cannot be reconstructed.",
-          {
-            baseSkillKey: PAPERCLIP_AI_FACTORY_BASE_SKILL_KEY,
-            policySkillKey: targetPolicyKey,
-          },
-        );
-      }
-
-      const sourceDefaultPolicyPattern = /^company\/[^/]+\/ai-factory-policy$/;
-      const remaining: ImportedSkill[] = [];
-      for (const skill of importedSkills) {
-        const target = skill.key === PAPERCLIP_AI_FACTORY_BASE_SKILL_KEY
-          ? bundledBase
-          : sourceDefaultPolicyPattern.test(skill.key) || targetProtectedKeys.has(skill.key)
-            ? targetPolicy
-            : null;
-        if (!target) {
-          remaining.push(skill);
-          continue;
-        }
-        reusedProtectedSkills.push({
-          skill: target,
-          action: "skipped",
-          originalKey: skill.key,
-          originalSlug: skill.slug,
-          requestedRefs: Array.from(new Set([skill.key, skill.slug])),
-          reason: "Protected AI Factory package content was not applied; the target control-plane-managed skill was reused.",
-        });
-      }
-      importableSkills = remaining;
-    }
-
-    await assertFactorySkillUpsertsAllowed(companyId, importableSkills, "generic");
-
-    for (const skill of importableSkills) {
+    for (const skill of importedSkills) {
       if (skill.sourceType !== "catalog") continue;
       const materializedDir = await materializeCatalogSkillFiles(companyId, skill, normalizedFiles);
       if (materializedDir) {
@@ -2848,9 +2361,9 @@ export function companySkillService(db: Db, options: CompanySkillServiceOptions 
       actionHint: "created" | "updated";
       reason: string | null;
     }> = [];
-    const out: ImportPackageSkillResult[] = [...reusedProtectedSkills];
+    const out: ImportPackageSkillResult[] = [];
 
-    for (const importedSkill of importableSkills) {
+    for (const importedSkill of importedSkills) {
       const originalKey = importedSkill.key;
       const originalSlug = importedSkill.slug;
       const normalizedSlug = normalizeSkillSlug(importedSkill.slug) ?? importedSkill.slug;
@@ -2931,123 +2444,113 @@ export function companySkillService(db: Db, options: CompanySkillServiceOptions 
     return out;
   }
 
-  async function upsertImportedSkills(
-    companyId: string,
-    imported: ImportedSkill[],
-    authority: FactorySkillUpsertAuthority = "generic",
-  ): Promise<CompanySkill[]> {
-    if (imported.length === 0) return [];
+  async function upsertImportedSkills(companyId: string, imported: ImportedSkill[]): Promise<CompanySkill[]> {
+    const out: CompanySkill[] = [];
+    if (imported.length === 0) return out;
     assertUniqueImportedSkillKeys(imported);
-    return db.transaction(async (tx) => {
-      const txDb = tx as unknown as Db;
-      const companySettings = await loadCompanySettings(companyId, txDb, { lock: true });
-      assertFactorySkillUpsertsAllowedWithSettings(companyId, imported, authority, companySettings);
-      const out: CompanySkill[] = [];
-      const importedKeys = Array.from(new Set(imported.map((skill) => skill.key)));
-      const existingByKey = new Map(
-        (await txDb
-          .select(selectCompanySkillColumns())
-          .from(companySkills)
-          .where(and(
-            eq(companySkills.companyId, companyId),
-            inArray(companySkills.key, importedKeys),
-          ))
-          .for("update"))
-          .map((row) => {
-            const skill = toCompanySkill(row);
-            return [skill.key, skill] as const;
-          }),
-      );
-      for (const skill of imported) {
-        const existing = existingByKey.get(skill.key) ?? null;
-        const existingMeta = existing ? getSkillMeta(existing) : {};
-        const incomingMeta = skill.metadata && isPlainRecord(skill.metadata) ? skill.metadata : {};
-        const incomingOwner = asString(incomingMeta.owner);
-        const incomingRepo = asString(incomingMeta.repo);
-        const incomingKind = asString(incomingMeta.sourceKind);
-        if (
-          existing
-          && existingMeta.sourceKind === "paperclip_bundled"
-          && incomingKind === "github"
-          && incomingOwner === "paperclipai"
-          && incomingRepo === "paperclip"
-        ) {
-          out.push(existing);
-          continue;
-        }
-
-        const metadata = {
-          ...(skill.metadata ?? {}),
-          skillKey: skill.key,
-        };
-        const values = {
-          companyId,
-          key: skill.key,
-          slug: skill.slug,
-          name: skill.name,
-          description: skill.description,
-          markdown: skill.markdown,
-          sourceType: skill.sourceType,
-          sourceLocator: skill.sourceLocator,
-          sourceRef: skill.sourceRef,
-          trustLevel: skill.trustLevel,
-          compatibility: skill.compatibility,
-          fileInventory: serializeFileInventory(skill.fileInventory),
-          metadata,
-          updatedAt: new Date(),
-        };
-        if (existing && isDeepStrictEqual(
-          {
-            companyId: existing.companyId,
-            key: existing.key,
-            slug: existing.slug,
-            name: existing.name,
-            description: existing.description,
-            markdown: existing.markdown,
-            sourceType: existing.sourceType,
-            sourceLocator: existing.sourceLocator,
-            sourceRef: existing.sourceRef,
-            trustLevel: existing.trustLevel,
-            compatibility: existing.compatibility,
-            fileInventory: existing.fileInventory,
-            metadata: existing.metadata,
-          },
-          {
-            companyId: values.companyId,
-            key: values.key,
-            slug: values.slug,
-            name: values.name,
-            description: values.description,
-            markdown: values.markdown,
-            sourceType: values.sourceType,
-            sourceLocator: values.sourceLocator,
-            sourceRef: values.sourceRef,
-            trustLevel: values.trustLevel,
-            compatibility: values.compatibility,
-            fileInventory: values.fileInventory,
-            metadata: values.metadata,
-          },
-        )) {
-          out.push(existing);
-          continue;
-        }
-        const row = existing
-          ? await txDb
-            .update(companySkills)
-            .set(values)
-            .where(and(eq(companySkills.id, existing.id), eq(companySkills.companyId, companyId)))
-            .returning()
-            .then((rows) => rows[0] ?? null)
-          : await txDb
-            .insert(companySkills)
-            .values(values)
-            .returning()
-            .then((rows) => rows[0] ?? null);
-        if (!row) throw notFound("Failed to persist company skill");
-        out.push(toCompanySkill(row));
+    const importedKeys = Array.from(new Set(imported.map((skill) => skill.key)));
+    const existingByKey = new Map(
+      (await db
+        .select(selectCompanySkillColumns())
+        .from(companySkills)
+        .where(and(
+          eq(companySkills.companyId, companyId),
+          inArray(companySkills.key, importedKeys),
+        )))
+        .map((row) => {
+          const skill = toCompanySkill(row);
+          return [skill.key, skill] as const;
+        }),
+    );
+    for (const skill of imported) {
+      const existing = existingByKey.get(skill.key) ?? null;
+      const existingMeta = existing ? getSkillMeta(existing) : {};
+      const incomingMeta = skill.metadata && isPlainRecord(skill.metadata) ? skill.metadata : {};
+      const incomingOwner = asString(incomingMeta.owner);
+      const incomingRepo = asString(incomingMeta.repo);
+      const incomingKind = asString(incomingMeta.sourceKind);
+      if (
+        existing
+        && existingMeta.sourceKind === "paperclip_bundled"
+        && incomingKind === "github"
+        && incomingOwner === "paperclipai"
+        && incomingRepo === "paperclip"
+      ) {
+        out.push(existing);
+        continue;
       }
-      return out;
-    });
+
+      const metadata = {
+        ...(skill.metadata ?? {}),
+        skillKey: skill.key,
+      };
+      const values = {
+        companyId,
+        key: skill.key,
+        slug: skill.slug,
+        name: skill.name,
+        description: skill.description,
+        markdown: skill.markdown,
+        sourceType: skill.sourceType,
+        sourceLocator: skill.sourceLocator,
+        sourceRef: skill.sourceRef,
+        trustLevel: skill.trustLevel,
+        compatibility: skill.compatibility,
+        fileInventory: serializeFileInventory(skill.fileInventory),
+        metadata,
+        updatedAt: new Date(),
+      };
+      if (existing && isDeepStrictEqual(
+        {
+          companyId: existing.companyId,
+          key: existing.key,
+          slug: existing.slug,
+          name: existing.name,
+          description: existing.description,
+          markdown: existing.markdown,
+          sourceType: existing.sourceType,
+          sourceLocator: existing.sourceLocator,
+          sourceRef: existing.sourceRef,
+          trustLevel: existing.trustLevel,
+          compatibility: existing.compatibility,
+          fileInventory: existing.fileInventory,
+          metadata: existing.metadata,
+        },
+        {
+          companyId: values.companyId,
+          key: values.key,
+          slug: values.slug,
+          name: values.name,
+          description: values.description,
+          markdown: values.markdown,
+          sourceType: values.sourceType,
+          sourceLocator: values.sourceLocator,
+          sourceRef: values.sourceRef,
+          trustLevel: values.trustLevel,
+          compatibility: values.compatibility,
+          fileInventory: values.fileInventory,
+          metadata: values.metadata,
+        },
+      )) {
+        out.push(existing);
+        continue;
+      }
+      const row = existing
+        ? await db
+          .update(companySkills)
+          .set(values)
+          .where(eq(companySkills.id, existing.id))
+          .returning()
+          .then((rows) => rows[0] ?? null)
+        : await db
+          .insert(companySkills)
+          .values(values)
+          .returning()
+          .then((rows) => rows[0] ?? null);
+      if (!row) throw notFound("Failed to persist company skill");
+      out.push(toCompanySkill(row));
+    }
+    return out;
   }
 
   async function importFromSource(companyId: string, source: string): Promise<CompanySkillImportResult> {
@@ -3086,64 +2589,50 @@ export function companySkillService(db: Db, options: CompanySkillServiceOptions 
         skill.key = deriveCanonicalSkillKey(companyId, skill);
       }
     }
-    await assertFactorySkillUpsertsAllowed(companyId, filteredSkills, "generic");
     const imported = await upsertImportedSkills(companyId, filteredSkills);
     return { imported, warnings };
   }
 
   async function deleteSkill(companyId: string, skillId: string): Promise<CompanySkill | null> {
-    await ensureSkillInventoryCurrent(companyId);
-    const skill = await db.transaction(async (tx) => {
-      const txDb = tx as unknown as Db;
-      const companySettings = await loadCompanySettings(companyId, txDb, { lock: true });
-      const row = await txDb
-        .select(selectCompanySkillColumns())
-        .from(companySkills)
-        .where(and(eq(companySkills.id, skillId), eq(companySkills.companyId, companyId)))
-        .for("update")
-        .then((rows) => rows[0] ?? null);
-      if (!row) return null;
+    const row = await db
+      .select()
+      .from(companySkills)
+      .where(and(eq(companySkills.id, skillId), eq(companySkills.companyId, companyId)))
+      .then((rows) => rows[0] ?? null);
+    if (!row) return null;
 
-      const lockedSkill = toCompanySkill(row);
-      await assertGenericFactorySkillMutationAllowed(
-        companyId,
-        lockedSkill.key,
-        "delete",
-        txDb,
-        companySettings,
+    const skill = toCompanySkill(row);
+    if (isPaperclipBundledSkill(skill)) {
+      throw unprocessable("Bundled Paperclip skills are managed by Paperclip and cannot be deleted.", {
+        skillId: skill.id,
+        skillKey: skill.key,
+        sourceKind: getSkillMeta(skill).sourceKind ?? null,
+      });
+    }
+
+    const usedByAgents = await usage(companyId, skill.key);
+
+    if (usedByAgents.length > 0) {
+      const agentNames = usedByAgents.map((agent) => agent.name).sort((left, right) => left.localeCompare(right));
+      throw unprocessable(
+        `Cannot delete skill "${skill.name}" while it is still used by ${agentNames.join(", ")}. Detach it from those agents first.`,
+        {
+          skillId: skill.id,
+          skillKey: skill.key,
+          usedByAgents: usedByAgents.map((agent) => ({
+            id: agent.id,
+            name: agent.name,
+            urlKey: agent.urlKey,
+            adapterType: agent.adapterType,
+          })),
+        },
       );
-      if (isPaperclipBundledSkill(lockedSkill)) {
-        throw unprocessable("Bundled Paperclip skills are managed by Paperclip and cannot be deleted.", {
-          skillId: lockedSkill.id,
-          skillKey: lockedSkill.key,
-          sourceKind: getSkillMeta(lockedSkill).sourceKind ?? null,
-        });
-      }
+    }
 
-      const usedByAgents = await usage(companyId, lockedSkill.key);
-      if (usedByAgents.length > 0) {
-        const agentNames = usedByAgents.map((agent) => agent.name).sort((left, right) => left.localeCompare(right));
-        throw unprocessable(
-          `Cannot delete skill "${lockedSkill.name}" while it is still used by ${agentNames.join(", ")}. Detach it from those agents first.`,
-          {
-            skillId: lockedSkill.id,
-            skillKey: lockedSkill.key,
-            usedByAgents: usedByAgents.map((agent) => ({
-              id: agent.id,
-              name: agent.name,
-              urlKey: agent.urlKey,
-              adapterType: agent.adapterType,
-            })),
-          },
-        );
-      }
-
-      await txDb
-        .delete(companySkills)
-        .where(and(eq(companySkills.id, skillId), eq(companySkills.companyId, companyId)));
-      return lockedSkill;
-    });
-    if (!skill) return null;
+    // Delete DB row
+    await db
+      .delete(companySkills)
+      .where(eq(companySkills.id, skillId));
 
     // Clean up materialized runtime files
     await fs.rm(resolveRuntimeSkillMaterializedPath(companyId, skill), { recursive: true, force: true });
@@ -3164,11 +2653,6 @@ export function companySkillService(db: Db, options: CompanySkillServiceOptions 
     updateStatus,
     readFile,
     updateFile,
-    updateAiFactoryPolicyFile,
-    getAiFactoryPolicy,
-    getAiFactoryPolicyView,
-    selectAiFactoryPolicy,
-    resetAiFactoryPolicy,
     createLocalSkill,
     deleteSkill,
     importFromSource,

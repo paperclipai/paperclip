@@ -3,17 +3,15 @@ import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
-import { and, asc, desc, eq, getTableColumns, gt, gte, inArray, isNull, lt, lte, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, getTableColumns, gt, inArray, isNull, lt, lte, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
-  DELIVERY_STAGES,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
   MODEL_PROFILE_KEYS,
   isEnvironmentDriverSupportedForAdapter,
   isUuidLike,
   type BillingType,
-  type DeliveryStage,
   type EnvironmentLeaseStatus,
   type ExecutionWorkspace,
   type ExecutionWorkspaceConfig,
@@ -34,7 +32,6 @@ import {
   companySkills as companySkillsTable,
   companies,
   documentRevisions,
-  externalOperations,
   issueAttachments,
   issueDocuments,
   heartbeatRunEvents,
@@ -101,14 +98,6 @@ import {
   classifyRunLiveness,
   type RunLivenessClassificationInput,
 } from "./run-liveness.js";
-import {
-  ISSUE_EVIDENCE_PROGRESS_ACTIVITY_ACTIONS,
-  ISSUE_NEW_INPUT_ACTIVITY_ACTIONS,
-  ISSUE_REWAKE_LOOKBACK_MS,
-  ISSUE_REWAKE_RUN_SAMPLE_LIMIT,
-  evaluateIssueRewakeThrottle,
-  isThrottleCandidateIssueRewake,
-} from "./issue-rewake-throttle.js";
 import { logActivity, publishPluginDomainEvent, type LogActivityInput } from "./activity-log.js";
 import {
   buildWorkspaceReadyComment,
@@ -134,6 +123,7 @@ import {
   issueTreeControlService,
 } from "./issue-tree-control.js";
 import {
+  continuationSummaryParksExecutor,
   getIssueContinuationSummaryDocument,
   refreshIssueContinuationSummary,
 } from "./issue-continuation-summary.js";
@@ -173,20 +163,6 @@ import {
 import { recoveryService } from "./recovery/service.js";
 import { issueRecoveryActionService } from "./issue-recovery-actions.js";
 import { productivityReviewService } from "./productivity-review.js";
-import {
-  acquireIssueDeliveryLock,
-  deliveryService,
-  type DeliveryCredentialResolver,
-} from "./delivery.js";
-import type { ExternalOperationVerifier } from "./delivery-verifiers.js";
-import {
-  DEFAULT_EXTERNAL_OPERATION_CONTROLLER_MAX_ATTEMPTS,
-  EXTERNAL_OPERATION_TERMINAL_STATES,
-  MAX_EXTERNAL_OPERATION_CONTROLLER_MAX_ATTEMPTS,
-  isBoundedExternalOperationProgressPath,
-  readExternalOperationControllerAttemptMinutes,
-  readExternalOperationControllerAttemptState,
-} from "./external-operation-liveness.js";
 import { withAgentStartLock } from "./agent-start-lock.js";
 import { acquireAgentLaunchLock } from "./agent-launch-lock.js";
 import {
@@ -2671,18 +2647,11 @@ async function buildPaperclipWakePayload(input: {
     candidateAttachmentIds: string[];
     candidateAssetIds: string[];
   } | null;
-  deliverySnapshot?: Record<string, unknown> | null;
 }) {
   const executionStage = parseObject(input.contextSnapshot.executionStage);
   const commentIds = extractWakeCommentIds(input.contextSnapshot);
   const issueId = readNonEmptyString(input.contextSnapshot.issueId);
   const continuationSummary = input.continuationSummary ?? null;
-  const deliverySnapshot = input.deliverySnapshot ?? (() => {
-    const canonical = parseObject(input.contextSnapshot.canonicalDeliverySnapshot);
-    if (Object.keys(canonical).length > 0) return canonical;
-    const legacy = parseObject(input.contextSnapshot.deliverySnapshot);
-    return Object.keys(legacy).length > 0 ? legacy : null;
-  })();
   const issueSummary =
     input.issueSummary ??
     (issueId
@@ -2847,15 +2816,6 @@ async function buildPaperclipWakePayload(input: {
     });
   }
 
-  const wakeDeltaTruncated = truncated || missingCommentCount > 0;
-  const rawHistoryCoverage = readNonEmptyString(input.contextSnapshot.historyCoverage);
-  const historyCoverage = rawHistoryCoverage ?? "wake_delta_only";
-  const canonicalSnapshotRevision =
-    readNonEmptyString(input.contextSnapshot.canonicalSnapshotRevision) ??
-    readNonEmptyString(input.contextSnapshot.deliverySnapshotRevision) ??
-    readNonEmptyString(deliverySnapshot?.revision) ??
-    null;
-
   return {
     reason: readNonEmptyString(input.contextSnapshot.wakeReason),
     recoveryActionId: readNonEmptyString(input.contextSnapshot.recoveryActionId),
@@ -2927,8 +2887,6 @@ async function buildPaperclipWakePayload(input: {
           updatedAt: continuationSummary.updatedAt.toISOString(),
         }
       : null,
-    canonicalDeliverySnapshot: deliverySnapshot,
-    canonicalSnapshotRevision,
     commentIds,
     latestCommentId: commentIds[commentIds.length - 1] ?? null,
     comments,
@@ -2937,13 +2895,8 @@ async function buildPaperclipWakePayload(input: {
       includedCount: comments.length,
       missingCount: missingCommentCount,
     },
-    wakeDeltaComplete: !wakeDeltaTruncated,
-    wakeDeltaTruncated,
-    historyCoverage,
-    truncated: wakeDeltaTruncated,
-    // Backward-compatible alias. `false` means only that the requested wake
-    // delta was loaded; it never means the entire issue history was loaded.
-    fallbackFetchNeeded: wakeDeltaTruncated,
+    truncated,
+    fallbackFetchNeeded: truncated || missingCommentCount > 0,
   };
 }
 
@@ -3210,10 +3163,6 @@ export type HeartbeatEnvironmentRuntime = ReturnType<typeof environmentRuntimeSe
 export interface HeartbeatServiceOptions {
   pluginWorkerManager?: PluginWorkerManager;
   environmentRuntime?: HeartbeatEnvironmentRuntime;
-  /** Test/extension seam for provider-specific external operation verification. */
-  externalOperationVerifiers?: Map<string, ExternalOperationVerifier>;
-  /** Test/extension seam for resolving external-operation provider credentials. */
-  externalOperationCredentialResolver?: DeliveryCredentialResolver;
   /** Test/diagnostic seam for deterministic monitor claim race coverage. */
   afterIssueMonitorClaim?: (input: {
     issueId: string;
@@ -3258,51 +3207,6 @@ const activeRunAbortControllers = new Map<
 >();
 const cancellationRequests = new Map<string, string>();
 
-export {
-  DEFAULT_EXTERNAL_OPERATION_CONTROLLER_MAX_ATTEMPTS,
-  MAX_EXTERNAL_OPERATION_CONTROLLER_MAX_ATTEMPTS,
-};
-export const EXTERNAL_OPERATION_CONTROLLER_BASE_RECHECK_MS = 30 * 1000;
-export const EXTERNAL_OPERATION_CONTROLLER_MAX_RECHECK_MS = 10 * 60 * 1000;
-export const EXTERNAL_OPERATION_CONTROLLER_CLAIM_LEASE_MS = 2 * 60 * 1000;
-const EXTERNAL_OPERATION_CONTROLLER_BATCH_SIZE = 25;
-export function externalOperationControllerRecheckDelayMs(attemptCount: number) {
-  const exponent = Math.max(0, Math.min(20, Math.floor(attemptCount) - 1));
-  return Math.min(
-    EXTERNAL_OPERATION_CONTROLLER_MAX_RECHECK_MS,
-    EXTERNAL_OPERATION_CONTROLLER_BASE_RECHECK_MS * (2 ** exponent),
-  );
-}
-
-/**
- * Factory recovery minutes are absolute offsets from operation registration,
- * or from the latest new provider-evidence fingerprint. Entry N therefore
- * schedules poll N: `[2, 10, 30]` means checks at epoch +2m, +10m, and +30m.
- * Once all offsets have been consumed by healthy nonterminal checks, the last
- * offset becomes the bounded polling cadence until timeout. Verification
- * failures have a separate per-evidence-fingerprint attempt budget.
- */
-export function externalOperationControllerNextCheckAt(input: {
-  nextScheduleIndex: number;
-  metadata: unknown;
-  scheduleStartedAt: Date;
-  now: Date;
-  fallbackAttemptCount: number;
-}) {
-  const nextScheduleIndex = Math.max(0, Math.floor(input.nextScheduleIndex));
-  const attemptMinutes = readExternalOperationControllerAttemptMinutes(input.metadata);
-  const nextAttemptOffsetMinutes = attemptMinutes?.[nextScheduleIndex];
-  if (attemptMinutes && nextAttemptOffsetMinutes !== undefined) {
-    return new Date(input.scheduleStartedAt.getTime() + nextAttemptOffsetMinutes * 60_000);
-  }
-  if (attemptMinutes) {
-    return new Date(input.now.getTime() + attemptMinutes[attemptMinutes.length - 1]! * 60_000);
-  }
-  return new Date(
-    input.now.getTime() + externalOperationControllerRecheckDelayMs(input.fallbackAttemptCount),
-  );
-}
-
 export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) {
   const instanceSettings = instanceSettingsService(db);
   const getCurrentUserRedactionOptions = async () => ({
@@ -3332,36 +3236,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     cancelWorkForScope: cancelBudgetScopeWork,
   };
   const budgets = budgetService(db, budgetHooks);
-
-  async function findCurrentPendingExternalOperationPath(
-    companyId: string,
-    issueId: string,
-    now = new Date(),
-  ) {
-    const candidates = await db
-      .select({
-        id: externalOperations.id,
-        state: externalOperations.state,
-        terminalAt: externalOperations.terminalAt,
-        nextCheckAt: externalOperations.nextCheckAt,
-        timeoutAt: externalOperations.timeoutAt,
-        metadata: externalOperations.metadata,
-        createdAt: externalOperations.createdAt,
-      })
-      .from(externalOperations)
-      .where(and(
-        eq(externalOperations.companyId, companyId),
-        eq(externalOperations.issueId, issueId),
-        isNull(externalOperations.terminalAt),
-        notInArray(externalOperations.state, [...EXTERNAL_OPERATION_TERMINAL_STATES]),
-        gt(externalOperations.timeoutAt, now),
-        sql`${externalOperations.nextCheckAt} is not null`,
-      ))
-      .orderBy(asc(externalOperations.nextCheckAt), asc(externalOperations.id));
-    return candidates.find((operation) =>
-      isBoundedExternalOperationProgressPath(operation, now)
-    ) ?? null;
-  }
   const recovery = recoveryService(db, {
     enqueueWakeup,
     cancelRun: (runId, cancellation) => cancelRunInternal(runId, cancellation.reason, {
@@ -3374,10 +3248,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   });
   const recoveryActionsSvc = issueRecoveryActionService(db);
   const productivityReviews = productivityReviewService(db, { enqueueWakeup });
-  const deliveries = deliveryService(db, {
-    verifiers: options.externalOperationVerifiers,
-    resolveCredential: options.externalOperationCredentialResolver,
-  });
   let unsafeTextProjectionPromise: Promise<boolean> | null = null;
 
   async function releaseEnvironmentLeasesForRun(input: {
@@ -5680,20 +5550,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .then((rows) => rows[0] ?? null),
     ]);
 
-    if (issue) {
-      const externalOperation = await findCurrentPendingExternalOperationPath(
-        issue.companyId,
-        issue.id,
-      );
-      if (externalOperation) {
-        await setRunStatus(run.id, run.status, {
-          livenessReason:
-            `${run.livenessReason ?? "Run ended without concrete progress"}; continuation held by external operation ${externalOperation.id}`,
-        });
-        return;
-      }
-    }
-
     const budgetBlock =
       issue && agent
         ? await budgets.getInvocationBlock(issue.companyId, agent.id, {
@@ -5865,9 +5721,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .from(issues)
       .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
       .then((rows) => rows[0] ?? null);
-    if (issue && await findCurrentPendingExternalOperationPath(issue.companyId, issue.id)) {
-      return;
-    }
     const idempotencyKey = issue
       ? buildFinishSuccessfulRunHandoffIdempotencyKey({
         issueId: issue.id,
@@ -6584,7 +6437,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           | "issue_execution_lock_changed"
           | "issue_review_participant_changed"
           | "issue_paused"
-          | "issue_tree_cancelled"
           | "issue_dependencies_blocked";
         issueId: string | null;
         details: Record<string, unknown>;
@@ -6736,21 +6588,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           };
         }
       }
-    }
-
-    const activeCancelHold = await treeControlSvc.getActiveCancelHoldGate(run.companyId, issueId);
-    if (activeCancelHold) {
-      return {
-        allowed: false,
-        reason: "Scheduled retry suppressed because the issue is covered by an active subtree cancel hold",
-        errorCode: "issue_tree_cancelled",
-        issueId,
-        details: {
-          issueId,
-          holdId: activeCancelHold.holdId,
-          rootIssueId: activeCancelHold.rootIssueId,
-        },
-      };
     }
 
     const activePauseHold = await treeControlSvc.getActivePauseHoldGate(run.companyId, issueId);
@@ -8120,39 +7957,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     if (issueId) {
-      const activeCancelHold = await treeControlSvc.getActiveCancelHoldGate(run.companyId, issueId);
-      if (activeCancelHold) {
-        await cancelQueuedRunForStaleIssue(run, issueId, {
-          stale: true,
-          reason: "Cancelled because issue is covered by an active subtree cancel hold",
-          errorCode: "issue_tree_cancelled",
-          details: {
-            issueId,
-            holdId: activeCancelHold.holdId,
-            rootIssueId: activeCancelHold.rootIssueId,
-          },
-        });
-        await logActivity(db, {
-          companyId: run.companyId,
-          actorType: "system",
-          actorId: "system",
-          agentId: run.agentId,
-          runId: run.id,
-          action: "issue.tree_hold_run_interrupted",
-          entityType: "heartbeat_run",
-          entityId: run.id,
-          details: {
-            issueId,
-            holdId: activeCancelHold.holdId,
-            rootIssueId: activeCancelHold.rootIssueId,
-            mode: activeCancelHold.mode,
-            source: "heartbeat.claim_queued_run",
-            securityPrinciples: ["Complete Mediation", "Fail Securely", "Secure Defaults"],
-          },
-        });
-        return null;
-      }
-
       const activePauseHold = await treeControlSvc.getActivePauseHoldGate(run.companyId, issueId);
       const treeHoldInteractionWake = activePauseHold && await isVerifiedIssueTreeControlInteractionWake(db, {
         companyId: run.companyId,
@@ -8399,10 +8203,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           | "issue_not_in_progress"
           | "issue_execution_lock_changed"
           | "issue_review_participant_changed"
+          | "issue_continuation_waiting_on_review"
           | "issue_monitor_generation_changed"
-          | "source_scoped_recovery_action_invalid"
-          | "issue_tree_cancelled"
-          | "issue_external_operation_waiting";
+          | "source_scoped_recovery_action_invalid";
         details: Record<string, unknown>;
       };
 
@@ -8459,26 +8262,33 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const resumeIntent = context.resumeIntent === true || context.followUpRequested === true;
     const retryReason = readNonEmptyString(context.retryReason) ?? run.scheduledRetryReason ?? null;
 
-    const externalOperation = await findCurrentPendingExternalOperationPath(
-      issue.companyId,
-      issue.id,
-    );
-    const carriesExplicitNewIntent = isInteractionWake || run.invocationSource === "on_demand" ||
-      run.triggerDetail === "manual";
-    if (externalOperation && !carriesExplicitNewIntent) {
-      return {
-        stale: true,
-        errorCode: "issue_external_operation_waiting",
-        reason:
-          `Cancelled because bounded external operation ${externalOperation.id} owns progress until its next verification check`,
-        details: {
-          issueId,
-          externalOperationId: externalOperation.id,
-          nextCheckAt: externalOperation.nextCheckAt?.toISOString() ?? null,
-          timeoutAt: externalOperation.timeoutAt?.toISOString() ?? null,
-          queuedRunCreatedAt: run.createdAt.toISOString(),
-        },
-      };
+    if (
+      issue.status === "in_progress" &&
+      !wakeCommentId &&
+      (wakeReason === "issue_continuation_needed" || retryReason === "issue_continuation_needed")
+    ) {
+      const queuedWake = parseObject(context.paperclipWake);
+      const queuedContinuationSummary =
+        readNonEmptyString(parseObject(context.paperclipContinuationSummary).body) ??
+        readNonEmptyString(parseObject(queuedWake.continuationSummary).body);
+      const currentContinuationSummary = queuedContinuationSummary
+        ? null
+        : await getIssueContinuationSummaryDocument(db, issueId);
+      const continuationSummaryBody = queuedContinuationSummary ?? currentContinuationSummary?.body ?? null;
+      if (continuationSummaryParksExecutor(continuationSummaryBody)) {
+        return {
+          stale: true,
+          errorCode: "issue_continuation_waiting_on_review",
+          reason:
+            "Cancelled because the continuation summary says the executor should wait for reviewer feedback or approval before more work starts",
+          details: {
+            issueId,
+            wakeReason,
+            retryReason,
+            nextAction: continuationSummaryBody,
+          },
+        };
+      }
     }
 
     if (
@@ -9186,595 +8996,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
   }
 
-  async function reconcileDueExternalOperations(opts?: {
-    now?: Date;
-    companyId?: string;
-    limit?: number;
-  }) {
-    const now = opts?.now ?? new Date();
-    const limit = Math.max(
-      1,
-      Math.min(100, Math.floor(asNumber(opts?.limit, EXTERNAL_OPERATION_CONTROLLER_BATCH_SIZE))),
-    );
-    const candidates = await db
-      .select()
-      .from(externalOperations)
-      .where(and(
-        opts?.companyId ? eq(externalOperations.companyId, opts.companyId) : undefined,
-        isNull(externalOperations.terminalAt),
-        notInArray(externalOperations.state, [...EXTERNAL_OPERATION_TERMINAL_STATES]),
-        lte(externalOperations.nextCheckAt, now),
-      ))
-      .orderBy(asc(externalOperations.nextCheckAt), asc(externalOperations.id))
-      .limit(limit);
-
-    const result = {
-      inspected: candidates.length,
-      claimed: 0,
-      held: 0,
-      verified: 0,
-      terminal: 0,
-      rescheduled: 0,
-      exhausted: 0,
-      timedOut: 0,
-      failed: 0,
-      skipped: 0,
-      operationIds: [] as string[],
-      failedOperationIds: [] as string[],
-    };
-
-    type ExternalOperationHoldGate = NonNullable<Awaited<ReturnType<
-      typeof treeControlSvc.getActivePauseHoldGate
-    >>> | NonNullable<Awaited<ReturnType<
-      typeof treeControlSvc.getActiveCancelHoldGate
-    >>>;
-    async function withExternalOperationHoldGate<T>(
-      operation: typeof externalOperations.$inferSelect,
-      action: (tx: Db) => Promise<T>,
-    ): Promise<
-      | { held: true; hold: ExternalOperationHoldGate }
-      | { held: false; value: T }
-    > {
-      return db.transaction(async (rawTx) => {
-        const tx = rawTx as unknown as Db;
-        // Hold creation takes this same per-issue transaction lock before it
-        // inserts a hold. Controller state cannot pass the hold check and then
-        // commit behind a concurrently created explicit hold.
-        await acquireIssueDeliveryLock(tx, operation.companyId, operation.issueId);
-        const treeControl = issueTreeControlService(tx);
-        const pauseHold = await treeControl.getActivePauseHoldGate(
-          operation.companyId,
-          operation.issueId,
-        );
-        if (pauseHold) return { held: true as const, hold: pauseHold };
-        const cancelHold = await treeControl.getActiveCancelHoldGate(
-          operation.companyId,
-          operation.issueId,
-        );
-        if (cancelHold) return { held: true as const, hold: cancelHold };
-        return { held: false as const, value: await action(tx) };
-      });
-    }
-
-    async function appendExternalOperationControllerCorrection(
-      scopedDeliveries: ReturnType<typeof deliveryService>,
-      operation: typeof externalOperations.$inferSelect,
-      outcome: "timed_out" | "exhausted",
-      attemptCount: number,
-      maxAttempts: number,
-      details: Record<string, unknown> = {},
-    ) {
-      const stage = operation.stage as DeliveryStage;
-      if (!DELIVERY_STAGES.includes(stage)) {
-        throw new Error(`External operation ${operation.id} has invalid delivery stage ${operation.stage}`);
-      }
-      const operationMetadata = parseObject(operation.metadata);
-      const factoryProvenance = parseObject(operationMetadata.paperclipFactory);
-      const controllerMetadata = parseObject(operationMetadata.paperclipController);
-      const outcomeLabel = outcome === "timed_out" ? "timed out" : "exhausted its verification attempts";
-      return scopedDeliveries.appendPaperclipAction(
-        operation.companyId,
-        operation.issueId,
-        {
-          stage,
-          // The controller proves that verification stopped, not that a provider
-          // reported failure. Keep the stage unknown unless higher-authority
-          // provider truth already establishes its state.
-          state: "unknown",
-          candidateSha: operation.candidateSha,
-          environment: operation.environment,
-          provider: operation.provider,
-          providerExternalId: operation.externalId,
-          providerUrl: operation.url,
-          summary: `External operation ${outcomeLabel} before Paperclip could verify delivery`,
-          metadata: {
-            operationId: operation.id,
-            operationKind: operation.kind,
-            ...(Object.keys(factoryProvenance).length > 0
-              ? { paperclipFactory: factoryProvenance }
-              : {}),
-            paperclipController: {
-              ...controllerMetadata,
-              outcome,
-              attemptCount,
-              maxAttempts,
-              timeoutAt: operation.timeoutAt?.toISOString() ?? null,
-              nextCheckAt: operation.nextCheckAt?.toISOString() ?? null,
-              stage,
-              candidateSha: operation.candidateSha,
-              ...details,
-            },
-          },
-          observedAt: now,
-          sourceFingerprint: [
-            "external-operation-controller",
-            operation.id,
-            outcome,
-            operation.nextCheckAt?.toISOString() ?? "no-next-check",
-            String(attemptCount),
-          ].join(":"),
-        },
-        { actorType: "system" },
-      );
-    }
-
-    const recordControllerActivity = async (input: {
-      operation: typeof externalOperations.$inferSelect;
-      action: string;
-      details: Record<string, unknown>;
-    }) => {
-      try {
-        await logActivity(db, {
-          companyId: input.operation.companyId,
-          actorType: "system",
-          actorId: "external_operation_controller",
-          agentId: null,
-          runId: null,
-          action: input.action,
-          entityType: "issue",
-          entityId: input.operation.issueId,
-          details: {
-            operationId: input.operation.id,
-            provider: input.operation.provider,
-            kind: input.operation.kind,
-            stage: input.operation.stage,
-            ...input.details,
-          },
-        });
-      } catch (error) {
-        logger.warn(
-          { err: error, operationId: input.operation.id },
-          "failed to record external operation controller activity",
-        );
-      }
-    };
-
-    for (const candidate of candidates) {
-      const metadata = parseObject(candidate.metadata);
-      const previousController = parseObject(metadata.paperclipController);
-      const { attemptCount, maxAttempts } = readExternalOperationControllerAttemptState(
-        candidate.metadata,
-      );
-      const configuredAttemptMinutes = readExternalOperationControllerAttemptMinutes(candidate.metadata);
-      const rawScheduleIndex = previousController.scheduleIndex;
-      const scheduleIndex = typeof rawScheduleIndex === "number" && Number.isFinite(rawScheduleIndex)
-        ? Math.max(0, Math.floor(rawScheduleIndex))
-        : configuredAttemptMinutes
-          ? Math.min(attemptCount, configuredAttemptMinutes.length - 1)
-          : 0;
-      const rawScheduleStartedAt = readNonEmptyString(previousController.scheduleStartedAt);
-      const parsedScheduleStartedAt = rawScheduleStartedAt ? new Date(rawScheduleStartedAt) : null;
-      const scheduleStartedAt = parsedScheduleStartedAt && Number.isFinite(parsedScheduleStartedAt.getTime())
-        ? parsedScheduleStartedAt
-        : candidate.createdAt;
-      const evidenceFingerprint = readNonEmptyString(previousController.evidenceFingerprint);
-      const rawPollCount = previousController.pollCount;
-      const pollCount = typeof rawPollCount === "number" && Number.isFinite(rawPollCount)
-        ? Math.max(0, Math.floor(rawPollCount))
-        : 0;
-
-      if (candidate.timeoutAt && candidate.timeoutAt.getTime() <= now.getTime()) {
-        const transition = await withExternalOperationHoldGate(candidate, async (tx) => {
-          const [timedOut] = await tx
-            .update(externalOperations)
-            .set({
-              state: "timed_out",
-              verificationStatus: "error",
-              nextCheckAt: null,
-              terminalAt: now,
-              lastVerifiedAt: now,
-              lastVerificationError: "External operation exceeded its controller timeout",
-              metadata: {
-                ...metadata,
-                paperclipController: {
-                  ...previousController,
-                  attemptCount,
-                  maxAttempts,
-                  status: "timed_out",
-                  completedAt: now.toISOString(),
-                },
-              },
-              updatedAt: now,
-            })
-            .where(and(
-              eq(externalOperations.id, candidate.id),
-              eq(externalOperations.companyId, candidate.companyId),
-              isNull(externalOperations.terminalAt),
-              lte(externalOperations.nextCheckAt, now),
-            ))
-            .returning({ id: externalOperations.id });
-          if (!timedOut) return null;
-          await appendExternalOperationControllerCorrection(
-            deliveryService(tx),
-            candidate,
-            "timed_out",
-            attemptCount,
-            maxAttempts,
-          );
-          return timedOut;
-        });
-        if (transition.held) {
-          result.held += 1;
-          result.skipped += 1;
-          continue;
-        }
-        if (!transition.value) {
-          result.skipped += 1;
-          continue;
-        }
-        result.terminal += 1;
-        result.timedOut += 1;
-        result.operationIds.push(candidate.id);
-        await recordControllerActivity({
-          operation: candidate,
-          action: "issue.external_operation_poll_timed_out",
-          details: { attemptCount, maxAttempts, timeoutAt: candidate.timeoutAt.toISOString() },
-        });
-        continue;
-      }
-
-      if (attemptCount >= maxAttempts) {
-        const transition = await withExternalOperationHoldGate(candidate, async (tx) => {
-          const exhaustedMessage =
-            `External operation verification exhausted after ${attemptCount} of ${maxAttempts} attempts`;
-          const [exhausted] = await tx
-            .update(externalOperations)
-            .set({
-              state: "failed",
-              verificationStatus: "error",
-              nextCheckAt: null,
-              terminalAt: now,
-              lastVerifiedAt: now,
-              lastVerificationError: exhaustedMessage,
-              metadata: {
-                ...metadata,
-                paperclipController: {
-                  ...previousController,
-                  attemptCount,
-                  maxAttempts,
-                  status: "exhausted",
-                  completedAt: now.toISOString(),
-                },
-              },
-              updatedAt: now,
-            })
-            .where(and(
-              eq(externalOperations.id, candidate.id),
-              eq(externalOperations.companyId, candidate.companyId),
-              isNull(externalOperations.terminalAt),
-              lte(externalOperations.nextCheckAt, now),
-            ))
-            .returning({ id: externalOperations.id });
-          if (!exhausted) return null;
-          await appendExternalOperationControllerCorrection(
-            deliveryService(tx),
-            candidate,
-            "exhausted",
-            attemptCount,
-            maxAttempts,
-          );
-          return exhausted;
-        });
-        if (transition.held) {
-          result.held += 1;
-          result.skipped += 1;
-          continue;
-        }
-        if (!transition.value) {
-          result.skipped += 1;
-          continue;
-        }
-        result.exhausted += 1;
-        result.terminal += 1;
-        result.operationIds.push(candidate.id);
-        await recordControllerActivity({
-          operation: candidate,
-          action: "issue.external_operation_poll_exhausted",
-          details: { attemptCount, maxAttempts },
-        });
-        continue;
-      }
-
-      const pollAttempt = pollCount + 1;
-      const claimToken = randomUUID();
-      const claimUntil = new Date(Math.min(
-        now.getTime() + EXTERNAL_OPERATION_CONTROLLER_CLAIM_LEASE_MS,
-        candidate.timeoutAt?.getTime() ?? Number.POSITIVE_INFINITY,
-      ));
-      const claimedMetadata = {
-        ...metadata,
-        paperclipController: {
-          ...previousController,
-          attemptCount,
-          maxAttempts,
-          pollCount: pollAttempt,
-          scheduleIndex,
-          scheduleStartedAt: scheduleStartedAt.toISOString(),
-          evidenceFingerprint,
-          status: "verifying",
-          claimToken,
-          claimedAt: now.toISOString(),
-          leaseUntil: claimUntil.toISOString(),
-        },
-      };
-      const transition = await withExternalOperationHoldGate(candidate, async (tx) => {
-        const [claimed] = await tx
-          .update(externalOperations)
-          .set({
-            nextCheckAt: claimUntil,
-            metadata: claimedMetadata,
-            updatedAt: now,
-          })
-          .where(and(
-            eq(externalOperations.id, candidate.id),
-            eq(externalOperations.companyId, candidate.companyId),
-            isNull(externalOperations.terminalAt),
-            lte(externalOperations.nextCheckAt, now),
-          ))
-          .returning({ id: externalOperations.id });
-        return claimed ?? null;
-      });
-      if (transition.held) {
-        result.held += 1;
-        result.skipped += 1;
-        continue;
-      }
-      const claimed = transition.value;
-      if (!claimed) {
-        result.skipped += 1;
-        continue;
-      }
-      result.claimed += 1;
-
-      try {
-        const verified = await deliveries.verifyExternalOperation(
-          candidate.companyId,
-          candidate.issueId,
-          candidate.id,
-          { actorType: "system" },
-        );
-        const terminal = EXTERNAL_OPERATION_TERMINAL_STATES.includes(
-          verified.operation.state as (typeof EXTERNAL_OPERATION_TERMINAL_STATES)[number],
-        );
-        const verifiedFingerprint = readNonEmptyString(verified.event.sourceFingerprint);
-        const fingerprintAdvanced = Boolean(
-          verifiedFingerprint && verifiedFingerprint !== evidenceFingerprint,
-        );
-        const resetScheduleForNewEvidence = Boolean(evidenceFingerprint && fingerprintAdvanced);
-        const nextAttemptCount = fingerprintAdvanced ? 0 : attemptCount;
-        const nextScheduleIndex = resetScheduleForNewEvidence ? 0 : scheduleIndex + 1;
-        const nextScheduleStartedAt = resetScheduleForNewEvidence ? now : scheduleStartedAt;
-        const scheduledCheckAt = externalOperationControllerNextCheckAt({
-          nextScheduleIndex,
-          metadata: candidate.metadata,
-          scheduleStartedAt: nextScheduleStartedAt,
-          now,
-          fallbackAttemptCount: pollAttempt,
-        });
-        const nextCheckAt = terminal
-          ? null
-          : new Date(Math.min(
-            scheduledCheckAt.getTime(),
-            candidate.timeoutAt?.getTime() ?? Number.POSITIVE_INFINITY,
-          ));
-        const verifiedMetadata = parseObject(verified.operation.metadata);
-        const verifiedController = parseObject(verifiedMetadata.paperclipController);
-        const persistence = await withExternalOperationHoldGate(candidate, async (tx) => {
-          const [updated] = await tx
-            .update(externalOperations)
-            .set({
-              nextCheckAt,
-              metadata: {
-                ...verifiedMetadata,
-                paperclipController: {
-                  ...verifiedController,
-                  attemptCount: nextAttemptCount,
-                  maxAttempts,
-                  pollCount: pollAttempt,
-                  evidenceFingerprint: verifiedFingerprint ?? evidenceFingerprint,
-                  evidenceFingerprintEventId: verified.event.id,
-                  ...(fingerprintAdvanced
-                    ? { evidenceFingerprintChangedAt: now.toISOString() }
-                    : {}),
-                  scheduleIndex: nextScheduleIndex,
-                  scheduleStartedAt: nextScheduleStartedAt.toISOString(),
-                  status: terminal ? "terminal" : "waiting",
-                  claimToken: null,
-                  leaseUntil: null,
-                  lastCompletedAt: now.toISOString(),
-                  nextCheckAt: nextCheckAt?.toISOString() ?? null,
-                },
-              },
-              updatedAt: now,
-            })
-            .where(and(
-              eq(externalOperations.id, candidate.id),
-              eq(externalOperations.companyId, candidate.companyId),
-              sql`${externalOperations.metadata} -> 'paperclipController' ->> 'claimToken' = ${claimToken}`,
-            ))
-            .returning({ id: externalOperations.id });
-          if (!updated) return false;
-          return true;
-        });
-        if (persistence.held) {
-          result.held += 1;
-          result.skipped += 1;
-          continue;
-        }
-        if (!persistence.value) {
-          result.skipped += 1;
-          continue;
-        }
-
-        result.verified += 1;
-        if (terminal) result.terminal += 1;
-        else result.rescheduled += 1;
-        result.operationIds.push(candidate.id);
-        await recordControllerActivity({
-          operation: candidate,
-          action: "issue.external_operation_verified",
-          details: {
-            attemptCount: nextAttemptCount,
-            maxAttempts,
-            pollCount: pollAttempt,
-            evidenceFingerprint: verifiedFingerprint,
-            fingerprintAdvanced,
-            state: verified.operation.state,
-            verificationStatus: verified.operation.verificationStatus,
-            providerEventId: verified.event.id,
-            eventCreated: verified.eventCreated,
-            candidateMismatch: verified.candidateMismatch,
-            controllerStatus: terminal ? "terminal" : "waiting",
-            nextCheckAt: nextCheckAt?.toISOString() ?? null,
-          },
-        });
-      } catch (error) {
-        const message = redactSensitiveText(error instanceof Error ? error.message : String(error)).slice(0, 1_000);
-        const operation = await deliveries.getExternalOperation(
-          candidate.companyId,
-          candidate.issueId,
-          candidate.id,
-        );
-        const operationMetadata = parseObject(operation?.metadata ?? claimedMetadata);
-        const operationController = parseObject(operationMetadata.paperclipController);
-        const failedAttemptCount = attemptCount + 1;
-        const exhausted = failedAttemptCount >= maxAttempts;
-        const nextScheduleIndex = scheduleIndex + 1;
-        const scheduledCheckAt = externalOperationControllerNextCheckAt({
-          nextScheduleIndex,
-          metadata: candidate.metadata,
-          scheduleStartedAt,
-          now,
-          fallbackAttemptCount: failedAttemptCount,
-        });
-        const nextCheckAt = exhausted
-          ? null
-          : new Date(Math.min(
-            scheduledCheckAt.getTime(),
-            candidate.timeoutAt?.getTime() ?? Number.POSITIVE_INFINITY,
-          ));
-        const persistence = await withExternalOperationHoldGate(candidate, async (tx) => {
-          const [updated] = await tx
-            .update(externalOperations)
-            .set({
-              ...(exhausted ? { state: "failed" as const, terminalAt: now } : {}),
-              verificationStatus: "error",
-              lastVerificationError: message,
-              lastVerifiedAt: now,
-              nextCheckAt,
-              metadata: {
-                ...operationMetadata,
-                paperclipController: {
-                  ...operationController,
-                  attemptCount: failedAttemptCount,
-                  maxAttempts,
-                  pollCount: pollAttempt,
-                  evidenceFingerprint,
-                  scheduleIndex: nextScheduleIndex,
-                  scheduleStartedAt: scheduleStartedAt.toISOString(),
-                  status: exhausted ? "exhausted" : "retry_scheduled",
-                  claimToken: null,
-                  leaseUntil: null,
-                  lastCompletedAt: now.toISOString(),
-                  lastError: message,
-                  nextCheckAt: nextCheckAt?.toISOString() ?? null,
-                },
-              },
-              updatedAt: now,
-            })
-            .where(and(
-              eq(externalOperations.id, candidate.id),
-              eq(externalOperations.companyId, candidate.companyId),
-              isNull(externalOperations.terminalAt),
-              sql`${externalOperations.metadata} -> 'paperclipController' ->> 'claimToken' = ${claimToken}`,
-            ))
-            .returning({ id: externalOperations.id });
-          if (!updated) return false;
-          if (exhausted) {
-            await appendExternalOperationControllerCorrection(
-              deliveryService(tx),
-              candidate,
-              "exhausted",
-              failedAttemptCount,
-              maxAttempts,
-              { verificationError: message },
-            );
-          }
-          return true;
-        });
-
-        result.failed += 1;
-        if (persistence.held) {
-          result.held += 1;
-          result.skipped += 1;
-          result.failedOperationIds.push(candidate.id);
-          continue;
-        }
-        if (!persistence.value) {
-          result.skipped += 1;
-          result.failedOperationIds.push(candidate.id);
-          continue;
-        }
-        if (exhausted) {
-          result.exhausted += 1;
-          result.terminal += 1;
-        }
-        else result.rescheduled += 1;
-        result.failedOperationIds.push(candidate.id);
-        await recordControllerActivity({
-          operation: candidate,
-          action: exhausted
-            ? "issue.external_operation_poll_exhausted"
-            : "issue.external_operation_verification_failed",
-          details: {
-            attemptCount: failedAttemptCount,
-            maxAttempts,
-            pollCount: pollAttempt,
-            evidenceFingerprint,
-            error: message,
-            controllerStatus: exhausted ? "exhausted" : "retry_scheduled",
-            nextCheckAt: nextCheckAt?.toISOString() ?? null,
-          },
-        });
-      }
-    }
-
-    return result;
-  }
-
-  async function reconcileStrandedAssignedIssues(options: {
-    includeExternalOperationController?: boolean;
-  } = {}) {
-    let externalOperationController: Awaited<ReturnType<typeof reconcileDueExternalOperations>> | null = null;
-    if (options.includeExternalOperationController !== false) {
-      try {
-        externalOperationController = await reconcileDueExternalOperations();
-      } catch (error) {
-        logger.error({ err: error }, "external operation controller reconciliation failed");
-      }
-    }
-    const stranded = await recovery.reconcileStrandedAssignedIssues();
-    return { ...stranded, externalOperationController };
+  async function reconcileStrandedAssignedIssues() {
+    return recovery.reconcileStrandedAssignedIssues();
   }
 
   function issueIdFromRunContext(contextSnapshot: unknown) {
@@ -10151,16 +9374,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     } else {
       delete context.paperclipImageReferenceGuardrail;
     }
-    const canonicalDeliverySnapshot = issueRef
-      ? await deliveries.getSnapshot(agent.companyId, issueRef.id)
-      : null;
-    if (canonicalDeliverySnapshot) {
-      context.canonicalDeliverySnapshot = canonicalDeliverySnapshot;
-      context.canonicalSnapshotRevision = canonicalDeliverySnapshot.revision;
-    } else {
-      delete context.canonicalDeliverySnapshot;
-      delete context.canonicalSnapshotRevision;
-    }
     const paperclipWakePayload = await buildPaperclipWakePayload({
       db,
       companyId: agent.companyId,
@@ -10184,7 +9397,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             executionContract: issueRef.executionContract ?? null,
           }
         : null,
-      deliverySnapshot: canonicalDeliverySnapshot as unknown as Record<string, unknown> | null,
     });
     if (paperclipWakePayload) {
       context[PAPERCLIP_WAKE_PAYLOAD_KEY] = paperclipWakePayload;
@@ -12044,22 +11256,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             continue;
           }
         }
-        const lockedTreeControl = issueTreeControlService(tx as unknown as Db);
-        const activeCancelHold = await lockedTreeControl.getActiveCancelHoldGate(issue.companyId, issue.id);
-        if (activeCancelHold) {
-          await tx
-            .update(agentWakeupRequests)
-            .set({
-              status: "cancelled",
-              finishedAt: new Date(),
-              error: "Deferred wake suppressed by active subtree cancel hold",
-              updatedAt: new Date(),
-            })
-            .where(eq(agentWakeupRequests.id, deferred.id));
-          continue;
-        }
-
-        const activePauseHold = await lockedTreeControl.getActivePauseHoldGate(issue.companyId, issue.id);
+        const activePauseHold = await treeControlSvc.getActivePauseHoldGate(issue.companyId, issue.id);
         const treeHoldInteractionWake = activePauseHold && await isVerifiedIssueTreeControlInteractionWake(tx, {
           companyId: issue.companyId,
           issueId: issue.id,
@@ -12573,36 +11770,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     if (issueId) {
-      const activeCancelHold = await treeControlSvc.getActiveCancelHoldGate(agent.companyId, issueId);
-      if (activeCancelHold) {
-        const wakeupRequestId = await writeSkippedRequest("issue_tree_cancel_hold_active");
-        await logActivity(db, {
-          companyId: agent.companyId,
-          actorType: "system",
-          actorId: "system",
-          agentId,
-          runId: null,
-          action: "issue.tree_hold_wakeup_deferred",
-          entityType: "issue",
-          entityId: issueId,
-          details: {
-            holdId: activeCancelHold.holdId,
-            rootIssueId: activeCancelHold.rootIssueId,
-            mode: activeCancelHold.mode,
-            requestedReason: reason,
-            source,
-            triggerDetail,
-            securityPrinciples: ["Complete Mediation", "Fail Securely", "Secure Defaults"],
-          },
-        });
-        return {
-          kind: "skipped",
-          run: null,
-          wakeupRequestId,
-          reason: "issue_tree_cancel_hold_active",
-        };
-      }
-
       const activePauseHold = await treeControlSvc.getActivePauseHoldGate(agent.companyId, issueId);
       if (activePauseHold) {
         const treeHoldInteractionWake = await isVerifiedIssueTreeControlInteractionWake(db, {
@@ -12735,37 +11902,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             kind: "skipped" as const,
             wakeupRequestId: null,
             reason: "issue_execution_issue_not_found",
-          };
-        }
-
-        // Recheck after taking the issue row lock. Cancel-hold creation takes
-        // the same row lock, so a hold that raced the optimistic check above
-        // cannot commit and then admit a new queued run behind it.
-        const lockedCancelHold = await issueTreeControlService(tx as unknown as Db)
-          .getActiveCancelHoldGate(issue.companyId, issue.id);
-        if (lockedCancelHold) {
-          const wakeupRequest = await tx
-            .insert(agentWakeupRequests)
-            .values({
-              companyId: agent.companyId,
-              agentId,
-              source,
-              triggerDetail,
-              reason: "issue_tree_cancel_hold_active",
-              payload,
-              status: "skipped",
-              requestedByActorType: opts.requestedByActorType ?? null,
-              requestedByActorId: opts.requestedByActorId ?? null,
-              idempotencyKey: opts.idempotencyKey ?? null,
-              finishedAt: new Date(),
-              error: "Wake suppressed by active subtree cancel hold",
-            })
-            .returning({ id: agentWakeupRequests.id })
-            .then((rows) => rows[0] ?? null);
-          return {
-            kind: "skipped" as const,
-            wakeupRequestId: wakeupRequest?.id ?? null,
-            reason: "issue_tree_cancel_hold_active",
           };
         }
 
@@ -13319,137 +12455,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             kind: "deferred" as const,
             wakeupRequestId: deferredRequest.id,
           };
-        }
-
-        // Repeated event-free wakes after successful no-evidence runs are not
-        // recovery; they are an amplification loop. Admit human/provider input
-        // and real failures immediately, but back off state-poll wakes until
-        // either evidence changes or the bounded cooldown expires.
-        if (
-          isThrottleCandidateIssueRewake({
-            reason,
-            wakeCommentId: wakeCommentId ?? null,
-            forceFreshSession: enrichedContextSnapshot.forceFreshSession === true,
-            hasExplicitResume: Boolean(explicitResumeSession),
-          })
-        ) {
-          const throttleNow = new Date();
-          const recentTerminalRuns = await tx
-            .select({
-              id: heartbeatRuns.id,
-              status: heartbeatRuns.status,
-              finishedAt: heartbeatRuns.finishedAt,
-            })
-            .from(heartbeatRuns)
-            .where(
-              and(
-                eq(heartbeatRuns.companyId, agent.companyId),
-                eq(heartbeatRuns.agentId, agentId),
-                sql`${heartbeatRuns.finishedAt} is not null`,
-                gte(heartbeatRuns.finishedAt, new Date(throttleNow.getTime() - ISSUE_REWAKE_LOOKBACK_MS)),
-                sql`coalesce(${heartbeatRuns.contextSnapshot} ->> 'issueId', ${heartbeatRuns.contextSnapshot} ->> 'taskId') = ${issue.id}`,
-              ),
-            )
-            .orderBy(desc(heartbeatRuns.finishedAt), desc(heartbeatRuns.id))
-            .limit(ISSUE_REWAKE_RUN_SAMPLE_LIMIT);
-
-          if (recentTerminalRuns.length > 0) {
-            const sampleRunIds = recentTerminalRuns.map((sampleRun) => sampleRun.id);
-            const progressRows = await tx
-              .select({ runId: activityLog.runId })
-              .from(activityLog)
-              .where(
-                and(
-                  eq(activityLog.companyId, agent.companyId),
-                  eq(activityLog.entityType, "issue"),
-                  eq(activityLog.entityId, issue.id),
-                  inArray(activityLog.runId, sampleRunIds),
-                  or(
-                    inArray(activityLog.action, ISSUE_EVIDENCE_PROGRESS_ACTIVITY_ACTIONS),
-                    and(
-                      eq(activityLog.action, "issue.delivery_event_recorded"),
-                      sql`${activityLog.details} ->> 'authority' in ('provider_verified', 'paperclip_verified', 'user_asserted')`,
-                    ),
-                    and(
-                      eq(activityLog.action, "issue.external_operation_verified"),
-                      sql`${activityLog.details} ->> 'verificationStatus' in ('verified', 'mismatch')`,
-                      or(
-                        sql`coalesce(${activityLog.details} ->> 'eventCreated', 'false') = 'true'`,
-                        sql`coalesce(${activityLog.details} ->> 'candidateMismatch', 'false') = 'true'`,
-                      ),
-                    ),
-                  ),
-                ),
-              );
-            const lastRunFinishedAt = recentTerminalRuns[0]?.finishedAt ?? null;
-            const newInputRows = lastRunFinishedAt
-              ? await tx
-                .select({ id: activityLog.id })
-                .from(activityLog)
-                .where(
-                  and(
-                    eq(activityLog.companyId, agent.companyId),
-                    eq(activityLog.entityType, "issue"),
-                    eq(activityLog.entityId, issue.id),
-                    gt(activityLog.createdAt, lastRunFinishedAt),
-                    inArray(activityLog.action, ISSUE_NEW_INPUT_ACTIVITY_ACTIONS),
-                    or(
-                      sql`${activityLog.action} <> 'issue.external_operation_verified'`,
-                      sql`coalesce(${activityLog.details} ->> 'eventCreated', 'false') = 'true'`,
-                      sql`coalesce(${activityLog.details} ->> 'candidateMismatch', 'false') = 'true'`,
-                    ),
-                  ),
-                )
-                .limit(1)
-              : [];
-
-            const throttleDecision = evaluateIssueRewakeThrottle({
-              now: throttleNow,
-              recentTerminalRuns,
-              runIdsWithIssueProgress: new Set(
-                progressRows
-                  .map((row) => row.runId)
-                  .filter((runId): runId is string => Boolean(runId)),
-              ),
-              hasNewIssueInputSinceLastRun: newInputRows.length > 0,
-            });
-
-            if (throttleDecision.blocked) {
-              const wakeupRequest = await tx
-                .insert(agentWakeupRequests)
-                .values({
-                  companyId: agent.companyId,
-                  agentId,
-                  source,
-                  triggerDetail,
-                  reason: "issue_rewake_throttled",
-                  payload: {
-                    ...(payload ?? {}),
-                    issueId,
-                    heartbeatSkip: {
-                      reason: "issue_rewake_throttled",
-                      requestedReason: reason,
-                      noProgressStreak: throttleDecision.noProgressStreak,
-                      cooldownMs: throttleDecision.cooldownMs,
-                      lastRunFinishedAt: throttleDecision.lastRunFinishedAt.toISOString(),
-                      nextAllowedAt: throttleDecision.nextAllowedAt.toISOString(),
-                    },
-                  },
-                  status: "skipped",
-                  requestedByActorType: opts.requestedByActorType ?? null,
-                  requestedByActorId: opts.requestedByActorId ?? null,
-                  idempotencyKey: opts.idempotencyKey ?? null,
-                  finishedAt: throttleNow,
-                })
-                .returning({ id: agentWakeupRequests.id })
-                .then((rows) => rows[0] ?? null);
-              return {
-                kind: "skipped" as const,
-                wakeupRequestId: wakeupRequest?.id ?? null,
-                reason: "issue_rewake_throttled",
-              };
-            }
-          }
         }
 
         if (!await finalizeMonitorClaim()) {
@@ -14425,8 +13430,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     resumeQueuedRuns,
     driveQueuedRunsForAgent: startNextQueuedRunForAgent,
-
-    reconcileDueExternalOperations,
 
     scheduleBoundedRetry: async (
       runId: string,

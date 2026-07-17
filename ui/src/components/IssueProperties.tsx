@@ -1179,7 +1179,6 @@ export function IssueProperties({
   );
   const reviewerValues = stageParticipantValues(issue.executionPolicy, "review");
   const approverValues = stageParticipantValues(issue.executionPolicy, "approval");
-  const factoryManagedWorkflow = Boolean(issue.executionPolicy?.factory);
   const userLabel = (userId: string | null | undefined) => formatAssigneeUserLabel(userId, currentUserId, userLabelMap);
   const assigneeUserLabel = userLabel(issue.assigneeUserId);
   const creatorUserLabel = userLabel(issue.createdByUserId);
@@ -1244,13 +1243,7 @@ export function IssueProperties({
   );
   const currentExecutionLabel = (() => {
     if (!issue.executionState?.currentStageType) return null;
-    const stageLabel = {
-      work: "Work",
-      verification: "Verification",
-      deployment: "Deployment",
-      review: "Review",
-      approval: "Approval",
-    }[issue.executionState.currentStageType];
+    const stageLabel = issue.executionState.currentStageType === "review" ? "Review" : "Approval";
     const participant = issue.executionState.currentParticipant;
     const participantLabel = participant
       ? (participant.type === "agent"
@@ -1299,7 +1292,6 @@ export function IssueProperties({
         commentRequired: true,
         stages: basePolicy?.stages ?? [],
         ...(nextMonitor ? { monitor: nextMonitor } : {}),
-        ...(basePolicy?.factory ? { factory: basePolicy.factory } : {}),
       },
     });
   };
@@ -2690,51 +2682,43 @@ export function IssueProperties({
           </PropertyRow>
         ) : null}
 
-        {factoryManagedWorkflow ? (
-          <PropertyRow label="Workflow">
-            <span className="text-sm text-muted-foreground">Managed by the immutable AI Factory policy snapshot</span>
-          </PropertyRow>
-        ) : (
-          <>
-            <PropertyPicker
-              inline={inline}
-              label="Reviewers"
-              open={reviewersOpen}
-              onOpenChange={(open) => { setReviewersOpen(open); if (!open) setReviewerSearch(""); }}
-              triggerContent={reviewerTrigger}
-              triggerClassName="min-w-0 max-w-full"
-              popoverClassName="w-56"
-            >
-              {executionParticipantsContent(
-                "review",
-                reviewerValues,
-                reviewerSearch,
-                setReviewerSearch,
-                () => updateExecutionPolicy([], approverValues),
-              )}
-            </PropertyPicker>
-            {nextRunnableExecutionStage === "review" && reviewerValues.length > 0 ? runExecutionButton("review") : null}
+        <PropertyPicker
+          inline={inline}
+          label="Reviewers"
+          open={reviewersOpen}
+          onOpenChange={(open) => { setReviewersOpen(open); if (!open) setReviewerSearch(""); }}
+          triggerContent={reviewerTrigger}
+          triggerClassName="min-w-0 max-w-full"
+          popoverClassName="w-56"
+        >
+          {executionParticipantsContent(
+            "review",
+            reviewerValues,
+            reviewerSearch,
+            setReviewerSearch,
+            () => updateExecutionPolicy([], approverValues),
+          )}
+        </PropertyPicker>
+        {nextRunnableExecutionStage === "review" && reviewerValues.length > 0 ? runExecutionButton("review") : null}
 
-            <PropertyPicker
-              inline={inline}
-              label="Approvers"
-              open={approversOpen}
-              onOpenChange={(open) => { setApproversOpen(open); if (!open) setApproverSearch(""); }}
-              triggerContent={approverTrigger}
-              triggerClassName="min-w-0 max-w-full"
-              popoverClassName="w-56"
-            >
-              {executionParticipantsContent(
-                "approval",
-                approverValues,
-                approverSearch,
-                setApproverSearch,
-                () => updateExecutionPolicy(reviewerValues, []),
-              )}
-            </PropertyPicker>
-            {nextRunnableExecutionStage === "approval" && approverValues.length > 0 ? runExecutionButton("approval") : null}
-          </>
-        )}
+        <PropertyPicker
+          inline={inline}
+          label="Approvers"
+          open={approversOpen}
+          onOpenChange={(open) => { setApproversOpen(open); if (!open) setApproverSearch(""); }}
+          triggerContent={approverTrigger}
+          triggerClassName="min-w-0 max-w-full"
+          popoverClassName="w-56"
+        >
+          {executionParticipantsContent(
+            "approval",
+            approverValues,
+            approverSearch,
+            setApproverSearch,
+            () => updateExecutionPolicy(reviewerValues, []),
+          )}
+        </PropertyPicker>
+        {nextRunnableExecutionStage === "approval" && approverValues.length > 0 ? runExecutionButton("approval") : null}
 
         {currentExecutionLabel && (
           <PropertyRow label="Execution">

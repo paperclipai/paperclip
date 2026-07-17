@@ -6,8 +6,6 @@ export { companyMcpServerRoutes } from "./company-mcp-servers.js";
 export { agentRoutes } from "./agents.js";
 export { projectRoutes } from "./projects.js";
 export { issueRoutes } from "./issues.js";
-export { aiFactoryExecutionLaneRoutes } from "./ai-factory-execution-lanes.js";
-export { deliveryRoutes } from "./delivery.js";
 export { issueTreeControlRoutes } from "./issue-tree-control.js";
 export { routineRoutes } from "./routines.js";
 export { goalRoutes } from "./goals.js";

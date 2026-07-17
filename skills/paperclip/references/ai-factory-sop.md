@@ -14,7 +14,7 @@ There are no execution grandchildren.
 ## Topology Rules
 
 - A main parent issue may create direct child execution lanes.
-- A parent issue may have only the direct execution lanes allowed by its frozen company AI Factory policy (hard ceiling: 10).
+- A parent issue may have at most 10 direct child execution lanes.
 - An execution lane is any issue with `parentId` set.
 - Execution lanes must not create child issues.
 - Engineer, QA, fix, and review loops stay inside the same execution-lane issue thread.
@@ -48,8 +48,7 @@ There are no execution grandchildren.
 The issue service rejects:
 
 - creating a child under an issue that already has `parentId`;
-- creating a child when the issue contract says `same_issue_only` or unambiguously forbids children;
-- creating more direct lanes than the parent factory snapshot permits (hard ceiling: 10).
+- creating more than 10 direct children under one parent.
 
 UI surfaces should hide sub-issue creation for execution lanes, but backend enforcement is authoritative.
 Issue budget hard-stops also apply to issue trees: `issue_tree` cancels parent plus lanes, and `issue_children` cancels lanes without cancelling the parent board-facing thread.

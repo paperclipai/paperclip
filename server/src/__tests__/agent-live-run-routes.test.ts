@@ -114,7 +114,6 @@ function createLiveRunsDbStub(rows: Array<Record<string, unknown>>) {
   const query = {
     from: vi.fn().mockReturnThis(),
     innerJoin: vi.fn().mockReturnThis(),
-    leftJoin: vi.fn().mockReturnThis(),
     where: vi.fn().mockReturnThis(),
     orderBy: vi.fn().mockReturnValue(orderedQuery),
   };
@@ -448,7 +447,6 @@ describe("agent live run routes", () => {
         const query = {
           from: vi.fn().mockReturnThis(),
           innerJoin: vi.fn().mockReturnThis(),
-          leftJoin: vi.fn().mockReturnThis(),
           where: vi.fn().mockReturnThis(),
           orderBy: vi.fn().mockReturnValue(orderedQuery),
         };
@@ -533,7 +531,6 @@ describe("agent live run routes", () => {
         return {
           from: vi.fn().mockReturnThis(),
           innerJoin: vi.fn().mockReturnThis(),
-          leftJoin: vi.fn().mockReturnThis(),
           where: vi.fn().mockReturnThis(),
           orderBy: vi.fn().mockReturnValue(orderedQuery),
         };

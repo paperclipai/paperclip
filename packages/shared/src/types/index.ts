@@ -83,16 +83,6 @@ export type {
   CompanySkillFileUpdateRequest,
 } from "./company-skill.js";
 export type {
-  FactoryStageType,
-  FactoryStageCondition,
-  FactoryPolicyStageV1,
-  FactoryPolicyV1,
-  FactoryPolicyServerInvariantsV1,
-  CompiledFactoryPolicyV1,
-  CompanyAiFactoryPolicyView,
-  CompanyAiFactoryPolicySelectRequest,
-} from "./ai-factory-policy.js";
-export type {
   AgentSkillSyncMode,
   AgentSkillState,
   AgentSkillOrigin,
@@ -175,31 +165,6 @@ export type {
   IssueWorkProductStatus,
   IssueWorkProductReviewState,
 } from "./work-product.js";
-export {
-  DELIVERY_STAGES,
-  DELIVERY_EVENT_STATES,
-  DELIVERY_EVENT_SOURCE_KINDS,
-  DELIVERY_EVENT_AUTHORITIES,
-  EXTERNAL_OPERATION_KINDS,
-  EXTERNAL_OPERATION_STATES,
-  EXTERNAL_OPERATION_VERIFICATION_STATUSES,
-} from "./delivery.js";
-export type {
-  DeliveryStage,
-  DeliveryEventState,
-  DeliveryEventSourceKind,
-  DeliveryEventAuthority,
-  DeliveryFactoryParticipantV1,
-  DeliveryFactoryProvenanceV1,
-  DeliveryEvidenceExpectationsV1,
-  DeliveryEventV1,
-  DeliveryStageSnapshotV1,
-  DeliverySnapshotV1,
-  ExternalOperationKind,
-  ExternalOperationState,
-  ExternalOperationVerificationStatus,
-  ExternalOperationV1,
-} from "./delivery.js";
 export type {
   Issue,
   IssueWorkMode,
@@ -224,7 +189,6 @@ export type {
   IssueExecutionMonitorPolicy,
   IssueExecutionMonitorState,
   IssueExecutionPolicy,
-  IssueFactoryExecutionPolicy,
   IssueExecutionState,
   IssueExecutionStage,
   IssueExecutionStageParticipant,
@@ -249,10 +213,6 @@ export type {
   SuggestTasksResult,
   AskUserQuestionsQuestionOption,
   AskUserQuestionsQuestion,
-  CapabilityPreflightReasonKind,
-  CapabilityPreflightCheckStatus,
-  CapabilityPreflightCheck,
-  CapabilityPreflightV1,
   AskUserQuestionsPayload,
   AskUserQuestionsAnswer,
   AskUserQuestionsResult,

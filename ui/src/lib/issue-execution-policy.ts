@@ -30,7 +30,7 @@ export function selectionValueFromPrincipal(principal: IssueExecutionStagePrinci
 }
 
 export function stageParticipantValues(policy: IssueExecutionPolicy | null | undefined, stageType: StageType): string[] {
-  const stage = policy?.stages.find((candidate) => candidate.type === stageType && !candidate.key);
+  const stage = policy?.stages.find((candidate) => candidate.type === stageType);
   return stage?.participants.map((participant) => selectionValueFromPrincipal(participant)) ?? [];
 }
 
@@ -61,17 +61,12 @@ export function buildExecutionPolicy(input: {
   approverValues: string[];
 }): IssueExecutionPolicy | null {
   const mode = input.existingPolicy?.mode ?? "normal";
-  const factoryManaged = Boolean(input.existingPolicy?.factory);
-  // Company factory stages are snapshotted and server-managed. The generic
-  // reviewer/approver picker must never erase or rewrite them.
-  const stages: IssueExecutionPolicy["stages"] = [
-    ...(input.existingPolicy?.stages.filter((stage) => Boolean(stage.key)) ?? []),
-  ];
+  const stages: IssueExecutionPolicy["stages"] = [];
   const monitor = input.existingPolicy?.monitor ?? null;
 
-  const existingReviewStage = input.existingPolicy?.stages.find((stage) => stage.type === "review" && !stage.key);
+  const existingReviewStage = input.existingPolicy?.stages.find((stage) => stage.type === "review");
   const reviewParticipants = mergeParticipants(existingReviewStage?.participants, input.reviewerValues);
-  if (!factoryManaged && reviewParticipants.length > 0) {
+  if (reviewParticipants.length > 0) {
     stages.push({
       id: existingReviewStage?.id ?? newId(),
       type: "review" as const,
@@ -80,9 +75,9 @@ export function buildExecutionPolicy(input: {
     });
   }
 
-  const existingApprovalStage = input.existingPolicy?.stages.find((stage) => stage.type === "approval" && !stage.key);
+  const existingApprovalStage = input.existingPolicy?.stages.find((stage) => stage.type === "approval");
   const approvalParticipants = mergeParticipants(existingApprovalStage?.participants, input.approverValues);
-  if (!factoryManaged && approvalParticipants.length > 0) {
+  if (approvalParticipants.length > 0) {
     stages.push({
       id: existingApprovalStage?.id ?? newId(),
       type: "approval" as const,
@@ -91,13 +86,12 @@ export function buildExecutionPolicy(input: {
     });
   }
 
-  if (stages.length === 0 && !monitor && !input.existingPolicy?.factory) return null;
+  if (stages.length === 0 && !monitor) return null;
 
   return {
     mode,
     commentRequired: true,
     stages,
     ...(monitor ? { monitor } : {}),
-    ...(input.existingPolicy?.factory ? { factory: input.existingPolicy.factory } : {}),
   };
 }

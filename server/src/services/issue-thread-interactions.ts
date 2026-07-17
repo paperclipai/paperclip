@@ -32,7 +32,6 @@ import {
   rejectIssueThreadInteractionSchema,
   requestConfirmationPayloadSchema,
   requestConfirmationResultSchema,
-  issueExecutionPolicySchema,
   suggestTasksPayloadSchema,
   suggestTasksResultSchema,
 } from "@paperclipai/shared";
@@ -43,32 +42,6 @@ type InteractionActor = {
   agentId?: string | null;
   userId?: string | null;
 };
-
-export function assertFactoryInteractionCapabilityPreflight(input: {
-  executionPolicy: unknown;
-  interaction: CreateIssueThreadInteraction;
-  actor: InteractionActor;
-}) {
-  if (!input.actor.agentId || input.interaction.kind === "suggest_tasks") return;
-  const policy = issueExecutionPolicySchema.safeParse(input.executionPolicy);
-  if (!policy.success || !policy.data.factory) return;
-  const preflightRequired =
-    policy.data.factory.policySnapshot?.productionAuthority
-      .requireCapabilityPreflightBeforeEscalation ?? true;
-  if (!preflightRequired) return;
-  const preflight = input.interaction.payload.capabilityPreflight;
-  if (preflight) return;
-  throw unprocessable(
-    "Factory agents must attach a capability preflight before pausing for a user decision.",
-    {
-      code: "capability_preflight_required",
-      rule: "factory_interaction_preflight",
-      interactionKind: input.interaction.kind,
-      laneKind: policy.data.factory.laneKind,
-      policyKey: policy.data.factory.policyKey,
-    },
-  );
-}
 
 const ISSUE_THREAD_INTERACTION_IDEMPOTENCY_CONSTRAINT =
   "issue_thread_interactions_company_issue_idempotency_uq";
@@ -733,17 +706,6 @@ export function issueThreadInteractionService(db: Db) {
       actor: InteractionActor,
     ) => {
       const data = createIssueThreadInteractionSchema.parse(input);
-
-      const issuePolicy = await db
-        .select({ executionPolicy: issues.executionPolicy })
-        .from(issues)
-        .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)))
-        .then((rows) => rows[0]?.executionPolicy ?? null);
-      assertFactoryInteractionCapabilityPreflight({
-        executionPolicy: issuePolicy,
-        interaction: data,
-        actor,
-      });
 
       if (data.idempotencyKey) {
         const existing = await getIdempotentInteraction({

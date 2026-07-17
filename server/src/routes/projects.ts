@@ -19,13 +19,7 @@ import { trackProjectCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
 import { heartbeatService, projectService, logActivity, workspaceOperationService, accessService } from "../services/index.js";
 import { conflict, forbidden, notFound } from "../errors.js";
-import {
-  assertBoard,
-  assertCompanyAccess,
-  getActorInfo,
-  requireProjectPermission,
-  requireProjectAccess,
-} from "./authz.js";
+import { assertCompanyAccess, getActorInfo, requireProjectPermission, requireProjectAccess } from "./authz.js";
 import {
   buildWorkspaceRuntimeDesiredStatePatch,
   listConfiguredRuntimeServiceEntries,
@@ -48,17 +42,6 @@ import { githubConnectionService } from "../services/github-connections.js";
 
 const WORKSPACE_CONTROL_OUTPUT_MAX_CHARS = 256 * 1024;
 const SHARED_WORKSPACE_STOP_AND_RESTART_ACTIONS = new Set(["stop", "restart"]);
-const PROJECT_DELIVERY_AUTHORITY_FIELDS = [
-  "env",
-  "githubConnectionId",
-  "executionWorkspacePolicy",
-] as const;
-
-function projectDeliveryAuthorityMutationFields(body: unknown) {
-  if (!body || typeof body !== "object" || Array.isArray(body)) return [];
-  return PROJECT_DELIVERY_AUTHORITY_FIELDS.filter((field) =>
-    Object.prototype.hasOwnProperty.call(body, field));
-}
 
 // Inline zod schemas for project RBAC (kept local to avoid introducing new shared exports).
 const addProjectMemberSchema = z.object({
@@ -188,29 +171,19 @@ export function projectRoutes(db: Db) {
     };
 
     const { workspace, ...projectData } = req.body as CreateProjectPayload;
-    assertNoAgentHostWorkspaceCommandMutation(
-      req,
-      [
-        ...collectProjectExecutionWorkspaceCommandPaths(projectData.executionWorkspacePolicy),
-        ...collectProjectWorkspaceCommandPaths(workspace, "workspace"),
-      ],
-    );
-    if (
-      workspace !== undefined
-      || projectDeliveryAuthorityMutationFields(projectData).length > 0
-    ) {
-      // Repository, provider, environment and workspace selection determine
-      // which external evidence Paperclip will trust. An agent must not be
-      // able to mint a project whose delivery authority points at a target it
-      // controls.
-      assertBoard(req);
-    }
     if (projectData.githubConnectionId) {
       await githubConnections.assertConnection(companyId, projectData.githubConnectionId);
     }
     await assertProjectEnvironmentSelection(
       companyId,
       readProjectPolicyEnvironmentId(projectData.executionWorkspacePolicy),
+    );
+    assertNoAgentHostWorkspaceCommandMutation(
+      req,
+      [
+        ...collectProjectExecutionWorkspaceCommandPaths(projectData.executionWorkspacePolicy),
+        ...collectProjectWorkspaceCommandPaths(workspace, "workspace"),
+      ],
     );
     if (projectData.env !== undefined) {
       projectData.env = await secretsSvc.normalizeEnvBindingsForPersistence(
@@ -287,23 +260,13 @@ export function projectRoutes(db: Db) {
     }
     assertCompanyAccess(req, existing.companyId);
     const body = { ...req.body };
+    if (body.githubConnectionId) {
+      await githubConnections.assertConnection(existing.companyId, body.githubConnectionId);
+    }
     assertNoAgentHostWorkspaceCommandMutation(
       req,
       collectProjectExecutionWorkspaceCommandPaths(body.executionWorkspacePolicy),
     );
-    if (projectDeliveryAuthorityMutationFields(body).length > 0) {
-      assertBoard(req);
-      await requireProjectPermission(
-        req,
-        access,
-        existing.companyId,
-        existing.id,
-        "project:settings",
-      );
-    }
-    if (body.githubConnectionId) {
-      await githubConnections.assertConnection(existing.companyId, body.githubConnectionId);
-    }
     await assertProjectEnvironmentSelection(
       existing.companyId,
       readProjectPolicyEnvironmentId(body.executionWorkspacePolicy),
@@ -390,8 +353,6 @@ export function projectRoutes(db: Db) {
       req,
       collectProjectWorkspaceCommandPaths(req.body),
     );
-    assertBoard(req);
-    await requireProjectPermission(req, access, existing.companyId, existing.id, "project:settings");
     const workspace = await svc.createWorkspace(id, req.body);
     if (!workspace) {
       res.status(422).json({ error: "Invalid project workspace payload" });
@@ -434,8 +395,6 @@ export function projectRoutes(db: Db) {
         req,
         collectProjectWorkspaceCommandPaths(req.body),
       );
-      assertBoard(req);
-      await requireProjectPermission(req, access, existing.companyId, existing.id, "project:settings");
       const workspaceExists = (await svc.listWorkspaces(id)).some((workspace) => workspace.id === workspaceId);
       if (!workspaceExists) {
         res.status(404).json({ error: "Project workspace not found" });
@@ -753,8 +712,6 @@ export function projectRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, existing.companyId);
-    assertBoard(req);
-    await requireProjectPermission(req, access, existing.companyId, existing.id, "project:settings");
     const workspace = await svc.removeWorkspace(id, workspaceId);
     if (!workspace) {
       res.status(404).json({ error: "Project workspace not found" });

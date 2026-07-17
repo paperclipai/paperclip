@@ -4219,7 +4219,6 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     const importedSkills = include.skills || include.agents
       ? await companySkills.importPackageFiles(targetCompany.id, pickTextFiles(plan.source.files), {
           onConflict: resolveSkillConflictStrategy(mode, plan.collisionStrategy),
-          protectedFactorySkills: "reuse_target",
         })
       : [];
     const desiredSkillRefMap = new Map<string, string>();

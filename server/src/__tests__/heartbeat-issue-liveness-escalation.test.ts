@@ -67,7 +67,6 @@ import { instanceSettingsService } from "../services/instance-settings.ts";
 import { issueService } from "../services/issues.ts";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.ts";
 import { runningProcesses } from "../adapters/index.ts";
-import { DEFAULT_LIVENESS_REESCALATION_COOLDOWN_MS } from "../services/recovery/service.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -354,7 +353,7 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     expect(wakeups.filter((row) => row.payload?.incidentKey === escalations[0]?.originId)).toHaveLength(1);
   });
 
-  it("treats an old pending request_confirmation as a durable waiting path", async () => {
+  it("treats a recent pending interaction as a current waiting path", async () => {
     await enableAutoRecovery();
     const { companyId, blockerIssueId } = await seedBlockedChain({
       blockerStatus: "backlog",
@@ -366,8 +365,8 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
       kind: "request_confirmation",
       status: "pending",
       payload: { version: 1, prompt: "Should this parked work proceed?" },
-      createdAt: new Date(Date.now() - 25 * 60 * 60 * 1000),
-      updatedAt: new Date(Date.now() - 25 * 60 * 60 * 1000),
+      createdAt: new Date(Date.now() - 60 * 60 * 1000),
+      updatedAt: new Date(Date.now() - 60 * 60 * 1000),
     });
 
     const result = await heartbeatService(db).reconcileIssueGraphLiveness();
@@ -388,7 +387,7 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
       id: interactionId,
       companyId,
       issueId: blockerIssueId,
-      kind: "ask_user_questions",
+      kind: "request_confirmation",
       status: "pending",
       payload: { version: 1, prompt: "Should this parked work proceed?" },
       createdAt: staleAt,
@@ -1608,9 +1607,7 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
       "in_review_without_action_path",
       blockerIssueId,
     ].join(":");
-    const closedAt = new Date(
-      Date.now() - DEFAULT_LIVENESS_REESCALATION_COOLDOWN_MS - 60_000,
-    );
+    const closedAt = new Date(Date.now() - 16 * 60 * 1000);
     await db.insert(issues).values({
       id: randomUUID(),
       companyId,

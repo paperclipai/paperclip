@@ -948,7 +948,7 @@ describe("renderPaperclipWakePrompt", () => {
     });
 
     const prompt = renderPaperclipWakePrompt(payload);
-    expect(prompt).toContain("Advisory issue continuation hint (`generated_hint`; never control state or authoritative fact):");
+    expect(prompt).toContain("Issue continuation summary:");
     expect(prompt).toContain("Integrate child outputs.");
     expect(prompt).toContain("Run liveness continuation:");
     expect(prompt).toContain("- attempt: 2/2");
@@ -959,129 +959,6 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt).toContain("Direct child issue summaries:");
     expect(prompt).toContain("PAP-101 Implement helper (done)");
     expect(prompt).toContain("Added the helper route and tests.");
-  });
-
-  it("does not treat a complete wake delta as complete issue history", () => {
-    const prompt = renderPaperclipWakePrompt({
-      reason: "issue_commented",
-      issue: {
-        id: "issue-1",
-        identifier: "ELIA-4787",
-        title: "Corrected build and release",
-        status: "in_review",
-      },
-      commentIds: ["comment-100"],
-      latestCommentId: "comment-100",
-      commentWindow: { requestedCount: 1, includedCount: 1, missingCount: 0 },
-      comments: [{ id: "comment-100", body: "What was deployed and what is still pending?" }],
-      wakeDeltaComplete: true,
-      wakeDeltaTruncated: false,
-      historyCoverage: "wake_delta_only",
-      fallbackFetchNeeded: false,
-    });
-
-    expect(prompt).toContain("`fallbackFetchNeeded=false` only means the requested delta was loaded");
-    expect(prompt).toContain("- wake delta complete: yes");
-    expect(prompt).toContain("- history coverage: wake_delta_only");
-    expect(prompt).toContain("HARD FACTUAL-STATUS GATE:");
-    expect(prompt).toContain("Do not infer 'not deployed', 'failed', or 'done' from a continuation summary");
-  });
-
-  it("renders the canonical delivery snapshot ahead of advisory prose", () => {
-    const prompt = renderPaperclipWakePrompt({
-      reason: "issue_commented",
-      issue: { id: "issue-1", identifier: "ELIA-4787", title: "Release", status: "in_review" },
-      comments: [{ id: "comment-1", body: "Was this deployed?" }],
-      canonicalDeliverySnapshot: {
-        version: 1,
-        issueId: "issue-1",
-        revision: "snapshot-17",
-        watermark: { eventId: "event-17", eventCount: 1 },
-        candidateSha: "5fa761a27c7d8cfc285057e6997b04b9831a07c4",
-        stages: {
-          deployment: {
-            eventId: "event-17",
-            state: "succeeded",
-            authority: "provider_verified",
-            stale: false,
-          },
-        },
-      },
-      canonicalSnapshotRevision: "snapshot-17",
-      fallbackFetchNeeded: false,
-    });
-
-    expect(prompt).toContain("- canonical snapshot revision: snapshot-17");
-    expect(prompt).toContain("Canonical delivery snapshot (authoritative structured state):");
-    expect(prompt).toContain("provider_verified");
-    expect(prompt).not.toContain("HARD FACTUAL-STATUS GATE:");
-  });
-
-  it("keeps the factual-status gate when a canonical snapshot has no verified evidence", () => {
-    const prompt = renderPaperclipWakePrompt({
-      reason: "issue_commented",
-      issue: { id: "issue-1", identifier: "ELIA-4787", title: "Release", status: "in_review" },
-      comments: [{ id: "comment-1", body: "Was this deployed?" }],
-      canonicalDeliverySnapshot: {
-        version: 1,
-        issueId: "issue-1",
-        revision: "empty-snapshot",
-        watermark: { eventId: null, eventCount: 0 },
-        stages: { deployment: { eventId: null, state: "unknown", authority: null, stale: false } },
-      },
-      fallbackFetchNeeded: false,
-    });
-
-    expect(prompt).toContain("Canonical delivery snapshot (authoritative structured state):");
-    expect(prompt).toContain("HARD FACTUAL-STATUS GATE:");
-    expect(prompt).toContain("no current provider- or Paperclip-verified delivery evidence");
-  });
-
-  it("renders a distinct, evidence-aware contract for every canonical factory stage", () => {
-    const promptFor = (stageKey: string, wakeRole: string, stageType: string) => renderPaperclipWakePrompt({
-      reason: `execution_${stageKey}_requested`,
-      issue: { id: "issue-1", identifier: "PAP-1", title: "Ship", status: "in_progress" },
-      executionStage: {
-        wakeRole,
-        stageId: "stage-1",
-        stageKey,
-        stageType,
-        stageRole: "engineer",
-        stageRevision: 4,
-        evidenceGates: ["delivery:implementation:succeeded"],
-        currentParticipant: { type: "agent", agentId: "agent-1" },
-        allowedActions: ["complete_stage", "block"],
-        factory: {
-          laneKind: "execution",
-          controlIssueId: "control-1",
-          policyKey: "company-ai-factory",
-          policyVersion: "v1",
-          policyHash: "policy-hash-1",
-          production: true,
-        },
-      },
-    });
-
-    const expectations = [
-      ["contract", "worker", "work", "Do not implement the product or invent candidate delivery evidence"],
-      ["implementation", "worker", "work", "produce one exact candidate"],
-      ["independent_qa", "verifier", "verification", "candidate-bound functional QA evidence"],
-      ["technical_acceptance", "reviewer", "review", "required CI evidence"],
-      ["deployment", "deployer", "deployment", "exact candidate and production environment"],
-      ["live_qa", "verifier", "verification", "environment, and URL/target"],
-      ["final_acceptance", "approver", "approval", "candidate-specific acceptance is durably recorded"],
-    ] as const;
-
-    for (const [stageKey, wakeRole, stageType, expected] of expectations) {
-      const prompt = promptFor(stageKey, wakeRole, stageType);
-      expect(prompt).toContain(expected);
-      expect(prompt).toContain(`- execution stage key: ${stageKey}`);
-      expect(prompt).toContain("- execution stage revision: 4");
-      expect(prompt).toContain("- required evidence gates: delivery:implementation:succeeded");
-      expect(prompt).toContain("- factory policy: company-ai-factory@v1");
-      expect(prompt).toContain("- factory policy hash: policy-hash-1");
-      expect(prompt).toContain("- factory production delivery: required");
-    }
   });
 });
 

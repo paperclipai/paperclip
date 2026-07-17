@@ -109,9 +109,6 @@ function blankExecutionState(): IssueExecutionState {
     currentStageId: null,
     currentStageIndex: null,
     currentStageType: null,
-    stageRevision: 0,
-    currentStageActivatedAt: null,
-    completedStageRevisions: {},
     currentParticipant: null,
     returnAssignee: null,
     reviewRequest: null,
@@ -326,12 +323,11 @@ function nextAssigneeIds(input: {
 export function stripMonitorFromExecutionPolicy(policy: IssueExecutionPolicy | null): IssueExecutionPolicy | null {
   if (!policy) return null;
   if (!policy.monitor) return policy;
-  if (policy.stages.length === 0 && !policy.factory) return null;
+  if (policy.stages.length === 0) return null;
   return {
     mode: policy.mode,
     commentRequired: policy.commentRequired,
     stages: policy.stages,
-    ...(policy.factory ? { factory: policy.factory } : {}),
   };
 }
 
@@ -379,12 +375,7 @@ export function normalizeIssueExecutionPolicy(input: unknown): IssueExecutionPol
       if (dedupedParticipants.length === 0) return null;
       return {
         id: stage.id ?? randomUUID(),
-        key: stage.key ?? null,
         type: stage.type,
-        role: stage.role ?? null,
-        independent: stage.independent ?? false,
-        returnToStageKey: stage.returnToStageKey ?? null,
-        evidenceGates: stage.evidenceGates ?? [],
         approvalsNeeded: 1 as const,
         participants: dedupedParticipants,
       };
@@ -405,42 +396,13 @@ export function normalizeIssueExecutionPolicy(input: unknown): IssueExecutionPol
     }
     : null;
 
-  const factory = parsed.data.factory
-    ? {
-      schemaVersion: 1 as const,
-      laneKind: parsed.data.factory.laneKind,
-      topologyMode: parsed.data.factory.topologyMode,
-      controlIssueId: parsed.data.factory.controlIssueId ?? null,
-      coordinator: {
-        type: parsed.data.factory.coordinator.type,
-        agentId: parsed.data.factory.coordinator.type === "agent"
-          ? parsed.data.factory.coordinator.agentId ?? null
-          : null,
-        userId: parsed.data.factory.coordinator.type === "user"
-          ? parsed.data.factory.coordinator.userId ?? null
-          : null,
-      },
-      policyKey: parsed.data.factory.policyKey,
-      policyVersion: parsed.data.factory.policyVersion,
-      policyHash: parsed.data.factory.policyHash,
-      maxExecutionLanes: parsed.data.factory.maxExecutionLanes,
-      ...(parsed.data.factory.policySnapshot
-        ? { policySnapshot: parsed.data.factory.policySnapshot }
-        : {}),
-      ...(parsed.data.factory.production !== undefined
-        ? { production: parsed.data.factory.production }
-        : {}),
-    }
-    : null;
-
-  if (stages.length === 0 && !monitor && !factory) return null;
+  if (stages.length === 0 && !monitor) return null;
 
   return {
     mode: parsed.data.mode ?? "normal",
     commentRequired: true,
     stages,
     ...(monitor ? { monitor } : {}),
-    ...(factory ? { factory } : {}),
   };
 }
 
@@ -505,22 +467,6 @@ function stageHasParticipant(stage: IssueExecutionStage, participant: IssueExecu
   return stage.participants.some((candidate) => principalsEqual(candidate, participant));
 }
 
-function stageRequiresIndependentParticipant(stage: IssueExecutionStage) {
-  if (stage.key) return stage.independent === true;
-  return stage.type === "review" || stage.type === "approval";
-}
-
-function pendingIssueStatusForStage(stage: IssueExecutionStage) {
-  return stage.type === "work" || stage.type === "deployment" ? "in_progress" : "in_review";
-}
-
-function participantExclusionForStage(
-  stage: IssueExecutionStage,
-  returnAssignee: IssueExecutionStagePrincipal | null,
-) {
-  return stageRequiresIndependentParticipant(stage) ? returnAssignee : null;
-}
-
 function patchForPrincipal(principal: IssueExecutionStagePrincipal | null) {
   if (!principal) {
     return { assigneeAgentId: null, assigneeUserId: null };
@@ -532,18 +478,11 @@ function patchForPrincipal(principal: IssueExecutionStagePrincipal | null) {
 
 function buildCompletedState(previous: IssueExecutionState | null, currentStage: IssueExecutionStage): IssueExecutionState {
   const completedStageIds = Array.from(new Set([...(previous?.completedStageIds ?? []), currentStage.id]));
-  const stageRevision = previous?.stageRevision ?? 0;
   return {
     status: COMPLETED_STATUS,
     currentStageId: null,
     currentStageIndex: null,
     currentStageType: null,
-    stageRevision,
-    currentStageActivatedAt: null,
-    completedStageRevisions: {
-      ...(previous?.completedStageRevisions ?? {}),
-      [currentStage.id]: stageRevision,
-    },
     currentParticipant: null,
     returnAssignee: previous?.returnAssignee ?? null,
     reviewRequest: null,
@@ -559,19 +498,11 @@ function buildStateWithCompletedStages(input: {
   completedStageIds: string[];
   returnAssignee: IssueExecutionStagePrincipal | null;
 }): IssueExecutionState {
-  const completedStageIdSet = new Set(input.completedStageIds);
-  const completedStageRevisions = Object.fromEntries(
-    Object.entries(input.previous?.completedStageRevisions ?? {})
-      .filter(([stageId]) => completedStageIdSet.has(stageId)),
-  );
   return {
     status: input.previous?.status ?? PENDING_STATUS,
     currentStageId: input.previous?.currentStageId ?? null,
     currentStageIndex: input.previous?.currentStageIndex ?? null,
     currentStageType: input.previous?.currentStageType ?? null,
-    stageRevision: input.previous?.stageRevision ?? 0,
-    currentStageActivatedAt: input.previous?.currentStageActivatedAt ?? null,
-    completedStageRevisions,
     currentParticipant: input.previous?.currentParticipant ?? null,
     returnAssignee: input.previous?.returnAssignee ?? input.returnAssignee,
     reviewRequest: input.previous?.reviewRequest ?? null,
@@ -587,18 +518,11 @@ function buildSkippedStageCompletedState(input: {
   completedStageIds: string[];
   returnAssignee: IssueExecutionStagePrincipal | null;
 }): IssueExecutionState {
-  const completedStageIdSet = new Set(input.completedStageIds);
   return {
     status: COMPLETED_STATUS,
     currentStageId: null,
     currentStageIndex: null,
     currentStageType: null,
-    stageRevision: input.previous?.stageRevision ?? 0,
-    currentStageActivatedAt: null,
-    completedStageRevisions: Object.fromEntries(
-      Object.entries(input.previous?.completedStageRevisions ?? {})
-        .filter(([stageId]) => completedStageIdSet.has(stageId)),
-    ),
     currentParticipant: null,
     returnAssignee: input.previous?.returnAssignee ?? input.returnAssignee,
     reviewRequest: null,
@@ -617,15 +541,11 @@ function buildPendingState(input: {
   returnAssignee: IssueExecutionStagePrincipal | null;
   reviewRequest?: IssueExecutionState["reviewRequest"] | null;
 }): IssueExecutionState {
-  const stageRevision = (input.previous?.stageRevision ?? 0) + 1;
   return {
     status: PENDING_STATUS,
     currentStageId: input.stage.id,
     currentStageIndex: input.stageIndex,
     currentStageType: input.stage.type,
-    stageRevision,
-    currentStageActivatedAt: new Date().toISOString(),
-    completedStageRevisions: input.previous?.completedStageRevisions ?? {},
     currentParticipant: input.participant,
     returnAssignee: input.returnAssignee,
     reviewRequest: input.reviewRequest ?? null,
@@ -656,7 +576,7 @@ function buildPendingStagePatch(input: {
   returnAssignee: IssueExecutionStagePrincipal | null;
   reviewRequest?: IssueExecutionState["reviewRequest"] | null;
 }) {
-  input.patch.status = pendingIssueStatusForStage(input.stage);
+  input.patch.status = "in_review";
   Object.assign(input.patch, patchForPrincipal(input.participant));
   input.patch.executionState = buildPendingState({
     previous: input.previous,
@@ -691,44 +611,6 @@ function canAutoSkipPendingStage(input: {
   }
   return input.stage.participants.length > 0 &&
     input.stage.participants.every((participant) => principalsEqual(participant, input.returnAssignee));
-}
-
-function findStageByKey(policy: IssueExecutionPolicy, key: string | null | undefined) {
-  if (!key) return null;
-  return policy.stages.find((stage) => stage.key === key) ?? null;
-}
-
-function completedStagesBefore(policy: IssueExecutionPolicy, target: IssueExecutionStage) {
-  const targetIndex = policy.stages.findIndex((stage) => stage.id === target.id);
-  if (targetIndex <= 0) return [];
-  return policy.stages.slice(0, targetIndex).map((stage) => stage.id);
-}
-
-export function buildInitialIssueExecutionWorkflow(input: {
-  policy: IssueExecutionPolicy;
-  coordinator?: IssueExecutionStagePrincipal | null;
-}): Record<string, unknown> | null {
-  const firstStage = input.policy.stages[0] ?? null;
-  if (!firstStage) return null;
-  const coordinator = input.policy.factory?.coordinator ?? input.coordinator ?? null;
-  const participant = selectStageParticipant(firstStage, {
-    preferred: coordinator,
-    exclude: participantExclusionForStage(firstStage, coordinator),
-  });
-  if (!participant) {
-    throw unprocessable(`No eligible ${firstStage.type} participant is configured for this issue`);
-  }
-  return {
-    status: pendingIssueStatusForStage(firstStage),
-    ...patchForPrincipal(participant),
-    executionState: buildPendingState({
-      previous: null,
-      stage: firstStage,
-      stageIndex: 0,
-      participant,
-      returnAssignee: coordinator,
-    }),
-  };
 }
 
 function applyIssueExecutionStageTransition(input: TransitionInput): TransitionResult {
@@ -781,7 +663,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
     const currentParticipant =
       existingState?.currentParticipant ??
       selectStageParticipant(activeStage, {
-        exclude: participantExclusionForStage(activeStage, existingState?.returnAssignee ?? null),
+        exclude: existingState?.returnAssignee ?? null,
       });
     if (!currentParticipant) {
       throw unprocessable(`No eligible ${activeStage.type} participant is configured for this issue`);
@@ -790,7 +672,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
     if (!stageHasParticipant(activeStage, currentParticipant)) {
       const participant = selectStageParticipant(activeStage, {
         preferred: explicitAssignee ?? existingState?.currentParticipant ?? null,
-        exclude: participantExclusionForStage(activeStage, existingState?.returnAssignee ?? null),
+        exclude: existingState?.returnAssignee ?? null,
       });
       if (!participant) {
         clearExecutionStatePatch({
@@ -820,7 +702,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
     if (principalsEqual(currentParticipant, actor)) {
       if (requestedStatus === "done") {
         if (!input.commentBody?.trim()) {
-          throw unprocessable("Completing an execution stage requires a comment");
+          throw unprocessable("Approving a review or approval stage requires a comment");
         }
         const approvedState = buildCompletedState(existingState, activeStage);
         const nextStage = nextPendingStage(
@@ -843,7 +725,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
 
         const participant = selectStageParticipant(nextStage, {
           preferred: explicitAssignee,
-          exclude: participantExclusionForStage(nextStage, existingState?.returnAssignee ?? null),
+          exclude: existingState?.returnAssignee ?? null,
         });
         if (!participant) {
           throw unprocessable(`No eligible ${nextStage.type} participant is configured for this issue`);
@@ -870,59 +752,9 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
         };
       }
 
-      if (requestedStatus === "blocked") {
-        patch.status = "blocked";
-        patch.executionState = existingState;
-        return { patch };
-      }
-
-      if (requestedStatus && requestedStatus !== pendingIssueStatusForStage(activeStage)) {
+      if (requestedStatus && requestedStatus !== "in_review") {
         if (!input.commentBody?.trim()) {
           throw unprocessable("Requesting changes requires a comment");
-        }
-        const returnStage = findStageByKey(input.policy, activeStage.returnToStageKey);
-        if (returnStage) {
-          const returnParticipant = selectStageParticipant(returnStage, {
-            exclude: participantExclusionForStage(returnStage, existingState?.returnAssignee ?? null),
-          });
-          if (!returnParticipant) {
-            throw unprocessable(`No eligible ${returnStage.type} participant is configured for this issue`);
-          }
-          const activeState = existingState ?? buildPendingState({
-            previous: null,
-            stage: activeStage,
-            stageIndex: input.policy.stages.findIndex((stage) => stage.id === activeStage.id),
-            participant: currentParticipant,
-            returnAssignee: currentAssignee ?? actor,
-          });
-          const completedStageIds = completedStagesBefore(input.policy, returnStage);
-          const rewindState: IssueExecutionState = {
-            ...activeState,
-            completedStageIds,
-            completedStageRevisions: Object.fromEntries(
-              Object.entries(activeState.completedStageRevisions ?? {})
-                .filter(([stageId]) => completedStageIds.includes(stageId)),
-            ),
-            lastDecisionOutcome: "changes_requested",
-          };
-          buildPendingStagePatch({
-            patch,
-            previous: rewindState,
-            policy: input.policy,
-            stage: returnStage,
-            participant: returnParticipant,
-            returnAssignee: activeState.returnAssignee,
-          });
-          return {
-            patch,
-            decision: {
-              stageId: activeStage.id,
-              stageType: activeStage.type,
-              outcome: "changes_requested",
-              body: input.commentBody.trim(),
-            },
-            workflowControlledAssignment: true,
-          };
         }
         if (!existingState?.returnAssignee) {
           throw unprocessable("This execution stage has no return assignee");
@@ -944,15 +776,15 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
     }
 
     const attemptedStageAdvance =
-      (requestedStatus !== undefined && requestedStatus !== pendingIssueStatusForStage(activeStage)) ||
+      (requestedStatus !== undefined && requestedStatus !== "in_review") ||
       (requestedAssigneePatchProvided && !principalsEqual(explicitAssignee, currentParticipant));
     const stageStateDrifted =
-      input.issue.status !== pendingIssueStatusForStage(activeStage) ||
+      input.issue.status !== "in_review" ||
       !principalsEqual(currentAssignee, currentParticipant) ||
       !principalsEqual(existingState?.currentParticipant ?? null, currentParticipant);
 
     if (attemptedStageAdvance && !stageStateDrifted) {
-      throw unprocessable("Only the active execution-stage participant can advance the current stage");
+      throw unprocessable("Only the active reviewer or approver can advance the current execution stage");
     }
 
     if (stageStateDrifted) {
@@ -995,7 +827,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
       existingState?.status === CHANGES_REQUESTED_STATUS
         ? explicitAssignee ?? existingState.currentParticipant ?? null
         : explicitAssignee,
-    exclude: participantExclusionForStage(pendingStage, returnAssignee),
+    exclude: returnAssignee,
   });
   while (!participant && canAutoSkipPendingStage({ stage: pendingStage, returnAssignee, requestedStatus })) {
     skippedStageIds.push(pendingStage.id);
@@ -1020,7 +852,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
         existingState?.status === CHANGES_REQUESTED_STATUS
           ? explicitAssignee ?? existingState.currentParticipant ?? null
           : explicitAssignee,
-      exclude: participantExclusionForStage(pendingStage, returnAssignee),
+      exclude: returnAssignee,
     });
   }
   if (!participant) {

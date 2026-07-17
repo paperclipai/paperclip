@@ -962,7 +962,7 @@ describe("IssueDetail", () => {
       isRoot: boolean;
       mode: "pause";
       reason: string | null;
-      releasePolicy: { strategy: "manual"; note?: string | null } | null;
+      releasePolicy: { strategy: "manual" | "after_active_runs_finish"; note?: string | null } | null;
     } = {
       holdId: "hold-1",
       rootIssueId: "issue-1",

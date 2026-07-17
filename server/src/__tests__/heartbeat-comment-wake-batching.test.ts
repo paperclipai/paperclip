@@ -30,17 +30,13 @@ async function closeDbClient(db: ReturnType<typeof createDb> | undefined) {
   await db?.$client?.end?.({ timeout: 0 });
 }
 
-async function createControlledGatewayServer(options: { blockSecondWait?: boolean } = {}) {
+async function createControlledGatewayServer() {
   const server = createServer();
   const wss = new WebSocketServer({ server });
   const agentPayloads: Array<Record<string, unknown>> = [];
   let firstWaitRelease: (() => void) | null = null;
   let firstWaitGate = new Promise<void>((resolve) => {
     firstWaitRelease = resolve;
-  });
-  let secondWaitRelease: (() => void) | null = null;
-  let secondWaitGate = new Promise<void>((resolve) => {
-    secondWaitRelease = resolve;
   });
   let waitCount = 0;
 
@@ -109,8 +105,6 @@ async function createControlledGatewayServer(options: { blockSecondWait?: boolea
         waitCount += 1;
         if (waitCount === 1) {
           await firstWaitGate;
-        } else if (waitCount === 2 && options.blockSecondWait) {
-          await secondWaitGate;
         }
         socket.send(
           JSON.stringify({
@@ -141,21 +135,12 @@ async function createControlledGatewayServer(options: { blockSecondWait?: boolea
   return {
     url: `ws://127.0.0.1:${address.port}`,
     getAgentPayloads: () => agentPayloads,
-    getWaitCount: () => waitCount,
     releaseFirstWait: () => {
       firstWaitRelease?.();
       firstWaitRelease = null;
       firstWaitGate = Promise.resolve();
     },
-    releaseSecondWait: () => {
-      secondWaitRelease?.();
-      secondWaitRelease = null;
-      secondWaitGate = Promise.resolve();
-    },
     close: async () => {
-      firstWaitRelease?.();
-      secondWaitRelease?.();
-      for (const client of wss.clients) client.terminate();
       await new Promise<void>((resolve) => wss.close(() => resolve()));
       await new Promise<void>((resolve) => server.close(() => resolve()));
     },
@@ -398,7 +383,7 @@ describe("heartbeat comment wake batching", () => {
   });
 
   it("batches deferred comment wakes and forwards the ordered batch to the next run", async () => {
-    const gateway = await createControlledGatewayServer({ blockSecondWait: true });
+    const gateway = await createControlledGatewayServer();
     const companyId = randomUUID();
     const agentId = randomUUID();
     const issueId = randomUUID();
@@ -472,7 +457,6 @@ describe("heartbeat comment wake batching", () => {
 
       expect(firstRun).not.toBeNull();
       await waitFor(() => gateway.getAgentPayloads().length === 1);
-      await waitFor(() => gateway.getWaitCount() === 1);
 
       await db.insert(issueComments).values({
         companyId,
@@ -570,26 +554,6 @@ describe("heartbeat comment wake batching", () => {
       gateway.releaseFirstWait();
 
       await waitFor(() => gateway.getAgentPayloads().length === 2);
-      await waitFor(() => gateway.getWaitCount() === 2);
-      const promotedRun = await db
-        .select({ id: heartbeatRuns.id })
-        .from(heartbeatRuns)
-        .where(eq(heartbeatRuns.agentId, agentId))
-        .then((rows) => rows.find((run) => run.id !== firstRun!.id) ?? null);
-      expect(promotedRun).not.toBeNull();
-      await db.insert(issueComments).values({
-        companyId,
-        issueId,
-        authorAgentId: agentId,
-        createdByRunId: promotedRun!.id,
-        body: "Deferred comments handled",
-      });
-      await db
-        .update(issues)
-        .set({ status: "done", completedAt: new Date(), updatedAt: new Date() })
-        .where(eq(issues.id, issueId));
-
-      gateway.releaseSecondWait();
       await waitFor(async () => {
         const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
         return runs.length === 2 && runs.every((run) => run.status === "succeeded");
@@ -607,13 +571,12 @@ describe("heartbeat comment wake batching", () => {
       expect(String(secondPayload.message ?? "")).not.toContain("First comment");
     } finally {
       gateway.releaseFirstWait();
-      gateway.releaseSecondWait();
       await gateway.close();
     }
   }, 120_000);
 
   it("promotes deferred comment wakes with their comments after the active run is cancelled", async () => {
-    const gateway = await createControlledGatewayServer({ blockSecondWait: true });
+    const gateway = await createControlledGatewayServer();
     const companyId = randomUUID();
     const agentId = randomUUID();
     const issueId = randomUUID();
@@ -687,7 +650,6 @@ describe("heartbeat comment wake batching", () => {
 
       expect(firstRun).not.toBeNull();
       await waitFor(() => gateway.getAgentPayloads().length === 1);
-      await waitFor(() => gateway.getWaitCount() === 1);
 
       const queuedComment = await db
         .insert(issueComments)
@@ -736,25 +698,6 @@ describe("heartbeat comment wake batching", () => {
       await heartbeat.cancelRun(firstRun!.id);
 
       await waitFor(() => gateway.getAgentPayloads().length === 2);
-      await waitFor(() => gateway.getWaitCount() === 2);
-      const promotedRun = await db
-        .select({ id: heartbeatRuns.id })
-        .from(heartbeatRuns)
-        .where(eq(heartbeatRuns.agentId, agentId))
-        .then((rows) => rows.find((run) => run.id !== firstRun!.id) ?? null);
-      expect(promotedRun).not.toBeNull();
-      await db.insert(issueComments).values({
-        companyId,
-        issueId,
-        authorAgentId: agentId,
-        createdByRunId: promotedRun!.id,
-        body: "Queued follow-up handled",
-      });
-      await db
-        .update(issues)
-        .set({ status: "done", completedAt: new Date(), updatedAt: new Date() })
-        .where(eq(issues.id, issueId));
-
       const promotedPayload = gateway.getAgentPayloads()[1] ?? {};
       expect(promotedPayload.paperclip).toMatchObject({
         wake: {
@@ -783,7 +726,6 @@ describe("heartbeat comment wake batching", () => {
       });
       expect(String(promotedPayload.message ?? "")).toContain("Queued follow-up");
 
-      gateway.releaseSecondWait();
       gateway.releaseFirstWait();
       await waitFor(async () => {
         const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
@@ -791,13 +733,12 @@ describe("heartbeat comment wake batching", () => {
       }, 90_000);
     } finally {
       gateway.releaseFirstWait();
-      gateway.releaseSecondWait();
       await gateway.close();
     }
   }, 120_000);
 
   it("promotes deferred comment wakes after the active run closes the issue", async () => {
-    const gateway = await createControlledGatewayServer({ blockSecondWait: true });
+    const gateway = await createControlledGatewayServer();
     const companyId = randomUUID();
     const agentId = randomUUID();
     const issueId = randomUUID();
@@ -871,8 +812,6 @@ describe("heartbeat comment wake batching", () => {
       });
 
       expect(firstRun).not.toBeNull();
-      await waitFor(() => gateway.getAgentPayloads().length === 1);
-      await waitFor(() => gateway.getWaitCount() === 1);
       await waitFor(async () => {
         const run = await db
           .select({ status: heartbeatRuns.status })
@@ -940,20 +879,13 @@ describe("heartbeat comment wake batching", () => {
       gateway.releaseFirstWait();
 
       await waitFor(() => gateway.getAgentPayloads().length === 2, 90_000);
-      await waitFor(() => gateway.getWaitCount() === 2);
-      const promotedRun = await db
-        .select({ id: heartbeatRuns.id })
-        .from(heartbeatRuns)
-        .where(eq(heartbeatRuns.agentId, agentId))
-        .then((rows) => rows.find((run) => run.id !== firstRun!.id) ?? null);
-      expect(promotedRun).not.toBeNull();
-      await db.insert(issueComments).values({
-        companyId,
-        issueId,
-        authorAgentId: agentId,
-        createdByRunId: promotedRun!.id,
-        body: "Reopened follow-up handled",
-      });
+      await waitFor(async () => {
+        const runs = await db
+          .select()
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.agentId, agentId));
+        return runs.length === 2 && runs.every((run) => run.status === "succeeded");
+      }, 90_000);
 
       const reopenedIssue = await db
         .select({
@@ -968,19 +900,6 @@ describe("heartbeat comment wake batching", () => {
         status: "in_progress",
         completedAt: null,
       });
-      await db
-        .update(issues)
-        .set({ status: "done", completedAt: new Date(), updatedAt: new Date() })
-        .where(eq(issues.id, issueId));
-
-      gateway.releaseSecondWait();
-      await waitFor(async () => {
-        const runs = await db
-          .select()
-          .from(heartbeatRuns)
-          .where(eq(heartbeatRuns.agentId, agentId));
-        return runs.length === 2 && runs.every((run) => run.status === "succeeded");
-      }, 90_000);
 
       const secondPayload = gateway.getAgentPayloads()[1] ?? {};
       expect(secondPayload.paperclip).toMatchObject({
@@ -1000,7 +919,6 @@ describe("heartbeat comment wake batching", () => {
       expect(String(secondPayload.message ?? "")).toContain("Please handle this follow-up after you finish");
     } finally {
       gateway.releaseFirstWait();
-      gateway.releaseSecondWait();
       await gateway.close();
     }
   }, 120_000);
@@ -1200,21 +1118,6 @@ describe("heartbeat comment wake batching", () => {
           runs[1]?.issueCommentStatus === "retry_exhausted"
         );
       });
-      await waitFor(async () => {
-        const [settledIssue, settledAgent] = await Promise.all([
-          db
-            .select({ executionRunId: issues.executionRunId })
-            .from(issues)
-            .where(eq(issues.id, issueId))
-            .then((rows) => rows[0] ?? null),
-          db
-            .select({ status: agents.status })
-            .from(agents)
-            .where(eq(agents.id, agentId))
-            .then((rows) => rows[0] ?? null),
-        ]);
-        return settledIssue?.executionRunId === null && settledAgent?.status === "idle";
-      });
 
       const runs = await db
         .select()
@@ -1254,7 +1157,7 @@ describe("heartbeat comment wake batching", () => {
   }, 20_000);
 
   it("treats the automatic run summary as fallback-only when the run already posted a comment", async () => {
-    const gateway = await createControlledGatewayServer({ blockSecondWait: true });
+    const gateway = await createControlledGatewayServer();
     const companyId = randomUUID();
     const agentId = randomUUID();
     const issueId = randomUUID();
@@ -1383,37 +1286,8 @@ describe("heartbeat comment wake batching", () => {
 
       expect(wakeups.some((wakeup) => wakeup.reason === "missing_issue_comment")).toBe(false);
       expect(wakeups.some((wakeup) => wakeup.reason === "finish_successful_run_handoff")).toBe(true);
-
-      await waitFor(() => gateway.getAgentPayloads().length === 2);
-      await waitFor(() => gateway.getWaitCount() === 2);
-      const handoffRun = await db
-        .select({ id: heartbeatRuns.id })
-        .from(heartbeatRuns)
-        .where(eq(heartbeatRuns.agentId, agentId))
-        .then((rows) => rows.find((run) => run.id !== firstRun!.id) ?? null);
-      expect(handoffRun).not.toBeNull();
-      await db.insert(issueComments).values({
-        companyId,
-        issueId,
-        authorAgentId: agentId,
-        createdByRunId: handoffRun!.id,
-        body: "Corrective handoff completed",
-      });
-      await db
-        .update(issues)
-        .set({ status: "done", completedAt: new Date(), updatedAt: new Date() })
-        .where(eq(issues.id, issueId));
-      gateway.releaseSecondWait();
-      await waitFor(async () => {
-        const settledRuns = await db
-          .select({ status: heartbeatRuns.status })
-          .from(heartbeatRuns)
-          .where(eq(heartbeatRuns.agentId, agentId));
-        return settledRuns.length === 2 && settledRuns.every((run) => run.status === "succeeded");
-      });
     } finally {
       gateway.releaseFirstWait();
-      gateway.releaseSecondWait();
       await gateway.close();
     }
   }, 20_000);

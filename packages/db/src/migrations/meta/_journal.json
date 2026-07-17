@@ -820,13 +820,6 @@
       "when": 1783936800000,
       "tag": "0116_retire_terminal_issue_interactions",
       "breakpoints": true
-    },
-    {
-      "idx": 117,
-      "version": "7",
-      "when": 1784246400000,
-      "tag": "0117_delivery_truth_kernel",
-      "breakpoints": true
     }
   ]
 }

@@ -277,9 +277,7 @@ export type IssueTreeControlMode = (typeof ISSUE_TREE_CONTROL_MODES)[number];
 export const ISSUE_TREE_HOLD_STATUSES = ["active", "released"] as const;
 export type IssueTreeHoldStatus = (typeof ISSUE_TREE_HOLD_STATUSES)[number];
 
-// Automatic release is intentionally not advertised until a durable runtime
-// consumer can prove every snapshotted run has reached a terminal state.
-export const ISSUE_TREE_HOLD_RELEASE_POLICY_STRATEGIES = ["manual"] as const;
+export const ISSUE_TREE_HOLD_RELEASE_POLICY_STRATEGIES = ["manual", "after_active_runs_finish"] as const;
 export type IssueTreeHoldReleasePolicyStrategy = (typeof ISSUE_TREE_HOLD_RELEASE_POLICY_STRATEGIES)[number];
 
 export const ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY = "continuation-summary" as const;
@@ -297,24 +295,8 @@ export type IssueReferenceSourceKind = (typeof ISSUE_REFERENCE_SOURCE_KINDS)[num
 export const ISSUE_EXECUTION_POLICY_MODES = ["normal", "auto"] as const;
 export type IssueExecutionPolicyMode = (typeof ISSUE_EXECUTION_POLICY_MODES)[number];
 
-export const ISSUE_EXECUTION_STAGE_TYPES = [
-  "work",
-  "verification",
-  "deployment",
-  "review",
-  "approval",
-] as const;
+export const ISSUE_EXECUTION_STAGE_TYPES = ["review", "approval"] as const;
 export type IssueExecutionStageType = (typeof ISSUE_EXECUTION_STAGE_TYPES)[number];
-
-export const ISSUE_FACTORY_LANE_KINDS = ["control", "execution"] as const;
-export type IssueFactoryLaneKind = (typeof ISSUE_FACTORY_LANE_KINDS)[number];
-
-export const ISSUE_FACTORY_TOPOLOGY_MODES = [
-  "same_issue_only",
-  "single_execution_lane",
-  "direct_execution_lanes",
-] as const;
-export type IssueFactoryTopologyMode = (typeof ISSUE_FACTORY_TOPOLOGY_MODES)[number];
 
 export const ISSUE_MONITOR_SCHEDULED_BY = ["assignee", "board"] as const;
 export type IssueMonitorScheduledBy = (typeof ISSUE_MONITOR_SCHEDULED_BY)[number];
@@ -711,7 +693,6 @@ export const PERMISSION_KEYS = [
   "goals:manage",
   "secrets:manage",
   "company:settings",
-  "ai_factory:manage",
   "company:export",
   "approvals:review",
   "issues:manage",

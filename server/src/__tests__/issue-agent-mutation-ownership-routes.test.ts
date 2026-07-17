@@ -378,6 +378,7 @@ describe("agent issue mutation checkout ownership", () => {
 
   it.each([
     ["patch", (app: express.Express) => request(app).patch(`/api/issues/${issueId}`).send({ title: "Blocked" })],
+    ["delete", (app: express.Express) => request(app).delete(`/api/issues/${issueId}`)],
     ["comment", (app: express.Express) => request(app).post(`/api/issues/${issueId}/comments`).send({ body: "blocked" })],
     [
       "document upsert",
@@ -393,32 +394,17 @@ describe("agent issue mutation checkout ownership", () => {
           .attach("file", Buffer.from("report"), { filename: "report.txt", contentType: "text/plain" }),
     ],
     ["attachment delete", (app: express.Express) => request(app).delete("/api/attachments/attachment-1")],
-  ])(
-    "rejects peer agent %s on another agent's active checkout",
-    async (_name, sendRequest) => {
-      const res = await sendRequest(await createApp(peerActor()));
+  ])("rejects peer agent %s on another agent's active checkout", async (_name, sendRequest) => {
+    const res = await sendRequest(await createApp(peerActor()));
 
-      expect(res.status, JSON.stringify(res.body)).toBe(409);
-      expect(res.body.error).toBe("Issue is checked out by another agent");
-      expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
-      expect(mockIssueService.update).not.toHaveBeenCalled();
-      expect(mockIssueService.addComment).not.toHaveBeenCalled();
-      expect(mockDocumentService.upsertIssueDocument).not.toHaveBeenCalled();
-      expect(mockWorkProductService.update).not.toHaveBeenCalled();
-      expect(mockStorageService.putFile).not.toHaveBeenCalled();
-      expect(mockStorageService.deleteObject).not.toHaveBeenCalled();
-    },
-    15_000,
-  );
-
-  it("rejects agent issue deletion at the board-only authorization boundary", async () => {
-    const res = await request(await createApp(peerActor())).delete(`/api/issues/${issueId}`);
-
-    expect(res.status, JSON.stringify(res.body)).toBe(403);
-    expect(res.body.error).toBe("Board access required");
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.error).toBe("Issue is checked out by another agent");
     expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
-    expect(mockIssueService.listAttachments).not.toHaveBeenCalled();
-    expect(mockIssueService.remove).not.toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    expect(mockDocumentService.upsertIssueDocument).not.toHaveBeenCalled();
+    expect(mockWorkProductService.update).not.toHaveBeenCalled();
+    expect(mockStorageService.putFile).not.toHaveBeenCalled();
     expect(mockStorageService.deleteObject).not.toHaveBeenCalled();
   });
 

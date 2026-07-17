@@ -14,7 +14,6 @@ import {
   agentWakeupRequests,
   approvals,
   companies,
-  externalOperations,
   issueComments,
   heartbeatRunEvents,
   heartbeatRunWatchdogDecisions,
@@ -40,7 +39,6 @@ import { issueTreeControlService } from "../issue-tree-control.js";
 import { issueService } from "../issues.js";
 import { publishLiveEvent } from "../live-events.js";
 import { getRunLogStore } from "../run-log-store.js";
-import { isBoundedExternalOperationProgressPath } from "../external-operation-liveness.js";
 import {
   DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_ATTEMPTS,
   FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
@@ -58,7 +56,6 @@ import {
 import {
   classifyIssueGraphLiveness,
   hasScheduledMonitor,
-  isIssueLivenessPendingInteractionCurrent,
   issueLivenessPendingInteractionExpiresAt,
   type IssueLivenessFinding,
 } from "./issue-graph-liveness.js";
@@ -78,9 +75,7 @@ const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.strandedIssueR
 const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const ISSUE_GRAPH_LIVENESS_RECOVERY_ACTION_OWNER_STATUSES = new Set(["active", "idle", "running"]);
-export const DEFAULT_LIVENESS_REESCALATION_COOLDOWN_MS = 60 * 60 * 1000;
-/** @deprecated Use DEFAULT_LIVENESS_REESCALATION_COOLDOWN_MS. */
-export const TERMINAL_LIVENESS_RECOVERY_RETRY_COOLDOWN_MS = DEFAULT_LIVENESS_REESCALATION_COOLDOWN_MS;
+export const TERMINAL_LIVENESS_RECOVERY_RETRY_COOLDOWN_MS = 15 * 60 * 1000;
 const STRANDED_RECOVERY_ACTION_TIMEOUT_MS = 15 * 60 * 1000;
 const legacyRecoveryReconciliationInFlight = new WeakMap<object, Promise<unknown>>();
 
@@ -604,76 +599,6 @@ export function recoveryService(
 
   async function hasActiveExecutionPath(companyId: string, issueId: string) {
     return Boolean(await getActiveExecutionRun(companyId, issueId));
-  }
-
-  async function hasCurrentPendingInteractionPath(companyId: string, issueId: string, now: Date) {
-    const pending = await db
-      .select({
-        kind: issueThreadInteractions.kind,
-        createdAt: issueThreadInteractions.createdAt,
-      })
-      .from(issueThreadInteractions)
-      .where(
-        and(
-          eq(issueThreadInteractions.companyId, companyId),
-          eq(issueThreadInteractions.issueId, issueId),
-          eq(issueThreadInteractions.status, "pending"),
-        ),
-      )
-      .orderBy(desc(issueThreadInteractions.createdAt));
-    return pending.some((interaction) =>
-      isIssueLivenessPendingInteractionCurrent(
-        interaction.createdAt,
-        interaction.kind,
-        now,
-      )
-    );
-  }
-
-  async function hasPendingApprovalPath(companyId: string, issueId: string) {
-    return db
-      .select({ id: approvals.id })
-      .from(issueApprovals)
-      .innerJoin(approvals, eq(approvals.id, issueApprovals.approvalId))
-      .where(
-        and(
-          eq(issueApprovals.companyId, companyId),
-          eq(issueApprovals.issueId, issueId),
-          inArray(approvals.status, ["pending", "revision_requested"]),
-        ),
-      )
-      .limit(1)
-      .then((rows) => Boolean(rows[0]));
-  }
-
-  async function hasCurrentPendingExternalOperationPath(
-    companyId: string,
-    issueId: string,
-    now: Date,
-  ) {
-    const candidates = await db
-      .select({
-        state: externalOperations.state,
-        terminalAt: externalOperations.terminalAt,
-        nextCheckAt: externalOperations.nextCheckAt,
-        timeoutAt: externalOperations.timeoutAt,
-        metadata: externalOperations.metadata,
-      })
-      .from(externalOperations)
-      .where(
-        and(
-          eq(externalOperations.companyId, companyId),
-          eq(externalOperations.issueId, issueId),
-          isNull(externalOperations.terminalAt),
-          notInArray(externalOperations.state, ["succeeded", "failed", "cancelled", "timed_out"]),
-          sql`${externalOperations.nextCheckAt} is not null`,
-          gt(externalOperations.timeoutAt, now),
-        ),
-      )
-      .orderBy(asc(externalOperations.nextCheckAt));
-    return candidates.some((operation) =>
-      isBoundedExternalOperationProgressPath(operation, now)
-    );
   }
 
   async function failOrphanedDeferredIssueWakes(companyId: string, issueId: string) {
@@ -2540,27 +2465,17 @@ export function recoveryService(
         continue;
       }
 
-      // Holds and explicit human decision paths are first-class waiting state.
-      // Check them before any cleanup mutation so recovery cannot turn an
-      // intentional pause into an orphaned-wake failure or a fresh agent run.
-      if (await isAutomaticRecoverySuppressedByPauseHold(db, issue.companyId, issue.id, treeControlSvc)) {
-        result.skipped += 1;
-        continue;
-      }
-      if (
-        await hasCurrentPendingInteractionPath(issue.companyId, issue.id, new Date()) ||
-        await hasPendingApprovalPath(issue.companyId, issue.id) ||
-        await hasCurrentPendingExternalOperationPath(issue.companyId, issue.id, new Date())
-      ) {
-        result.skipped += 1;
-        continue;
-      }
       if (await hasActiveExecutionPath(issue.companyId, issue.id)) {
         result.skipped += 1;
         continue;
       }
       const orphanedDeferredWakes = await failOrphanedDeferredIssueWakes(issue.companyId, issue.id);
       result.orphanedDeferredWakesFailed += orphanedDeferredWakes.length;
+
+      if (await isAutomaticRecoverySuppressedByPauseHold(db, issue.companyId, issue.id, treeControlSvc)) {
+        result.skipped += 1;
+        continue;
+      }
 
       const latestRun = await getLatestIssueRun(issue.companyId, issue.id);
       if (isStrandedIssueRecoveryIssue(issue) && isUnsuccessfulTerminalIssueRun(latestRun)) {
@@ -2869,7 +2784,6 @@ export function recoveryService(
         .select({
           companyId: issueThreadInteractions.companyId,
           issueId: issueThreadInteractions.issueId,
-          kind: issueThreadInteractions.kind,
           status: issueThreadInteractions.status,
           createdAt: issueThreadInteractions.createdAt,
         })
@@ -3066,14 +2980,8 @@ export function recoveryService(
       )
       .orderBy(desc(issues.updatedAt), desc(issues.id));
 
-    const fingerprint = livenessRecoveryLeafFingerprint(finding);
     return candidates.find((row) => {
-      if (row.originFingerprint === fingerprint) return true;
       const parsed = parseLivenessIncidentKey(row.originId);
-      // A classifier label can change while the same dependency leaf remains
-      // stranded. Keep the terminal cooldown leaf-scoped so label churn cannot
-      // immediately recreate serial recovery work; active/open dedupe above
-      // remains exact-fingerprint scoped.
       return parsed?.leafIssueId === leafIssueId;
     }) ?? null;
   }
@@ -3244,7 +3152,6 @@ export function recoveryService(
         .select({
           companyId: issueThreadInteractions.companyId,
           issueId: issueThreadInteractions.issueId,
-          kind: issueThreadInteractions.kind,
           createdAt: issueThreadInteractions.createdAt,
         })
         .from(issueThreadInteractions)
@@ -3263,10 +3170,7 @@ export function recoveryService(
     // not discard a finding at the same boundary where the interaction stops
     // masking it.
     for (const interaction of pendingInteractionRows) {
-      const expiredAt = issueLivenessPendingInteractionExpiresAt(
-        interaction.createdAt,
-        interaction.kind,
-      );
+      const expiredAt = issueLivenessPendingInteractionExpiresAt(interaction.createdAt);
       if (!expiredAt || expiredAt > now) continue;
       const key = livenessDependencyIssueKey(interaction.companyId, interaction.issueId);
       const current = activityAtByIssueKey.get(key);
@@ -3832,8 +3736,6 @@ export function recoveryService(
     finding: IssueLivenessFinding;
     sourceFindings?: IssueLivenessFinding[];
     runId?: string | null;
-    now: Date;
-    reescalationCooldownMs: number;
   }) {
     const issue = await db
       .select()
@@ -3868,7 +3770,7 @@ export function recoveryService(
     const terminalIncident = await findTerminalLivenessEscalationForLeaf(input.finding);
     if (
       terminalIncident &&
-      input.now.getTime() - terminalIncident.updatedAt.getTime() < input.reescalationCooldownMs
+      Date.now() - terminalIncident.updatedAt.getTime() < TERMINAL_LIVENESS_RECOVERY_RETRY_COOLDOWN_MS
     ) {
       logger.warn({
         incidentKey: input.finding.incidentKey,
@@ -3878,7 +3780,7 @@ export function recoveryService(
         terminalEscalationIssueId: terminalIncident.id,
         terminalEscalationStatus: terminalIncident.status,
         retryAfter: new Date(
-          terminalIncident.updatedAt.getTime() + input.reescalationCooldownMs,
+          terminalIncident.updatedAt.getTime() + TERMINAL_LIVENESS_RECOVERY_RETRY_COOLDOWN_MS,
         ).toISOString(),
       }, "deferred repeated liveness escalation during terminal recovery cooldown");
       return { kind: "suppressed_terminal_incident" as const, escalationIssueId: terminalIncident.id };
@@ -5672,14 +5574,8 @@ export function recoveryService(
     runId?: string | null;
     force?: boolean;
     lookbackHours?: number;
-    now?: Date;
-    reescalationCooldownMs?: number;
   }) {
-    const now = opts?.now ?? new Date();
-    const reescalationCooldownMs = Math.max(
-      0,
-      Math.floor(asNumber(opts?.reescalationCooldownMs, DEFAULT_LIVENESS_REESCALATION_COOLDOWN_MS)),
-    );
+    const now = new Date();
     const terminalSourceRecoveryActions = await reconcileTerminalSourceRecoveryActions(now);
     const legacyRecoveryDeliveries = await reconcileLegacySourceScopedRecoveryDeliveries(now);
     const exhaustedRecoveryActions = await escalateExhaustedRecoveryActions(now);
@@ -5714,8 +5610,6 @@ export function recoveryService(
       skipped: 0,
       skippedAutoRecoveryDisabled: 0,
       skippedOutsideLookback: 0,
-      skippedReescalationCooldown: 0,
-      skippedPendingExternalOperation: 0,
       obsoleteRecoveriesRetired: obsoleteRecoveryCleanup.retired,
       obsoleteRecoveriesActiveSkipped: obsoleteRecoveryCleanup.activeSkipped,
       obsoleteRecoveryBlockerRelationsRemoved: obsoleteRecoveryCleanup.blockerRelationsRemoved,
@@ -5751,19 +5645,12 @@ export function recoveryService(
         result.skipped += 1;
         continue;
       }
-      if (await hasCurrentPendingExternalOperationPath(finding.companyId, finding.issueId, now)) {
-        result.skippedPendingExternalOperation += 1;
-        result.skipped += 1;
-        continue;
-      }
       let escalation: Awaited<ReturnType<typeof createIssueGraphLivenessEscalation>>;
       try {
         escalation = await createIssueGraphLivenessEscalation({
           finding,
           sourceFindings: sourceFindingsByRecoveryLeaf.get(livenessRecoveryLeafFingerprint(finding)) ?? [finding],
           runId: opts?.runId ?? null,
-          now,
-          reescalationCooldownMs,
         });
       } catch (error) {
         result.failed += 1;
@@ -5798,9 +5685,6 @@ export function recoveryService(
         if (!result.boardInteractionIds.includes(escalation.interactionId)) {
           result.boardInteractionIds.push(escalation.interactionId);
         }
-      } else if (escalation.kind === "suppressed_terminal_incident") {
-        result.skippedReescalationCooldown += 1;
-        result.skipped += 1;
       } else {
         result.skipped += 1;
       }

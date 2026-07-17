@@ -8,8 +8,6 @@ import {
   ISSUE_EXECUTION_POLICY_MODES,
   ISSUE_EXECUTION_STAGE_TYPES,
   ISSUE_EXECUTION_STATE_STATUSES,
-  ISSUE_FACTORY_LANE_KINDS,
-  ISSUE_FACTORY_TOPOLOGY_MODES,
   ISSUE_COMMENT_AUTHOR_TYPES,
   ISSUE_COMMENT_METADATA_ROW_TYPES,
   ISSUE_COMMENT_PRESENTATION_KINDS,
@@ -35,7 +33,6 @@ import type {
   SuggestedTaskDraft,
 } from "../types/issue.js";
 import { multilineTextSchema } from "./text.js";
-import { factoryPolicyV1Schema } from "./ai-factory-policy.js";
 
 export const ISSUE_EXECUTION_WORKSPACE_PREFERENCES = [
   "inherit",
@@ -284,30 +281,9 @@ export const issueExecutionStageParticipantSchema = issueExecutionStagePrincipal
 
 export const issueExecutionStageSchema = z.object({
   id: z.string().uuid().optional(),
-  key: z.string().trim().min(1).max(80).regex(/^[a-z][a-z0-9_-]*$/).nullable().optional(),
   type: z.enum(ISSUE_EXECUTION_STAGE_TYPES),
-  role: z.string().trim().min(1).max(80).nullable().optional(),
-  independent: z.boolean().optional().default(false),
-  returnToStageKey: z.string().trim().min(1).max(80).regex(/^[a-z][a-z0-9_-]*$/).nullable().optional(),
-  evidenceGates: z.array(z.string().trim().min(1).max(120)).max(30).optional().default([]),
   approvalsNeeded: z.literal(1).optional().default(1),
   participants: z.array(issueExecutionStageParticipantSchema).default([]),
-});
-
-export const issueFactoryExecutionPolicySchema = z.object({
-  schemaVersion: z.literal(1),
-  laneKind: z.enum(ISSUE_FACTORY_LANE_KINDS),
-  topologyMode: z.enum(ISSUE_FACTORY_TOPOLOGY_MODES),
-  controlIssueId: z.string().uuid().nullable().optional(),
-  coordinator: issueExecutionStagePrincipalSchema,
-  policyKey: z.string().trim().min(1).max(240),
-  policyVersion: z.string().trim().min(1).max(80),
-  policyHash: z.string().trim().min(8).max(128),
-  maxExecutionLanes: z.number().int().min(1).max(10),
-  // Optional for backwards compatibility with factory policies persisted
-  // before full snapshots were introduced. New lane creation always sets it.
-  policySnapshot: factoryPolicyV1Schema.optional(),
-  production: z.boolean().optional(),
 });
 
 export const issueExecutionMonitorPolicySchema = z.object({
@@ -327,29 +303,6 @@ export const issueExecutionPolicySchema = z.object({
   commentRequired: z.boolean().optional().default(true),
   stages: z.array(issueExecutionStageSchema).default([]),
   monitor: issueExecutionMonitorPolicySchema.optional().nullable(),
-  factory: issueFactoryExecutionPolicySchema.optional().nullable(),
-}).superRefine((value, ctx) => {
-  const keyedStages = value.stages.filter((stage) => stage.key);
-  const keys = new Set<string>();
-  for (const [index, stage] of value.stages.entries()) {
-    if (stage.key && keys.has(stage.key)) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "Execution stage keys must be unique",
-        path: ["stages", index, "key"],
-      });
-    }
-    if (stage.key) keys.add(stage.key);
-  }
-  for (const [index, stage] of value.stages.entries()) {
-    if (stage.returnToStageKey && !keyedStages.some((candidate) => candidate.key === stage.returnToStageKey)) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "returnToStageKey must reference a stage in the same policy",
-        path: ["stages", index, "returnToStageKey"],
-      });
-    }
-  }
 });
 
 export const issueExecutionMonitorStateSchema = z.object({
@@ -378,9 +331,6 @@ export const issueExecutionStateSchema = z.object({
   currentStageId: z.string().uuid().nullable(),
   currentStageIndex: z.number().int().nonnegative().nullable(),
   currentStageType: z.enum(ISSUE_EXECUTION_STAGE_TYPES).nullable(),
-  stageRevision: z.number().int().nonnegative().optional().default(0),
-  currentStageActivatedAt: z.string().datetime().nullable().optional().default(null),
-  completedStageRevisions: z.record(z.number().int().nonnegative()).optional().default({}),
   currentParticipant: issueExecutionStagePrincipalSchema.nullable(),
   returnAssignee: issueExecutionStagePrincipalSchema.nullable(),
   reviewRequest: issueReviewRequestSchema.nullable().optional().default(null),
@@ -599,11 +549,6 @@ export const createIssueLabelSchema = z.object({
 export type CreateIssueLabel = z.infer<typeof createIssueLabelSchema>;
 
 export const updateIssueSchema = createIssueBaseSchema.partial().extend({
-  // Visibility changes are deliberately mediated by
-  // POST /issues/:id/visibility. Keeping the field present as `never` makes a
-  // generic PATCH fail closed instead of silently stripping a caller's
-  // attempted declassification.
-  visibility: z.never().optional(),
   workMode: z.enum(ISSUE_WORK_MODES).optional(),
   workItemType: z.enum(ISSUE_WORK_ITEM_TYPES).optional(),
   priority: z.enum(ISSUE_PRIORITIES).optional(),
@@ -839,40 +784,11 @@ export const askUserQuestionsQuestionSchema = z.object({
   options: z.array(askUserQuestionsQuestionOptionSchema).min(1).max(10),
 });
 
-export const capabilityPreflightCheckSchema = z.object({
-  capability: z.string().trim().min(1).max(160),
-  status: z.enum(["available", "unavailable", "not_applicable"]),
-  evidence: z.string().trim().min(1).max(2000),
-});
-
-export const capabilityPreflightSchema = z.object({
-  version: z.literal(1),
-  reasonKind: z.enum([
-    "missing_capability",
-    "missing_authority",
-    "policy_approval",
-    "irreversible_action",
-    "user_requested",
-  ]),
-  checks: z.array(capabilityPreflightCheckSchema).min(1).max(30),
-  alternativesConsidered: z.array(z.string().trim().min(1).max(1000)).min(1).max(20),
-  minimumDecision: z.string().trim().min(1).max(1000),
-}).superRefine((value, ctx) => {
-  if (value.reasonKind === "missing_capability" && !value.checks.some((check) => check.status === "unavailable")) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "missing_capability requires at least one unavailable capability check",
-      path: ["checks"],
-    });
-  }
-});
-
 export const askUserQuestionsPayloadSchema = z.object({
   version: z.literal(1),
   title: z.string().trim().max(240).nullable().optional(),
   submitLabel: z.string().trim().max(120).nullable().optional(),
   context: z.record(z.unknown()).nullable().optional(),
-  capabilityPreflight: capabilityPreflightSchema.nullable().optional(),
   questions: z.array(askUserQuestionsQuestionSchema).min(1).max(10),
 }).superRefine((value, ctx) => {
   const seenQuestionIds = new Set<string>();
@@ -958,7 +874,6 @@ export const requestConfirmationPayloadSchema = z.object({
   detailsMarkdown: z.string().max(20000).nullable().optional(),
   supersedeOnUserComment: z.boolean().optional(),
   target: requestConfirmationTargetSchema.nullable().optional(),
-  capabilityPreflight: capabilityPreflightSchema.nullable().optional(),
 });
 
 export const requestConfirmationResultSchema = z.object({

@@ -114,13 +114,7 @@ describe("issue graph liveness classifier", () => {
       },
       {
         name: "queued wake",
-        queuedWakeRequests: [{
-          companyId,
-          issueId: blockedId,
-          agentId: coderId,
-          status: "queued",
-          createdAt: now,
-        }],
+        queuedWakeRequests: [{ companyId, issueId: blockedId, agentId: coderId, status: "queued" }],
       },
       {
         name: "pending typed interaction",
@@ -674,20 +668,13 @@ describe("issue graph liveness classifier", () => {
 
     const cases = [
       {
-        name: "typed agent participant with queued delivery",
+        name: "typed agent participant",
         issue: {
           ...baseReviewIssue,
           executionState: {
             currentParticipant: { type: "agent", agentId: coderId },
           },
         },
-        queuedWakeRequests: [{
-          companyId,
-          issueId: reviewIssueId,
-          agentId: coderId,
-          status: "queued",
-          createdAt: now,
-        }],
       },
       {
         name: "typed user participant",
@@ -710,13 +697,7 @@ describe("issue graph liveness classifier", () => {
       {
         name: "queued wake",
         issue: baseReviewIssue,
-        queuedWakeRequests: [{
-          companyId,
-          issueId: reviewIssueId,
-          agentId: coderId,
-          status: "queued",
-          createdAt: now,
-        }],
+        queuedWakeRequests: [{ companyId, issueId: reviewIssueId, agentId: coderId, status: "queued" }],
       },
       {
         name: "pending interaction",
@@ -809,7 +790,6 @@ describe("issue graph liveness classifier", () => {
         pendingInteractions: [{
           companyId,
           issueId: reviewIssueId,
-          kind: "ask_user_questions",
           status: testCase.status,
           createdAt: testCase.createdAt,
         }],
@@ -840,35 +820,8 @@ describe("issue graph liveness classifier", () => {
       pendingInteractions: [{
         companyId,
         issueId: reviewIssueId,
-        kind: "ask_user_questions",
         status: "pending",
         createdAt: new Date(now.getTime() - ISSUE_LIVENESS_PENDING_INTERACTION_MAX_AGE_MS),
-      }],
-      now,
-    });
-
-    expect(findings).toEqual([]);
-  });
-
-  it("keeps an explicit request_confirmation as a durable authorization hold", () => {
-    const reviewIssueId = "review-1";
-    const now = new Date("2026-07-10T12:00:00.000Z");
-
-    const findings = classifyIssueGraphLiveness({
-      issues: [issue({
-        id: reviewIssueId,
-        status: "in_review",
-        assigneeAgentId: coderId,
-        executionState: null,
-      })],
-      relations: [],
-      agents: [agent(), manager],
-      pendingInteractions: [{
-        companyId,
-        issueId: reviewIssueId,
-        kind: "request_confirmation",
-        status: "pending",
-        createdAt: new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000),
       }],
       now,
     });

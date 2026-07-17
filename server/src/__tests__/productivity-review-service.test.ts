@@ -296,7 +296,7 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(await listProductivityReviews(seeded.companyId)).toHaveLength(3);
   });
 
-  it("suppresses serial reviews after three unchanged evidence fingerprints", async () => {
+  it("does not count cancelled productivity reviews toward the creation cap", async () => {
     const now = new Date("2026-04-28T12:00:00.000Z");
     const seeded = await seedAssignedIssue();
     await insertRuns({
@@ -307,123 +307,7 @@ describeEmbeddedPostgres("productivity review service", () => {
       now,
     });
     await db.insert(issues).values(
-      [96, 72, 48].map((hoursAgo, index) => {
-        const createdAt = new Date(now.getTime() - hoursAgo * 60 * 60 * 1000);
-        return {
-          id: randomUUID(),
-          companyId: seeded.companyId,
-          title: `No-evidence productivity review ${index + 1}`,
-          status: "done" as const,
-          priority: "high" as const,
-          originKind: PRODUCTIVITY_REVIEW_ORIGIN_KIND,
-          originId: seeded.issueId,
-          originFingerprint: `productivity-review:${seeded.issueId}`,
-          parentId: seeded.issueId,
-          issueNumber: index + 2,
-          identifier: `${seeded.issuePrefix}-${index + 2}`,
-          createdAt,
-          updatedAt: new Date(createdAt.getTime() + 60 * 60 * 1000),
-        };
-      }),
-    );
-    await db.insert(activityLog).values({
-      companyId: seeded.companyId,
-      actorType: "system",
-      actorId: "system",
-      action: "issue.updated",
-      entityType: "issue",
-      entityId: seeded.issueId,
-      createdAt: new Date(now.getTime() - 60 * 60 * 60 * 1000),
-      details: { source: "recovery.reconcile" },
-    });
-    await db.insert(activityLog).values({
-      companyId: seeded.companyId,
-      actorType: "system",
-      actorId: "external_operation_controller",
-      action: "issue.external_operation_verified",
-      entityType: "issue",
-      entityId: seeded.issueId,
-      createdAt: new Date(now.getTime() - 55 * 60 * 60 * 1000),
-      details: {
-        verificationStatus: "verified",
-        eventCreated: false,
-        candidateMismatch: false,
-      },
-    });
-
-    const result = await productivityReviewService(db).reconcileProductivityReviews({
-      now,
-      companyId: seeded.companyId,
-    });
-
-    expect(result.created).toBe(0);
-    expect(result.noActionSuppressed).toBe(1);
-    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(3);
-  });
-
-  it("resets serial-review suppression when durable evidence changes", async () => {
-    const now = new Date("2026-04-28T12:00:00.000Z");
-    const seeded = await seedAssignedIssue();
-    await insertRuns({
-      companyId: seeded.companyId,
-      agentId: seeded.coderId,
-      issueId: seeded.issueId,
-      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
-      now,
-    });
-    await db.insert(issues).values(
-      [96, 72, 48].map((hoursAgo, index) => {
-        const createdAt = new Date(now.getTime() - hoursAgo * 60 * 60 * 1000);
-        return {
-          id: randomUUID(),
-          companyId: seeded.companyId,
-          title: `Evidence-window productivity review ${index + 1}`,
-          status: "done" as const,
-          priority: "high" as const,
-          originKind: PRODUCTIVITY_REVIEW_ORIGIN_KIND,
-          originId: seeded.issueId,
-          originFingerprint: `productivity-review:${seeded.issueId}`,
-          parentId: seeded.issueId,
-          issueNumber: index + 2,
-          identifier: `${seeded.issuePrefix}-${index + 2}`,
-          createdAt,
-          updatedAt: new Date(createdAt.getTime() + 60 * 60 * 1000),
-        };
-      }),
-    );
-    await db.insert(activityLog).values({
-      companyId: seeded.companyId,
-      actorType: "agent",
-      actorId: seeded.coderId,
-      agentId: seeded.coderId,
-      action: "issue.work_product_created",
-      entityType: "issue",
-      entityId: seeded.issueId,
-      createdAt: new Date(now.getTime() - 60 * 60 * 60 * 1000),
-    });
-
-    const result = await productivityReviewService(db).reconcileProductivityReviews({
-      now,
-      companyId: seeded.companyId,
-    });
-
-    expect(result.created).toBe(1);
-    expect(result.noActionSuppressed).toBe(0);
-    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(4);
-  });
-
-  it("snoozes recently cancelled productivity reviews instead of recreating them", async () => {
-    const now = new Date("2026-04-28T12:00:00.000Z");
-    const seeded = await seedAssignedIssue();
-    await insertRuns({
-      companyId: seeded.companyId,
-      agentId: seeded.coderId,
-      issueId: seeded.issueId,
-      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
-      now,
-    });
-    await db.insert(issues).values(
-      [1, 2, 3].map((hoursAgo, index) => {
+      [8, 9, 10].map((hoursAgo, index) => {
         const createdAt = new Date(now.getTime() - hoursAgo * 60 * 60 * 1000);
         return {
           id: randomUUID(),
@@ -448,10 +332,9 @@ describeEmbeddedPostgres("productivity review service", () => {
       companyId: seeded.companyId,
     });
 
-    expect(result.created).toBe(0);
+    expect(result.created).toBe(1);
     expect(result.creationCapped).toBe(0);
-    expect(result.snoozed).toBe(1);
-    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(3);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(4);
   });
 
   it("creates a long-active review without enabling a continuation hold", async () => {

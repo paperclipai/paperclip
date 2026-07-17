@@ -30,12 +30,6 @@ describe("issue validators", () => {
       .toBeUndefined();
   });
 
-  it("rejects visibility changes through the generic issue update schema", () => {
-    expect(updateIssueSchema.safeParse({ visibility: "company" }).success).toBe(false);
-    expect(updateIssueSchema.safeParse({ visibility: "private" }).success).toBe(false);
-    expect(updateIssueSchema.safeParse({ priority: "high" }).success).toBe(true);
-  });
-
   it("accepts extensible execution contracts on create and update", () => {
     const contract = {
       schemaVersion: 2,

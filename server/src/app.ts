@@ -20,8 +20,6 @@ import { projectRoutes } from "./routes/projects.js";
 import { workCycleRoutes } from "./routes/work-cycles.js";
 import { organizationRoutes } from "./routes/organizations.js";
 import { issueRoutes } from "./routes/issues.js";
-import { aiFactoryExecutionLaneRoutes } from "./routes/ai-factory-execution-lanes.js";
-import { deliveryRoutes } from "./routes/delivery.js";
 import { issueTreeControlRoutes } from "./routes/issue-tree-control.js";
 import { routineRoutes } from "./routes/routines.js";
 import { environmentRoutes } from "./routes/environments.js";
@@ -213,8 +211,6 @@ export async function createApp(
     feedbackExportService: opts.feedbackExportService,
     pluginWorkerManager: workerManager,
   }));
-  api.use(aiFactoryExecutionLaneRoutes(db));
-  api.use(deliveryRoutes(db));
   api.use(issueTreeControlRoutes(db));
   api.use(routineRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(environmentRoutes(db, { pluginWorkerManager: workerManager }));
