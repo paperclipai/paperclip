@@ -116,6 +116,7 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     await db.delete(issueTreeHoldMembers);
     await db.delete(issueTreeHolds);
     await db.delete(issueRelations);
+    await db.delete(issueComments);
     await db.delete(issues);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
