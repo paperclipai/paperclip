@@ -8,7 +8,6 @@ import { heartbeatsApi } from "../api/heartbeats";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { collectLiveIssueIds } from "../lib/liveIssueIds";
-import { useVisibilityRefetchInterval } from "@/lib/polling";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "@/hooks/useSharedPolling";
 import { queryKeys } from "../lib/queryKeys";
 import { createIssueDetailLocationState } from "../lib/issueDetailBreadcrumb";
@@ -98,14 +97,14 @@ export function Issues() {
     enabled: !!selectedCompanyId,
   });
 
-  const liveRunsRefetchInterval = useVisibilityRefetchInterval({ visibleMs: 5000 });
   const liveRunsQueryKey = queryKeys.liveRuns(selectedCompanyId!);
   const sharedLiveRuns = useSharedPollingQuery({
     companyId: selectedCompanyId,
     resourceKey: "live-runs",
     queryKey: liveRunsQueryKey,
     enabled: !!selectedCompanyId,
-    refetchInterval: liveRunsRefetchInterval,
+    // Event-sourced via LiveUpdatesProvider (#9627); no interval poll needed.
+    refetchInterval: false,
     leaderOnly: true,
   });
   const { data: liveRuns, dataUpdatedAt: liveRunsUpdatedAt } = useQuery({

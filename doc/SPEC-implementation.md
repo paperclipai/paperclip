@@ -498,6 +498,8 @@ V1 non-terminal liveness rule:
 - invalid external-wait recovery queues at most one normal-model continuation per source-state fingerprint, then requires a real blocker or explicit recovery action instead of repeating equivalent recovery wakes; new durable source activity may establish a new fingerprint
 - when Paperclip cannot safely infer the next action, it surfaces the problem through visible blocked/recovery work instead of silently completing or reassigning work
 - explicit recovery actions are the liveness primitive; source-scoped actions are the default form, issue-backed recovery is a fallback for independent repair work or safety boundaries, and comments alone are evidence rather than a healthy liveness path
+- source-scoped recovery routing is cause-keyed: lost processes, missing successful-run dispositions, and output-inactivity terminations retry the original agent when invokable; provider-quota failures create/reuse a scheduled wait-recovery monitor without a takeover wake; workspace validation and unknown causes route to the manager ladder
+- recovery-scoped wakes replace the normal deliverable execution contract with a cause-specific recovery contract, and successful repair returns the issue to the recorded original owner by default while recording `handed_back` versus `owner_completed`
 
 Detailed ownership, execution, blocker, active-run watchdog, crash-recovery, and non-terminal liveness semantics are documented in `doc/execution-semantics.md`.
 
@@ -541,6 +543,8 @@ Detailed ownership, execution, blocker, active-run watchdog, crash-recovery, and
 | Report cost | yes | yes |
 | Set company budget | yes | no |
 | Set subordinate budget | yes | yes (manager subtree only) |
+| Manage responsible user's inbox state | yes | yes (default-open policy) |
+| Manage another user's inbox state | yes | scoped `inbox:manage` grant |
 | Set work-object visibility (issue/project) | no | no (pro gate) |
 
 ## 9.4 Permission Terminology and Default Visibility Rule
@@ -573,6 +577,8 @@ The approved term set is:
 | Assignment/invocation | Assignment creates execution authority; board can reassign or force release | Delegation policies and scoped invokers with deny-listed tool classes |
 | Work-object visibility | All issues and projects in-company are visible to board and agents | Project/issue ACLs and reviewer-only channels |
 | Tool/secret policy | Secret refs, log redaction, and adapter-level command/webhook restrictions | Tool allowlists with centralized policy evaluation |
+| Company skills | Open to authenticated company agents; core enforces invariants and any stored restriction policy | Paperclip EE policy editor, protected-skill controls, presets, simulation, and policy audit UX |
+| Inbox management | Responsible agent may archive/unarchive its responsible user's Mine items under a default-open user policy; cross-user access requires `inbox:manage`; all mutations are audited | Policy administration UX, organization presets, simulations, bulk controls, and richer audit/reporting surfaces |
 | Escalation | Escalate from agent to manager to board; board approval/budget gates remain authoritative | Escalation routing and SLA windows |
 
 ## 9.7 Recommended first-slice implementation order
@@ -668,6 +674,138 @@ Implementation, security, UI, and QA work for task watchdogs must prove these co
 - QA validates a full create/edit/remove/run/reuse flow with screenshots for UI changes
 
 No unresolved policy decision blocks implementation once CTO and Security accept this contract. Deliberately deferred and disallowed for the first implementation: resolving interaction kinds beyond eligible plan confirmations, letting watchdogs cancel active runs, approving board/governance actions, mutating outside the watched subtree, or allowing watchdog agents to modify their own watchdog configuration. Any expansion requires a new product/security review.
+
+## 9.10 Company Skill Policy Contract
+
+### Product default
+
+An authenticated agent may perform normal company-skill work without a skill-specific grant when the target company has no explicit skill policy. This includes creating, importing, installing, editing, updating, testing, resetting, and removing skills. Core MUST NOT introduce a `skills:author` prerequisite, a draft-only default, or an activation-approval default.
+
+Authorization order is fixed:
+
+1. Enforce non-configurable platform invariants.
+2. Evaluate the company's explicit skill policy when one exists.
+3. Otherwise allow the authenticated company agent.
+
+Non-configurable invariants include authenticated actor identity, exact company scoping, source and workspace path containment, package and frontmatter validation, secret redaction/non-export, immutable audit attribution, and any hard runtime isolation rule. A policy rule, legacy grant, plugin, or EE configuration cannot override these invariants.
+
+For avoidance of doubt:
+
+- Local-path imports, updates, resets, and project scans MUST resolve under a Paperclip-known local workspace root or a Paperclip-managed skill root. Arbitrary host filesystem paths are invalid even when the caller is otherwise authorized. Caller-supplied `source`, `sourceLocator`, or similar path strings are descriptive input only; they MUST NOT expand authority beyond those approved roots.
+- Remote imports and updates MUST normalize to a known source category, require validated HTTPS or catalog sources, and resolve immutable content before install (for example pinned Git commit/content hash or pinned package version). Unknown schemes, unknown source categories, symlink escapes, and out-of-tree files fail closed before persistence.
+- Unsafe executable content, fetch-and-exec patterns, and secret exfiltration or non-redacted secret material are platform safety failures. Policy cannot waive them; the route MUST reject the operation before any new skill version, install, update, or reset is persisted.
+- Mandatory activity attribution is part of the invariant boundary. If the required audit record for a skill mutation or policy mutation cannot be persisted, the mutation MUST fail or roll back; do not return success with missing auditability.
+
+### Canonical actions and resources
+
+The version 1 evaluator uses these stable action identifiers:
+
+- `skills.create`: create or fork a company-authored skill and create skill versions
+- `skills.import`: import or scan skills from a workspace, Git source, URL, or package
+- `skills.install`: install a catalog or externally sourced skill into the company
+- `skills.edit`: change skill metadata, name, files, test inputs, or test templates
+- `skills.update`: install a newer upstream revision
+- `skills.test`: start, cancel, or remove a skill test run and run a skill audit
+- `skills.reset`: restore the installed/upstream revision
+- `skills.remove`: delete a company skill
+
+Policy resources may include `skillId`, stable `skillKey`, `sourceType`, and `sourceLocator`. The stable source categories are `workspace`, `catalog`, `git`, `external_package`, `generated`, and `unknown`; adapters may preserve a more specific source value as metadata, but policy evaluation MUST normalize it to one of these categories. Core derives actor and company identity from authentication and derives known resource fields from stored data; a mutation client cannot authorize itself by supplying actor or resource identity fields.
+
+### Version 1 policy document
+
+Absence of a policy record is semantically equivalent to the following document, but core SHOULD avoid materializing records for untouched companies:
+
+```json
+{
+  "schemaVersion": 1,
+  "revision": 0,
+  "defaultEffect": "allow",
+  "rules": []
+}
+```
+
+An explicit policy has a monotonically increasing `revision`, a `defaultEffect` of `allow` or `deny`, and ordered rules. Each rule contains a stable `id`, integer `priority`, `effect` (`allow` or `deny`), a subject selector (`all_agents`, agent ids, or role names), one or more canonical actions, and optional resource selectors for skill ids/keys and normalized source types/locators. An omitted resource selector matches every resource for the listed action.
+
+Rules are evaluated by ascending `priority`, then stable rule id; the first matching rule decides. If no rule matches, `defaultEffect` decides. This supports both the normal open policy with targeted deny rules and an opt-in restricted preset with default deny plus explicit allow rules. Core MUST validate policy documents atomically and reject ambiguous, unknown-version, unknown-action, cross-company, or malformed selectors with `422`.
+
+Every decision returned by the evaluator has this stable shape:
+
+```json
+{
+  "allowed": false,
+  "action": "skills.install",
+  "reason": "explicit_rule",
+  "policyRevision": 7,
+  "matchedRuleId": "deny-external-packages",
+  "remediation": "Contact a company administrator to change the skill policy."
+}
+```
+
+`reason` is one of `platform_invariant`, `no_policy_default`, `explicit_rule`, `policy_default`, or `legacy_compatibility`. Mutation routes MUST use this evaluator and return `403` with code `skill_policy_denied` and the non-sensitive decision fields when an explicit restriction denies an operation. Denials must identify the action and remediation without exposing hidden rule data, secrets, or another company's policy.
+
+Platform-invariant failures are not policy denials and MUST use stable machine-readable error codes so clients can distinguish non-overridable safety failures from optional administrative restrictions. Version 1 requires a finite code set covering at least:
+
+- `skill_authentication_required`
+- `skill_company_boundary_denied`
+- `skill_workspace_boundary_denied`
+- `skill_source_validation_failed`
+- `skill_unsafe_content_blocked`
+- `skill_secret_handling_blocked`
+- `skill_policy_admin_required`
+
+Core Skill Studio and Paperclip EE MUST treat those codes as hard platform failures, not as prompts to loosen policy.
+
+### Core API and ownership boundary
+
+Core owns and ships these company-scoped endpoints:
+
+- `GET /companies/:companyId/skill-policy` returns the effective versioned policy, its revision, and whether it is materialized or the open default.
+- `PUT /companies/:companyId/skill-policy` atomically replaces the policy and requires the caller's expected revision; stale writes return `409`.
+- `DELETE /companies/:companyId/skill-policy` removes explicit configuration and restores the open default.
+- `POST /companies/:companyId/skill-policy/evaluate` simulates decisions for administrative tooling without performing a skill mutation.
+
+Policy reads, writes, deletion, and simulation enforce company access. Policy mutation and cross-principal simulation require board administration authority or the existing `users:manage_permissions` capability; ordinary skill access does not. Every policy mutation writes an activity event containing the actor, previous revision, new revision, and a redacted change summary. Skill mutation activity logging remains required independently of the policy decision.
+
+Paperclip EE owns the detailed editor, presets, protected-skill management, policy simulation UX, and policy-specific audit views. EE consumes the core endpoints and does not implement a second evaluator. Core may expose a concise effective-policy summary and denial state, but MUST NOT depend on EE for enforcement or make EE installation a prerequisite for normal skill work.
+
+### Compatibility and availability
+
+- Existing companies with no explicit restriction adopt the open default, including companies that previously depended on missing grants to deny skill changes. Release notes and upgrade guidance MUST call out this behavior change.
+- Existing explicit restriction policies remain effective after migration.
+- Legacy `skills:create` and `skills:suggest-changes` positive grants remain accepted in APIs and portability packages. Historically either positive grant authorized the broad company-skill mutation surface, so in an explicit restricted policy either grant remains a compatibility allow fallback for all eight canonical skill actions only when no explicit rule matched. They never override an explicit deny or a platform invariant. With no explicit policy they are redundant because the default already allows the action.
+- Legacy `skills:suggest-changes` consent state is not a platform invariant for company skills and does not add a second mutation gate under the open-default policy. Companies that require approval or consent before skill changes must express that restriction through explicit skill-policy rules; authentication, company boundaries, source containment, validation, auditability, and runtime safety remain non-configurable invariants.
+- Import preview MUST report whether a package contains an explicit skill policy or legacy grants and how each will map. Import apply MUST preserve explicit policies, normalize supported legacy grants, and reject unknown policy versions rather than silently weakening them.
+- Export MUST include explicit skill policy configuration and retained legacy grants in `.paperclip.yaml`, never secret values or environment-specific paths. An unconfigured company exports no synthetic restriction.
+- If Paperclip EE is unavailable or removed, core continues to enforce stored policies and expose the policy API. Normal skill work remains available under the open default; explicit denials use core remediation text rather than a broken EE-only link.
+
+### Required regression tests
+
+Phase 2 server tests and Phase 4 UI tests must prove:
+
+- unauthenticated actors and authenticated actors from another company are denied for all skill mutation routes and all skill-policy routes
+- local-path imports and project scans reject paths outside approved workspace or managed-skill roots, including symlink escapes and out-of-tree files
+- remote imports and updates reject unknown schemes/categories, unpinned mutable refs, unsafe executable content, and secret exfiltration patterns before persistence
+- policy mutation, policy reset, and cross-principal policy simulation require board administration authority or `users:manage_permissions`; ordinary open-default skill access never grants those actions
+- explicit policy denials return `skill_policy_denied`, while platform safety failures return the stable invariant denial codes above
+- successful skill mutations and policy mutations persist activity records with actor, company, run attribution, normalized action, and revision/change summary; audit-write failures do not leave successful unaudited mutations behind
+
+## 9.11 Inbox Management Permission and Ownership Contract
+
+`inbox:manage` is the permission key for agent-driven per-user inbox archive state. Inbox archive state changes presentation in a user's Mine inbox; it does not change issue status, assignment, visibility, or the underlying work record.
+
+Core authorization follows these rules:
+
+- Board users may archive or unarchive inbox entries for users in the company.
+- An agent may manage the responsible user's inbox without an explicit grant when the authenticated run resolves that user and the user's inbox-agent policy permits the agent. This is the default-open path.
+- A user may set inbox-agent policy to `disabled` or `allowlist`. Policy restrictions override the default-open path, and low-trust agents are denied.
+- An agent targeting any user other than its resolved responsible user requires an explicit `inbox:manage` grant. Grants may be unscoped or constrained by `scope.userIds`.
+- Archive and unarchive operations are company-scoped, reversible, and activity logged with actor, agent, run, target user, target-resolution source, and policy mode.
+- New qualifying issue activity may invalidate an archive so the item resurfaces; archival is not a substitute for resolving or closing work.
+
+Ownership split:
+
+- **Core / Free:** permission key and scoped-grant enforcement; responsible-user resolution; default-open, disabled, and allowlist policy modes; archive/unarchive APIs; per-user archive persistence; resurfacing behavior; activity audit records; and stable denial codes.
+- **Paperclip EE / Enterprise:** centralized policy administration beyond the per-user controls, organization-wide presets, policy simulation, bulk inbox operations, advanced compliance reporting, and richer administrative audit UX. EE may extend policy management surfaces but must not weaken core company boundaries, user policy restrictions, scoped grants, or audit requirements.
 
 ## 10. API Contract (REST)
 
@@ -809,11 +947,16 @@ The current app also exposes V1-supporting surfaces for:
 
 - issue thread interactions (`suggest_tasks`, `ask_user_questions`, `request_confirmation`)
 - issue approvals, issue references/search, labels, read state, inbox/archive state, and work products
+- company search through `GET /companies/:companyId/search` plus agent-oriented bulk extraction through
+  `GET /companies/:companyId/search/extract`; extraction accepts a server-escaped literal `contains`, optional
+  server-owned URL expansion, issue/comment/document scopes, status/date filters, issue-level pagination, a
+  bounded `matchesPerIssue` override for machine consumers, and explicit issue/match truncation flags
 - execution workspaces, project workspaces, workspace runtime services, and workspace operations
 - task watchdog configuration and reusable watchdog issue orchestration for explicitly watched issue subtrees
 - routines and scheduled/API/webhook triggers
 - plugin installation, configuration, state, jobs, logs, webhooks, and plugin database namespace migration
 - company import/export preview/apply, feedback export/vote routes, instance backup/config routes, invites, join requests, memberships, and permission grants
+- company skill policy read/replace/reset/simulation, enforced by the same core evaluator used by skill mutation routes
 
 ## 11. Heartbeat and Adapter Contract
 
@@ -1142,6 +1285,7 @@ Export/import behavior in V1:
 - Paperclip imports recurring task packages as routines instead of downgrading them to one-time issues
 - export strips environment-specific paths (`cwd`, local instruction file paths, inline prompt duplication) while preserving portable project repo/workspace metadata such as `repoUrl`, refs, and workspace-policy references keyed in `.paperclip.yaml`
 - export never includes secret values; env inputs are reported as portable declarations instead
+- export preserves explicit company skill policy and retained legacy skill grants in `.paperclip.yaml`; absence of policy remains the open default
 - import supports target modes:
   - create a new company
   - import into an existing company
@@ -1149,4 +1293,5 @@ Export/import behavior in V1:
 - import forces imported agent timer heartbeats off so packages never start scheduled runs implicitly
 - import supports collision strategies: `rename`, `skip`, `replace`
 - import supports preview (dry-run) before apply
+- import preview reports skill-policy and legacy-grant mappings before apply and rejects unknown policy schema versions
 - GitHub imports warn on unpinned refs instead of blocking

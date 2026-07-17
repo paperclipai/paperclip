@@ -24,13 +24,16 @@ const apiPrefixes: Record<string, string> = {
   "cloud-upstreams.ts": "/api",
   "companies.ts": "/api/companies",
   "company-skills.ts": "/api",
+  "company-skill-policy.ts": "/api",
   "costs.ts": "/api",
   "dashboard.ts": "/api",
   "environments.ts": "/api",
   "execution-workspaces.ts": "/api",
   "file-resources.ts": "/api",
+  "folders.ts": "/api",
   "goals.ts": "/api",
   "health.ts": "/api/health",
+  "inbox-agent-policy.ts": "/api",
   "inbox-dismissals.ts": "/api",
   "instance-database-backups.ts": "/api",
   "instance-settings.ts": "/api",
@@ -164,12 +167,26 @@ describe("openapi routes", () => {
       },
       required: ["name"],
     });
+    expect(JSON.stringify(res.body.paths["/api/companies"].post.responses)).not.toContain("candidates");
+    expect(res.body.paths["/api/companies/{companyId}/skills/scan-projects"].post.responses["200"].content[
+      "application/json"
+    ].schema).toMatchObject({
+      type: "object",
+      properties: {
+        candidates: { type: "array" },
+      },
+      required: expect.arrayContaining(["candidates"]),
+    });
     expect(res.body.paths["/api/agents/{id}/keys"].post.requestBody.content["application/json"].schema).toMatchObject({
       type: "object",
       properties: {
         name: { type: "string" },
       },
     });
+    expect(res.body.paths["/api/companies/{companyId}/folders"].post.responses["201"]).toBeDefined();
+    expect(res.body.paths["/api/companies/{companyId}/folders/items/move"].post.summary).toBe(
+      "Move an item into or out of a folder",
+    );
     expect(JSON.stringify(res.body.paths["/api/tool-gateway/tools"].get)).not.toContain("sessionToken");
     expect(JSON.stringify(res.body.paths["/api/tool-gateway/tools/call"].post)).not.toContain("sessionToken");
   });

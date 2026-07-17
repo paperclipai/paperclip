@@ -522,6 +522,8 @@ export type SuccessfulRunHandoffStateKind = "required" | "resolved" | "escalated
 export interface SuccessfulRunHandoffState {
   state: SuccessfulRunHandoffStateKind;
   required: boolean;
+  hasLiveContinuation: boolean;
+  liveRunId?: string | null;
   sourceRunId: string | null;
   correctiveRunId: string | null;
   assigneeAgentId: string | null;
@@ -772,6 +774,10 @@ export interface Issue {
   lastExternalCommentAt?: Date | null;
   lastActivityAt?: Date | null;
   isUnreadForMe?: boolean;
+  archivedAt?: Date | null;
+  archivedByActorType?: "user" | "agent" | null;
+  archivedByAgentId?: string | null;
+  archivedByRunId?: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -823,6 +829,10 @@ export type CompactIssue = Pick<
   lastExternalCommentAt?: Date | null;
   lastActivityAt?: Date | null;
   isUnreadForMe?: boolean;
+  archivedAt?: Date | null;
+  archivedByActorType?: "user" | "agent" | null;
+  archivedByAgentId?: string | null;
+  archivedByRunId?: string | null;
   activeRecoveryAction: IssueRecoveryAction | null;
   successfulRunHandoff: SuccessfulRunHandoffState | null;
 };

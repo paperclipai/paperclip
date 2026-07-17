@@ -291,6 +291,7 @@ export function environmentRunOrchestrator(
       action: "environment.lease_acquired",
       entityType: "environment_lease",
       entityId: leaseRecord.lease.id,
+      issueId: input.issueId,
       details: {
         environmentId: environment.id,
         driver: environment.driver,
@@ -535,6 +536,7 @@ export function environmentRunOrchestrator(
           action: "environment.lease_released",
           entityType: "environment_lease",
           entityId: released.lease.id,
+          issueId: released.lease.issueId,
           details: {
             environmentId: released.lease.environmentId,
             driver: released.environment.driver,

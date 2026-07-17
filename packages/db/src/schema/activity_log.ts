@@ -15,11 +15,22 @@ export const activityLog = pgTable(
     entityId: text("entity_id").notNull(),
     agentId: uuid("agent_id").references(() => agents.id),
     runId: uuid("run_id").references(() => heartbeatRuns.id),
+    responsibleUserId: text("responsible_user_id"),
     details: jsonb("details").$type<Record<string, unknown>>(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
     companyCreatedIdx: index("activity_log_company_created_idx").on(table.companyId, table.createdAt),
+    companyAgentCreatedIdx: index("activity_log_company_agent_created_idx").on(
+      table.companyId,
+      table.agentId,
+      table.createdAt,
+    ),
+    companyResponsibleUserCreatedIdx: index("activity_log_company_responsible_user_created_idx").on(
+      table.companyId,
+      table.responsibleUserId,
+      table.createdAt,
+    ),
     runIdIdx: index("activity_log_run_id_idx").on(table.runId),
     entityIdx: index("activity_log_entity_type_id_idx").on(table.entityType, table.entityId),
   }),

@@ -107,8 +107,9 @@ vi.mock("../context/SidebarContext", () => ({
   useSidebar: () => ({ isMobile: false }),
 }));
 
+const generalSettingsMock = { keyboardShortcutsEnabled: false };
 vi.mock("../context/GeneralSettingsContext", () => ({
-  useGeneralSettings: () => ({ keyboardShortcutsEnabled: false }),
+  useGeneralSettings: () => generalSettingsMock,
 }));
 
 vi.mock("../hooks/useInboxBadge", () => ({
@@ -498,6 +499,72 @@ describe("Inbox toolbar", () => {
     act(() => {
       root.unmount();
     });
+  });
+
+  it("keeps hover→j/k selection in sync after the list reshapes (PAP-9679)", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    generalSettingsMock.keyboardShortcutsEnabled = true;
+    const issueA = createIssue({ id: "issue-a", identifier: "PAP-2001", title: "Sync row A" });
+    const issueB = createIssue({ id: "issue-b", identifier: "PAP-2002", title: "Sync row B" });
+    const issueC = createIssue({ id: "issue-c", identifier: "PAP-2003", title: "Sync row C" });
+    apiMocks.issuesList.mockResolvedValue([issueA, issueB, issueC]);
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 0, gcTime: 0 } },
+    });
+    const root = createRoot(container);
+
+    const linkOf = (row: Element): HTMLAnchorElement | null =>
+      row.querySelector("a[data-inbox-issue-link]");
+    // The keyboard-selected row swaps to `hover:bg-transparent`; find its index.
+    const selectedRowIndex = () =>
+      [...container.querySelectorAll("[data-inbox-item]")].findIndex((row) =>
+        linkOf(row)?.className.includes("hover:bg-transparent"),
+      );
+
+    try {
+      await act(async () => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <Inbox />
+          </QueryClientProvider>,
+        );
+      });
+      await vi.waitFor(() => {
+        expect(container.querySelectorAll("[data-inbox-item]").length).toBeGreaterThanOrEqual(3);
+      });
+
+      // Pointer physically moves, then hovers the middle row (index 1).
+      await act(async () => {
+        window.dispatchEvent(new MouseEvent("mousemove", { bubbles: true }));
+        const rows = container.querySelectorAll("[data-inbox-item]");
+        rows[1]!.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+        rows[1]!.dispatchEvent(new MouseEvent("mouseenter", { bubbles: false }));
+      });
+
+      // A poll reshapes the list (row B's title changes → new nav array) before
+      // the keypress. This is what used to null the hovered index and strand
+      // j/k back at the top.
+      apiMocks.issuesList.mockResolvedValue([issueA, { ...issueB, title: "Sync row B (updated)" }, issueC]);
+      await act(async () => {
+        await queryClient.invalidateQueries();
+      });
+      await vi.waitFor(() => {
+        expect(container.textContent).toContain("Sync row B (updated)");
+      });
+
+      // j must continue from the hovered row (index 1) → index 2, not jump to
+      // the top of the list.
+      await act(async () => {
+        document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "j", bubbles: true }));
+      });
+      expect(selectedRowIndex()).toBe(2);
+    } finally {
+      generalSettingsMock.keyboardShortcutsEnabled = false;
+      act(() => {
+        root.unmount();
+      });
+    }
   });
 
   it("keeps other issue archive controls enabled while one archive is pending", async () => {

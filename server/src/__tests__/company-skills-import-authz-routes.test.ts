@@ -41,11 +41,13 @@ describeEmbeddedPostgres("company skill import authorization routes", () => {
   const cleanupDirs = new Set<string>();
   const previousAgentJwtSecret = process.env.PAPERCLIP_AGENT_JWT_SECRET;
   const previousPaperclipHome = process.env.PAPERCLIP_HOME;
+  const previousPaperclipInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
 
   beforeAll(async () => {
     process.env.PAPERCLIP_AGENT_JWT_SECRET = "company-skills-import-authz-test-secret";
     paperclipHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-company-skills-import-authz-home-"));
     process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_INSTANCE_ID = "default";
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-company-skills-import-authz-");
     db = createDb(tempDb.connectionString);
   }, 20_000);
@@ -72,6 +74,8 @@ describeEmbeddedPostgres("company skill import authorization routes", () => {
     else process.env.PAPERCLIP_AGENT_JWT_SECRET = previousAgentJwtSecret;
     if (previousPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
     else process.env.PAPERCLIP_HOME = previousPaperclipHome;
+    if (previousPaperclipInstanceId === undefined) delete process.env.PAPERCLIP_INSTANCE_ID;
+    else process.env.PAPERCLIP_INSTANCE_ID = previousPaperclipInstanceId;
   });
 
   function authenticatedApp() {
@@ -83,8 +87,14 @@ describeEmbeddedPostgres("company skill import authorization routes", () => {
     return instance;
   }
 
-  async function writeSkillFixture() {
-    const skillDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-import-authz-skill-"));
+  async function writeSkillFixture(companyId: string) {
+    if (!paperclipHome) throw new Error("Expected Paperclip test home");
+    // Local imports must originate from an approved root (managed-skill
+    // directory or a configured workspace); a bare tmpdir is rejected with
+    // skill_workspace_boundary_denied.
+    const managedRoot = path.join(paperclipHome, "instances", "default", "skills", companyId);
+    await fs.mkdir(managedRoot, { recursive: true });
+    const skillDir = await fs.mkdtemp(path.join(managedRoot, "paperclip-import-authz-skill-"));
     cleanupDirs.add(skillDir);
     await fs.writeFile(
       path.join(skillDir, "SKILL.md"),
@@ -169,7 +179,7 @@ describeEmbeddedPostgres("company skill import authorization routes", () => {
 
   it("lets a standard responsible-user agent JWT with skills:create import a company skill", async () => {
     const { companyId, agent, responsibleUserId, runId } = await seedGrantedAgentWithResponsibleUser();
-    const skillDir = await writeSkillFixture();
+    const skillDir = await writeSkillFixture(companyId);
     const token = createLocalAgentJwt(agent.id, companyId, agent.adapterType, runId, responsibleUserId);
     expect(token).toBeTruthy();
 

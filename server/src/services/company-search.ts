@@ -37,6 +37,7 @@ import {
   type CompanySearchUpdatedWithinOption,
 } from "@paperclipai/shared";
 import { companyArtifactsService } from "./company-artifacts.js";
+import { companySearchExtractService } from "./company-search-extract.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
 
 const MIN_TOKEN_LENGTH = 2;
@@ -554,7 +555,9 @@ export function companySearchBranchFetchLimit(limit: number, offset = 0) {
 }
 
 export function companySearchService(db: Db) {
+  const extractService = companySearchExtractService(db);
   return {
+    extract: extractService.extract,
     search: async (companyId: string, query: CompanySearchQuery): Promise<CompanySearchResponse> => {
       const normalizedQuery = normalizeQuery(query.q);
       const hasSearchText = normalizedQuery.length > 0;

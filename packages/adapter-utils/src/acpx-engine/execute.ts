@@ -33,6 +33,7 @@ import {
   ensureAbsoluteDirectory,
   ensurePathInEnv,
   ensurePaperclipSkillSymlink,
+  isPaperclipRuntimeEnvKey,
   joinPromptSections,
   materializePaperclipSkillCopy,
   parseObject,
@@ -723,6 +724,49 @@ function normalizeRequestedThinkingEffort(config: Record<string, unknown>): stri
   ).trim();
 }
 
+function buildCodexStartupConfig(input: {
+  existingConfig: string | undefined;
+  requestedModel: string;
+  requestedThinkingEffort: string;
+  fastMode: boolean;
+}): { value: string | null; invalidExistingConfig: boolean } {
+  const hasRuntimeConfig = Boolean(
+    input.requestedModel || input.requestedThinkingEffort || input.fastMode,
+  );
+  if (!hasRuntimeConfig) return { value: null, invalidExistingConfig: false };
+
+  let existing: Record<string, unknown> = {};
+  let invalidExistingConfig = false;
+  if (input.existingConfig) {
+    try {
+      existing = parseObject(JSON.parse(input.existingConfig));
+    } catch {
+      invalidExistingConfig = true;
+      existing = {};
+    }
+  }
+
+  return {
+    value: JSON.stringify({
+      ...existing,
+      ...(input.requestedModel ? { model: input.requestedModel } : {}),
+      ...(input.requestedThinkingEffort
+        ? { model_reasoning_effort: input.requestedThinkingEffort }
+        : {}),
+      ...(input.fastMode
+        ? {
+            service_tier: "fast",
+            features: {
+              ...parseObject(existing.features),
+              fast_mode: true,
+            },
+          }
+        : {}),
+    }),
+    invalidExistingConfig,
+  };
+}
+
 function isCompatibleSession(
   params: Record<string, unknown>,
   runtime: Pick<AcpxPreparedRuntime, "fingerprint" | "sessionKey" | "cwd" | "mode" | "acpxAgent" | "remoteExecutionIdentity">,
@@ -1044,8 +1088,24 @@ async function buildRuntime(input: {
     executionCwd: shapedWorkspaceEnv.workspaceCwd,
     executionTargetIsRemote,
   });
+  // Resolved adapter env (plain + server-resolved secret_ref values) that we
+  // forward to the spawned agent process. Captured so a stable hash of it can be
+  // folded into the session fingerprint below — a change here must invalidate a
+  // warm/resumable session so the next launch picks up the latest env. Only
+  // user/adapter-configured env flows through this loop; per-wake PAPERCLIP_*
+  // runtime vars (PAPERCLIP_RUN_ID, wake/approval ids, ...) were assigned to
+  // `env` above and are never present in shapedEnvConfig, so they inherently
+  // stay out of the hash and don't reset the session every heartbeat.
+  const resolvedAdapterEnv: Record<string, string> = {};
   for (const [key, value] of Object.entries(shapedEnvConfig)) {
-    if (typeof value === "string") env[key] = value;
+    if (typeof value !== "string") continue;
+    // Runtime PAPERCLIP_* always wins over config: skip a PAPERCLIP_* key that
+    // Paperclip has already assigned this run. A PAPERCLIP_* key Paperclip did
+    // NOT set (e.g. an explicitly configured PAPERCLIP_API_KEY, applied here) is
+    // stable per-run config, so it applies and feeds the fingerprint hash below.
+    if (isPaperclipRuntimeEnvKey(key) && key in env) continue;
+    env[key] = value;
+    resolvedAdapterEnv[key] = value;
   }
   if (!hasExplicitApiKey && authToken) env.PAPERCLIP_API_KEY = authToken;
   // For the claude agent, set model via ANTHROPIC_MODEL at startup rather than
@@ -1056,6 +1116,21 @@ async function buildRuntime(input: {
   // it reliably sets the model before any turns are run.
   if (requestedModel && acpxAgent === "claude" && !env.ANTHROPIC_MODEL) {
     env.ANTHROPIC_MODEL = requestedModel;
+  }
+  if (acpxAgent === "codex") {
+    const codexStartupConfig = buildCodexStartupConfig({
+      existingConfig: env.CODEX_CONFIG,
+      requestedModel,
+      requestedThinkingEffort,
+      fastMode,
+    });
+    if (codexStartupConfig.invalidExistingConfig) {
+      await input.ctx.onLog(
+        "stderr",
+        "[paperclip] Ignoring invalid user CODEX_CONFIG while applying runtime Codex settings; expected a JSON object.\n",
+      );
+    }
+    if (codexStartupConfig.value) env.CODEX_CONFIG = codexStartupConfig.value;
   }
 
   let skillPromptInstructions = "";
@@ -1217,6 +1292,14 @@ async function buildRuntime(input: {
       : null,
     mcpServers: mcpIdentity,
     secretManifestHash: shortHash(secretManifest),
+    // Fold the resolved adapter env (all applied user-configured values —
+    // plain, secret_ref, and stable PAPERCLIP_* config such as an explicit
+    // PAPERCLIP_API_KEY) into the fingerprint so a change to any forwarded value
+    // invalidates a warm handle / resumable session and forces a fresh launch
+    // that sources the latest env. secretManifestHash alone misses plain-value
+    // edits and same-version secret rotations. Per-wake runtime vars never enter
+    // resolvedAdapterEnv, so they don't churn the fingerprint every heartbeat.
+    adapterEnvHash: shortHash(resolvedAdapterEnv),
   });
   const taskKey = asString(input.ctx.runtime.taskKey, "") || wakeTaskId || workspaceId || "default";
   const sessionKey = `paperclip:${agent.companyId}:${agent.id}:${taskKey}:${fingerprint}`;
@@ -1264,19 +1347,23 @@ async function buildRuntime(input: {
 
 function sessionConfigOptions(prepared: AcpxPreparedRuntime): Array<{ key: string; value: string }> {
   const options: Array<{ key: string; value: string }> = [];
-  // Model for the claude agent is pre-set via ANTHROPIC_MODEL env var at
-  // startup; skip set_config_option to avoid ACP-server model-name validation
-  // that rejects bare IDs like "claude-opus-4-7" in some runtime versions.
-  if (prepared.requestedModel && prepared.acpxAgent !== "claude") {
+  // Claude and Codex runtime config is pre-set via startup env vars; skip
+  // set_config_option to avoid ACP-server picker validation rejecting valid
+  // backend model IDs that are not advertised by the local ACP server.
+  if (
+    prepared.requestedModel &&
+    prepared.acpxAgent !== "claude" &&
+    prepared.acpxAgent !== "codex"
+  ) {
     options.push({ key: "model", value: prepared.requestedModel });
   }
-  if (prepared.requestedThinkingEffort) {
+  if (prepared.requestedThinkingEffort && prepared.acpxAgent !== "codex") {
     options.push({
-      key: prepared.acpxAgent === "codex" ? "reasoning_effort" : "effort",
+      key: "effort",
       value: prepared.requestedThinkingEffort,
     });
   }
-  if (prepared.fastMode) {
+  if (prepared.fastMode && prepared.acpxAgent !== "codex") {
     options.push(
       { key: "service_tier", value: "fast" },
       { key: "features.fast_mode", value: "true" },
@@ -2034,6 +2121,8 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             ? [
                 prepared.acpxAgent === "claude"
                   ? `Requested ACPX model: ${prepared.requestedModel} (set via ANTHROPIC_MODEL env at startup).`
+                  : prepared.acpxAgent === "codex"
+                    ? `Requested ACPX model: ${prepared.requestedModel} (set via CODEX_CONFIG at startup).`
                   : `Requested ACPX model: ${prepared.requestedModel}.`,
               ]
             : []),
