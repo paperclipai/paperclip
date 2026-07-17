@@ -4151,41 +4151,63 @@ async function startLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
 }
 
 async function startProviderRuntimeService(input: StartLocalRuntimeServiceInput & { providerRuntime: RuntimeServiceProvider }): Promise<RuntimeServiceRecord> {
-  const resolved = resolveWorkspaceCommandExecution({
-    command: input.service,
+  const identity = resolveRuntimeServiceReuseIdentity({
+    service: input.service,
     workspace: input.workspace,
     agent: input.agent,
     issue: input.issue,
     adapterEnv: input.adapterEnv,
+    scopeType: input.scopeType,
+    scopeId: input.scopeId,
   });
-  if (!resolved.command) throw new Error(`Runtime service "${resolved.name}" is missing command`);
-  const readinessUrl = asString(parseObject(input.service.readiness).url, resolved.url ?? "") || null;
+  if (!identity.command) throw new Error(`Runtime service "${identity.serviceName}" is missing command`);
+  const templateData = buildTemplateData({
+    workspace: input.workspace,
+    agent: input.agent,
+    issue: input.issue,
+    adapterEnv: input.adapterEnv,
+    port: identity.identityPort,
+  });
+  const expose = parseObject(input.service.expose);
+  const readiness = parseObject(input.service.readiness);
+  const urlTemplate = asString(expose.urlTemplate, "") || asString(readiness.urlTemplate, "");
+  const url = urlTemplate ? renderTemplate(urlTemplate, templateData) : null;
+  const readinessUrlTemplate = asString(readiness.urlTemplate, "");
+  const readinessUrl =
+    readinessUrlTemplate
+      ? renderTemplate(readinessUrlTemplate, templateData)
+      : asString(readiness.url, url ?? "") || null;
+  const env = {
+    ...sanitizeRuntimeServiceBaseEnv(process.env),
+    ...input.adapterEnv,
+    ...renderRuntimeServiceEnv({ envConfig: identity.envConfig, templateData }),
+  } as Record<string, string>;
   const started = await input.providerRuntime.start({
-    serviceName: resolved.name,
-    command: resolved.command,
-    cwd: resolved.cwd,
-    url: resolved.url ?? null,
+    serviceName: identity.serviceName,
+    command: identity.command,
+    cwd: identity.serviceCwd,
+    url,
     readinessUrl,
-    env: resolved.env,
+    env,
   });
   const health = await input.providerRuntime.health({
-    serviceName: resolved.name,
+    serviceName: identity.serviceName,
     providerRef: started.providerRef,
-    url: started.url ?? resolved.url ?? null,
+    url: started.url ?? url,
     readinessUrl,
   });
   if (!health.healthy) {
-    await input.providerRuntime.stop({ serviceName: resolved.name, providerRef: started.providerRef }).catch(() => undefined);
-    throw new Error(`Provider runtime service "${resolved.name}" did not become healthy`);
+    await input.providerRuntime.stop({ serviceName: identity.serviceName, providerRef: started.providerRef }).catch(() => undefined);
+    throw new Error(`Provider runtime service "${identity.serviceName}" did not become healthy`);
   }
   const now = new Date().toISOString();
   return {
     id: randomUUID(), companyId: input.agent.companyId, projectId: input.workspace.projectId,
     projectWorkspaceId: input.workspace.workspaceId, executionWorkspaceId: input.executionWorkspaceId ?? null,
-    issueId: input.issue?.id ?? null, serviceName: resolved.name, status: "running",
+    issueId: input.issue?.id ?? null, serviceName: identity.serviceName, status: "running",
     lifecycle: input.service.lifecycle === "shared" ? "shared" : "ephemeral", scopeType: input.scopeType,
-    scopeId: input.scopeId, reuseKey: input.reuseKey, command: resolved.command, cwd: resolved.cwd,
-    port: asNumber(input.service.port, 0) || null, url: health.url ?? started.url ?? resolved.url ?? null,
+    scopeId: input.scopeId, reuseKey: input.reuseKey, command: identity.command, cwd: identity.serviceCwd,
+    port: identity.identityPort, url: health.url ?? started.url ?? url,
     provider: "sandbox_provider", providerRef: started.providerRef,
     providerMetadata: { ...(started.metadata ?? {}), ...(health.metadata ?? {}) },
     ownerAgentId: input.agent.id ?? null, startedByRunId: input.runId, lastUsedAt: now, startedAt: now,
