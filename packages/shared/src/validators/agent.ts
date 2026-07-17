@@ -125,6 +125,15 @@ export const updateAgentSchema = createAgentSchema
 
 export type UpdateAgent = z.infer<typeof updateAgentSchema>;
 
+export const pauseAgentSchema = z.preprocess(
+  (value) => (value == null ? {} : value),
+  z.object({
+    note: z.string().trim().max(2000).optional().nullable(),
+  }).strict(),
+);
+
+export type PauseAgent = z.infer<typeof pauseAgentSchema>;
+
 export const updateAgentInstructionsPathSchema = z.object({
   path: z.string().trim().min(1).nullable(),
   adapterConfigKey: z.string().trim().min(1).optional(),

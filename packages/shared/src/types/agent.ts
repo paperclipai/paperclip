@@ -97,7 +97,9 @@ export interface Agent {
   budgetMonthlyCents: number;
   spentMonthlyCents: number;
   pauseReason: PauseReason | null;
+  pauseNote?: string | null;
   pausedAt: Date | null;
+  pausedByUserId?: string | null;
   errorReason?: string | null;
   permissions: AgentPermissions;
   lastHeartbeatAt: Date | null;

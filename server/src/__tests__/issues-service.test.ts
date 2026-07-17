@@ -463,6 +463,115 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     });
   });
 
+  it("allows checkout takeover when the current assignee is paused", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const pausedAgentId = randomUUID();
+    const reclaimingAgentId = randomUUID();
+    await db.insert(agents).values([
+      agentRow(companyId, {
+        id: pausedAgentId,
+        name: "PausedAssignee",
+        status: "paused",
+      }),
+      agentRow(companyId, {
+        id: reclaimingAgentId,
+        name: "ReclaimingManager",
+      }),
+    ]);
+    const issue = await svc.create(companyId, {
+      title: "Stranded on paused assignee",
+      description: null,
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: pausedAgentId,
+    });
+    const checkoutRunId = randomUUID();
+
+    const updated = await svc.checkout(
+      issue.id,
+      reclaimingAgentId,
+      ["todo", "backlog", "blocked", "in_review"],
+      checkoutRunId,
+    );
+
+    expect(updated).toMatchObject({
+      assigneeAgentId: reclaimingAgentId,
+      status: "in_progress",
+      checkoutRunId,
+      executionRunId: checkoutRunId,
+    });
+  });
+
+  it("allows checkout takeover of in_progress work stranded on a terminated assignee", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const terminatedAgentId = randomUUID();
+    const reclaimingAgentId = randomUUID();
+    await db.insert(agents).values([
+      agentRow(companyId, {
+        id: terminatedAgentId,
+        name: "TerminatedAssignee",
+      }),
+      agentRow(companyId, {
+        id: reclaimingAgentId,
+        name: "ReclaimingPeer",
+      }),
+    ]);
+    const issue = await svc.create(companyId, {
+      title: "Stranded in progress",
+      description: null,
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: terminatedAgentId,
+    });
+    await db
+      .update(issues)
+      .set({ status: "in_progress", startedAt: new Date() })
+      .where(eq(issues.id, issue.id));
+    await db.update(agents).set({ status: "terminated" }).where(eq(agents.id, terminatedAgentId));
+    const checkoutRunId = randomUUID();
+
+    const updated = await svc.checkout(
+      issue.id,
+      reclaimingAgentId,
+      ["todo", "backlog", "blocked", "in_review"],
+      checkoutRunId,
+    );
+
+    expect(updated).toMatchObject({
+      assigneeAgentId: reclaimingAgentId,
+      status: "in_progress",
+      checkoutRunId,
+      executionRunId: checkoutRunId,
+    });
+  });
+
+  it("still conflicts checkout when the current assignee is active", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const activeAgentId = randomUUID();
+    const peerAgentId = randomUUID();
+    await db.insert(agents).values([
+      agentRow(companyId, { id: activeAgentId, name: "ActiveAssignee" }),
+      agentRow(companyId, { id: peerAgentId, name: "PeerAgent" }),
+    ]);
+    const issue = await svc.create(companyId, {
+      title: "Owned by active agent",
+      description: null,
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: activeAgentId,
+    });
+
+    await expect(
+      svc.checkout(issue.id, peerAgentId, ["todo", "backlog", "blocked", "in_review"], randomUUID()),
+    ).rejects.toMatchObject({
+      status: 409,
+      message: "Issue checkout conflict",
+      details: {
+        assigneeAgentId: activeAgentId,
+      },
+    });
+  });
+
   it("rejects moving an existing terminated assignment into progress without clearing it", async () => {
     const companyId = await seedAssignableAgentCompany();
     const assigneeAgentId = randomUUID();

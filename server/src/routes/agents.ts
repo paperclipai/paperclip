@@ -26,6 +26,7 @@ import {
   updateAgentInstructionsPathSchema,
   wakeAgentSchema,
   updateAgentSchema,
+  pauseAgentSchema,
   supportedEnvironmentDriversForAdapter,
   LOW_TRUST_REVIEW_PRESET,
 } from "@paperclipai/shared";
@@ -3083,13 +3084,20 @@ export function agentRoutes(
     res.json(agent);
   });
 
-  router.post("/agents/:id/pause", async (req, res) => {
+  router.post("/agents/:id/pause", validate(pauseAgentSchema), async (req, res) => {
     assertBoard(req);
     const id = req.params.id as string;
     if (!(await getAccessibleAgent(req, res, id))) {
       return;
     }
-    const agent = await svc.pause(id);
+    const note =
+      typeof req.body?.note === "string" || req.body?.note === null
+        ? req.body.note
+        : undefined;
+    const agent = await svc.pause(id, "manual", {
+      note: note ?? null,
+      pausedByUserId: req.actor.userId ?? null,
+    });
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
@@ -3104,6 +3112,11 @@ export function agentRoutes(
       action: "agent.paused",
       entityType: "agent",
       entityId: agent.id,
+      details: {
+        pauseReason: agent.pauseReason,
+        pauseNote: agent.pauseNote,
+        pausedByUserId: agent.pausedByUserId,
+      },
     });
 
     res.json(agent);
