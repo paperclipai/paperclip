@@ -1,5 +1,6 @@
 import path from "node:path";
 import {
+  createSandboxReadFileTooLargeError,
   prepareSandboxManagedRuntime,
   type PreparedSandboxManagedRuntime,
   type SandboxManagedRuntimeAsset,
@@ -177,6 +178,13 @@ export function createCommandManagedRuntimeClient(input: {
       const totalBytes = Number.parseInt(sizeResult.stdout.trim(), 10);
       if (!Number.isFinite(totalBytes) || totalBytes < 0) {
         throw new Error(`Could not determine remote file size for ${remotePath}`);
+      }
+      if (options?.maxBytes != null && totalBytes > options.maxBytes) {
+        throw createSandboxReadFileTooLargeError({
+          remotePath,
+          actualBytes: totalBytes,
+          maxBytes: options.maxBytes,
+        });
       }
 
       // Read in bounded remote chunks so the runner never has to materialize a

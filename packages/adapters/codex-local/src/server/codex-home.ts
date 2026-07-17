@@ -39,8 +39,9 @@ export async function pathExists(candidate: string): Promise<boolean> {
 }
 
 // Co-change notice: this function's logic is mirrored by parseAuth in
-// packages/adapter-utils/src/sandbox-managed-runtime.ts (buildCodexAuthMergeDecisionScript).
-// If the auth format changes (new shape, renamed field), update both sites together.
+// packages/adapter-utils/src/codex-auth-merge-decision.cjs and
+// parseCodexAuthPayload in packages/adapter-utils/src/sandbox-managed-runtime.ts.
+// If the auth format changes (new shape, renamed field), update all sites together.
 function hasUsableAuthPayload(authPayload: unknown): boolean {
   if (authPayload === null || typeof authPayload !== "object" || Array.isArray(authPayload)) {
     return false;

@@ -10,6 +10,7 @@ import {
   prepareCommandManagedRuntime,
   type CommandManagedRuntimeRunner,
 } from "./command-managed-runtime.js";
+import { SANDBOX_READ_FILE_TOO_LARGE_ERROR_CODE } from "./sandbox-managed-runtime.js";
 import type { RunProcessResult } from "./server-utils.js";
 
 const execFile = promisify(execFileCallback);
@@ -394,6 +395,25 @@ describe("command managed runtime", () => {
     }
     expect(progress.every((entry) => entry.total === payload.length)).toBe(true);
     expect(progress.at(-1)?.done).toBe(payload.length);
+  });
+
+  it("rejects oversized downloads after the remote size probe", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-command-read-max-"));
+    cleanupDirs.push(rootDir);
+    const remotePath = path.join(rootDir, "download.bin");
+    await writeFile(remotePath, Buffer.alloc(1024));
+
+    const { runner, calls } = makeSpawnRunner();
+    const client = createCommandManagedRuntimeClient({ runner, commandCwd: "/", timeoutMs: 30_000 });
+
+    await expect(client.readFile(remotePath, { maxBytes: 16 })).rejects.toMatchObject({
+      code: SANDBOX_READ_FILE_TOO_LARGE_ERROR_CODE,
+      actualBytes: 1024,
+      maxBytes: 16,
+    });
+
+    expect(calls.some((call) => call.args?.join(" ").includes("wc -c"))).toBe(true);
+    expect(calls.some((call) => call.args?.join(" ").includes("dd if="))).toBe(false);
   });
 
   it("includes stdout diagnostics when a managed runtime command fails", async () => {
