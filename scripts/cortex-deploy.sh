@@ -42,10 +42,16 @@ CORTEX_DEPLOY_HEALTH_RETRIES="${CORTEX_DEPLOY_HEALTH_RETRIES:-30}"
 CORTEX_DEPLOY_HEALTH_INTERVAL="${CORTEX_DEPLOY_HEALTH_INTERVAL:-2}"
 CORTEX_DEPLOY_LOCK="${CORTEX_DEPLOY_LOCK:-/tmp/cortex-deploy.lock}"
 CORTEX_DEPLOY_STATE_FILE="${CORTEX_DEPLOY_STATE_FILE:-/var/tmp/cortex-deploy-last-good.ref}"
-# Optional content-verify gate (NEO-527 / subtask 522b). Invoked after the health gate passes;
-# a non-zero exit triggers the same auto-rollback as an unhealthy restart. This is the
-# coordinated hook point for 522b — leave unset until 522b lands its probe.
+# Content-verify gate (NEO-527 / subtask 522b). Invoked after the health gate passes; a non-zero
+# exit triggers the same auto-rollback as an unhealthy restart. When left unset, the gate defaults
+# (once beta is healthy) to running the whole release-probes/ registry against the running instance
+# via scripts/verify-content.mjs — asserting behaviour/content, never SHA ancestry. It is skipped
+# only when no probe files exist yet, so an empty registry never rolls back a healthy deploy.
 CORTEX_DEPLOY_VERIFY_CMD="${CORTEX_DEPLOY_VERIFY_CMD:-}"
+# Base URL of the running instance for content probes (health URL minus the /api/health suffix).
+CORTEX_BETA_BASE_URL="${CORTEX_BETA_BASE_URL:-${CORTEX_BETA_HEALTH_URL%/api/health}}"
+# Instance config the beta service uses — passed to db-type probes so they assert the live DB.
+CORTEX_BETA_CONFIG="${CORTEX_BETA_CONFIG:-/home/ubuntu/.paperclip/instances/beta/config.json}"
 # Optional alert sink. Invoked as `$CORTEX_DEPLOY_ALERT_CMD "<message>"` on any abort/rollback.
 # When unset, alerts still land in stderr/journald (grep for the ALERT marker).
 CORTEX_DEPLOY_ALERT_CMD="${CORTEX_DEPLOY_ALERT_CMD:-}"
@@ -194,6 +200,17 @@ if ! health_ok; then
 fi
 
 # Content-verify gate (522b hook). Runs only once beta is healthy.
+if [[ -z "$CORTEX_DEPLOY_VERIFY_CMD" ]]; then
+  # Default gate: run the whole release-probes registry against the running instance. Skipped
+  # when no probe files exist yet — never roll back a healthy deploy over an empty registry.
+  if compgen -G "release-probes/*.yaml" >/dev/null 2>&1 \
+    || compgen -G "release-probes/*.yml" >/dev/null 2>&1 \
+    || compgen -G "release-probes/*.json" >/dev/null 2>&1; then
+    CORTEX_DEPLOY_VERIFY_CMD="PAPERCLIP_CONFIG='$CORTEX_BETA_CONFIG' node scripts/verify-content.mjs --base '$CORTEX_BETA_BASE_URL' --dir release-probes"
+  else
+    log "no release-probes/*.yaml present — skipping content-verify gate"
+  fi
+fi
 if [[ -n "$CORTEX_DEPLOY_VERIFY_CMD" ]]; then
   log "running content-verify gate: $CORTEX_DEPLOY_VERIFY_CMD"
   if ! eval "$CORTEX_DEPLOY_VERIFY_CMD"; then

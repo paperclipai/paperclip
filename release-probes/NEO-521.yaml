@@ -1,0 +1,32 @@
+# release-probes/NEO-521.yaml — content-verify probe set for the Brand Kit port (NEO-521).
+#
+# Asserts that Brand Kit is actually LIVE on the running instance, by behaviour — not by commit
+# lineage (NEO-521 re-landed the work under a fresh SHA with the migration renumbered 0114→10006,
+# so SHA ancestry proves nothing). Run by scripts/verify-content.mjs; wired as the post-deploy
+# gate in scripts/cortex-deploy.sh. See release-probes/README.md for the schema.
+issue: NEO-521
+description: Brand Kit is live on cortex-beta (was the NEO-138 deploy gap)
+
+probes:
+  # bundle — the SPA's served JS bundle must contain the Brand Kit API path literal. The runner
+  # auto-discovers the hashed index-*.js asset from `/`, so this survives every rebuild.
+  - name: brand-kit-in-bundle
+    type: bundle
+    path: /
+    match: brand-kits
+
+  # route — the brand-kits API must be mounted. Unauthenticated it answers 401 (auth-gated), not
+  # 404 (feature absent). Either 200 or 401 proves the route deployed; 404 is a red.
+  - name: brand-kits-route-mounted
+    type: route
+    path: /api/companies/00000000-0000-0000-0000-000000000000/brand-kits
+    expectStatus: [200, 401]
+
+  # db — the brand_kits table (migration 10006_brand_kits) must exist. Asserted through the app's
+  # runtime Drizzle client via scripts/db-assert.mjs, which targets the same DB the running
+  # instance uses (PAPERCLIP_CONFIG) — never raw psql (Hard Rule #1, enforced by the runner's
+  # psql guard). The runner greps stdout for the marker below.
+  - name: brand-kits-table-present
+    type: db
+    command: node scripts/db-assert.mjs --regclass public.brand_kits
+    match: "db-assert: OK"
