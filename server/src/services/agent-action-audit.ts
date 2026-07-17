@@ -151,9 +151,12 @@ export function agentActionAuditService(db: Db) {
           : document
             ? { id: document.issueId, identifier: document.identifier, title: document.title }
             : issue ? { id: issue.id, identifier: issue.identifier, title: issue.title } : null;
+        const isIssueDerived = row.entityType === "issue"
+          || row.entityType === "issue_comment"
+          || row.entityType === "issue_document";
         return {
           ...row,
-          details: redactDetails(row.details),
+          details: isIssueDerived && !issueSnippet ? null : redactDetails(row.details),
           entity: {
             issue: issueSnippet,
             comment: comment ? { id: comment.id, excerpt: excerpt(comment.body) } : null,

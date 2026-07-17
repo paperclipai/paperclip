@@ -191,16 +191,37 @@ describePostgres("agent action audit routes", () => {
       authorAgentId: agent.id,
       body: "Hidden audit comment",
     }).returning().then((rows) => rows[0]!);
-    const [hiddenActivity, mismatchedActivity] = await db.insert(activityLog).values([
+    const [hiddenActivity, hiddenDocumentActivity, mismatchedActivity] = await db.insert(activityLog).values([
       {
         companyId: company.id,
         actorType: "agent",
         actorId: agent.id,
         action: "issue.comment.created",
-        entityType: "issue_comment",
-        entityId: hiddenComment.id,
+        entityType: "issue",
+        entityId: hiddenIssue.id,
         agentId: agent.id,
         runId: run.id,
+        details: {
+          commentId: hiddenComment.id,
+          bodySnippet: hiddenComment.body,
+          identifier: hiddenIssue.identifier,
+          issueTitle: hiddenIssue.title,
+        },
+      },
+      {
+        companyId: company.id,
+        actorType: "agent",
+        actorId: agent.id,
+        action: "issue.document_updated",
+        entityType: "issue",
+        entityId: hiddenIssue.id,
+        agentId: agent.id,
+        runId: run.id,
+        details: {
+          documentId: randomUUID(),
+          key: "plan",
+          title: "Hidden document title",
+        },
       },
       {
         companyId: company.id,
@@ -223,6 +244,8 @@ describePostgres("agent action audit routes", () => {
       comment: null,
       document: null,
     });
+    expect(response.body.items.find((item: { id: string }) => item.id === hiddenActivity.id)?.details).toBeNull();
+    expect(response.body.items.find((item: { id: string }) => item.id === hiddenDocumentActivity.id)?.details).toBeNull();
     expect(response.body.items.find((item: { id: string }) => item.id === mismatchedActivity.id)?.entity).toEqual({
       issue: null,
       comment: null,
