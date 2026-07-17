@@ -388,6 +388,14 @@ describeEmbeddedPostgres("pipeline routes", () => {
       scope: null,
     });
     const runId = randomUUID();
+    // Pipeline admin routes now emit attributed activity_log rows, whose run_id FK requires a
+    // real heartbeat run for the agent's in-run mutations (PAP-14491, gap G13).
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId: company.id,
+      agentId: agent!.id,
+      status: "running",
+    });
     const agentActor: Express.Request["actor"] = {
       type: "agent",
       agentId: agent!.id,
