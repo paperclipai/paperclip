@@ -7095,6 +7095,36 @@ export function issueService(db: Db) {
       });
     },
 
+    // BRO-1313: locate a DIRECT child of `parentIssueId` that `actorAgentId` is
+    // currently live on (assigned + in_progress), so the attachment route can
+    // prove the child's own checkout liveness before letting the child's
+    // assignee attach a deliverable to its parent. Prefers a child whose active
+    // checkout run is the actor's current run (the strongest liveness proof);
+    // otherwise returns any in_progress child assigned to the actor so
+    // assertCheckoutOwner can adopt a stale same-agent checkout. Direct children
+    // only — a single hop, matching the BRO-1290 comment-to-parent grant.
+    findLiveDirectChildForParentAttach: async (
+      parentIssueId: string,
+      companyId: string,
+      actorAgentId: string,
+      actorRunId: string,
+    ): Promise<string | null> => {
+      const rows = await db
+        .select({ id: issues.id, checkoutRunId: issues.checkoutRunId })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, companyId),
+            eq(issues.parentId, parentIssueId),
+            eq(issues.assigneeAgentId, actorAgentId),
+            eq(issues.status, "in_progress"),
+          ),
+        );
+      if (rows.length === 0) return null;
+      const ownedByThisRun = rows.find((row) => row.checkoutRunId === actorRunId);
+      return (ownedByThisRun ?? rows[0]).id;
+    },
+
     release: async (id: string, actorAgentId?: string, actorRunId?: string | null) =>
       db.transaction(async (tx) => {
         await tx.execute(
