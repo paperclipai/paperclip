@@ -390,7 +390,8 @@ export function resourceRuntimeService(db: Db) {
         inputVersions,
         publish: async () => {
           const results: ResourceOutputResult[] = [];
-          for (const item of prepared) {
+          try {
+            for (const item of prepared) {
             const output = item.attachment.output ?? { action: "none" as const };
             if (item.attachment.mode === "input" || output.action === "none") {
               results.push({
@@ -462,6 +463,12 @@ export function resourceRuntimeService(db: Db) {
               body: output.body?.trim() ?? "",
             });
             results.push({ resourceId: item.resource.id, inputCommit: item.expectedCommit, outputCommit: commit, action: output.action, branch: pushRef, targetRef, pullRequestId: pullRequest.id, pullRequestUrl: pullRequest.url, changedFiles, insertions, deletions, status: "pull_request_created" });
+            }
+          } catch (error) {
+            if (error && typeof error === "object") {
+              Object.assign(error, { resourceOutputs: results });
+            }
+            throw error;
           }
           for (const version of inputVersions) {
             const result = results.find((item) => item.resourceId === version.resourceId);

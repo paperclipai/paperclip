@@ -809,6 +809,9 @@ export function workflowService(db: Db) {
       ));
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err);
+      if (err && typeof err === "object" && "resourceOutputs" in err && Array.isArray(err.resourceOutputs)) {
+        contextSnapshot.resourceOutputs = err.resourceOutputs;
+      }
       if (contextSnapshot.resultJson === null || contextSnapshot.resultJson === undefined) {
         contextSnapshot.resultJson = { error: errorMessage };
       } else {

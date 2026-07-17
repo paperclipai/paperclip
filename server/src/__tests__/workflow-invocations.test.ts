@@ -398,7 +398,9 @@ describeEmbeddedPostgres("workflow invocation bridge", () => {
       environment: {},
       inputVersions: [],
       publish: vi.fn(async () => {
-        throw new Error("Resource publication failed");
+        throw Object.assign(new Error("Resource publication failed"), {
+          resourceOutputs: [{ resourceId: "published-resource", action: "push", status: "pushed" }],
+        });
       }),
     });
 
@@ -420,6 +422,7 @@ describeEmbeddedPostgres("workflow invocation bridge", () => {
       expect(run?.status).toBe("failed");
       expect(run?.contextSnapshot).toMatchObject({
         resultJson: { ok: true },
+        resourceOutputs: [{ resourceId: "published-resource", status: "pushed" }],
         resourceOutputError: "Resource publication failed",
       });
     }, 10_000);
