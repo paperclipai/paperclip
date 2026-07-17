@@ -206,7 +206,6 @@ type PreparedResource = {
   expectedCommit: string;
   outputBaselineCommit: string | null;
   resolvedRef: string;
-  credentialToken: string | null;
 };
 
 export interface PreparedResourceRun {
@@ -378,7 +377,6 @@ export function resourceRuntimeService(db: Db) {
           expectedCommit,
           outputBaselineCommit,
           resolvedRef: requestedRef,
-          credentialToken: credential.token,
         });
       }
 
@@ -460,11 +458,11 @@ export function resourceRuntimeService(db: Db) {
               results.push({ resourceId: item.resource.id, inputCommit: item.expectedCommit, outputCommit: commit, action: output.action, branch: pushRef, targetRef, changedFiles, insertions, deletions, status: "pushed" });
               continue;
             }
-            if (!item.credentialToken) throw unprocessable("Pull request output requires a Resource credential");
+            if (!credential.token) throw unprocessable("Pull request output requires a Resource credential");
             const provider = input.pullRequestProvider ?? githubPullRequestProvider();
             const pullRequest = await provider.create({
               repository: item.resource.repository,
-              token: item.credentialToken,
+              token: credential.token,
               head: pushRef,
               base: targetRef,
               title,
