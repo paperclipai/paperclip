@@ -114,6 +114,44 @@ describe("sandbox callback bridge", () => {
     }
   });
 
+  it("uses the explicit runtime PATH to launch the bridge Node process", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-runtime-path-"));
+    cleanupDirs.push(rootDir);
+
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+    const assetRemoteDir = path.join(remoteWorkspaceDir, "bridge-server");
+    const queueDir = path.join(remoteWorkspaceDir, "bridge-queue");
+    const versionedNodeBin = path.join(rootDir, "node-v22", "bin");
+    const markerFile = path.join(rootDir, "selected-node.txt");
+    await mkdir(remoteWorkspaceDir, { recursive: true });
+    await mkdir(versionedNodeBin, { recursive: true });
+
+    const quotedNodePath = process.execPath.replaceAll("'", "'\"'\"'");
+    await writeFile(
+      path.join(versionedNodeBin, "node"),
+      `#!/bin/sh\nprintf '%s\\n' versioned-node > "${markerFile}"\nexec '${quotedNodePath}' "$@"\n`,
+      { mode: 0o755 },
+    );
+
+    const bridgeAsset = await createSandboxCallbackBridgeAsset();
+    cleanupFns.push(bridgeAsset.cleanup);
+    const bridge = await startSandboxCallbackBridgeServer({
+      runner: createExecRunner(),
+      remoteCwd: remoteWorkspaceDir,
+      assetRemoteDir,
+      queueDir,
+      bridgeToken: createSandboxCallbackBridgeToken(),
+      bridgeAsset,
+      runtimePath: [versionedNodeBin, process.env.PATH ?? ""].filter(Boolean).join(path.delimiter),
+      timeoutMs: 30_000,
+    });
+    cleanupFns.push(async () => {
+      await bridge.stop();
+    });
+
+    expect(await readFile(markerFile, "utf8")).toBe("versioned-node\n");
+  });
+
   it("round-trips localhost bridge requests over the sandbox queue without forwarding the bridge token", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-runtime-"));
     cleanupDirs.push(rootDir);
