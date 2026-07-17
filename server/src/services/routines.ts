@@ -1395,6 +1395,71 @@ export function routineService(
     return run;
   }
 
+  // Records a scheduled firing whose dispatch threw before a routineRuns row could be created
+  // (e.g. dispatchRoutineRun's own assignee-eligibility check). The tick is still claimed and
+  // advanced upstream, same as the paused-project case, so a persistently broken routine logs
+  // loudly on every tick instead of retrying tightly or replaying missed firings on repair.
+  async function recordFailedScheduleRun(input: {
+    routine: typeof routines.$inferSelect;
+    trigger: typeof routineTriggers.$inferSelect;
+    error: unknown;
+    nextRunAt: Date | null;
+    idempotencyKey: string;
+  }) {
+    const triggeredAt = new Date();
+    const failureReason = input.error instanceof Error ? input.error.message : String(input.error);
+    const run = await db.transaction(async (tx) => {
+      const txDb = tx as unknown as Db;
+      const [createdRun] = await txDb
+        .insert(routineRuns)
+        .values({
+          companyId: input.routine.companyId,
+          routineId: input.routine.id,
+          triggerId: input.trigger.id,
+          source: "schedule",
+          status: "failed",
+          triggeredAt,
+          idempotencyKey: input.idempotencyKey,
+          failureReason,
+          completedAt: triggeredAt,
+          linkedIssueId: null,
+          routineRevisionId: input.routine.latestRevisionId,
+          responsibleUserId: input.routine.responsibleUserId ?? null,
+        })
+        .returning();
+      await updateRoutineTouchedState({
+        routineId: input.routine.id,
+        triggerId: input.trigger.id,
+        triggeredAt,
+        status: "failed",
+        nextRunAt: input.nextRunAt,
+      }, txDb);
+      return createdRun;
+    });
+
+    try {
+      await logActivity(db, {
+        companyId: input.routine.companyId,
+        actorType: "system",
+        actorId: "routine-scheduler",
+        action: "routine.run_failed",
+        entityType: "routine_run",
+        entityId: run.id,
+        details: {
+          routineId: input.routine.id,
+          triggerId: input.trigger.id,
+          source: "schedule",
+          status: "failed",
+          reason: failureReason,
+        },
+      });
+    } catch (err) {
+      logger.warn({ err, routineId: input.routine.id, runId: run.id }, "failed to log failed scheduled routine run");
+    }
+
+    return run;
+  }
+
   function routineExecutionFingerprintCondition(dispatchFingerprint?: string | null) {
     if (!dispatchFingerprint) return null;
     // The "default" arm preserves coalescing against pre-migration open issues.
@@ -1919,12 +1984,19 @@ export function routineService(
       }
     }
 
-    const telemetryClient = getTelemetryClient();
-    if (telemetryClient) {
-      trackRoutineRun(telemetryClient, {
-        source: run.source,
-        status: run.status,
-      });
+    try {
+      const telemetryClient = getTelemetryClient();
+      if (telemetryClient) {
+        trackRoutineRun(telemetryClient, {
+          source: run.source,
+          status: run.status,
+        });
+      }
+    } catch (err) {
+      // Telemetry runs after the run/issue transaction has already committed. A throw here
+      // must never bubble up as a dispatch failure — that would falsely record a durably
+      // created run as failed (and, for scheduled runs, spuriously drop the rest of the tick).
+      logger.warn({ err, routineId: input.routine.id, runId: run.id }, "failed to record routine run telemetry");
     }
 
     return run;
@@ -2983,6 +3055,10 @@ export function routineService(
 
         let runCount = 1;
         let claimedNextRunAt = nextCronTickInTimeZone(row.trigger.cronExpression, row.trigger.timezone, now);
+        // The scheduled firing time each runCount iteration is replaying — used below to build
+        // a deterministic per-attempt idempotency key. Single-firing (non-catch-up) ticks fire
+        // exactly the trigger's own due time.
+        let firingScheduledAts: Date[] = [row.trigger.nextRunAt];
 
         if (!projectPaused && !worktreeSuppressed && row.routine.catchUpPolicy === "enqueue_missed_with_cap") {
           if (isSubHourlyCronExpression(row.trigger.cronExpression, row.trigger.timezone, now)) {
@@ -2990,7 +3066,9 @@ export function routineService(
           } else {
             let cursor: Date | null = row.trigger.nextRunAt;
             runCount = 0;
+            firingScheduledAts = [];
             while (cursor && cursor <= now && runCount < MAX_CATCH_UP_RUNS) {
+              firingScheduledAts.push(cursor);
               runCount += 1;
               claimedNextRunAt = nextCronTickInTimeZone(row.trigger.cronExpression, row.trigger.timezone, cursor);
               cursor = claimedNextRunAt;
@@ -3047,14 +3125,121 @@ export function routineService(
           continue;
         }
 
+        let triggerFailureCount = 0;
         for (let i = 0; i < runCount; i += 1) {
-          await dispatchRoutineRun({
-            routine: row.routine,
-            trigger: row.trigger,
-            source: "schedule",
-            nextRunAtOverride: claimedNextRunAt,
-          });
-          triggered += 1;
+          // A deterministic, per-attempt identity: distinct for every claimed firing (the
+          // scheduled tick it replays, and its index) within this trigger. dispatchRoutineRun
+          // already dedupes on idempotencyKey (see the existing-run lookup inside its own
+          // transaction), and passing one here is what lets the reconciliation check below
+          // find the *exact* row this attempt is responsible for — no clock comparison, no
+          // risk of one iteration's outcome being mistaken for another's.
+          const firingScheduledAt = firingScheduledAts[i] ?? row.trigger.nextRunAt ?? now;
+          const idempotencyKey = `schedule:${row.trigger.id}:${firingScheduledAt.toISOString()}:${i}`;
+          try {
+            await dispatchRoutineRun({
+              routine: row.routine,
+              trigger: row.trigger,
+              source: "schedule",
+              nextRunAtOverride: claimedNextRunAt,
+              idempotencyKey,
+            });
+            triggered += 1;
+          } catch (err) {
+            // A single routine's dispatch failure (e.g. its assignee agent was archived or
+            // otherwise became unassignable) must not abort the rest of this tick's batch.
+            // The claim above already advanced nextRunAt past every one of the runCount
+            // firings claimed for this trigger, so each claimed firing gets its own dispatch
+            // attempt and its own recorded outcome — continuing (not breaking) here avoids
+            // silently discarding claimed catch-up firings on a transient error. Log the
+            // first failure loudly; downgrade repeats for the same trigger in this tick to
+            // avoid flooding the log when a persistently broken routine burns through its
+            // whole catch-up cap.
+            triggerFailureCount += 1;
+            if (triggerFailureCount === 1) {
+              logger.error(
+                { err, routineId: row.routine.id, triggerId: row.trigger.id, runCount },
+                "routine scheduled dispatch failed",
+              );
+            } else {
+              logger.warn(
+                { err, routineId: row.routine.id, triggerId: row.trigger.id, occurrence: triggerFailureCount, runCount },
+                "routine scheduled dispatch failed again in the same tick",
+              );
+            }
+
+            // dispatchRoutineRun's own transaction can, in principle, durably commit and still
+            // have the awaiting call throw (e.g. the driver reports an ambiguous failure after
+            // the COMMIT actually lands). Recording a "failed" row unconditionally in that case
+            // would sit right next to the real successful run and contradict it — a failure
+            // mode this patch itself would introduce, since the old code had no compensating
+            // insert here at all. Reconcile first, by the exact idempotencyKey this attempt
+            // used (any status): a matching row — success, coalesced, or even an internally
+            // recorded "failed" row from inside dispatchRoutineRun's own transaction — means
+            // this attempt already has a durable outcome, so skip the compensating insert. A
+            // createdAt/time-window based check was tried first and rejected: it's vulnerable
+            // to app/DB clock skew, to one catch-up iteration's row landing in the same
+            // millisecond as the next iteration's window (falsely suppressing a genuine
+            // failure with zero rows recorded for it), and excluding "failed" status by fiat
+            // still let an internally committed failed row get duplicated. Exact-key matching
+            // has none of those holes: distinct keys can't cross-match, and status is
+            // irrelevant because any row under this exact key is this attempt's own outcome.
+            let existingRun: typeof routineRuns.$inferSelect | null = null;
+            let reconciliationFailed = false;
+            try {
+              existingRun = await db
+                .select()
+                .from(routineRuns)
+                .where(
+                  and(
+                    eq(routineRuns.routineId, row.routine.id),
+                    eq(routineRuns.triggerId, row.trigger.id),
+                    eq(routineRuns.source, "schedule"),
+                    eq(routineRuns.idempotencyKey, idempotencyKey),
+                  ),
+                )
+                .limit(1)
+                .then((rows) => rows[0] ?? null);
+            } catch (reconcileErr) {
+              reconciliationFailed = true;
+              // Fallback direction flipped from an earlier draft: never contradict a possible
+              // real success. If we can't tell whether this attempt already has a durable
+              // outcome, skip the compensating insert rather than risk a duplicate — and log
+              // loudly (error, not warn) so the gap is observable instead of silently
+              // swallowed.
+              logger.error(
+                { err: reconcileErr, routineId: row.routine.id, triggerId: row.trigger.id, idempotencyKey },
+                "failed to reconcile dispatch outcome by idempotency key — skipping compensating failure record to avoid a possible duplicate",
+              );
+            }
+
+            if (existingRun) {
+              logger.warn(
+                {
+                  routineId: row.routine.id,
+                  triggerId: row.trigger.id,
+                  runId: existingRun.id,
+                  status: existingRun.status,
+                },
+                "dispatch threw but a run already exists for this attempt's idempotency key — skipping compensating failure record",
+              );
+            } else if (!reconciliationFailed) {
+              try {
+                await recordFailedScheduleRun({
+                  routine: row.routine,
+                  trigger: row.trigger,
+                  error: err,
+                  nextRunAt: claimedNextRunAt,
+                  idempotencyKey,
+                });
+              } catch (recordErr) {
+                // Recording the failure must not itself be able to abort the tick's batch.
+                logger.error(
+                  { err: recordErr, routineId: row.routine.id, triggerId: row.trigger.id },
+                  "failed to record failed scheduled routine run",
+                );
+              }
+            }
+          }
         }
       }
 

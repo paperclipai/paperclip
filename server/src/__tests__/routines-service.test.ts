@@ -1,5 +1,5 @@
 import { createHmac, randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
@@ -2350,5 +2350,519 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     const run = await svc.firePublicTrigger(trigger.publicId!, { payload: { source: "test" } });
 
     expect(run).toMatchObject({ source: "webhook", status: "issue_created" });
+  });
+
+  async function seedSecondRoutineInSameCompany(
+    companyId: string,
+    projectId: string,
+    svc: Awaited<ReturnType<typeof seedFixture>>["svc"],
+    label: string,
+  ) {
+    const agentId = randomUUID();
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: label,
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const routine = await svc.create(
+      companyId,
+      {
+        projectId,
+        goalId: null,
+        parentIssueId: null,
+        title: `${label} routine`,
+        description: `Run the ${label} routine`,
+        assigneeAgentId: agentId,
+        priority: "medium",
+        status: "active",
+        concurrencyPolicy: "coalesce_if_active",
+        catchUpPolicy: "skip_missed",
+      },
+      {},
+    );
+    return { agentId, routine };
+  }
+
+  it("keeps ticking the rest of a single-company batch, only after an earlier dispatch failure is durably recorded", async () => {
+    // Causal check (not incidental createdAt ordering): the healthy routine's own wakeup
+    // fires synchronously mid-dispatch, inside the same for-loop iteration that processes the
+    // whole due batch. If a future change ever parallelized that loop, the broken routine's
+    // failed run would not yet be committed when this fires, and the assertion below would
+    // catch it — a timestamp-only check after the tick completes could not.
+    let causalCheckRan = false;
+    let causalCheckPassed = false;
+
+    const { companyId, agentId, projectId, routine, svc } = await seedFixture({
+      wakeup: async (wakeupAgentId, wakeupOpts) => {
+        causalCheckRan = true;
+        const brokenFailedRuns = await db
+          .select()
+          .from(routineRuns)
+          .where(and(eq(routineRuns.routineId, routine.id), eq(routineRuns.status, "failed")));
+        causalCheckPassed = brokenFailedRuns.length === 1;
+
+        const issueId =
+          (typeof wakeupOpts.payload?.issueId === "string" && wakeupOpts.payload.issueId) ||
+          (typeof wakeupOpts.contextSnapshot?.issueId === "string" && wakeupOpts.contextSnapshot.issueId) ||
+          null;
+        if (!issueId) return null;
+        const queuedRunId = randomUUID();
+        await db.insert(heartbeatRuns).values({
+          id: queuedRunId,
+          companyId,
+          agentId: wakeupAgentId,
+          invocationSource: wakeupOpts.source ?? "assignment",
+          triggerDetail: wakeupOpts.triggerDetail ?? null,
+          status: "queued",
+          contextSnapshot: { ...(wakeupOpts.contextSnapshot ?? {}), issueId },
+        });
+        await db
+          .update(issues)
+          .set({ executionRunId: queuedRunId, executionLockedAt: new Date() })
+          .where(eq(issues.id, issueId));
+        return { id: queuedRunId };
+      },
+    });
+
+    const { routine: healthyRoutine } = await seedSecondRoutineInSameCompany(companyId, projectId, svc, "healthy");
+
+    const { trigger: brokenTrigger } = await svc.createTrigger(
+      routine.id,
+      { kind: "schedule", label: "daily", cronExpression: "0 0 * * *", timezone: "UTC" },
+      {},
+    );
+    const { trigger: healthyTrigger } = await svc.createTrigger(
+      healthyRoutine.id,
+      { kind: "schedule", label: "daily", cronExpression: "0 0 * * *", timezone: "UTC" },
+      {},
+    );
+
+    // Make the first routine's assignee unassignable so dispatchRoutineRun throws
+    // synchronously (assertAssignableAgent), before any routineRuns row is created.
+    await db.update(agents).set({ status: "terminated" }).where(eq(agents.id, agentId));
+
+    const pastDue = new Date("2020-01-01T00:00:00.000Z");
+    // Order matters: the broken trigger must be claimed/dispatched before the healthy one
+    // in the same tick to prove a throw doesn't abort the remaining batch.
+    await db
+      .update(routineTriggers)
+      .set({ nextRunAt: pastDue, createdAt: new Date("2019-12-31T00:00:00.000Z") })
+      .where(eq(routineTriggers.id, brokenTrigger.id));
+    await db
+      .update(routineTriggers)
+      .set({ nextRunAt: pastDue, createdAt: new Date("2019-12-31T00:00:01.000Z") })
+      .where(eq(routineTriggers.id, healthyTrigger.id));
+
+    const result = await svc.tickScheduledTriggers(new Date());
+
+    // Only the healthy routine actually dispatched; the broken one is recorded as failed, not counted.
+    expect(result.triggered).toBe(1);
+    expect(causalCheckRan).toBe(true);
+    expect(causalCheckPassed).toBe(true);
+
+    // The broken routine's schedule is still claimed/advanced (no tight retry loop), but the
+    // failure is recorded observably instead of vanishing.
+    const brokenRuns = await db
+      .select()
+      .from(routineRuns)
+      .where(eq(routineRuns.routineId, routine.id));
+    expect(brokenRuns).toHaveLength(1);
+    expect(brokenRuns[0]?.status).toBe("failed");
+    expect(brokenRuns[0]?.source).toBe("schedule");
+    expect(brokenRuns[0]?.linkedIssueId).toBeNull();
+    expect(brokenRuns[0]?.failureReason).toMatch(/terminated/i);
+    expect(brokenRuns[0]?.completedAt).not.toBeNull();
+
+    const brokenTriggerAfter = await db
+      .select()
+      .from(routineTriggers)
+      .where(eq(routineTriggers.id, brokenTrigger.id))
+      .then((rows) => rows[0]);
+    expect(brokenTriggerAfter?.nextRunAt).not.toBeNull();
+    expect(brokenTriggerAfter!.nextRunAt!.getTime()).toBeGreaterThan(pastDue.getTime());
+    expect(brokenTriggerAfter?.lastResult).toMatch(/failed/i);
+
+    // The second, healthy routine in the same tick must not be skipped by the first one's throw.
+    const healthyRuns = await db
+      .select()
+      .from(routineRuns)
+      .where(eq(routineRuns.routineId, healthyRoutine.id));
+    expect(healthyRuns).toHaveLength(1);
+    expect(healthyRuns[0]?.status).toBe("issue_created");
+
+    const healthyIssues = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.companyId, companyId));
+    expect(healthyIssues).toHaveLength(1);
+  });
+
+  it("records one failed run per claimed catch-up firing, capped at MAX_CATCH_UP_RUNS, without aborting the tick", async () => {
+    const { companyId, agentId, projectId, svc } = await seedFixture();
+
+    // A routine with enqueue_missed_with_cap so a long-overdue trigger computes runCount > 1
+    // (capped at MAX_CATCH_UP_RUNS) inside a single tick.
+    const routine = await svc.create(
+      companyId,
+      {
+        projectId,
+        goalId: null,
+        parentIssueId: null,
+        title: "catch-up frog",
+        description: "Run the catch-up frog routine",
+        assigneeAgentId: agentId,
+        priority: "medium",
+        status: "active",
+        concurrencyPolicy: "coalesce_if_active",
+        catchUpPolicy: "enqueue_missed_with_cap",
+      },
+      {},
+    );
+    const { trigger } = await svc.createTrigger(
+      routine.id,
+      // Hourly, not sub-hourly: an every-minute cron would hit the scheduler's own
+      // sub-hourly catch-up guard (isSubHourlyCronExpression) and collapse to a single
+      // firing instead of the multi-firing batch this test needs.
+      { kind: "schedule", label: "hourly", cronExpression: "0 * * * *", timezone: "UTC" },
+      {},
+    );
+
+    // Make the assignee unassignable so every catch-up iteration's dispatch throws identically.
+    await db.update(agents).set({ status: "terminated" }).where(eq(agents.id, agentId));
+
+    // Far enough in the past that the capped catch-up loop computes runCount === MAX_CATCH_UP_RUNS.
+    const longOverdue = new Date("2020-01-01T00:00:00.000Z");
+    await db
+      .update(routineTriggers)
+      .set({ nextRunAt: longOverdue })
+      .where(eq(routineTriggers.id, trigger.id));
+
+    const result = await svc.tickScheduledTriggers(new Date());
+    expect(result.triggered).toBe(0);
+
+    // The CAS already advanced nextRunAt past every one of the MAX_CATCH_UP_RUNS claimed
+    // firings before dispatch, so each claimed firing must get its own recorded outcome —
+    // no claimed firing silently vanishes, and the batch is not aborted midway.
+    const runs = await db
+      .select()
+      .from(routineRuns)
+      .where(eq(routineRuns.routineId, routine.id));
+    // Mirrors the unexported MAX_CATCH_UP_RUNS in ../services/routines.ts.
+    const MAX_CATCH_UP_RUNS = 25;
+    expect(runs).toHaveLength(MAX_CATCH_UP_RUNS);
+    expect(runs.every((run) => run.status === "failed")).toBe(true);
+    expect(runs.every((run) => (run.failureReason ?? "").match(/terminated/i))).toBe(true);
+  });
+
+  it("keeps dispatching later routines in the batch when the failure recorder's own transaction throws", async () => {
+    const { companyId, agentId, projectId, routine, svc } = await seedFixture();
+    const { routine: healthyRoutine } = await seedSecondRoutineInSameCompany(companyId, projectId, svc, "healthy");
+
+    const { trigger: brokenTrigger } = await svc.createTrigger(
+      routine.id,
+      { kind: "schedule", label: "daily", cronExpression: "0 0 * * *", timezone: "UTC" },
+      {},
+    );
+    const { trigger: healthyTrigger } = await svc.createTrigger(
+      healthyRoutine.id,
+      { kind: "schedule", label: "daily", cronExpression: "0 0 * * *", timezone: "UTC" },
+      {},
+    );
+
+    await db.update(agents).set({ status: "terminated" }).where(eq(agents.id, agentId));
+
+    const pastDue = new Date("2020-01-01T00:00:00.000Z");
+    await db
+      .update(routineTriggers)
+      .set({ nextRunAt: pastDue, createdAt: new Date("2019-12-31T00:00:00.000Z") })
+      .where(eq(routineTriggers.id, brokenTrigger.id));
+    await db
+      .update(routineTriggers)
+      .set({ nextRunAt: pastDue, createdAt: new Date("2019-12-31T00:00:01.000Z") })
+      .where(eq(routineTriggers.id, healthyTrigger.id));
+
+    // Simulate a DB blip on the very first db.transaction call in this tick, which is
+    // recordFailedScheduleRun's own transaction for the broken routine (dispatchRoutineRun's
+    // early assignee-eligibility throw happens before it ever opens a transaction, so no
+    // other db.transaction call precedes it). vi.spyOn keeps the pass-through default for
+    // every call after the queued one-shot override.
+    const transactionSpy = vi
+      .spyOn(db, "transaction")
+      .mockImplementationOnce(() => Promise.reject(new Error("simulated recorder db blip")));
+
+    try {
+      const result = await svc.tickScheduledTriggers(new Date());
+
+      // The broken routine's own failure couldn't be durably recorded (its recorder's
+      // transaction rejected, caught by the recorder guard), but the batch must still reach
+      // the healthy routine rather than aborting the whole tick.
+      expect(result.triggered).toBe(1);
+
+      const brokenRuns = await db
+        .select()
+        .from(routineRuns)
+        .where(eq(routineRuns.routineId, routine.id));
+      expect(brokenRuns).toHaveLength(0);
+
+      const healthyRuns = await db
+        .select()
+        .from(routineRuns)
+        .where(eq(routineRuns.routineId, healthyRoutine.id));
+      expect(healthyRuns).toHaveLength(1);
+      expect(healthyRuns[0]?.status).toBe("issue_created");
+    } finally {
+      transactionSpy.mockRestore();
+    }
+  });
+
+  it("does not record a compensating failed run when dispatch's transaction durably commits but the caller sees it reject", async () => {
+    // The assignee stays healthy here: this reproduces an "ambiguous commit" — the DB driver
+    // actually commits dispatchRoutineRun's transaction, but the promise the scheduler is
+    // awaiting rejects anyway (a real class of failure: connection drop between COMMIT and
+    // acknowledgment, etc). That is a genuinely different failure mode than an assignee
+    // rejection, and it is the one the reconciliation check exists for.
+    const { companyId, projectId, routine, svc } = await seedFixture();
+    const { routine: healthyRoutine } = await seedSecondRoutineInSameCompany(
+      companyId,
+      projectId,
+      svc,
+      "healthy-after-ambiguous",
+    );
+
+    const { trigger: ambiguousTrigger } = await svc.createTrigger(
+      routine.id,
+      { kind: "schedule", label: "daily", cronExpression: "0 0 * * *", timezone: "UTC" },
+      {},
+    );
+    const { trigger: healthyTrigger } = await svc.createTrigger(
+      healthyRoutine.id,
+      { kind: "schedule", label: "daily", cronExpression: "0 0 * * *", timezone: "UTC" },
+      {},
+    );
+
+    const pastDue = new Date("2020-01-01T00:00:00.000Z");
+    await db
+      .update(routineTriggers)
+      .set({ nextRunAt: pastDue, createdAt: new Date("2019-12-31T00:00:00.000Z") })
+      .where(eq(routineTriggers.id, ambiguousTrigger.id));
+    await db
+      .update(routineTriggers)
+      .set({ nextRunAt: pastDue, createdAt: new Date("2019-12-31T00:00:01.000Z") })
+      .where(eq(routineTriggers.id, healthyTrigger.id));
+
+    // Let the very first db.transaction call in this tick (dispatchRoutineRun's own, for the
+    // "ambiguous" routine — it is processed first by due-order) actually run to completion
+    // via the real implementation, so the run row genuinely commits, then reject the promise
+    // the caller is awaiting anyway. Every later db.transaction call (including the healthy
+    // routine's own dispatch) falls through to the untouched real implementation.
+    const originalTransaction = db.transaction.bind(db) as typeof db.transaction;
+    const transactionSpy = vi
+      .spyOn(db, "transaction")
+      .mockImplementationOnce(async (...args: Parameters<typeof db.transaction>) => {
+        await originalTransaction(...args);
+        throw new Error("simulated ambiguous commit failure — driver reported failure after a real commit");
+      });
+
+    try {
+      const result = await svc.tickScheduledTriggers(new Date());
+
+      // The healthy routine's dispatch resolves cleanly and is counted; the "ambiguous"
+      // routine's own dispatch call appears (from the scheduler's point of view) to throw,
+      // so it is not counted here even though it truly committed.
+      expect(result.triggered).toBe(1);
+
+      // Exactly one run for the ambiguous routine — the real, durably committed one — and it
+      // reflects the actual dispatch outcome, not a compensating "failed" row next to it.
+      const ambiguousRuns = await db
+        .select()
+        .from(routineRuns)
+        .where(eq(routineRuns.routineId, routine.id));
+      expect(ambiguousRuns).toHaveLength(1);
+      expect(ambiguousRuns[0]?.status).toBe("issue_created");
+      expect(ambiguousRuns[0]?.linkedIssueId).not.toBeNull();
+      // Reconciliation matched on the deterministic per-attempt idempotency key, not on a
+      // clock/time-window comparison — assert the mechanism directly, not just the outcome.
+      expect(ambiguousRuns[0]?.idempotencyKey).toMatch(new RegExp(`^schedule:${ambiguousTrigger.id}:`));
+
+      // The later, healthy routine in the same tick still dispatched normally.
+      const healthyRuns = await db
+        .select()
+        .from(routineRuns)
+        .where(eq(routineRuns.routineId, healthyRoutine.id));
+      expect(healthyRuns).toHaveLength(1);
+      expect(healthyRuns[0]?.status).toBe("issue_created");
+    } finally {
+      transactionSpy.mockRestore();
+    }
+  });
+
+  it("does not let one catch-up firing's success suppress the next firing's genuine failure (distinct idempotency keys)", async () => {
+    // This is the direct regression for the timestamp-based design's zero-row hole: a
+    // same-tick catch-up iteration N that succeeds must not cause iteration N+1's own,
+    // genuinely different failure to be swallowed. A time-window reconciliation could mistake
+    // iteration N's just-committed success for iteration N+1's outcome if the two landed
+    // within the same createdAt-resolution window. Forcing that specific race deterministically
+    // against embedded Postgres's real async I/O (both rows must land in the exact same
+    // millisecond) is not practical to do reliably — vi.useFakeTimers stalls the driver's own
+    // I/O, and sub-millisecond timing races are inherently flaky to force from outside. So
+    // this test instead proves the mechanism directly: iteration 0 dispatches successfully,
+    // iteration 1's own dispatch call is made to fail (via a one-shot db.transaction
+    // rejection, exactly the same technique the ambiguous-commit test above uses — no
+    // assignability toggling required), and we assert each iteration produced its own outcome
+    // row under its own distinct, index-suffixed idempotency key. Because the reconciliation
+    // lookup matches on that exact key, iteration 0's row is structurally unable to satisfy
+    // iteration 1's lookup regardless of how close together in time they land — this is true
+    // by construction, not by getting lucky on timing, which is what makes the exact-key
+    // design correct where the time-window design was not.
+    const { companyId, agentId, projectId, routine, svc } = await seedFixture();
+
+    const routineWithCatchUp = await svc.create(
+      companyId,
+      {
+        projectId,
+        goalId: null,
+        parentIssueId: null,
+        title: "flaky catch-up frog",
+        description: "Run the flaky catch-up frog routine",
+        assigneeAgentId: agentId,
+        priority: "medium",
+        status: "active",
+        concurrencyPolicy: "always_enqueue",
+        catchUpPolicy: "enqueue_missed_with_cap",
+      },
+      {},
+    );
+    const { trigger } = await svc.createTrigger(
+      routineWithCatchUp.id,
+      // Hourly, not sub-hourly: an every-minute cron would hit the scheduler's own
+      // sub-hourly catch-up guard (isSubHourlyCronExpression) and collapse to a single
+      // firing instead of the two-firing batch this test needs.
+      { kind: "schedule", label: "hourly", cronExpression: "0 * * * *", timezone: "UTC" },
+      {},
+    );
+
+    // Exactly two missed firings, one hour apart, so runCount === 2.
+    const firstFiring = new Date("2020-01-01T00:00:00.000Z");
+    await db
+      .update(routineTriggers)
+      .set({ nextRunAt: firstFiring })
+      .where(eq(routineTriggers.id, trigger.id));
+    const now = new Date("2020-01-01T01:01:00.000Z");
+
+    // Let the first *top-level* db.transaction call in this tick (iteration 0's own dispatch)
+    // commit for real. Reject the second top-level call (iteration 1's own dispatch) outright,
+    // without calling through — a genuine, non-durable failure for that attempt specifically:
+    // no row is created for it at all, so recordFailedScheduleRun must be the one to create it.
+    // Nesting depth must be tracked explicitly: issueSvc.create opens its own nested
+    // db.transaction (a savepoint) from inside dispatchRoutineRun's already-open transaction,
+    // so a flat call counter can't tell an iteration boundary apart from that nested call.
+    const originalTransaction = db.transaction.bind(db) as typeof db.transaction;
+    let depth = 0;
+    let topLevelCallCount = 0;
+    const transactionSpy = vi.spyOn(db, "transaction").mockImplementation(
+      async (...args: Parameters<typeof db.transaction>) => {
+        const isTopLevel = depth === 0;
+        if (isTopLevel) {
+          topLevelCallCount += 1;
+          if (topLevelCallCount === 2) {
+            throw new Error("simulated genuine failure for the second catch-up iteration");
+          }
+        }
+        depth += 1;
+        try {
+          return await originalTransaction(...args);
+        } finally {
+          depth -= 1;
+        }
+      },
+    );
+
+    try {
+      const result = await svc.tickScheduledTriggers(now);
+
+      // Iteration 0 dispatched successfully and is counted; iteration 1 failed.
+      expect(result.triggered).toBe(1);
+
+      const runs = await db
+        .select()
+        .from(routineRuns)
+        .where(eq(routineRuns.routineId, routineWithCatchUp.id));
+      expect(runs).toHaveLength(2);
+
+      const successRun = runs.find((run) => run.status !== "failed");
+      const failedRun = runs.find((run) => run.status === "failed");
+      expect(successRun).toBeDefined();
+      expect(failedRun).toBeDefined();
+      expect(failedRun?.failureReason).toMatch(/simulated genuine failure/);
+
+      // The two runs used distinct, index-suffixed idempotency keys — the mechanism that
+      // makes iteration 0's success structurally unable to satisfy iteration 1's
+      // reconciliation lookup, regardless of how close together in time they land.
+      expect(successRun?.idempotencyKey).toMatch(/:0$/);
+      expect(failedRun?.idempotencyKey).toMatch(/:1$/);
+      expect(failedRun?.idempotencyKey).not.toBe(successRun?.idempotencyKey);
+    } finally {
+      transactionSpy.mockRestore();
+    }
+  });
+
+  it("does not duplicate a run that dispatchRoutineRun already recorded as failed internally, even under an ambiguous commit", async () => {
+    // dispatchRoutineRun has its own internal try/catch (around issue creation and wakeup
+    // queueing) that, on failure, finalizes the run with status "failed" and commits that
+    // within the SAME transaction as the run's own creation — a durable, real failed row that
+    // predates and is independent of the scheduler's compensating-insert logic entirely. If
+    // the outer db.transaction call *also* appears to throw afterward (the same ambiguous
+    // commit scenario as above), the scheduler's reconciliation must recognize the row that
+    // already exists under this attempt's idempotency key — regardless of its status — and
+    // must not insert a second "failed" row next to it.
+    const failure = new Error("simulated wakeup queueing failure");
+    const { routine, svc } = await seedFixture({
+      wakeup: async () => {
+        throw failure;
+      },
+    });
+
+    const { trigger } = await svc.createTrigger(
+      routine.id,
+      { kind: "schedule", label: "daily", cronExpression: "0 0 * * *", timezone: "UTC" },
+      {},
+    );
+    await db
+      .update(routineTriggers)
+      .set({ nextRunAt: new Date("2020-01-01T00:00:00.000Z") })
+      .where(eq(routineTriggers.id, trigger.id));
+
+    // Let the real transaction run to completion (issue creation fails internally via the
+    // throwing wakeup above, dispatchRoutineRun's own catch commits a real "failed" row), then
+    // reject the promise the scheduler is awaiting anyway.
+    const originalTransaction = db.transaction.bind(db) as typeof db.transaction;
+    const transactionSpy = vi
+      .spyOn(db, "transaction")
+      .mockImplementationOnce(async (...args: Parameters<typeof db.transaction>) => {
+        await originalTransaction(...args);
+        throw new Error("simulated ambiguous commit failure — driver reported failure after a real commit");
+      });
+
+    try {
+      await svc.tickScheduledTriggers(new Date());
+
+      // Exactly one failed run — the one dispatchRoutineRun itself durably committed — not a
+      // second, compensating one from the scheduler's catch.
+      const runs = await db
+        .select()
+        .from(routineRuns)
+        .where(eq(routineRuns.routineId, routine.id));
+      expect(runs).toHaveLength(1);
+      expect(runs[0]?.status).toBe("failed");
+      expect(runs[0]?.failureReason).toMatch(/simulated wakeup queueing failure/);
+    } finally {
+      transactionSpy.mockRestore();
+    }
   });
 });
