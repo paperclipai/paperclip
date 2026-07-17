@@ -471,6 +471,12 @@ describe("codex-auth-merge-decision predicate directions", () => {
         expected: KEEP_HOST,
       },
       {
+        name: "host last_refresh unparseable → keep host",
+        sandboxAuth: subscriptionAuth({ accountId: "acct", lastRefresh: NEWER }),
+        hostAuth: subscriptionAuth({ accountId: "acct", lastRefresh: "not-a-date" }),
+        expected: KEEP_HOST,
+      },
+      {
         name: "sandbox apikey → keep host",
         sandboxAuth: apiKeyAuth("sandbox"),
         hostAuth: subscriptionAuth({ accountId: "acct", lastRefresh: OLDER }),
@@ -594,6 +600,12 @@ describe("codex-auth-merge-decision predicate directions", () => {
         name: "sandbox unusable → keep host",
         sandboxAuth: "{not valid json",
         hostAuth: subscriptionAuth({ accountId: "acct", lastRefresh: NEWER }),
+        expected: KEEP_HOST,
+      },
+      {
+        name: "host unusable → keep host",
+        sandboxAuth: subscriptionAuth({ accountId: "acct", lastRefresh: NEWER }),
+        hostAuth: "{not valid json",
         expected: KEEP_HOST,
       },
     ];
