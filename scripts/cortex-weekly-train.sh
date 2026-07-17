@@ -220,6 +220,17 @@ canary_promote() {
     die "live tree has uncommitted tracked changes — refusing to promote over in-progress work."
   fi
 
+  # Prove the candidate is actually reachable on the live plane BEFORE taking a backup — a
+  # snapshot the live tree has never seen can never be promoted, so fail fast rather than leave
+  # an orphaned pre-promotion backup behind. (Fetch is read-only; still no live mutation here.)
+  log "§5.2 fetch $CORTEX_LIVE_REMOTE + verify candidate present"
+  if ! git -C "$CORTEX_LIVE_TREE" fetch --quiet "$CORTEX_LIVE_REMOTE" 2>/dev/null; then
+    warn "fetch of $CORTEX_LIVE_REMOTE failed — candidate must already be present locally"
+  fi
+  if ! git -C "$CORTEX_LIVE_TREE" cat-file -e "${candidate}^{commit}" 2>/dev/null; then
+    die "candidate ${candidate:0:12} is not present in the live tree — cannot promote a snapshot the live plane has never seen."
+  fi
+
   # §5 step 1 — DB backup FIRST. No live mutation happens before this succeeds. The backup
   # path is recorded so a rollback can name the exact file to restore (restore is the manual
   # NEO-198 procedure — there is no db:restore CLI, so we surface it, never fake it).
@@ -233,14 +244,8 @@ canary_promote() {
 
   printf '%s\n' "$lkg" >"$CORTEX_LIVE_STATE_FILE" 2>/dev/null || warn "could not persist live last-known-good ref"
 
-  # Fetch + move the live tree to the exact validated snapshot SHA (never a moving branch ref).
-  log "§5.2 fetch $CORTEX_LIVE_REMOTE + checkout ${candidate:0:12}"
-  if ! git -C "$CORTEX_LIVE_TREE" fetch --quiet "$CORTEX_LIVE_REMOTE" 2>/dev/null; then
-    warn "fetch of $CORTEX_LIVE_REMOTE failed — candidate must already be present locally"
-  fi
-  if ! git -C "$CORTEX_LIVE_TREE" cat-file -e "${candidate}^{commit}" 2>/dev/null; then
-    die "candidate ${candidate:0:12} is not present in the live tree — cannot promote a snapshot the live plane has never seen."
-  fi
+  # Move the live tree to the exact validated snapshot SHA (never a moving branch ref).
+  log "checkout ${candidate:0:12}"
   git -C "$CORTEX_LIVE_TREE" checkout --quiet --detach "$candidate"
 
   if ! promote_build_migrate_verify; then
@@ -383,11 +388,15 @@ log "CTO approval token matches candidate ${CANDIDATE:0:12} — proceeding to ca
 
 # --- Promote: canary (§5 → live), then fleet (stable cut + ring) ---------------------------
 canary_promote "$CANDIDATE" 0
-fleet_stage "$CANDIDATE" 0
 
-# Single-use approval: consume the token so it can't silently promote a later snapshot.
-log "consuming single-use approval token"
+# The token authorizes the LIVE promotion (canary), which is now done + verified green. Consume
+# it immediately — before fleet — so a downstream fleet failure can't leave a still-valid token
+# that a later tick would use to re-promote live without a fresh CTO approval. Live now serves
+# the candidate, so record it as the new last-known-good.
+log "canary green — consuming single-use approval token"
 rm -f "$CORTEX_RELEASE_APPROVAL_FILE" "$CORTEX_RELEASE_PENDING_FILE" 2>/dev/null || true
 printf '%s\n' "$CANDIDATE" >"$CORTEX_LIVE_STATE_FILE" 2>/dev/null || true
+
+fleet_stage "$CANDIDATE" 0
 
 log "weekly train complete: ${CANDIDATE:0:12} promoted to live + stable fleet cut. done."
