@@ -1,4 +1,5 @@
 import { and, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, or, sql } from "drizzle-orm";
+import { z } from "zod";
 import type { Db } from "@paperclipai/db";
 import { activityLog, heartbeatRuns, issueComments, issueDocuments, issues } from "@paperclipai/db";
 import { createActivityDetailsRedactor } from "./activity-log.js";
@@ -22,13 +23,16 @@ export interface AgentActionAuditFilters {
 
 type CursorValue = { createdAt: string; id: string };
 
+const cursorValueSchema = z.object({
+  createdAt: z.string().datetime({ offset: true }),
+  id: z.string().uuid(),
+});
+
 function decodeCursor(cursor: string | undefined): CursorValue | null {
   if (!cursor) return null;
   try {
-    const value = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as CursorValue;
-    const createdAt = new Date(value.createdAt);
-    if (!value.id || Number.isNaN(createdAt.getTime())) return null;
-    return { createdAt: createdAt.toISOString(), id: value.id };
+    const parsed = cursorValueSchema.safeParse(JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")));
+    return parsed.success ? parsed.data : null;
   } catch {
     return null;
   }
@@ -66,10 +70,12 @@ export function agentActionAuditService(db: Db) {
       if (filters.from) conditions.push(gte(activityLog.createdAt, filters.from));
       if (filters.to) conditions.push(lte(activityLog.createdAt, filters.to));
       if (cursor) {
-        const cursorDate = new Date(cursor.createdAt);
         conditions.push(or(
-          lt(activityLog.createdAt, cursorDate),
-          and(eq(activityLog.createdAt, cursorDate), lt(activityLog.id, cursor.id)),
+          sql<boolean>`${activityLog.createdAt} < ${cursor.createdAt}::timestamptz`,
+          and(
+            sql<boolean>`${activityLog.createdAt} = ${cursor.createdAt}::timestamptz`,
+            lt(activityLog.id, cursor.id),
+          ),
         )!);
       }
 
@@ -86,6 +92,7 @@ export function agentActionAuditService(db: Db) {
         responsibleUserId: effectiveResponsibleUserId,
         details: activityLog.details,
         createdAt: activityLog.createdAt,
+        cursorCreatedAt: sql<string>`to_char(${activityLog.createdAt} at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`.as("cursor_created_at"),
       }).from(activityLog).leftJoin(heartbeatRuns, and(
         eq(heartbeatRuns.companyId, activityLog.companyId),
         eq(heartbeatRuns.id, activityLog.runId),
@@ -155,7 +162,17 @@ export function agentActionAuditService(db: Db) {
           || row.entityType === "issue_comment"
           || row.entityType === "issue_document";
         return {
-          ...row,
+          id: row.id,
+          companyId: row.companyId,
+          actorType: row.actorType,
+          actorId: row.actorId,
+          action: row.action,
+          entityType: row.entityType,
+          entityId: row.entityId,
+          agentId: row.agentId,
+          runId: row.runId,
+          responsibleUserId: row.responsibleUserId,
+          createdAt: row.createdAt,
           details: isIssueDerived && !issueSnippet ? null : redactDetails(row.details),
           entity: {
             issue: issueSnippet,
@@ -168,7 +185,7 @@ export function agentActionAuditService(db: Db) {
       return {
         items,
         nextCursor: rows.length > filters.limit && last
-          ? encodeCursor({ createdAt: last.createdAt.toISOString(), id: last.id })
+          ? encodeCursor({ createdAt: last.cursorCreatedAt, id: last.id })
           : null,
       };
     },

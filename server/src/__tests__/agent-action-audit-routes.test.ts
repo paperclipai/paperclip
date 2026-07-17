@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
+import { sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
@@ -141,6 +142,45 @@ describePostgres("agent action audit routes", () => {
     })).get(`/api/companies/${company.id}/audit/agent-actions?cursor=invalid`);
     expect(cursorResponse.status).toBe(400);
     expect(cursorResponse.body.error).toBe("Invalid audit cursor");
+
+    const nonUuidCursor = Buffer.from(JSON.stringify({
+      createdAt: "2026-07-17T00:00:00.000000Z",
+      id: "not-a-uuid",
+    }), "utf8").toString("base64url");
+    const nonUuidCursorResponse = await request(await createApp(db, {
+      type: "board", userId: "local-board", companyIds: [company.id], source: "local_implicit", isInstanceAdmin: false,
+    })).get(`/api/companies/${company.id}/audit/agent-actions?cursor=${encodeURIComponent(nonUuidCursor)}`);
+    expect(nonUuidCursorResponse.status).toBe(400);
+    expect(nonUuidCursorResponse.body.error).toBe("Invalid audit cursor");
+  });
+
+  it("preserves sub-millisecond cursor precision across pages", async () => {
+    const { company, agent } = await seed();
+    await db.delete(activityLog);
+    const newerId = randomUUID();
+    const olderId = randomUUID();
+    await db.execute(sql`
+      insert into activity_log (
+        id, company_id, actor_type, actor_id, action, entity_type, entity_id, agent_id, created_at
+      ) values
+        (${newerId}::uuid, ${company.id}::uuid, 'agent', ${agent.id}, 'audit.precision', 'company', ${company.id}, ${agent.id}::uuid, '2026-07-17T00:00:00.001900Z'::timestamptz),
+        (${olderId}::uuid, ${company.id}::uuid, 'agent', ${agent.id}, 'audit.precision', 'company', ${company.id}, ${agent.id}::uuid, '2026-07-17T00:00:00.001100Z'::timestamptz)
+    `);
+
+    const app = await createApp(db, {
+      type: "board", userId: "local-board", companyIds: [company.id], source: "local_implicit", isInstanceAdmin: false,
+    });
+    const first = await request(app).get(`/api/companies/${company.id}/audit/agent-actions?action=audit.precision&limit=1`);
+    expect(first.status, JSON.stringify(first.body)).toBe(200);
+    expect(first.body.items.map((item: { id: string }) => item.id)).toEqual([newerId]);
+    expect(first.body.nextCursor).toEqual(expect.any(String));
+
+    const second = await request(app).get(
+      `/api/companies/${company.id}/audit/agent-actions?action=audit.precision&limit=1&cursor=${encodeURIComponent(first.body.nextCursor)}`,
+    );
+    expect(second.status, JSON.stringify(second.body)).toBe(200);
+    expect(second.body.items.map((item: { id: string }) => item.id)).toEqual([olderId]);
+    expect(second.body.nextCursor).toBeNull();
   });
 
   it("paginates, filters, enriches entities, and falls back to the run responsible user", async () => {
