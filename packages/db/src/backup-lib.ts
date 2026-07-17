@@ -354,8 +354,13 @@ async function runPgDumpBackup(opts: {
     pipeline(child.stdout, createGzip(), createWriteStream(opts.outputFile)),
     waitForChildExit(child, pgDumpBin),
   ]);
-  const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
-  if (failure) throw failure.reason;
+  const failures = results
+    .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+    .map((result) => result.reason);
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) {
+    throw new AggregateError(failures, `${pgDumpBin} backup failed in multiple ways`);
+  }
 }
 
 async function restoreWithPsql(opts: RunDatabaseRestoreOptions, connectTimeout: number): Promise<void> {
