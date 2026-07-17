@@ -4,9 +4,9 @@ import { shellQuote } from "./ssh.js";
 import type { SandboxManagedRuntimeAssetProvision } from "./sandbox-managed-runtime.js";
 
 // Codex-specific inbound auth-merge assets. These physically live in
-// `adapter-utils/src` during Phase 1 of the generic-asset-lifecycle-seam work
-// (PAP-2750); Phase 2 (PAP-2751) relocates this module and the two script
-// files into the `codex-local` adapter. The sandbox runtime *core*
+// `adapter-utils/src` in Phase 1 of the generic-asset-lifecycle-seam work;
+// a follow-on phase will relocate this module and the two script files
+// into the `codex-local` adapter. The sandbox runtime *core*
 // (`sandbox-managed-runtime.ts`) is intentionally free of any Codex knowledge —
 // the adapter supplies this contribution through the generic `provision` seam.
 

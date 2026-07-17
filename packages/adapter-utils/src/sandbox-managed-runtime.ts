@@ -637,8 +637,12 @@ export async function prepareSandboxManagedRuntime(input: {
         const stageBytes = typeof stageFile.contents === "string"
           ? Buffer.from(stageFile.contents)
           : stageFile.contents;
+        const safeName = stageFile.name;
+        if (/[\\/]|\.\.(\.|$)/.test(safeName) || safeName === "..") {
+          throw new Error(`provision stageFile.name must be a simple basename, got: ${safeName}`);
+        }
         await input.client.writeFile(
-          path.posix.join(runtimeRootDir, stageFile.name),
+          path.posix.join(runtimeRootDir, safeName),
           toArrayBuffer(stageBytes),
         );
       }

@@ -970,6 +970,69 @@ describe("sandbox managed runtime", () => {
     expect(stagedContentSeen).toEqual(["provisioned"]);
   });
 
+  it("rejects a provision stageFile.name that is not a simple basename", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-traversal-"));
+    cleanupDirs.push(rootDir);
+    const localWorkspaceDir = path.join(rootDir, "local-workspace");
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+    const localAssetsDir = path.join(rootDir, "local-assets");
+    await mkdir(localWorkspaceDir, { recursive: true });
+    await mkdir(localAssetsDir, { recursive: true });
+    await writeFile(path.join(localWorkspaceDir, "README.md"), "workspace\n", "utf8");
+    await writeFile(path.join(localAssetsDir, "seed.txt"), "seed\n", "utf8");
+
+    const writtenPaths: string[] = [];
+    const client: SandboxManagedRuntimeClient = {
+      makeDir: async (remotePath) => {
+        await mkdir(remotePath, { recursive: true });
+      },
+      writeFile: async (remotePath, bytes) => {
+        writtenPaths.push(remotePath);
+        await mkdir(path.dirname(remotePath), { recursive: true });
+        await writeFile(remotePath, Buffer.from(bytes));
+      },
+      readFile: async (remotePath) => await readFile(remotePath),
+      listFiles: async () => [],
+      remove: async (remotePath) => {
+        await rm(remotePath, { recursive: true, force: true });
+      },
+      run: async (command) => {
+        await execFile("sh", ["-c", command], { maxBuffer: 32 * 1024 * 1024 });
+      },
+    };
+
+    // A compromised adapter supplying a traversal name must be rejected before
+    // the core ever writes outside the runtime root.
+    for (const maliciousName of ["../evil.txt", "..", "nested/child.txt", "back\\slash.txt", "../../etc/passwd"]) {
+      writtenPaths.length = 0;
+      await expect(
+        prepareSandboxManagedRuntime({
+          spec: {
+            transport: "sandbox",
+            provider: "test",
+            sandboxId: "sandbox-1",
+            remoteCwd: remoteWorkspaceDir,
+            timeoutMs: 30_000,
+            apiKey: null,
+          },
+          adapterKey: "generic-adapter",
+          client,
+          workspaceLocalDir: localWorkspaceDir,
+          assets: [{
+            key: "widget",
+            localDir: localAssetsDir,
+            provision: {
+              stageFiles: [{ name: maliciousName, contents: "payload\n" }],
+            },
+          }],
+        }),
+      ).rejects.toThrow(/must be a simple basename/);
+
+      // The guard fires before the offending write, so nothing landed under the runtime root.
+      expect(writtenPaths.some((p) => p.endsWith("evil.txt") || p.endsWith("passwd") || p.endsWith("child.txt"))).toBe(false);
+    }
+  });
+
   it("keeps the sandbox runtime core free of Codex-specific string literals", async () => {
     const coreSource = await readFile(new URL("./sandbox-managed-runtime.ts", import.meta.url), "utf8");
     // The seam must be generic: no adapter (Codex) knowledge may live in the core.
