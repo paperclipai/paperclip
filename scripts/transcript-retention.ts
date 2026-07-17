@@ -164,14 +164,35 @@ async function writeRollbackState(retentionRoot: string, rollback: ModeRecord[],
 async function restorePermissions(file: string) {
   const parsed = JSON.parse(await fs.readFile(file, "utf8")) as { entries?: ModeRecord[] };
   if (!Array.isArray(parsed.entries)) throw new Error("Invalid permissions rollback file");
+  const home = path.resolve(os.homedir());
+  const realHome = await fs.realpath(home);
   let restored = 0;
   for (const entry of [...parsed.entries].reverse()) {
-    if (!entry || typeof entry.path !== "string" || typeof entry.mode !== "number") {
+    if (
+      !entry
+      || typeof entry.path !== "string"
+      || !Number.isInteger(entry.mode)
+      || entry.mode < 0
+    ) {
       throw new Error("Invalid permissions rollback entry");
     }
-    await fs.chmod(entry.path, entry.mode).catch((error: NodeJS.ErrnoException) => {
-      if (error.code !== "ENOENT") throw error;
+    const candidate = path.resolve(entry.path);
+    if (!isWithin(home, candidate)) {
+      throw new Error(`Refusing to restore permissions outside home: ${entry.path}`);
+    }
+    const stat = await fs.lstat(candidate).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return null;
+      throw error;
     });
+    if (!stat) continue;
+    if (stat.isSymbolicLink()) {
+      throw new Error(`Refusing to restore permissions through symbolic link: ${entry.path}`);
+    }
+    const realCandidate = await fs.realpath(candidate);
+    if (!isWithin(realHome, realCandidate)) {
+      throw new Error(`Refusing to restore permissions outside real home: ${entry.path}`);
+    }
+    await fs.chmod(candidate, modeOf(entry.mode));
     restored++;
   }
   console.log(JSON.stringify({ mode: "restore-permissions", rollbackFile: file, restored }));
