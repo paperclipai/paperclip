@@ -111,7 +111,10 @@ describe.sequential("activity routes", () => {
       explanation: "Allowed by test mock.",
     });
     mockLogActivity.mockReset();
-    mockLogActivity.mockResolvedValue(undefined);
+    mockLogActivity.mockImplementation(async (_db: unknown, entry: Record<string, unknown>) => ({
+      id: "activity-row-1",
+      ...entry,
+    }));
   });
 
   it("stamps the authenticated caller and ignores body-supplied actor fields when creating activity (P6)", async () => {
@@ -148,6 +151,8 @@ describe.sequential("activity routes", () => {
     expect(entry.entityType).toBe("issue");
     expect(res.body.actorId).toBe("real-user");
     expect(res.body.actorType).toBe("user");
+    // The inserted row (with its id) is returned, preserving the API contract.
+    expect(res.body.id).toBe("activity-row-1");
   });
 
   it("limits company activity lists by default", async () => {

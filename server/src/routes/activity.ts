@@ -112,18 +112,10 @@ export function activityRoutes(db: Db) {
       agentApiKeyId: actor.agentApiKeyId,
       details: req.body.details ? sanitizeRecord(req.body.details) : null,
     };
-    await logActivity(db, entry);
-    res.status(201).json({
-      companyId: entry.companyId,
-      actorType: entry.actorType,
-      actorId: entry.actorId,
-      action: entry.action,
-      entityType: entry.entityType,
-      entityId: entry.entityId,
-      agentId: entry.agentId,
-      runId: entry.runId,
-      details: entry.details,
-    });
+    // Return the inserted row (including its `id`) to preserve the response
+    // contract the previous `svc.create` handler exposed.
+    const created = await logActivity(db, entry);
+    res.status(201).json(created);
   });
 
   router.get("/issues/:id/activity", async (req, res) => {
