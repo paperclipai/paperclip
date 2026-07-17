@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { readFile } from "node:fs/promises";
 import manifest from "./manifest.js";
-import { buildDockerRunArgs, buildLeaseLabels, createDockerSandboxPlugin, healthDockerRuntimeService, parseDockerDriverConfig, startDockerRuntimeService, stopDockerRuntimeService, type DockerRunner } from "./plugin.js";
+import { buildDockerRunArgs, buildLeaseLabels, createDockerSandboxPlugin, decodeBoundedUtf8, healthDockerRuntimeService, parseDockerDriverConfig, startDockerRuntimeService, stopDockerRuntimeService, type DockerRunner } from "./plugin.js";
 
 const config = { image: "paperclip-noble-qa:24.04", timeoutMs: 30_000, memoryMb: 512, cpus: 1, pidsLimit: 128 };
 
@@ -80,7 +80,20 @@ describe("Docker sandbox provider", () => {
     await stopDockerRuntimeService(runner, { providerLeaseId: "container-1", serviceName: "web" });
     expect(started.providerRef).toBe("container-1:web");
     expect(runner.mock.calls[0]?.[0]).toEqual(expect.arrayContaining(["exec", "--detach", "--workdir", "/workspace/app", "container-1"]));
-    expect(runner.mock.calls[1]?.[0]).toEqual(expect.arrayContaining(["exec", "container-1", "/bin/sh"]));
+    expect(runner.mock.calls[1]?.[0]).toEqual(expect.arrayContaining(["exec", "container-1", "/bin/sh", "-lc", expect.stringContaining("test -s")]));
+    expect(runner.mock.calls[2]?.[0]).toEqual(expect.arrayContaining(["exec", "container-1", "/bin/sh"]));
+  });
+
+  it("waits for the detached service PID hand-off before reporting start success", async () => {
+    const runner = vi.fn(async (args: string[]) => ({ exitCode: args.includes("paperclip-service-ready") ? 1 : 0, signal: null, timedOut: false, stdout: "", stderr: "PID was not persisted", stdoutTruncated: false, stderrTruncated: false })) satisfies DockerRunner;
+    await expect(startDockerRuntimeService(runner, { providerLeaseId: "container-1", serviceName: "web", command: "node server.js" })).rejects.toThrow("docker exec failed");
+    expect(runner).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not split a UTF-8 character when bounded output is truncated", () => {
+    const bytes = Buffer.from("prefix-é", "utf8");
+    expect(decodeBoundedUtf8([bytes.subarray(0, bytes.length - 1)], true)).toBe("prefix-");
+    expect(decodeBoundedUtf8([Buffer.from("prefix-"), Buffer.from("é")], false)).toBe("prefix-é");
   });
 
   it("health-checks only the loopback managed URL", async () => {

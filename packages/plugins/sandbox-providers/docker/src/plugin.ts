@@ -131,19 +131,38 @@ export function buildDockerRunArgs(input: {
   return args;
 }
 
-function appendBounded(current: string, chunk: Buffer, maxBytes: number): { text: string; truncated: boolean } {
-  const remaining = Math.max(0, maxBytes - Buffer.byteLength(current));
-  if (remaining === 0) return { text: current, truncated: true };
-  const content = chunk.subarray(0, remaining).toString();
-  return { text: current + content, truncated: chunk.length > remaining };
+function appendBounded(current: Buffer[], currentBytes: number, chunk: Buffer, maxBytes: number): { bytes: number; truncated: boolean } {
+  const remaining = Math.max(0, maxBytes - currentBytes);
+  if (remaining === 0) return { bytes: currentBytes, truncated: true };
+  current.push(chunk.subarray(0, remaining));
+  return { bytes: currentBytes + Math.min(chunk.length, remaining), truncated: chunk.length > remaining };
+}
+
+/**
+ * When a byte cap cuts a UTF-8 sequence, omit its incomplete suffix instead
+ * of decoding it as a replacement character. Intact (even malformed) output
+ * is otherwise preserved verbatim by Buffer's normal UTF-8 decoder.
+ */
+export function decodeBoundedUtf8(chunks: readonly Buffer[], truncated: boolean): string {
+  const buffer = Buffer.concat(chunks);
+  if (!truncated || buffer.length === 0) return buffer.toString("utf8");
+
+  let start = buffer.length - 1;
+  while (start > 0 && (buffer[start] & 0xc0) === 0x80) start -= 1;
+  const lead = buffer[start];
+  const expectedLength = lead < 0x80 ? 1 : lead >= 0xc2 && lead <= 0xdf ? 2 : lead >= 0xe0 && lead <= 0xef ? 3 : lead >= 0xf0 && lead <= 0xf4 ? 4 : 1;
+  const completeLength = expectedLength > buffer.length - start ? start : buffer.length;
+  return buffer.subarray(0, completeLength).toString("utf8");
 }
 
 export function runDockerCli(args: string[], options: { timeoutMs?: number } = {}): Promise<DockerCommandResult> {
   const timeoutMs = boundedNumber(options.timeoutMs, 30_000, 1_000, MAX_TIMEOUT_MS);
   return new Promise((resolve, reject) => {
     const child = spawn("docker", args, { shell: false, stdio: ["ignore", "pipe", "pipe"] });
-    let stdout = "";
-    let stderr = "";
+    const stdoutChunks: Buffer[] = [];
+    const stderrChunks: Buffer[] = [];
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
     let stdoutTruncated = false;
     let stderrTruncated = false;
     let timedOut = false;
@@ -153,19 +172,19 @@ export function runDockerCli(args: string[], options: { timeoutMs?: number } = {
       setTimeout(() => child.kill("SIGKILL"), 500).unref();
     }, timeoutMs);
     child.stdout?.on("data", (chunk: Buffer) => {
-      const next = appendBounded(stdout, chunk, MAX_OUTPUT_BYTES);
-      stdout = next.text;
+      const next = appendBounded(stdoutChunks, stdoutBytes, chunk, MAX_OUTPUT_BYTES);
+      stdoutBytes = next.bytes;
       stdoutTruncated ||= next.truncated;
     });
     child.stderr?.on("data", (chunk: Buffer) => {
-      const next = appendBounded(stderr, chunk, MAX_OUTPUT_BYTES);
-      stderr = next.text;
+      const next = appendBounded(stderrChunks, stderrBytes, chunk, MAX_OUTPUT_BYTES);
+      stderrBytes = next.bytes;
       stderrTruncated ||= next.truncated;
     });
     child.once("error", (error) => { clearTimeout(timer); reject(error); });
     child.once("close", (exitCode, signal) => {
       clearTimeout(timer);
-      resolve({ exitCode: timedOut ? null : exitCode, signal, timedOut, stdout, stderr, stdoutTruncated, stderrTruncated });
+      resolve({ exitCode: timedOut ? null : exitCode, signal, timedOut, stdout: decodeBoundedUtf8(stdoutChunks, stdoutTruncated), stderr: decodeBoundedUtf8(stderrChunks, stderrTruncated), stdoutTruncated, stderrTruncated });
     });
   });
 }
@@ -249,12 +268,17 @@ export async function startDockerRuntimeService(runner: DockerRunner, service: D
   const cwd = validContainerCwd(service.cwd);
   const script = "mkdir -p /tmp/paperclip-services; (exec /bin/sh -lc \"$1\") >/tmp/paperclip-services/$2.log 2>&1 & pid=$!; echo \"$pid\" >\"$3\"; wait \"$pid\"";
   await mustRun(runner, ["exec", "--detach", "--workdir", cwd, "--user", "paperclip", service.providerLeaseId, "/bin/sh", "-lc", script, "paperclip-service", service.command, service.serviceName, pidPath], { timeoutMs: 30_000 });
+  // docker exec --detach returns before the wrapper has necessarily persisted
+  // the PID. Do not report a started service until that hand-off is complete,
+  // so cleanup cannot race a missing PID file.
+  const readyScript = "attempt=0; while test \"$attempt\" -lt 50; do test -s \"$1\" && exit 0; attempt=$((attempt + 1)); sleep 0.1; done; exit 1";
+  await mustRun(runner, ["exec", "--user", "paperclip", service.providerLeaseId, "/bin/sh", "-lc", readyScript, "paperclip-service-ready", pidPath], { timeoutMs: 10_000 });
   return { providerRef: `${service.providerLeaseId}:${service.serviceName}` };
 }
 
 export async function stopDockerRuntimeService(runner: DockerRunner, service: Pick<DockerRuntimeService, "providerLeaseId" | "serviceName">): Promise<void> {
   const pidPath = servicePidPath(service.serviceName);
-  const script = "if test -r \"$1\"; then pid=$(cat \"$1\"); kill \"$pid\" 2>/dev/null || true; rm -f \"$1\"; fi";
+  const script = "if test -r \"$1\"; then pid=$(cat \"$1\"); case \"$pid\" in *[!0-9]*|'') ;; *) kill \"$pid\" 2>/dev/null || true;; esac; rm -f \"$1\"; fi";
   const result = await runner(["exec", "--user", "paperclip", service.providerLeaseId, "/bin/sh", "-lc", script, "paperclip-service-stop", pidPath], { timeoutMs: 30_000 });
   if (result.exitCode !== 0 && !result.timedOut) throw failure(result, "docker exec service stop");
 }
