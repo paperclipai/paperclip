@@ -88,7 +88,7 @@ export function resourceService(db: Db) {
     update: async (id: string, patch: UpdateResource) => {
       const existing = await db.select().from(resources).where(eq(resources.id, id)).then((rows) => rows[0] ?? null);
       if (!existing) return null;
-      await assertCredential(existing.companyId, patch.credentialRef ?? existing.credentialRef);
+      await assertCredential(existing.companyId, patch.credentialRef !== undefined ? patch.credentialRef : existing.credentialRef);
       try {
         const row = await db.update(resources).set({
           ...(patch.key !== undefined ? { key: patch.key } : {}),

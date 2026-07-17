@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { companies, createDb, resources } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
@@ -83,5 +84,28 @@ describeEmbeddedPostgres("resourceService", () => {
     };
     await svc.create(firstCompanyId, input);
     await expect(svc.create(secondCompanyId, input)).resolves.toMatchObject({ companyId: secondCompanyId });
+  });
+
+  it("allows clearing a credential reference whose secret no longer exists", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Credential Cleanup Co",
+      issuePrefix: `C${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    const created = await resourceService(db).create(companyId, {
+      key: "credentialed",
+      type: "git",
+      repository: "/tmp/repo",
+      sourcePath: null,
+      defaultRef: "main",
+      mountPath: "credentialed",
+      credentialRef: null,
+      labels: {},
+    });
+    await db.update(resources).set({ credentialRef: randomUUID() }).where(eq(resources.id, created.id));
+
+    await expect(resourceService(db).update(created.id, { credentialRef: null })).resolves.toMatchObject({ credentialRef: null });
   });
 });
