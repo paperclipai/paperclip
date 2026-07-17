@@ -5129,7 +5129,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             actorType: "system",
             actorId: "issue_graph_liveness_backstop",
             agentId,
-            runId: opts?.runId ?? null,
+            runId: wake.id,
             action: "issue.blockers_resolved_wake_emitted",
             entityType: "issue",
             entityId: candidate.id,

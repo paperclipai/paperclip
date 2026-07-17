@@ -234,7 +234,9 @@ export function getActorInfo(req: Request): (
 
   return {
     actorType: "user" as const,
-    actorId: req.actor.userId ?? "board",
+    actorId:
+      req.actor.userId
+      ?? (req.actor.source === "local_implicit" ? "local-board" : "board"),
     sessionId: req.actor.sessionId ?? null,
     agentId: null,
     runId: req.actor.runId ?? null,

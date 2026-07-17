@@ -7,6 +7,7 @@ import { boardMutationGuard } from "../middleware/board-mutation-guard.js";
 import { errorHandler } from "../middleware/index.js";
 
 const claimFirstInstanceAdminMock = vi.hoisted(() => vi.fn());
+const claimBoardOwnershipMock = vi.hoisted(() => vi.fn());
 const accessServiceMock = vi.hoisted(() => ({
   isInstanceAdmin: vi.fn(),
   canUser: vi.fn(),
@@ -19,19 +20,27 @@ vi.mock("../first-admin-claim.js", () => ({
   claimFirstInstanceAdmin: claimFirstInstanceAdminMock,
 }));
 
+vi.mock("../board-claim.js", () => ({
+  claimBoardOwnership: claimBoardOwnershipMock,
+  inspectBoardClaimChallenge: vi.fn(),
+}));
+
+const boardAuthServiceMock = vi.hoisted(() => ({
+  createCliAuthChallenge: vi.fn(),
+  resolveBoardAccess: vi.fn(async () => ({ companyIds: ["company-1"] })),
+  assertCurrentBoardKey: vi.fn(),
+  revokeBoardApiKey: vi.fn(),
+}));
+const logActivityMock = vi.hoisted(() => vi.fn(async () => undefined));
+
 vi.mock("../services/index.js", () => ({
   accessService: () => accessServiceMock,
   agentService: () => ({
     getById: vi.fn(),
   }),
-  boardAuthService: () => ({
-    createCliAuthChallenge: vi.fn(),
-    resolveBoardAccess: vi.fn(),
-    assertCurrentBoardKey: vi.fn(),
-    revokeBoardApiKey: vi.fn(),
-  }),
+  boardAuthService: () => boardAuthServiceMock,
   deduplicateAgentName: vi.fn(),
-  logActivity: vi.fn(),
+  logActivity: logActivityMock,
   notifyHireApproved: vi.fn(),
 }));
 
@@ -85,6 +94,7 @@ function createApp(input: {
 describe("POST /bootstrap/claim", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    boardAuthServiceMock.resolveBoardAccess.mockResolvedValue({ companyIds: ["company-1"] });
     claimFirstInstanceAdminMock.mockResolvedValue({
       status: "claimed",
       userId: "user-1",
@@ -100,6 +110,18 @@ describe("POST /bootstrap/claim", () => {
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ claimed: true, userId: "user-1" });
     expect(claimFirstInstanceAdminMock).toHaveBeenCalledWith(expect.anything(), { userId: "user-1" });
+    expect(boardAuthServiceMock.resolveBoardAccess).toHaveBeenCalledWith("user-1");
+    expect(logActivityMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        companyId: "company-1",
+        action: "instance.first_admin_claimed",
+        actorType: "user",
+        actorId: "user-1",
+        entityId: "user-1",
+        details: { claimSource: "session" },
+      }),
+    );
   });
 
   it("is not exposed in authenticated public mode", async () => {
@@ -162,6 +184,38 @@ describe("POST /bootstrap/claim", () => {
       .send({});
     expect(allowed.status).toBe(200);
     expect(claimFirstInstanceAdminMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("logs board claim attribution for browser-session ownership claims", async () => {
+    claimBoardOwnershipMock.mockResolvedValue({
+      status: "claimed",
+      claimedByUserId: "user-1",
+    });
+    const app = createApp({});
+
+    const res = await request(app)
+      .post("/api/board-claim/claim-token/claim")
+      .send({ code: "claim-code" });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ claimed: true, userId: "user-1" });
+    expect(claimBoardOwnershipMock).toHaveBeenCalledWith(expect.anything(), {
+      token: "claim-token",
+      code: "claim-code",
+      userId: "user-1",
+    });
+    expect(boardAuthServiceMock.resolveBoardAccess).toHaveBeenCalledWith("user-1");
+    expect(logActivityMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        companyId: "company-1",
+        action: "instance.board_claimed",
+        actorType: "user",
+        actorId: "user-1",
+        entityId: "user-1",
+        details: { claimSource: "session" },
+      }),
+    );
   });
 });
 

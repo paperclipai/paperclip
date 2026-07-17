@@ -402,14 +402,16 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     expect(["queued", "claimed", "completed"]).toContain(wake?.status);
 
     const events = await db
-      .select({ action: activityLog.action, entityId: activityLog.entityId, details: activityLog.details })
+      .select({ action: activityLog.action, entityId: activityLog.entityId, runId: activityLog.runId, details: activityLog.details })
       .from(activityLog)
       .where(and(eq(activityLog.companyId, companyId), eq(activityLog.action, "issue.blockers_resolved_wake_emitted")));
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({
       entityId: blockedIssueId,
+      runId: expect.any(String),
       details: expect.objectContaining({ source: "issue_graph_liveness.backstop" }),
     });
+    expect(events[0].runId).toBe((events[0].details as { wakeupRunId?: string }).wakeupRunId);
   });
 
   it("heals a blocked dependent whose done blocker has no workspace finalize obligation", async () => {
@@ -440,11 +442,12 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     expect(["queued", "claimed", "completed"]).toContain(wake?.status);
 
     const events = await db
-      .select({ action: activityLog.action, entityId: activityLog.entityId, details: activityLog.details })
+      .select({ action: activityLog.action, entityId: activityLog.entityId, runId: activityLog.runId, details: activityLog.details })
       .from(activityLog)
       .where(and(eq(activityLog.companyId, companyId), eq(activityLog.action, "issue.blockers_resolved_wake_emitted")));
     expect(events).toHaveLength(1);
-    expect(events[0]).toMatchObject({ entityId: blockedIssueId });
+    expect(events[0]).toMatchObject({ entityId: blockedIssueId, runId: expect.any(String) });
+    expect(events[0].runId).toBe((events[0].details as { wakeupRunId?: string }).wakeupRunId);
   });
 
   it("reconciles a resolved blocked dependency after the assignee-null window closes", async () => {

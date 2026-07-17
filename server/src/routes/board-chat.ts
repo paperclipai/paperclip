@@ -5,7 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Db } from "@paperclipai/db";
 import type { DeploymentMode } from "@paperclipai/shared";
-import { instanceSettingsService, issueService } from "../services/index.js";
+import { instanceSettingsService, issueService, logActivity } from "../services/index.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 
 /**
@@ -189,6 +189,23 @@ export function boardChatRoutes(
       userId: actor.agentId ? undefined : actor.actorId,
       runId: actor.runId,
     });
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
+      action: "board_chat.requested",
+      entityType: "issue",
+      entityId: resolvedIssueId,
+      issueId: resolvedIssueId,
+      details: {
+        actorSource: actor.actorSource,
+        requesterUserId: actor.actorType === "user" ? actor.actorId : null,
+        requesterSessionId: actor.actorType === "user" ? actor.sessionId : null,
+      },
+    });
 
     // Build conversation history from recent comments (oldest first).
     const comments = await issueSvc.listComments(resolvedIssueId, { order: "asc" });
@@ -361,6 +378,20 @@ export function boardChatRoutes(
         try {
           await issueSvc.addComment(resolvedIssueId, cleanedResponse, {
             userId: "board-concierge",
+          });
+          await logActivity(db, {
+            companyId,
+            actorType: "system",
+            actorId: "board-concierge",
+            action: "board_chat.responded",
+            entityType: "issue",
+            entityId: resolvedIssueId,
+            issueId: resolvedIssueId,
+            details: {
+              requesterUserId: actor.actorType === "user" ? actor.actorId : null,
+              requesterSessionId: actor.actorType === "user" ? actor.sessionId : null,
+              responseLength: cleanedResponse.length,
+            },
           });
         } catch {
           /* best effort */

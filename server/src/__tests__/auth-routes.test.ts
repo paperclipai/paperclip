@@ -1,7 +1,18 @@
 import express from "express";
 import request from "supertest";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { errorHandler } from "../middleware/index.js";
+
+const mockBoardAuthService = vi.hoisted(() => ({
+  resolveBoardAccess: vi.fn(async () => ({ companyIds: ["company-1"] })),
+}));
+const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
+
+vi.mock("../services/index.js", () => ({
+  boardAuthService: () => mockBoardAuthService,
+  logActivity: mockLogActivity,
+}));
+
 import { authRoutes } from "../routes/auth.js";
 
 function createSelectChain(rows: unknown[]) {
@@ -52,6 +63,11 @@ function createApp(actor: Express.Request["actor"], row: Record<string, unknown>
 }
 
 describe.sequential("auth routes", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockBoardAuthService.resolveBoardAccess.mockResolvedValue({ companyIds: ["company-1"] });
+  });
+
   const baseUser = {
     id: "user-1",
     name: "Jane Example",
@@ -81,7 +97,7 @@ describe.sequential("auth routes", () => {
     });
   });
 
-  it("updates the signed-in profile", async () => {
+  it("updates the signed-in profile and logs the audit event", async () => {
     const app = await createApp(
       {
         type: "board",
@@ -102,6 +118,18 @@ describe.sequential("auth routes", () => {
       email: "jane@example.com",
       image: null,
     });
+    expect(mockBoardAuthService.resolveBoardAccess).toHaveBeenCalledWith("user-1");
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        companyId: "company-1",
+        action: "user.profile_updated",
+        actorType: "user",
+        actorId: "user-1",
+        entityId: "user-1",
+        details: { changedFields: ["name", "image"] },
+      }),
+    );
   });
 
   it("preserves the existing avatar when updating only the profile name", async () => {
