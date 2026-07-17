@@ -87,6 +87,7 @@ describeEmbeddedPostgres("resourceRuntimeService", () => {
 
     const published = await prepared!.publish();
     expect(published[0]).toMatchObject({ resourceId, action: "push", status: "pushed", targetRef: "main" });
+    expect(prepared!.inputVersions[0]!.published).toBe(true);
 
     const checkPath = path.join(fixtureRoot, "check");
     await git(["clone", "--branch", "main", remotePath, checkPath]);
@@ -157,6 +158,16 @@ describeEmbeddedPostgres("resourceRuntimeService", () => {
     });
     const noChange = await noChangePrepared!.publish();
     expect(noChange[0]).toMatchObject({ action: "push", status: "no_changes" });
+
+    const inputOnlyWorkspace = path.join(fixtureRoot, "input-only-workspace");
+    const inputOnlyPrepared = await resourceRuntimeService(db).prepare({
+      companyId,
+      runId: "run-input-only-output-test",
+      workspaceRoot: inputOnlyWorkspace,
+      manifest: { version: 1, resources: [{ resourceId, mode: "input", output: { action: "push", targetRef: "main" } }] },
+    });
+    const inputOnly = await inputOnlyPrepared!.publish();
+    expect(inputOnly[0]).toMatchObject({ action: "push", status: "discarded" });
   });
 
   it("creates pull requests through the provider without exposing credentials", async () => {

@@ -355,7 +355,7 @@ export function resourceRuntimeService(db: Db) {
                 resourceId: item.resource.id,
                 inputCommit: item.expectedCommit,
                 action: output.action,
-                status: output.action === "none" ? "discarded" : "no_changes",
+                status: "discarded",
               });
               continue;
             }
@@ -404,6 +404,10 @@ export function resourceRuntimeService(db: Db) {
               body: output.body?.trim() ?? "",
             });
             results.push({ resourceId: item.resource.id, inputCommit: item.expectedCommit, outputCommit: commit, action: output.action, branch: pushRef, targetRef, pullRequestId: pullRequest.id, pullRequestUrl: pullRequest.url, changedFiles, insertions, deletions, status: "pull_request_created" });
+          }
+          for (const version of inputVersions) {
+            const result = results.find((item) => item.resourceId === version.resourceId);
+            version.published = result?.status === "pushed" || result?.status === "pull_request_created";
           }
           return results;
         },
