@@ -106,6 +106,13 @@ describeEmbeddedPostgres("resourceRuntimeService", () => {
     await fs.writeFile(path.join(mixedRefWorkspace, "resources", "context", "context.md"), "mixed-ref\n", "utf8");
     await expect(mixedRefPrepared!.publish()).resolves.toMatchObject([{ status: "pushed", targetRef: "main" }]);
 
+    await expect(resourceRuntimeService(db).prepare({
+      companyId,
+      runId: "run-existing-pr-branch-test",
+      workspaceRoot: path.join(fixtureRoot, "existing-pr-branch-workspace"),
+      manifest: { version: 1, resources: [{ resourceId, mode: "input_output", output: { action: "pull_request", branch: "feature" } }] },
+    })).rejects.toThrow("Git output branch already exists: feature");
+
     const commitWorkspace = path.join(fixtureRoot, "commit-workspace");
     const commitPrepared = await resourceRuntimeService(db).prepare({
       companyId,
@@ -116,14 +123,12 @@ describeEmbeddedPostgres("resourceRuntimeService", () => {
     expect(commitPrepared!.inputVersions[0]!.commit).toBe(initialCommit);
 
     const invalidBranchWorkspace = path.join(fixtureRoot, "invalid-branch-workspace");
-    const invalidBranchPrepared = await resourceRuntimeService(db).prepare({
+    await expect(resourceRuntimeService(db).prepare({
       companyId,
       runId: "run-invalid-branch-test",
       workspaceRoot: invalidBranchWorkspace,
       manifest: { version: 1, resources: [{ resourceId, mode: "input_output", output: { action: "pull_request", branch: "feat[scope" } }] },
-    });
-    await fs.writeFile(path.join(invalidBranchWorkspace, "resources", "context", "context.md"), "invalid\n", "utf8");
-    await expect(invalidBranchPrepared!.publish()).rejects.toThrow("Invalid Git output branch");
+    })).rejects.toThrow("Invalid Git output branch");
 
     const collidingResourceId = randomUUID();
     await db.insert(resources).values({

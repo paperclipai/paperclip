@@ -133,6 +133,16 @@ async function resolveRemoteRef(resource: Resource, requestedRef: string, env: N
   throw notFound(`Git ref not found: ${requestedRef}`);
 }
 
+async function assertPublishBranchAvailable(resource: Resource, branch: string, env: NodeJS.ProcessEnv) {
+  if (resource.repository.startsWith("/") || resource.repository.startsWith(".")) {
+    const output = await runGit(["-C", resource.repository, "for-each-ref", `refs/heads/${branch}`, "--format=%(refname)"], { env });
+    if (output) throw conflict(`Git output branch already exists: ${branch}`);
+    return;
+  }
+  const output = await runGit(["ls-remote", "--heads", resource.repository, `refs/heads/${branch}`], { env });
+  if (output) throw conflict(`Git output branch already exists: ${branch}`);
+}
+
 async function resolveLocalRef(resource: Resource, requestedRef: string) {
   const env = process.env;
   const candidate = requestedRef === "HEAD" ? "HEAD" : requestedRef;
@@ -295,11 +305,15 @@ export function resourceRuntimeService(db: Db) {
           ? await resolveLocalRef(resource, requestedRef)
           : await resolveRemoteRef(resource, requestedRef, env);
         const output = attachment.output ?? { action: "none" as const };
+        const outputBranch = output.action === "pull_request"
+          ? validateBranch(output.branch ?? generatedBranch(input.runId, resource.key))
+          : null;
         const outputBaselineCommit = attachment.mode !== "input" && output.action !== "none"
           ? (resource.repository.startsWith("/") || resource.repository.startsWith(".")
             ? await resolveLocalRef(resource, normalizePublishRef(output.targetRef, resource.defaultRef))
             : await resolveRemoteRef(resource, normalizePublishRef(output.targetRef, resource.defaultRef), env))
           : null;
+        if (outputBranch) await assertPublishBranchAvailable(resource, outputBranch, env);
         // Full Git Resources are cloned directly into their mount. A
         // source_path needs a hidden staging checkout so only that subtree is
         // exposed at the mount; the staging directory remains inside this run
