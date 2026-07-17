@@ -1988,12 +1988,11 @@ describe("IssueProperties", () => {
     await flush();
 
     expect(container.textContent).toContain("Monitor");
-    expect(container.textContent).toContain("Next check");
+    expect(container.textContent).toContain("In 2h 30m");
     expect(container.querySelector('input[type="datetime-local"]')).toBeNull();
     expect(container.querySelector('input[placeholder="What should the agent re-check?"]')).toBeNull();
 
-    const monitorTrigger = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent?.includes("Next check"));
+    const monitorTrigger = container.querySelector('[data-testid="monitor-row-trigger"]')?.closest("button");
     expect(monitorTrigger).not.toBeUndefined();
 
     await act(async () => {
@@ -2043,6 +2042,7 @@ describe("IssueProperties", () => {
     };
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const root = createRoot(container);
+    const monitorRowText = () => container.querySelector('[data-testid="monitor-row-trigger"]')?.textContent;
     const renderMonitor = (issue: Issue) => {
       act(() => {
         root.render(
@@ -2059,8 +2059,8 @@ describe("IssueProperties", () => {
       monitorAttemptCount: 1,
     }));
     await flush();
-    expect(container.textContent).toContain("Next check in 2h 12m");
-    expect(container.textContent).toContain("Jul 17, 4:08 PM · attempt 1");
+    expect(monitorRowText()).toContain("In 2h 12m");
+    expect(monitorRowText()).toContain("Today, 4:08 PM · Attempt 1");
 
     renderMonitor(createIssue({
       executionPolicy: createExecutionPolicy({ monitor: { ...baseMonitorState, serviceName: "vercel-deploy" } }),
@@ -2068,22 +2068,23 @@ describe("IssueProperties", () => {
       monitorAttemptCount: 3,
     }));
     await flush();
-    expect(container.textContent).toContain("attempt 3");
+    expect(monitorRowText()).toContain("Attempt 3");
 
     renderMonitor(createIssue({
       executionPolicy: createExecutionPolicy({ monitor: { ...baseMonitorState, nextCheckAt: "2026-07-17T13:56:00.000Z" } }),
       executionState: createExecutionState({ monitor: { ...baseMonitorState, nextCheckAt: "2026-07-17T13:56:00.000Z" } }),
     }));
     await flush();
-    expect(container.textContent).toContain("Due now");
-    expect(container.textContent).toContain("checking momentarily…");
+    expect(monitorRowText()).toContain("Due now");
+    expect(monitorRowText()).toContain("checking momentarily…");
 
     renderMonitor(createIssue({
       executionPolicy: createExecutionPolicy({ monitor: { ...baseMonitorState, nextCheckAt: "2026-07-17T13:38:00.000Z" } }),
       executionState: createExecutionState({ monitor: { ...baseMonitorState, nextCheckAt: "2026-07-17T13:38:00.000Z" } }),
     }));
     await flush();
-    expect(container.textContent).toContain("Overdue by 18m");
+    expect(monitorRowText()).toContain("Overdue by 18m");
+    expect(monitorRowText()).toContain("Today, 1:38 PM · fires on next tick");
 
     renderMonitor(createIssue({
       executionPolicy: createExecutionPolicy(),
@@ -2100,12 +2101,12 @@ describe("IssueProperties", () => {
       monitorLastTriggeredAt: new Date("2026-07-17T11:56:00.000Z"),
     }));
     await flush();
-    expect(container.textContent).toContain("Monitor cleared");
-    expect(container.textContent).toContain("last checked 2h ago · after attempt 2");
+    expect(monitorRowText()).toContain("Cleared");
+    expect(monitorRowText()).toContain("last checked 2h ago · after attempt 2");
 
     renderMonitor(createIssue());
     await flush();
-    expect(container.querySelector('[data-testid="monitor-row-trigger"]')?.textContent).toContain("None");
+    expect(monitorRowText()).toContain("None");
 
     act(() => root.unmount());
     dateNowSpy.mockRestore();

@@ -1015,14 +1015,14 @@ export function IssueProperties({
       ? "Due now"
       : monitorIsOverdue
         ? `Overdue by ${monitorRelative!.slice("overdue by ".length)}`
-        : `Next check ${monitorRelative}`
+        : `In ${monitorRelative!.slice("in ".length)}`
     : monitorState?.status === "cleared"
-      ? "Monitor cleared"
+      ? "Cleared"
       : "None";
   const monitorSecondary = monitorNextCheckAt
     ? monitorIsDueNow
       ? "checking momentarily…"
-      : `${formatMonitorAbsolute(monitorNextCheckAt)}${monitorAttemptCount > 0 ? ` · attempt ${monitorAttemptCount}` : ""}`
+      : `${formatMonitorAbsolute(monitorNextCheckAt, {}, new Date(Date.now()))}${monitorIsOverdue ? " · fires on next tick" : monitorAttemptCount > 0 ? ` · Attempt ${monitorAttemptCount}` : ""}`
     : monitorState?.status === "cleared"
       ? [
           monitorLastTriggeredAt ? `last checked ${timeAgo(monitorLastTriggeredAt)}` : null,
