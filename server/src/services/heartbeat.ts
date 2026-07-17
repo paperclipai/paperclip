@@ -15703,6 +15703,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               sql`case when ${heartbeatRuns.status} = 'running' then 0 else 1 end`,
               asc(heartbeatRuns.createdAt),
             )
+            .limit(20)
             .then((rows) =>
               rows.find((row) => shouldWakeOwnIssueExecutionLock(parseObject(row.contextSnapshot))) ?? null
             );
