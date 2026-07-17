@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync, existsSync, chmodSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -124,6 +124,41 @@ test("canary_promote in DRY mode runs the safety assert but makes NO live change
   assert.match(r.stdout, /DRY-RUN canary: would/);
   assert.match(r.stdout, /db:backup live/);
   rmSync(tree, { recursive: true, force: true });
+});
+
+test("materialize_handoff (522f) writes the pre-primed recovery artifact before any live change", () => {
+  // A tiny git tree stands in for both the beta snapshot source and the live tree.
+  const tree = makeGitTree();
+  execFileSync("git", ["-C", tree, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "cut"]);
+  const sha = execFileSync("git", ["-C", tree, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  const root = mkdtempSync(join(tmpdir(), "train-release-"));
+  const r = evalInScript(`materialize_handoff ${sha} ${sha}`, {
+    CORTEX_RELEASE_ROOT: root,
+    CORTEX_BETA_TREE: tree,
+    CORTEX_LIVE_TREE: tree,
+    CORTEX_RELEASE_HANDOFF_SCRIPT: join(dirname(fileURLToPath(import.meta.url)), "cortex-release-handoff.sh"),
+  });
+  assert.equal(r.code, 0);
+  const dir = r.stdout.trim();
+  assert.equal(dir, join(root, sha.slice(0, 12)));
+  assert.ok(existsSync(join(dir, "HANDOFF.md")), "HANDOFF.md should be materialized");
+  assert.ok(existsSync(join(dir, "context.env")), "context.env sidecar should be materialized");
+  rmSync(tree, { recursive: true, force: true });
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("escalate_oob (522f) fires the OOB recovery entrypoint with the handoff dir", () => {
+  const dir = mkdtempSync(join(tmpdir(), "train-esc-"));
+  const recorder = join(dir, "recorder.sh");
+  const out = join(dir, "invoked.txt");
+  writeFileSync(recorder, `#!/usr/bin/env bash\necho "$@" > '${out}'\n`);
+  chmodSync(recorder, 0o755);
+  const r = evalInScript(`escalate_oob /var/lib/cortex-release/mycut`, {
+    CORTEX_OOB_RECOVER_CMD: recorder,
+  });
+  assert.equal(r.code, 0);
+  assert.match(readFileSync(out, "utf8"), /--handoff \/var\/lib\/cortex-release\/mycut/);
+  rmSync(dir, { recursive: true, force: true });
 });
 
 test("resolve_candidate prefers the deploy state file over beta HEAD", () => {

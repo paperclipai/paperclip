@@ -124,9 +124,39 @@ scripts/cortex-weekly-train.sh --promote          # canary (§5 → live) + flee
 | no matching approval token      | halt after preflight; (re)raise the request; **no live change**               |
 | live `db:backup` fails          | abort before any live mutation; **ALERT**                                     |
 | build / migrate / health / probe fails on live | code auto-rollback to last-known-good + rebuild + restart; **ALERT** naming the pre-promotion backup for DB restore (§5.4 / NEO-198) |
+| **auto-rollback itself fails to restore green** | **escalate to out-of-band recovery** (`cortex-oob-recover.sh --auto`, see below); **ALERT** |
 | stable `release.sh stable` fails (armed) | fleet stage aborts; **ALERT** (canary already verified independently) |
 
 `release.sh stable` (npm `latest`) publishes only when `CORTEX_FLEET_PUBLISH=1` — otherwise it
 runs `--dry-run`, so a train never publishes npm unless explicitly armed. The instance ring
 (`CORTEX_FLEET_INSTANCES`) is empty today (single live instance = no-op ring); the verify+rollback
 machinery is wired for future instances.
+
+## Out-of-band update-failure recovery (522f / NEO-532)
+
+- `../cortex-release-handoff.sh` — materializes a pre-primed recovery artifact (`HANDOFF.md` +
+  `context.env`) to the **stable host path** `/var/lib/cortex-release/<cut>/` **before** any live
+  change; the train calls it, and carries the same change log in the CTO approval request.
+- `../cortex-oob-recover.sh` — the **host-level** recovery entrypoint (independent failure domain):
+  `--restore` (deterministic LKG restore, host tools only), `--auto` (agent if wired, else restore),
+  `--agent` (pre-primed Claude Code for a novel failure), `--print`, `--dry-run`.
+- `cortex-oob-recover.service` — oneshot, **manual/escalation-only** (NOT timer-driven, NOT ordered
+  after `paperclip.service` — it must run when live is down). The train auto-fires `--auto` when its
+  own auto-rollback fails to restore green.
+
+```sh
+# Install (one-time, on the controller host):
+sudo ln -sf /home/ubuntu/projects/cortex-beta/scripts/systemd/cortex-oob-recover.service /etc/systemd/system/cortex-oob-recover.service
+sudo mkdir -p /var/lib/cortex-release && sudo chown ubuntu:ubuntu /var/lib/cortex-release
+sudo touch /var/log/cortex-oob-recover.log && sudo chown ubuntu:ubuntu /var/log/cortex-oob-recover.log
+sudo systemctl daemon-reload
+# On a failed update whose auto-rollback did not restore green:
+sudo systemctl start cortex-oob-recover.service     # or: scripts/cortex-oob-recover.sh --restore
+# Optional — wire a pre-primed recovery agent for novel failures:
+sudo systemctl edit cortex-oob-recover.service      # add CORTEX_OOB_AGENT_CMD=/usr/local/bin/cortex-oob-agent
+```
+
+> **Why host-level, never a heartbeat.** If the live orchestrator is down, an agent hosted *on it*
+> can't recover it. The handoff lives outside the live tree + DB, and the entrypoint reads only that
+> artifact + host tools (`git` / `systemctl` / `db:backup` / `curl`) — it never calls back into the
+> instance it is recovering. All actions are audit-logged to `/var/log/cortex-oob-recover.log`.

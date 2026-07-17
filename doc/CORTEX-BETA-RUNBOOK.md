@@ -221,12 +221,15 @@ The train runs four stages, each independently rollback-capable:
    (an approval for one snapshot can never promote a different one). The weekly timer re-raises the
    request on each un-approved firing until granted.
 3. **canary** — promote the green snapshot onto **live** (`cortex.neoreef.com`, `:3100`) via the
-   governed **DEV-PROCESS §5** path: `db:backup` **first** → checkout the exact snapshot SHA →
-   `pnpm install && build` → `db:generate && db:migrate` → `doctor --repair` + health → content
-   probes. Any failure auto-rolls-back the **code** (checkout last-known-good → rebuild → restart →
-   health) and emits a first-class **ALERT** naming the pre-promotion backup for the DB restore
-   (§5.4 / NEO-198 — code rollback alone does not undo an applied migration; there is no
-   `db:restore` CLI, so DB restore stays the deliberate manual step).
+   governed **DEV-PROCESS §5** path. **Before any live change** it materializes a pre-primed
+   out-of-band recovery handoff to `/var/lib/cortex-release/<cut>/` (§7); then `db:backup` **first**
+   → checkout the exact snapshot SHA → `pnpm install && build` → `db:generate && db:migrate` →
+   `doctor --repair` + health → content probes. Any failure auto-rolls-back the **code** (checkout
+   last-known-good → rebuild → restart → health) and emits a first-class **ALERT** naming the
+   pre-promotion backup for the DB restore (§5.4 / NEO-198 — code rollback alone does not undo an
+   applied migration; there is no `db:restore` CLI, so DB restore stays the deliberate manual step).
+   If the auto-rollback itself does **not** restore green, the train **escalates to the out-of-band
+   recovery entrypoint** (§7) — the failure path that is expected to happen eventually.
 4. **fleet** — cut stable npm `latest` (`scripts/release.sh stable`; publishes only when
    `CORTEX_FLEET_PUBLISH=1`, else `--dry-run`) and upgrade any remaining instances → verify →
    rollback on fail. With a single live instance today the ring is a **no-op**, but the machinery
@@ -248,7 +251,47 @@ scripts/cortex-weekly-train.sh --promote     # canary (§5 → live) + fleet
 > that is non-loopback, a `*beta*` unit, or equal to the beta tree. Beta remains the single
 > in-place-build exception (§2), owned by the deploy agent — never the train.
 
-## 7. References
+## 7. Out-of-band canary update-failure recovery (522f / NEO-532)
+
+A canary (live orchestrator) update **will** fail eventually. The deterministic auto-rollback in
+§6 stage 3 handles the common case, but it can itself fail, or the failure can be novel. For that,
+the pipeline pre-primes an **out-of-band recovery** path — reachable even with the live orchestrator
+down, run at the **host level as an independent failure domain** (never a Paperclip heartbeat on the
+instance being recovered — an agent hosted on a down instance can't recover it).
+
+**Two moving parts:**
+
+1. **Pre-primed handoff artifact** — `scripts/cortex-release-handoff.sh` writes a self-contained
+   `HANDOFF.md` + machine-readable `context.env` to the **stable host path**
+   `/var/lib/cortex-release/<cut>/` (a `latest` symlink tracks the newest cut). The train
+   materializes it **before any live change**, so it is readable even if the orchestrator + its DB
+   are down. It contains: the version change log (issues + migrations + probes in the cut), the
+   last-known-good ref + exact §5 rollback/restore commands, the health/verify commands, per-change
+   tracing guidance (which probe/issue maps to which symptom), and the escalation path. The same
+   change log is carried in the weekly **approval request**, so the CTO approves *with* the summary.
+
+2. **Recovery entrypoint** — `scripts/cortex-oob-recover.sh` (host-level, `cortex-oob-recover.service`):
+
+   ```bash
+   scripts/cortex-oob-recover.sh --restore   # deterministic restore to last-known-good (host tools only)
+   scripts/cortex-oob-recover.sh --auto      # launch a wired recovery agent (CORTEX_OOB_AGENT_CMD), else --restore
+   scripts/cortex-oob-recover.sh --agent     # launch the pre-primed Claude Code agent for a NOVEL failure
+   scripts/cortex-oob-recover.sh --print     # show the resolved handoff + context
+   scripts/cortex-oob-recover.sh --dry-run --restore   # print the restore plan, change nothing
+   ```
+
+   `--restore` is deterministic and needs no LLM: checkout the handoff's last-known-good ref →
+   rebuild → restart → health → content-verify, then surface the DB-restore caveat if a migration
+   may have applied. `--agent` hands the artifact to a pre-primed agent (own creds, host shell,
+   `systemctl`, `db:backup`/restore, `git`) for failures the deterministic path can't fix. The
+   weekly train auto-fires `--auto` when its own auto-rollback fails to restore green.
+
+> **Escalation order.** deterministic auto-rollback (§6 stage 3) → OOB `--restore` → OOB `--agent`
+> for a novel failure → page the CTO and hold. Never re-attempt the forward promotion after a
+> failed cut: the approval token is single-use and already consumed; a new cut needs fresh approval.
+> All OOB actions are audit-logged (`/var/log/cortex-oob-recover.log` + journald).
+
+## 8. References
 
 - `doc/DEV-PROCESS.md` — §2 Staging row points here; §5 governs the live promotion gate and
   cross-links this deploy agent as beta's single sanctioned in-place-build exception.
@@ -258,6 +301,7 @@ scripts/cortex-weekly-train.sh --promote     # canary (§5 → live) + fleet
   `scripts/verify-content.mjs` + auto-rollback).
 - Drift guard: [NEO-528](/NEO/issues/NEO-528) (522c done⇒on-beta reconciliation routine).
 - Canary + fleet weekly train: [NEO-529](/NEO/issues/NEO-529) (522d — see §6; `scripts/cortex-weekly-train.sh` + `cortex-weekly-train.timer`/`.service`, §5-gated live promotion).
+- Out-of-band update-failure recovery: [NEO-532](/NEO/issues/NEO-532) (522f — see §7; `scripts/cortex-release-handoff.sh` pre-primed handoff + `scripts/cortex-oob-recover.sh` + `cortex-oob-recover.service`, host-level independent-failure-domain restore).
 - Pipeline plan & decisions: [NEO-522](/NEO/issues/NEO-522#document-plan).
 - Beta service topology: NEO-253 (systemd unit, isolated DB/plugins). Vendoring: NEO-251.
 - Live promotion + rollback runbook: [NEO-198](/NEO/issues/NEO-198) (the §5 gate this reuses).

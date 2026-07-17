@@ -80,6 +80,17 @@ CORTEX_TRAIN_LOCK="${CORTEX_TRAIN_LOCK:-/tmp/cortex-weekly-train.lock}"
 # Optional alert sink, invoked as `$CMD "<message>"` on any abort/rollback (also always journald).
 CORTEX_TRAIN_ALERT_CMD="${CORTEX_TRAIN_ALERT_CMD:-}"
 
+# Out-of-band recovery handoff (522f / NEO-532). Before any live change the train materializes a
+# pre-primed recovery artifact (changelog + LKG + restore/verify commands + tracing) to a stable
+# host path, so a failed update can be recovered out-of-band even with the orchestrator down. If
+# the deterministic auto-rollback below cannot restore green, the train escalates to the OOB
+# recovery entrypoint (a host-level, independent-failure-domain agent — NOT a heartbeat here).
+CORTEX_RELEASE_ROOT="${CORTEX_RELEASE_ROOT:-/var/lib/cortex-release}"
+CORTEX_RELEASE_HANDOFF_SCRIPT="${CORTEX_RELEASE_HANDOFF_SCRIPT:-$CORTEX_BETA_TREE/scripts/cortex-release-handoff.sh}"
+# Escalation hook fired ONLY when auto-rollback fails to restore green. Invoked as
+# `$CMD <handoff-dir>`. Defaults to the OOB recovery entrypoint in --auto mode.
+CORTEX_OOB_RECOVER_CMD="${CORTEX_OOB_RECOVER_CMD:-}"
+
 MODE="train"
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -171,6 +182,54 @@ request_approval() {
   log "    scripts/cortex-weekly-train.sh --promote"
 }
 
+# --- Out-of-band recovery handoff (522f) --------------------------------------------------------
+# The version change log for a cut — carried in the approval request so the CTO approves WITH the
+# change summary (NEO-532 acceptance). Best-effort: never let changelog generation block the train.
+release_changelog() {
+  local candidate="$1"
+  [[ -x "$CORTEX_RELEASE_HANDOFF_SCRIPT" ]] || { echo "(changelog unavailable — $CORTEX_RELEASE_HANDOFF_SCRIPT not executable)"; return 0; }
+  CORTEX_RELEASE_ROOT="$CORTEX_RELEASE_ROOT" CORTEX_BETA_TREE="$CORTEX_BETA_TREE" \
+  CORTEX_LIVE_TREE="$CORTEX_LIVE_TREE" CORTEX_LIVE_SERVICE="$CORTEX_LIVE_SERVICE" \
+  CORTEX_LIVE_HEALTH_URL="$CORTEX_LIVE_HEALTH_URL" \
+    "$CORTEX_RELEASE_HANDOFF_SCRIPT" changelog "$candidate" 2>/dev/null || echo "(changelog generation failed)"
+}
+
+# Materialize the pre-primed handoff artifact to the stable host path BEFORE any live change.
+# Prints the handoff dir on success. Fatal on failure: without the handoff there is no OOB recovery
+# path, so we refuse to promote (fail safe — nothing has changed live yet at this point).
+materialize_handoff() {
+  local candidate="$1" lkg="$2" dir
+  [[ -x "$CORTEX_RELEASE_HANDOFF_SCRIPT" ]] || die "handoff script not executable ($CORTEX_RELEASE_HANDOFF_SCRIPT) — refusing to promote without an OOB recovery artifact."
+  dir="$( CORTEX_RELEASE_ROOT="$CORTEX_RELEASE_ROOT" CORTEX_BETA_TREE="$CORTEX_BETA_TREE" \
+          CORTEX_LIVE_TREE="$CORTEX_LIVE_TREE" CORTEX_LIVE_SERVICE="$CORTEX_LIVE_SERVICE" \
+          CORTEX_LIVE_HEALTH_URL="$CORTEX_LIVE_HEALTH_URL" CORTEX_LIVE_BASE_URL="$CORTEX_LIVE_BASE_URL" \
+          CORTEX_LIVE_CONFIG="$CORTEX_LIVE_CONFIG" CORTEX_LIVE_REMOTE="$CORTEX_LIVE_REMOTE" \
+          "$CORTEX_RELEASE_HANDOFF_SCRIPT" materialize "$candidate" "$lkg" 2>/dev/null )" \
+    || die "failed to materialize the OOB recovery handoff for ${candidate:0:12} — refusing to promote without a recovery artifact."
+  printf '%s' "$dir"
+}
+
+# Append the concrete pre-promotion backup path to an already-materialized handoff (best-effort).
+record_handoff_backup() {
+  local candidate="$1" backup="$2"
+  [[ -n "$backup" && -x "$CORTEX_RELEASE_HANDOFF_SCRIPT" ]] || return 0
+  CORTEX_RELEASE_ROOT="$CORTEX_RELEASE_ROOT" "$CORTEX_RELEASE_HANDOFF_SCRIPT" \
+    record-backup "${candidate:0:12}" "$backup" >/dev/null 2>&1 || warn "could not record backup into handoff"
+}
+
+# Escalate to the out-of-band recovery entrypoint — fired ONLY when the deterministic auto-rollback
+# has failed to restore green. Runs host-level (this train is a systemd unit, not a heartbeat), so
+# invoking it here keeps the independent-failure-domain contract. Best-effort: it is the last resort.
+escalate_oob() {
+  local handoff_dir="$1"
+  local cmd="$CORTEX_OOB_RECOVER_CMD"
+  [[ -n "$cmd" ]] || cmd="$CORTEX_BETA_TREE/scripts/cortex-oob-recover.sh --auto"
+  alert "auto-rollback did NOT restore green — escalating to out-of-band recovery: $cmd --handoff ${handoff_dir:-$CORTEX_RELEASE_ROOT/latest}"
+  # shellcheck disable=SC2086
+  $cmd --handoff "${handoff_dir:-$CORTEX_RELEASE_ROOT/latest}" \
+    || alert "OOB recovery entrypoint returned non-zero — live may still be DOWN; page the CTO and hold (do NOT re-attempt the forward promotion)."
+}
+
 # --- Live safety asserts: this is the ONLY sanctioned path that touches the live plane -----
 assert_live_target() {
   [[ -d "$CORTEX_LIVE_TREE/.git" || -f "$CORTEX_LIVE_TREE/.git" ]] \
@@ -210,8 +269,9 @@ canary_promote() {
   log "canary: promote ${candidate:0:12} → live (${CORTEX_LIVE_SERVICE}); current live ${lkg:0:12}"
 
   if [[ "$dry" == "1" ]]; then
-    log "DRY-RUN canary: would (1) db:backup live, (2) record LKG ${lkg:0:12}, (3) checkout ${candidate:0:12},"
-    log "DRY-RUN canary: (4) pnpm install+build, (5) db:generate+db:migrate, (6) doctor --repair + health, (7) content-verify; rollback on any fail."
+    log "DRY-RUN canary: would (0) materialize OOB recovery handoff to $CORTEX_RELEASE_ROOT/<cut> BEFORE any live change,"
+    log "DRY-RUN canary: (1) db:backup live, (2) record LKG ${lkg:0:12}, (3) checkout ${candidate:0:12},"
+    log "DRY-RUN canary: (4) pnpm install+build, (5) db:generate+db:migrate, (6) doctor --repair + health, (7) content-verify; rollback→OOB-escalate on any fail."
     return 0
   fi
 
@@ -231,6 +291,14 @@ canary_promote() {
     die "candidate ${candidate:0:12} is not present in the live tree — cannot promote a snapshot the live plane has never seen."
   fi
 
+  # 522f — materialize the pre-primed OOB recovery handoff to the stable host path BEFORE any live
+  # change, so a failed update is recoverable out-of-band even with the orchestrator down. The
+  # candidate is proven reachable above and no live state has changed yet; fatal if it can't be
+  # written (no recovery artifact ⇒ no OOB path ⇒ refuse to promote).
+  local handoff_dir
+  handoff_dir="$(materialize_handoff "$candidate" "$lkg")"
+  log "OOB recovery handoff pre-primed at $handoff_dir (readable with the orchestrator down)."
+
   # §5 step 1 — DB backup FIRST. No live mutation happens before this succeeds. The backup
   # path is recorded so a rollback can name the exact file to restore (restore is the manual
   # NEO-198 procedure — there is no db:restore CLI, so we surface it, never fake it).
@@ -241,6 +309,9 @@ canary_promote() {
   fi
   backup_ref="$(printf '%s' "$backup_json" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s);process.stdout.write(j.path||j.file||j.filename||j.backupPath||"")}catch{process.stdout.write("")}})' 2>/dev/null || true)"
   log "live backup taken: ${backup_ref:-<see db:backup output / configured backup dir>}"
+  # Fill the concrete pre-promotion backup path into the handoff so an OOB restore names the exact
+  # file to restore (this is still before the real promotion — code checkout below).
+  record_handoff_backup "$candidate" "$backup_ref"
 
   printf '%s\n' "$lkg" >"$CORTEX_LIVE_STATE_FILE" 2>/dev/null || warn "could not persist live last-known-good ref"
 
@@ -249,7 +320,7 @@ canary_promote() {
   git -C "$CORTEX_LIVE_TREE" checkout --quiet --detach "$candidate"
 
   if ! promote_build_migrate_verify; then
-    rollback_live "$lkg" "$backup_ref"
+    rollback_live "$lkg" "$backup_ref" "$handoff_dir"
     die "canary promotion of ${candidate:0:12} FAILED — rolled back live to ${lkg:0:12} + restored backup."
   fi
 
@@ -277,7 +348,7 @@ promote_build_migrate_verify() {
 # first-class ALERT naming the exact pre-promotion backup + the NEO-198 restore procedure rather
 # than pretending a one-liner restore exists.
 rollback_live() {
-  local ref="$1" backup_ref="$2"
+  local ref="$1" backup_ref="$2" handoff_dir="${3:-}"
   alert "rolling live CODE back to ${ref:0:12} (rebuild + restart)"
   git -C "$CORTEX_LIVE_TREE" checkout --quiet --force "$ref" 2>/dev/null || warn "code rollback checkout failed"
   build_tree "$CORTEX_LIVE_TREE" || warn "rebuild during rollback failed"
@@ -285,7 +356,11 @@ rollback_live() {
   if health_ok "$CORTEX_LIVE_HEALTH_URL"; then
     log "code rollback healthy — live restored to ${ref:0:12}"
   else
-    alert "code rollback did NOT come healthy — live may be DOWN; manual intervention required"
+    # Deterministic auto-rollback itself failed — this is exactly the case 522f's out-of-band
+    # recovery exists for: escalate to the host-level recovery entrypoint pointed at the
+    # pre-primed handoff artifact (independent failure domain — the live plane is down).
+    alert "code rollback did NOT come healthy — live may be DOWN; escalating to out-of-band recovery."
+    escalate_oob "$handoff_dir"
   fi
   # DB: a failed promotion may have applied migrations that the code rollback cannot undo.
   alert "DB RESTORE MAY BE REQUIRED: if the failed promotion applied a migration, restore the pre-promotion backup \"${backup_ref:-<in the configured backup dir>}\" per DEV-PROCESS §5.4 / the NEO-198 runbook (stop service → restore backup → restart on ${ref:0:12}). Code-only rollback does not undo an applied migration."
@@ -361,7 +436,11 @@ if [[ "$MODE" == "preflight" ]]; then
   exit 0
 fi
 
-SUMMARY="Weekly release train: promote green beta snapshot ${CANDIDATE:0:12} to live (cortex.neoreef.com) via DEV-PROCESS §5."
+# The approval request carries the version change log of the cut (522f / NEO-532 acceptance): the
+# CTO approves WITH the change summary, and the same changelog is baked into the OOB handoff.
+SUMMARY="Weekly release train: promote green beta snapshot ${CANDIDATE:0:12} to live (cortex.neoreef.com) via DEV-PROCESS §5.
+
+$(release_changelog "$CANDIDATE")"
 
 if [[ "$MODE" == "request" ]]; then
   request_approval "$CANDIDATE" "$SUMMARY"

@@ -1,0 +1,47 @@
+# cortex-oob-recover.service — out-of-band canary update-failure recovery (NEO-532 / 522f).
+#
+# HOST-LEVEL, oneshot, MANUAL/escalation-only. This is the independent-failure-domain recovery
+# entrypoint: it brings a failed canary (live orchestrator) update back online using ONLY the
+# pre-primed handoff artifact (scripts/cortex-release-handoff.sh writes it to /var/lib/cortex-release
+# before every promotion) + host tools. It is the ESCALATION after the weekly train's deterministic
+# auto-rollback (522d/522b) has already failed or the failure is novel.
+#
+# It is deliberately NOT timer-driven and NOT a Paperclip heartbeat: an agent hosted on the
+# instance being recovered can't recover it. Invoke it host-level, one of:
+#
+#   # Deterministic restore to last-known-good (the fast path):
+#   sudo systemctl start cortex-oob-recover.service
+#   # or directly, choosing the mode:
+#   scripts/cortex-oob-recover.sh --restore           # deterministic LKG restore (host tools only)
+#   scripts/cortex-oob-recover.sh --auto              # agent if wired (CORTEX_OOB_AGENT_CMD), else restore
+#   scripts/cortex-oob-recover.sh --print             # show the resolved handoff + context
+#
+# The weekly train also auto-fires this entrypoint (`--auto`) when its own auto-rollback fails to
+# restore green (see cortex-weekly-train.sh escalate_oob).
+#
+# Install (one-time, on the controller host):
+#   sudo ln -sf /home/ubuntu/projects/cortex-beta/scripts/systemd/cortex-oob-recover.service /etc/systemd/system/cortex-oob-recover.service
+#   sudo mkdir -p /var/lib/cortex-release && sudo chown ubuntu:ubuntu /var/lib/cortex-release
+#   sudo touch /var/log/cortex-oob-recover.log && sudo chown ubuntu:ubuntu /var/log/cortex-oob-recover.log
+#   sudo systemctl daemon-reload
+#   # then, on a failed update:  sudo systemctl start cortex-oob-recover.service
+#
+# To wire a pre-primed Claude Code recovery agent for NOVEL failures (optional), drop-in:
+#   sudo systemctl edit cortex-oob-recover.service
+#   [Service]
+#   Environment=CORTEX_OOB_AGENT_CMD=/usr/local/bin/cortex-oob-agent   # invoked: $CMD <HANDOFF.md> <context.env>
+
+[Unit]
+Description=Cortex out-of-band canary update-failure recovery (host-level, independent failure domain)
+# Intentionally NOT ordered After=paperclip.service: this must run even when the live orchestrator
+# is down — that is the whole point of an out-of-band recovery.
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/projects/cortex-beta
+# Default mode = --auto: hand off to a wired recovery agent, else deterministic LKG restore.
+ExecStart=/home/ubuntu/projects/cortex-beta/scripts/cortex-oob-recover.sh --auto
+# A restore (checkout + rebuild + restart + health) can take minutes; never kill it mid-restore.
+TimeoutStartSec=3600
+# The restore unsets NODE_ENV around the rebuild itself so devDeps install. Do NOT set it here.
