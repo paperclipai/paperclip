@@ -1635,7 +1635,7 @@ export function agentRoutes(
     };
   }
 
-  function toAgentListSummary(agent: NonNullable<Awaited<ReturnType<typeof svc.getById>>>) {
+  function toAgentListSummary(agent: Awaited<ReturnType<typeof svc.list>>[number]) {
     return {
       id: agent.id,
       companyId: agent.companyId,
@@ -2015,6 +2015,7 @@ export function agentRoutes(
         return;
       }
       const result = await filterAgentsForActor(req, await svc.list(companyId));
+      result.sort((left, right) => left.id.localeCompare(right.id));
       res.json(result.slice(offset, offset + limit).map((agent) => toAgentListSummary(agent)));
       return;
     }

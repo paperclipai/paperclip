@@ -22,7 +22,8 @@ GET /api/companies/{companyId}/agents?view=summary&limit=100&offset=0
 
 Summary pages contain only `id`, `companyId`, `name`, `urlKey`, `role`, `title`,
 `status`, and `reportsTo`. `limit` defaults to 100 and cannot exceed 100; `offset`
-defaults to 0. Continue until a page contains fewer than `limit` items.
+defaults to 0. Results are ordered by agent ID. Continue until a page contains
+fewer than `limit` items.
 
 `limit` and `offset` require `view=summary`. Other query parameters return `400`.
 

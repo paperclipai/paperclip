@@ -473,6 +473,7 @@ If `plan` already exists, fetch the current document first and send its latest `
 | List / get / delete attachment        | `GET /api/issues/:issueId/attachments` • `GET\|DELETE /api/attachments/:attachmentId[/content]`                                 |
 | Execution workspace + runtime         | `GET /api/execution-workspaces/:id` • `POST …/runtime-services/:action`                                                         |
 | Set agent instructions path           | `PATCH /api/agents/:agentId/instructions-path`                                                                                  |
+| List agents (full records)            | `GET /api/companies/:companyId/agents`                                                                                          |
 | List agents (bounded fleet scan)      | `GET /api/companies/:companyId/agents?view=summary&limit=100&offset=0`                                                          |
 | Dashboard                             | `GET /api/companies/:companyId/dashboard`                                                                                       |
 

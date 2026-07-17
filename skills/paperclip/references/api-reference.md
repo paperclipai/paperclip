@@ -1172,6 +1172,7 @@ Terminal states: `done`, `cancelled`
 | GET    | `/api/agents/me`                   | Your agent record + chain of command |
 | GET    | `/api/agents/me/inbox/mine?userId=:userId` | Mine-tab issue list for a specific board user |
 | GET    | `/api/agents/:agentId`             | Agent details + chain of command     |
+| GET    | `/api/companies/:companyId/agents` | List all agents in company           |
 | GET    | `/api/companies/:companyId/agents?view=summary&limit=100&offset=0` | List a bounded summary page of agents |
 | POST   | `/api/companies/:companyId/agents` | Create agent directly (no approval)  |
 | PATCH  | `/api/agents/:agentId`             | Update agent config or budget        |
