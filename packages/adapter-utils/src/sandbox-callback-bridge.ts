@@ -912,6 +912,7 @@ export async function startSandboxCallbackBridgeServer(input: {
     maxQueueDepth: input.maxQueueDepth,
     maxBodyBytes: input.maxBodyBytes,
   });
+  delete env.PAPERCLIP_BRIDGE_TOKEN;
   const nodeCommand = input.nodeCommand?.trim() || "node";
   const startResult = await input.runner.execute({
     command: shellCommand,
@@ -919,6 +920,8 @@ export async function startSandboxCallbackBridgeServer(input: {
       [
         `mkdir -p ${shellQuote(directories.requestsDir)} ${shellQuote(directories.responsesDir)} ${shellQuote(directories.logsDir)}`,
         `rm -f ${shellQuote(directories.readyFile)} ${shellQuote(directories.pidFile)}`,
+        "IFS= read -r PAPERCLIP_BRIDGE_TOKEN",
+        "export PAPERCLIP_BRIDGE_TOKEN",
         `nohup ${shellQuote(nodeCommand)} ${shellQuote(remoteEntrypoint)} ` +
           `>> ${shellQuote(directories.logFile)} 2>&1 < /dev/null &`,
         "pid=$!",
@@ -931,6 +934,7 @@ export async function startSandboxCallbackBridgeServer(input: {
       [SANDBOX_EXEC_CHANNEL_ENV]: SANDBOX_EXEC_CHANNEL_BRIDGE,
       ...env,
     },
+    stdin: `${input.bridgeToken}\n`,
     timeoutMs,
   });
   requireSuccessfulResult("start sandbox callback bridge", startResult);

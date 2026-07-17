@@ -114,7 +114,7 @@ describe("sandbox callback bridge", () => {
     }
   });
 
-  it("round-trips localhost bridge requests over the sandbox queue without forwarding the bridge token", async () => {
+  it("round-trips bridge requests without putting the bridge credential in spawned argv", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-runtime-"));
     cleanupDirs.push(rootDir);
 
@@ -124,7 +124,14 @@ describe("sandbox callback bridge", () => {
     await mkdir(remoteWorkspaceDir, { recursive: true });
     await writeFile(path.join(localWorkspaceDir, "README.md"), "bridge test\n", "utf8");
 
-    const runner = createExecRunner();
+    const delegateRunner = createExecRunner();
+    const runnerInputs: Array<Parameters<typeof delegateRunner.execute>[0]> = [];
+    const runner = {
+      execute: async (input: Parameters<typeof delegateRunner.execute>[0]) => {
+        runnerInputs.push(input);
+        return await delegateRunner.execute(input);
+      },
+    };
 
     const bridgeAsset = await createSandboxCallbackBridgeAsset();
     cleanupFns.push(bridgeAsset.cleanup);
@@ -147,7 +154,7 @@ describe("sandbox callback bridge", () => {
 
     const queueDir = path.posix.join(prepared.runtimeRootDir, "paperclip-bridge");
     const directories = sandboxCallbackBridgeDirectories(queueDir);
-    const bridgeToken = createSandboxCallbackBridgeToken();
+    const bridgeToken = "paperclip-bridge-argv-sentinel";
     const seenRequests: Array<{
       method: string;
       path: string;
@@ -199,6 +206,13 @@ describe("sandbox callback bridge", () => {
     cleanupFns.push(async () => {
       await bridge.stop();
     });
+
+    const bridgeStartInput = runnerInputs.find((input) => input.stdin === `${bridgeToken}\n`);
+    expect(bridgeStartInput).toBeDefined();
+    expect(JSON.stringify([bridgeStartInput!.command, ...(bridgeStartInput!.args ?? [])])).not.toContain(
+      bridgeToken,
+    );
+    expect(JSON.stringify(bridgeStartInput!.env ?? {})).not.toContain(bridgeToken);
 
     const okResponse = await fetch(`${bridge.baseUrl}/api/agents/me?view=compact`, {
       headers: {
