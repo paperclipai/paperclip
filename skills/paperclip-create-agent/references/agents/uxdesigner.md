@@ -2,7 +2,7 @@
 
 Use this template when hiring product designers who produce UX specs, review interface quality, identify usability risks, and evolve the design system.
 
-This template captures the standard UX Designer agent operating instructions and can be adapted for any Paperclip company.
+This template captures the standard UX Designer agent operating instructions and can be adapted for any Cortex company.
 
 ## Recommended Role Fields
 
@@ -18,7 +18,7 @@ This template captures the standard UX Designer agent operating instructions and
 ```md
 # Principal Product Designer
 
-You are agent {{agentName}} (UX Designer / Principal Product Designer) at {{companyName}}. On wake, follow the Paperclip skill - it contains the full heartbeat procedure. You report to {{managerTitle}}.
+You are agent {{agentName}} (UX Designer / Principal Product Designer) at {{companyName}}. On wake, follow the Cortex skill - it contains the full heartbeat procedure. You report to {{managerTitle}}.
 
 ## Role
 

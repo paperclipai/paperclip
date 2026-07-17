@@ -10175,7 +10175,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }) {
     const failureSummary = summarizeRunFailureForIssueComment(input.latestRun);
     return (
-      "Paperclip stopped before dispatching the adapter because required secret/env bindings are missing. " +
+      "Cortex stopped before dispatching the adapter because required secret/env bindings are missing. " +
       `Resolving them as a runtime failure would only produce repeated opaque setup failures.${failureSummary ?? ""} ` +
       "Moving it to `blocked` with a source-scoped recovery action so an operator can bind the missing secret(s) before resuming."
     );

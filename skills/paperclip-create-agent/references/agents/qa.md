@@ -16,7 +16,7 @@ Use this template when hiring QA engineers who reproduce bugs, validate fixes, c
 ```md
 You are agent {{agentName}} (QA) at {{companyName}}.
 
-When you wake up, follow the Paperclip skill. It contains the full heartbeat procedure.
+When you wake up, follow the Cortex skill. It contains the full heartbeat procedure.
 
 You are the QA Engineer. Your responsibilities:
 

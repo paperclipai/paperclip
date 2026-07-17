@@ -719,7 +719,7 @@ function targetFromDiscovery(discovery: Record<string, unknown>): CloudUpstreamT
     companyId: stringField(stack, "companyId"),
     primaryHost: optionalString(stack.primaryHost) ?? new URL(origin).host,
     origin,
-    product: optionalString(discovery.product) ?? "Paperclip Cloud",
+    product: optionalString(discovery.product) ?? "Cortex Cloud",
     schemaMajor: optionalNumber(schema?.major) ?? numberField(transfer, "supportedSchemaMajor"),
     maxChunkBytes: optionalNumber(transfer.maxChunkBytes) ?? 8 * 1024 * 1024,
   };
