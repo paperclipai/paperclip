@@ -48,7 +48,8 @@ describe("adapter model listing", () => {
     const models = await listAdapterModels("codex_local");
 
     expect(models).toEqual(codexFallbackModels);
-    expect(models.some((model) => model.id === "gpt-5.6")).toBe(true);
+    // The bare gpt-5.6 alias is intentionally not advertised (Codex has no metadata for it).
+    expect(models.some((model) => model.id === "gpt-5.6")).toBe(false);
     expect(models.some((model) => model.id === "gpt-5.6-sol")).toBe(true);
     expect(models.some((model) => model.id === "gpt-5.6-terra")).toBe(true);
     expect(models.some((model) => model.id === "gpt-5.6-luna")).toBe(true);
