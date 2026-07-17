@@ -80,7 +80,7 @@ emit() { # $1 status ("ok"/"failed"), $2 revision number, $3 revision id, $4 mes
 }
 
 if [ "$DRY_RUN" = "1" ]; then
-  echo "DRY RUN: PUT $PAPERCLIP_API_URL/api/issues/$ISSUE_ID/documents/$KEY"
+  echo "DRY RUN: PUT ${PAPERCLIP_API_URL:-<PAPERCLIP_API_URL not set>}/api/issues/$ISSUE_ID/documents/$KEY"
   echo "  title=$TITLE format=$FORMAT bodyBytes=${#BODY} changeSummary=${CHANGE_SUMMARY:-<none>}"
   exit 0
 fi
@@ -134,10 +134,16 @@ fi
 # 4. Never report success on a non-2xx.
 [ "${code:0:1}" = "2" ] || { emit failed 0 "" "write failed (HTTP $code): $payload" >&2; exit 1; }
 
-# 5. Verify the revision actually advanced.
+# 5. Verify the revision actually advanced. Distinguish "couldn't read it back"
+#    (transient GET failure) from "the revision genuinely didn't advance" so the
+#    error is actionable. Either way we exit non-zero — never a false success.
 read_state
-if [ "$GET_CODE" != "200" ] || [ "$GET_REVNUM" -le "$BEFORE_REV" ]; then
-  emit failed "$GET_REVNUM" "$GET_REV" "post-write verify failed (before=$BEFORE_REV after=$GET_REVNUM code=$GET_CODE)" >&2
+if [ "$GET_CODE" != "200" ]; then
+  emit failed "$GET_REVNUM" "$GET_REV" "write returned HTTP $code but the post-write read could not confirm it (GET $GET_CODE); treat as unverified" >&2
+  exit 1
+fi
+if [ "$GET_REVNUM" -le "$BEFORE_REV" ]; then
+  emit failed "$GET_REVNUM" "$GET_REV" "post-write verify failed: revision did not advance (before=$BEFORE_REV after=$GET_REVNUM)" >&2
   exit 1
 fi
 
