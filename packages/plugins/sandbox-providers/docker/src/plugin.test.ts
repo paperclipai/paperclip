@@ -75,6 +75,21 @@ describe("Docker sandbox provider", () => {
     expect(runner.mock.calls[1]?.[0]).toEqual(expect.arrayContaining(["exec", "container-1", "/bin/sh"]));
   });
 
+  it("exposes provider-managed service lifecycle hooks", async () => {
+    const runner = vi.fn(async () => ({ exitCode: 0, signal: null, timedOut: false, stdout: "exec-1", stderr: "", stdoutTruncated: false, stderrTruncated: false })) satisfies DockerRunner;
+    const plugin = createDockerSandboxPlugin(runner);
+    const start = await plugin.definition.onEnvironmentStartRuntimeService?.({
+      driverKey: "docker", companyId: "company-1", environmentId: "env-1", config,
+      lease: { providerLeaseId: "container-1" }, service: { serviceName: "web", command: "node server.js", cwd: "/workspace/app", url: "http://127.0.0.1:45123" },
+    });
+    await plugin.definition.onEnvironmentStopRuntimeService?.({
+      driverKey: "docker", companyId: "company-1", environmentId: "env-1", config,
+      lease: { providerLeaseId: "container-1" }, serviceName: "web", providerRef: start?.providerRef,
+    });
+    expect(start).toMatchObject({ providerRef: "container-1:web", metadata: { provider: "docker" } });
+    expect(runner).toHaveBeenCalledTimes(2);
+  });
+
   it("health-checks only the loopback managed URL", async () => {
     const request = vi.fn(async () => new Response("ok", { status: 200 }));
     await expect(healthDockerRuntimeService("http://127.0.0.1:45123/health", request)).resolves.toBe(true);

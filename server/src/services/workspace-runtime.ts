@@ -106,8 +106,9 @@ export interface RuntimeServiceRef {
   cwd: string | null;
   port: number | null;
   url: string | null;
-  provider: "local_process" | "adapter_managed";
+  provider: "local_process" | "adapter_managed" | "sandbox_provider";
   providerRef: string | null;
+  providerMetadata?: Record<string, unknown> | null;
   ownerAgentId: string | null;
   startedByRunId: string | null;
   lastUsedAt: string;
@@ -127,6 +128,14 @@ interface RuntimeServiceRecord extends RuntimeServiceRef {
   serviceKey: string;
   profileKind: string;
   processGroupId: number | null;
+  providerLifecycle?: RuntimeServiceProvider | null;
+}
+
+/** Provider-owned service lifecycle used when a workspace is realized remotely. */
+export interface RuntimeServiceProvider {
+  start(service: { serviceName: string; command: string; cwd: string; url: string | null; readinessUrl: string | null; env: Record<string, string> }): Promise<{ providerRef: string; url?: string | null; metadata?: Record<string, unknown> }>;
+  stop(service: { serviceName: string; providerRef: string | null }): Promise<void>;
+  health(service: { serviceName: string; providerRef: string | null; url: string | null; readinessUrl: string | null }): Promise<{ healthy: boolean; url?: string | null; metadata?: Record<string, unknown> }>;
 }
 
 type LocalRuntimeServiceStart = {
@@ -369,6 +378,7 @@ function toRuntimeServiceRef(record: RuntimeServiceRecord, overrides?: Partial<R
     url: record.url,
     provider: record.provider,
     providerRef: record.providerRef,
+    providerMetadata: record.providerMetadata ?? null,
     ownerAgentId: record.ownerAgentId,
     startedByRunId: record.startedByRunId,
     lastUsedAt: record.lastUsedAt,
@@ -3644,6 +3654,7 @@ function toPersistedWorkspaceRuntimeService(record: RuntimeServiceRecord): typeo
     url: record.url,
     provider: record.provider,
     providerRef: record.providerRef,
+    providerMetadata: record.providerMetadata ?? null,
     ownerAgentId: record.ownerAgentId,
     startedByRunId: record.startedByRunId,
     lastUsedAt: new Date(record.lastUsedAt),
@@ -3680,6 +3691,7 @@ async function persistRuntimeServiceRecord(db: Db | undefined, record: RuntimeSe
         url: values.url,
         provider: values.provider,
         providerRef: values.providerRef,
+        providerMetadata: values.providerMetadata,
         ownerAgentId: values.ownerAgentId,
         startedByRunId: values.startedByRunId,
         lastUsedAt: values.lastUsedAt,
@@ -4138,6 +4150,52 @@ async function startLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
   return started.record;
 }
 
+async function startProviderRuntimeService(input: StartLocalRuntimeServiceInput & { providerRuntime: RuntimeServiceProvider }): Promise<RuntimeServiceRecord> {
+  const resolved = resolveWorkspaceCommandExecution({
+    command: input.service,
+    workspace: input.workspace,
+    agent: input.agent,
+    issue: input.issue,
+    adapterEnv: input.adapterEnv,
+  });
+  if (!resolved.command) throw new Error(`Runtime service "${resolved.name}" is missing command`);
+  const readinessUrl = asString(parseObject(input.service.readiness).url, resolved.url ?? "") || null;
+  const started = await input.providerRuntime.start({
+    serviceName: resolved.name,
+    command: resolved.command,
+    cwd: resolved.cwd,
+    url: resolved.url ?? null,
+    readinessUrl,
+    env: resolved.env,
+  });
+  const health = await input.providerRuntime.health({
+    serviceName: resolved.name,
+    providerRef: started.providerRef,
+    url: started.url ?? resolved.url ?? null,
+    readinessUrl,
+  });
+  if (!health.healthy) {
+    await input.providerRuntime.stop({ serviceName: resolved.name, providerRef: started.providerRef }).catch(() => undefined);
+    throw new Error(`Provider runtime service "${resolved.name}" did not become healthy`);
+  }
+  const now = new Date().toISOString();
+  return {
+    id: randomUUID(), companyId: input.agent.companyId, projectId: input.workspace.projectId,
+    projectWorkspaceId: input.workspace.workspaceId, executionWorkspaceId: input.executionWorkspaceId ?? null,
+    issueId: input.issue?.id ?? null, serviceName: resolved.name, status: "running",
+    lifecycle: input.service.lifecycle === "shared" ? "shared" : "ephemeral", scopeType: input.scopeType,
+    scopeId: input.scopeId, reuseKey: input.reuseKey, command: resolved.command, cwd: resolved.cwd,
+    port: asNumber(input.service.port, 0) || null, url: health.url ?? started.url ?? resolved.url ?? null,
+    provider: "sandbox_provider", providerRef: started.providerRef,
+    providerMetadata: { ...(started.metadata ?? {}), ...(health.metadata ?? {}) },
+    ownerAgentId: input.agent.id ?? null, startedByRunId: input.runId, lastUsedAt: now, startedAt: now,
+    stoppedAt: null, stopPolicy: parseObject(input.service.stopPolicy), healthStatus: "healthy", reused: false,
+    child: null, leaseRunIds: new Set([input.runId]), idleTimer: null, envFingerprint: "provider",
+    serviceKey: `provider:${started.providerRef}`, profileKind: "workspace-runtime", processGroupId: null,
+    providerLifecycle: input.providerRuntime,
+  };
+}
+
 function scheduleIdleStop(record: RuntimeServiceRecord) {
   clearIdleTimer(record);
   const stopType = asString(record.stopPolicy?.type, "manual");
@@ -4160,7 +4218,9 @@ async function stopRuntimeService(serviceId: string) {
   if (record.reuseKey && runtimeServicesByReuseKey.get(record.reuseKey) === record.id) {
     runtimeServicesByReuseKey.delete(record.reuseKey);
   }
-  if (record.child && record.child.pid) {
+  if (record.providerLifecycle) {
+    await record.providerLifecycle.stop({ serviceName: record.serviceName, providerRef: record.providerRef });
+  } else if (record.child && record.child.pid) {
     await terminateLocalService({
       pid: record.child.pid,
       processGroupId: record.processGroupId ?? record.child.pid,
@@ -4174,7 +4234,7 @@ async function stopRuntimeService(serviceId: string) {
       });
     }
   }
-  await removeLocalServiceRegistryRecord(record.serviceKey);
+  if (record.provider === "local_process") await removeLocalServiceRegistryRecord(record.serviceKey);
   await persistRuntimeServiceRecord(record.db, record);
 }
 
@@ -4324,6 +4384,7 @@ export async function ensureRuntimeServicesForRun(input: {
   config: Record<string, unknown>;
   adapterEnv: Record<string, string>;
   onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+  providerRuntime?: RuntimeServiceProvider | null;
 }): Promise<RuntimeServiceRef[]> {
   const rawServices = selectRuntimeServiceEntries({
     config: input.config,
@@ -4374,7 +4435,22 @@ export async function ensureRuntimeServicesForRun(input: {
         }
       }
 
-      const record = await startLocalRuntimeService({
+      const record = input.providerRuntime
+        ? await startProviderRuntimeService({
+            db: input.db,
+            runId: input.runId,
+            agent: input.agent,
+            issue: input.issue,
+            workspace: input.workspace,
+            executionWorkspaceId: input.executionWorkspaceId,
+            adapterEnv: input.adapterEnv,
+            service,
+            reuseKey,
+            scopeType,
+            scopeId,
+            providerRuntime: input.providerRuntime,
+          })
+        : await startLocalRuntimeService({
         db: input.db,
         runId: input.runId,
         agent: input.agent,
@@ -4413,6 +4489,7 @@ type StartRuntimeServicesForWorkspaceControlInput = {
   onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   serviceIndex?: number | null;
   respectDesiredStates?: boolean;
+  providerRuntime?: RuntimeServiceProvider | null;
 };
 
 type WorkspaceControlStartBatch = {

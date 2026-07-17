@@ -7,6 +7,8 @@ import type {
 import type {
   PluginEnvironmentExecuteParams,
   PluginEnvironmentExecuteResult,
+  PluginEnvironmentHealthRuntimeServiceParams,
+  PluginEnvironmentHealthRuntimeServiceResult,
   PluginEnvironmentInteractiveSetupSession,
   PluginEnvironmentStartInteractiveSetupParams,
   PluginEnvironmentGetInteractiveSetupParams,
@@ -19,6 +21,9 @@ import type {
   PluginEnvironmentLease,
   PluginEnvironmentRealizeWorkspaceParams,
   PluginEnvironmentRealizeWorkspaceResult,
+  PluginEnvironmentStartRuntimeServiceParams,
+  PluginEnvironmentStartRuntimeServiceResult,
+  PluginEnvironmentStopRuntimeServiceParams,
 } from "@paperclipai/plugin-sdk";
 import { unprocessable } from "../errors.js";
 import { pluginRegistryService } from "./plugin-registry.js";
@@ -342,6 +347,34 @@ export async function executePluginEnvironmentCommand(input: {
       config: input.config.driverConfig,
     }),
   );
+}
+
+/** Dispatch provider-owned workspace service lifecycle calls through the plugin worker. */
+export async function startPluginEnvironmentRuntimeService(input: {
+  db: Db;
+  workerManager: PluginWorkerManager;
+  pluginId: string;
+  params: PluginEnvironmentStartRuntimeServiceParams;
+}): Promise<PluginEnvironmentStartRuntimeServiceResult> {
+  return await input.workerManager.call(input.pluginId, "environmentStartRuntimeService", input.params);
+}
+
+export async function stopPluginEnvironmentRuntimeService(input: {
+  db: Db;
+  workerManager: PluginWorkerManager;
+  pluginId: string;
+  params: PluginEnvironmentStopRuntimeServiceParams;
+}): Promise<void> {
+  await input.workerManager.call(input.pluginId, "environmentStopRuntimeService", input.params);
+}
+
+export async function healthPluginEnvironmentRuntimeService(input: {
+  db: Db;
+  workerManager: PluginWorkerManager;
+  pluginId: string;
+  params: PluginEnvironmentHealthRuntimeServiceParams;
+}): Promise<PluginEnvironmentHealthRuntimeServiceResult> {
+  return await input.workerManager.call(input.pluginId, "environmentHealthRuntimeService", input.params);
 }
 
 export async function startPluginEnvironmentInteractiveSetup(input: {

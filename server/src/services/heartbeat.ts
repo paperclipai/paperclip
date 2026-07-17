@@ -13255,6 +13255,38 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           (entry): entry is [string, string] => typeof entry[0] === "string" && typeof entry[1] === "string",
         ),
       );
+      const sandboxPluginId = readNonEmptyString(activeEnvironmentLease.lease.metadata?.pluginId);
+      const sandboxProviderKey = readNonEmptyString(activeEnvironmentLease.lease.metadata?.provider);
+      const sandboxProviderRuntime =
+        activeEnvironmentLease.lease.metadata?.sandboxProviderPlugin &&
+        sandboxPluginId &&
+        sandboxProviderKey &&
+        options.pluginWorkerManager?.isRunning(sandboxPluginId)
+          ? {
+              start: async (service: { serviceName: string; command: string; cwd: string; url: string | null; readinessUrl: string | null; env: Record<string, string> }) =>
+                await options.pluginWorkerManager!.call(sandboxPluginId, "environmentStartRuntimeService", {
+                  driverKey: sandboxProviderKey, companyId: agent.companyId, environmentId: selectedEnvironment.id,
+                  issueId, config: selectedEnvironmentConfigForFingerprint,
+                  lease: { providerLeaseId: activeEnvironmentLease.lease.providerLeaseId, metadata: activeEnvironmentLease.lease.metadata ?? undefined },
+                  service,
+                }),
+              stop: async (service: { serviceName: string; providerRef: string | null }) => {
+                await options.pluginWorkerManager!.call(sandboxPluginId, "environmentStopRuntimeService", {
+                  driverKey: sandboxProviderKey, companyId: agent.companyId, environmentId: selectedEnvironment.id,
+                  issueId, config: selectedEnvironmentConfigForFingerprint,
+                  lease: { providerLeaseId: activeEnvironmentLease.lease.providerLeaseId, metadata: activeEnvironmentLease.lease.metadata ?? undefined },
+                  ...service,
+                });
+              },
+              health: async (service: { serviceName: string; providerRef: string | null; url: string | null; readinessUrl: string | null }) =>
+                await options.pluginWorkerManager!.call(sandboxPluginId, "environmentHealthRuntimeService", {
+                  driverKey: sandboxProviderKey, companyId: agent.companyId, environmentId: selectedEnvironment.id,
+                  issueId, config: selectedEnvironmentConfigForFingerprint,
+                  lease: { providerLeaseId: activeEnvironmentLease.lease.providerLeaseId, metadata: activeEnvironmentLease.lease.metadata ?? undefined },
+                  ...service,
+                }),
+            }
+          : null;
       const runtimeServices = await ensureRuntimeServicesForRun({
         db,
         runId: run.id,
@@ -13269,6 +13301,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         config: hostExecutionWorkspaceConfig,
         adapterEnv,
         onLog,
+        providerRuntime: sandboxProviderRuntime,
       });
       if (runtimeServices.length > 0) {
         context.paperclipRuntimeServices = runtimeServices;

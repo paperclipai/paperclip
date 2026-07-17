@@ -6,6 +6,8 @@ import type {
   PluginEnvironmentDestroyLeaseParams,
   PluginEnvironmentExecuteParams,
   PluginEnvironmentExecuteResult,
+  PluginEnvironmentHealthRuntimeServiceParams,
+  PluginEnvironmentHealthRuntimeServiceResult,
   PluginEnvironmentLease,
   PluginEnvironmentProbeParams,
   PluginEnvironmentProbeResult,
@@ -13,6 +15,9 @@ import type {
   PluginEnvironmentRealizeWorkspaceResult,
   PluginEnvironmentReleaseLeaseParams,
   PluginEnvironmentResumeLeaseParams,
+  PluginEnvironmentStartRuntimeServiceParams,
+  PluginEnvironmentStartRuntimeServiceResult,
+  PluginEnvironmentStopRuntimeServiceParams,
   PluginEnvironmentValidateConfigParams,
   PluginEnvironmentValidationResult,
 } from "@paperclipai/plugin-sdk";
@@ -369,6 +374,24 @@ export function createDockerSandboxPlugin(runner: DockerRunner = runDockerCli) {
       args.push(params.lease.providerLeaseId, params.command, ...(params.args ?? []));
       const result = await runner(args, { timeoutMs: boundedNumber(params.timeoutMs, config.timeoutMs, 1_000, MAX_TIMEOUT_MS) });
       return { exitCode: result.exitCode, signal: result.signal, timedOut: result.timedOut, stdout: result.stdout, stderr: result.stderr, metadata: { provider: "docker", stdoutTruncated: result.stdoutTruncated, stderrTruncated: result.stderrTruncated } };
+    },
+    async onEnvironmentStartRuntimeService(params: PluginEnvironmentStartRuntimeServiceParams): Promise<PluginEnvironmentStartRuntimeServiceResult> {
+      if (!params.lease.providerLeaseId) throw new Error("Docker sandbox lease id is required to start a runtime service");
+      const started = await startDockerRuntimeService(runner, {
+        providerLeaseId: params.lease.providerLeaseId,
+        serviceName: params.service.serviceName,
+        command: params.service.command,
+        cwd: params.service.cwd,
+      });
+      return { ...started, url: params.service.url ?? null, metadata: { provider: "docker", providerLeaseId: params.lease.providerLeaseId } };
+    },
+    async onEnvironmentStopRuntimeService(params: PluginEnvironmentStopRuntimeServiceParams): Promise<void> {
+      if (!params.lease.providerLeaseId) throw new Error("Docker sandbox lease id is required to stop a runtime service");
+      await stopDockerRuntimeService(runner, { providerLeaseId: params.lease.providerLeaseId, serviceName: params.serviceName });
+    },
+    async onEnvironmentHealthRuntimeService(params: PluginEnvironmentHealthRuntimeServiceParams): Promise<PluginEnvironmentHealthRuntimeServiceResult> {
+      const url = params.readinessUrl ?? params.url ?? null;
+      return { healthy: url ? await healthDockerRuntimeService(url) : true, url, metadata: { provider: "docker" } };
     },
   });
 }
