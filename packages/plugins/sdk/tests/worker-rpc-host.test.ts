@@ -71,6 +71,78 @@ describe("isWorkerEntrypoint", () => {
   });
 });
 
+describe("worker environment runtime-service dispatch", () => {
+  it("dispatches start, stop, and health lifecycle requests to plugin hooks", async () => {
+    const hostToWorker = new PassThrough();
+    const workerToHost = new PassThrough();
+    const hostReadline = createInterface({ input: workerToHost });
+    const pending = new Map<string, (response: JsonRpcResponse) => void>();
+    let nextRequestId = 1;
+    const plugin = definePlugin({
+      async onEnvironmentStartRuntimeService(params) {
+        return { providerRef: `lease:${params.service.serviceName}` };
+      },
+      async onEnvironmentStopRuntimeService() {},
+      async onEnvironmentHealthRuntimeService(params) {
+        return { healthy: true, url: params.url };
+      },
+    });
+    const worker = startWorkerRpcHost({ plugin, stdin: hostToWorker, stdout: workerToHost });
+
+    function callWorker(method: string, params: unknown) {
+      const id = `host-${nextRequestId++}`;
+      const result = new Promise<unknown>((resolve, reject) => {
+        pending.set(id, (response) => {
+          if ("error" in response && response.error) {
+            reject(new Error(response.error.message));
+            return;
+          }
+          resolve((response as { result?: unknown }).result);
+        });
+      });
+      hostToWorker.write(serializeMessage(createRequest(method, params, id)));
+      return result;
+    }
+
+    hostReadline.on("line", (line) => {
+      const message = parseMessage(line);
+      if (!isJsonRpcResponse(message)) return;
+      pending.get(String(message.id))?.(message);
+      pending.delete(String(message.id));
+    });
+
+    const baseParams = {
+      driverKey: "docker",
+      companyId: "company-1",
+      environmentId: "environment-1",
+      config: {},
+      lease: { providerLeaseId: "lease-1" },
+    };
+
+    try {
+      await expect(callWorker("environmentStartRuntimeService", {
+        ...baseParams,
+        service: { serviceName: "web", command: "node server.js" },
+      })).resolves.toEqual({ providerRef: "lease:web" });
+      await expect(callWorker("environmentStopRuntimeService", {
+        ...baseParams,
+        serviceName: "web",
+        providerRef: "lease:web",
+      })).resolves.toBeNull();
+      await expect(callWorker("environmentHealthRuntimeService", {
+        ...baseParams,
+        serviceName: "web",
+        url: "http://127.0.0.1:3107",
+      })).resolves.toEqual({ healthy: true, url: "http://127.0.0.1:3107" });
+    } finally {
+      worker.stop();
+      hostReadline.close();
+      hostToWorker.destroy();
+      workerToHost.destroy();
+    }
+  });
+});
+
 describe("worker performAction context", () => {
   it("does not derive context companyId from caller params without host actor context", async () => {
     const hostToWorker = new PassThrough();

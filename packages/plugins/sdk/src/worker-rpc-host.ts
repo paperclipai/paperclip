@@ -1397,6 +1397,15 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       case "environmentExecute":
         return handleEnvironmentExecute(params as PluginEnvironmentExecuteParams);
 
+      case "environmentStartRuntimeService":
+        return handleEnvironmentStartRuntimeService(params as PluginEnvironmentStartRuntimeServiceParams);
+
+      case "environmentStopRuntimeService":
+        return handleEnvironmentStopRuntimeService(params as PluginEnvironmentStopRuntimeServiceParams);
+
+      case "environmentHealthRuntimeService":
+        return handleEnvironmentHealthRuntimeService(params as PluginEnvironmentHealthRuntimeServiceParams);
+
       case "environmentStartInteractiveSetup":
         return handleEnvironmentStartInteractiveSetup(params as PluginEnvironmentStartInteractiveSetupParams);
 

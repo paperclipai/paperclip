@@ -75,10 +75,10 @@ describe("Docker sandbox provider", () => {
 
   it("starts and stops a provider-managed service inside the container", async () => {
     const runner = vi.fn(async () => ({ exitCode: 0, signal: null, timedOut: false, stdout: "exec-1", stderr: "", stdoutTruncated: false, stderrTruncated: false })) satisfies DockerRunner;
-    const started = await startDockerRuntimeService(runner, { providerLeaseId: "container-1", serviceName: "web", command: "node server.js", cwd: "/workspace/app" });
+    const started = await startDockerRuntimeService(runner, { providerLeaseId: "container-1", serviceName: "web", command: "node server.js", cwd: "/workspace/app", env: { PORT: "3107", FEATURE_FLAG: "enabled" } });
     await stopDockerRuntimeService(runner, { providerLeaseId: "container-1", serviceName: "web" });
     expect(started.providerRef).toBe("container-1:web");
-    expect(runner.mock.calls[0]?.[0]).toEqual(expect.arrayContaining(["exec", "--detach", "--workdir", "/workspace/app", "container-1"]));
+    expect(runner.mock.calls[0]?.[0]).toEqual(expect.arrayContaining(["exec", "--detach", "--workdir", "/workspace/app", "--env", "PORT=3107", "--env", "FEATURE_FLAG=enabled", "container-1"]));
     expect(runner.mock.calls[1]?.[0]).toEqual(expect.arrayContaining(["exec", "container-1", "/bin/sh"]));
   });
 
@@ -87,13 +87,14 @@ describe("Docker sandbox provider", () => {
     const plugin = createDockerSandboxPlugin(runner);
     const start = await plugin.definition.onEnvironmentStartRuntimeService?.({
       driverKey: "docker", companyId: "company-1", environmentId: "env-1", config,
-      lease: { providerLeaseId: "container-1" }, service: { serviceName: "web", command: "node server.js", cwd: "/workspace/app", url: "http://127.0.0.1:45123" },
+      lease: { providerLeaseId: "container-1" }, service: { serviceName: "web", command: "node server.js", cwd: "/workspace/app", url: "http://127.0.0.1:45123", env: { PORT: "3107" } },
     });
     await plugin.definition.onEnvironmentStopRuntimeService?.({
       driverKey: "docker", companyId: "company-1", environmentId: "env-1", config,
       lease: { providerLeaseId: "container-1" }, serviceName: "web", providerRef: start?.providerRef,
     });
     expect(start).toMatchObject({ providerRef: "container-1:web", metadata: { provider: "docker" } });
+    expect(runner.mock.calls[0]?.[0]).toEqual(expect.arrayContaining(["--env", "PORT=3107"]));
     expect(runner).toHaveBeenCalledTimes(2);
   });
 

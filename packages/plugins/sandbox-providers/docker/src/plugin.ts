@@ -55,6 +55,7 @@ export interface DockerRuntimeService {
   serviceName: string;
   command: string;
   cwd?: string;
+  env?: Record<string, string>;
 }
 
 type DockerInspect = {
@@ -249,10 +250,14 @@ export async function startDockerRuntimeService(runner: DockerRunner, service: D
   if (!service.providerLeaseId || service.providerLeaseId.includes("\0") || service.command.includes("\0")) {
     throw new Error("Docker runtime service has an invalid lease id or command");
   }
+  validCommand(service.command, undefined, service.env);
   const pidPath = servicePidPath(service.serviceName);
   const cwd = validContainerCwd(service.cwd);
   const script = "mkdir -p /tmp/paperclip-services; (exec /bin/sh -lc \"$1\") >/tmp/paperclip-services/$2.log 2>&1 & pid=$!; echo \"$pid\" >\"$3\"; wait \"$pid\"";
-  await mustRun(runner, ["exec", "--detach", "--workdir", cwd, "--user", "paperclip", service.providerLeaseId, "/bin/sh", "-lc", script, "paperclip-service", service.command, service.serviceName, pidPath], { timeoutMs: 30_000 });
+  const args = ["exec", "--detach", "--workdir", cwd, "--user", "paperclip"];
+  for (const [key, value] of Object.entries(service.env ?? {})) args.push("--env", `${key}=${value}`);
+  args.push(service.providerLeaseId, "/bin/sh", "-lc", script, "paperclip-service", service.command, service.serviceName, pidPath);
+  await mustRun(runner, args, { timeoutMs: 30_000 });
   return { providerRef: `${service.providerLeaseId}:${service.serviceName}` };
 }
 
@@ -383,6 +388,7 @@ export function createDockerSandboxPlugin(runner: DockerRunner = runDockerCli) {
         serviceName: params.service.serviceName,
         command: params.service.command,
         cwd: params.service.cwd,
+        env: params.service.env,
       });
       return { ...started, url: params.service.url ?? null, metadata: { provider: "docker", providerLeaseId: params.lease.providerLeaseId } };
     },
