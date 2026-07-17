@@ -10,6 +10,7 @@ import {
   prepareSandboxManagedRuntime,
   type SandboxManagedRuntimeClient,
 } from "./sandbox-managed-runtime.js";
+import { buildCodexAuthInboundProvision } from "./codex-auth-merge-scripts.js";
 import { captureDirectorySnapshot, mergeDirectoryWithBaseline } from "./workspace-restore-merge.js";
 
 const execFile = promisify(execFileCallback);
@@ -187,6 +188,11 @@ describe("codex home auth merge on sandbox asset extract", () => {
         key: "home",
         localDir: localHomeDir,
         followSymlinks: true,
+        // The Codex inbound auth-merge now rides the generic per-asset
+        // `provision` seam. This matrix drives the sandbox core directly, so it
+        // supplies the same contribution the codex adapter (`execute.ts`)
+        // attaches in production — proving the seam reproduces inbound behavior.
+        provision: buildCodexAuthInboundProvision(),
       }],
     });
 

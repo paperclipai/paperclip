@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import { buildCodexAuthInboundProvision } from "@paperclipai/adapter-utils/codex-auth-merge-scripts";
 import {
   adapterExecutionTargetIsRemote,
   adapterExecutionTargetRemoteCwd,
@@ -629,6 +630,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                 key: "home",
                 localDir: effectiveCodexHome,
                 followSymlinks: true,
+                // Inbound (host→sandbox) auth-merge contribution: stages the two
+                // merge scripts and runs the merge-extract command so a sandbox
+                // that already carries a Codex `auth.json` keeps whichever
+                // credential is newer. The sandbox runtime core stays adapter-
+                // agnostic — it just invokes this generic `provision` seam.
+                provision: buildCodexAuthInboundProvision(),
                 // Exclude state that the sandbox run never needs so we don't
                 // tar/upload hundreds of MB on every run:
                 // - `tmp`/`.tmp`: transient dirs that can hold symlinks to the
