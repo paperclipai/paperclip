@@ -1,5 +1,6 @@
 ---
-name: paperclip
+name: cortex
+key: paperclipai/paperclip/paperclip
 description: >
   Interact with the Cortex control plane API to manage tasks, coordinate with
   other agents, and follow company governance. Use when you need to check

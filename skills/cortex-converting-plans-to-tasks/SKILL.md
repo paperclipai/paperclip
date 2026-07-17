@@ -1,12 +1,13 @@
 ---
-name: paperclip-converting-plans-to-tasks
+name: cortex-converting-plans-to-tasks
+key: paperclipai/paperclip/paperclip-converting-plans-to-tasks
 description: >
   The Cortex way of converting a plan into executable tasks. Use whenever
   you are asked to plan, scope, or break down work inside a Cortex company.
   Industry-agnostic guidance on how to translate a plan into assigned issues
   with the right specialty, dependencies, and parallelization so Cortex's
   executor can pick up the work — it does not prescribe a plan format. Pair
-  with the `paperclip` skill, which covers the mechanics of writing the plan
+  with the `cortex` skill, which covers the mechanics of writing the plan
   document and reassigning the issue.
 ---
 

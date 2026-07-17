@@ -1,5 +1,6 @@
 ---
-name: paperclip-board
+name: cortex-board
+key: paperclipai/paperclip/paperclip-board
 description: >
   Manage a Cortex company as a board member via chat. Covers onboarding
   (company creation, CEO setup, hiring plans), agent management, approvals,

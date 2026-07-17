@@ -1,5 +1,6 @@
 ---
-name: paperclip-create-agent
+name: cortex-create-agent
+key: paperclipai/paperclip/paperclip-create-agent
 description: >
   Create new agents in Cortex with governance-aware hiring. Use when you need
   to inspect adapter configuration options, compare existing agent configs,
