@@ -670,6 +670,25 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
    */
   const inputActiveRef = useRef(false);
   const inputSettleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /**
+   * NEO-411 rev 8: the authoritative transcript of an in-flight iOS dictation.
+   * iOS dictation streams full-field-replace `insertText` events whose `data` is
+   * the whole cumulative text; we latch the latest such `data` here (including the
+   * paragraph-break replace that Lexical drops with no `onChange`). At commit iOS
+   * re-lays the whole transcript as a same-tick burst of *collapsed* inserts that
+   * duplicates (or, at scattered offsets, eats) text — corrupting what the editor
+   * emits. On settle we reconcile back to this latched transcript once, so the
+   * spoken text lands verbatim exactly once. `null` when no dictation is in flight.
+   */
+  const dictationTranscriptRef = useRef<string | null>(null);
+  /** True between compositionstart/compositionend (desktop CJK / macOS IME). iOS
+   * dictation never composes; gating transcript capture on this keeps the repair
+   * off the IME path the plan's Risks call out. */
+  const isComposingRef = useRef(false);
+  /** Latest parent onChange, kept in a ref so the settle repair can emit without
+   * churning `markInputActive`/listener identity across renders. */
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
   const [richEditorError, setRichEditorError] = useState<string | null>(null);
@@ -928,6 +947,28 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
     inputSettleTimerRef.current = setTimeout(() => {
       inputSettleTimerRef.current = null;
       inputActiveRef.current = false;
+      // NEO-411 rev 8 — dictation commit-burst repair. If iOS dictation ran this
+      // session we hold its authoritative transcript. The commit burst may have
+      // duplicated or eaten text in what the editor actually emitted; reconcile
+      // back to the transcript once so the spoken text lands verbatim (and the
+      // paragraph break the transcript carries survives). Authoritative for this
+      // settle — we skip the external reconcile below, since the parent's value
+      // currently holds the corrupted emit and would just fight this.
+      const transcript = dictationTranscriptRef.current;
+      dictationTranscriptRef.current = null;
+      if (transcript !== null && ref.current) {
+        const prepared = prepareMarkdownForEditor(transcript);
+        if (prepared !== latestValueRef.current) {
+          echoIgnoreMarkdownRef.current = prepared;
+          recordTts("setMarkdown", { origin: "dictation-repair", len: prepared.length });
+          ref.current.setMarkdown(prepared);
+          latestValueRef.current = prepared;
+          onChangeRef.current(transcript);
+          return;
+        }
+        // Clean dictation (editor already emitted the transcript verbatim) — fall
+        // through so a genuine external update isn't stranded.
+      }
       // valueRef holds the freshest prepared controlled value. Flush only a
       // genuine external change; an editor-originated value the editor already
       // holds is dropped (no self-inflicted round-trip).
@@ -935,7 +976,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
         applyReconcile(valueRef.current);
       }
     }, INPUT_SETTLE_MS);
-  }, [applyReconcile, editorAlreadyHolds]);
+  }, [applyReconcile, editorAlreadyHolds, recordTts]);
 
   // NEO-411 Phase 1+2: reconcile the controlled value into the editor, but never
   // while input is actively streaming (defer to settle) and never for a value the
@@ -965,10 +1006,39 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
     const container = containerRef.current;
     if (!container) return;
     const onInputActivity = () => markInputActive();
+    // NEO-411 rev 8: composition = desktop CJK / macOS IME. iOS dictation never
+    // composes, so we only latch a dictation transcript while NOT composing —
+    // keeping the repair off the IME path (plan Risks: don't disturb CJK/macOS).
+    const onCompositionStart = () => { isComposingRef.current = true; };
+    const onCompositionEnd = () => { isComposingRef.current = false; };
+    // NEO-411 rev 8: latch the iOS dictation transcript. A full-field-replace
+    // `insertText`/`insertReplacementText` carries the whole cumulative text in
+    // `data` (length >= the current field) — that's dictation streaming, and also
+    // the paragraph-break replace Lexical drops silently. Normal typing (collapsed,
+    // 1-char data), selection-replace (data shorter than the field), and paste
+    // (`insertFromPaste`) are all excluded, so `dictationTranscriptRef` only ever
+    // holds a real dictation transcript. The collapsed commit-burst inserts are
+    // shorter than the field too, so they never overwrite the latched transcript.
+    const onBeforeInputCapture = (event: Event) => {
+      if (!(event instanceof InputEvent)) return;
+      if (isComposingRef.current) return;
+      const { inputType, data } = event;
+      if (inputType !== "insertText" && inputType !== "insertReplacementText") return;
+      if (typeof data !== "string" || data.length <= 1) return;
+      if (data.length >= latestValueRef.current.length) {
+        dictationTranscriptRef.current = data;
+      }
+    };
     const events = ["beforeinput", "input", "compositionstart", "compositionupdate", "compositionend"];
     for (const type of events) container.addEventListener(type, onInputActivity, true);
+    container.addEventListener("beforeinput", onBeforeInputCapture, true);
+    container.addEventListener("compositionstart", onCompositionStart, true);
+    container.addEventListener("compositionend", onCompositionEnd, true);
     return () => {
       for (const type of events) container.removeEventListener(type, onInputActivity, true);
+      container.removeEventListener("beforeinput", onBeforeInputCapture, true);
+      container.removeEventListener("compositionstart", onCompositionStart, true);
+      container.removeEventListener("compositionend", onCompositionEnd, true);
       if (inputSettleTimerRef.current) {
         clearTimeout(inputSettleTimerRef.current);
         inputSettleTimerRef.current = null;
