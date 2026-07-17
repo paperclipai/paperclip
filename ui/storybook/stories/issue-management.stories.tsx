@@ -70,7 +70,7 @@ const modelOverrideIssue: Issue = {
   title: "Verify task-level model override provenance",
   assigneeAdapterOverrides: {
     adapterConfig: {
-      model: "gpt-5.6",
+      model: "gpt-5.6-sol",
       modelReasoningEffort: "high",
     },
   },
