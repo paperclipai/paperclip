@@ -75,12 +75,14 @@ export const AGENT_ROLE_LABELS: Record<AgentRole, string> = {
   general: "General",
 };
 
-export const AGENT_DEFAULT_MAX_CONCURRENT_RUNS = 20;
-// Upper bound for companies.maxConcurrentAgentRuns (see GRO-60): an opt-in,
-// company-wide ceiling on simultaneously "running" heartbeat runs across every
-// agent, independent of each agent's own maxConcurrentRuns. Null (the default)
-// means no company-wide ceiling is enforced.
-export const MAX_COMPANY_CONCURRENT_AGENT_RUNS = 500;
+// GRO-93: lowered from 20 to 3. 20 was never a safe default on a single-host
+// deployment — it was the root cause of every memory-exhaustion incident in the
+// GRO-60 family (5 agents × 20 each = up to 100 processes on one machine).
+export const AGENT_DEFAULT_MAX_CONCURRENT_RUNS = 3;
+// Upper bound for companies.maxConcurrentAgentRuns (see GRO-60/GRO-93): mirrors
+// the per-agent bound in heartbeat.ts (min 1, max 50) so the company-wide
+// ceiling is validated with the same limits as each individual agent cap.
+export const MAX_COMPANY_CONCURRENT_AGENT_RUNS = 50;
 export const WORKSPACE_BRANCH_ROUTINE_VARIABLE = "workspaceBranch";
 
 export const MODEL_PROFILE_KEYS = ["cheap"] as const;

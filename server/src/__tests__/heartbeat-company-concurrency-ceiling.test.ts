@@ -216,4 +216,45 @@ describeEmbeddedPostgres("heartbeat company-wide concurrency ceiling", () => {
     expect(mockAdapterExecute).not.toHaveBeenCalled();
     expect(await statusOf(queuedRunId)).toBe("queued");
   });
+
+  it("cross-agent slot handoff: freeing a slot via run cancellation dispatches another agent's queued run", async () => {
+    // GRO-93: when a run completes/cancels, the freed slot must be offered to other
+    // agents in the same company — not only to the completing agent's own queue.
+    const companyId = await seedCompany(1);
+    const agentA = await seedAgent(companyId, "Agent-Alpha");
+    const agentB = await seedAgent(companyId, "Agent-Beta");
+    const agentARunId = await seedRunningRun(companyId, agentA);
+    const agentBQueuedId = await seedQueuedRun(companyId, agentB);
+
+    // Verify the ceiling blocks agentB before the slot is freed.
+    await heartbeat.resumeQueuedRuns();
+    expect(await statusOf(agentBQueuedId)).toBe("queued");
+
+    // Cancel agentA's run — frees the company slot and should trigger cross-agent
+    // handoff so agentB does not have to wait for the next resumeQueuedRuns tick.
+    await heartbeat.cancelRun(agentARunId, "test: freeing slot for cross-agent handoff");
+
+    expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
+    expect(await statusOf(agentBQueuedId)).not.toBe("queued");
+  });
+
+  it("stale-row starvation guard: orphaned running rows do not permanently block company dispatch", async () => {
+    // GRO-93: a 'running' row whose process died without being reaped must not
+    // prevent legitimate queued work from dispatching. The dispatch path reaps
+    // orphaned rows when the ceiling appears full, so the count is accurate.
+    const companyId = await seedCompany(1);
+    const agentA = await seedAgent(companyId, "Agent-Alpha");
+    const agentB = await seedAgent(companyId, "Agent-Beta");
+    // agentA's running row is NOT added to runningProcesses — simulates an
+    // orphaned run (died before being reaped).
+    await seedRunningRun(companyId, agentA);
+    const agentBQueuedId = await seedQueuedRun(companyId, agentB);
+
+    // Without the stale-row guard, agentA's orphaned row counts against the
+    // ceiling and keeps agentB stranded even though no real run is active.
+    await heartbeat.resumeQueuedRuns();
+
+    expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
+    expect(await statusOf(agentBQueuedId)).not.toBe("queued");
+  });
 });

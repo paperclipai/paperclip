@@ -3,7 +3,7 @@ import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash, randomUUID } from "node:crypto";
-import { and, asc, desc, eq, getTableColumns, gt, gte, inArray, isNull, lt, lte, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, getTableColumns, gt, gte, inArray, isNull, lt, lte, ne, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
@@ -9460,6 +9460,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       await finalizeAgentStatus(run.agentId, "failed", baseMessage);
       await startNextQueuedRunForAgent(run.agentId);
+      // Cross-agent handoff is intentionally NOT called here. reapOrphanedRuns is
+      // invoked from within withAgentStartLock for the dispatching agent; calling
+      // startNextQueuedRunsForCompany would try to acquire that same agent lock and
+      // deadlock. The company ceiling re-check happens in the outer dispatch path
+      // after this reap returns, which covers queued runs across the company.
       runningProcesses.delete(run.id);
       reaped.push(run.id);
     }
@@ -9675,6 +9680,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       // every other agent's dispatch in the same company so two agents can't
       // both read a stale company running-count and jointly overshoot it.
       const companyMaxConcurrentRuns = await getCompanyMaxConcurrentRuns(agent.companyId);
+
+      if (companyMaxConcurrentRuns !== null) {
+        // GRO-93 stale-row starvation guard: if the ceiling appears full, reap
+        // orphaned 'running' rows BEFORE entering the company lock. Doing it inside
+        // the lock would deadlock — reapOrphanedRuns calls startNextQueuedRunForAgent,
+        // which itself acquires the company lock (deadlock: company → company). This
+        // pre-lock check is a fast hint; the authoritative count is always re-fetched
+        // inside withCompanyRunDispatchLock below. Another agent may grab the freed
+        // slot between the reap and the lock — that's fine, the lock re-checks.
+        const prelimCount = await countRunningRunsForCompany(agent.companyId);
+        if (prelimCount >= companyMaxConcurrentRuns) {
+          await reapOrphanedRuns();
+        }
+      }
+
       const claimedRuns = companyMaxConcurrentRuns === null
         ? await claimNextRuns()
         : await withCompanyRunDispatchLock(agent.companyId, async () => {
@@ -9706,6 +9726,35 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
       return claimedRuns;
     });
+  }
+
+  // GRO-93: cross-agent slot handoff. When a run finishes and frees a company
+  // slot, only calling startNextQueuedRunForAgent for the completing agent
+  // leaves other agents' queued runs stranded until their own timer tick. This
+  // function offers the freed slot to every OTHER agent in the company that has
+  // queued work, ordered by the age of their oldest queued run (FIFO fairness
+  // across agents — whichever agent has been waiting longest dispatches first
+  // when slots are scarce). Each inner startNextQueuedRunForAgent call takes the
+  // per-agent lock then the company lock (the established order in this module).
+  // Only call from paths where NO agent or company lock is already held.
+  async function startNextQueuedRunsForCompany(companyId: string, completingAgentId: string) {
+    const agentsWithQueue = await db
+      .select({
+        agentId: heartbeatRuns.agentId,
+        oldestQueuedAt: sql<Date>`min(${heartbeatRuns.createdAt})`,
+      })
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.companyId, companyId),
+        eq(heartbeatRuns.status, "queued"),
+        ne(heartbeatRuns.agentId, completingAgentId),
+      ))
+      .groupBy(heartbeatRuns.agentId)
+      .orderBy(asc(sql`min(${heartbeatRuns.createdAt})`));
+
+    for (const { agentId } of agentsWithQueue) {
+      await startNextQueuedRunForAgent(agentId);
+    }
   }
 
   async function executeRun(runId: string) {
@@ -11971,6 +12020,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           await releaseRuntimeServicesForRun(run.id).catch(() => undefined);
           activeRunExecutions.delete(run.id);
           await startNextQueuedRunForAgent(run.agentId);
+          await startNextQueuedRunsForCompany(run.companyId, run.agentId);
         }
   }
 
@@ -13825,6 +13875,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     await finalizeAgentStatus(run.agentId, "cancelled");
     await startNextQueuedRunForAgent(run.agentId);
+    await startNextQueuedRunsForCompany(run.companyId, run.agentId);
     return cancelled;
   }
 
