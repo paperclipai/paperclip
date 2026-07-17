@@ -395,7 +395,6 @@ export function releaseCandidateService(db: Db) {
       candidateId: string,
       interaction: IssueThreadInteraction,
       actor: Actor,
-      expectedUpdatedAt: Date,
     ) => {
       const candidate = await getById(candidateId);
       if (!candidate) throw notFound("Release candidate not found");
@@ -420,7 +419,6 @@ export function releaseCandidateService(db: Db) {
         eq(releaseCandidates.id, candidateId),
         eq(releaseCandidates.status, "candidate_created"),
         isNull(releaseCandidates.approvalInteractionId),
-        eq(releaseCandidates.updatedAt, expectedUpdatedAt),
       )).returning();
       if (!updated) {
         throw conflict("Release candidate changed while creating its approval interaction; retry the request", {

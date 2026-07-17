@@ -209,7 +209,6 @@ describe("release candidate approval relay", () => {
         candidate.id,
         interaction,
         {},
-        candidate.updatedAt,
       ),
     ).rejects.toMatchObject({
       status: 409,

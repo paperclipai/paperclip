@@ -247,7 +247,7 @@ export function releaseCandidateRoutes(db: Db, storage: StorageService) {
           agentId: actor.agentId,
           userId: actor.actorType === "user" ? actor.actorId : null,
           runId: actor.runId,
-        }, candidate.updatedAt);
+        });
         return { candidate: updated, interaction };
       });
       res.status(201).json(result);
