@@ -161,6 +161,53 @@ describe("IssueRow", () => {
     });
   });
 
+  it("reserves the leading dot slot on read rows so unread rows never indent past them", () => {
+    const root = createRoot(container);
+    act(() => {
+      // A read inbox row still supplies `unreadState` (as "hidden").
+      root.render(<IssueRow issue={createIssue()} unreadState="hidden" />);
+    });
+
+    // The desktop dot slot is reserved even when read (empty), so unread rows
+    // add no column and line up with read rows.
+    const slot = container.querySelector('[data-testid="issue-row-unread-slot"]');
+    expect(slot).not.toBeNull();
+    expect(slot?.className).toContain("w-4");
+    expect(slot?.className).toContain("sm:inline-flex");
+    // In flow, not an absolute overlay.
+    expect(slot?.className).not.toContain("absolute");
+    // Read rows carry no dot button in the slot.
+    expect(slot?.querySelector('button[aria-label="Mark as read"]')).toBeNull();
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("puts the unread dot in the reserved far-left slot on desktop and in flow on mobile", () => {
+    const root = createRoot(container);
+    act(() => {
+      root.render(<IssueRow issue={createIssue()} unreadState="visible" />);
+    });
+
+    // Desktop: the dot lives in the reserved leading slot (far left, ahead of
+    // any leading control such as a parent's collapse caret).
+    const slot = container.querySelector('[data-testid="issue-row-unread-slot"]');
+    expect(slot).not.toBeNull();
+    expect(slot?.querySelector('button[aria-label="Mark as read"]')).not.toBeNull();
+
+    // Mobile: a separate in-flow, order-first dot (mobile has no reserved slot).
+    const mobileDot = container
+      .querySelector('button[aria-label="Mark as read"].sm\\:hidden, span.sm\\:hidden button[aria-label="Mark as read"]')
+      ?.closest("span.sm\\:hidden");
+    expect(mobileDot).not.toBeNull();
+    expect(mobileDot?.className).toContain("order-first");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("preserves the issue detail breadcrumb source and href in the link target", () => {
     const root = createRoot(container);
     const issue = createIssue();
