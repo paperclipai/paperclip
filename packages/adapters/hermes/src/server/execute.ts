@@ -407,11 +407,12 @@ export async function execute(
 
   // ── Build command args ─────────────────────────────────────────────────
   // Use -Q (quiet) to get clean output: just response + session_id line
-  const useQuiet = cfgBoolean(config.quiet) === true; // default false
+  const useQuiet = cfgBoolean(config.quiet) !== false; // schema default true; explicit false is supported
   const args: string[] = ["chat", "-q", prompt];
   if (useQuiet) args.push("-Q");
 
-  if (model) {
+  // `auto` is an adapter sentinel: omitting -m lets Hermes resolve its configured model.
+  if (model !== "auto") {
     args.push("-m", model);
   }
 
@@ -527,14 +528,31 @@ export async function execute(
     timeoutSec,
     graceSec,
     onLog: wrappedOnLog,
+    onSpawn: ctx.onSpawn,
   });
 
   // ── Parse output ───────────────────────────────────────────────────────
-  const parsed = parseHermesOutput(result.stdout || "", result.stderr || "");
+  const stdout = result.stdout || "";
+  const stderr = result.stderr || "";
+  const parsed = parseHermesOutput(stdout, stderr);
+
+  // Older Hermes releases can return 0 after exhausting every provider. Require
+  // the complete terminal envelope so ordinary HTTP-error prose stays successful.
+  const combinedOutput = `${stdout}\n${stderr}`;
+  const terminalProviderExhaustion =
+    /API call failed \(attempt \d+\/\d+\)/i.test(combinedOutput) &&
+    /model [\s\x27"]*auto[\s\x27"]* is not supported[^\n]*Codex provider/i.test(combinedOutput) &&
+    /fallback provider[^\n]*failed[^\n]*(?:HTTP 401 Unauthorized|non-retryable client error)/i.test(combinedOutput) &&
+    /(?:all fallback providers failed|no providers remain)/i.test(combinedOutput) &&
+    /Resume this session with:/i.test(combinedOutput);
+  const effectiveExitCode = result.exitCode === 0 && terminalProviderExhaustion ? 1 : result.exitCode;
+  if (terminalProviderExhaustion) {
+    parsed.errorMessage = "Provider fallback exhaustion prevented Hermes from completing the request.";
+  }
 
   await ctx.onLog(
     "stdout",
-    `[hermes] Exit code: ${result.exitCode ?? "null"}, timed out: ${result.timedOut}\n`,
+    `[hermes] Exit code: ${effectiveExitCode ?? "null"}, timed out: ${result.timedOut}\n`,
   );
   if (parsed.sessionId) {
     await ctx.onLog("stdout", `[hermes] Session: ${parsed.sessionId}\n`);
@@ -542,7 +560,7 @@ export async function execute(
 
   // ── Build result ───────────────────────────────────────────────────────
   const executionResult: AdapterExecutionResult = {
-    exitCode: result.exitCode,
+    exitCode: effectiveExitCode,
     signal: result.signal,
     timedOut: result.timedOut,
     provider: resolvedProvider,
