@@ -176,6 +176,19 @@ describeEmbeddedPostgres("resourceRuntimeService", () => {
     });
     const inputOnly = await inputOnlyPrepared!.publish();
     expect(inputOnly[0]).toMatchObject({ action: "push", status: "discarded" });
+
+    const deletionWorkspace = path.join(fixtureRoot, "deletion-workspace");
+    const deletionPrepared = await resourceRuntimeService(db).prepare({
+      companyId,
+      runId: "run-divergent-deletion-test",
+      workspaceRoot: deletionWorkspace,
+      manifest: { version: 1, resources: [{ resourceId, mode: "input_output", version: "branch:feature", output: { action: "push", targetRef: "main" } }] },
+    });
+    await fs.rm(path.join(deletionWorkspace, "resources", "context", "context.md"));
+    await expect(deletionPrepared!.publish()).resolves.toMatchObject([{ status: "pushed", targetRef: "main" }]);
+    const deletionCheckPath = path.join(fixtureRoot, "deletion-check");
+    await git(["clone", "--branch", "main", remotePath, deletionCheckPath]);
+    await expect(fs.access(path.join(deletionCheckPath, "context.md"))).rejects.toThrow();
   });
 
   it("creates pull requests through the provider without exposing credentials", async () => {

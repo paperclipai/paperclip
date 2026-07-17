@@ -168,6 +168,13 @@ async function copyWorkingTreeContents(sourcePath: string, destinationPath: stri
   }
 }
 
+async function clearWorkingTreeContents(destinationPath: string) {
+  const entries = await fs.readdir(destinationPath, { withFileTypes: true });
+  await Promise.all(entries
+    .filter((entry) => entry.name !== ".git")
+    .map((entry) => fs.rm(path.join(destinationPath, entry.name), { recursive: true, force: true })));
+}
+
 function resourceEnvKey(resourceKey: string) {
   return `BIZBOX_RESOURCE_${resourceKey.replace(/[^A-Za-z0-9]+/g, "_").toUpperCase()}_PATH`;
 }
@@ -424,6 +431,7 @@ export function resourceRuntimeService(db: Db) {
               if (item.resource.sourcePath) {
                 await copyResourceTree(outputSnapshotPath, path.join(item.repoPath, item.resource.sourcePath));
               } else {
+                await clearWorkingTreeContents(item.repoPath);
                 await copyWorkingTreeContents(outputSnapshotPath, item.repoPath);
               }
             }
