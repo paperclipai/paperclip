@@ -13834,6 +13834,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       });
 
       const finalizedRun = persistedRun ?? (await getRun(run.id));
+      let maxTurnAgentErrorSuppressed = false;
       if (finalizedRun) {
         await appendRunEvent(finalizedRun, seq++, {
           eventType: "lifecycle",
@@ -13885,12 +13886,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         if (outcome === "failed" && isMaxTurnExhaustionRun(livenessRun)) {
           const policy = parseMaxTurnContinuationPolicy(agent);
           if (policy.enabled && policy.maxAttempts > 0) {
-            await scheduleBoundedRetryForRun(livenessRun, agent, {
+            const retryResult = await scheduleBoundedRetryForRun(livenessRun, agent, {
               retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
               wakeReason: MAX_TURN_CONTINUATION_WAKE_REASON,
               maxAttempts: policy.maxAttempts,
               delayMs: policy.delayMs,
             });
+            // A bounded continuation is already in flight to pick this run back
+            // up, so a hard agent-level error would just require a manual
+            // clear-error for a condition the platform is already self-healing.
+            maxTurnAgentErrorSuppressed = retryResult.outcome === "scheduled";
           } else {
             await appendRunEvent(livenessRun, await nextRunEventSeq(livenessRun.id), {
               eventType: "lifecycle",
@@ -13905,6 +13910,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
         } else if (outcome === "failed" && readTransientRecoveryContractFromRun(livenessRun)) {
           await scheduleBoundedRetryForRun(livenessRun, agent);
+        }
+        if (outcome === "failed" && isMaxTurnExhaustionRun(livenessRun) && !maxTurnAgentErrorSuppressed && issueId) {
+          // The run's deliverable can land (issue marked done, comment posted)
+          // moments before the process itself exhausts its turn budget. That's
+          // a completed run, not an operator-facing agent error.
+          const [issueRow] = await db
+            .select({ status: issues.status })
+            .from(issues)
+            .where(eq(issues.id, issueId))
+            .limit(1);
+          if (issueRow && (issueRow.status === "done" || issueRow.status === "cancelled")) {
+            maxTurnAgentErrorSuppressed = true;
+          }
         }
         const issueCommentPolicyResult = await finalizeIssueCommentPolicy(livenessRun, agent);
         await releaseIssueExecutionAndPromote(livenessRun);
@@ -13983,7 +14001,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         {
           keepIdleOnFailure:
             outcome === "failed" &&
-            (finalizedRun ? readHeartbeatRunErrorFamily(finalizedRun) === "provider_quota" : runErrorCode === "provider_quota"),
+            (maxTurnAgentErrorSuppressed ||
+              (finalizedRun ? readHeartbeatRunErrorFamily(finalizedRun) === "provider_quota" : runErrorCode === "provider_quota")),
         },
       );
     } catch (err) {
