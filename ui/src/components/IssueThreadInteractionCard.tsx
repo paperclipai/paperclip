@@ -1859,6 +1859,7 @@ function RequestConfirmationCard({
     setActionError(null);
     setShots([]);
     setUploadError(null);
+    setDetailsOpen(false);
     if (interaction.status !== "pending") {
       setRejecting(false);
       setWorking(null);

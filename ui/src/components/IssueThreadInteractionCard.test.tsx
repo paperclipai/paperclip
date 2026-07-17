@@ -650,6 +650,41 @@ describe("IssueThreadInteractionCard", () => {
     );
   });
 
+  it("collapses the details disclosure when the card moves to another interaction", async () => {
+    const acceptedInteraction = {
+      ...pendingRequestConfirmationInteraction,
+      status: "accepted" as const,
+      result: { version: 1 as const, outcome: "accepted" as const },
+    };
+    const host = renderCard({ interaction: acceptedInteraction });
+
+    const toggle = Array.from(host.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Show details"),
+    );
+    await act(async () => {
+      toggle?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(host.textContent).toContain("Hide details");
+
+    // Re-render the same root so React reuses the card instance for a new interaction.
+    await act(async () => {
+      root?.render(
+        <TooltipProvider>
+          <ThemeProvider>
+            <IssueThreadInteractionCard
+              interaction={{ ...acceptedInteraction, id: `${acceptedInteraction.id}-next` }}
+            />
+          </ThemeProvider>
+        </TooltipProvider>,
+      );
+    });
+
+    expect(host.textContent).toContain("Show details");
+    expect(host.textContent).not.toContain(
+      "Approve the plan and let the responsible start implementation?",
+    );
+  });
+
   it("omits the empty prompt block when a resolved confirmation has details only", async () => {
     const host = renderCard({
       interaction: {
