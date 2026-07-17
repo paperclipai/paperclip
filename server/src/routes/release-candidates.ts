@@ -5,7 +5,7 @@ import { z } from "zod";
 import type { Db } from "@paperclipai/db";
 import type { StorageService } from "../storage/types.js";
 import { validate } from "../middleware/validate.js";
-import { badRequest, conflict, HttpError, notFound, unauthorized } from "../errors.js";
+import { badRequest, conflict, forbidden, HttpError, notFound, unauthorized } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { assertCompanyAccess, getActorInfo, hasCompanyAccess } from "./authz.js";
 import { assetService } from "../services/assets.js";
@@ -74,10 +74,35 @@ const deployRecordSchema = z.object({
   metadata: z.record(z.unknown()).optional(),
 }).strict();
 
+const deployReceiptMetadataSchema = z.object({
+  deployRecord: z.object({
+    lease_id: z.string().uuid(),
+    candidate_id: z.string().uuid(),
+    commit_sha: z.string().trim().min(7).max(80),
+    image_digest: digestSchema,
+    approval_interaction_id: z.string().uuid(),
+  }).passthrough(),
+}).passthrough();
+
+const deployReceiptSchema = deployRecordSchema
+  .omit({ authorizationId: true })
+  .extend({
+    candidateId: z.string().uuid(),
+    status: z.enum(["succeeded", "failed", "rolled_back"]),
+    metadata: deployReceiptMetadataSchema,
+  })
+  .strict();
+
 function readDeployTokenHeader(req: Request) {
   const token = req.header(DEPLOY_TOKEN_HEADER)?.trim();
   if (!token) throw unauthorized("Missing deploy authorization token header");
   return token;
+}
+
+function assertDeployReceiptApiKey(req: Request) {
+  if (req.actor.type !== "agent" || req.actor.source !== "agent_key") {
+    throw forbidden("Deploy record receipts require an agent API key");
+  }
 }
 
 function normalizeSha256(value: string) {
@@ -164,6 +189,7 @@ export function releaseCandidateRoutes(db: Db, storage: StorageService) {
       expiresAt: authorization.expiresAt,
       stageRelayArtifactPath: `/api/release-deploy-authorizations/${authorization.id}/stage-relay-artifact`,
       deployRecordPath: "/api/release-candidates/deploy-records",
+      deployRecordReceiptPath: `/api/release-deploy-authorizations/${authorization.id}/deploy-record-receipt`,
       stagedArtifactPath: authorization.leaseArtifactAssetId
         ? `/api/release-deploy-authorizations/${authorization.id}/staged-artifact`
         : null,
@@ -193,6 +219,35 @@ export function releaseCandidateRoutes(db: Db, storage: StorageService) {
       });
       res.status(201).json({
         ok: true,
+        eventType: result.eventType,
+        authorizationId: result.authorization.id,
+        candidateId: result.candidate.id,
+        sourceIssueId: result.candidate.sourceIssueId,
+      });
+    },
+  );
+
+  router.post(
+    "/release-deploy-authorizations/:authorizationId/deploy-record-receipt",
+    validate(deployReceiptSchema),
+    async (req, res) => {
+      assertDeployReceiptApiKey(req);
+      const authorizationId = req.params.authorizationId as string;
+      const { candidate } = await candidates.getDeployReceiptTarget(authorizationId);
+      if (!hasCompanyAccess(req, candidate.companyId)) throw notFound("Release deploy authorization not found");
+      assertCompanyAccess(req, candidate.companyId);
+      const actor = getActorInfo(req);
+      const result = await candidates.recordDeployReceipt({
+        ...req.body,
+        authorizationId,
+      }, {
+        agentId: actor.agentId,
+        userId: actor.actorType === "user" ? actor.actorId : null,
+        runId: actor.runId,
+      });
+      res.status(result.duplicate ? 200 : 201).json({
+        ok: true,
+        duplicate: result.duplicate,
         eventType: result.eventType,
         authorizationId: result.authorization.id,
         candidateId: result.candidate.id,

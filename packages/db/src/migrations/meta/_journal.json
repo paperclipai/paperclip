@@ -1268,6 +1268,13 @@
       "when": 1784241829832,
       "tag": "0182_release_candidate_approval_relay",
       "breakpoints": true
+    },
+    {
+      "idx": 179,
+      "version": "7",
+      "when": 1784241826834,
+      "tag": "0179_release_deploy_receipt_idempotency",
+      "breakpoints": true
     }
   ]
 }

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { releaseDeployAuthorizations } from "@paperclipai/db";
+import { releaseCandidateAuditEvents, releaseDeployAuthorizations } from "@paperclipai/db";
 import { HttpError } from "../errors.js";
 import { releaseCandidateService, verifyRelayArtifact } from "./release-candidates.js";
 
@@ -51,6 +51,8 @@ function makeDb(
   const transactions = { count: 0 };
   let authorizationConsumed = false;
   let issuedAuthorization: Record<string, unknown> | null = null;
+  const auditIdempotencyKeys = new Set<string>();
+  const auditEventsByKey = new Map<string, Record<string, unknown>>();
   const db = {
     transaction: async (callback: (tx: unknown) => Promise<unknown>) => {
       transactions.count += 1;
@@ -58,6 +60,8 @@ function makeDb(
       const updatedCount = updated.length;
       const previousAuthorizationConsumed = authorizationConsumed;
       const previousIssuedAuthorization = issuedAuthorization;
+      const previousAuditIdempotencyKeys = new Set(auditIdempotencyKeys);
+      const previousAuditEventsByKey = new Map(auditEventsByKey);
       try {
         return await callback(db);
       } catch (error) {
@@ -65,6 +69,10 @@ function makeDb(
         updated.splice(updatedCount);
         authorizationConsumed = previousAuthorizationConsumed;
         issuedAuthorization = previousIssuedAuthorization;
+        auditIdempotencyKeys.clear();
+        for (const key of previousAuditIdempotencyKeys) auditIdempotencyKeys.add(key);
+        auditEventsByKey.clear();
+        for (const [key, value] of previousAuditEventsByKey) auditEventsByKey.set(key, value);
         throw error;
       }
     },
@@ -72,10 +80,15 @@ function makeDb(
       from: (table: unknown) => ({
         where: () => ({
           then: (resolve: (rows: unknown[]) => unknown) => {
-            const queuedRows = selectRows.shift();
+            const queuedRows = table === releaseCandidateAuditEvents
+              ? undefined
+              : selectRows.shift();
             if (queuedRows) return resolve(queuedRows);
             if (options.atomicAuthorizationIssue && table === releaseDeployAuthorizations && issuedAuthorization) {
               return resolve([issuedAuthorization]);
+            }
+            if (table === releaseCandidateAuditEvents) {
+              return resolve([...auditEventsByKey.values()].slice(-1));
             }
             return resolve([]);
           },
@@ -95,6 +108,16 @@ function makeDb(
                 ...(value as Record<string, unknown>),
               };
               return [issuedAuthorization];
+            }
+            const idempotencyKey = (value as Record<string, unknown>).idempotencyKey;
+            const authorizationId = (value as Record<string, unknown>).authorizationId;
+            if (typeof idempotencyKey === "string" && typeof authorizationId === "string") {
+              const key = `${authorizationId}:${idempotencyKey}`;
+              if (auditIdempotencyKeys.has(key)) return [];
+              auditIdempotencyKeys.add(key);
+              const audit = { id: `audit-${auditIdempotencyKeys.size}`, ...(value as Record<string, unknown>) };
+              auditEventsByKey.set(key, audit);
+              return [audit];
             }
             return [value];
           },
@@ -459,6 +482,183 @@ describe("release candidate approval relay", () => {
       }),
     ]));
     expect(JSON.stringify(inserted)).not.toContain(token);
+  });
+
+  it("defers receipt readiness errors until after company access can be checked", async () => {
+    const authorization = {
+      id: "99999999-9999-4999-8999-999999999999",
+      companyId: candidate.companyId,
+      candidateId: candidate.id,
+      approvalInteractionId: null,
+      tokenHash: "unused",
+      tokenPrefix: "pcdeploy_unused",
+      targetHost: candidate.targetHost,
+      imageDigest: candidate.imageDigest,
+      environment: candidate.environment,
+      sequence: candidate.sequence,
+      expiresAt: new Date(Date.now() - 60_000),
+      usedAt: null,
+      leaseArtifactAssetId: null,
+      leaseSignatureBundleAssetId: null,
+      leaseIssuedAt: null,
+      createdByUserId: "founder",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    const lookup = releaseCandidateService(makeDb([[authorization], [candidate]]).db);
+    await expect(lookup.getDeployReceiptTarget(authorization.id)).resolves.toMatchObject({
+      authorization: { id: authorization.id },
+      candidate: { id: candidate.id },
+    });
+
+    const write = releaseCandidateService(makeDb([[authorization], [candidate]]).db);
+    await expect(write.recordDeployReceipt({
+      authorizationId: authorization.id,
+      candidateId: candidate.id,
+      status: "failed",
+      metadata: { deployRecord: {
+        lease_id: authorization.id,
+        candidate_id: candidate.id,
+        commit_sha: candidate.commitSha,
+        image_digest: candidate.imageDigest,
+        approval_interaction_id: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+      } },
+    }, {})).rejects.toMatchObject({
+      status: 409,
+      message: "Deploy receipt requires a relay-staged authorization",
+    });
+  });
+
+  it("records an expired authorization receipt once with only the staged authorization binding", async () => {
+    const approvalInteractionId = "ffffffff-ffff-4fff-8fff-ffffffffffff";
+    const stagedCandidate = {
+      ...candidate,
+      status: "staged",
+      approvalInteractionId,
+      stagedArtifactAssetId: "77777777-7777-4777-8777-777777777777",
+      stagedArtifactSha256: "4444444444444444444444444444444444444444444444444444444444444444",
+      stagedSignatureBundleAssetId: "88888888-8888-4888-8888-888888888888",
+      stagedSignatureBundleSha256: candidate.signatureBundleSha256,
+      stagedAt: new Date(),
+    };
+    const authorization = {
+      id: "99999999-9999-4999-8999-999999999999",
+      companyId: candidate.companyId,
+      candidateId: candidate.id,
+      approvalInteractionId,
+      tokenHash: "expired-token-hash-is-not-read",
+      tokenPrefix: "pcdeploy_expired",
+      targetHost: candidate.targetHost,
+      imageDigest: candidate.imageDigest,
+      environment: candidate.environment,
+      sequence: candidate.sequence,
+      expiresAt: new Date(Date.now() - 60_000),
+      usedAt: new Date(Date.now() - 120_000),
+      leaseArtifactAssetId: stagedCandidate.stagedArtifactAssetId,
+      leaseSignatureBundleAssetId: stagedCandidate.stagedSignatureBundleAssetId,
+      leaseIssuedAt: new Date(Date.now() - 120_000),
+      createdByUserId: "founder",
+      createdAt: new Date(Date.now() - 180_000),
+      updatedAt: new Date(Date.now() - 120_000),
+    };
+    const { db, inserted } = makeDb([
+      [authorization],
+      [stagedCandidate],
+      [authorization],
+      [stagedCandidate],
+    ]);
+    const service = releaseCandidateService(db);
+    const input = {
+      authorizationId: authorization.id,
+      candidateId: candidate.id,
+      status: "succeeded" as const,
+      commitSha: candidate.commitSha,
+      healthStatus: "passed",
+      metadata: {
+        deployRecord: {
+          lease_id: authorization.id,
+          candidate_id: candidate.id,
+          commit_sha: candidate.commitSha,
+          image_digest: candidate.imageDigest,
+          approval_interaction_id: approvalInteractionId,
+        },
+      },
+    };
+
+    await expect(service.recordDeployReceipt(input, { agentId: candidate.createdByAgentId }))
+      .resolves.toMatchObject({ eventType: "deploy_succeeded", duplicate: false });
+    await expect(service.recordDeployReceipt(input, { agentId: candidate.createdByAgentId }))
+      .resolves.toMatchObject({ eventType: "deploy_succeeded", duplicate: true });
+
+    const comments = inserted.filter((value) =>
+      typeof value === "object" && value !== null && "body" in value
+    );
+    expect(comments).toHaveLength(1);
+    expect(JSON.stringify(inserted)).not.toContain("expired-token-hash-is-not-read");
+  });
+
+  it("rejects receipt rebinds and conflicting terminal evidence", async () => {
+    const approvalInteractionId = "ffffffff-ffff-4fff-8fff-ffffffffffff";
+    const stagedCandidate = {
+      ...candidate,
+      status: "staged",
+      approvalInteractionId,
+      stagedArtifactAssetId: "77777777-7777-4777-8777-777777777777",
+      stagedSignatureBundleAssetId: "88888888-8888-4888-8888-888888888888",
+    };
+    const authorization = {
+      id: "99999999-9999-4999-8999-999999999999",
+      companyId: candidate.companyId,
+      candidateId: candidate.id,
+      approvalInteractionId,
+      tokenHash: "unused",
+      tokenPrefix: "pcdeploy_used",
+      targetHost: candidate.targetHost,
+      imageDigest: candidate.imageDigest,
+      environment: candidate.environment,
+      sequence: candidate.sequence,
+      expiresAt: new Date(Date.now() - 60_000),
+      usedAt: new Date(),
+      leaseArtifactAssetId: stagedCandidate.stagedArtifactAssetId,
+      leaseSignatureBundleAssetId: stagedCandidate.stagedSignatureBundleAssetId,
+      leaseIssuedAt: new Date(),
+      createdByUserId: "founder",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    const service = releaseCandidateService(makeDb([
+      [authorization], [stagedCandidate],
+      [authorization], [stagedCandidate],
+      [authorization], [stagedCandidate],
+    ]).db);
+    const base = {
+      authorizationId: authorization.id,
+      candidateId: candidate.id,
+      status: "failed" as const,
+      commitSha: candidate.commitSha,
+      message: "acceptance failed",
+      metadata: { deployRecord: {
+        lease_id: authorization.id,
+        candidate_id: candidate.id,
+        commit_sha: candidate.commitSha,
+        image_digest: candidate.imageDigest,
+        approval_interaction_id: approvalInteractionId,
+      } },
+    };
+
+    await expect(service.recordDeployReceipt(base, {})).resolves.toMatchObject({ duplicate: false });
+    await expect(service.recordDeployReceipt({ ...base, message: "different terminal evidence" }, {}))
+      .rejects.toMatchObject({
+        status: 409,
+        message: "A different deploy receipt is already bound to this authorization",
+      });
+    await expect(service.recordDeployReceipt({
+      ...base,
+      candidateId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+    }, {})).rejects.toMatchObject({
+      status: 422,
+      message: "Deploy receipt candidate does not match authorization",
+    });
   });
 
   it("rejects wrong, expired, replayed, and wrong-scope relay authorization tokens", async () => {

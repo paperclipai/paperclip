@@ -665,6 +665,25 @@ const releaseDeployRecordOpenApiSchema = z.object({
   metadata: z.record(z.unknown()).optional(),
 }).strict();
 
+const releaseDeployReceiptMetadataOpenApiSchema = z.object({
+  deployRecord: z.object({
+    lease_id: z.string().uuid(),
+    candidate_id: z.string().uuid(),
+    commit_sha: z.string().trim().min(7).max(80),
+    image_digest: releaseCandidateDigestSchema,
+    approval_interaction_id: z.string().uuid(),
+  }).passthrough(),
+}).passthrough();
+
+const releaseDeployReceiptOpenApiSchema = releaseDeployRecordOpenApiSchema
+  .omit({ authorizationId: true })
+  .extend({
+    candidateId: z.string().uuid(),
+    status: z.enum(["succeeded", "failed", "rolled_back"]),
+    metadata: releaseDeployReceiptMetadataOpenApiSchema,
+  })
+  .strict();
+
 function paramsSchemaFromPath(routePath: string): z.ZodObject<z.ZodRawShape> | undefined {
   const names = [...routePath.matchAll(/\{([A-Za-z0-9_]+)\}/g)].map((match) => match[1]);
   if (names.length === 0) return undefined;
@@ -6614,6 +6633,15 @@ registerCurrentRoute({
   summary: "Record a release candidate deploy event",
   body: releaseDeployRecordOpenApiSchema,
   responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/release-deploy-authorizations/{authorizationId}/deploy-record-receipt",
+  tags: ["release-candidates"],
+  summary: "Idempotently record a terminal deploy receipt using an agent API key",
+  body: releaseDeployReceiptOpenApiSchema,
+  responses: { 200: r.ok(), 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
 });
 
 registerCurrentRoute({

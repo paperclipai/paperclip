@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { Readable } from "node:stream";
 import express from "express";
 import request from "supertest";
@@ -17,6 +18,8 @@ const mockAssetService = vi.hoisted(() => ({
 const mockReleaseCandidateService = vi.hoisted(() => ({
   getApprovedLease: vi.fn(),
   recordDeployEvent: vi.fn(),
+  getDeployReceiptTarget: vi.fn(),
+  recordDeployReceipt: vi.fn(),
   verifyRelayAuthorization: vi.fn(),
   stageRelayArtifact: vi.fn(),
 }));
@@ -36,14 +39,41 @@ vi.mock("../services/assets.js", () => ({
 }));
 
 const companyId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+const approvedLeaseContractFixture = JSON.parse(readFileSync(
+  new URL("./fixtures/scanner-approved-lease-v1.json", import.meta.url),
+  "utf8",
+));
 
-function createApp(beforeRoutes?: express.RequestHandler, jsonLimit: string | number = "100kb") {
+function deployReceiptBody(
+  authorizationId: string,
+  candidateId: string,
+  status: "succeeded" | "failed" | "rolled_back" = "succeeded",
+) {
+  return {
+    candidateId,
+    status,
+    commitSha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    metadata: { deployRecord: {
+      lease_id: authorizationId,
+      candidate_id: candidateId,
+      commit_sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      image_digest: "ghcr.io/corwinfoundation/are-scanner/scanner-edge@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      approval_interaction_id: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+    } },
+  };
+}
+
+function createApp(
+  beforeRoutes?: express.RequestHandler,
+  jsonLimit: string | number = "100kb",
+  actorSource: "agent_jwt" | "agent_key" = "agent_jwt",
+) {
   const app = express();
   app.use(express.json({ limit: jsonLimit }));
   app.use((req, _res, next) => {
     req.actor = {
       type: "agent",
-      source: "agent_jwt",
+      source: actorSource,
       agentId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
       companyId,
       runId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
@@ -60,6 +90,8 @@ describe("release candidate routes", () => {
   beforeEach(() => {
     mockReleaseCandidateService.getApprovedLease.mockReset();
     mockReleaseCandidateService.recordDeployEvent.mockReset();
+    mockReleaseCandidateService.getDeployReceiptTarget.mockReset();
+    mockReleaseCandidateService.recordDeployReceipt.mockReset();
     mockReleaseCandidateService.verifyRelayAuthorization.mockReset();
     mockReleaseCandidateService.stageRelayArtifact.mockReset();
     mockAssetService.create.mockReset();
@@ -77,7 +109,7 @@ describe("release candidate routes", () => {
         candidateId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
         approvalInteractionId,
         targetHost: "srv1749248",
-        imageDigest: "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        imageDigest: "ghcr.io/corwinfoundation/are-scanner/scanner-edge@sha256:1111111111111111111111111111111111111111111111111111111111111111",
         environment: "production",
         sequence: 42,
         expiresAt: new Date("2026-07-14T14:00:00.000Z"),
@@ -88,8 +120,8 @@ describe("release candidate routes", () => {
         id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
         companyId,
         sourceIssueId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
-        commitSha: "abc1234567890",
-        imageDigest: "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        commitSha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        imageDigest: "ghcr.io/corwinfoundation/are-scanner/scanner-edge@sha256:1111111111111111111111111111111111111111111111111111111111111111",
         signatureBundleRef: "oci://registry.example/scanner/signature",
         signatureBundleSha256: "3333333333333333333333333333333333333333333333333333333333333333",
         provenanceRef: "https://github.example/workflows/1/provenance",
@@ -109,11 +141,13 @@ describe("release candidate routes", () => {
       authorizationId,
       approvalInteractionId,
       stagedArtifactPath: `/api/release-deploy-authorizations/${authorizationId}/staged-artifact`,
+      deployRecordReceiptPath: `/api/release-deploy-authorizations/${authorizationId}/deploy-record-receipt`,
       stagedArtifactSha256,
       stagedSignatureBundlePath: `/api/release-deploy-authorizations/${authorizationId}/staged-signature-bundle`,
       stagedSignatureBundleSha256: "3333333333333333333333333333333333333333333333333333333333333333",
       tarballSha256: stagedArtifactSha256,
     });
+    expect(res.body).toEqual(approvedLeaseContractFixture);
     expect(res.body).not.toHaveProperty("token");
     expect(res.body).not.toHaveProperty("signatureBundleRef");
     expect(JSON.stringify(res.body)).not.toContain("oci://registry.example/scanner/signature");
@@ -215,6 +249,106 @@ describe("release candidate routes", () => {
 
     expect(res.status).toBe(400);
     expect(mockReleaseCandidateService.recordDeployEvent).not.toHaveBeenCalled();
+  });
+
+  it("accepts an authorization-bound deploy receipt with an agent API key and no deploy token", async () => {
+    const authorizationId = "99999999-9999-4999-8999-999999999999";
+    const candidateId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const sourceIssueId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+    mockReleaseCandidateService.getDeployReceiptTarget.mockResolvedValue({
+      authorization: { id: authorizationId },
+      candidate: { id: candidateId, companyId, sourceIssueId },
+    });
+    mockReleaseCandidateService.recordDeployReceipt.mockResolvedValue({
+      duplicate: false,
+      eventType: "deploy_succeeded",
+      authorization: { id: authorizationId },
+      candidate: { id: candidateId, companyId, sourceIssueId },
+    });
+
+    const res = await request(createApp(undefined, "100kb", "agent_key"))
+      .post(`/api/release-deploy-authorizations/${authorizationId}/deploy-record-receipt`)
+      .set("Authorization", "Bearer pc_agent_service_key")
+      .send({
+        ...deployReceiptBody(authorizationId, candidateId),
+        healthStatus: "passed",
+      });
+
+    expect(res.status).toBe(201);
+    expect(res.body).toMatchObject({
+      ok: true,
+      duplicate: false,
+      authorizationId,
+      candidateId,
+    });
+    expect(mockReleaseCandidateService.recordDeployReceipt).toHaveBeenCalledWith(
+      expect.objectContaining({
+        authorizationId,
+        candidateId,
+        status: "succeeded",
+      }),
+      expect.objectContaining({ agentId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd" }),
+    );
+    expect(JSON.stringify(mockReleaseCandidateService.recordDeployReceipt.mock.calls)).not.toContain("pcdeploy_");
+  });
+
+  it("returns 200 for an idempotent duplicate deploy receipt", async () => {
+    const authorizationId = "99999999-9999-4999-8999-999999999999";
+    const candidateId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    mockReleaseCandidateService.getDeployReceiptTarget.mockResolvedValue({
+      authorization: { id: authorizationId },
+      candidate: { id: candidateId, companyId, sourceIssueId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc" },
+    });
+    mockReleaseCandidateService.recordDeployReceipt.mockResolvedValue({
+      duplicate: true,
+      eventType: "deploy_succeeded",
+      authorization: { id: authorizationId },
+      candidate: { id: candidateId, companyId, sourceIssueId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc" },
+    });
+
+    const res = await request(createApp(undefined, "100kb", "agent_key"))
+      .post(`/api/release-deploy-authorizations/${authorizationId}/deploy-record-receipt`)
+      .set("Authorization", "Bearer pc_agent_service_key")
+      .send(deployReceiptBody(authorizationId, candidateId));
+
+    expect(res.status).toBe(200);
+    expect(res.body.duplicate).toBe(true);
+  });
+
+  it("rejects deploy receipts authenticated with an agent JWT", async () => {
+    const authorizationId = "99999999-9999-4999-8999-999999999999";
+    const candidateId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+
+    const res = await request(createApp())
+      .post(`/api/release-deploy-authorizations/${authorizationId}/deploy-record-receipt`)
+      .send(deployReceiptBody(authorizationId, candidateId));
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Deploy record receipts require an agent API key");
+    expect(mockReleaseCandidateService.getDeployReceiptTarget).not.toHaveBeenCalled();
+    expect(mockReleaseCandidateService.recordDeployReceipt).not.toHaveBeenCalled();
+  });
+
+  it("conceals cross-company deploy receipt authorizations from service API keys", async () => {
+    const authorizationId = "99999999-9999-4999-8999-999999999999";
+    const candidateId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    mockReleaseCandidateService.getDeployReceiptTarget.mockResolvedValue({
+      authorization: { id: authorizationId },
+      candidate: {
+        id: candidateId,
+        companyId: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+        sourceIssueId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      },
+    });
+
+    const res = await request(createApp(undefined, "100kb", "agent_key"))
+      .post(`/api/release-deploy-authorizations/${authorizationId}/deploy-record-receipt`)
+      .set("Authorization", "Bearer pc_agent_service_key")
+      .send(deployReceiptBody(authorizationId, candidateId, "failed"));
+
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe("Release deploy authorization not found");
+    expect(mockReleaseCandidateService.recordDeployReceipt).not.toHaveBeenCalled();
   });
 
   it("passes stage-relay artifact tokens only from the header", async () => {

@@ -96,6 +96,7 @@ export const releaseCandidateAuditEvents = pgTable(
     actorAgentId: uuid("actor_agent_id").references(() => agents.id, { onDelete: "set null" }),
     actorUserId: text("actor_user_id"),
     eventType: text("event_type").notNull(),
+    idempotencyKey: text("idempotency_key"),
     payload: jsonb("payload").$type<Record<string, unknown>>().notNull().default({}),
     redacted: boolean("redacted").notNull().default(true),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -103,5 +104,8 @@ export const releaseCandidateAuditEvents = pgTable(
   (table) => ({
     candidateCreatedIdx: index("release_candidate_audit_events_candidate_created_idx").on(table.candidateId, table.createdAt),
     companyCreatedIdx: index("release_candidate_audit_events_company_created_idx").on(table.companyId, table.createdAt),
+    authorizationIdempotencyUq: uniqueIndex("release_candidate_audit_events_authorization_idempotency_uq")
+      .on(table.authorizationId, table.idempotencyKey)
+      .where(sql`${table.authorizationId} IS NOT NULL AND ${table.idempotencyKey} IS NOT NULL`),
   }),
 );

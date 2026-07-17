@@ -77,6 +77,14 @@ export type DeployRecordInput = {
   metadata?: Record<string, unknown>;
 };
 
+export type DeployReceiptInput = Omit<DeployRecordInput, "token" | "status"> & {
+  candidateId: string;
+  status: Exclude<DeployRecordInput["status"], "started">;
+};
+
+const TERMINAL_DEPLOY_RECEIPT_IDEMPOTENCY_KEY = "deploy-terminal:v1";
+type DeployEventInput = Omit<DeployRecordInput, "authorizationId" | "token">;
+
 function sha256(value: string) {
   return createHash("sha256").update(value).digest("hex");
 }
@@ -146,6 +154,16 @@ function buildAuditMetadata(eventType: string, candidate: CandidateRow): IssueCo
   };
 }
 
+function stableJson(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map((item) => stableJson(item)).join(",")}]`;
+  const objectValue = value as Record<string, unknown>;
+  return `{${Object.keys(objectValue)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${stableJson(objectValue[key])}`)
+    .join(",")}}`;
+}
+
 async function appendAudit(db: Db, args: {
   candidate: CandidateRow;
   eventType: string;
@@ -153,8 +171,9 @@ async function appendAudit(db: Db, args: {
   authorizationId?: string | null;
   payload?: Record<string, unknown>;
   commentExtra?: Record<string, unknown>;
+  idempotencyKey?: string | null;
 }) {
-  await db.insert(releaseCandidateAuditEvents).values({
+  const auditInsert = db.insert(releaseCandidateAuditEvents).values({
     companyId: args.candidate.companyId,
     candidateId: args.candidate.id,
     authorizationId: args.authorizationId ?? null,
@@ -162,9 +181,17 @@ async function appendAudit(db: Db, args: {
     actorAgentId: args.actor.agentId ?? null,
     actorUserId: args.actor.userId ?? null,
     eventType: args.eventType,
+    idempotencyKey: args.idempotencyKey ?? null,
     payload: args.payload ?? {},
     redacted: true,
   });
+
+  if (args.idempotencyKey) {
+    const inserted = await auditInsert.onConflictDoNothing().returning({ id: releaseCandidateAuditEvents.id });
+    if (inserted.length === 0) return false;
+  } else {
+    await auditInsert;
+  }
 
   await db.insert(issueComments).values({
     companyId: args.candidate.companyId,
@@ -176,6 +203,7 @@ async function appendAudit(db: Db, args: {
     body: buildAuditComment(args.eventType, args.candidate, args.commentExtra),
     metadata: buildAuditMetadata(args.eventType, args.candidate),
   });
+  return true;
 }
 
 export function verifyRelayArtifact(candidate: CandidateRow, artifact: RelayArtifactVerificationInput) {
@@ -325,6 +353,136 @@ async function issueDeployAuthorizationForAcceptedInteraction(
     },
   });
   return { authorization, token: token.secret, alreadyIssued: false };
+}
+
+function assertAuthorizationScope(authorization: AuthorizationRow, candidate: CandidateRow) {
+  if (
+    authorization.companyId !== candidate.companyId
+    || authorization.candidateId !== candidate.id
+    || authorization.targetHost !== candidate.targetHost
+    || authorization.imageDigest !== candidate.imageDigest
+    || authorization.environment !== candidate.environment
+    || authorization.sequence !== candidate.sequence
+  ) {
+    throw conflict("Deploy authorization scope no longer matches release candidate");
+  }
+}
+
+function assertDeployReceiptStaged(authorization: AuthorizationRow, candidate: CandidateRow) {
+  if (
+    !authorization.usedAt
+    || !authorization.leaseIssuedAt
+    || !authorization.leaseArtifactAssetId
+    || !authorization.leaseSignatureBundleAssetId
+    || !candidate.stagedArtifactAssetId
+    || !candidate.stagedSignatureBundleAssetId
+  ) {
+    throw conflict("Deploy receipt requires a relay-staged authorization", {
+      code: "release_candidate_receipt_not_staged",
+    });
+  }
+}
+
+function assertDeployEventBinding(
+  authorization: AuthorizationRow,
+  candidate: CandidateRow,
+  input: DeployEventInput,
+  requireRawRecord = false,
+) {
+  if (input.commitSha && input.commitSha !== candidate.commitSha) {
+    throw unprocessable("Deploy record commit does not match release candidate", {
+      code: "release_candidate_deploy_record_commit_mismatch",
+    });
+  }
+  const metadata = input.metadata ?? {};
+  const rawRecord = metadata.deployRecord;
+  if (requireRawRecord && (!rawRecord || typeof rawRecord !== "object" || Array.isArray(rawRecord))) {
+    throw unprocessable("Deploy receipt is missing its bound deploy record", {
+      code: "release_candidate_deploy_record_binding_missing",
+    });
+  }
+  if (rawRecord && typeof rawRecord === "object" && !Array.isArray(rawRecord)) {
+    const record = rawRecord as Record<string, unknown>;
+    const bindings: Array<[unknown, unknown, string]> = [
+      [record.lease_id, authorization.id, "authorization"],
+      [record.candidate_id, candidate.id, "candidate"],
+      [record.commit_sha, candidate.commitSha, "commit"],
+      [record.image_digest, candidate.imageDigest, "image digest"],
+      [record.approval_interaction_id, candidate.approvalInteractionId, "approval interaction"],
+    ];
+    for (const [actual, expected, label] of bindings) {
+      if (actual != null && actual !== expected) {
+        throw unprocessable(`Deploy record ${label} does not match authorization`, {
+          code: "release_candidate_deploy_record_binding_mismatch",
+        });
+      }
+    }
+  }
+}
+
+function deployEventPayload(candidate: CandidateRow, input: DeployEventInput) {
+  return {
+    status: input.status,
+    message: input.message ?? null,
+    commitSha: input.commitSha ?? candidate.commitSha,
+    healthStatus: input.healthStatus ?? null,
+    rollbackReason: input.rollbackReason ?? null,
+    metadata: input.metadata ?? {},
+  };
+}
+
+async function persistDeployEvent(
+  operationDb: Db,
+  authorization: AuthorizationRow,
+  candidate: CandidateRow,
+  input: DeployEventInput,
+  actor: Actor,
+  source: "deploy_token" | "service_receipt",
+) {
+  assertAuthorizationScope(authorization, candidate);
+  assertDeployEventBinding(authorization, candidate, input, source === "service_receipt");
+  const payload = deployEventPayload(candidate, input);
+  const receiptFingerprint = sha256(stableJson({
+    authorizationId: authorization.id,
+    candidateId: candidate.id,
+    ...payload,
+  }));
+  const idempotencyKey = input.status === "started"
+    ? `deploy-started:v1:${receiptFingerprint}`
+    : TERMINAL_DEPLOY_RECEIPT_IDEMPOTENCY_KEY;
+  const eventType = `deploy_${input.status}`;
+  const inserted = await appendAudit(operationDb, {
+    candidate,
+    actor,
+    authorizationId: authorization.id,
+    eventType,
+    idempotencyKey,
+    payload: { ...payload, receiptFingerprint, source },
+    commentExtra: {
+      authorization_id: authorization.id,
+      status: input.status,
+      commit_sha: payload.commitSha,
+      health_status: input.healthStatus ?? null,
+      rollback_reason: input.rollbackReason ?? null,
+      message: input.message ?? null,
+    },
+  });
+  if (inserted) return { authorization, candidate, eventType, duplicate: false };
+
+  const existing = await operationDb
+    .select()
+    .from(releaseCandidateAuditEvents)
+    .where(and(
+      eq(releaseCandidateAuditEvents.authorizationId, authorization.id),
+      eq(releaseCandidateAuditEvents.idempotencyKey, idempotencyKey),
+    ))
+    .then((rows) => rows[0] ?? null);
+  if (existing?.payload?.receiptFingerprint !== receiptFingerprint) {
+    throw conflict("A different deploy receipt is already bound to this authorization", {
+      code: "release_candidate_deploy_receipt_conflict",
+    });
+  }
+  return { authorization, candidate, eventType: existing.eventType, duplicate: true };
 }
 
 export function releaseCandidateService(db: Db) {
@@ -513,14 +671,7 @@ export function releaseCandidateService(db: Db) {
           code: "release_candidate_token_used",
         });
       }
-      if (
-        authorization.targetHost !== candidate.targetHost
-        || authorization.imageDigest !== candidate.imageDigest
-        || authorization.environment !== candidate.environment
-        || authorization.sequence !== candidate.sequence
-      ) {
-        throw conflict("Deploy authorization scope no longer matches release candidate");
-      }
+      assertAuthorizationScope(authorization, candidate);
       verifyRelayArtifact(candidate, artifact);
       return { authorization, candidate };
     },
@@ -537,14 +688,17 @@ export function releaseCandidateService(db: Db) {
       if (authorization.expiresAt.getTime() <= Date.now()) {
         throw unauthorized("Deploy authorization token is expired");
       }
-      if (
-        authorization.targetHost !== candidate.targetHost
-        || authorization.imageDigest !== candidate.imageDigest
-        || authorization.environment !== candidate.environment
-        || authorization.sequence !== candidate.sequence
-      ) {
-        throw conflict("Deploy authorization scope no longer matches release candidate");
-      }
+      assertAuthorizationScope(authorization, candidate);
+      return { authorization, candidate };
+    },
+
+    getDeployReceiptTarget: async (authorizationId: string) => {
+      const authorization = await getAuthorizationById(authorizationId);
+      if (!authorization) throw notFound("Deploy authorization not found");
+      const candidate = await getById(authorization.candidateId);
+      if (!candidate) throw notFound("Release candidate not found");
+      // Deliberately defer scope/staging errors until after the route checks
+      // company access, so cross-company authorization probes stay concealed.
       return { authorization, candidate };
     },
 
@@ -611,31 +765,25 @@ export function releaseCandidateService(db: Db) {
       });
     },
 
-    recordDeployEvent: async (input: DeployRecordInput, actor: Actor) => {
-      const { authorization, candidate } = await releaseCandidateService(db).getApprovedLease(input.authorizationId, input.token);
-      const eventType = `deploy_${input.status}`;
-      await appendAudit(db, {
-        candidate,
-        actor,
-        authorizationId: authorization.id,
-        eventType,
-        payload: {
-          status: input.status,
-          commitSha: input.commitSha ?? candidate.commitSha,
-          healthStatus: input.healthStatus ?? null,
-          rollbackReason: input.rollbackReason ?? null,
-          metadata: input.metadata ?? {},
-        },
-        commentExtra: {
-          authorization_id: authorization.id,
-          status: input.status,
-          commit_sha: input.commitSha ?? candidate.commitSha,
-          health_status: input.healthStatus ?? null,
-          rollback_reason: input.rollbackReason ?? null,
-          message: input.message ?? null,
-        },
-      });
-      return { authorization, candidate, eventType };
-    },
+    recordDeployEvent: async (input: DeployRecordInput, actor: Actor) => db.transaction(async (tx) => {
+      const operationDb = tx as unknown as Db;
+      const { authorization, candidate } = await releaseCandidateService(operationDb)
+        .getApprovedLease(input.authorizationId, input.token);
+      return persistDeployEvent(operationDb, authorization, candidate, input, actor, "deploy_token");
+    }),
+
+    recordDeployReceipt: async (input: DeployReceiptInput, actor: Actor) => db.transaction(async (tx) => {
+      const operationDb = tx as unknown as Db;
+      const { authorization, candidate } = await releaseCandidateService(operationDb)
+        .getDeployReceiptTarget(input.authorizationId);
+      assertAuthorizationScope(authorization, candidate);
+      assertDeployReceiptStaged(authorization, candidate);
+      if (input.candidateId !== candidate.id) {
+        throw unprocessable("Deploy receipt candidate does not match authorization", {
+          code: "release_candidate_deploy_record_binding_mismatch",
+        });
+      }
+      return persistDeployEvent(operationDb, authorization, candidate, input, actor, "service_receipt");
+    }),
   };
 }
