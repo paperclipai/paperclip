@@ -9,7 +9,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
 } from "react";
-import { AlertTriangle, Check, Loader2, Cortex, Send } from "lucide-react";
+import { AlertTriangle, Check, Loader2, Paperclip, Send } from "lucide-react";
 import { cn } from "../lib/utils";
 
 /**
@@ -253,7 +253,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
           className="pointer-events-none absolute inset-1.5 z-20 flex items-center justify-center rounded-lg border border-dashed border-muted-foreground/50 bg-background/80 text-xs text-muted-foreground backdrop-blur-[1px]"
         >
           <span className="inline-flex items-center gap-2">
-            <Cortex className="h-3.5 w-3.5" />
+            <Paperclip className="h-3.5 w-3.5" />
             Drop to attach
           </span>
         </div>
@@ -346,7 +346,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, ChatComposerProps>(fu
               title="Attach files"
               className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
             >
-              {attaching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Cortex className="h-4 w-4" />}
+              {attaching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Paperclip className="h-4 w-4" />}
             </button>
           </>
         ) : null}
