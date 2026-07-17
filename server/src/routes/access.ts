@@ -81,7 +81,7 @@ import {
   collapseDuplicatePendingHumanJoinRequests,
   findReusableHumanJoinRequest,
 } from "../lib/join-request-dedupe.js";
-import { assertAuthenticated, assertCompanyAccess } from "./authz.js";
+import { assertAuthenticated, assertCompanyAccess, getActorInfo } from "./authz.js";
 import {
   claimBoardOwnership,
   inspectBoardClaimChallenge
@@ -3136,10 +3136,17 @@ export function accessRoutes(
       .returning()
       .then((rows) => rows[0] ?? null);
 
+    // Runs inside the pre-auth invite-accept flow; attribute agent/run when the caller is
+    // authenticated but never assert authentication (anonymous humans accept invites here).
     await logActivity(db, {
       companyId: input.companyId,
-      actorType: "user",
-      actorId: approvedByUserId ?? "board",
+      actorType: input.req.actor?.type === "agent" ? "agent" : "user",
+      actorId:
+        input.req.actor?.type === "agent"
+          ? input.req.actor.agentId ?? "invite-agent"
+          : input.req.actor?.userId ?? approvedByUserId ?? "board",
+      agentId: input.req.actor?.type === "agent" ? input.req.actor.agentId ?? null : null,
+      runId: input.req.actor?.runId ?? null,
       action: "join.approved",
       entityType: "join_request",
       entityId: input.joinRequest.id,
@@ -3294,13 +3301,13 @@ export function accessRoutes(
           agentMessage: req.body.agentMessage ?? null
         });
 
+      const actor = getActorInfo(req);
       await logActivity(db, {
         companyId,
-        actorType: req.actor.type === "agent" ? "agent" : "user",
-        actorId:
-          req.actor.type === "agent"
-            ? req.actor.agentId ?? "unknown-agent"
-            : req.actor.userId ?? "board",
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
         action: "invite.created",
         entityType: "invite",
         entityId: created.id,
@@ -4026,14 +4033,18 @@ export function accessRoutes(
         }
       }
 
+      // Invite acceptance is a pre-auth flow: the caller may be anonymous, so we cannot use
+      // getActorInfo() (which asserts authentication). Attribute agent/run only when present.
       await logActivity(db, {
         companyId,
-        actorType: req.actor.type === "agent" ? "agent" : "user",
+        actorType: req.actor?.type === "agent" ? "agent" : "user",
         actorId:
-          req.actor.type === "agent"
+          req.actor?.type === "agent"
             ? req.actor.agentId ?? "invite-agent"
-            : req.actor.userId ??
+            : req.actor?.userId ??
               (requestType === "agent" ? "invite-anon" : "board"),
+        agentId: req.actor?.type === "agent" ? req.actor.agentId ?? null : null,
+        runId: req.actor?.runId ?? null,
         action: inviteAlreadyAccepted
           ? "join.request_replayed"
           : "join.requested",
@@ -4111,14 +4122,17 @@ export function accessRoutes(
       .returning()
       .then((rows) => rows[0]);
 
+    // Bootstrap CEO invites have no company scope, so they cannot be attributed on the
+    // company-scoped activity_log spine; that instance-level surface is owned by the
+    // instance-audit architecture work (PAP-14494). Company-scoped invites are audited here.
     if (invite.companyId) {
+      const actor = getActorInfo(req);
       await logActivity(db, {
         companyId: invite.companyId,
-        actorType: req.actor.type === "agent" ? "agent" : "user",
-        actorId:
-          req.actor.type === "agent"
-            ? req.actor.agentId ?? "unknown-agent"
-            : req.actor.userId ?? "board",
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
         action: "invite.revoked",
         entityType: "invite",
         entityId: id
@@ -4275,10 +4289,13 @@ export function accessRoutes(
         .returning()
         .then((rows) => rows[0]);
 
+      const actor = getActorInfo(req);
       await logActivity(db, {
         companyId,
-        actorType: "user",
-        actorId: req.actor.userId ?? "board",
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
         action: "join.approved",
         entityType: "join_request",
         entityId: requestId,
@@ -4333,10 +4350,13 @@ export function accessRoutes(
         .returning()
         .then((rows) => rows[0]);
 
+      const actor = getActorInfo(req);
       await logActivity(db, {
         companyId,
-        actorType: "user",
-        actorId: req.actor.userId ?? "board",
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
         action: "join.rejected",
         entityType: "join_request",
         entityId: requestId,

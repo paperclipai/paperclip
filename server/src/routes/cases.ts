@@ -1,7 +1,7 @@
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import { z } from "zod";
-import { and, asc, desc, eq, ilike, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, ilike, inArray, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -1077,11 +1077,13 @@ export function caseRoutes(db: Db, storage: StorageService) {
     if (!caseRow) return next();
     const key = parseDocumentKey(req.params.key as string);
     const actor = getActorInfo(req);
-    const result = await db.transaction(async (tx) => {
+    const { result, locked, documentId } = await db.transaction(async (tx) => {
       await lockCaseDocumentKey(tx, { companyId: caseRow.companyId, caseId: caseRow.id, key });
       const link = await loadCaseDocumentLink(tx, { companyId: caseRow.companyId, caseId: caseRow.id, key });
       if (!link) throw notFound("Case document not found");
-      if (link.document.lockedAt) return caseDocumentResponse({ key, document: link.document });
+      if (link.document.lockedAt) {
+        return { result: caseDocumentResponse({ key, document: link.document }), locked: false, documentId: link.document.id };
+      }
       const now = new Date();
       const [document] = await tx.update(documents).set({
         lockedAt: now,
@@ -1090,8 +1092,22 @@ export function caseRoutes(db: Db, storage: StorageService) {
         updatedAt: now,
       }).where(eq(documents.id, link.document.id)).returning();
       await tx.update(caseDocuments).set({ updatedAt: now }).where(eq(caseDocuments.documentId, link.document.id));
-      return caseDocumentResponse({ key, document: document! });
+      return { result: caseDocumentResponse({ key, document: document! }), locked: true, documentId: link.document.id };
     });
+    if (locked) {
+      await logActivity(db, {
+        companyId: caseRow.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
+        action: "case.document_locked",
+        entityType: "case",
+        entityId: caseRow.id,
+        details: { key, documentId },
+      });
+    }
     res.json(result);
   });
 
@@ -1099,11 +1115,14 @@ export function caseRoutes(db: Db, storage: StorageService) {
     const caseRow = await resolveSharedPathCase(db, req, req.params.id as string);
     if (!caseRow) return next();
     const key = parseDocumentKey(req.params.key as string);
-    const result = await db.transaction(async (tx) => {
+    const actor = getActorInfo(req);
+    const { result, unlocked, documentId } = await db.transaction(async (tx) => {
       await lockCaseDocumentKey(tx, { companyId: caseRow.companyId, caseId: caseRow.id, key });
       const link = await loadCaseDocumentLink(tx, { companyId: caseRow.companyId, caseId: caseRow.id, key });
       if (!link) throw notFound("Case document not found");
-      if (!link.document.lockedAt) return caseDocumentResponse({ key, document: link.document });
+      if (!link.document.lockedAt) {
+        return { result: caseDocumentResponse({ key, document: link.document }), unlocked: false, documentId: link.document.id };
+      }
       const now = new Date();
       const [document] = await tx.update(documents).set({
         lockedAt: null,
@@ -1112,8 +1131,22 @@ export function caseRoutes(db: Db, storage: StorageService) {
         updatedAt: now,
       }).where(eq(documents.id, link.document.id)).returning();
       await tx.update(caseDocuments).set({ updatedAt: now }).where(eq(caseDocuments.documentId, link.document.id));
-      return caseDocumentResponse({ key, document: document! });
+      return { result: caseDocumentResponse({ key, document: document! }), unlocked: true, documentId: link.document.id };
     });
+    if (unlocked) {
+      await logActivity(db, {
+        companyId: caseRow.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
+        action: "case.document_unlocked",
+        entityType: "case",
+        entityId: caseRow.id,
+        details: { key, documentId },
+      });
+    }
     res.json(result);
   });
 
@@ -1210,10 +1243,11 @@ export function caseRoutes(db: Db, storage: StorageService) {
     const caseRow = await resolveSharedPathCase(db, req, req.params.id as string);
     if (!caseRow) return next();
     const key = parseDocumentKey(req.params.key as string);
-    await db.transaction(async (tx) => {
+    const actor = getActorInfo(req);
+    const tombstone = await db.transaction(async (tx) => {
       await lockCaseDocumentKey(tx, { companyId: caseRow.companyId, caseId: caseRow.id, key });
       const link = await loadCaseDocumentLink(tx, { companyId: caseRow.companyId, caseId: caseRow.id, key });
-      if (!link) return;
+      if (!link) return null;
       if (link.document.lockedAt) {
         throw conflict("Document is locked", {
           key,
@@ -1221,9 +1255,36 @@ export function caseRoutes(db: Db, storage: StorageService) {
           lockedAt: link.document.lockedAt,
         });
       }
+      const [{ revisionCount }] = await tx
+        .select({ revisionCount: count() })
+        .from(documentRevisions)
+        .where(eq(documentRevisions.documentId, link.document.id));
       await tx.delete(caseDocuments).where(eq(caseDocuments.documentId, link.document.id));
       await tx.delete(documents).where(eq(documents.id, link.document.id));
+      return {
+        documentId: link.document.id,
+        title: link.document.title ?? null,
+        latestRevisionId: link.document.latestRevisionId,
+        latestRevisionNumber: link.document.latestRevisionNumber,
+        revisionCount: Number(revisionCount ?? 0),
+      };
     });
+    // Tombstone: the document + revisions are hard-deleted, so this durable audit row is
+    // the only surviving record of who destroyed the content and what history it held.
+    if (tombstone) {
+      await logActivity(db, {
+        companyId: caseRow.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
+        action: "case.document_deleted",
+        entityType: "case",
+        entityId: caseRow.id,
+        details: { key, ...tombstone },
+      });
+    }
     res.json({ ok: true });
   });
 
