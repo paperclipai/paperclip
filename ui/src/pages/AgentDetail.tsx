@@ -42,6 +42,7 @@ import { EntityRow } from "../components/EntityRow";
 import { MembershipAction } from "../components/MembershipAction";
 import { StarToggle } from "../components/StarToggle";
 import { Identity } from "../components/Identity";
+import { AuditFeed } from "./audit/AuditFeed";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { AgentActionButtons } from "../components/AgentActionButtons";
 import { InlineBanner } from "../components/InlineBanner";
@@ -272,7 +273,7 @@ function scrollToContainerBottom(container: ScrollContainer, behavior: ScrollBeh
   container.scrollTo({ top: container.scrollHeight, behavior });
 }
 
-type AgentDetailView = "dashboard" | "instructions" | "configuration" | "skills" | "tools" | "runs" | "budget";
+type AgentDetailView = "dashboard" | "instructions" | "configuration" | "skills" | "tools" | "runs" | "audit" | "budget";
 
 function parseAgentDetailView(value: string | null): AgentDetailView {
   if (value === "instructions" || value === "prompts") return "instructions";
@@ -280,6 +281,7 @@ function parseAgentDetailView(value: string | null): AgentDetailView {
   if (value === "skills") return "skills";
   if (value === "tools") return "tools";
   if (value === "budget") return "budget";
+  if (value === "audit") return "audit";
   if (value === "runs") return value;
   return "dashboard";
 }
@@ -1252,6 +1254,7 @@ export function AgentDetail() {
               { value: "configuration", label: "Configuration" },
               { value: "tools", label: "Tools" },
               { value: "runs", label: "Runs" },
+              { value: "audit", label: "Audit" },
               { value: "budget", label: "Budget" },
             ]}
             value={activeView}
@@ -1383,6 +1386,10 @@ export function AgentDetail() {
           adapterConfig={agent.adapterConfig}
         />
       )}
+
+      {activeView === "audit" && resolvedCompanyId ? (
+        <AuditFeed companyId={resolvedCompanyId} lockedAgentId={agent.id} hideHeader />
+      ) : null}
 
       {activeView === "budget" && resolvedCompanyId ? (
         <div className="max-w-3xl">

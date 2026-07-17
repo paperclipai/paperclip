@@ -82,6 +82,7 @@ const ACTIVITY_ROW_VERBS: Record<string, string> = {
   "company.archived": "archived",
   "company.reactivated": "reactivated",
   "company.budget_updated": "updated budget for",
+  "audit.exported": "exported the agent audit log for",
 };
 
 const ISSUE_ACTIVITY_LABELS: Record<string, string> = {
