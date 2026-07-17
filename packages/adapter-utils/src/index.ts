@@ -78,6 +78,16 @@ export type {
   RuntimeStatusUpdate,
 } from "./runtime-progress.js";
 export { inferOpenAiCompatibleBiller } from "./billing.js";
+export type {
+  PreflightDenylistConfig,
+  PreflightDenylistInput,
+  PreflightDenylistDecision,
+  PreflightDenylistRuleId,
+  PostPreflightRefusalInput,
+  PostPreflightRefusalResult,
+  RunAdapterPreflightDenylistInput,
+  RunAdapterPreflightDenylistResult,
+} from "./preflight-denylist.js";
 // Keep the root adapter-utils entry browser-safe because the UI imports it.
 // The sandbox callback bridge stays available via its dedicated subpath export.
 export type {
