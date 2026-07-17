@@ -16,6 +16,7 @@ import {
   writeClaudeMcpConfig,
   writeCodexMcpConfig,
 } from "./test-support/mcp-isolation-harness.js";
+import { shellQuote } from "./ssh.js";
 
 const repoRoot = fileURLToPath(new URL("../../..", import.meta.url));
 const stdioFixturePath = path.join(repoRoot, "scripts/mcp-fixtures/servers/stdio-fixture.mjs");
@@ -54,7 +55,7 @@ async function runAcpxFixtureSession(
     sessionStore: createRuntimeStore({ stateDir: path.join(root, `acpx-${sessionName}`) }),
     agentRegistry: createAgentRegistry({
       overrides: {
-        isolation_fixture: `${process.execPath} ${acpFixturePath}`,
+        isolation_fixture: `${shellQuote(process.execPath)} ${shellQuote(acpFixturePath)}`,
       },
     }),
     mcpServers,
