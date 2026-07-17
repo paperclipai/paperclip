@@ -85,17 +85,63 @@ export function formatMonitorEta(nextCheckAt: MonitorDate, now: MonitorDate = ne
   return `overdue by ${formatDuration(Math.abs(deltaMs))}`;
 }
 
+function zonedYmd(
+  date: Date,
+  locale: Intl.LocalesArgument,
+  timeZone: string | undefined,
+): { year: string; month: string; day: string } {
+  const parts = new Intl.DateTimeFormat(locale, {
+    year: "numeric",
+    month: "numeric",
+    day: "numeric",
+    timeZone,
+  }).formatToParts(date);
+  const pick = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((part) => part.type === type)?.value ?? "";
+  return { year: pick("year"), month: pick("month"), day: pick("day") };
+}
+
+/**
+ * Compact absolute time for the monitor surfaces (wireframe 04). Renders
+ * `Today, 8:16 PM` when the check lands on the reference day, otherwise prefixes
+ * the weekday (`Mon Jul 20, 9:00 AM`) and only adds the year when it differs from
+ * the reference year (`Mon Jul 20, 2027, 9:00 AM`). Day/year comparisons are made
+ * in the display time zone so "Today" matches what the user sees.
+ */
 export function formatMonitorAbsolute(
   nextCheckAt: MonitorDate,
   options: MonitorDateTimeFormatOptions = {},
+  now: MonitorDate = new Date(),
 ): string {
-  return new Intl.DateTimeFormat(options.locale, {
-    month: "short",
-    day: "numeric",
+  const target = new Date(toTimestamp(nextCheckAt));
+  const reference = new Date(toTimestamp(now));
+  const targetYmd = zonedYmd(target, options.locale, options.timeZone);
+  const referenceYmd = zonedYmd(reference, options.locale, options.timeZone);
+
+  const time = new Intl.DateTimeFormat(options.locale, {
     hour: "numeric",
     minute: "2-digit",
     timeZone: options.timeZone,
-  }).format(new Date(toTimestamp(nextCheckAt)));
+  }).format(target);
+
+  const isToday =
+    targetYmd.year === referenceYmd.year &&
+    targetYmd.month === referenceYmd.month &&
+    targetYmd.day === referenceYmd.day;
+  if (isToday) return `Today, ${time}`;
+
+  const weekday = new Intl.DateTimeFormat(options.locale, {
+    weekday: "short",
+    timeZone: options.timeZone,
+  }).format(target);
+  const date = new Intl.DateTimeFormat(options.locale, {
+    month: "short",
+    day: "numeric",
+    year: targetYmd.year === referenceYmd.year ? undefined : "numeric",
+    timeZone: options.timeZone,
+  }).format(target);
+
+  return `${weekday} ${date}, ${time}`;
 }
 
 export function formatMonitorAbsoluteFull(

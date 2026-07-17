@@ -62,7 +62,7 @@ export function buildMonitorSurfaceCopy(
   if (!isWaitingMonitorState(derived.state) || !derived.nextCheckAt) return null;
 
   const eta = formatMonitorEta(derived.nextCheckAt, now); // "in 2h 12m" | "due now" | "overdue by 18m"
-  const absolute = formatMonitorAbsolute(derived.nextCheckAt); // local time, e.g. "Jul 17, 4:08 PM"
+  const absolute = formatMonitorAbsolute(derived.nextCheckAt, {}, now); // local time, e.g. "Today, 4:08 PM"
 
   let bannerTitle: string;
   let stripTitle: string;
