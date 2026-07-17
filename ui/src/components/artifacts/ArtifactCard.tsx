@@ -1,5 +1,5 @@
 import { type SyntheticEvent, useEffect, useRef, useState } from "react";
-import { Download, ExternalLink, Cortex, Play } from "lucide-react";
+import { Download, ExternalLink, PaperclipIcon, Play } from "lucide-react";
 import type { CompanyArtifact } from "@/api/artifacts";
 import { Link } from "@/lib/router";
 import { cn, formatDate } from "@/lib/utils";
@@ -25,7 +25,7 @@ function PlaceholderPreview({ label }: { label?: string }) {
   return (
     <PreviewFrame className="flex items-center justify-center">
       <div className="flex flex-col items-center gap-1.5 text-muted-foreground/50">
-        <Cortex className="h-7 w-7" aria-hidden="true" />
+        <PaperclipIcon className="h-7 w-7" aria-hidden="true" />
         {label ? <span className="text-[11px] font-medium uppercase tracking-wide">{label}</span> : null}
       </div>
     </PreviewFrame>
