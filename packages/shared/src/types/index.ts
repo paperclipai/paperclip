@@ -27,6 +27,14 @@ export type {
   AttentionWorkspaceRef,
 } from "./attention.js";
 export type {
+  DecisionTrainingExample,
+  DecisionTrainingNotesHistoryEntry,
+  DecisionTrainingRetentionPolicy,
+  DecisionTrainingSnapshotV1,
+  DecisionTrainingSourceKind,
+} from "./decision-training.js";
+export { DECISION_TRAINING_RETENTION_POLICY } from "./decision-training.js";
+export type {
   Environment,
   EnvironmentDeleteBlastRadius,
   EnvironmentDeleteBlockedReason,

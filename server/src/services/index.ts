@@ -62,6 +62,7 @@ export { goalService } from "./goals.js";
 export { activityService, type ActivityFilters } from "./activity.js";
 export { workTimelineService, normalizeTimelineWindow } from "./work-timeline.js";
 export { attentionService } from "./attention.js";
+export { captureDecisionSnapshot, decisionTrainingService } from "./decision-training.js";
 export type {
   WorkTimelineActor,
   WorkTimelineEdge,
