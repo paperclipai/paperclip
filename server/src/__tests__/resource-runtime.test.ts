@@ -7,7 +7,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { companies, createDb, resources } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
-import { githubPullRequestProvider, resourceRuntimeService } from "../services/resource-runtime.ts";
+import { githubPullRequestProvider, resourceRuntimeService, validateCredentialRepository } from "../services/resource-runtime.ts";
 
 const execFile = promisify(execFileCallback);
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -95,6 +95,9 @@ describeEmbeddedPostgres("resourceRuntimeService", () => {
 
     await git(["fetch", "origin", "main"], seedPath);
     await git(["switch", "-c", "feature", "origin/main"], seedPath);
+    await fs.writeFile(path.join(seedPath, "feature.md"), "feature-only\n", "utf8");
+    await git(["add", "."], seedPath);
+    await git(["commit", "-m", "feature change"], seedPath);
     await git(["push", "origin", "feature"], seedPath);
     const mixedRefWorkspace = path.join(fixtureRoot, "mixed-ref-workspace");
     const mixedRefPrepared = await resourceRuntimeService(db).prepare({
@@ -192,6 +195,12 @@ describeEmbeddedPostgres("resourceRuntimeService", () => {
     expect(result).toEqual({ id: "42", url: "https://github.com/acme/repo/pull/42" });
     expect(String(request?.body)).not.toContain("secret-token");
     expect((request?.headers as Record<string, string>).authorization).toBe("Bearer secret-token");
+  });
+
+  it("only allows credential-backed HTTPS Git hosts", () => {
+    expect(() => validateCredentialRepository("https://github.com/acme/repo.git")).not.toThrow();
+    expect(() => validateCredentialRepository("http://attacker.example/repo.git")).toThrow("require an HTTPS Git repository");
+    expect(() => validateCredentialRepository("https://attacker.example/repo.git")).toThrow("host is not allowed");
   });
 
   it("redacts provider failure details", async () => {

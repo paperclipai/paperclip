@@ -95,6 +95,7 @@ function resolveMountPath(workspaceRoot: string, mountPath: string) {
 
 async function credentialContext(db: Db, resource: Resource): Promise<{ env: NodeJS.ProcessEnv; token: string | null }> {
   if (!resource.credentialRef) return { env: process.env, token: null };
+  validateCredentialRepository(resource.repository);
   const token = await secretService(db).resolveSecretValue(resource.companyId, resource.credentialRef, "latest");
   const value = Buffer.from(`x-access-token:${token}`).toString("base64");
   return { env: {
@@ -159,8 +160,35 @@ async function copyResourceTree(sourcePath: string, destinationPath: string) {
   await fs.cp(sourcePath, destinationPath, { recursive: true });
 }
 
+async function copyWorkingTreeContents(sourcePath: string, destinationPath: string) {
+  const entries = await fs.readdir(sourcePath, { withFileTypes: true });
+  for (const entry of entries) {
+    if (entry.name === ".git") continue;
+    await fs.cp(path.join(sourcePath, entry.name), path.join(destinationPath, entry.name), { recursive: true, force: true });
+  }
+}
+
 function resourceEnvKey(resourceKey: string) {
   return `BIZBOX_RESOURCE_${resourceKey.replace(/[^A-Za-z0-9]+/g, "_").toUpperCase()}_PATH`;
+}
+
+export function validateCredentialRepository(repository: string) {
+  let url: URL;
+  try {
+    url = new URL(repository);
+  } catch {
+    throw unprocessable("Credential-backed Resources require an HTTPS Git repository");
+  }
+  if (url.protocol !== "https:") {
+    throw unprocessable("Credential-backed Resources require an HTTPS Git repository");
+  }
+  const allowedHosts = (process.env.BIZBOX_GIT_CREDENTIAL_HOSTS ?? "github.com")
+    .split(",")
+    .map((host) => host.trim().toLowerCase())
+    .filter(Boolean);
+  if (!allowedHosts.includes(url.hostname.toLowerCase())) {
+    throw unprocessable(`Credential-backed Git host is not allowed: ${url.hostname}`);
+  }
 }
 
 type PreparedResource = {
@@ -381,6 +409,22 @@ export function resourceRuntimeService(db: Db) {
               : await resolveRemoteRef(item.resource, targetRef, env);
             if (currentCommit !== item.outputBaselineCommit) {
               throw conflict(`Resource changed while workflow was running: ${item.resource.key}`);
+            }
+            const rebasingOutput = item.outputBaselineCommit !== item.expectedCommit;
+            const outputSnapshotPath = rebasingOutput
+              ? path.join(path.dirname(item.repoPath), "output-working-tree")
+              : null;
+            if (outputSnapshotPath) {
+              await fs.rm(outputSnapshotPath, { recursive: true, force: true });
+              await fs.mkdir(outputSnapshotPath, { recursive: true });
+              await copyWorkingTreeContents(item.repoPath, outputSnapshotPath);
+              await runGit(["reset", "--hard", item.outputBaselineCommit!], { cwd: item.repoPath, env });
+              await runGit(["clean", "-fd"], { cwd: item.repoPath, env });
+              if (item.resource.sourcePath) {
+                await copyResourceTree(outputSnapshotPath, path.join(item.repoPath, item.resource.sourcePath));
+              } else {
+                await copyWorkingTreeContents(outputSnapshotPath, item.repoPath);
+              }
             }
             if (item.resource.sourcePath) {
               await copyResourceTree(item.mountPath, path.join(item.repoPath, item.resource.sourcePath));
