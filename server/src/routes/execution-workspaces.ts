@@ -364,7 +364,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
         if (action === "start" || action === "restart") {
           const availableWorkspace = await ensureWorkspaceAvailable();
           if (!availableWorkspace) {
-            throw new Error("Execution workspace needs a local path before Paperclip can manage local runtime services");
+            throw new Error("Execution workspace needs a local path before Cortex can manage local runtime services");
           }
           const startedServices = await startRuntimeServicesForWorkspaceControl({
             db,

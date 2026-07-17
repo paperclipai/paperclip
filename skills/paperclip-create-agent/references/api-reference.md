@@ -1,4 +1,4 @@
-# Paperclip Create Agent API Reference
+# Cortex Create Agent API Reference
 
 ## Core Endpoints
 

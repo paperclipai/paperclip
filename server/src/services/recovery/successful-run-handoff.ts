@@ -319,7 +319,7 @@ export function buildSuccessfulRunHandoffInstruction(input: {
   return [
     `Your previous run on ${issueLabel} succeeded, but the issue is still in \`in_progress\` and Paperclip cannot identify a valid issue disposition.`,
     "",
-    "Resolve the missing disposition before creating or revising any new artifacts. Choose **exactly one** outcome and perform the matching Paperclip action:",
+    "Resolve the missing disposition before creating or revising any new artifacts. Choose **exactly one** outcome and perform the matching Cortex action:",
     "",
     "**Is the issue finished?**",
     "1. Mark it `done` (scope complete) or `cancelled` (intentionally stopped).",

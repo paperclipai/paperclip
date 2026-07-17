@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "packageName": "@paperclipai/skills-catalog",
   "packageVersion": "0.3.1",
-  "generatedAt": "2026-06-04T19:57:14.020Z",
+  "generatedAt": "2026-07-17T03:11:14.266Z",
   "skills": [
     {
       "id": "paperclipai:bundled:docs:doc-maintenance",
@@ -45,7 +45,7 @@
       "category": "paperclip-operations",
       "slug": "issue-triage",
       "name": "issue-triage",
-      "description": "Triage Paperclip inbox issues that are stale, blocked, in-review, or assigned-but-not-progressing, and decide a single next action per issue (resume, reassign, unblock, escalate, or close).",
+      "description": "Triage Cortex inbox issues that are stale, blocked, in-review, or assigned-but-not-progressing, and decide a single next action per issue (resume, reassign, unblock, escalate, or close).",
       "path": "catalog/bundled/paperclip-operations/issue-triage",
       "entrypoint": "SKILL.md",
       "trustLevel": "markdown_only",
@@ -67,11 +67,11 @@
         {
           "path": "SKILL.md",
           "kind": "skill",
-          "sizeBytes": 4042,
-          "sha256": "df5bdc8bf5e017b7ba5f70a4b5323fad51d0c323278f386580f26cf43ad09160"
+          "sizeBytes": 4039,
+          "sha256": "19e62fc8b37ab64973c8bc64089b5497b4ebb07bdf4a12093194400964e05755"
         }
       ],
-      "contentHash": "sha256:88dc13560371fb364963782cb4f6eeb4090fcde92ee3774479428ed6b90e11c1"
+      "contentHash": "sha256:b449f996b5124d20401d00201bd719b697bc8f7d282a04871b0c4b07626e5029"
     },
     {
       "id": "paperclipai:bundled:paperclip-operations:task-planning",
@@ -80,7 +80,7 @@
       "category": "paperclip-operations",
       "slug": "task-planning",
       "name": "task-planning",
-      "description": "Turn a Paperclip issue or request into a structured implementation plan with child task graph, blockers, owners, and acceptance criteria, then save it as the issue `plan` document.",
+      "description": "Turn a Cortex issue or request into a structured implementation plan with child task graph, blockers, owners, and acceptance criteria, then save it as the issue `plan` document.",
       "path": "catalog/bundled/paperclip-operations/task-planning",
       "entrypoint": "SKILL.md",
       "trustLevel": "markdown_only",
@@ -102,11 +102,11 @@
         {
           "path": "SKILL.md",
           "kind": "skill",
-          "sizeBytes": 4649,
-          "sha256": "2ff61e12dfaa4cf8cc548529fd176f55f1b1f5292ff9dd3eb2cb331417ab5e4e"
+          "sizeBytes": 4926,
+          "sha256": "f72f7d8bea110ff42de7994bb9c59c15e9ba6d4845b13451737bf48d6132fb78"
         }
       ],
-      "contentHash": "sha256:4fb46a4bcefad4fd46fae48c433ee497112509a8e19fb8a7745ead44d219b498"
+      "contentHash": "sha256:eea113d0479f89a78bddd635b8c5ce289e8cb854d61a35c638bb4229af1b4279"
     },
     {
       "id": "paperclipai:bundled:product:wireframe",

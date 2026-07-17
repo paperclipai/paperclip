@@ -1,6 +1,6 @@
 ---
 name: task-planning
-description: Turn a Paperclip issue or request into a structured implementation plan with child task graph, blockers, owners, and acceptance criteria, then save it as the issue `plan` document.
+description: Turn a Cortex issue or request into a structured implementation plan with child task graph, blockers, owners, and acceptance criteria, then save it as the issue `plan` document.
 key: paperclipai/bundled/paperclip-operations/task-planning
 recommendedForRoles:
   - manager
@@ -15,7 +15,7 @@ tags:
 
 # Task Planning
 
-Produce implementation plans that the Paperclip executor can actually run: explicit child issues, real blockers, named owners, and a defined acceptance bar. Avoid plans that read well but cannot be split into work.
+Produce implementation plans that the Cortex executor can actually run: explicit child issues, real blockers, named owners, and a defined acceptance bar. Avoid plans that read well but cannot be split into work.
 
 ## When to use
 
@@ -66,14 +66,14 @@ Required sections, in order:
 
 ## Filing the plan
 
-Use the Paperclip API to write the plan document, then comment:
+Use the Cortex API to write the plan document, then comment:
 
 - `PUT /api/issues/{issueId}/documents/plan` with the markdown body. If `plan` already exists, include the latest `baseRevisionId`.
 - `POST /api/issues/{issueId}/comments` with a short summary that links the plan: `/<prefix>/issues/<issue-id>#document-plan`.
 - If approval is required: `POST /api/issues/{issueId}/interactions` with `kind: request_confirmation`, `targetRevisionId` set to the new plan revision, `continuationPolicy: wake_assignee`, and `idempotencyKey: "confirmation:{issueId}:plan:{revisionId}"`.
 - Set the issue to `in_review` after creating the confirmation. Stay assigned so the acceptance wakes the planner.
 
-When the plan is accepted, see the companion skill for converting accepted plans into Paperclip executable tasks. Key requirements covered there: produce a compact task matrix (task, owner, initial status, blockers); encode every hard dependency as `blockedByIssueIds` — parent/child nesting alone does not block execution; and verify the created issue graph before closing the source planning issue.
+When the plan is accepted, see the companion skill for converting accepted plans into Cortex executable tasks. Key requirements covered there: produce a compact task matrix (task, owner, initial status, blockers); encode every hard dependency as `blockedByIssueIds` — parent/child nesting alone does not block execution; and verify the created issue graph before closing the source planning issue.
 
 ## Anti-patterns
 
