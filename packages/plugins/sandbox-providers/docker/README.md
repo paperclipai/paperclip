@@ -2,6 +2,8 @@
 
 `@paperclipai/plugin-docker` creates one Docker container per Paperclip lease. It never mounts a host repository, home directory, credentials, Docker socket, devices, or host namespaces into a lease.
 
+Leases run as the unprivileged `paperclip` user with all capabilities dropped and `no-new-privileges`. The image includes `sudo` for Noble tool compatibility, but it grants no `NOPASSWD` sudoers rule, so `sudo -n` cannot elevate a workload inside a provider-created lease.
+
 Build the Noble QA image:
 
 ```sh

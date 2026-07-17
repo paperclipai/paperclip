@@ -48,6 +48,14 @@ describe("Docker sandbox provider", () => {
     await expect(plugin.definition.onEnvironmentExecute?.({ driverKey: "docker", companyId: "company-1", environmentId: "env-1", config, lease: { providerLeaseId: "container-1" }, command: "pwd", cwd: "/etc" })).rejects.toThrow("inside /workspace");
   });
 
+  it("normalizes cwd before enforcing the workspace boundary", async () => {
+    const runner = vi.fn(async () => ({ exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "", stdoutTruncated: false, stderrTruncated: false })) satisfies DockerRunner;
+    const plugin = createDockerSandboxPlugin(runner);
+    await expect(plugin.definition.onEnvironmentExecute?.({ driverKey: "docker", companyId: "company-1", environmentId: "env-1", config, lease: { providerLeaseId: "container-1" }, command: "pwd", cwd: "/workspace/../tmp" })).rejects.toThrow("inside /workspace");
+    await expect(plugin.definition.onEnvironmentExecute?.({ driverKey: "docker", companyId: "company-1", environmentId: "env-1", config, lease: { providerLeaseId: "container-1" }, command: "pwd", cwd: "/workspace/app/../project" })).resolves.toMatchObject({ exitCode: 0 });
+    expect(runner).toHaveBeenCalledWith(expect.arrayContaining(["--workdir", "/workspace/project"]), expect.any(Object));
+  });
+
   it("refuses cleanup when ownership labels do not exactly match", async () => {
     const runner = vi.fn(async (args: string[]) => {
       if (args[0] === "inspect") return { exitCode: 0, signal: null, timedOut: false, stdout: dockerInspect({ "com.paperclip.managed": "true", "com.paperclip.provider": "docker" }), stderr: "", stdoutTruncated: false, stderrTruncated: false };
@@ -82,12 +90,13 @@ describe("Docker sandbox provider", () => {
     expect(request).toHaveBeenCalledOnce();
   });
 
-  it("ships the reproducible Noble image profile and sudo probe prerequisites", async () => {
+  it("ships the reproducible Noble image profile without sudo elevation", async () => {
     const dockerfile = await readFile(new URL("../Dockerfile.noble", import.meta.url), "utf8");
     expect(dockerfile).toContain("FROM ubuntu:24.04");
     expect(dockerfile).toContain("--uid 1000 --gid 1000");
     expect(dockerfile).toContain("/workspace");
     expect(dockerfile).toContain("ca-certificates curl git nodejs npm sudo tini");
-    expect(dockerfile).toContain("NOPASSWD");
+    expect(dockerfile).not.toContain("NOPASSWD");
+    expect(dockerfile).not.toContain("sudoers.d");
   });
 });

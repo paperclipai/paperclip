@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
+import { posix } from "node:path";
 import { definePlugin } from "@paperclipai/plugin-sdk";
 import type {
   PluginEnvironmentAcquireLeaseParams,
@@ -213,11 +214,12 @@ function hostPort(inspect: DockerInspect): number | null {
 }
 
 function validContainerCwd(cwd: string | undefined): string {
-  const selected = cwd?.trim() || WORKSPACE_PATH;
+  const raw = cwd?.trim() || WORKSPACE_PATH;
+  if (raw.includes("\0")) throw new Error("Docker sandbox cwd contains a null byte");
+  const selected = posix.normalize(raw);
   if (!selected.startsWith(`${WORKSPACE_PATH}/`) && selected !== WORKSPACE_PATH) {
     throw new Error(`Docker sandbox cwd must be inside ${WORKSPACE_PATH}`);
   }
-  if (selected.includes("\0")) throw new Error("Docker sandbox cwd contains a null byte");
   return selected;
 }
 
