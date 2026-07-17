@@ -103,5 +103,29 @@ runtime/CLI, never a raw client — the runner **refuses any command containing 
 
 Drop a `release-probes/<ISSUE>.yaml` alongside the PR that lands the work — it becomes a normal PR
 deliverable (documented in 522e). Every deploy re-runs the whole registry, so probe files
-accumulate into a growing content-level regression suite for beta. The `done ⇒ on-beta`
-reconciliation (522c) reuses this same runner + registry.
+accumulate into a growing content-level regression suite for beta.
+
+## `done ⇒ on-beta` reconciliation (NEO-528 / 522c)
+
+[`scripts/reconcile-beta.mjs`](../scripts/reconcile-beta.mjs) is the scheduled drift guard — the
+check that would have caught Brand Kit (NEO-138). It walks every issue in `done` (Paperclip API)
+and, **reusing this same registry + `verify-content.mjs` runner** (it does not build a second probe
+engine — it invokes `verify-content.mjs --json` per issue), classifies each:
+
+- **live** — a `release-probes/<ISSUE>.yaml` exists and all its probes pass on the running beta.
+- **drift** — a probe file exists but a probe is red → *closed but not actually deployed*. The
+  offending issue gets an idempotent flag comment, and it appears in the CTO digest.
+- **unverifiable** — no probe file, so content can't be confirmed. Surfaced in the digest (never a
+  silent false green), never per-issue-spammed by default.
+
+It posts one **CTO digest** to a target issue (`--digest-issue`, the routine's run issue),
+@-mentioning the CTO only when there is drift to act on. Exit: `0` no drift · `1` drift · `2`
+config error. It runs on a **Paperclip routine** (schedule trigger) assigned to Gene, so a fresh
+run JWT is available to post — see the routine `beta done⇒on-beta reconciliation (522c)`.
+
+```sh
+PAPERCLIP_CONFIG=/home/ubuntu/.paperclip/instances/beta/config.json \
+  node scripts/reconcile-beta.mjs --base http://127.0.0.1:3200 \
+  --digest-issue <run-issue-id> --cto-agent <werner-agent-id>
+# add --dry-run to compute + print the digest without posting anything
+```
