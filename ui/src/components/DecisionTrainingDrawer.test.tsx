@@ -234,6 +234,9 @@ describe("DecisionTrainingDrawer — saved state", () => {
       />,
     );
 
+    expect(bodyText()).toContain("Training example");
+    expect(bodyText()).not.toContain("Train this decision");
+    expect(mockApi.preview).not.toHaveBeenCalled();
     await waitFor(() => bodyText().includes("Frozen state"));
     expect(bodyText()).toContain("You"); // provenance author
     expect(bodyText()).toContain("Read-only"); // snapshot is visibly read-only

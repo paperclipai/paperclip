@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Clock,
@@ -67,13 +67,14 @@ export function DecisionTrainingDrawer({
   item,
   currentUserId,
 }: DecisionTrainingDrawerProps) {
-  // Track the example id locally so a successful create flips the same drawer
-  // instance from create → saved without waiting for the feed to refetch.
-  const [savedExampleId, setSavedExampleId] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (open) setSavedExampleId(item?.trainingExampleId ?? null);
-  }, [open, item?.trainingExampleId, item?.id]);
+  const [createdExample, setCreatedExample] = useState<{
+    itemId: string;
+    exampleId: string;
+  } | null>(null);
+  const locallyCreatedExampleId = createdExample && createdExample.itemId === item?.id
+    ? createdExample.exampleId
+    : null;
+  const savedExampleId = item?.trainingExampleId ?? locallyCreatedExampleId;
 
   const target = item ? trainingTargetForItem(item) : null;
 
@@ -104,14 +105,17 @@ export function DecisionTrainingDrawer({
             exampleId={savedExampleId}
             companyId={companyId}
             currentUserId={currentUserId}
-            onDeleted={() => onOpenChange(false)}
+            onDeleted={() => {
+              setCreatedExample(null);
+              onOpenChange(false);
+            }}
           />
         ) : (
           <CreateState
             companyId={companyId}
             item={item}
             target={target}
-            onCreated={(example) => setSavedExampleId(example.id)}
+            onCreated={(example) => setCreatedExample({ itemId: item.id, exampleId: example.id })}
             onCancel={() => onOpenChange(false)}
           />
         )}
