@@ -25,6 +25,9 @@ Summary pages contain only `id`, `companyId`, `name`, `urlKey`, `role`, `title`,
 defaults to 0. Results are ordered by agent ID. Continue until a page contains
 fewer than `limit` items.
 
+Agent creation or deletion during a scan can shift offset boundaries. Callers
+that require a point-in-time snapshot should restart the scan after fleet changes.
+
 `limit` and `offset` require `view=summary`. Other query parameters return `400`.
 
 ## Get Agent
