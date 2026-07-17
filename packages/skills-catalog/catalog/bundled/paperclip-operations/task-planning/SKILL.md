@@ -7,7 +7,7 @@ recommendedForRoles:
   - engineer
   - product
 tags:
-  - paperclip
+  - cortex
   - planning
   - issues
   - delegation

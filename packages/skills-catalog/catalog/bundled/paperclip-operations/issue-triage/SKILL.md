@@ -7,7 +7,7 @@ recommendedForRoles:
   - ceo
   - engineer
 tags:
-  - paperclip
+  - cortex
   - triage
   - inbox
   - workflow
