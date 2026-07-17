@@ -28,6 +28,7 @@ import type {
   DecisionTrainingSnapshotV1,
   DecisionTrainingSourceKind,
 } from "@paperclipai/shared";
+import { DECISION_TRAINING_RETENTION_POLICY } from "@paperclipai/shared";
 import { conflict, notFound } from "../errors.js";
 
 type CaptureInput = {
@@ -50,6 +51,13 @@ type ListInput = {
   kind?: DecisionTrainingSourceKind;
   author?: string;
   q?: string;
+};
+
+type ScrubDeletedCommentsInput = {
+  companyId: string;
+  issueId: string;
+  commentIds: string[];
+  deletedAt: Date;
 };
 
 function jsonCopy(value: unknown): Record<string, unknown> {
@@ -220,6 +228,11 @@ export async function captureDecisionSnapshot(
     decisionOutcome: decision.outcome,
     snapshot: {
       version: 1,
+      retention: {
+        policy: DECISION_TRAINING_RETENTION_POLICY,
+        commentDeletion: "redact",
+        issueDeletion: "cascade",
+      },
       capturedAt: capturedAt.toISOString(),
       cutoff: {
         at: decision.cutoffAt.toISOString(),
@@ -270,6 +283,7 @@ export function decisionTrainingService(db: Db) {
           notes: input.notes,
           notesHistory: [],
           decisionOutcome: captured.decisionOutcome,
+          retentionPolicy: DECISION_TRAINING_RETENTION_POLICY,
           snapshot: captured.snapshot,
           createdByUserId: input.createdByUserId,
         })
@@ -324,6 +338,59 @@ export function decisionTrainingService(db: Db) {
         .returning();
       return updated ?? null;
     }),
+    scrubDeletedComments: async (
+      input: ScrubDeletedCommentsInput,
+      dbOrTx: any = db,
+    ) => {
+      if (input.commentIds.length === 0) return { updatedCount: 0 };
+      const commentIds = new Set(input.commentIds);
+      const rows = await dbOrTx
+        .select({ id: decisionTrainingExamples.id, snapshot: decisionTrainingExamples.snapshot })
+        .from(decisionTrainingExamples)
+        .where(and(
+          eq(decisionTrainingExamples.companyId, input.companyId),
+          eq(decisionTrainingExamples.issueId, input.issueId),
+        ));
+      let updatedCount = 0;
+      for (const row of rows) {
+        let changed = false;
+        const comments = row.snapshot.comments.map((comment: Record<string, unknown>) => {
+          if (typeof comment.id !== "string" || !commentIds.has(comment.id)) return comment;
+          changed = true;
+          return {
+            id: comment.id,
+            issueId: input.issueId,
+            body: "",
+            presentation: null,
+            metadata: null,
+            deletedAt: input.deletedAt.toISOString(),
+            retentionRedaction: {
+              reason: "source_comment_deleted",
+              policy: DECISION_TRAINING_RETENTION_POLICY,
+            },
+          };
+        });
+        if (!changed) continue;
+        await dbOrTx
+          .update(decisionTrainingExamples)
+          .set({
+            retentionPolicy: DECISION_TRAINING_RETENTION_POLICY,
+            snapshot: {
+              ...row.snapshot,
+              retention: {
+                policy: DECISION_TRAINING_RETENTION_POLICY,
+                commentDeletion: "redact",
+                issueDeletion: "cascade",
+              },
+              comments,
+            },
+            updatedAt: input.deletedAt,
+          })
+          .where(eq(decisionTrainingExamples.id, row.id));
+        updatedCount += 1;
+      }
+      return { updatedCount };
+    },
     delete: async (id: string) => db
       .delete(decisionTrainingExamples)
       .where(eq(decisionTrainingExamples.id, id))

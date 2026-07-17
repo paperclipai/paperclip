@@ -1,5 +1,8 @@
 export type DecisionTrainingSourceKind = "interaction" | "approval" | "execution_decision";
 
+export const DECISION_TRAINING_RETENTION_POLICY = "scrub_deleted_comments_v1" as const;
+export type DecisionTrainingRetentionPolicy = typeof DECISION_TRAINING_RETENTION_POLICY;
+
 export interface DecisionTrainingNotesHistoryEntry {
   author: string;
   at: string;
@@ -8,6 +11,11 @@ export interface DecisionTrainingNotesHistoryEntry {
 
 export interface DecisionTrainingSnapshotV1 {
   version: 1;
+  retention?: {
+    policy: DecisionTrainingRetentionPolicy;
+    commentDeletion: "redact";
+    issueDeletion: "cascade";
+  };
   capturedAt: string;
   cutoff: {
     at: string;
@@ -41,6 +49,7 @@ export interface DecisionTrainingExample {
   notes: string;
   notesHistory: DecisionTrainingNotesHistoryEntry[];
   decisionOutcome: string | null;
+  retentionPolicy: DecisionTrainingRetentionPolicy;
   snapshot: DecisionTrainingSnapshotV1;
   createdByUserId: string;
   createdAt: string;

@@ -66,9 +66,11 @@ export type {
 export type {
   DecisionTrainingExample,
   DecisionTrainingNotesHistoryEntry,
+  DecisionTrainingRetentionPolicy,
   DecisionTrainingSnapshotV1,
   DecisionTrainingSourceKind,
 } from "./types/decision-training.js";
+export { DECISION_TRAINING_RETENTION_POLICY } from "./types/decision-training.js";
 
 export type {
   PipelineAutomationRetryBlocker,

@@ -1,5 +1,6 @@
 import type {
   DecisionTrainingNotesHistoryEntry,
+  DecisionTrainingRetentionPolicy,
   DecisionTrainingSnapshotV1,
   DecisionTrainingSourceKind,
 } from "@paperclipai/shared";
@@ -19,6 +20,10 @@ export const decisionTrainingExamples = pgTable(
     notes: text("notes").notNull().default(""),
     notesHistory: jsonb("notes_history").$type<DecisionTrainingNotesHistoryEntry[]>().notNull().default([]),
     decisionOutcome: text("decision_outcome"),
+    retentionPolicy: text("retention_policy")
+      .$type<DecisionTrainingRetentionPolicy>()
+      .notNull()
+      .default("scrub_deleted_comments_v1"),
     snapshot: jsonb("snapshot").$type<DecisionTrainingSnapshotV1>().notNull(),
     createdByUserId: text("created_by_user_id").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

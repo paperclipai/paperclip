@@ -118,6 +118,67 @@ describeEmbeddedPostgres("decision training", () => {
     });
     expect(captured.snapshot.comments.map((comment) => comment.id)).toEqual([seeded.beforeId, seeded.atCutoffId]);
     expect(JSON.stringify(captured.snapshot)).not.toContain("Leaked later context");
+    expect(captured.snapshot.retention).toEqual({
+      policy: "scrub_deleted_comments_v1",
+      commentDeletion: "redact",
+      issueDeletion: "cascade",
+    });
+  });
+
+  it("scrubs captured comment content after source deletion", async () => {
+    const seeded = await seedResolvedInteraction();
+    const svc = decisionTrainingService(db);
+    const example = await svc.create({
+      companyId: seeded.companyId,
+      sourceKind: "interaction",
+      sourceId: seeded.interactionId,
+      issueId: seeded.issueId,
+      notes: "Keep the decision, not deleted comment content.",
+      createdByUserId: "board-user",
+    });
+
+    await svc.scrubDeletedComments({
+      companyId: seeded.companyId,
+      issueId: seeded.issueId,
+      commentIds: [seeded.beforeId],
+      deletedAt: new Date("2026-07-16T14:00:00.000Z"),
+    });
+
+    const updated = await svc.getById(example.id);
+    expect(updated?.retentionPolicy).toBe("scrub_deleted_comments_v1");
+    expect(updated?.snapshot.comments).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: seeded.beforeId,
+        body: "",
+        presentation: null,
+        metadata: null,
+        retentionRedaction: {
+          reason: "source_comment_deleted",
+          policy: "scrub_deleted_comments_v1",
+        },
+      }),
+    ]));
+    expect(JSON.stringify(updated?.snapshot)).not.toContain("Before");
+    expect(updated?.snapshot.comments.find((comment) => comment.id === seeded.atCutoffId)?.body).toBe("At cutoff");
+  });
+
+  it("deletes training examples when their issue is deleted", async () => {
+    const seeded = await seedResolvedInteraction();
+    const svc = decisionTrainingService(db);
+    const example = await svc.create({
+      companyId: seeded.companyId,
+      sourceKind: "interaction",
+      sourceId: seeded.interactionId,
+      issueId: seeded.issueId,
+      notes: "Cascade with the issue.",
+      createdByUserId: "board-user",
+    });
+
+    await db.delete(issueComments).where(eq(issueComments.issueId, seeded.issueId));
+    await db.delete(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, seeded.issueId));
+    await db.delete(issues).where(eq(issues.id, seeded.issueId));
+
+    expect(await svc.getById(example.id)).toBeUndefined();
   });
 
   it("excludes runs updated after the decision cutoff", async () => {
@@ -378,6 +439,35 @@ describeEmbeddedPostgres("decision training", () => {
       .expect(400);
   });
 
+  it("rejects agent reads and exports", async () => {
+    const seeded = await seedResolvedInteraction();
+    const example = await decisionTrainingService(db).create({
+      companyId: seeded.companyId,
+      sourceKind: "interaction",
+      sourceId: seeded.interactionId,
+      issueId: seeded.issueId,
+      notes: "Sensitive guidance",
+      createdByUserId: "board-user",
+    });
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = {
+        type: "agent",
+        agentId: randomUUID(),
+        companyId: seeded.companyId,
+        source: "agent_jwt",
+      };
+      next();
+    });
+    app.use("/api", decisionTrainingRoutes(db));
+    app.use(errorHandler);
+
+    await request(app).get(`/api/companies/${seeded.companyId}/decision-training`).expect(403);
+    await request(app).get(`/api/decision-training/${example.id}`).expect(403);
+    await request(app).get(`/api/companies/${seeded.companyId}/decision-training/export.jsonl`).expect(403);
+  });
+
   it("exports immutable state and labels as JSONL", async () => {
     const seeded = await seedResolvedInteraction();
     const example = await decisionTrainingService(db).create({
@@ -402,9 +492,64 @@ describeEmbeddedPostgres("decision training", () => {
       .expect(200);
     const line = JSON.parse(response.text.trim());
     expect(line).toEqual({
+      retentionPolicy: "scrub_deleted_comments_v1",
       state: example.snapshot,
       label: { outcome: "accepted", notes: "Use a feature flag." },
     });
     expect(response.text).not.toContain("Leaked later context");
+
+    const exportLogs = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.action, "decision_training.exported"));
+    expect(exportLogs).toHaveLength(1);
+    expect(exportLogs[0]).toMatchObject({
+      companyId: seeded.companyId,
+      actorType: "user",
+      actorId: "board-user",
+      entityType: "decision_training_export",
+      entityId: seeded.companyId,
+      details: { exampleCount: 1, exampleIds: [example.id] },
+    });
+  });
+
+  it("logs individual example reads", async () => {
+    const seeded = await seedResolvedInteraction();
+    const example = await decisionTrainingService(db).create({
+      companyId: seeded.companyId,
+      sourceKind: "interaction",
+      sourceId: seeded.interactionId,
+      issueId: seeded.issueId,
+      notes: "Read audit",
+      createdByUserId: "board-user",
+    });
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", userId: "board-user", source: "local_implicit" };
+      next();
+    });
+    app.use("/api", decisionTrainingRoutes(db));
+    app.use(errorHandler);
+
+    await request(app).get(`/api/decision-training/${example.id}`).expect(200);
+
+    const readLogs = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.action, "decision_training.read"));
+    expect(readLogs).toHaveLength(1);
+    expect(readLogs[0]).toMatchObject({
+      companyId: seeded.companyId,
+      actorType: "user",
+      actorId: "board-user",
+      entityType: "decision_training_example",
+      entityId: example.id,
+      details: {
+        sourceKind: "interaction",
+        sourceId: seeded.interactionId,
+        issueId: seeded.issueId,
+      },
+    });
   });
 });
