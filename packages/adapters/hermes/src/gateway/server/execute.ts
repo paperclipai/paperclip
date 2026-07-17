@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type {
   AdapterExecutionContext,
   AdapterExecutionResult,
@@ -146,6 +147,16 @@ function issueIdFromContext(ctx: AdapterExecutionContext): string | null {
   return nonEmpty(ctx.context.taskId) ?? nonEmpty(ctx.context.issueId);
 }
 
+const MAX_SESSION_KEY_LEN = 64;
+
+function hashSessionKey(key: string): string {
+  return createHash("sha256").update(key).digest("hex");
+}
+
+function capSessionKey(key: string): string {
+  return key.length <= MAX_SESSION_KEY_LEN ? key : hashSessionKey(key);
+}
+
 export function resolveSessionKey(input: {
   strategy: SessionKeyStrategy;
   companyId: string;
@@ -155,13 +166,13 @@ export function resolveSessionKey(input: {
 }): string | null {
   if (input.strategy === "none") return null;
   if (input.strategy === "agent") {
-    return `paperclip:company:${input.companyId}:agent:${input.agentId}`;
+    return capSessionKey(`paperclip:company:${input.companyId}:agent:${input.agentId}`);
   }
   if (input.strategy === "run") {
-    return `paperclip:run:${input.runId}`;
+    return capSessionKey(`paperclip:run:${input.runId}`);
   }
   const issuePart = input.issueId ? `issue:${input.issueId}` : `run:${input.runId}`;
-  return `paperclip:company:${input.companyId}:agent:${input.agentId}:${issuePart}`;
+  return capSessionKey(`paperclip:company:${input.companyId}:agent:${input.agentId}:${issuePart}`);
 }
 
 function stringifyForLog(value: unknown, maxChars = 4_000): string {

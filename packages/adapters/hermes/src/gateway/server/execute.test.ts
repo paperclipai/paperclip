@@ -69,6 +69,49 @@ describe("resolveSessionKey", () => {
       }),
     ).toBeNull();
   });
+
+  it("caps composed session keys at 64 chars for every strategy so OpenAI prompt_cache_key stays in bounds", () => {
+    const longId = "a".repeat(200);
+    for (const strategy of ["issue", "agent", "run"] as const) {
+      const key = resolveSessionKey({
+        strategy,
+        companyId: longId,
+        agentId: longId,
+        runId: longId,
+        issueId: longId,
+      });
+      expect(key).not.toBeNull();
+      expect(key!.length).toBeLessThanOrEqual(64);
+    }
+  });
+
+  it("returns a stable hash for identical long inputs and distinct hashes for distinct inputs", () => {
+    const base = {
+      strategy: "issue" as const,
+      companyId: "company-".padEnd(80, "x"),
+      agentId: "agent-".padEnd(80, "y"),
+      runId: "run-1",
+      issueId: "issue-".padEnd(80, "z"),
+    };
+    const a = resolveSessionKey(base);
+    const b = resolveSessionKey(base);
+    const c = resolveSessionKey({ ...base, issueId: "issue-".padEnd(80, "Z") });
+    expect(a).toBe(b);
+    expect(a).not.toBe(c);
+    expect(a!.length).toBeLessThanOrEqual(64);
+    expect(c!.length).toBeLessThanOrEqual(64);
+  });
+
+  it("leaves short composed keys untouched (no hashing when already within limit)", () => {
+    const key = resolveSessionKey({
+      strategy: "run",
+      companyId: "c",
+      agentId: "a",
+      runId: "short-run",
+      issueId: null,
+    });
+    expect(key).toBe("paperclip:run:short-run");
+  });
 });
 
 describe("parseSseFramesForTest", () => {
