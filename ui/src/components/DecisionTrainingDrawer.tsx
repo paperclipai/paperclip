@@ -138,7 +138,7 @@ function CreateState({
   const [notes, setNotes] = useState("");
 
   const preview = useQuery({
-    queryKey: [...queryKeys.decisionTraining.list(companyId), "preview", target.sourceKind, target.sourceId],
+    queryKey: [...queryKeys.decisionTraining.list(companyId), "preview", target.sourceKind, target.sourceId, target.issueId],
     queryFn: () => decisionTrainingApi.preview(companyId, target),
     enabled: true,
   });
