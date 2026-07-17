@@ -1,0 +1,33 @@
+# cortex-weekly-train.service — one run of the weekly canary + fleet release train.
+#
+# NEO-529 (subtask 522d of NEO-522). Oneshot unit driven by cortex-weekly-train.timer. Every run
+# is journalctl-observable:  journalctl -u cortex-weekly-train -f
+#
+# The train NEVER changes the live orchestrator without a matching CTO release-approval token
+# (see scripts/cortex-weekly-train.sh). A timer-driven run with no token simply verifies beta is
+# green, raises the approval request, and halts. Once Werner approves (materializes the token),
+# the next run (timer or `systemctl start`) promotes beta→live via DEV-PROCESS §5 and cuts fleet.
+#
+# Runs as `ubuntu`. The §5 promotion escalates only for `systemctl restart <service>` via sudo,
+# which ubuntu already has passwordless.
+
+[Unit]
+Description=Cortex weekly canary+fleet release train (§5-gated live promotion; CTO-approval required)
+After=network-online.target
+Wants=network-online.target
+After=paperclip.service paperclip-beta.service
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/projects/cortex-beta
+ExecStart=/home/ubuntu/projects/cortex-beta/scripts/cortex-weekly-train.sh
+# A live promotion (backup + install + build + migrate) can take many minutes; never let systemd
+# kill it mid-promotion (a half-applied migration is the worst case). Generous ceiling.
+TimeoutStartSec=3600
+# The script unsets NODE_ENV around builds itself so devDeps install. Do NOT set NODE_ENV here.
+# Wire the approval-request hook + optional alert sink via a drop-in:
+#   sudo systemctl edit cortex-weekly-train.service
+#   [Service]
+#   Environment=CORTEX_RELEASE_APPROVAL_REQUEST_CMD=/home/ubuntu/projects/cortex-beta/scripts/request-release-approval.sh
+#   Environment=CORTEX_TRAIN_ALERT_CMD=/usr/local/bin/cortex-alert

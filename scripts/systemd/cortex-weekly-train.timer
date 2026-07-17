@@ -1,0 +1,21 @@
+# cortex-weekly-train.timer — cuts the weekly release train.
+#
+# NEO-529 (subtask 522d of NEO-522). Fires once a week: verify the green beta snapshot, gate on a
+# final CTO release-approval, and on approval promote beta→live via §5 + cut the stable fleet ring.
+#
+# The cadence is deliberately weekly (NEO-522 plan §2.0: review continuously on beta, promote live
+# weekly). An un-approved firing is a cheap no-op that just (re)raises the approval request — the
+# script's own lock + approval gate make repeated ticks safe.
+
+[Unit]
+Description=Weekly cadence for the Cortex canary+fleet release train (cortex-weekly-train.service)
+
+[Timer]
+# Monday 09:00 local — a low-activity window at the start of the week, before heavy usage.
+OnCalendar=Mon *-*-* 09:00:00
+# If the host was asleep/off across the scheduled tick, run once on resume.
+Persistent=true
+Unit=cortex-weekly-train.service
+
+[Install]
+WantedBy=timers.target

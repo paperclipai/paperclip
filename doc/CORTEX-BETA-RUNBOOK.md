@@ -202,7 +202,53 @@ Add your `release-probes/<ISSUE>.yaml` in the **same PR** as the behavior change
 can prove your work landed. This is the contributor-facing half of the pipeline; the tooling is
 introduced by [NEO-526](/NEO/issues/NEO-526) / [NEO-527](/NEO/issues/NEO-527).
 
-## 6. References
+## 6. Weekly canary + fleet train (522d / NEO-529) — supersedes ad-hoc promotion
+
+The release model (NEO-522 plan §2.0) is: **review continuously on beta → once a week, promote
+the approved+tested beta snapshot live.** The deploy agent (§2) keeps beta current; the **weekly
+train** (`scripts/cortex-weekly-train.sh` + `cortex-weekly-train.timer`, fires `Mon 09:00`) cuts
+the promotion. This is now the **only** sanctioned way a change reaches the live orchestrator —
+one-off manual `git pull && build && migrate` on live is retired in favour of this governed,
+rollback-wrapped train.
+
+The train runs four stages, each independently rollback-capable:
+
+1. **Preflight** — confirm the current beta snapshot is healthy + content-verified (reuses §5.2
+   probes against `:3200`). A red beta aborts the train before anything else.
+2. **CTO approval GATE** — nothing goes live without it. With no matching approval the train
+   raises a `request_confirmation` to Werner and **halts**, changing nothing on live. Approval is
+   materialized as a token holding the exact candidate SHA; it is **snapshot-scoped + single-use**
+   (an approval for one snapshot can never promote a different one). The weekly timer re-raises the
+   request on each un-approved firing until granted.
+3. **canary** — promote the green snapshot onto **live** (`cortex.neoreef.com`, `:3100`) via the
+   governed **DEV-PROCESS §5** path: `db:backup` **first** → checkout the exact snapshot SHA →
+   `pnpm install && build` → `db:generate && db:migrate` → `doctor --repair` + health → content
+   probes. Any failure auto-rolls-back the **code** (checkout last-known-good → rebuild → restart →
+   health) and emits a first-class **ALERT** naming the pre-promotion backup for the DB restore
+   (§5.4 / NEO-198 — code rollback alone does not undo an applied migration; there is no
+   `db:restore` CLI, so DB restore stays the deliberate manual step).
+4. **fleet** — cut stable npm `latest` (`scripts/release.sh stable`; publishes only when
+   `CORTEX_FLEET_PUBLISH=1`, else `--dry-run`) and upgrade any remaining instances → verify →
+   rollback on fail. With a single live instance today the ring is a **no-op**, but the machinery
+   exists for future instances.
+
+```bash
+# Observe / drive manually (details: scripts/systemd/README.md)
+scripts/cortex-weekly-train.sh --status      # candidate / approval / pending state
+scripts/cortex-weekly-train.sh --preflight   # verify beta green; no live change
+scripts/cortex-weekly-train.sh --dry-run     # full walk-through, no mutation
+scripts/cortex-weekly-train.sh --request     # raise the CTO approval request; halt
+# After Werner approves the specific snapshot SHA:
+echo '<candidate-sha>' > /var/tmp/cortex-release-approval.token
+scripts/cortex-weekly-train.sh --promote     # canary (§5 → live) + fleet
+```
+
+> **Guardrails.** The live orchestrator is never a direct build/migrate target: promotion only
+> happens on the CTO-gated §5 path with a DB backup first, and the train refuses any live target
+> that is non-loopback, a `*beta*` unit, or equal to the beta tree. Beta remains the single
+> in-place-build exception (§2), owned by the deploy agent — never the train.
+
+## 7. References
 
 - `doc/DEV-PROCESS.md` — §2 Staging row points here; §5 governs the live promotion gate and
   cross-links this deploy agent as beta's single sanctioned in-place-build exception.
@@ -211,7 +257,7 @@ introduced by [NEO-526](/NEO/issues/NEO-526) / [NEO-527](/NEO/issues/NEO-527).
 - Content-verify gate: [NEO-527](/NEO/issues/NEO-527) (522b `release-probes/<ISSUE>.yaml` +
   `scripts/verify-content.mjs` + auto-rollback).
 - Drift guard: [NEO-528](/NEO/issues/NEO-528) (522c done⇒on-beta reconciliation routine).
-- Canary + fleet weekly train: [NEO-529](/NEO/issues/NEO-529) (522d, §5-gated live promotion).
+- Canary + fleet weekly train: [NEO-529](/NEO/issues/NEO-529) (522d — see §6; `scripts/cortex-weekly-train.sh` + `cortex-weekly-train.timer`/`.service`, §5-gated live promotion).
 - Pipeline plan & decisions: [NEO-522](/NEO/issues/NEO-522#document-plan).
 - Beta service topology: NEO-253 (systemd unit, isolated DB/plugins). Vendoring: NEO-251.
 - Live promotion + rollback runbook: [NEO-198](/NEO/issues/NEO-198) (the §5 gate this reuses).
