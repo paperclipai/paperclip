@@ -9,7 +9,10 @@ approved 30-day window.
 
 - The utility is a dry-run unless `--apply` is passed.
 - Only Paperclip runs with a recognized terminal status and an unambiguous
-  `finished_at` older than the single UTC cutoff are eligible.
+  `finished_at` older than the single UTC cutoff are eligible. The database
+  query filters on those status and `finished_at` predicates before loading
+  candidate rows, and only pulls nullability / session metadata rather than
+  full `result_json` or `context_snapshot` payloads.
 - Queued, running, scheduled-retry, held, and terminal runs without
   `finished_at` are excluded.
 - An active Paperclip issue-tree hold protects runs linked to that issue.

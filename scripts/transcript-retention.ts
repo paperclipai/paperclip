@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { and, eq, inArray, isNotNull, or } from "../packages/db/node_modules/drizzle-orm/index.js";
+import { and, eq, inArray, isNotNull, lt, not, or, sql } from "../packages/db/node_modules/drizzle-orm/index.js";
 import {
   activityLog,
   createDb,
@@ -15,8 +15,10 @@ import {
 import { resolveMigrationConnection } from "../packages/db/src/migration-runtime.ts";
 
 const RETENTION_DAYS = 7;
-const TERMINAL_STATUSES = new Set(["succeeded", "interrupted", "failed", "cancelled", "timed_out"]);
-const LIVE_STATUSES = new Set(["queued", "running", "scheduled_retry"]);
+const TERMINAL_STATUSES = ["succeeded", "interrupted", "failed", "cancelled", "timed_out"] as const;
+const LIVE_STATUSES = ["queued", "running", "scheduled_retry"] as const;
+const TERMINAL_STATUS_SET = new Set<string>(TERMINAL_STATUSES);
+const LIVE_STATUS_SET = new Set<string>(LIVE_STATUSES);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const APPLY = process.argv.includes("--apply");
 const RESTORE_INDEX = process.argv.indexOf("--restore-permissions");
@@ -28,28 +30,39 @@ type RunRow = {
   status: string;
   finishedAt: Date | null;
   logRef: string | null;
-  resultJson: Record<string, unknown> | null;
-  stdoutExcerpt: string | null;
-  stderrExcerpt: string | null;
+  hasResultJson: boolean;
+  hasStdoutExcerpt: boolean;
+  hasStderrExcerpt: boolean;
   sessionIdBefore: string | null;
   sessionIdAfter: string | null;
   externalRunId: string | null;
-  contextSnapshot: Record<string, unknown> | null;
+  contextIssueId: string | null;
+};
+type SessionRunRow = {
+  id: string;
+  status: string;
+  finishedAt: Date | null;
+  sessionIdBefore: string | null;
+  sessionIdAfter: string | null;
+  externalRunId: string | null;
 };
 
 function modeOf(mode: number) {
   return mode & 0o777;
 }
 
-function issueIdFromContext(context: Record<string, unknown> | null) {
-  const candidate = context?.issueId ?? context?.taskId;
-  return typeof candidate === "string" && candidate.length > 0 ? candidate : null;
-}
-
-function sessionIds(run: RunRow) {
+function sessionIds(run: Pick<RunRow, "sessionIdBefore" | "sessionIdAfter" | "externalRunId">) {
   return [run.sessionIdBefore, run.sessionIdAfter, run.externalRunId].filter(
     (value): value is string => typeof value === "string" && UUID.test(value),
   );
+}
+
+function oldTerminalPredicate(cutoff: Date) {
+  return and(
+    inArray(heartbeatRuns.status, [...TERMINAL_STATUSES]),
+    isNotNull(heartbeatRuns.finishedAt),
+    lt(heartbeatRuns.finishedAt, cutoff),
+  )!;
 }
 
 function isWithin(root: string, candidate: string) {
@@ -325,22 +338,35 @@ async function main() {
   const connection = await resolveMigrationConnection();
   const db = createDb(connection.connectionString);
   try {
-    const runs = await db
+    const oldTerminalWhere = oldTerminalPredicate(cutoff);
+    const oldTerminalRuns = await db
       .select({
         id: heartbeatRuns.id,
         companyId: heartbeatRuns.companyId,
         status: heartbeatRuns.status,
         finishedAt: heartbeatRuns.finishedAt,
         logRef: heartbeatRuns.logRef,
-        resultJson: heartbeatRuns.resultJson,
-        stdoutExcerpt: heartbeatRuns.stdoutExcerpt,
-        stderrExcerpt: heartbeatRuns.stderrExcerpt,
+        hasResultJson: sql<boolean>`(${heartbeatRuns.resultJson} is not null)`.mapWith(Boolean),
+        hasStdoutExcerpt: sql<boolean>`(${heartbeatRuns.stdoutExcerpt} is not null)`.mapWith(Boolean),
+        hasStderrExcerpt: sql<boolean>`(${heartbeatRuns.stderrExcerpt} is not null)`.mapWith(Boolean),
         sessionIdBefore: heartbeatRuns.sessionIdBefore,
         sessionIdAfter: heartbeatRuns.sessionIdAfter,
         externalRunId: heartbeatRuns.externalRunId,
-        contextSnapshot: heartbeatRuns.contextSnapshot,
+        contextIssueId: sql<string | null>`coalesce(${heartbeatRuns.contextSnapshot} ->> 'issueId', ${heartbeatRuns.contextSnapshot} ->> 'taskId')`,
       })
-      .from(heartbeatRuns) as RunRow[];
+      .from(heartbeatRuns)
+      .where(oldTerminalWhere) as RunRow[];
+    const protectiveSessionRuns = await db
+      .select({
+        id: heartbeatRuns.id,
+        status: heartbeatRuns.status,
+        finishedAt: heartbeatRuns.finishedAt,
+        sessionIdBefore: heartbeatRuns.sessionIdBefore,
+        sessionIdAfter: heartbeatRuns.sessionIdAfter,
+        externalRunId: heartbeatRuns.externalRunId,
+      })
+      .from(heartbeatRuns)
+      .where(not(oldTerminalWhere)) as SessionRunRow[];
     const activeHoldMembers = await db
       .select({ issueId: issueTreeHoldMembers.issueId })
       .from(issueTreeHoldMembers)
@@ -354,15 +380,15 @@ async function main() {
         .filter(Boolean),
     );
 
-    const terminal = runs.filter((run) => TERMINAL_STATUSES.has(run.status));
-    const active = runs.filter((run) => LIVE_STATUSES.has(run.status));
-    const ambiguous = terminal.filter((run) => !run.finishedAt);
-    const oldTerminal = terminal.filter((run) => run.finishedAt && run.finishedAt.getTime() < cutoffMs);
-    const held = oldTerminal.filter(
-      (run) => explicitHeldRunIds.has(run.id) || heldIssueIds.has(issueIdFromContext(run.contextSnapshot) ?? ""),
+    const active = protectiveSessionRuns.filter((run) => LIVE_STATUS_SET.has(run.status));
+    const ambiguous = protectiveSessionRuns.filter(
+      (run) => TERMINAL_STATUS_SET.has(run.status) && !run.finishedAt,
+    );
+    const held = oldTerminalRuns.filter(
+      (run) => explicitHeldRunIds.has(run.id) || heldIssueIds.has(run.contextIssueId ?? ""),
     );
     const heldIds = new Set(held.map((run) => run.id));
-    const unheldOldTerminal = oldTerminal.filter((run) => !heldIds.has(run.id));
+    const unheldOldTerminal = oldTerminalRuns.filter((run) => !heldIds.has(run.id));
     const eventContentRunIds = await runsWithPersistedEventContent(
       db,
       unheldOldTerminal.map((run) => run.id),
@@ -386,14 +412,17 @@ async function main() {
     const eligible = unheldOldTerminal.filter(
       (run) =>
         run.logRef !== null
-        || run.resultJson !== null
-        || run.stdoutExcerpt !== null
-        || run.stderrExcerpt !== null
+        || run.hasResultJson
+        || run.hasStdoutExcerpt
+        || run.hasStderrExcerpt
         || eventContentRunIds.has(run.id)
         || sessionIds(run).some((sessionId) => availableCursorSessionIds.has(sessionId)),
     );
     const eligibleIds = new Set(eligible.map((run) => run.id));
-    const protectedSessions = new Set(runs.filter((run) => !eligibleIds.has(run.id)).flatMap(sessionIds));
+    const protectedSessions = new Set([
+      ...protectiveSessionRuns.flatMap(sessionIds),
+      ...oldTerminalRuns.filter((run) => !eligibleIds.has(run.id)).flatMap(sessionIds),
+    ]);
     const eligibleSessions = new Map<string, Set<string>>();
     for (const run of eligible) {
       for (const sessionId of sessionIds(run)) {
