@@ -1181,6 +1181,7 @@ export function createToolGatewayService(
       entityId,
       agentId: input.agentId,
       runId: input.runId,
+      issueId: input.issueId,
       details: {
         gatewaySessionId: input.session?.id ?? null,
         gatewayId: input.session?.gatewayId ?? null,

@@ -19,7 +19,10 @@ import {
 import { actorMiddleware } from "../middleware/auth.js";
 import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
-import { issueService } from "../services/issues.js";
+import {
+  ISSUE_CREATE_IDEMPOTENCY_KEY_RETENTION_DAYS,
+  issueService,
+} from "../services/issues.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -110,6 +113,45 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
       deduplicationReason: "idempotency_key",
     });
     expect(await db.select().from(issueCreateIdempotencyKeys)).toHaveLength(1);
+  });
+
+  it("expires old idempotency keys before replay lookup", async () => {
+    const companyId = await seedCompany();
+    const parent = await seedParent(companyId);
+    const app = createApp();
+    const oldIssueId = randomUUID();
+    const idempotencyKey = "run-1:expired-retry";
+    const expiredCreatedAt = new Date(
+      Date.now() - (ISSUE_CREATE_IDEMPOTENCY_KEY_RETENTION_DAYS + 1) * 24 * 60 * 60 * 1000,
+    );
+    await db.insert(issues).values({
+      id: oldIssueId,
+      companyId,
+      parentId: parent.id,
+      title: "Expired retry target",
+      status: "todo",
+      priority: "medium",
+    });
+    await db.insert(issueCreateIdempotencyKeys).values({
+      companyId,
+      idempotencyKey,
+      issueId: oldIssueId,
+      createdAt: expiredCreatedAt,
+    });
+
+    const recreated = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({ parentId: parent.id, title: "Expired retry creates new work", idempotencyKey })
+      .expect(201);
+
+    const rows = await db.select().from(issueCreateIdempotencyKeys);
+    expect(recreated.body.id).not.toBe(oldIssueId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      companyId,
+      idempotencyKey,
+      issueId: recreated.body.id,
+    });
   });
 
   it("returns a recent open sibling whose normalized title matches", async () => {

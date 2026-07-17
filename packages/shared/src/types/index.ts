@@ -164,6 +164,17 @@ export type {
   CompanySkillInstallCatalogResult,
 } from "./company-skill.js";
 export type {
+  FolderKind,
+  Folder,
+  FolderListItem,
+  FolderListResult,
+  CreateFolderRequest,
+  UpdateFolderRequest,
+  MoveFolderRequest,
+  MoveFolderItemRequest,
+  EnsureMySkillFolderRequest,
+} from "./folder.js";
+export type {
   CatalogTeamKind,
   CatalogTeamTrustLevel,
   CatalogTeamCompatibility,

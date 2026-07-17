@@ -67,6 +67,10 @@ import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { parseObject } from "../adapters/utils.js";
 import {
+  hydrateSuccessfulRunHandoffLiveness,
+  SUCCESSFUL_RUN_HANDOFF_LIVE_WAKE_STATUSES,
+} from "./successful-run-handoff-state.js";
+import {
   defaultIssueExecutionWorkspaceSettingsForProject,
   gateProjectExecutionWorkspacePolicy,
   issueExecutionWorkspaceModeForPersistedWorkspace,
@@ -130,6 +134,9 @@ const ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_LOG_BYTES = 2_000_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_CHUNK_BYTES = 256_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_END_SLACK_MS = 60_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_PARALLEL_READS = 8;
+export const ISSUE_CREATE_IDEMPOTENCY_KEY_RETENTION_DAYS = 7;
+const ISSUE_CREATE_IDEMPOTENCY_KEY_RETENTION_MS = ISSUE_CREATE_IDEMPOTENCY_KEY_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+const ISSUE_CREATE_IDEMPOTENCY_KEY_CLEANUP_BATCH_SIZE = 500;
 const DELETED_ISSUE_COMMENT_BODY = "";
 const ISSUE_WAKE_DIAGNOSTICS_ACTIVITY_ACTIONS = ["issue.tree_hold_wakeup_deferred"] as const;
 
@@ -1475,6 +1482,50 @@ function latestIssueActivityAt(...values: Array<Date | string | null | undefined
   return normalized[0] ?? null;
 }
 
+type InboxArchiveAttributionRow = {
+  issueId: string;
+  archivedAt: Date;
+  archivedByActorType: "user" | "agent";
+  archivedByAgentId: string | null;
+  archivedByRunId: string | null;
+};
+
+async function inboxArchiveRowsForIssues(
+  dbOrTx: Db,
+  companyId: string,
+  userId: string,
+  issueIds: string[],
+): Promise<InboxArchiveAttributionRow[]> {
+  if (issueIds.length === 0) return [];
+  return dbOrTx
+    .select({
+      issueId: issueInboxArchives.issueId,
+      archivedAt: issueInboxArchives.archivedAt,
+      archivedByActorType: issueInboxArchives.archivedByActorType,
+      archivedByAgentId: issueInboxArchives.archivedByAgentId,
+      archivedByRunId: issueInboxArchives.archivedByRunId,
+    })
+    .from(issueInboxArchives)
+    .where(and(
+      eq(issueInboxArchives.companyId, companyId),
+      eq(issueInboxArchives.userId, userId),
+      inArray(issueInboxArchives.issueId, issueIds),
+    ));
+}
+
+function activeInboxArchiveFields(
+  archive: InboxArchiveAttributionRow | undefined,
+  lastActivityAt: Date,
+) {
+  if (!archive || archive.archivedAt.getTime() < lastActivityAt.getTime()) return {};
+  return {
+    archivedAt: archive.archivedAt,
+    archivedByActorType: archive.archivedByActorType,
+    archivedByAgentId: archive.archivedByAgentId,
+    archivedByRunId: archive.archivedByRunId,
+  };
+}
+
 function issueListOrderBy(
   companyId: string,
   {
@@ -2672,7 +2723,7 @@ async function blockedByMapForIssues(
 
 const BLOCKED_INBOX_TERMINAL_STATUSES = ["done", "cancelled"] as const;
 const BLOCKED_INBOX_ACTIVE_RUN_STATUSES = ["queued", "running"] as const;
-const BLOCKED_INBOX_ACTIVE_WAKE_STATUSES = ["queued", "deferred_issue_execution"] as const;
+const BLOCKED_INBOX_ACTIVE_WAKE_STATUSES = SUCCESSFUL_RUN_HANDOFF_LIVE_WAKE_STATUSES;
 const BLOCKED_INBOX_PENDING_INTERACTION_STATUSES = ["pending"] as const;
 const BLOCKED_INBOX_PENDING_APPROVAL_STATUSES = ["pending", "revision_requested"] as const;
 const BLOCKED_INBOX_RECOVERY_ORIGIN_KINDS = ["harness_liveness_escalation", "stranded_issue_recovery"] as const;
@@ -2794,6 +2845,7 @@ function readSuccessfulRunHandoffFromActivity(row: {
   return {
     state,
     required: state === "required",
+    hasLiveContinuation: false,
     sourceRunId:
       readStringFromRecord(details, "sourceRunId")
       ?? readStringFromRecord(details, "source_run_id")
@@ -2818,6 +2870,7 @@ async function listSuccessfulRunHandoffMapForIssues(
   dbOrTx: any,
   companyId: string,
   issueIds: string[],
+  options?: { hydrateLiveness?: boolean },
 ): Promise<Map<string, SuccessfulRunHandoffState>> {
   const uniqueIssueIds = [...new Set(issueIds)];
   const states = new Map<string, SuccessfulRunHandoffState>();
@@ -2856,7 +2909,9 @@ async function listSuccessfulRunHandoffMapForIssues(
     }
   }
 
-  return states;
+  return options?.hydrateLiveness === false
+    ? states
+    : hydrateSuccessfulRunHandoffLiveness(dbOrTx, companyId, states);
 }
 
 function externalWaitFromDescription(description: string | null): { owner: string; action: string } | null {
@@ -3033,7 +3088,10 @@ async function listIssueBlockedInboxAttentionMap(
       : dbOrTx
           .select({
             companyId: heartbeatRuns.companyId,
-            issueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`,
+            issueId: sql<string | null>`coalesce(
+              ${heartbeatRuns.contextSnapshot} ->> 'issueId',
+              ${heartbeatRuns.contextSnapshot} ->> 'taskId'
+            )`,
             agentId: heartbeatRuns.agentId,
             status: heartbeatRuns.status,
           })
@@ -3041,14 +3099,22 @@ async function listIssueBlockedInboxAttentionMap(
           .where(and(
             eq(heartbeatRuns.companyId, companyId),
             inArray(heartbeatRuns.status, [...BLOCKED_INBOX_ACTIVE_RUN_STATUSES]),
-            inArray(sql<string>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`, graphIssueIds),
+            inArray(sql<string>`coalesce(
+              ${heartbeatRuns.contextSnapshot} ->> 'issueId',
+              ${heartbeatRuns.contextSnapshot} ->> 'taskId'
+            )`, graphIssueIds),
           )),
     graphIssueIds.length === 0
       ? Promise.resolve([])
       : dbOrTx
           .select({
             companyId: agentWakeupRequests.companyId,
-            issueId: sql<string | null>`${agentWakeupRequests.payload} ->> 'issueId'`,
+            issueId: sql<string | null>`coalesce(
+              ${agentWakeupRequests.payload} ->> 'issueId',
+              ${agentWakeupRequests.payload} ->> 'taskId',
+              ${agentWakeupRequests.payload} -> '_paperclipWakeContext' ->> 'issueId',
+              ${agentWakeupRequests.payload} -> '_paperclipWakeContext' ->> 'taskId'
+            )`,
             agentId: agentWakeupRequests.agentId,
             status: agentWakeupRequests.status,
           })
@@ -3056,15 +3122,22 @@ async function listIssueBlockedInboxAttentionMap(
           .where(and(
             eq(agentWakeupRequests.companyId, companyId),
             inArray(agentWakeupRequests.status, [...BLOCKED_INBOX_ACTIVE_WAKE_STATUSES]),
-            sql`${agentWakeupRequests.runId} is null`,
-            inArray(sql<string>`${agentWakeupRequests.payload} ->> 'issueId'`, graphIssueIds),
+            inArray(sql<string>`coalesce(
+              ${agentWakeupRequests.payload} ->> 'issueId',
+              ${agentWakeupRequests.payload} ->> 'taskId',
+              ${agentWakeupRequests.payload} -> '_paperclipWakeContext' ->> 'issueId',
+              ${agentWakeupRequests.payload} -> '_paperclipWakeContext' ->> 'taskId'
+            )`, graphIssueIds),
           )),
     graphIssueIds.length === 0
       ? Promise.resolve([])
       : dbOrTx
           .select({
             companyId: heartbeatRuns.companyId,
-            issueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`,
+            issueId: sql<string | null>`coalesce(
+              ${heartbeatRuns.contextSnapshot} ->> 'issueId',
+              ${heartbeatRuns.contextSnapshot} ->> 'taskId'
+            )`,
             agentId: heartbeatRuns.agentId,
             status: heartbeatRuns.status,
           })
@@ -3072,7 +3145,10 @@ async function listIssueBlockedInboxAttentionMap(
           .where(and(
             eq(heartbeatRuns.companyId, companyId),
             eq(heartbeatRuns.status, "scheduled_retry"),
-            inArray(sql<string>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`, graphIssueIds),
+            inArray(sql<string>`coalesce(
+              ${heartbeatRuns.contextSnapshot} ->> 'issueId',
+              ${heartbeatRuns.contextSnapshot} ->> 'taskId'
+            )`, graphIssueIds),
           )),
     graphIssueIds.length === 0
       ? Promise.resolve([])
@@ -3105,7 +3181,7 @@ async function listIssueBlockedInboxAttentionMap(
             inArray(approvals.status, [...BLOCKED_INBOX_PENDING_APPROVAL_STATUSES]),
             inArray(issueApprovals.issueId, graphIssueIds),
           )),
-    listSuccessfulRunHandoffMapForIssues(dbOrTx, companyId, rowIssueIds),
+    listSuccessfulRunHandoffMapForIssues(dbOrTx, companyId, rowIssueIds, { hydrateLiveness: false }),
   ]);
 
   const pendingInteractions = (interactionRows as BlockedInboxInteractionRow[]).map((row) => ({
@@ -3186,6 +3262,13 @@ async function listIssueBlockedInboxAttentionMap(
   for (const row of approvalRows as BlockedInboxApprovalRow[]) {
     if (!approvalByIssueId.has(row.issueId)) approvalByIssueId.set(row.issueId, row);
   }
+  const liveHandoffRunIssueIds = new Set([
+    ...(activeRunRows as Array<{ issueId: string | null }>),
+    ...(scheduledRetryRows as Array<{ issueId: string | null }>),
+  ].flatMap((row) => row.issueId ? [row.issueId] : []));
+  const liveHandoffWakeIssueIds = new Set(
+    (wakeRows as Array<{ issueId: string | null }>).flatMap((row) => row.issueId ? [row.issueId] : []),
+  );
 
   for (const row of issueRows) {
     if (row.companyId !== companyId || BLOCKED_INBOX_TERMINAL_STATUSES.includes(row.status as typeof BLOCKED_INBOX_TERMINAL_STATUSES[number]) || row.hiddenAt) {
@@ -3193,7 +3276,11 @@ async function listIssueBlockedInboxAttentionMap(
     }
     const source = issueRef(row);
     const handoff = handoffMap.get(row.id);
-    if (handoff && (handoff.required || handoff.state === "escalated")) {
+    const hasLiveHandoffContinuation = Boolean(
+      handoff?.state === "required"
+      && (liveHandoffRunIssueIds.has(row.id) || liveHandoffWakeIssueIds.has(row.id))
+    );
+    if (handoff && !hasLiveHandoffContinuation && (handoff.required || handoff.state === "escalated")) {
       result.set(row.id, attentionBase({
         state: "missing_disposition",
         reason: "missing_successful_run_disposition",
@@ -4776,7 +4863,7 @@ export function issueService(db: Db) {
       }
 
       const issueIds = withRuns.map((row) => row.id);
-      const [statsRows, readRows, lastActivityRows, blockedByMap, liveDescendantCountByIssueId] = await Promise.all([
+      const [statsRows, readRows, lastActivityRows, archiveRows, blockedByMap, liveDescendantCountByIssueId] = await Promise.all([
         contextUserId
           ? userCommentStatsForIssues(db, companyId, contextUserId, issueIds)
           : Promise.resolve([]),
@@ -4784,6 +4871,9 @@ export function issueService(db: Db) {
           ? userReadStatsForIssues(db, companyId, contextUserId, issueIds)
           : Promise.resolve([]),
         lastActivityStatsForIssues(db, companyId, issueIds),
+        contextUserId
+          ? inboxArchiveRowsForIssues(db, companyId, contextUserId, issueIds)
+          : Promise.resolve([]),
         includeBlockedBy
           ? blockedByMapForIssues(db, companyId, issueIds)
           : Promise.resolve(new Map<string, IssueRelationIssueSummary[]>()),
@@ -4793,6 +4883,7 @@ export function issueService(db: Db) {
       ]);
       const statsByIssueId = new Map(statsRows.map((row) => [row.issueId, row]));
       const lastActivityByIssueId = new Map(lastActivityRows.map((row) => [row.issueId, row]));
+      const archiveByIssueId = new Map(archiveRows.map((row) => [row.issueId, row]));
       const [
         blockerAttentionByIssueId,
         productivityReviewByIssueId,
@@ -4838,6 +4929,7 @@ export function issueService(db: Db) {
         ) ?? row.updatedAt;
         return {
           ...row,
+          ...activeInboxArchiveFields(archiveByIssueId.get(row.id), lastActivityAt),
           ...(includeBlockedBy ? { blockedBy: blockedByMap.get(row.id) ?? [] } : {}),
           lastActivityAt,
           ...(blockerAttentionByIssueId.has(row.id) ? { blockerAttention: blockerAttentionByIssueId.get(row.id) } : {}),
@@ -4955,7 +5047,17 @@ export function issueService(db: Db) {
       return deleted.length > 0;
     },
 
-    archiveInbox: async (companyId: string, issueId: string, userId: string, archivedAt: Date = new Date()) => {
+    archiveInbox: async (
+      companyId: string,
+      issueId: string,
+      userId: string,
+      archivedAt: Date = new Date(),
+      attribution?: {
+        archivedByActorType: "user" | "agent";
+        archivedByAgentId?: string | null;
+        archivedByRunId?: string | null;
+      },
+    ) => {
       const now = new Date();
       const [row] = await db
         .insert(issueInboxArchives)
@@ -4963,6 +5065,9 @@ export function issueService(db: Db) {
           companyId,
           issueId,
           userId,
+          archivedByActorType: attribution?.archivedByActorType ?? "user",
+          archivedByAgentId: attribution?.archivedByAgentId ?? null,
+          archivedByRunId: attribution?.archivedByRunId ?? null,
           archivedAt,
           updatedAt: now,
         })
@@ -4970,6 +5075,9 @@ export function issueService(db: Db) {
           target: [issueInboxArchives.companyId, issueInboxArchives.issueId, issueInboxArchives.userId],
           set: {
             archivedAt,
+            archivedByActorType: attribution?.archivedByActorType ?? "user",
+            archivedByAgentId: attribution?.archivedByAgentId ?? null,
+            archivedByRunId: attribution?.archivedByRunId ?? null,
             updatedAt: now,
           },
         })
@@ -4989,6 +5097,22 @@ export function issueService(db: Db) {
         )
         .returning();
       return row ?? null;
+    },
+
+    getActiveInboxArchiveFields: async (
+      issue: Pick<IssueRow, "id" | "companyId" | "updatedAt">,
+      userId: string,
+    ) => {
+      const [[activity], [archive]] = await Promise.all([
+        lastActivityStatsForIssues(db, issue.companyId, [issue.id]),
+        inboxArchiveRowsForIssues(db, issue.companyId, userId, [issue.id]),
+      ]);
+      const lastActivityAt = latestIssueActivityAt(
+        issue.updatedAt,
+        activity?.latestCommentAt ?? null,
+        activity?.latestLogAt ?? null,
+      ) ?? issue.updatedAt;
+      return activeInboxArchiveFields(archive, lastActivityAt);
     },
 
     getById: async (raw: string) => {
@@ -6031,6 +6155,19 @@ export function issueService(db: Db) {
         let existingIssue: typeof issues.$inferSelect | undefined;
         let deduplicationReason: "idempotency_key" | "recent_open_title" | null = null;
         if (idempotencyKey) {
+          const idempotencyKeyRetentionCutoff = new Date(Date.now() - ISSUE_CREATE_IDEMPOTENCY_KEY_RETENTION_MS);
+          await tx.execute(sql`
+            delete from ${issueCreateIdempotencyKeys}
+            where ${issueCreateIdempotencyKeys.id} in (
+              select ${issueCreateIdempotencyKeys.id}
+              from ${issueCreateIdempotencyKeys}
+              where ${issueCreateIdempotencyKeys.companyId} = ${companyId}
+                and ${issueCreateIdempotencyKeys.createdAt} < ${idempotencyKeyRetentionCutoff.toISOString()}::timestamptz
+              order by ${issueCreateIdempotencyKeys.createdAt} asc, ${issueCreateIdempotencyKeys.id} asc
+              limit ${ISSUE_CREATE_IDEMPOTENCY_KEY_CLEANUP_BATCH_SIZE}
+            )
+          `);
+
           [existingIssue] = await tx
             .select()
             .from(issueCreateIdempotencyKeys)

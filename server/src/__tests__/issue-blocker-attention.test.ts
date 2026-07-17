@@ -803,6 +803,37 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       owner: { type: "agent", agentId },
       action: { label: "Choose disposition" },
     });
+
+    const handoffRunId = await activeRun({ companyId, agentId, issueId: handoffId, current: false });
+    const liveRows = await svc.list(companyId, { attention: "blocked" });
+    expect(liveRows.some((row) => row.id === handoffId)).toBe(false);
+
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, handoffRunId));
+    const stoppedRows = await svc.list(companyId, { attention: "blocked" });
+    expect(stoppedRows.find((row) => row.id === handoffId)?.blockedInboxAttention).toMatchObject({
+      state: "missing_disposition",
+      reason: "missing_successful_run_disposition",
+    });
+
+    const scheduledRetryRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: scheduledRetryRunId,
+      companyId,
+      agentId,
+      status: "scheduled_retry",
+      contextSnapshot: { taskId: handoffId },
+      scheduledRetryAt: new Date(Date.now() + 60_000),
+      scheduledRetryAttempt: 1,
+    });
+    const scheduledRows = await svc.list(companyId, { attention: "blocked" });
+    expect(scheduledRows.some((row) => row.id === handoffId)).toBe(false);
+
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, scheduledRetryRunId));
+    const exhaustedRows = await svc.list(companyId, { attention: "blocked" });
+    expect(exhaustedRows.find((row) => row.id === handoffId)?.blockedInboxAttention).toMatchObject({
+      state: "missing_disposition",
+      reason: "missing_successful_run_disposition",
+    });
   });
 
   it("applies assigneeAgentId='null' as an IS NULL filter on the blocked-inbox path", async () => {

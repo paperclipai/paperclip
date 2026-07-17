@@ -38,12 +38,13 @@ import { IssueReferencePill } from "../IssueReferencePill";
 import { formatDate, formatDateTime, cn, projectUrl } from "../../lib/utils";
 import type { IssueExternalObjectGroup } from "../../hooks/useIssueExternalObjects";
 import { timeAgo } from "../../lib/timeAgo";
+import { invalidateInboxIssueQueries } from "../../lib/inboxArchiveCache";
 import { Button } from "@/components/ui/button";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { User, ArrowUpRight, Plus, GitBranch, FolderOpen, HardDrive, Check, Clock, RotateCcw, Loader2, CheckCircle2 } from "lucide-react";
+import { User, ArrowUpRight, Plus, GitBranch, FolderOpen, HardDrive, Check, Clock, RotateCcw, Loader2, CheckCircle2, ArchiveRestore } from "lucide-react";
 import { AgentIcon } from "../AgentIconPicker";
 import { InlineEntitySelector, type InlineEntityOption } from "../InlineEntitySelector";
 import {
@@ -187,6 +188,7 @@ export function IssueProperties({
   const [monitorServiceInput, setMonitorServiceInput] = useState(issue.executionPolicy?.monitor?.serviceName ?? "");
   const [runtimeActionMessage, setRuntimeActionMessage] = useState<string | null>(null);
   const [runtimeActionErrorMessage, setRuntimeActionErrorMessage] = useState<string | null>(null);
+  const [unarchiveErrorMessage, setUnarchiveErrorMessage] = useState<string | null>(null);
   const [watchdogOpen, setWatchdogOpen] = useState(false);
   const [watchdogAgentInput, setWatchdogAgentInput] = useState(issue.watchdog?.watchdogAgentId ?? "");
   const [watchdogInstructionsInput, setWatchdogInstructionsInput] = useState(issue.watchdog?.instructions ?? "");
@@ -267,6 +269,26 @@ export function IssueProperties({
       onUpdate({ labelIds: [...(issue.labelIds ?? []), created.id] });
       void queryClient.invalidateQueries({ queryKey: queryKeys.issues.labels(companyId!) });
       setNewLabelName("");
+    },
+  });
+
+  const unarchiveFromInbox = useMutation({
+    mutationFn: () => issuesApi.unarchiveFromInbox(issue.id),
+    onMutate: () => {
+      setUnarchiveErrorMessage(null);
+    },
+    onSuccess: () => {
+      setUnarchiveErrorMessage(null);
+      queryClient.setQueryData<Issue>(queryKeys.issues.detail(issue.id), (current) =>
+        current ? { ...current, archivedAt: null, archivedByActorType: null, archivedByAgentId: null, archivedByRunId: null } : current,
+      );
+      void queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issue.id) });
+      if (companyId) invalidateInboxIssueQueries(queryClient, companyId);
+    },
+    onError: (error) => {
+      setUnarchiveErrorMessage(error instanceof Error && error.message.trim().length > 0
+        ? error.message
+        : "Failed to unarchive this issue. Please try again.");
     },
   });
 
@@ -512,9 +534,13 @@ export function IssueProperties({
         assigneeOverrideThinkingEffort,
         assigneeOverrideChrome ? "Chrome" : "",
       ].filter(Boolean);
+      const summary = details.length > 0 ? `Override · ${details.join(" · ")}` : "Override · adapter options";
       return (
-        <span className="min-w-0 truncate text-sm" title={details.length > 0 ? `Custom · ${details.join(" · ")}` : "Custom adapter options"}>
-          Custom{details.length > 0 ? ` · ${details.join(" · ")}` : " adapter options"}
+        <span
+          className="min-w-0 truncate text-sm"
+          title={`Task-level model override — replaces the agent's primary model for this issue.${details.length > 0 ? ` (${details.join(" · ")})` : ""}`}
+        >
+          {summary}
         </span>
       );
     }
@@ -537,7 +563,7 @@ export function IssueProperties({
               )}
               onClick={() => setAssigneeOverrideLane(lane)}
             >
-              {lane === "primary" ? "Primary" : lane === "cheap" ? "Cheap" : "Custom"}
+              {lane === "primary" ? "Primary" : lane === "cheap" ? "Cheap" : "Override"}
             </button>
           ))}
         </div>
@@ -549,6 +575,11 @@ export function IssueProperties({
               : assigneeCheapProfile
                 ? <>· uses the agent&apos;s configured cheap profile</>
                 : <>· falls back to the primary model if no cheap profile is configured</>}
+          </p>
+        ) : null}
+        {assigneeOverrideLane === "custom" ? (
+          <p className="text-xs text-muted-foreground">
+            Task-level model override — replaces the agent&apos;s primary model for this issue.
           </p>
         ) : null}
       </div>
@@ -2293,6 +2324,52 @@ export function IssueProperties({
         <PropertyRow label="Updated">
           <span className="text-sm">{timeAgo(issue.updatedAt)}</span>
         </PropertyRow>
+        {issue.archivedAt && issue.archivedByActorType === "agent" && issue.archivedByAgentId ? (
+          (() => {
+            const archivedByAgent = (agents ?? []).find((candidate) => candidate.id === issue.archivedByAgentId);
+            const archivedByName = agentName(issue.archivedByAgentId);
+            return (
+              <PropertyRow label="Archived">
+                <div className="flex min-w-0 max-w-full flex-col items-start gap-1">
+                  {/* The row label already reads "Archived", so the value shows just
+                      the attributing agent (icon + name) — this gives the name the
+                      full ~164px value column at the real 320px pane width, where an
+                      "Archived by …" prefix would clip even short names. The full
+                      phrasing + timestamp live in the tooltip so any residual
+                      truncation on genuinely long names is recoverable. */}
+                  <span
+                    className="flex min-w-0 max-w-full items-center gap-1.5 text-sm"
+                    title={`Archived by ${archivedByName} · ${formatDateTime(issue.archivedAt)}`}
+                  >
+                    {archivedByAgent
+                      ? <AgentIcon icon={archivedByAgent.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                      : null}
+                    <span className="min-w-0 truncate">
+                      {archivedByName}
+                    </span>
+                  </span>
+                  <div className="flex min-w-0 max-w-full items-center gap-2">
+                    <span className="shrink-0 text-xs text-muted-foreground">{timeAgo(issue.archivedAt)}</span>
+                    <button
+                      type="button"
+                      className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground disabled:opacity-50"
+                      onClick={() => unarchiveFromInbox.mutate()}
+                      disabled={unarchiveFromInbox.isPending}
+                    >
+                      <ArchiveRestore className="h-3 w-3" />
+                      {unarchiveFromInbox.isPending ? "Unarchiving…" : "Unarchive"}
+                    </button>
+                  </div>
+                  {unarchiveErrorMessage ? (
+                    <p className="text-xs text-destructive" role="alert">
+                      {unarchiveErrorMessage}
+                    </p>
+                  ) : null}
+                </div>
+              </PropertyRow>
+            );
+          })()
+        ) : null}
         {issue.requestDepth > 0 && (
           <PropertyRow label="Depth">
             <span className="text-sm font-mono">{issue.requestDepth}</span>

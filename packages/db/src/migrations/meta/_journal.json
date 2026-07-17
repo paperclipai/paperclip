@@ -1191,6 +1191,48 @@
       "when": 1784160000000,
       "tag": "0171_issue_create_idempotency_keys",
       "breakpoints": true
+    },
+    {
+      "idx": 172,
+      "version": "7",
+      "when": 1784169959628,
+      "tag": "0172_inbox_archive_agent_policies",
+      "breakpoints": true
+    },
+    {
+      "idx": 173,
+      "version": "7",
+      "when": 1784210753027,
+      "tag": "0173_inbox_policy_agent_cleanup",
+      "breakpoints": true
+    },
+    {
+      "idx": 174,
+      "version": "7",
+      "when": 1784210754027,
+      "tag": "0174_folders",
+      "breakpoints": true
+    },
+    {
+      "idx": 175,
+      "version": "7",
+      "when": 1784210755027,
+      "tag": "0175_nested_skill_folders",
+      "breakpoints": true
+    },
+    {
+      "idx": 176,
+      "version": "7",
+      "when": 1784211956161,
+      "tag": "0176_issue_create_idempotency_key_expiry",
+      "breakpoints": true
+    },
+    {
+      "idx": 177,
+      "version": "7",
+      "when": 1784241826832,
+      "tag": "0177_activity_log_responsible_user",
+      "breakpoints": true
     }
   ]
 }

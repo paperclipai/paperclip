@@ -380,72 +380,538 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     },
   );
 
-  it("creates a quota wait-recovery monitor without enqueueing a takeover wake", async () => {
-    const { companyId, coderId, sourceIssue } = await seedCompany();
+  it("schedules a provider-quota monitor for the original assignee without creating recovery work", async () => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
     const runId = randomUUID();
-    await seedHeartbeatRun({ companyId, agentId: coderId, runId, issueId: sourceIssue.id, status: "failed" });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: coderId,
+      invocationSource: "manual",
+      status: "failed",
+      error: "You've hit your usage limit for GPT-5. Try again at 12:00 AM (UTC).",
+      errorCode: "adapter_failed",
+      startedAt: new Date("2026-07-15T20:00:00.000Z"),
+      finishedAt: new Date("2026-07-15T20:01:00.000Z"),
+      contextSnapshot: { issueId: sourceIssueId },
+    });
     const enqueueWakeup = vi.fn(async () => null);
     const recovery = recoveryService(db, { enqueueWakeup });
-    const retryAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
 
-    await recovery.escalateStrandedAssignedIssue({
-      issue: sourceIssue,
-      previousStatus: "in_progress",
-      latestRun: {
-        id: runId,
-        agentId: coderId,
-        status: "failed",
-        error: "provider usage limit exceeded",
-        errorCode: "adapter_failed",
-        contextSnapshot: { retryReason: "issue_continuation_needed" },
-        livenessState: "needs_followup",
-        resultJson: { errorFamily: "provider_quota", providerQuotaRetryNotBefore: retryAt },
+    const result = await recovery.reconcileStrandedAssignedIssues();
+
+    expect(result.providerQuotaMonitored).toBe(1);
+    const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(updatedIssue).toMatchObject({
+      status: "in_progress",
+      assigneeAgentId: coderId,
+      monitorScheduledBy: "assignee",
+      monitorNotes: "Provider usage quota reached; retry the original assignee at the provider reset time.",
+    });
+    expect(updatedIssue?.monitorNextCheckAt).toBeInstanceOf(Date);
+    expect(updatedIssue?.executionPolicy).toMatchObject({
+      monitor: {
+        serviceName: "AI provider quota",
+        externalRef: runId,
+        maxAttempts: null,
+        recoveryPolicy: "wake_owner",
+      },
+    });
+    const [updatedRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(updatedRun).toMatchObject({ errorCode: "provider_quota" });
+    expect(updatedRun?.resultJson).toMatchObject({ errorFamily: "provider_quota" });
+    expect(await db.select().from(issueRecoveryActions)).toHaveLength(0);
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+
+    const secondResult = await recovery.reconcileStrandedAssignedIssues();
+    expect(secondResult).toMatchObject({ providerQuotaMonitored: 0, skipped: 1 });
+    expect(await db.select().from(issueRecoveryActions)).toHaveLength(0);
+  });
+
+  it("schedules another provider-quota monitor after a prior quota monitor fired", async () => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    await db.update(issues).set({ monitorAttemptCount: 1 }).where(eq(issues.id, sourceIssueId));
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: coderId,
+      invocationSource: "manual",
+      status: "failed",
+      error: "Provider quota exceeded for this model.",
+      errorCode: "adapter_failed",
+      startedAt: new Date("2026-07-15T21:00:00.000Z"),
+      finishedAt: new Date("2026-07-15T21:01:00.000Z"),
+      contextSnapshot: { issueId: sourceIssueId },
+    });
+    const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+
+    const result = await recovery.reconcileStrandedAssignedIssues();
+
+    expect(result.providerQuotaMonitored).toBe(1);
+    const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(updatedIssue?.executionPolicy).toMatchObject({
+      monitor: {
+        maxAttempts: null,
+        externalRef: runId,
+      },
+    });
+  });
+
+  it("skips provider-quota monitor scheduling for todo issues without aborting reconciliation", async () => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    await db.update(issues).set({ status: "todo" }).where(eq(issues.id, sourceIssueId));
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: coderId,
+      invocationSource: "manual",
+      status: "failed",
+      error: "Provider quota exceeded for this model.",
+      errorCode: "adapter_failed",
+      startedAt: new Date("2026-07-15T20:00:00.000Z"),
+      finishedAt: new Date("2026-07-15T20:01:00.000Z"),
+      contextSnapshot: { issueId: sourceIssueId },
+    });
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    const result = await recovery.reconcileStrandedAssignedIssues();
+
+    expect(result).toMatchObject({ providerQuotaMonitored: 0, skipped: 1 });
+    const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(updatedIssue).toMatchObject({
+      status: "todo",
+      assigneeAgentId: coderId,
+      monitorNextCheckAt: null,
+    });
+    const [updatedRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(updatedRun?.errorCode).toBe("adapter_failed");
+    expect(await db.select().from(issueRecoveryActions)).toHaveLength(0);
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+  });
+
+  it("does not create takeover recovery when a quota monitor cannot be scheduled", async () => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    await db.update(issues).set({ status: "in_review" }).where(eq(issues.id, sourceIssueId));
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: coderId,
+      invocationSource: "manual",
+      status: "failed",
+      error: "Provider quota exceeded for this model.",
+      errorCode: "adapter_failed",
+      startedAt: new Date("2026-07-15T20:00:00.000Z"),
+      finishedAt: new Date("2026-07-15T20:01:00.000Z"),
+      contextSnapshot: { issueId: sourceIssueId },
+    });
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    const result = await recovery.reconcileStrandedAssignedIssues();
+
+    expect(result).toMatchObject({ providerQuotaMonitored: 0, skipped: 1 });
+    const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(updatedIssue).toMatchObject({
+      status: "in_review",
+      assigneeAgentId: coderId,
+      monitorNextCheckAt: null,
+    });
+    const [updatedRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(updatedRun?.errorCode).toBe("adapter_failed");
+    expect(await db.select().from(issueRecoveryActions)).toHaveLength(0);
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+  });
+
+  it("schedules a quota monitor for a cross-agent active review participant", async () => {
+    const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
+    const stageId = randomUUID();
+    await db.update(issues).set({
+      status: "in_review",
+      assigneeAgentId: coderId,
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: true,
+        stages: [{
+          id: stageId,
+          type: "review",
+          approvalsNeeded: 1,
+          participants: [{ id: randomUUID(), type: "agent", agentId: managerId, userId: null }],
+        }],
+      },
+      executionState: {
+        status: "pending",
+        currentStageId: stageId,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: managerId, userId: null },
+        returnAssignee: { type: "agent", agentId: coderId, userId: null },
+        reviewRequest: null,
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    }).where(eq(issues.id, sourceIssueId));
+    const [reviewIssueBeforeRecovery] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(reviewIssueBeforeRecovery).toMatchObject({
+      assigneeAgentId: coderId,
+      executionState: {
+        currentParticipant: { type: "agent", agentId: managerId },
+        returnAssignee: { type: "agent", agentId: coderId },
+      },
+    });
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: managerId,
+      invocationSource: "automation",
+      status: "failed",
+      error: "Provider quota exceeded for this model.",
+      errorCode: "adapter_failed",
+      startedAt: new Date("2026-07-15T20:00:00.000Z"),
+      finishedAt: new Date("2026-07-15T20:01:00.000Z"),
+      contextSnapshot: { issueId: sourceIssueId },
+    });
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    const result = await recovery.reconcileStrandedAssignedIssues();
+
+    expect(result).toMatchObject({ providerQuotaMonitored: 1, reviewParticipantRequeued: 0 });
+    const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(updatedIssue).toMatchObject({
+      status: "in_review",
+      assigneeAgentId: coderId,
+      monitorNextCheckAt: expect.any(Date),
+      monitorNotes: "Provider usage quota reached; retry the active review participant after the default recovery backoff.",
+    });
+    const [updatedRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(updatedRun?.errorCode).toBe("provider_quota");
+    expect(await db.select().from(issueRecoveryActions)).toHaveLength(0);
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+  });
+
+  it("does not restamp an in_review quota monitor when the assignee has a newer terminal run", async () => {
+    const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
+    const stageId = randomUUID();
+    await db.update(issues).set({
+      status: "in_review",
+      assigneeAgentId: coderId,
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: true,
+        stages: [{
+          id: stageId,
+          type: "review",
+          approvalsNeeded: 1,
+          participants: [{ id: randomUUID(), type: "agent", agentId: managerId, userId: null }],
+        }],
+      },
+      executionState: {
+        status: "pending",
+        currentStageId: stageId,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: managerId, userId: null },
+        returnAssignee: { type: "agent", agentId: coderId, userId: null },
+        reviewRequest: null,
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    }).where(eq(issues.id, sourceIssueId));
+    const participantRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: participantRunId,
+      companyId,
+      agentId: managerId,
+      invocationSource: "automation",
+      status: "failed",
+      error: "Provider quota exceeded for this model.",
+      errorCode: "adapter_failed",
+      startedAt: new Date("2026-07-15T20:00:00.000Z"),
+      finishedAt: new Date("2026-07-15T20:01:00.000Z"),
+      contextSnapshot: { issueId: sourceIssueId },
+    });
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    const firstResult = await recovery.reconcileStrandedAssignedIssues();
+
+    expect(firstResult).toMatchObject({ providerQuotaMonitored: 1 });
+    const [monitoredIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    const firstNextCheckAt = monitoredIssue?.monitorNextCheckAt;
+    expect(firstNextCheckAt).toBeInstanceOf(Date);
+    expect(monitoredIssue?.executionPolicy).toMatchObject({
+      monitor: {
+        serviceName: "AI provider quota",
+        externalRef: participantRunId,
       },
     });
 
-    expect(enqueueWakeup).not.toHaveBeenCalled();
-    const [action] = await db
-      .select()
-      .from(issueRecoveryActions)
-      .where(eq(issueRecoveryActions.sourceIssueId, sourceIssue.id));
-    expect(action).toMatchObject({
-      cause: "provider_quota",
-      ownerType: "system",
-      ownerAgentId: null,
-      returnOwnerAgentId: coderId,
-      wakePolicy: expect.objectContaining({ type: "monitor_only" }),
-      monitorPolicy: expect.objectContaining({ type: "wait_recovery", retryAgentId: coderId }),
-    });
-    const scheduled = await db
-      .select()
-      .from(heartbeatRuns)
-      .where(eq(heartbeatRuns.status, "scheduled_retry"));
-    expect(scheduled).toHaveLength(1);
-    expect(scheduled[0]).toMatchObject({
-      agentId: coderId,
-      scheduledRetryReason: "provider_quota_recovery",
-    });
-    expect(scheduled[0]?.contextSnapshot).toMatchObject({
-      issueId: sourceIssue.id,
-      wakeReason: "provider_quota_recovery",
-    });
-    expect(scheduled[0]?.contextSnapshot).not.toHaveProperty("recoveryActionId");
-    expect(scheduled[0]?.contextSnapshot).not.toHaveProperty("recoveryCause");
-    const wakePayload = await buildPaperclipWakePayload({
-      db,
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
       companyId,
-      contextSnapshot: scheduled[0]?.contextSnapshot as Record<string, unknown>,
+      agentId: coderId,
+      invocationSource: "automation",
+      status: "failed",
+      error: "Stale assignee wake fired after the issue entered review.",
+      errorCode: "issue_assignee_changed",
+      startedAt: new Date("2026-07-15T20:02:00.000Z"),
+      finishedAt: new Date("2026-07-15T20:03:00.000Z"),
+      contextSnapshot: { issueId: sourceIssueId },
     });
-    expect(wakePayload?.reason).toBe("provider_quota_recovery");
-    expect(wakePayload?.recovery).toBeNull();
-    const [updatedIssue] = await db
-      .select()
-      .from(issues)
-      .where(eq(issues.id, sourceIssue.id));
+
+    const secondResult = await recovery.reconcileStrandedAssignedIssues();
+
+    expect(secondResult).toMatchObject({ providerQuotaMonitored: 0, skipped: 1 });
+    const [unchangedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(unchangedIssue?.monitorNextCheckAt?.getTime()).toBe(firstNextCheckAt?.getTime());
+    expect(unchangedIssue?.executionPolicy).toMatchObject({
+      monitor: {
+        serviceName: "AI provider quota",
+        externalRef: participantRunId,
+      },
+    });
+    expect(await db.select().from(issueRecoveryActions)).toHaveLength(0);
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+  });
+
+  it("classifies review recovery from the active participant run instead of a newer assignee run", async () => {
+    const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
+    const stageId = randomUUID();
+    await db.update(issues).set({
+      status: "in_review",
+      assigneeAgentId: coderId,
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: true,
+        stages: [{
+          id: stageId,
+          type: "review",
+          approvalsNeeded: 1,
+          participants: [{ id: randomUUID(), type: "agent", agentId: managerId, userId: null }],
+        }],
+      },
+      executionState: {
+        status: "pending",
+        currentStageId: stageId,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: managerId, userId: null },
+        returnAssignee: { type: "agent", agentId: coderId, userId: null },
+        reviewRequest: null,
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    }).where(eq(issues.id, sourceIssueId));
+    const participantRunId = randomUUID();
+    const assigneeRunId = randomUUID();
+    await db.insert(heartbeatRuns).values([{
+      id: participantRunId,
+      companyId,
+      agentId: managerId,
+      invocationSource: "automation",
+      status: "failed",
+      error: "review process exited unexpectedly",
+      errorCode: "adapter_failed",
+      startedAt: new Date("2026-07-15T20:00:00.000Z"),
+      finishedAt: new Date("2026-07-15T20:01:00.000Z"),
+      contextSnapshot: { issueId: sourceIssueId },
+    }, {
+      id: assigneeRunId,
+      companyId,
+      agentId: coderId,
+      invocationSource: "automation",
+      status: "failed",
+      error: "You've hit your usage limit. Try again at 11:00 PM (UTC)",
+      errorCode: "adapter_failed",
+      startedAt: new Date("2026-07-15T20:02:00.000Z"),
+      finishedAt: new Date("2026-07-15T20:03:00.000Z"),
+      contextSnapshot: { issueId: sourceIssueId },
+    }]);
+    const enqueueWakeup = vi.fn(async () => ({ id: randomUUID() } as never));
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    const result = await recovery.reconcileStrandedAssignedIssues();
+
+    expect(result).toMatchObject({ providerQuotaMonitored: 0, reviewParticipantRequeued: 1 });
+    const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(updatedIssue).toMatchObject({
+      status: "in_review",
+      assigneeAgentId: coderId,
+      monitorNextCheckAt: null,
+    });
+    const [assigneeRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, assigneeRunId));
+    expect(assigneeRun?.errorCode).toBe("adapter_failed");
+    expect(enqueueWakeup).toHaveBeenCalledWith(managerId, expect.objectContaining({
+      reason: "execution_review_participant_recovery",
+      payload: expect.objectContaining({ issueId: sourceIssueId, retryOfRunId: participantRunId }),
+    }));
+  });
+
+  it("blocks a cross-agent review participant with incomplete configuration", async () => {
+    const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
+    const stageId = randomUUID();
+    await db.update(issues).set({
+      status: "in_review",
+      executionPolicy: {
+        mode: "normal",
+        commentRequired: true,
+        stages: [{
+          id: stageId,
+          type: "review",
+          approvalsNeeded: 1,
+          participants: [{ id: randomUUID(), type: "agent", agentId: managerId, userId: null }],
+        }],
+      },
+      executionState: {
+        status: "pending",
+        currentStageId: stageId,
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: managerId, userId: null },
+        returnAssignee: { type: "agent", agentId: coderId, userId: null },
+        reviewRequest: null,
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    }).where(eq(issues.id, sourceIssueId));
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: managerId,
+      invocationSource: "automation",
+      status: "failed",
+      error: "model_not_found: requested review model does not exist",
+      errorCode: "adapter_failed",
+      startedAt: new Date("2026-07-15T20:00:00.000Z"),
+      finishedAt: new Date("2026-07-15T20:01:00.000Z"),
+      contextSnapshot: { issueId: sourceIssueId },
+    });
+    const enqueueWakeup = vi.fn(async () => ({ id: randomUUID() } as never));
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    const result = await recovery.reconcileStrandedAssignedIssues();
+
+    expect(result).toMatchObject({ escalated: 1, reviewParticipantRequeued: 0 });
+    const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
     expect(updatedIssue).toMatchObject({
       status: "blocked",
+      assigneeAgentId: managerId,
+    });
+    const [updatedRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(updatedRun?.errorCode).toBe("configuration_incomplete");
+    const [action] = await db.select().from(issueRecoveryActions);
+    expect(action).toMatchObject({
+      sourceIssueId,
+      ownerAgentId: managerId,
+      previousOwnerAgentId: coderId,
+      cause: "configuration_incomplete",
+      recoveryIssueId: null,
+    });
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+  });
+
+  it("uses the default quota backoff when the provider does not state a reset time", async () => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId: coderId,
+      invocationSource: "manual",
+      status: "failed",
+      error: "Provider quota exceeded for this model.",
+      errorCode: "adapter_failed",
+      startedAt: new Date("2026-07-15T20:00:00.000Z"),
+      finishedAt: new Date("2026-07-15T20:01:00.000Z"),
+      contextSnapshot: { issueId: sourceIssueId },
+    });
+    const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+
+    const result = await recovery.reconcileStrandedAssignedIssues();
+
+    expect(result.providerQuotaMonitored).toBe(1);
+    const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(updatedIssue).toMatchObject({
+      status: "in_progress",
+      assigneeAgentId: coderId,
+      monitorNotes: "Provider usage quota reached; retry the original assignee after the default recovery backoff.",
+    });
+    expect(await db.select().from(issueRecoveryActions)).toHaveLength(0);
+  });
+
+  it("classifies model lookup failures as configuration incomplete without waking a recovery owner", async () => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: coderId,
+      invocationSource: "manual",
+      status: "failed",
+      error: "model_not_found: requested model does not exist",
+      errorCode: "adapter_failed",
+      startedAt: new Date("2026-07-15T20:00:00.000Z"),
+      finishedAt: new Date("2026-07-15T20:01:00.000Z"),
+      contextSnapshot: { issueId: sourceIssueId },
+    });
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    const result = await recovery.reconcileStrandedAssignedIssues();
+
+    expect(result).toMatchObject({ escalated: 1, skipped: 0 });
+    const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(updatedIssue?.status).toBe("blocked");
+    const [updatedRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(updatedRun?.errorCode).toBe("configuration_incomplete");
+    const [action] = await db.select().from(issueRecoveryActions);
+    expect(action).toMatchObject({
+      sourceIssueId,
+      cause: "configuration_incomplete",
+      recoveryIssueId: null,
+    });
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+  });
+
+  it("does not classify stale configuration failures from a non-assignee run", async () => {
+    const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: managerId,
+      invocationSource: "manual",
+      status: "failed",
+      error: "model_not_found: previous assignee model does not exist",
+      errorCode: "adapter_failed",
+      startedAt: new Date("2026-07-15T20:00:00.000Z"),
+      finishedAt: new Date("2026-07-15T20:01:00.000Z"),
+      contextSnapshot: { issueId: sourceIssueId },
+    });
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    const result = await recovery.reconcileStrandedAssignedIssues();
+
+    expect(result).toMatchObject({ escalated: 0, skipped: 1 });
+    const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(updatedIssue).toMatchObject({
+      status: "in_progress",
       assigneeAgentId: coderId,
     });
+    const [updatedRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(updatedRun?.errorCode).toBe("adapter_failed");
+    expect(await db.select().from(issueRecoveryActions)).toHaveLength(0);
+    expect(enqueueWakeup).not.toHaveBeenCalled();
   });
 
   it("reuses the same source-scoped action when latest run IDs change while the cause stays the same", async () => {

@@ -93,8 +93,12 @@ vi.mock("../components/RoutineRunVariablesDialog", () => ({
 }));
 vi.mock("../components/WorkspaceRuntimeControls", () => ({
   buildWorkspaceRuntimeControlSections: () => [],
-  WorkspaceRuntimeQuickControls: () => <div data-testid="runtime-quick-controls" />,
+  buildWorkspaceServiceControlEntries: () => [],
+  resolveWorkspaceServiceControlRequests: () => [],
   WorkspaceRuntimeControls: () => <div data-testid="runtime-controls" />,
+}));
+vi.mock("../components/WorkspaceServiceControlBar", () => ({
+  WorkspaceServiceControlBar: () => <div data-testid="service-control-bar" />,
 }));
 vi.mock("../components/PageTabBar", () => ({
   PageTabBar: ({ items }: { items: Array<{ value: string; label: string }> }) => (

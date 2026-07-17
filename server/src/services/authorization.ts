@@ -10,9 +10,11 @@ import {
   issues,
   principalPermissionGrants,
   projects,
+  userInboxAgentPolicies,
 } from "@paperclipai/db";
 import type {
   AgentApiKeyScope,
+  InboxAgentPolicyMode,
   PermissionKey,
   PrincipalType,
   SkillTestAgentKeyScope,
@@ -89,6 +91,7 @@ export type AuthorizationDecision = {
   allowed: boolean;
   action: AuthorizationAction;
   explanation: string;
+  inboxPolicyMode?: InboxAgentPolicyMode | "grant_override";
   code?: "RESPONSIBLE_USER_UNAUTHORIZED" | "RESPONSIBLE_USER_UNAVAILABLE";
   reason:
     | "allow_low_trust_boundary"
@@ -104,6 +107,9 @@ export type AuthorizationDecision = {
     | "allow_company_member"
     | "allow_simple_company_member"
     | "allow_manager_chain"
+    | "inbox_target_user_unresolved"
+    | "inbox_management_disabled"
+    | "inbox_agent_not_allowed"
     | "deny_unauthenticated"
     | "deny_company_boundary"
     | "deny_missing_membership"
@@ -358,6 +364,7 @@ async function scopeAllows(
         ? requestedScope.targetAgentId
         : null;
   const requestedProjectId = typeof requestedScope.projectId === "string" ? requestedScope.projectId : null;
+  const requestedUserId = typeof requestedScope.userId === "string" ? requestedScope.userId : null;
   let constrained = false;
 
   const projectIds = [
@@ -384,6 +391,12 @@ async function scopeAllows(
   if (targetAgentIds.length > 0) {
     constrained = true;
     if (!scopeIncludesId(targetAgentIds, targetAssigneeAgentId)) return false;
+  }
+
+  const targetUserIds = scopeValuesForKeys(grantScope, ["userId", "userIds"]);
+  if (targetUserIds.length > 0) {
+    constrained = true;
+    if (!scopeIncludesId(targetUserIds, requestedUserId)) return false;
   }
 
   const subtreeRootAgentIds = [
@@ -582,7 +595,9 @@ export function authorizationService(db: Db) {
     const requestMemo = actorWithMemo.__responsibleUserSnapshotMemo.get(key);
     if (requestMemo) return requestMemo;
 
-    const actorMembership = activeActorMembership(input.actor.onBehalfOfMemberships, input.companyId);
+    const actorMembership = input.actor.onBehalfOfUserId === input.userId
+      ? activeActorMembership(input.actor.onBehalfOfMemberships, input.companyId)
+      : null;
     if (actorMembership) {
       const promise = Promise.resolve({
         userId: input.userId,
@@ -913,6 +928,7 @@ export function authorizationService(db: Db) {
       input.action === "agent_config:read" ||
       input.action === "agent_config:update" ||
       input.action === "skill_config:update" ||
+      input.action === "inbox:manage" ||
       input.action === "runtime:manage" ||
       input.action === "secrets:read"
     ) {
@@ -1693,6 +1709,117 @@ export function authorizationService(db: Db) {
       }
     }
 
+
+    if (input.action === "inbox:manage") {
+      if (!isSimpleAssignableAgentStatus(actorAgent.status)) {
+        return deny({
+          action: input.action,
+          reason: "deny_missing_membership",
+          explanation: "Actor agent is not active in the target company.",
+        });
+      }
+      const responsibleUserId = input.actor.onBehalfOfUserId?.trim() || null;
+      const explicitTargetUserId = typeof input.scope?.userId === "string"
+        ? input.scope.userId.trim() || null
+        : null;
+      const targetUserId = explicitTargetUserId ?? responsibleUserId;
+      if (!targetUserId) {
+        return deny({
+          action: input.action,
+          reason: "inbox_target_user_unresolved",
+          explanation: "Inbox target user could not be resolved from the request or responsible-user context.",
+        });
+      }
+
+      const targetSnapshot = await getResponsibleUserSnapshot({
+        actor: input.actor,
+        companyId,
+        userId: targetUserId,
+      });
+      if (!targetSnapshot.userExists || !targetSnapshot.activeMembership) {
+        return deny({
+          action: input.action,
+          reason: "deny_missing_membership",
+          explanation: `Inbox target user ${targetUserId} is not an active member of company ${companyId}.`,
+        });
+      }
+
+      if (targetUserId !== responsibleUserId) {
+        // Cross-user grants are board-admin overrides; user policies only govern responsible-user default access.
+        const grant = await findGrant(companyId, "agent", actorAgentId, "inbox:manage");
+        if (!grant) {
+          return deny({
+            action: input.action,
+            reason: "deny_missing_grant",
+            explanation: "Missing permission: inbox:manage.",
+          });
+        }
+        if (!(await scopeAllows(db, companyId, grant.scope, { userId: targetUserId }))) {
+          return deny({
+            action: input.action,
+            reason: "deny_scope",
+            explanation: "Permission inbox:manage does not cover the requested user.",
+            grant: {
+              principalType: "agent",
+              principalId: actorAgentId,
+              permissionKey: "inbox:manage",
+              scope: grant.scope ?? null,
+            },
+          });
+        }
+        return allow({
+          action: input.action,
+          reason: "allow_explicit_grant",
+          explanation: "Allowed by explicit grant inbox:manage.",
+          inboxPolicyMode: "grant_override",
+          grant: {
+            principalType: "agent",
+            principalId: actorAgentId,
+            permissionKey: "inbox:manage",
+            scope: grant.scope ?? null,
+          },
+        });
+      }
+
+      const policy = await db
+        .select({
+          mode: userInboxAgentPolicies.mode,
+          allowedAgentIds: userInboxAgentPolicies.allowedAgentIds,
+        })
+        .from(userInboxAgentPolicies)
+        .where(
+          and(
+            eq(userInboxAgentPolicies.companyId, companyId),
+            eq(userInboxAgentPolicies.userId, targetUserId),
+          ),
+        )
+        .then((rows) => rows[0] ?? null);
+
+      if (policy?.mode === "disabled") {
+        return deny({
+          action: input.action,
+          reason: "inbox_management_disabled",
+          explanation: `Inbox management is disabled for user ${targetUserId}.`,
+        });
+      }
+      if (policy?.mode === "allowlist" && !policy.allowedAgentIds.includes(actorAgentId)) {
+        return deny({
+          action: input.action,
+          reason: "inbox_agent_not_allowed",
+          explanation: `Agent ${actorAgentId} is not allowed to manage user ${targetUserId}'s inbox.`,
+        });
+      }
+
+      return allow({
+        action: input.action,
+        reason: "allow_self",
+        inboxPolicyMode: policy?.mode ?? "open",
+        explanation: policy?.mode === "allowlist"
+          ? "Allowed by the responsible user's inbox agent allowlist."
+          : "Allowed by the responsible user's default-open inbox policy.",
+      });
+    }
+
     if (
       input.action === "agent:read" ||
       input.action === "company_scope:read" ||
@@ -1870,7 +1997,12 @@ export function authorizationService(db: Db) {
     agentDecision: AuthorizationDecision,
   ): Promise<AuthorizationDecision> {
     const responsibleUserId = input.actor.onBehalfOfUserId?.trim();
-    if (input.actor.type !== "agent" || !responsibleUserId || !agentDecision.allowed) {
+    if (
+      input.actor.type !== "agent" ||
+      input.action === "inbox:manage" ||
+      !responsibleUserId ||
+      !agentDecision.allowed
+    ) {
       return agentDecision;
     }
 

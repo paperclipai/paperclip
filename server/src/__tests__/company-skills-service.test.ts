@@ -11,6 +11,7 @@ import {
   companySkillVersions,
   companySkills,
   createDb,
+  folders,
   projects,
   projectWorkspaces,
 } from "@paperclipai/db";
@@ -19,6 +20,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { companySkillService } from "../services/company-skills.ts";
+import { folderService } from "../services/folders.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -63,6 +65,7 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     await db.delete(companySkills);
     await db.delete(projectWorkspaces);
     await db.delete(projects);
+    await db.delete(folders);
     await db.delete(companies);
     await db.delete(authUsers);
     await Promise.all(Array.from(cleanupDirs, (dir) => fs.rm(dir, { recursive: true, force: true })));
@@ -310,6 +313,13 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     const bundledSkill = initialList.find((skill) => skill.key.startsWith("paperclipai/paperclip/"));
     expect(bundledSkill).toBeDefined();
     if (!bundledSkill) throw new Error("Expected bundled Paperclip skills fixture");
+    const bundledFolder = bundledSkill.folderId
+      ? await db.select().from(folders).where(eq(folders.id, bundledSkill.folderId)).then((rows) => rows[0])
+      : null;
+    expect(bundledFolder).toMatchObject({
+      name: "Paperclip Core",
+      systemKey: "bundled:paperclip-core",
+    });
 
     const preservedUpdatedAt = new Date("2026-01-01T00:00:00.000Z");
     await db
@@ -321,6 +331,34 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     const refreshedSkill = refreshedList.find((skill) => skill.id === bundledSkill.id);
 
     expect(refreshedSkill?.updatedAt.toISOString()).toBe(preservedUpdatedAt.toISOString());
+  });
+
+  it("repairs a squatted bundled root during bundled-skill list refresh", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    const [squatted] = await db.insert(folders).values({
+      companyId,
+      kind: "skill",
+      parentId: null,
+      name: "User Bundled",
+      slug: "bundled",
+      position: 0,
+    }).returning();
+
+    const listed = await svc.list(companyId);
+    const folderRows = await db.select().from(folders).where(eq(folders.companyId, companyId));
+    const bundledRoot = folderRows.find((folder) => folder.systemKey === "bundled");
+    const repairedSquat = folderRows.find((folder) => folder.id === squatted!.id);
+
+    expect(listed.some((skill) => skill.key.startsWith("paperclipai/paperclip/"))).toBe(true);
+    expect(bundledRoot).toMatchObject({ slug: "bundled", parentId: null, systemKey: "bundled" });
+    expect(repairedSquat).toMatchObject({ name: "User Bundled", systemKey: null });
+    expect(repairedSquat?.slug).toMatch(/^bundled-[a-f0-9]{8}$/);
   });
 
   it("does not retouch bundled skills with stale missing-source metadata during list refresh", async () => {
@@ -684,6 +722,97 @@ describeEmbeddedPostgres("companySkillService.list", () => {
       categories: [],
     });
     await expect(svc.categoryCounts(companyId)).resolves.toEqual([]);
+  });
+
+  it("filters by folder subtree, keeps search global, and returns canonical folder paths", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    const folderSvc = folderService(db);
+    const engineering = await folderSvc.create(companyId, { kind: "skill", name: "Engineering" });
+    const reviews = await folderSvc.create(companyId, { kind: "skill", parentId: engineering.id, name: "Reviews" });
+    const operations = await folderSvc.create(companyId, { kind: "skill", name: "Operations" });
+
+    const reviewDir = await createManagedSkillDir(companyId, "review-");
+    const deployDir = await createManagedSkillDir(companyId, "deploy-");
+    await fs.writeFile(path.join(reviewDir, "SKILL.md"), "# Review\n", "utf8");
+    await fs.writeFile(path.join(deployDir, "SKILL.md"), "# Deploy\n", "utf8");
+    await db.insert(companySkills).values([
+      {
+        companyId,
+        folderId: reviews.id,
+        key: `company/${companyId}/review`,
+        slug: "review",
+        name: "Review",
+        markdown: "# Review",
+        sourceType: "local_path",
+        sourceLocator: reviewDir,
+        categories: ["engineering"],
+      },
+      {
+        companyId,
+        folderId: operations.id,
+        key: `company/${companyId}/deploy`,
+        slug: "deploy",
+        name: "Deploy",
+        markdown: "# Deploy",
+        sourceType: "local_path",
+        sourceLocator: deployDir,
+        categories: ["operations"],
+      },
+    ]);
+
+    await expect(svc.list(companyId, {
+      folderId: engineering.id,
+      includeSubtree: true,
+      categories: ["engineering"],
+    })).resolves.toEqual([
+      expect.objectContaining({ name: "Review", folderPath: "engineering/reviews" }),
+    ]);
+    await expect(svc.list(companyId, { folderId: engineering.id })).resolves.toEqual([]);
+    await expect(svc.list(companyId, { folderId: engineering.id, q: "deploy" })).resolves.toEqual([
+      expect.objectContaining({ name: "Deploy", folderPath: "operations" }),
+    ]);
+    const review = (await svc.list(companyId)).find((skill) => skill.name === "Review");
+    await expect(svc.getById(companyId, review!.id)).resolves.toMatchObject({
+      name: "Review",
+      folderPath: "engineering/reviews",
+    });
+  });
+
+  it("creates skills in same-company folders and rejects cross-company folder references", async () => {
+    const companyId = randomUUID();
+    const otherCompanyId = randomUUID();
+    await db.insert(companies).values([
+      {
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+      {
+        id: otherCompanyId,
+        name: "Other",
+        issuePrefix: `T${otherCompanyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+    ]);
+    const folderSvc = folderService(db);
+    const folder = await folderSvc.create(companyId, { kind: "skill", name: "Personal" });
+    const otherFolder = await folderSvc.create(otherCompanyId, { kind: "skill", name: "Private" });
+
+    await expect(svc.createLocalSkill(companyId, {
+      name: "Filed Skill",
+      folderId: folder.id,
+    })).resolves.toMatchObject({ folderId: folder.id });
+    await expect(svc.createLocalSkill(companyId, {
+      name: "Cross Company Skill",
+      folderId: otherFolder.id,
+    })).rejects.toMatchObject({ status: 404, message: "Skill folder not found" });
   });
 
   it("resolves detail by unique skill slug for Studio deep links", async () => {
@@ -2327,4 +2456,60 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     const persisted = await db.select().from(companySkills).where(eq(companySkills.companyId, companyId));
     expect(persisted.filter((skill) => skill.metadata?.sourceKind === "project_scan")).toEqual([]);
   });
+
+  it("files new project imports without moving them back on re-import", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const workspaceId = randomUUID();
+    const folderSvc = folderService(db);
+    const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-skill-project-folder-"));
+    cleanupDirs.add(workspaceDir);
+    const skillDir = path.join(workspaceDir, "skills", "project-skill");
+    const skillFile = path.join(skillDir, "SKILL.md");
+    await fs.mkdir(skillDir, { recursive: true });
+    await fs.writeFile(skillFile, "---\nname: Project Skill\n---\n\nInitial content.\n", "utf8");
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({ id: projectId, companyId, name: "Skills Project" });
+    await db.insert(projectWorkspaces).values({
+      id: workspaceId,
+      companyId,
+      projectId,
+      name: "Primary",
+      cwd: workspaceDir,
+      isPrimary: true,
+    });
+
+    const firstImport = await svc.scanProjectWorkspaces(companyId, { projectIds: [projectId] });
+
+    expect(firstImport.imported).toHaveLength(1);
+    const importedSkill = firstImport.imported[0]!;
+    const projectFolder = await folderSvc.getFolder(companyId, importedSkill.folderId!);
+    expect(projectFolder).toMatchObject({
+      path: "projects/skills-project",
+      systemKey: `project:${projectId}`,
+    });
+
+    const personalFolder = await folderSvc.create(companyId, { kind: "skill", name: "Personal" });
+    await folderSvc.moveItem(companyId, {
+      kind: "skill",
+      itemId: importedSkill.id,
+      folderId: personalFolder.id,
+    });
+    await fs.writeFile(skillFile, "---\nname: Project Skill\n---\n\nUpdated content.\n", "utf8");
+
+    const reimport = await svc.scanProjectWorkspaces(companyId, { projectIds: [projectId] });
+
+    expect(reimport.updated).toHaveLength(1);
+    expect(reimport.updated[0]).toMatchObject({
+      id: importedSkill.id,
+      folderId: personalFolder.id,
+      markdown: expect.stringContaining("Updated content."),
+    });
+  });
+
 });

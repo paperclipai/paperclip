@@ -38,7 +38,7 @@ import {
   listCatalogSkillsOrEmpty,
   readCatalogSkillFile,
 } from "../services/skills-catalog.js";
-import { forbidden, unauthorized } from "../errors.js";
+import { badRequest, forbidden, unauthorized } from "../errors.js";
 import { assertAuthenticated, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { getTelemetryClient } from "../telemetry.js";
 import {
@@ -113,6 +113,14 @@ export function companySkillRoutes(db: Db) {
     if (typeof value === "string") return value;
     if (Array.isArray(value) && typeof value[0] === "string") return value[0];
     return undefined;
+  }
+
+  function optionalQueryBoolean(value: unknown) {
+    const parsed = firstQueryString(value);
+    if (parsed === undefined) return undefined;
+    if (parsed === "true") return true;
+    if (parsed === "false") return false;
+    throw badRequest("Boolean query parameters must be true or false");
   }
 
   function queryStringArray(value: unknown): string[] {
@@ -305,12 +313,17 @@ export function companySkillRoutes(db: Db) {
         ...queryStringArray(req.query.category),
         ...queryStringArray(req.query.categories),
         ...queryStringArray(req.query["categories[]"]),
+        ...queryStringArray(req.query.tag),
+        ...queryStringArray(req.query.tags),
+        ...queryStringArray(req.query["tags[]"]),
       ],
       scope: firstQueryString(req.query.scope),
       include: [
         ...queryStringArray(req.query.include),
         ...queryStringArray(req.query["include[]"]),
       ],
+      folderId: firstQueryString(req.query.folderId),
+      includeSubtree: optionalQueryBoolean(req.query.includeSubtree),
     }));
     res.json(result);
   });
@@ -387,6 +400,7 @@ export function companySkillRoutes(db: Db) {
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         action: "company.skill_test_input_created",
         entityType: "company_skill_test_input",
         entityId: result.id,
@@ -416,6 +430,7 @@ export function companySkillRoutes(db: Db) {
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         action: "company.skill_test_input_updated",
         entityType: "company_skill_test_input",
         entityId: result.id,
@@ -442,6 +457,7 @@ export function companySkillRoutes(db: Db) {
       actorId: actor.actorId,
       agentId: actor.agentId,
       runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
       action: "company.skill_test_input_deleted",
       entityType: "company_skill_test_input",
       entityId: result.id,
@@ -470,6 +486,7 @@ export function companySkillRoutes(db: Db) {
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         action: "company.skill_test_run_template_created",
         entityType: "company_skill_test_run_template",
         entityId: result.id,
@@ -498,6 +515,7 @@ export function companySkillRoutes(db: Db) {
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         action: "company.skill_test_run_template_updated",
         entityType: "company_skill_test_run_template",
         entityId: result.id,
@@ -523,6 +541,7 @@ export function companySkillRoutes(db: Db) {
       actorId: actor.actorId,
       agentId: actor.agentId,
       runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
       action: "company.skill_test_run_template_deleted",
       entityType: "company_skill_test_run_template",
       entityId: result.id,
@@ -580,6 +599,7 @@ export function companySkillRoutes(db: Db) {
             actorId: actor.actorId,
             agentId: actor.agentId,
             runId: actor.runId,
+            agentApiKeyId: actor.agentApiKeyId,
             action: "issue.created",
             entityType: "issue",
             entityId: created.id,
@@ -617,6 +637,7 @@ export function companySkillRoutes(db: Db) {
             actorId: actor.actorId,
             agentId: actor.agentId,
             runId: actor.runId,
+            agentApiKeyId: actor.agentApiKeyId,
             action: "company.skill_test_harness_issue_cleaned_up",
             entityType: "issue",
             entityId: issueId,
@@ -630,9 +651,11 @@ export function companySkillRoutes(db: Db) {
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         action: "company.skill_test_run_created",
         entityType: "company_skill_test_run",
         entityId: result.id,
+        issueId: result.issueId,
         details: {
           skillId,
           inputId: result.inputId,
@@ -678,9 +701,11 @@ export function companySkillRoutes(db: Db) {
       actorId: actor.actorId,
       agentId: actor.agentId,
       runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
       action: "company.skill_test_run_cancelled",
       entityType: "company_skill_test_run",
       entityId: result.id,
+      issueId: result.issueId,
       details: { skillId, issueId: result.issueId },
     });
     res.json(result);
@@ -714,9 +739,11 @@ export function companySkillRoutes(db: Db) {
       actorId: actor.actorId,
       agentId: actor.agentId,
       runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
       action: "company.skill_test_run_deleted",
       entityType: "company_skill_test_run",
       entityId: result.id,
+      issueId: result.issueId,
       details: { skillId, issueId: result.issueId },
     });
     res.json(result);
@@ -737,6 +764,7 @@ export function companySkillRoutes(db: Db) {
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         action: "company.skill_version_created",
         entityType: "company_skill_version",
         entityId: result.id,
@@ -762,6 +790,7 @@ export function companySkillRoutes(db: Db) {
       actorId: actor.actorId,
       agentId: actor.agentId,
       runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
       action: "company.skill_starred",
       entityType: "company_skill",
       entityId: skillId,
@@ -782,6 +811,7 @@ export function companySkillRoutes(db: Db) {
       actorId: actor.actorId,
       agentId: actor.agentId,
       runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
       action: "company.skill_unstarred",
       entityType: "company_skill",
       entityId: skillId,
@@ -810,6 +840,7 @@ export function companySkillRoutes(db: Db) {
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         action: "company.skill_forked",
         entityType: "company_skill",
         entityId: result.skill.id,
@@ -846,6 +877,7 @@ export function companySkillRoutes(db: Db) {
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         action: "company.skill_comment_created",
         entityType: "company_skill_comment",
         entityId: result.id,
@@ -871,6 +903,7 @@ export function companySkillRoutes(db: Db) {
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         action: "company.skill_comment_updated",
         entityType: "company_skill_comment",
         entityId: result.id,
@@ -893,6 +926,7 @@ export function companySkillRoutes(db: Db) {
       actorId: actor.actorId,
       agentId: actor.agentId,
       runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
       action: "company.skill_comment_deleted",
       entityType: "company_skill_comment",
       entityId: result.id,
@@ -943,6 +977,7 @@ export function companySkillRoutes(db: Db) {
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         action: "company.skill_created",
         entityType: "company_skill",
         entityId: result.id,
@@ -972,6 +1007,7 @@ export function companySkillRoutes(db: Db) {
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         action: "company.skill_updated",
         entityType: "company_skill",
         entityId: result.id,
@@ -1008,6 +1044,7 @@ export function companySkillRoutes(db: Db) {
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         action: "company.skill_file_updated",
         entityType: "company_skill",
         entityId: skillId,
@@ -1037,6 +1074,7 @@ export function companySkillRoutes(db: Db) {
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         action: "company.skill_file_deleted",
         entityType: "company_skill",
         entityId: skillId,
@@ -1067,6 +1105,7 @@ export function companySkillRoutes(db: Db) {
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         action: "company.skills_imported",
         entityType: "company",
         entityId: companyId,
@@ -1109,6 +1148,7 @@ export function companySkillRoutes(db: Db) {
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         action: result.action === "created" ? "company.skill_catalog_installed" : "company.skill_catalog_updated",
         entityType: "company_skill",
         entityId: result.skill.id,
@@ -1141,6 +1181,7 @@ export function companySkillRoutes(db: Db) {
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         action: "company.skills_scanned",
         entityType: "company",
         entityId: companyId,
@@ -1178,6 +1219,7 @@ export function companySkillRoutes(db: Db) {
       actorId: actor.actorId,
       agentId: actor.agentId,
       runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
       action: "company.skill_deleted",
       entityType: "company_skill",
       entityId: result.id,
@@ -1209,6 +1251,7 @@ export function companySkillRoutes(db: Db) {
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         action: "company.skill_audited",
         entityType: "company_skill",
         entityId: skillId,
@@ -1246,6 +1289,7 @@ export function companySkillRoutes(db: Db) {
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         action: "company.skill_update_installed",
         entityType: "company_skill",
         entityId: result.id,
@@ -1286,6 +1330,7 @@ export function companySkillRoutes(db: Db) {
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         action: "company.skill_reset",
         entityType: "company_skill",
         entityId: result.id,

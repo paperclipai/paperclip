@@ -240,6 +240,14 @@ vi.mock("../components/IssueChatThread", () => ({
   IssueChatThread: (props: {
     onWorkModeChange?: (workMode: string) => void;
     issueWorkMode?: string;
+    comments?: Array<{
+      body: string;
+      clientStatus?: string;
+      queueState?: string;
+      queueTargetRunId?: string | null;
+    }>;
+    onAdd?: (body: string) => Promise<void>;
+    onInterruptQueued?: (runId: string) => Promise<void>;
     onStopRun?: (runId: string) => Promise<void>;
     stopRunLabel?: string;
     stoppingRunLabel?: string;
@@ -1265,6 +1273,95 @@ describe("IssueDetail", () => {
     const props = mockIssueChatThreadRender.mock.calls.at(-1)?.[0] as { comments?: Array<{ id: string; queueState?: string }> };
     const freshComment = props.comments?.find((comment) => comment.id === "comment-fresh");
     expect(freshComment?.queueState).toBeUndefined();
+  });
+
+  it("queues messages against a queued live run and interrupts that exact run", async () => {
+    const postedComment = createDeferred<IssueComment>();
+    mockIssuesApi.get.mockResolvedValue(createIssue({
+      status: "in_progress",
+      executionRunId: "run-queued",
+    }));
+    mockIssuesApi.addComment.mockReturnValue(postedComment.promise);
+    mockHeartbeatsApi.cancel.mockResolvedValue({});
+    mockHeartbeatsApi.liveRunsForIssue.mockResolvedValue([
+      {
+        id: "run-queued",
+        status: "queued",
+        invocationSource: "issue",
+        triggerDetail: null,
+        contextCommentId: null,
+        contextWakeCommentId: null,
+        startedAt: null,
+        finishedAt: null,
+        createdAt: "2026-04-21T00:00:01.000Z",
+        agentId: "agent-1",
+        agentName: "Coder",
+        adapterType: "codex_local",
+        issueId: "issue-1",
+      },
+    ]);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const props = mockIssueChatThreadRender.mock.calls.at(-1)?.[0] as {
+      onAdd: (body: string) => Promise<void>;
+    };
+    await act(async () => {
+      void props.onAdd("Queued run message");
+      await Promise.resolve();
+    });
+    await flushReact();
+
+    const queuedProps = mockIssueChatThreadRender.mock.calls.at(-1)?.[0] as {
+      comments?: Array<{
+        body: string;
+        clientStatus?: string;
+        queueState?: string;
+        queueTargetRunId?: string | null;
+      }>;
+      onInterruptQueued: (runId: string) => Promise<void>;
+    };
+    const optimisticComment = queuedProps.comments?.find((comment) => comment.body === "Queued run message");
+    expect(optimisticComment).toMatchObject({
+      clientStatus: "queued",
+      queueState: "queued",
+      queueTargetRunId: "run-queued",
+    });
+
+    await act(async () => {
+      postedComment.resolve(createIssueComment({ body: "Queued run message" }));
+    });
+    await flushReact();
+
+    const persistedProps = mockIssueChatThreadRender.mock.calls.at(-1)?.[0] as {
+      comments?: Array<{
+        body: string;
+        clientStatus?: string;
+        queueState?: string;
+        queueTargetRunId?: string | null;
+      }>;
+      onInterruptQueued: (runId: string) => Promise<void>;
+    };
+    const persistedComment = persistedProps.comments?.find((comment) => comment.body === "Queued run message");
+    expect(persistedComment).toMatchObject({
+      queueState: "queued",
+      queueTargetRunId: "run-queued",
+    });
+
+    await act(async () => {
+      await persistedProps.onInterruptQueued(persistedComment!.queueTargetRunId!);
+    });
+
+    expect(mockHeartbeatsApi.cancel).toHaveBeenCalledWith("run-queued");
+    mockHeartbeatsApi.cancel.mockClear();
   });
 
   it("does not optimistically queue a fresh comment from an unlocked stale active-run cache", async () => {
