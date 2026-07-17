@@ -2,6 +2,8 @@ import { and, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, or, sql } from
 import type { Db } from "@paperclipai/db";
 import { activityLog, heartbeatRuns, issueComments, issueDocuments, issues } from "@paperclipai/db";
 import { createActivityDetailsRedactor } from "./activity-log.js";
+import { badRequest } from "../errors.js";
+import { visibleIssueCondition } from "./issue-visibility.js";
 
 export interface AgentActionAuditFilters {
   companyId: string;
@@ -45,7 +47,7 @@ export function agentActionAuditService(db: Db) {
   return {
     list: async (filters: AgentActionAuditFilters) => {
       const cursor = decodeCursor(filters.cursor);
-      if (filters.cursor && !cursor) throw new Error("Invalid audit cursor");
+      if (filters.cursor && !cursor) throw badRequest("Invalid audit cursor");
       const effectiveResponsibleUserId = sql<string | null>`coalesce(${activityLog.responsibleUserId}, ${heartbeatRuns.responsibleUserId})`;
       const conditions = [eq(activityLog.companyId, filters.companyId), isNotNull(activityLog.agentId)];
       if (filters.agentId) conditions.push(eq(activityLog.agentId, filters.agentId));
@@ -90,21 +92,46 @@ export function agentActionAuditService(db: Db) {
       )).where(and(...conditions)).orderBy(desc(activityLog.createdAt), desc(activityLog.id)).limit(filters.limit + 1);
 
       const page = rows.slice(0, filters.limit);
-      const entityIds = [...new Set(page.map((row) => row.entityId))];
-      const commentRows = entityIds.length === 0 ? [] : await db.select({
+      const commentEntityIds = [...new Set(page
+        .filter((row) => row.entityType === "issue_comment")
+        .map((row) => row.entityId))];
+      const issueEntityIds = [...new Set(page
+        .filter((row) => row.entityType === "issue")
+        .map((row) => row.entityId))];
+      const documentEntityIds = [...new Set(page
+        .filter((row) => row.entityType === "issue_document")
+        .map((row) => row.entityId))];
+      const commentRows = commentEntityIds.length === 0 ? [] : await db.select({
         id: issueComments.id, body: issueComments.body, issueId: issues.id, identifier: issues.identifier, title: issues.title,
-      }).from(issueComments).innerJoin(issues, and(eq(issues.id, issueComments.issueId), eq(issues.companyId, filters.companyId)))
-        .where(and(eq(issueComments.companyId, filters.companyId), inArray(issueComments.id, entityIds)));
-      const issueRows = entityIds.length === 0 ? [] : await db.select({
+      }).from(issueComments).innerJoin(issues, and(
+        eq(issues.id, issueComments.issueId),
+        eq(issues.companyId, filters.companyId),
+        visibleIssueCondition(),
+      )).where(and(
+        eq(issueComments.companyId, filters.companyId),
+        inArray(issueComments.id, commentEntityIds),
+      ));
+      const issueRows = issueEntityIds.length === 0 ? [] : await db.select({
         id: issues.id, identifier: issues.identifier, title: issues.title,
-      }).from(issues).where(and(eq(issues.companyId, filters.companyId), inArray(issues.id, entityIds)));
-      const documentRows = entityIds.length === 0 ? [] : await db.select({
+      }).from(issues).where(and(
+        eq(issues.companyId, filters.companyId),
+        visibleIssueCondition(),
+        inArray(issues.id, issueEntityIds),
+      ));
+      const documentRows = documentEntityIds.length === 0 ? [] : await db.select({
         id: issueDocuments.id, documentId: issueDocuments.documentId, key: issueDocuments.key,
         issueId: issues.id, identifier: issues.identifier, title: issues.title,
-      }).from(issueDocuments).innerJoin(issues, and(eq(issues.id, issueDocuments.issueId), eq(issues.companyId, filters.companyId)))
-        .where(and(eq(issueDocuments.companyId, filters.companyId), or(
-          inArray(issueDocuments.id, entityIds), inArray(issueDocuments.documentId, entityIds),
-        )));
+      }).from(issueDocuments).innerJoin(issues, and(
+        eq(issues.id, issueDocuments.issueId),
+        eq(issues.companyId, filters.companyId),
+        visibleIssueCondition(),
+      )).where(and(
+        eq(issueDocuments.companyId, filters.companyId),
+        or(
+          inArray(issueDocuments.id, documentEntityIds),
+          inArray(issueDocuments.documentId, documentEntityIds),
+        ),
+      ));
 
       const comments = new Map(commentRows.map((row) => [row.id, row]));
       const issueMap = new Map(issueRows.map((row) => [row.id, row]));
@@ -116,9 +143,9 @@ export function agentActionAuditService(db: Db) {
 
       const redactDetails = await createActivityDetailsRedactor(db);
       const items = page.map((row) => {
-        const comment = comments.get(row.entityId);
-        const issue = issueMap.get(row.entityId);
-        const document = documents.get(row.entityId);
+        const comment = row.entityType === "issue_comment" ? comments.get(row.entityId) : undefined;
+        const issue = row.entityType === "issue" ? issueMap.get(row.entityId) : undefined;
+        const document = row.entityType === "issue_document" ? documents.get(row.entityId) : undefined;
         const issueSnippet = comment
           ? { id: comment.issueId, identifier: comment.identifier, title: comment.title }
           : document

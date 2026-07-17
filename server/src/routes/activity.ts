@@ -120,15 +120,7 @@ export function activityRoutes(db: Db) {
     if (!parsedQuery.success) {
       throw badRequest("Invalid agent action audit query", parsedQuery.error.issues);
     }
-    try {
-      res.json(await agentAudit.list({ companyId, ...parsedQuery.data }));
-    } catch (error) {
-      if (error instanceof Error && error.message === "Invalid audit cursor") {
-        res.status(400).json({ error: error.message });
-        return;
-      }
-      throw error;
-    }
+    res.json(await agentAudit.list({ companyId, ...parsedQuery.data }));
   });
 
   router.post("/companies/:companyId/activity", validate(createActivitySchema), async (req, res) => {

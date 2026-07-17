@@ -135,6 +135,12 @@ describePostgres("agent action audit routes", () => {
     })).get(`/api/companies/${company.id}/audit/agent-actions?limit=invalid`);
     expect(response.status).toBe(400);
     expect(response.body.error).toBe("Invalid agent action audit query");
+
+    const cursorResponse = await request(await createApp(db, {
+      type: "board", userId: "local-board", companyIds: [company.id], source: "local_implicit", isInstanceAdmin: false,
+    })).get(`/api/companies/${company.id}/audit/agent-actions?cursor=invalid`);
+    expect(cursorResponse.status).toBe(400);
+    expect(cursorResponse.body.error).toBe("Invalid audit cursor");
   });
 
   it("paginates, filters, enriches entities, and falls back to the run responsible user", async () => {
@@ -167,6 +173,61 @@ describePostgres("agent action audit routes", () => {
       expect(response.status, `${query}: ${JSON.stringify(response.body)}`).toBe(200);
       expect(response.body.items, query).toHaveLength(count);
     }
+  });
+
+  it("does not enrich hidden issues or mismatched entity types", async () => {
+    const { company, agent, comment, run } = await seed();
+    const hiddenIssue = await db.insert(issues).values({
+      companyId: company.id,
+      identifier: `${company.issuePrefix}-HIDDEN`,
+      title: "Hidden audit target",
+      status: "todo",
+      priority: "medium",
+      hiddenAt: new Date(),
+    }).returning().then((rows) => rows[0]!);
+    const hiddenComment = await db.insert(issueComments).values({
+      companyId: company.id,
+      issueId: hiddenIssue.id,
+      authorAgentId: agent.id,
+      body: "Hidden audit comment",
+    }).returning().then((rows) => rows[0]!);
+    const [hiddenActivity, mismatchedActivity] = await db.insert(activityLog).values([
+      {
+        companyId: company.id,
+        actorType: "agent",
+        actorId: agent.id,
+        action: "issue.comment.created",
+        entityType: "issue_comment",
+        entityId: hiddenComment.id,
+        agentId: agent.id,
+        runId: run.id,
+      },
+      {
+        companyId: company.id,
+        actorType: "agent",
+        actorId: agent.id,
+        action: "company.updated",
+        entityType: "company",
+        entityId: comment.id,
+        agentId: agent.id,
+        runId: run.id,
+      },
+    ]).returning();
+
+    const response = await request(await createApp(db, {
+      type: "board", userId: "local-board", companyIds: [company.id], source: "local_implicit", isInstanceAdmin: false,
+    })).get(`/api/companies/${company.id}/audit/agent-actions`);
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(response.body.items.find((item: { id: string }) => item.id === hiddenActivity.id)?.entity).toEqual({
+      issue: null,
+      comment: null,
+      document: null,
+    });
+    expect(response.body.items.find((item: { id: string }) => item.id === mismatchedActivity.id)?.entity).toEqual({
+      issue: null,
+      comment: null,
+      document: null,
+    });
   });
 
   it("allows a signed-in board user with the explicit permission", async () => {
