@@ -1244,10 +1244,10 @@ export function caseRoutes(db: Db, storage: StorageService) {
     if (!caseRow) return next();
     const key = parseDocumentKey(req.params.key as string);
     const actor = getActorInfo(req);
-    const tombstone = await db.transaction(async (tx) => {
+    await db.transaction(async (tx) => {
       await lockCaseDocumentKey(tx, { companyId: caseRow.companyId, caseId: caseRow.id, key });
       const link = await loadCaseDocumentLink(tx, { companyId: caseRow.companyId, caseId: caseRow.id, key });
-      if (!link) return null;
+      if (!link) return;
       if (link.document.lockedAt) {
         throw conflict("Document is locked", {
           key,
@@ -1261,18 +1261,11 @@ export function caseRoutes(db: Db, storage: StorageService) {
         .where(eq(documentRevisions.documentId, link.document.id));
       await tx.delete(caseDocuments).where(eq(caseDocuments.documentId, link.document.id));
       await tx.delete(documents).where(eq(documents.id, link.document.id));
-      return {
-        documentId: link.document.id,
-        title: link.document.title ?? null,
-        latestRevisionId: link.document.latestRevisionId,
-        latestRevisionNumber: link.document.latestRevisionNumber,
-        revisionCount: Number(revisionCount ?? 0),
-      };
-    });
-    // Tombstone: the document + revisions are hard-deleted, so this durable audit row is
-    // the only surviving record of who destroyed the content and what history it held.
-    if (tombstone) {
-      await logActivity(db, {
+      // Tombstone: the document + revisions are hard-deleted, so this durable audit row is
+      // the only surviving record of who destroyed the content and what history it held.
+      // It is written inside the same transaction as the delete so the removal and its audit
+      // record commit atomically — a crash can never destroy content without leaving a record.
+      await logActivity(tx as unknown as Db, {
         companyId: caseRow.companyId,
         actorType: actor.actorType,
         actorId: actor.actorId,
@@ -1282,9 +1275,16 @@ export function caseRoutes(db: Db, storage: StorageService) {
         action: "case.document_deleted",
         entityType: "case",
         entityId: caseRow.id,
-        details: { key, ...tombstone },
+        details: {
+          key,
+          documentId: link.document.id,
+          title: link.document.title ?? null,
+          latestRevisionId: link.document.latestRevisionId,
+          latestRevisionNumber: link.document.latestRevisionNumber,
+          revisionCount: Number(revisionCount ?? 0),
+        },
       });
-    }
+    });
     res.json({ ok: true });
   });
 
