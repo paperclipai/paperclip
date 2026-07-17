@@ -33,7 +33,7 @@ export function registerContextCommands(program: Command): void {
   context
     .command("show")
     .description("Show current context and active profile")
-    .option("-d, --data-dir <path>", "Paperclip data directory root (isolates state from ~/.paperclip)")
+    .option("-d, --data-dir <path>", "Cortex data directory root (isolates state from ~/.paperclip)")
     .option("--context <path>", "Path to CLI context file")
     .option("--profile <name>", "Profile to inspect")
     .option("--json", "Output raw JSON")
@@ -54,7 +54,7 @@ export function registerContextCommands(program: Command): void {
   context
     .command("list")
     .description("List available context profiles")
-    .option("-d, --data-dir <path>", "Paperclip data directory root (isolates state from ~/.paperclip)")
+    .option("-d, --data-dir <path>", "Cortex data directory root (isolates state from ~/.paperclip)")
     .option("--context <path>", "Path to CLI context file")
     .option("--json", "Output raw JSON")
     .action((opts: ContextOptions) => {
@@ -76,7 +76,7 @@ export function registerContextCommands(program: Command): void {
     .command("use")
     .description("Set active context profile")
     .argument("<profile>", "Profile name")
-    .option("-d, --data-dir <path>", "Paperclip data directory root (isolates state from ~/.paperclip)")
+    .option("-d, --data-dir <path>", "Cortex data directory root (isolates state from ~/.paperclip)")
     .option("--context <path>", "Path to CLI context file")
     .action((profile: string, opts: ContextOptions) => {
       setCurrentProfile(profile, opts.context);
@@ -86,7 +86,7 @@ export function registerContextCommands(program: Command): void {
   context
     .command("set")
     .description("Set values on a profile")
-    .option("-d, --data-dir <path>", "Paperclip data directory root (isolates state from ~/.paperclip)")
+    .option("-d, --data-dir <path>", "Cortex data directory root (isolates state from ~/.paperclip)")
     .option("--context <path>", "Path to CLI context file")
     .option("--profile <name>", "Profile name (default: current profile)")
     .option("--api-base <url>", "Default API base URL")

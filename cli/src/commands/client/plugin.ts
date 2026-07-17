@@ -150,7 +150,7 @@ export function buildPluginInstallRequest(
 export function renderLocalPluginInstallHint(packagePath: string): string {
   return [
     pc.dim("Local plugin installs run trusted local code from your machine."),
-    pc.dim(`Keep ${pc.cyan("pnpm dev")} running in ${packagePath}; Paperclip watches rebuilt dist output and reloads the plugin worker.`),
+    pc.dim(`Keep ${pc.cyan("pnpm dev")} running in ${packagePath}; Cortex watches rebuilt dist output and reloads the plugin worker.`),
   ].join("\n");
 }
 
@@ -243,7 +243,7 @@ export function registerPluginCommands(program: Command): void {
   addCommonClientOptions(
     plugin
       .command("init <packageName>")
-      .description("Scaffold a local Paperclip plugin project")
+      .description("Scaffold a local Cortex plugin project")
       .option("--output <dir>", "Directory to create the plugin folder in")
       .addOption(
         new Option("--template <template>", "Starter template")

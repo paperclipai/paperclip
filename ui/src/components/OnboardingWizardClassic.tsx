@@ -204,7 +204,7 @@ export function OnboardingWizardClassic() {
 
   const { data: adapterModels } = useQuery({
     // The wizard doesn't expose an environment selector, so models always
-    // resolve against the local Paperclip host (environmentId = null).
+    // resolve against the local Cortex host (environmentId = null).
     queryKey: createdCompanyId
       ? queryKeys.agents.adapterModels(createdCompanyId, adapterType, null)
       : ["agents", "none", "adapter-models", adapterType, null],

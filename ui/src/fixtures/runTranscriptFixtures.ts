@@ -44,7 +44,7 @@ export const runTranscriptFixtureEntries: TranscriptEntry[] = [
   {
     kind: "assistant",
     ts: "2026-03-11T15:21:18.851Z",
-    text: "I’m starting with the Paperclip heartbeat procedure and the repo-required docs so I can see what task is actually assigned and then work only on that scope.",
+    text: "I’m starting with the Cortex heartbeat procedure and the repo-required docs so I can see what task is actually assigned and then work only on that scope.",
   },
   {
     kind: "tool_call",
@@ -70,14 +70,14 @@ export const runTranscriptFixtureEntries: TranscriptEntry[] = [
     kind: "tool_result",
     ts: "2026-03-11T15:21:19.034Z",
     toolUseId: "item_1",
-    content: "command: sed -n '1,220p' doc/GOAL.md\nstatus: completed\nexit_code: 0\n\n# Paperclip\n\nPaperclip is the backbone of the autonomous economy.",
+    content: "command: sed -n '1,220p' doc/GOAL.md\nstatus: completed\nexit_code: 0\n\n# Cortex\n\nPaperclip is the backbone of the autonomous economy.",
     isError: false,
   },
   {
     kind: "tool_result",
     ts: "2026-03-11T15:21:19.035Z",
     toolUseId: "item_2",
-    content: "command: sed -n '1,320p' doc/SPEC-implementation.md\nstatus: completed\nexit_code: 0\n\n# Paperclip V1 Implementation Spec\n\nPaperclip V1 must provide a full control-plane loop for autonomous agents.",
+    content: "command: sed -n '1,320p' doc/SPEC-implementation.md\nstatus: completed\nexit_code: 0\n\n# Cortex V1 Implementation Spec\n\nPaperclip V1 must provide a full control-plane loop for autonomous agents.",
     isError: false,
   },
   {

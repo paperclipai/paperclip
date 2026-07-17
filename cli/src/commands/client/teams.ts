@@ -404,7 +404,7 @@ async function requestInstallApproval(
     payload: {
       title: `Approve catalog team install: ${trimmedRef}`,
       summary:
-        `A Paperclip CLI agent-run attempted to install catalog team "${trimmedRef}" into company "${ctx.companyId}", ` +
+        `A Cortex CLI agent-run attempted to install catalog team "${trimmedRef}" into company "${ctx.companyId}", ` +
         `but the API denied the install with: ${error.message}.`,
       recommendedAction:
         "Approve the catalog team source and rerun the install with a board or agent-creator token, or grant agents:create to the requesting agent and rerun the same command.",

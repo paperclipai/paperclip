@@ -309,6 +309,7 @@ export {
   type PluginApiRouteCheckoutPolicy,
   type PluginEventType,
   type PluginBridgeErrorCode,
+  PRODUCT_NAME,
 } from "./constants.js";
 
 export {

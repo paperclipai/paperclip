@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { PRODUCT_NAME } from "@paperclipai/shared";
 import {
+  applyProductName,
   applyUiBranding,
   getWorktreeUiBranding,
   isWorktreeUiBrandingEnabled,
@@ -63,6 +65,22 @@ describe("ui branding", () => {
     expect(meta).toContain('name="paperclip-worktree-name"');
     expect(meta).toContain('content="paperclip-pr-432"');
     expect(meta).toContain('name="paperclip-worktree-color"');
+  });
+
+  it("stamps the product name onto the served title and apple-mobile meta", () => {
+    const shell = `<!doctype html>
+<head>
+    <meta name="apple-mobile-web-app-title" content="Paperclip" />
+    <title>Paperclip</title>
+</head>`;
+    const served = applyProductName(shell);
+    expect(served).toContain(`<title>${PRODUCT_NAME}</title>`);
+    expect(served).toContain(`content="${PRODUCT_NAME}"`);
+    expect(served).not.toContain("<title>Paperclip</title>");
+  });
+
+  it("leaves markup without a title untouched", () => {
+    expect(applyProductName(TEMPLATE)).toBe(TEMPLATE);
   });
 
   it("rewrites the favicon and runtime branding blocks for worktree instances only", () => {

@@ -29,7 +29,7 @@ export async function doctor(opts: {
   yes?: boolean;
 }): Promise<{ passed: number; warned: number; failed: number }> {
   printPaperclipCliBanner();
-  p.intro(pc.bgCyan(pc.black(" paperclip doctor ")));
+  p.intro(pc.bgCyan(pc.black(" cortex doctor ")));
 
   const configPath = resolveConfigPath(opts.config);
   loadPaperclipEnvFile(configPath);

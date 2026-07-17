@@ -241,7 +241,7 @@ export function CloudUpstream() {
             <h1 className="text-lg font-semibold">Cloud upstream</h1>
           </div>
           <p className="max-w-2xl text-sm text-muted-foreground">
-            Push {selectedCompany.name} into a Paperclip Cloud stack. Automations stay paused until activation.
+            Push {selectedCompany.name} into a Cortex Cloud stack. Automations stay paused until activation.
           </p>
         </div>
         {connection?.target.origin ? (
@@ -302,7 +302,7 @@ export function CloudUpstream() {
                 value={remoteUrl}
                 onChange={(event) => setRemoteUrl(event.target.value)}
                 placeholder="https://paperclip.paperclip.app/PC521D/dashboard"
-                aria-label="Paperclip Cloud stack URL"
+                aria-label="Cortex Cloud stack URL"
               />
               <Button onClick={() => startMutation.mutate()} disabled={startMutation.isPending || !remoteUrl.trim()}>
                 {startMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <CloudUpload className="h-4 w-4" />}

@@ -1,6 +1,6 @@
 /**
  * Tiny best-effort cron → plain-English helper for the routine Triggers section.
- * Not a full cron parser: it covers the common shapes Paperclip schedule triggers
+ * Not a full cron parser: it covers the common shapes Cortex schedule triggers
  * produce (every N minutes/hours, daily at HH:MM, weekday/weekend, day-of-week).
  * Falls back to the raw expression when it can't confidently describe it.
  */
