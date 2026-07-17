@@ -140,6 +140,7 @@ Human auth tables (`users`, `sessions`, and provider-specific auth artifacts) ar
 - `budget_monthly_cents` int not null default 0
 - `spent_monthly_cents` int not null default 0
 - `attachment_max_bytes` int not null
+- `activity_log_retention_days` int null (null means keep forever)
 - `require_board_approval_for_new_agents` boolean not null default false
 - feedback sharing consent fields
 - branding fields such as `brand_color`
@@ -324,6 +325,8 @@ Invariant: each event must attach to agent and company; rollups are aggregation,
 - `entity_id` uuid/text not null
 - `details` jsonb null
 - `created_at` timestamptz not null default now()
+
+Activity details are capped at 64 KiB of serialized UTF-8 JSON at write time. Oversized payloads are replaced by a bounded marker containing the original byte count and a JSON preview. A scheduled maintenance sweep deletes rows older than each company's optional retention policy without crossing company boundaries; null retention keeps rows forever.
 
 ## 7.12 `project_memberships` + `agent_memberships`
 
