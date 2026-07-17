@@ -1,6 +1,6 @@
 import type { Request, RequestHandler } from "express";
 import type { IncomingHttpHeaders } from "node:http";
-import { betterAuth } from "better-auth";
+import { betterAuth, type Auth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { toNodeHandler } from "better-auth/node";
 import type { Db } from "@paperclipai/db";
@@ -24,7 +24,17 @@ export type BetterAuthSessionResult = {
   user: BetterAuthSessionUser | null;
 };
 
-type BetterAuthInstance = ReturnType<typeof betterAuth>;
+type BetterAuthGetSessionApi = {
+  getSession?: (input: { headers: Headers }) => Promise<unknown>;
+};
+
+type BetterAuthHandlerTarget = Extract<Parameters<typeof toNodeHandler>[0], { handler: Auth["handler"] }>;
+
+type BetterAuthSessionResolver = {
+  api?: BetterAuthGetSessionApi;
+};
+
+type BetterAuthInstance = BetterAuthHandlerTarget & BetterAuthSessionResolver;
 
 const AUTH_COOKIE_PREFIX_FALLBACK = "default";
 const AUTH_COOKIE_PREFIX_INVALID_SEGMENTS_RE = /[^a-zA-Z0-9_-]+/g;
@@ -158,7 +168,7 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
   return betterAuth(authConfig);
 }
 
-export function createBetterAuthHandler(auth: BetterAuthInstance): RequestHandler {
+export function createBetterAuthHandler(auth: BetterAuthHandlerTarget): RequestHandler {
   const handler = toNodeHandler(auth);
   return (req, res, next) => {
     void Promise.resolve(handler(req, res)).catch(next);
@@ -166,10 +176,10 @@ export function createBetterAuthHandler(auth: BetterAuthInstance): RequestHandle
 }
 
 export async function resolveBetterAuthSessionFromHeaders(
-  auth: BetterAuthInstance,
+  auth: BetterAuthSessionResolver,
   headers: Headers,
 ): Promise<BetterAuthSessionResult | null> {
-  const api = (auth as unknown as { api?: { getSession?: (input: unknown) => Promise<unknown> } }).api;
+  const api = auth.api;
   if (!api?.getSession) return null;
 
   const sessionValue = await api.getSession({
@@ -197,7 +207,7 @@ export async function resolveBetterAuthSessionFromHeaders(
 }
 
 export async function resolveBetterAuthSession(
-  auth: BetterAuthInstance,
+  auth: BetterAuthSessionResolver,
   req: Request,
 ): Promise<BetterAuthSessionResult | null> {
   return resolveBetterAuthSessionFromHeaders(auth, headersFromExpressRequest(req));

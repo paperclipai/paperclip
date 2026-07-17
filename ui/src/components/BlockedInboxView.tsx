@@ -6,6 +6,7 @@ import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
 import { cn } from "../lib/utils";
 import { applyIssueFilters, type IssueFilterState, type IssueFilterWorkspaceContext } from "../lib/issue-filters";
+import { resolveInboxIssueBlockerAttention } from "../lib/inbox-live-descendants";
 import {
   blockedRowMatchesSearch,
   buildBlockedInboxRows,
@@ -34,6 +35,7 @@ interface BlockedInboxViewProps {
   issueFilters: IssueFilterState;
   currentUserId: string | null;
   liveIssueIds: ReadonlySet<string>;
+  subtreeLiveCounts: ReadonlyMap<string, number>;
   workspaceFilterContext: IssueFilterWorkspaceContext;
   showStatusColumn: boolean;
   showIdentifierColumn: boolean;
@@ -53,6 +55,7 @@ export function BlockedInboxView({
   issueFilters,
   currentUserId,
   liveIssueIds,
+  subtreeLiveCounts,
   workspaceFilterContext,
   showStatusColumn,
   showIdentifierColumn,
@@ -67,12 +70,13 @@ export function BlockedInboxView({
     error,
     refetch,
   } = useQuery({
-    queryKey: queryKeys.issues.listBlockedAttention(companyId),
+    queryKey: [...queryKeys.issues.listBlockedAttention(companyId), "live-descendant-summary"],
     queryFn: () =>
       issuesApi.list(companyId, {
         attention: "blocked",
         includeBlockedInboxAttention: true,
         includeBlockedBy: true,
+        includeLiveDescendantSummary: true,
         limit: BLOCKED_LIST_LIMIT,
       }),
   });
@@ -209,6 +213,8 @@ export function BlockedInboxView({
               issueLinkState={issueLinkState}
               agentNameById={agentNameById}
               userLabelById={userLabelById}
+              liveIssueIds={liveIssueIds}
+              subtreeLiveCounts={subtreeLiveCounts}
               showStatusColumn={showStatusColumn}
               showIdentifierColumn={showIdentifierColumn}
               showUpdatedColumn={showUpdatedColumn}
@@ -236,6 +242,8 @@ export function BlockedInboxView({
                         issueLinkState={issueLinkState}
                         agentNameById={agentNameById}
                         userLabelById={userLabelById}
+                        liveIssueIds={liveIssueIds}
+                        subtreeLiveCounts={subtreeLiveCounts}
                         showStatusColumn={showStatusColumn}
                         showIdentifierColumn={showIdentifierColumn}
                         showUpdatedColumn={showUpdatedColumn}
@@ -257,6 +265,8 @@ interface BlockedInboxRowProps {
   issueLinkState: unknown;
   agentNameById: ReadonlyMap<string, string>;
   userLabelById?: ReadonlyMap<string, string>;
+  liveIssueIds: ReadonlySet<string>;
+  subtreeLiveCounts: ReadonlyMap<string, number>;
   showStatusColumn: boolean;
   showIdentifierColumn: boolean;
   showUpdatedColumn: boolean;
@@ -283,12 +293,18 @@ function BlockedInboxRow({
   issueLinkState,
   agentNameById,
   userLabelById,
+  liveIssueIds,
+  subtreeLiveCounts,
   showStatusColumn,
   showIdentifierColumn,
   showUpdatedColumn,
 }: BlockedInboxRowProps) {
   const { label: ownerName, isAgent } = resolveOwnerName(row, agentNameById, userLabelById);
   const stoppedAge = formatStoppedAge(row.attention.stoppedSinceAt);
+  const blockerAttention = resolveInboxIssueBlockerAttention(row.issue, {
+    isLive: liveIssueIds.has(row.issue.id),
+    loadedSubtreeLiveCount: subtreeLiveCounts.get(row.issue.id) ?? 0,
+  });
 
   const desktopTrailing = (
     <span className="flex shrink-0 items-center gap-3 text-xs">
@@ -345,13 +361,14 @@ function BlockedInboxRow({
       desktopMetaLeading={
         <BlockedRowDesktopMeta
           row={row}
+          blockerAttention={blockerAttention}
           showStatusColumn={showStatusColumn}
           showIdentifierColumn={showIdentifierColumn}
         />
       }
       mobileLeading={
         <span className="flex shrink-0 items-center gap-1.5 pt-px">
-          <StatusIcon status={row.issue.status} blockerAttention={row.issue.blockerAttention} />
+          <StatusIcon status={row.issue.status} blockerAttention={blockerAttention} />
         </span>
       }
       titleSuffix={
@@ -369,17 +386,19 @@ function BlockedInboxRow({
 
 function BlockedRowDesktopMeta({
   row,
+  blockerAttention,
   showStatusColumn,
   showIdentifierColumn,
 }: {
   row: BlockedInboxIssueRow;
+  blockerAttention: Issue["blockerAttention"] | null;
   showStatusColumn: boolean;
   showIdentifierColumn: boolean;
 }) {
   const identifier = row.issue.identifier ?? row.issue.id.slice(0, 8);
   return (
     <span className="hidden shrink-0 items-center gap-2 sm:inline-flex">
-      {showStatusColumn ? <StatusIcon status={row.issue.status} blockerAttention={row.issue.blockerAttention} /> : null}
+      {showStatusColumn ? <StatusIcon status={row.issue.status} blockerAttention={blockerAttention} /> : null}
       {showIdentifierColumn ? <span className="font-mono text-xs text-muted-foreground">{identifier}</span> : null}
     </span>
   );

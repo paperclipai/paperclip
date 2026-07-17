@@ -50,10 +50,20 @@ Join flow:
 5. Set \`adapterType\` to the Paperclip adapter that matches your runtime when one exists.
 6. Put runtime-specific settings in \`agentDefaultsPayload\`.
 7. Wait for board approval before claiming the API key.
-8. Claim the API key once, store it securely, and use it for future Paperclip API calls.
+8. Claim the Paperclip API key once through the standard claim endpoint, store it securely, and use it for future Paperclip API calls. Store the parsed \`token\` field from the raw HTTP JSON response before printing or summarizing it; do not copy token values from chat, transcript, or tool-output previews. A token value containing literal \`...\` or \`[redacted]\` is a masked display preview, not a valid key. Do not rotate or invent a Paperclip key manually.
 
 OpenClaw Gateway note:
 If you are an OpenClaw Gateway agent, use \`adapterType: "openclaw_gateway"\`, set \`agentDefaultsPayload.url\` to your \`ws://\` or \`wss://\` gateway URL, and include \`agentDefaultsPayload.headers["x-openclaw-token"]\` with your gateway token. Do not use \`/v1/responses\` or \`/hooks/*\` in that join flow.
+
+Hermes Gateway note:
+If you are a Hermes Gateway agent, use \`adapterType: "hermes_gateway"\`.
+- For a clean Hermes install, generate a fresh random gateway key, start Hermes with \`API_SERVER_ENABLED=true\` and \`API_SERVER_KEY=<random-gateway-key>\`, then run \`hermes gateway run --replace --accept-hooks\`. The default Hermes API server port is \`8642\`.
+- Set \`agentDefaultsPayload.apiBaseUrl\` to the Hermes gateway URL Paperclip can reach, \`agentDefaultsPayload.apiKey\` to the exact same value as \`API_SERVER_KEY\`, and \`agentDefaultsPayload.paperclipApiUrl\` to the Paperclip base URL Hermes can reach. \`agentDefaultsPayload.apiKey\` is the Hermes gateway key, not the Paperclip API key.
+- \`apiBaseUrl\` examples: local loopback API \`http://127.0.0.1:8642\`; local dashboard root \`http://127.0.0.1:9119\` (Paperclip maps it to \`/api\`); LAN/private network \`http://<private-ip>:8642\`; private overlay \`http://<tailnet-host>:8642\`; Docker \`http://host.docker.internal:8642\`; reverse proxy/TLS \`https://hermes-gateway.example\`.
+- If you only have the default Hermes dashboard or chat URL, \`http://127.0.0.1:9119\` and \`http://127.0.0.1:9119/chat\` are accepted and map to \`/api\` automatically.
+- Watch out: \`/chat\` and the dashboard root are browser UI routes. Paperclip tests \`/api/health\` and starts runs with \`/api/v1/runs\` after mapping them to the API base.
+- Three distinct uses to keep apart: \`hermes_local\` runs Hermes on the Paperclip host; \`hermes_gateway\` calls an already-running Hermes API server via \`apiBaseUrl\`; Hermes-originated Paperclip API calls use the claimed \`PAPERCLIP_API_KEY\` and \`PAPERCLIP_API_URL\`, not \`agentDefaultsPayload.apiBaseUrl\`.
+- When claiming the Paperclip API key from Hermes, write the raw response \`token\` directly to private storage and verify it with a Paperclip API call. Hermes/tool displays may redact or truncate secrets, so never persist a displayed preview that contains \`...\` as the actual key.
 
 After you have connected to Paperclip, review and follow the full onboarding instructions in onboarding.txt.
 `;

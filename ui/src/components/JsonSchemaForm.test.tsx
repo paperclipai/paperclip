@@ -8,6 +8,24 @@ import { JsonSchemaForm, getDefaultValues } from "./JsonSchemaForm";
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
+// Radix Select relies on PointerEvent, pointer capture, and ResizeObserver,
+// none of which jsdom implements. Stub them so the dropdown can open in tests.
+if (!globalThis.PointerEvent) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (globalThis as any).PointerEvent = MouseEvent;
+}
+if (typeof Element !== "undefined" && !Element.prototype.hasPointerCapture) {
+  Element.prototype.hasPointerCapture = () => false;
+  Element.prototype.releasePointerCapture = () => {};
+}
+class ResizeObserverStub {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+(globalThis as any).ResizeObserver = (globalThis as any).ResizeObserver ?? ResizeObserverStub;
+
 // SecretBindingPicker pulls in CompanyContext + react-query. Stub it so we can
 // exercise SecretField in isolation. The stub renders a select with the same
 // onChange contract as the real picker.
@@ -358,6 +376,7 @@ describe("JsonSchemaForm secret-ref rendering", () => {
         sshPort: { type: "number", default: 22 },
         cpu: { type: "number" },
         memory: { type: "string" },
+        size: { type: "string", enum: ["small", "large"] },
         reuseLease: { type: "boolean", default: false },
         tags: { type: "array", items: { type: "string" } },
       },
@@ -373,6 +392,42 @@ describe("JsonSchemaForm secret-ref rendering", () => {
     expect("apiKey" in defaults).toBe(false);
     expect("cpu" in defaults).toBe(false);
     expect("memory" in defaults).toBe(false);
+    expect("size" in defaults).toBe(false);
+  });
+
+  it("renders datalist suggestions for numeric fields when examples are present", async () => {
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <JsonSchemaForm
+          schema={{
+            type: "object",
+            properties: {
+              memory: {
+                type: "integer",
+                examples: [1, 2, 4, 8],
+              },
+            },
+          }}
+          values={{}}
+          onChange={() => {}}
+        />,
+      );
+    });
+
+    const input = container.querySelector<HTMLInputElement>('input[type="number"]');
+    // The "/" in the field path is sanitized so the id is a valid CSS/HTML identifier.
+    expect(input?.getAttribute("list")).toBe("-memory-suggestions");
+    expect(container.querySelector("datalist")?.getAttribute("id")).toBe("-memory-suggestions");
+    const options = Array.from(container.querySelectorAll("datalist option")).map((option) =>
+      option.getAttribute("value"),
+    );
+    expect(options).toEqual(["1", "2", "4", "8"]);
+
+    await act(async () => {
+      root.unmount();
+    });
   });
 
   it("keeps the password fallback for short raw values", async () => {
@@ -401,6 +456,145 @@ describe("JsonSchemaForm secret-ref rendering", () => {
     );
     expect(input).not.toBeNull();
     expect(input?.value).toBe("raw-value");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+});
+
+describe("JsonSchemaForm enum rendering", () => {
+  let container: HTMLDivElement;
+
+  const numericEnumSchema = {
+    type: "object" as const,
+    properties: {
+      memory: {
+        type: "integer" as const,
+        enum: [1, 2, 4, 8],
+      },
+    },
+  };
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+  });
+
+  afterEach(() => {
+    container.remove();
+    document.body.innerHTML = "";
+    vi.clearAllMocks();
+  });
+
+  async function openSelect() {
+    const trigger = container.querySelector<HTMLElement>('[role="combobox"]');
+    expect(trigger).not.toBeNull();
+    await act(async () => {
+      trigger!.dispatchEvent(
+        new PointerEvent("pointerdown", { bubbles: true, button: 0 }),
+      );
+      trigger!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+  }
+
+  function optionByLabel(label: string): Element | undefined {
+    return Array.from(document.querySelectorAll('[role="option"]')).find(
+      (option) => option.textContent?.trim() === label,
+    );
+  }
+
+  it("renders an optional numeric enum as a dropdown with a blank row and no 0", async () => {
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <JsonSchemaForm schema={numericEnumSchema} values={{}} onChange={() => {}} />,
+      );
+    });
+
+    await openSelect();
+
+    const labels = Array.from(document.querySelectorAll('[role="option"]')).map(
+      (option) => option.textContent?.trim(),
+    );
+    // A blank "None" row is offered so the user can express "not configured".
+    expect(labels).toContain("None");
+    expect(labels).toEqual(expect.arrayContaining(["1", "2", "4", "8"]));
+    // 0 is not a valid Daytona memory size and must never appear.
+    expect(labels).not.toContain("0");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("selects the blank row by default when no value is configured", async () => {
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <JsonSchemaForm schema={numericEnumSchema} values={{}} onChange={() => {}} />,
+      );
+    });
+
+    await openSelect();
+
+    const noneOption = optionByLabel("None");
+    expect(noneOption).toBeTruthy();
+    // Radix marks the active selection with aria-selected / data-state checked.
+    expect(noneOption?.getAttribute("aria-selected")).toBe("true");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("coerces the selected numeric enum value back to a number", async () => {
+    const onChange = vi.fn();
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <JsonSchemaForm schema={numericEnumSchema} values={{}} onChange={onChange} />,
+      );
+    });
+
+    await openSelect();
+
+    await act(async () => {
+      optionByLabel("2")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    // Number, not the string "2", so server-side integer validation passes.
+    expect(onChange).toHaveBeenCalledWith({ memory: 2 });
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("maps the blank row back to an unset (undefined) value", async () => {
+    const onChange = vi.fn();
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <JsonSchemaForm
+          schema={numericEnumSchema}
+          values={{ memory: 2 }}
+          onChange={onChange}
+        />,
+      );
+    });
+
+    await openSelect();
+
+    await act(async () => {
+      optionByLabel("None")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onChange).toHaveBeenCalledWith({ memory: undefined });
 
     await act(async () => {
       root.unmount();

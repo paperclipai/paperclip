@@ -1,14 +1,55 @@
 import type {
   ExecutionWorkspace,
   ExecutionWorkspaceSummary,
+  ExecutionWorkspaceStatus,
   ExecutionWorkspaceCloseReadiness,
+  WorkspaceOverviewResponse,
   WorkspaceOperation,
   WorkspaceRuntimeControlTarget,
 } from "@paperclipai/shared";
 import { api } from "./client";
 import { sanitizeWorkspaceRuntimeControlTarget } from "./workspace-runtime-control";
 
+type WorkspaceOverviewFilters = {
+  projectId?: string;
+  status?: ExecutionWorkspaceStatus[];
+  limit?: number;
+  offset?: number;
+};
+
+function normalizeWorkspaceOverview(response: WorkspaceOverviewResponse): WorkspaceOverviewResponse {
+  return {
+    ...response,
+    items: response.items.map((item) => ({
+      ...item,
+      lastUpdatedAt: new Date(item.lastUpdatedAt),
+      primaryService: item.primaryService
+        ? {
+            ...item.primaryService,
+            updatedAt: new Date(item.primaryService.updatedAt),
+          }
+        : null,
+      linkedIssues: item.linkedIssues.map((issue) => ({
+        ...issue,
+        updatedAt: new Date(issue.updatedAt),
+      })),
+    })),
+  };
+}
+
 export const executionWorkspacesApi = {
+  listOverview: async (companyId: string, filters?: WorkspaceOverviewFilters) => {
+    const params = new URLSearchParams();
+    if (filters?.projectId) params.set("projectId", filters.projectId);
+    if (filters?.status?.length) params.set("status", filters.status.join(","));
+    if (filters?.limit !== undefined) params.set("limit", String(filters.limit));
+    if (filters?.offset !== undefined) params.set("offset", String(filters.offset));
+    const qs = params.toString();
+    const response = await api.get<WorkspaceOverviewResponse>(
+      `/companies/${companyId}/workspace-overview${qs ? `?${qs}` : ""}`,
+    );
+    return normalizeWorkspaceOverview(response);
+  },
   listSummaries: (
     companyId: string,
     filters?: {

@@ -25,6 +25,7 @@ import { PageSkeleton } from "../components/PageSkeleton";
 import { PageTabBar } from "../components/PageTabBar";
 import { ProjectWorkspacesContent } from "../components/ProjectWorkspacesContent";
 import { MembershipAction } from "../components/MembershipAction";
+import { StarToggle } from "../components/StarToggle";
 import { buildProjectWorkspaceSummaries } from "../lib/project-workspaces-tab";
 import { collectLiveIssueIds } from "../lib/liveIssueIds";
 import { projectRouteRef } from "../lib/utils";
@@ -37,6 +38,7 @@ import { Tabs } from "@/components/ui/tabs";
 import { PluginLauncherOutlet } from "@/plugins/launchers";
 import { PluginSlotMount, PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
 import {
+  isStarred,
   resourceMembershipState,
   useResourceMembershipMutation,
   useResourceMemberships,
@@ -696,6 +698,9 @@ export function ProjectDetail() {
     membershipMutation.isPending &&
     membershipMutation.variables?.resourceType === "project" &&
     membershipMutation.variables.resourceId === project.id;
+  const projectStarred = isStarred(membershipsQuery.data, "project", project.id);
+  const projectStarPending = projectMembershipPending && membershipMutation.variables?.starred !== undefined;
+  const projectJoinLeavePending = projectMembershipPending && membershipMutation.variables?.starred === undefined;
 
   const handleTabChange = (tab: ProjectTab) => {
     // Cache the active tab per project
@@ -731,8 +736,8 @@ export function ProjectDetail() {
           <MembershipAction
             compact
             state="left"
-            pending={projectMembershipPending}
-            pendingState={projectMembershipPending ? membershipMutation.variables?.state : null}
+            pending={projectJoinLeavePending}
+            pendingState={projectJoinLeavePending ? membershipMutation.variables?.state : null}
             resourceName={project.name}
             onJoin={() => membershipMutation.mutate({
               resourceType: "project",
@@ -785,6 +790,20 @@ export function ProjectDetail() {
               Managed by {project.managedByPlugin.pluginDisplayName}
             </div>
           ) : null}
+        </div>
+        <div className="ml-auto flex items-center gap-2">
+          <StarToggle
+            size="button"
+            starred={projectStarred}
+            pending={projectStarPending}
+            resourceName={project.name}
+            onToggle={(next) => membershipMutation.mutate({
+              resourceType: "project",
+              resourceId: project.id,
+              resourceName: project.name,
+              starred: next,
+            })}
+          />
         </div>
       </div>
 

@@ -96,6 +96,60 @@ describe("parseAcpxStdoutLine", () => {
     ]);
   });
 
+  it("merges explicit tool_call input payload with status text", () => {
+    const entries = parseAcpxStdoutLine(
+      emit({
+        type: "acpx.tool_call",
+        name: "read",
+        toolCallId: "tool-3",
+        status: "in_progress",
+        text: "reading README.md",
+        input: { file: "README.md" },
+      }),
+      TS,
+    );
+    expect(entries).toEqual([
+      {
+        kind: "tool_call",
+        ts: TS,
+        name: "read",
+        toolUseId: "tool-3",
+        input: { file: "README.md", status: "in_progress", text: "reading README.md" },
+      },
+    ]);
+  });
+
+  it("keeps terminal tool_call status while preserving existing input", () => {
+    const entries = parseAcpxStdoutLine(
+      emit({
+        type: "acpx.tool_call",
+        name: "read",
+        toolCallId: "tool-4",
+        status: "completed",
+        text: "ok",
+        input: { file: "README.md", status: "running" },
+      }),
+      TS,
+    );
+    expect(entries).toEqual([
+      {
+        kind: "tool_call",
+        ts: TS,
+        name: "read",
+        toolUseId: "tool-4",
+        input: { file: "README.md", status: "running", text: "ok" },
+      },
+      {
+        kind: "tool_result",
+        ts: TS,
+        toolUseId: "tool-4",
+        toolName: "read",
+        content: "ok",
+        isError: false,
+      },
+    ]);
+  });
+
   it("emits a paired tool_result entry when a tool_call reports terminal status", () => {
     const completed = parseAcpxStdoutLine(
       emit({

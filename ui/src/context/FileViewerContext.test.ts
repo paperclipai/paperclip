@@ -1,10 +1,11 @@
 // @vitest-environment node
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   FILE_VIEWER_NAVIGATE_OPTIONS,
   readBrowseStateFromSearch,
   readFileViewerStateFromSearch,
+  shouldNavigateFileViewerSearch,
   writeBrowseStateToSearch,
   writeFolderViewerStateToSearch,
   writeFileViewerStateToSearch,
@@ -14,6 +15,35 @@ describe("FILE_VIEWER_NAVIGATE_OPTIONS", () => {
   it("preserves page scroll when the viewer updates URL search params", () => {
     expect(FILE_VIEWER_NAVIGATE_OPTIONS.preventScrollReset).toBe(true);
     expect(FILE_VIEWER_NAVIGATE_OPTIONS.replace).toBe(false);
+  });
+});
+
+describe("shouldNavigateFileViewerSearch", () => {
+  const originalWindow = globalThis.window;
+
+  afterEach(() => {
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: originalWindow,
+    });
+  });
+
+  it("uses the browser URL search when router state is stale", () => {
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: { location: { search: "?browse=1" } },
+    });
+
+    expect(shouldNavigateFileViewerSearch("", "")).toBe(true);
+  });
+
+  it("keeps no-op navigation suppressed when the browser URL already matches", () => {
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: { location: { search: "" } },
+    });
+
+    expect(shouldNavigateFileViewerSearch("", "?browse=1")).toBe(false);
   });
 });
 
@@ -118,6 +148,20 @@ describe("writeFileViewerStateToSearch", () => {
     expect(params.get("projectId")).toBeNull();
     expect(params.get("workspaceId")).toBeNull();
     expect(params.get("keep")).toBe("yes");
+  });
+
+  it("clears browse-origin viewer params when closing a selected file", () => {
+    const next = writeFileViewerStateToSearch(
+      "?tab=thread&browse=1&q=FileViewer&folder=ui/src&file=ui/src/FileViewer.tsx&line=4",
+      null,
+    );
+    const params = new URLSearchParams(next);
+    expect(params.get("file")).toBeNull();
+    expect(params.get("line")).toBeNull();
+    expect(params.get("browse")).toBeNull();
+    expect(params.get("q")).toBeNull();
+    expect(params.get("folder")).toBeNull();
+    expect(params.get("tab")).toBe("thread");
   });
 
   it("returns empty string when no params remain", () => {

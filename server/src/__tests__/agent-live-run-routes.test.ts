@@ -8,6 +8,7 @@ const mockAgentService = vi.hoisted(() => ({
 
 const mockHeartbeatService = vi.hoisted(() => ({
   buildRunOutputSilence: vi.fn(),
+  decorateActiveRunStatus: vi.fn(),
   getRunIssueSummary: vi.fn(),
   getActiveRunIssueSummaryForAgent: vi.fn(),
   getRunLogAccess: vi.fn(),
@@ -194,6 +195,11 @@ describe("agent live run routes", () => {
     });
     mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1"]);
     mockHeartbeatService.buildRunOutputSilence.mockResolvedValue(null);
+    mockHeartbeatService.decorateActiveRunStatus.mockImplementation((run) => ({
+      ...run,
+      currentStatusMessage: null,
+      currentStatusUpdatedAt: null,
+    }));
     mockHeartbeatService.getRunIssueSummary.mockResolvedValue({
       id: "run-1",
       status: "running",
@@ -256,6 +262,8 @@ describe("agent live run routes", () => {
       agentName: "Builder",
       adapterType: "codex_local",
       outputSilence: null,
+      currentStatusMessage: null,
+      currentStatusUpdatedAt: null,
     });
     expect(res.body).not.toHaveProperty("resultJson");
     expect(res.body).not.toHaveProperty("contextSnapshot");
@@ -300,6 +308,35 @@ describe("agent live run routes", () => {
       agentId: "agent-1",
       agentName: "Builder",
       adapterType: "codex_local",
+    });
+  });
+
+  it("includes ephemeral current status fields on active run polling", async () => {
+    mockHeartbeatService.decorateActiveRunStatus.mockImplementation((run) => ({
+      ...run,
+      currentStatusMessage: "Syncing workspace to sandbox",
+      currentStatusUpdatedAt: new Date("2026-04-10T09:30:05.000Z"),
+      currentToolName: "bash",
+      lastAssistantSnippet: "Inspecting files",
+      lastEventAt: new Date("2026-04-10T09:30:06.000Z"),
+    }));
+
+    const res = await requestApp(
+      await createApp(),
+      (baseUrl) => request(baseUrl).get("/api/issues/PC1A2-1295/active-run"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockHeartbeatService.decorateActiveRunStatus).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "run-1", issueId: "issue-1" }),
+      { companyId: "company-1", issueId: "issue-1" },
+    );
+    expect(res.body).toMatchObject({
+      currentStatusMessage: "Syncing workspace to sandbox",
+      currentStatusUpdatedAt: "2026-04-10T09:30:05.000Z",
+      currentToolName: "bash",
+      lastAssistantSnippet: "Inspecting files",
+      lastEventAt: "2026-04-10T09:30:06.000Z",
     });
   });
 

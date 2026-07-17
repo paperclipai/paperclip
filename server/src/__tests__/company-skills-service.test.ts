@@ -303,6 +303,46 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     });
   });
 
+  it("updates categories, normalizes values, and reflects them in list filters and counts", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const skill = await svc.createLocalSkill(companyId, {
+      name: "Category Skill",
+      tagline: "A categorized skill",
+      categories: ["engineering"],
+    });
+
+    const updated = await svc.updateSkill(companyId, skill.id, {
+      categories: ["Memory", "review", "memory", "  "],
+    });
+
+    expect(updated.categories).toEqual(["memory", "review"]);
+    await expect(svc.detail(companyId, skill.id)).resolves.toMatchObject({
+      id: skill.id,
+      categories: ["memory", "review"],
+    });
+    await expect(svc.list(companyId, { categories: ["review"] })).resolves.toEqual([
+      expect.objectContaining({ id: skill.id, categories: ["memory", "review"] }),
+    ]);
+    await expect(svc.list(companyId, { categories: ["engineering"] })).resolves.toEqual([]);
+    await expect(svc.categoryCounts(companyId)).resolves.toEqual([
+      { slug: "memory", count: 1 },
+      { slug: "review", count: 1 },
+    ]);
+
+    await expect(svc.updateSkill(companyId, skill.id, { categories: [] })).resolves.toMatchObject({
+      id: skill.id,
+      categories: [],
+    });
+    await expect(svc.categoryCounts(companyId)).resolves.toEqual([]);
+  });
+
   it("creates a fork from the creation flow with copied files and lineage", async () => {
     const companyId = randomUUID();
     const sourceSkillId = randomUUID();
@@ -575,6 +615,116 @@ describeEmbeddedPostgres("companySkillService.list", () => {
 
     expect(listed.find((skill) => skill.id === skillId)).toBeUndefined();
     await expect(svc.getById(companyId, skillId)).resolves.toBeNull();
+  });
+
+  it("refreshes stale local-path file inventory from disk", async () => {
+    const companyId = randomUUID();
+    const skillId = randomUUID();
+    const skillDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-stale-inventory-skill-"));
+    cleanupDirs.add(skillDir);
+    await fs.mkdir(path.join(skillDir, "references"), { recursive: true });
+    await fs.writeFile(path.join(skillDir, "SKILL.md"), "# Stale Inventory Skill\n", "utf8");
+    await fs.writeFile(path.join(skillDir, "references", "guide.md"), "# Guide\n", "utf8");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(companySkills).values({
+      id: skillId,
+      companyId,
+      key: `company/${companyId}/stale-inventory-skill`,
+      slug: "stale-inventory-skill",
+      name: "Stale Inventory Skill",
+      description: null,
+      markdown: "# Stale Inventory Skill\n",
+      sourceType: "local_path",
+      sourceLocator: skillDir,
+      trustLevel: "markdown_only",
+      compatibility: "compatible",
+      fileInventory: [{ path: "SKILL.md", kind: "skill" }],
+      metadata: { sourceKind: "local_path" },
+    });
+
+    const listed = await svc.list(companyId);
+    const skill = listed.find((entry) => entry.id === skillId);
+
+    expect(new Set(skill?.fileInventory.map((entry) => `${entry.kind}:${entry.path}`))).toEqual(new Set([
+      "skill:SKILL.md",
+      "reference:references/guide.md",
+    ]));
+    await expect(svc.readFile(companyId, skillId, "references/guide.md")).resolves.toMatchObject({
+      path: "references/guide.md",
+      kind: "reference",
+      content: "# Guide\n",
+    });
+    await expect(svc.getById(companyId, skillId)).resolves.toMatchObject({
+      fileInventory: expect.arrayContaining([
+        expect.objectContaining({ path: "SKILL.md", kind: "skill" }),
+        expect.objectContaining({ path: "references/guide.md", kind: "reference" }),
+      ]),
+    });
+  });
+
+  it("imports sibling reference files when the source is a direct SKILL.md path", async () => {
+    const companyId = randomUUID();
+    const skillDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-file-import-skill-"));
+    cleanupDirs.add(skillDir);
+    await fs.mkdir(path.join(skillDir, "references"), { recursive: true });
+    await fs.writeFile(
+      path.join(skillDir, "SKILL.md"),
+      "---\nname: File Import Skill\n---\n\n# File Import Skill\n",
+      "utf8",
+    );
+    await fs.writeFile(path.join(skillDir, "references", "checklist.md"), "# Checklist\n", "utf8");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const result = await svc.importFromSource(companyId, path.join(skillDir, "SKILL.md"));
+
+    expect(result.imported).toHaveLength(1);
+    expect(new Set(result.imported[0]?.fileInventory.map((entry) => `${entry.kind}:${entry.path}`))).toEqual(new Set([
+      "skill:SKILL.md",
+      "reference:references/checklist.md",
+    ]));
+  });
+
+  it("bounds direct root SKILL.md imports to known support directories", async () => {
+    const companyId = randomUUID();
+    const repoDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-root-skill-"));
+    cleanupDirs.add(repoDir);
+    await fs.mkdir(path.join(repoDir, "references"), { recursive: true });
+    await fs.mkdir(path.join(repoDir, "server", "src"), { recursive: true });
+    await fs.writeFile(
+      path.join(repoDir, "SKILL.md"),
+      "---\nname: Root Skill\n---\n\n# Root Skill\n",
+      "utf8",
+    );
+    await fs.writeFile(path.join(repoDir, "references", "guide.md"), "# Guide\n", "utf8");
+    await fs.writeFile(path.join(repoDir, "README.md"), "# Repo readme\n", "utf8");
+    await fs.writeFile(path.join(repoDir, "server", "src", "index.ts"), "export {};\n", "utf8");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const result = await svc.importFromSource(companyId, path.join(repoDir, "SKILL.md"));
+
+    expect(result.imported).toHaveLength(1);
+    expect(result.imported[0]?.fileInventory.map((entry) => entry.path).sort()).toEqual([
+      "SKILL.md",
+      "references/guide.md",
+    ]);
   });
 
   it("rejects executable external package skills before persistence", async () => {

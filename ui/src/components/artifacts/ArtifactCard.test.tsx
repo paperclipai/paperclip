@@ -40,7 +40,7 @@ function makeArtifact(overrides: Partial<CompanyArtifact> = {}): CompanyArtifact
     issue: { id: "issue-1", identifier: "PAP-10306", title: "Landing visuals" },
     project: { id: "proj-1", name: "Paperclip App" },
     createdByAgent: { id: "agent-1", name: "ClaudeCoder" },
-    updatedAt: "2026-06-01T00:00:00.000Z",
+    updatedAt: "2026-06-01T12:00:00.000Z",
     href: "/issues/PAP-10306#attachment-art-1",
     ...overrides,
   };

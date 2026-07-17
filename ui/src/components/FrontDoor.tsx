@@ -30,7 +30,7 @@ export function FrontDoor({ onChoose }: FrontDoorProps) {
             <Rocket className="h-6 w-6" />
           </div>
           <div>
-            <h3 className="font-semibold text-sm">Build a new team</h3>
+            <h3 className="font-semibold text-sm">Build a new company</h3>
             <p className="text-xs text-muted-foreground mt-1">
               Begin with a mission, bring on a lead agent, and grow a team of agents to do the work.
             </p>

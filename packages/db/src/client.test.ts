@@ -29,6 +29,52 @@ async function migrationHash(migrationFile: string): Promise<string> {
   return createHash("sha256").update(content).digest("hex");
 }
 
+const userVisibleUpdatedAtTables = new Set([
+  "companies",
+  "heartbeat_runs",
+  "issue_comments",
+  "issues",
+  "routine_runs",
+  "routines",
+]);
+
+const migrationUpdatedAtUpdateAllowlist = new Map<string, ReadonlySet<string>>([
+  [
+    "0105_instance_scoped_environments.sql",
+    new Set(["issues"]),
+  ],
+  [
+    "0131_repair_run_responsible_user_context_refs.sql",
+    new Set(["heartbeat_runs"]),
+  ],
+  [
+    "0135_repair_run_responsible_user_updated_at_sweep.sql",
+    new Set(["companies", "heartbeat_runs", "issues", "routine_runs", "routines"]),
+  ],
+]);
+
+function findUserVisibleUpdatedAtBackfillViolations(
+  migrationFile: string,
+  content: string,
+): string[] {
+  const allowedTables = migrationUpdatedAtUpdateAllowlist.get(migrationFile) ?? new Set<string>();
+  const violations: string[] = [];
+
+  for (const statement of content.split("--> statement-breakpoint")) {
+    const updateMatch = statement.match(/\bUPDATE\s+"([^"]+)"/i);
+    if (!updateMatch) continue;
+
+    const tableName = updateMatch[1];
+    if (!userVisibleUpdatedAtTables.has(tableName)) continue;
+    if (!/\bSET\b[\s\S]*"updated_at"\s*=/i.test(statement)) continue;
+    if (allowedTables.has(tableName)) continue;
+
+    violations.push(`${migrationFile}: UPDATE "${tableName}" sets updated_at`);
+  }
+
+  return violations;
+}
+
 afterEach(async () => {
   while (cleanups.length > 0) {
     const cleanup = cleanups.pop();
@@ -43,6 +89,35 @@ if (!embeddedPostgresSupport.supported) {
 }
 
 describeEmbeddedPostgres("applyPendingMigrations", () => {
+  it("rejects unallowlisted migration backfills that bump updated_at on user-visible tables", async () => {
+    const entries = await fs.promises.readdir(new URL("./migrations", import.meta.url), {
+      withFileTypes: true,
+    });
+    const violations: string[] = [];
+
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith(".sql")) continue;
+      const content = await fs.promises.readFile(
+        new URL(`./migrations/${entry.name}`, import.meta.url),
+        "utf8",
+      );
+      violations.push(...findUserVisibleUpdatedAtBackfillViolations(entry.name, content));
+    }
+
+    expect(violations).toEqual([]);
+    expect(
+      findUserVisibleUpdatedAtBackfillViolations(
+        "9999_bad_backfill.sql",
+        `
+          UPDATE "issues" AS i
+          SET "responsible_user_id" = 'owner-user',
+              "updated_at" = now()
+          WHERE i."responsible_user_id" IS NULL;
+        `,
+      ),
+    ).toEqual(['9999_bad_backfill.sql: UPDATE "issues" sets updated_at']);
+  });
+
   it(
     "applies an inserted earlier migration without replaying later legacy migrations",
     async () => {
@@ -535,6 +610,662 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
             "plugin_migrations_status_idx",
           ]),
         );
+      } finally {
+        await verifySql.end();
+      }
+    },
+    20_000,
+  );
+
+  it(
+    "replays migration 0134 without bumping issue updated_at for inbox archives",
+    async () => {
+      const connectionString = await createTempDatabase();
+
+      await applyPendingMigrations(connectionString);
+
+      const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const runResponsibleUserHash = await migrationHash(
+          "0134_run_responsible_user_invariant.sql",
+        );
+
+        await sql.unsafe(`
+          INSERT INTO "companies" ("id", "name", "issue_prefix", "created_at", "updated_at")
+          VALUES (
+            '00000000-0000-0000-0000-000000000120',
+            'Migration Inbox Co',
+            'TST120',
+            '2026-03-26T09:00:00.000Z',
+            '2026-03-26T09:00:00.000Z'
+          )
+        `);
+        await sql.unsafe(`
+          INSERT INTO "company_memberships" (
+            "id",
+            "company_id",
+            "principal_type",
+            "principal_id",
+            "status",
+            "membership_role",
+            "created_at",
+            "updated_at"
+          )
+          VALUES (
+            '00000000-0000-0000-0000-000000000121',
+            '00000000-0000-0000-0000-000000000120',
+            'user',
+            'owner-user',
+            'active',
+            'owner',
+            '2026-03-26T09:00:00.000Z',
+            '2026-03-26T09:00:00.000Z'
+          )
+        `);
+        await sql.unsafe(`
+          INSERT INTO "issues" (
+            "id",
+            "company_id",
+            "title",
+            "status",
+            "responsible_user_id",
+            "created_at",
+            "updated_at"
+          )
+          VALUES (
+            '00000000-0000-0000-0000-000000000122',
+            '00000000-0000-0000-0000-000000000120',
+            'Archived issue needing responsible user backfill',
+            'todo',
+            NULL,
+            '2026-03-26T10:00:00.000Z',
+            '2026-03-26T10:00:00.000Z'
+          )
+        `);
+        await sql.unsafe(`
+          INSERT INTO "issue_inbox_archives" (
+            "id",
+            "company_id",
+            "issue_id",
+            "user_id",
+            "archived_at",
+            "created_at",
+            "updated_at"
+          )
+          VALUES (
+            '00000000-0000-0000-0000-000000000123',
+            '00000000-0000-0000-0000-000000000120',
+            '00000000-0000-0000-0000-000000000122',
+            'owner-user',
+            '2026-03-26T12:00:00.000Z',
+            '2026-03-26T12:00:00.000Z',
+            '2026-03-26T12:00:00.000Z'
+          )
+        `);
+        await sql.unsafe(
+          `DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash = '${runResponsibleUserHash}'`,
+        );
+      } finally {
+        await sql.end();
+      }
+
+      const pendingState = await inspectMigrations(connectionString);
+      expect(pendingState).toMatchObject({
+        status: "needsMigrations",
+        pendingMigrations: ["0134_run_responsible_user_invariant.sql"],
+        reason: "pending-migrations",
+      });
+
+      await applyPendingMigrations(connectionString);
+
+      const verifySql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const rows = await verifySql.unsafe<{
+          responsible_user_id: string | null;
+          updated_at: Date;
+          inbox_archive_still_current: boolean;
+        }[]>(`
+          SELECT
+            i."responsible_user_id",
+            i."updated_at",
+            EXISTS (
+              SELECT 1
+              FROM "issue_inbox_archives" AS archive
+              WHERE archive."company_id" = i."company_id"
+                AND archive."issue_id" = i."id"
+                AND archive."user_id" = 'owner-user'
+                AND archive."archived_at" >= i."updated_at"
+            ) AS "inbox_archive_still_current"
+          FROM "issues" AS i
+          WHERE i."id" = '00000000-0000-0000-0000-000000000122'
+        `);
+        expect(rows).toHaveLength(1);
+        expect(rows[0]?.responsible_user_id).toBe("owner-user");
+        expect(rows[0]?.updated_at.toISOString()).toBe("2026-03-26T10:00:00.000Z");
+        expect(rows[0]?.inbox_archive_still_current).toBe(true);
+      } finally {
+        await verifySql.end();
+      }
+    },
+    20_000,
+  );
+
+  it(
+    "replays migration 0135 to repair updated_at sweeps and no-op when clean",
+    async () => {
+      const connectionString = await createTempDatabase();
+
+      await applyPendingMigrations(connectionString);
+
+      const repairSweepHash = await migrationHash(
+        "0135_repair_run_responsible_user_updated_at_sweep.sql",
+      );
+      const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        await sql.unsafe(`
+          INSERT INTO "companies" ("id", "name", "issue_prefix", "created_at", "updated_at")
+          VALUES (
+            '00000000-0000-0000-0000-000000000240',
+            'Clean Migration Co',
+            'CLN134',
+            '2026-04-01T09:00:00.000Z',
+            '2026-04-02T09:00:00.000Z'
+          )
+        `);
+        await sql.unsafe(`
+          INSERT INTO "issues" ("id", "company_id", "title", "status", "created_at", "updated_at")
+          VALUES (
+            '00000000-0000-0000-0000-000000000241',
+            '00000000-0000-0000-0000-000000000240',
+            'Clean issue should not be touched',
+            'todo',
+            '2026-04-01T10:00:00.000Z',
+            '2026-04-02T10:00:00.000Z'
+          )
+        `);
+        await sql.unsafe(
+          `DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash = '${repairSweepHash}'`,
+        );
+      } finally {
+        await sql.end();
+      }
+
+      await applyPendingMigrations(connectionString);
+
+      const afterCleanReplay = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const cleanRows = await afterCleanReplay.unsafe<{ updated_at: Date }[]>(`
+          SELECT "updated_at"
+          FROM "issues"
+          WHERE "id" = '00000000-0000-0000-0000-000000000241'
+        `);
+        expect(cleanRows[0]?.updated_at.toISOString()).toBe("2026-04-02T10:00:00.000Z");
+
+        await afterCleanReplay.unsafe(`
+          INSERT INTO "companies" ("id", "name", "issue_prefix", "created_at", "updated_at")
+          VALUES (
+            '00000000-0000-0000-0000-000000000250',
+            'Sweep Migration Co',
+            'SWP134',
+            '2026-01-01T00:00:00.000Z',
+            '2026-04-03T12:00:00.123456Z'
+          )
+        `);
+        await afterCleanReplay.unsafe(`
+          INSERT INTO "agents" ("id", "company_id", "name", "role", "adapter_type", "created_at", "updated_at")
+          VALUES (
+            '00000000-0000-0000-0000-000000000251',
+            '00000000-0000-0000-0000-000000000250',
+            'Sweep Agent',
+            'general',
+            'process',
+            '2026-01-02T00:00:00.000Z',
+            '2026-01-02T00:00:00.000Z'
+          )
+        `);
+        await afterCleanReplay.unsafe(`
+          INSERT INTO "issues" ("id", "company_id", "title", "status", "created_at", "updated_at")
+          SELECT
+            ('10000000-0000-0000-0000-' || lpad(gs::text, 12, '0'))::uuid,
+            '00000000-0000-0000-0000-000000000250',
+            'Swept issue ' || gs::text,
+            'todo',
+            '2026-02-01T00:00:00.000Z'::timestamptz + (gs::text || ' minutes')::interval,
+            '2026-04-03T12:00:00.123456Z'
+          FROM generate_series(1, 101) AS gs
+        `);
+        await afterCleanReplay.unsafe(`
+          UPDATE "issues"
+          SET
+            "status" = 'done',
+            "completed_at" = '2026-04-03T12:00:00.123456Z'
+          WHERE "id" = '10000000-0000-0000-0000-000000000003'
+        `);
+        await afterCleanReplay.unsafe(`
+          INSERT INTO "issue_comments" ("id", "company_id", "issue_id", "body", "created_at", "updated_at")
+          VALUES (
+            '00000000-0000-0000-0000-000000000252',
+            '00000000-0000-0000-0000-000000000250',
+            '10000000-0000-0000-0000-000000000001',
+            'Latest pre-sweep activity',
+            '2026-03-01T15:30:00.000Z',
+            '2026-03-02T16:45:00.000Z'
+          )
+        `);
+        await afterCleanReplay.unsafe(`
+          INSERT INTO "heartbeat_runs" (
+            "id",
+            "company_id",
+            "agent_id",
+            "status",
+            "started_at",
+            "finished_at",
+            "created_at",
+            "updated_at"
+          )
+          VALUES (
+            '00000000-0000-0000-0000-000000000253',
+            '00000000-0000-0000-0000-000000000250',
+            '00000000-0000-0000-0000-000000000251',
+            'completed',
+            '2026-02-10T10:00:00.000Z',
+            '2026-02-10T10:30:00.000Z',
+            '2026-02-10T09:55:00.000Z',
+            '2026-04-03T12:00:00.123456Z'
+          )
+        `);
+        await afterCleanReplay.unsafe(`
+          INSERT INTO "heartbeat_runs" (
+            "id",
+            "company_id",
+            "agent_id",
+            "status",
+            "started_at",
+            "last_output_at",
+            "created_at",
+            "updated_at"
+          )
+          VALUES (
+            '00000000-0000-0000-0000-000000000256',
+            '00000000-0000-0000-0000-000000000250',
+            '00000000-0000-0000-0000-000000000251',
+            'running',
+            '2026-02-10T11:00:00.000Z',
+            '2026-04-03T12:00:00.123456Z',
+            '2026-02-10T10:55:00.000Z',
+            '2026-04-03T12:00:00.123456Z'
+          )
+        `);
+        await afterCleanReplay.unsafe(`
+          INSERT INTO "routines" (
+            "id",
+            "company_id",
+            "title",
+            "last_triggered_at",
+            "last_enqueued_at",
+            "created_at",
+            "updated_at"
+          )
+          VALUES (
+            '00000000-0000-0000-0000-000000000254',
+            '00000000-0000-0000-0000-000000000250',
+            'Swept routine',
+            '2026-03-20T10:00:00.000Z',
+            '2026-03-21T11:00:00.000Z',
+            '2026-02-11T00:00:00.000Z',
+            '2026-04-03T12:00:00.123456Z'
+          )
+        `);
+        await afterCleanReplay.unsafe(`
+          INSERT INTO "routines" (
+            "id",
+            "company_id",
+            "title",
+            "last_triggered_at",
+            "last_enqueued_at",
+            "created_at",
+            "updated_at"
+          )
+          VALUES (
+            '00000000-0000-0000-0000-000000000257',
+            '00000000-0000-0000-0000-000000000250',
+            'Same-timestamp active routine',
+            '2026-03-20T10:00:00.000Z',
+            '2026-04-03T12:00:00.123456Z',
+            '2026-02-11T00:00:00.000Z',
+            '2026-04-03T12:00:00.123456Z'
+          )
+        `);
+        await afterCleanReplay.unsafe(`
+          INSERT INTO "routine_runs" (
+            "id",
+            "company_id",
+            "routine_id",
+            "source",
+            "status",
+            "completed_at",
+            "created_at",
+            "updated_at"
+          )
+          VALUES (
+            '00000000-0000-0000-0000-000000000255',
+            '00000000-0000-0000-0000-000000000250',
+            '00000000-0000-0000-0000-000000000254',
+            'schedule',
+            'completed',
+            '2026-02-12T12:00:00.000Z',
+            '2026-02-12T11:00:00.000Z',
+            '2026-04-03T12:00:00.123456Z'
+          )
+        `);
+        await afterCleanReplay.unsafe(`
+          INSERT INTO "routine_runs" (
+            "id",
+            "company_id",
+            "routine_id",
+            "source",
+            "status",
+            "triggered_at",
+            "created_at",
+            "updated_at"
+          )
+          VALUES (
+            '00000000-0000-0000-0000-000000000258',
+            '00000000-0000-0000-0000-000000000250',
+            '00000000-0000-0000-0000-000000000257',
+            'schedule',
+            'running',
+            '2026-04-03T12:00:00.123456Z',
+            '2026-02-12T13:00:00.000Z',
+            '2026-04-03T12:00:00.123456Z'
+          )
+        `);
+        await afterCleanReplay.unsafe(`
+          INSERT INTO "companies" ("id", "name", "issue_prefix", "created_at", "updated_at")
+          VALUES (
+            '00000000-0000-0000-0000-000000000260',
+            'Coincident Timestamp Co',
+            'CTS134',
+            '2026-01-05T00:00:00.000Z',
+            '2026-04-03T12:00:00.123456Z'
+          )
+        `);
+        await afterCleanReplay.unsafe(`
+          INSERT INTO "agents" ("id", "company_id", "name", "role", "adapter_type", "created_at", "updated_at")
+          VALUES (
+            '00000000-0000-0000-0000-000000000261',
+            '00000000-0000-0000-0000-000000000260',
+            'Coincident Agent',
+            'general',
+            'process',
+            '2026-01-05T00:10:00.000Z',
+            '2026-01-05T00:10:00.000Z'
+          )
+        `);
+        await afterCleanReplay.unsafe(`
+          INSERT INTO "issues" ("id", "company_id", "title", "status", "created_at", "updated_at")
+          VALUES (
+            '20000000-0000-0000-0000-000000000001',
+            '00000000-0000-0000-0000-000000000260',
+            'Coincident timestamp issue should not be touched',
+            'todo',
+            '2026-02-05T00:00:00.000Z',
+            '2026-04-03T12:00:00.123456Z'
+          )
+        `);
+        await afterCleanReplay.unsafe(`
+          INSERT INTO "heartbeat_runs" (
+            "id",
+            "company_id",
+            "agent_id",
+            "status",
+            "started_at",
+            "finished_at",
+            "created_at",
+            "updated_at"
+          )
+          VALUES (
+            '00000000-0000-0000-0000-000000000262',
+            '00000000-0000-0000-0000-000000000260',
+            '00000000-0000-0000-0000-000000000261',
+            'completed',
+            '2026-02-05T10:00:00.000Z',
+            '2026-02-05T10:30:00.000Z',
+            '2026-02-05T09:55:00.000Z',
+            '2026-04-03T12:00:00.123456Z'
+          )
+        `);
+        await afterCleanReplay.unsafe(
+          `DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash = '${repairSweepHash}'`,
+        );
+      } finally {
+        await afterCleanReplay.end();
+      }
+
+      await applyPendingMigrations(connectionString);
+
+      const afterRepair = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const repairedRows = await afterRepair.unsafe<{
+          subject: string;
+          updated_at: Date;
+        }[]>(`
+          SELECT 'company' AS subject, "updated_at"
+          FROM "companies"
+          WHERE "id" = '00000000-0000-0000-0000-000000000250'
+          UNION ALL
+          SELECT 'issue_with_comment' AS subject, "updated_at"
+          FROM "issues"
+          WHERE "id" = '10000000-0000-0000-0000-000000000001'
+          UNION ALL
+          SELECT 'issue_without_comment' AS subject, "updated_at"
+          FROM "issues"
+          WHERE "id" = '10000000-0000-0000-0000-000000000002'
+          UNION ALL
+          SELECT 'issue_with_state_activity' AS subject, "updated_at"
+          FROM "issues"
+          WHERE "id" = '10000000-0000-0000-0000-000000000003'
+          UNION ALL
+          SELECT 'heartbeat_run' AS subject, "updated_at"
+          FROM "heartbeat_runs"
+          WHERE "id" = '00000000-0000-0000-0000-000000000253'
+          UNION ALL
+          SELECT 'heartbeat_run_with_output' AS subject, "updated_at"
+          FROM "heartbeat_runs"
+          WHERE "id" = '00000000-0000-0000-0000-000000000256'
+          UNION ALL
+          SELECT 'other_company' AS subject, "updated_at"
+          FROM "companies"
+          WHERE "id" = '00000000-0000-0000-0000-000000000260'
+          UNION ALL
+          SELECT 'other_heartbeat_run' AS subject, "updated_at"
+          FROM "heartbeat_runs"
+          WHERE "id" = '00000000-0000-0000-0000-000000000262'
+          UNION ALL
+          SELECT 'other_issue' AS subject, "updated_at"
+          FROM "issues"
+          WHERE "id" = '20000000-0000-0000-0000-000000000001'
+          UNION ALL
+          SELECT 'routine' AS subject, "updated_at"
+          FROM "routines"
+          WHERE "id" = '00000000-0000-0000-0000-000000000254'
+          UNION ALL
+          SELECT 'routine_with_activity' AS subject, "updated_at"
+          FROM "routines"
+          WHERE "id" = '00000000-0000-0000-0000-000000000257'
+          UNION ALL
+          SELECT 'routine_run' AS subject, "updated_at"
+          FROM "routine_runs"
+          WHERE "id" = '00000000-0000-0000-0000-000000000255'
+          UNION ALL
+          SELECT 'routine_run_with_trigger' AS subject, "updated_at"
+          FROM "routine_runs"
+          WHERE "id" = '00000000-0000-0000-0000-000000000258'
+          ORDER BY subject
+        `);
+        const repaired = Object.fromEntries(
+          repairedRows.map((row) => [row.subject, row.updated_at.toISOString()]),
+        );
+        expect(repaired).toEqual({
+          company: "2026-01-01T00:00:00.000Z",
+          heartbeat_run: "2026-02-10T10:30:00.000Z",
+          heartbeat_run_with_output: "2026-04-03T12:00:00.123Z",
+          issue_with_comment: "2026-03-02T16:45:00.000Z",
+          issue_with_state_activity: "2026-04-03T12:00:00.123Z",
+          issue_without_comment: "2026-02-01T00:02:00.000Z",
+          other_company: "2026-04-03T12:00:00.123Z",
+          other_heartbeat_run: "2026-04-03T12:00:00.123Z",
+          other_issue: "2026-04-03T12:00:00.123Z",
+          routine: "2026-03-21T11:00:00.000Z",
+          routine_run_with_trigger: "2026-04-03T12:00:00.123Z",
+          routine_with_activity: "2026-04-03T12:00:00.123Z",
+          routine_run: "2026-02-12T12:00:00.000Z",
+        });
+
+        await afterRepair.unsafe(
+          `DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash = '${repairSweepHash}'`,
+        );
+      } finally {
+        await afterRepair.end();
+      }
+
+      await applyPendingMigrations(connectionString);
+
+      const afterSecondRun = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const secondRunRows = await afterSecondRun.unsafe<{ updated_at: Date }[]>(`
+          SELECT "updated_at"
+          FROM "issues"
+          WHERE "id" = '10000000-0000-0000-0000-000000000001'
+        `);
+        expect(secondRunRows[0]?.updated_at.toISOString()).toBe("2026-03-02T16:45:00.000Z");
+      } finally {
+        await afterSecondRun.end();
+      }
+    },
+    20_000,
+  );
+
+  it(
+    "replays the run responsible user repair migration when heartbeat run issue refs are identifiers",
+    async () => {
+      const connectionString = await createTempDatabase();
+
+      await applyPendingMigrations(connectionString);
+
+      const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const runResponsibleUserRepairHash = await migrationHash(
+          "0131_repair_run_responsible_user_context_refs.sql",
+        );
+
+        await sql.unsafe(`
+          INSERT INTO "companies" ("id", "name", "issue_prefix", "created_at", "updated_at")
+          VALUES ('00000000-0000-0000-0000-000000000130', 'Migration Test Co', 'TST130', now(), now())
+        `);
+        await sql.unsafe(`
+          INSERT INTO "company_memberships" (
+            "id",
+            "company_id",
+            "principal_type",
+            "principal_id",
+            "status",
+            "membership_role",
+            "created_at",
+            "updated_at"
+          )
+          VALUES (
+            '00000000-0000-0000-0000-000000000131',
+            '00000000-0000-0000-0000-000000000130',
+            'user',
+            'owner-user',
+            'active',
+            'owner',
+            now(),
+            now()
+          )
+        `);
+        await sql.unsafe(`
+          INSERT INTO "agents" ("id", "company_id", "name", "role", "adapter_type", "created_at", "updated_at")
+          VALUES (
+            '00000000-0000-0000-0000-000000000132',
+            '00000000-0000-0000-0000-000000000130',
+            'Migration Agent',
+            'general',
+            'process',
+            now(),
+            now()
+          )
+        `);
+        await sql.unsafe(`
+          INSERT INTO "issues" (
+            "id",
+            "company_id",
+            "title",
+            "status",
+            "responsible_user_id",
+            "identifier",
+            "created_at",
+            "updated_at"
+          )
+          VALUES (
+            '00000000-0000-0000-0000-000000000133',
+            '00000000-0000-0000-0000-000000000130',
+            'Identifier referenced issue',
+            'todo',
+            'issue-user',
+            'TST130-1',
+            now(),
+            now()
+          )
+        `);
+        await sql.unsafe(`
+          INSERT INTO "heartbeat_runs" (
+            "id",
+            "company_id",
+            "agent_id",
+            "status",
+            "responsible_user_id",
+            "context_snapshot",
+            "created_at",
+            "updated_at"
+          )
+          VALUES (
+            '00000000-0000-0000-0000-000000000134',
+            '00000000-0000-0000-0000-000000000130',
+            '00000000-0000-0000-0000-000000000132',
+            'completed',
+            NULL,
+            '{"issueId":"TST130-1"}'::jsonb,
+            now(),
+            now()
+          )
+        `);
+        await sql.unsafe(
+          `DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash = '${runResponsibleUserRepairHash}'`,
+        );
+      } finally {
+        await sql.end();
+      }
+
+      const pendingState = await inspectMigrations(connectionString);
+      expect(pendingState).toMatchObject({
+        status: "needsMigrations",
+        pendingMigrations: ["0131_repair_run_responsible_user_context_refs.sql"],
+        reason: "pending-migrations",
+      });
+
+      await applyPendingMigrations(connectionString);
+
+      const verifySql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const runs = await verifySql.unsafe<{ responsible_user_id: string | null }[]>(`
+          SELECT "responsible_user_id"
+          FROM "heartbeat_runs"
+          WHERE "id" = '00000000-0000-0000-0000-000000000134'
+        `);
+        expect(runs).toEqual([{ responsible_user_id: "issue-user" }]);
+
       } finally {
         await verifySql.end();
       }

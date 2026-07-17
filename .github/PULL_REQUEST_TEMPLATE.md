@@ -22,6 +22,12 @@
   (A) Issue exists — tag each linked issue with `Fixes: #123`, `Closes #123`,
       or `Refs #123`. Include duplicates and closely related issues too.
 
+  Only reference PUBLIC GitHub issues/PRs here. Do NOT paste internal,
+  instance-local Paperclip references — ticket ids like PAPA-123 / PAP-224,
+  /PAP/issues/... or agent://... links, or localhost/tailnet URLs. Other
+  contributors cannot open them. See CONTRIBUTING.md → "No Internal Issue
+  References".
+
   (B) No issue exists — describe the underlying problem here, following the
       relevant issue template so reviewers get the same fields:
         • Bug:     .github/ISSUE_TEMPLATE/bug_report.yml
@@ -43,7 +49,7 @@
 
 <!--
   How can a reviewer confirm this works? Include test commands, manual
-  steps, or both. For UI changes, include before/after screenshots.
+  steps, or both.
 -->
 
 -
@@ -81,9 +87,10 @@
 - [ ] I have checked ROADMAP.md and confirmed this PR does not duplicate planned core work
 - [ ] I have searched GitHub for duplicate or related PRs and linked them above
 - [ ] I have either (a) linked existing issues with `Fixes: #` / `Closes #` / `Refs #` OR (b) described the issue in-PR following the relevant issue template
+- [ ] I have not referenced internal/instance-local Paperclip issues or links (only public GitHub `#NNN` / `github.com/paperclipai/paperclip` URLs)
+- [ ] My branch name describes the change (e.g. `docs/...`, `fix/...`) and contains no internal Paperclip ticket id or instance-derived details
 - [ ] I have run tests locally and they pass
 - [ ] I have added or updated tests where applicable
-- [ ] If this change affects the UI, I have included before/after screenshots
 - [ ] I have updated relevant documentation to reflect my changes
 - [ ] I have considered and documented any risks above
 - [ ] All Paperclip CI gates are green

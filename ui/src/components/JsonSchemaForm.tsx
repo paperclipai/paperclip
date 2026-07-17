@@ -47,6 +47,7 @@ export interface JsonSchemaNode {
   description?: string;
   default?: unknown;
   enum?: unknown[];
+  examples?: unknown[];
   const?: unknown;
   format?: string;
 
@@ -155,7 +156,7 @@ export function getDefaultForSchema(schema: JsonSchemaNode): unknown {
     case "boolean":
       return false;
     case "enum":
-      return schema.enum?.[0] ?? "";
+      return undefined;
     case "array":
       return [];
     case "object": {
@@ -439,6 +440,13 @@ const BooleanField = React.memo(({
 BooleanField.displayName = "BooleanField";
 
 /**
+ * Sentinel value for the "not configured" row of an optional enum select.
+ * Radix `Select` forbids an empty-string item value, so we map the unset state
+ * onto this sentinel and translate it back to `undefined` on change.
+ */
+const ENUM_UNSET_VALUE = "__paperclip_unset__";
+
+/**
  * Specialized field for enum (select) values.
  */
 const EnumField = React.memo(({
@@ -459,32 +467,63 @@ const EnumField = React.memo(({
   description?: string;
   error?: string;
   options: unknown[];
-}) => (
-  <FieldWrapper
-    label={label}
-    description={description}
-    required={isRequired}
-    error={error}
-    disabled={disabled}
-  >
-    <Select
-      value={String(value ?? "")}
-      onValueChange={onChange}
+}) => {
+  // Optional enums get a leading blank row so the user can express "not
+  // configured"; it is also the selected row when no value is set.
+  const showUnsetOption = !isRequired;
+  // When every option is numeric, coerce the selected string back to a number
+  // so the payload keeps the schema's integer/number type — a stringified "2"
+  // would otherwise fail server-side integer validation.
+  const numericOptions =
+    options.length > 0 && options.every((option) => typeof option === "number");
+
+  const isUnset = value === undefined || value === null || value === "";
+  const selectValue = isUnset
+    ? showUnsetOption
+      ? ENUM_UNSET_VALUE
+      : ""
+    : String(value);
+
+  const handleChange = (next: string) => {
+    if (next === ENUM_UNSET_VALUE) {
+      onChange(undefined);
+      return;
+    }
+    onChange(numericOptions ? Number(next) : next);
+  };
+
+  return (
+    <FieldWrapper
+      label={label}
+      description={description}
+      required={isRequired}
+      error={error}
       disabled={disabled}
     >
-      <SelectTrigger className="w-full">
-        <SelectValue placeholder="Select an option" />
-      </SelectTrigger>
-      <SelectContent>
-        {options.map((option) => (
-          <SelectItem key={String(option)} value={String(option)}>
-            {String(option)}
-          </SelectItem>
-        ))}
-      </SelectContent>
-    </Select>
-  </FieldWrapper>
-));
+      <Select
+        value={selectValue}
+        onValueChange={handleChange}
+        disabled={disabled}
+      >
+        <SelectTrigger className="w-full">
+          <SelectValue placeholder="Select an option" />
+        </SelectTrigger>
+        <SelectContent>
+          {showUnsetOption && (
+            <SelectItem value={ENUM_UNSET_VALUE} textValue="None">
+              <span className="text-muted-foreground">None</span>
+            </SelectItem>
+          )}
+          {options.map((option) => (
+            <SelectItem key={String(option)} value={String(option)}>
+              {String(option)}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </FieldWrapper>
+  );
+});
 
 EnumField.displayName = "EnumField";
 
@@ -689,6 +728,7 @@ SecretField.displayName = "SecretField";
  * Specialized field for numeric (number/integer) values.
  */
 const NumberField = React.memo(({
+  id,
   value,
   onChange,
   disabled,
@@ -698,7 +738,11 @@ const NumberField = React.memo(({
   error,
   defaultValue,
   type,
+  minimum,
+  maximum,
+  suggestions,
 }: {
+  id: string;
   value: unknown;
   onChange: (val: unknown) => void;
   disabled: boolean;
@@ -708,28 +752,47 @@ const NumberField = React.memo(({
   error?: string;
   defaultValue?: unknown;
   type: "number" | "integer";
-}) => (
-  <FieldWrapper
-    label={label}
-    description={description}
-    required={isRequired}
-    error={error}
-    disabled={disabled}
-  >
-    <Input
-      type="number"
-      step={type === "integer" ? "1" : "any"}
-      value={value !== undefined ? String(value) : ""}
-      onChange={(e) => {
-        const val = e.target.value;
-        onChange(val === "" ? undefined : Number(val));
-      }}
-      placeholder={String(defaultValue ?? "")}
+  minimum?: number;
+  maximum?: number;
+  suggestions?: unknown[];
+}) => {
+  const hasSuggestions = Array.isArray(suggestions) && suggestions.length > 0;
+  // Sanitize the path-based id so it is a valid CSS/HTML identifier (paths can contain "/").
+  const listId = hasSuggestions ? `${id.replace(/[^a-zA-Z0-9_-]/g, "-")}-suggestions` : undefined;
+  return (
+    <FieldWrapper
+      label={label}
+      description={description}
+      required={isRequired}
+      error={error}
       disabled={disabled}
-      aria-invalid={!!error}
-    />
-  </FieldWrapper>
-));
+    >
+      <Input
+        type="number"
+        step={type === "integer" ? "1" : "any"}
+        min={minimum}
+        max={maximum}
+        list={listId}
+        value={value !== undefined ? String(value) : ""}
+        onChange={(e) => {
+          const val = e.target.value;
+          const trimmed = val.trim();
+          onChange(trimmed === "" ? undefined : Number(trimmed));
+        }}
+        placeholder={String(defaultValue ?? "")}
+        disabled={disabled}
+        aria-invalid={!!error}
+      />
+      {listId ? (
+        <datalist id={listId}>
+          {suggestions!.map((suggestion) => (
+            <option key={String(suggestion)} value={String(suggestion)} />
+          ))}
+        </datalist>
+      ) : null}
+    </FieldWrapper>
+  );
+});
 
 NumberField.displayName = "NumberField";
 
@@ -1044,6 +1107,7 @@ const FormField = React.memo(({
     case "integer":
       return (
         <NumberField
+          id={path}
           value={value}
           onChange={onChange}
           disabled={isReadOnly}
@@ -1053,6 +1117,9 @@ const FormField = React.memo(({
           error={error}
           defaultValue={propSchema.default}
           type={type as "number" | "integer"}
+          minimum={typeof propSchema.minimum === "number" ? propSchema.minimum : undefined}
+          maximum={typeof propSchema.maximum === "number" ? propSchema.maximum : undefined}
+          suggestions={Array.isArray(propSchema.examples) ? propSchema.examples : undefined}
         />
       );
 

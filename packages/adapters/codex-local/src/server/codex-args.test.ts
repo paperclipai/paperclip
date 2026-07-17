@@ -91,7 +91,7 @@ describe("buildCodexExecArgs", () => {
 
   it("ignores fast mode for unsupported models", () => {
     const result = buildCodexExecArgs({
-      model: "gpt-5.3-codex",
+      model: "gpt-5.3-codex-spark",
       fastMode: true,
     });
 
@@ -104,7 +104,7 @@ describe("buildCodexExecArgs", () => {
       "exec",
       "--json",
       "--model",
-      "gpt-5.3-codex",
+      "gpt-5.3-codex-spark",
       "-",
     ]);
   });
@@ -112,7 +112,7 @@ describe("buildCodexExecArgs", () => {
   it("adds --skip-git-repo-check when requested", () => {
     const result = buildCodexExecArgs(
       {
-        model: "gpt-5.3-codex",
+        model: "gpt-5.5",
       },
       { skipGitRepoCheck: true },
     );
@@ -122,7 +122,7 @@ describe("buildCodexExecArgs", () => {
       "--json",
       "--skip-git-repo-check",
       "--model",
-      "gpt-5.3-codex",
+      "gpt-5.5",
       "-",
     ]);
   });

@@ -1,5 +1,5 @@
 ---
-title: Claude Local
+title: Claude Code
 summary: Claude Code local adapter setup and configuration
 ---
 

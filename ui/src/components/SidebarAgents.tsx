@@ -9,6 +9,7 @@ import {
   Pencil,
   PlayCircle,
   Plus,
+  Star,
   Users,
   AlertTriangle,
 } from "lucide-react";
@@ -23,7 +24,13 @@ import { SIDEBAR_SCROLL_RESET_STATE } from "../lib/navigation-scroll";
 import { queryKeys } from "../lib/queryKeys";
 import { cn, agentRouteRef, agentUrl, SIDEBAR_RAIL_HIDDEN_LABEL } from "../lib/utils";
 import { useAgentOrder } from "../hooks/useAgentOrder";
-import { resourceMembershipState, useResourceMembershipMutation, useResourceMemberships } from "../hooks/useResourceMemberships";
+import {
+  isStarred,
+  resourceMembershipState,
+  starredResourceIds,
+  useResourceMembershipMutation,
+  useResourceMemberships,
+} from "../hooks/useResourceMemberships";
 import {
   AGENT_SORT_MODE_UPDATED_EVENT,
   getAgentSortModeStorageKey,
@@ -35,6 +42,7 @@ import {
 import { AgentIcon } from "./AgentIconPicker";
 import { BudgetSidebarMarker } from "./BudgetSidebarMarker";
 import { SidebarSection, type SidebarSectionRadioChoice } from "./SidebarSection";
+import { StarToggle } from "./StarToggle";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -87,6 +95,10 @@ function sortAgents(agents: Agent[], sortMode: AgentSidebarSortMode): Agent[] {
   return sorted;
 }
 
+// Sidebar star reveals with the agent row's own group, not the shared group.
+const AGENT_STAR_ROW_REVEAL =
+  "opacity-0 transition-opacity group-hover/agent:opacity-100 group-focus-within/agent:opacity-100";
+
 function SidebarAgentItem({
   activeAgentId,
   activeTab,
@@ -99,6 +111,9 @@ function SidebarAgentItem({
   rail,
   runCount,
   setSidebarOpen,
+  starred = false,
+  onToggleStar,
+  starPending = false,
 }: {
   activeAgentId: string | null;
   activeTab: string | null;
@@ -111,6 +126,9 @@ function SidebarAgentItem({
   rail: boolean;
   runCount: number;
   setSidebarOpen: (open: boolean) => void;
+  starred?: boolean;
+  onToggleStar?: (agent: Agent, starred: boolean) => void;
+  starPending?: boolean;
 }) {
   const routeRef = agentRouteRef(agent);
   const href = activeTab ? `${agentUrl(agent)}/${activeTab}` : agentUrl(agent);
@@ -137,7 +155,9 @@ function SidebarAgentItem({
         if (isMobile) setSidebarOpen(false);
       }}
       className={cn(
-        "flex min-w-0 flex-1 items-center gap-2.5 px-3 py-1.5 pointer-coarse:py-1 pr-8 text-[13px] font-medium transition-colors",
+        "flex min-w-0 flex-1 items-center gap-2.5 px-3 py-1.5 pointer-coarse:py-1 text-[13px] font-medium transition-colors",
+        // Reserve room for the ⋯ menu, plus the inline unstar star on starred rows.
+        starred && !isMobile ? "pr-14" : "pr-8",
         isActive
           ? "bg-accent text-foreground"
           : "text-foreground/80 hover:bg-accent/50 hover:text-foreground"
@@ -187,6 +207,21 @@ function SidebarAgentItem({
         link
       )}
 
+      {!rail && starred && !isMobile && onToggleStar ? (
+        // Desktop: quiet inline unstar, left of the ⋯ menu, revealed on hover/focus.
+        <span className="absolute right-8 top-1/2 -translate-y-1/2">
+          <StarToggle
+            size="row"
+            quiet
+            starred
+            pending={starPending}
+            resourceName={agent.name}
+            onToggle={() => onToggleStar(agent, false)}
+            revealClassName={AGENT_STAR_ROW_REVEAL}
+          />
+        </span>
+      ) : null}
+
       {!rail && (
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
@@ -204,7 +239,26 @@ function SidebarAgentItem({
             <MoreHorizontal className="h-3.5 w-3.5" />
           </Button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="w-44">
+        <DropdownMenuContent align="end" className="w-48">
+          {onToggleStar ? (
+            <>
+              <DropdownMenuItem
+                onClick={() => {
+                  if (starPending) return;
+                  onToggleStar(agent, !starred);
+                }}
+                disabled={starPending}
+              >
+                {starPending ? (
+                  <Loader2 className="size-4 motion-safe:animate-spin" />
+                ) : (
+                  <Star className={cn("size-4", starred && "fill-amber-500 text-amber-500")} />
+                )}
+                <span>{starred ? "Remove from starred" : "Star agent"}</span>
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+            </>
+          ) : null}
           <DropdownMenuItem asChild>
             <Link
               to={editHref}
@@ -441,6 +495,59 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
     [membershipMutation.isPending, membershipMutation.variables],
   );
 
+  const toggleStarAgent = useCallback(
+    (agent: Agent, starred: boolean) => membershipMutation.mutate({
+      resourceType: "agent",
+      resourceId: agent.id,
+      resourceName: agent.name,
+      starred,
+    }),
+    [membershipMutation],
+  );
+  const agentStarPending = useCallback(
+    (agent: Agent) =>
+      membershipMutation.isPending &&
+      membershipMutation.variables?.resourceType === "agent" &&
+      membershipMutation.variables.resourceId === agent.id &&
+      membershipMutation.variables.starred !== undefined,
+    [membershipMutation.isPending, membershipMutation.variables],
+  );
+
+  // Starred agents pin to the top of the section (name order), and are deduped
+  // out of the active/recent subset so no agent appears twice.
+  const starredAgentIdSet = useMemo(
+    () => new Set(starredResourceIds(membershipsQuery.data, "agent")),
+    [membershipsQuery.data],
+  );
+  const starredAgents = useMemo(
+    () => sortAgents(visibleAgents.filter((agent: Agent) => starredAgentIdSet.has(agent.id)), "alphabetical"),
+    [visibleAgents, starredAgentIdSet],
+  );
+  const dedupedDisplayedAgents = useMemo(
+    () => displayedAgents.filter((agent: Agent) => !starredAgentIdSet.has(agent.id)),
+    [displayedAgents, starredAgentIdSet],
+  );
+
+  const renderAgentRow = (agent: Agent, isStarredRow: boolean) => (
+    <SidebarAgentItem
+      key={agent.id}
+      activeAgentId={activeAgentId}
+      activeTab={activeTab}
+      agent={agent}
+      disabled={pendingAgentIds.has(agent.id)}
+      isMobile={isMobile}
+      leaving={agentLeaving(agent)}
+      onLeaveAgent={leaveAgent}
+      onPauseResume={(targetAgent, action) => pauseResumeAgent.mutate({ agent: targetAgent, action })}
+      rail={rail}
+      runCount={liveCountByAgent.get(agent.id) ?? 0}
+      setSidebarOpen={setSidebarOpen}
+      starred={isStarredRow || isStarred(membershipsQuery.data, "agent", agent.id)}
+      onToggleStar={toggleStarAgent}
+      starPending={agentStarPending(agent)}
+    />
+  );
+
   return (
     <SidebarSection
       label="Agents"
@@ -462,25 +569,8 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
         onRadioValueChange: persistSortMode,
       }}
     >
-      {displayedAgents.map((agent: Agent) => {
-        const runCount = liveCountByAgent.get(agent.id) ?? 0;
-        return (
-          <SidebarAgentItem
-            key={agent.id}
-            activeAgentId={activeAgentId}
-            activeTab={activeTab}
-            agent={agent}
-            disabled={pendingAgentIds.has(agent.id)}
-            isMobile={isMobile}
-            leaving={agentLeaving(agent)}
-            onLeaveAgent={leaveAgent}
-            onPauseResume={(targetAgent, action) => pauseResumeAgent.mutate({ agent: targetAgent, action })}
-            rail={rail}
-            runCount={runCount}
-            setSidebarOpen={setSidebarOpen}
-          />
-        );
-      })}
+      {starredAgents.map((agent: Agent) => renderAgentRow(agent, true))}
+      {dedupedDisplayedAgents.map((agent: Agent) => renderAgentRow(agent, false))}
       {showSeeAllLink && (() => {
         const seeAllLink = (
           <Link

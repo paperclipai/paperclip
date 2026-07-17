@@ -68,6 +68,7 @@ describe("human invite roles", () => {
   it("maps owner to the full management grant set", () => {
     expect(grantsForHumanRole("owner")).toEqual([
       { permissionKey: "agents:create", scope: null },
+      { permissionKey: "skills:create", scope: null },
       { permissionKey: "environments:manage", scope: null },
       { permissionKey: "users:invite", scope: null },
       { permissionKey: "users:manage_permissions", scope: null },
@@ -79,6 +80,7 @@ describe("human invite roles", () => {
   it("maps admin to management grants including environment management", () => {
     expect(grantsForHumanRole("admin")).toEqual([
       { permissionKey: "agents:create", scope: null },
+      { permissionKey: "skills:create", scope: null },
       { permissionKey: "environments:manage", scope: null },
       { permissionKey: "users:invite", scope: null },
       { permissionKey: "tasks:assign", scope: null },

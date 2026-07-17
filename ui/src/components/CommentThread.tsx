@@ -14,7 +14,7 @@ import { ArrowRight, Check, Copy, Paperclip } from "lucide-react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Identity } from "./Identity";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
-import { MarkdownBody } from "./MarkdownBody";
+import { MarkdownBody, type MarkdownExternalReferenceMap } from "./MarkdownBody";
 import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./MarkdownEditor";
 import { OutputFeedbackButtons } from "./OutputFeedbackButtons";
 import { ApprovalCard } from "./ApprovalCard";
@@ -105,6 +105,7 @@ interface CommentThreadProps {
   onInterruptQueued?: (runId: string) => Promise<void>;
   interruptingQueuedRunId?: string | null;
   composerDisabledReason?: string | null;
+  externalReferences?: MarkdownExternalReferenceMap;
 }
 
 const DRAFT_DEBOUNCE_MS = 800;
@@ -324,6 +325,7 @@ function CommentCard({
   voting = false,
   highlightCommentId,
   queued = false,
+  externalReferences,
 }: {
   comment: CommentWithRunMeta;
   agentMap?: Map<string, Agent>;
@@ -339,6 +341,7 @@ function CommentCard({
   voting?: boolean;
   highlightCommentId?: string | null;
   queued?: boolean;
+  externalReferences?: MarkdownExternalReferenceMap;
 }) {
   const isHighlighted = highlightCommentId === comment.id;
   const isPending = comment.clientStatus === "pending";
@@ -412,7 +415,7 @@ function CommentCard({
       {isDeleted ? (
         <div className="text-sm italic text-muted-foreground">Comment deleted</div>
       ) : (
-        <MarkdownBody className="text-sm" softBreaks>{comment.body}</MarkdownBody>
+        <MarkdownBody className="text-sm" softBreaks externalReferences={externalReferences}>{comment.body}</MarkdownBody>
       )}
       {companyId && !isPending && !isDeleted ? (
         <div className="mt-2 space-y-2">
@@ -575,6 +578,7 @@ const TimelineList = memo(function TimelineList({
   onVote,
   votingTargetId,
   highlightCommentId,
+  externalReferences,
 }: {
   timeline: TimelineItem[];
   agentMap?: Map<string, Agent>;
@@ -597,6 +601,7 @@ const TimelineList = memo(function TimelineList({
   ) => Promise<void>;
   votingTargetId?: string | null;
   highlightCommentId?: string | null;
+  externalReferences?: MarkdownExternalReferenceMap;
 }) {
   if (timeline.length === 0) {
     return <p className="text-sm text-muted-foreground">No timeline entries yet.</p>;
@@ -718,6 +723,7 @@ const TimelineList = memo(function TimelineList({
             onVote={onVote ? (vote, options) => onVote(comment.id, vote, options) : undefined}
             voting={votingTargetId === comment.id}
             highlightCommentId={highlightCommentId}
+            externalReferences={externalReferences}
           />
         );
       })}
@@ -756,6 +762,7 @@ export function CommentThread({
   onInterruptQueued,
   interruptingQueuedRunId = null,
   composerDisabledReason = null,
+  externalReferences,
 }: CommentThreadProps) {
   const [body, setBody] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -974,6 +981,7 @@ export function CommentThread({
         votingTargetId={votingTargetId}
         highlightCommentId={highlightCommentId}
         feedbackTermsUrl={feedbackTermsUrl}
+        externalReferences={externalReferences}
       />
 
       {liveRunSlot}
@@ -1006,6 +1014,7 @@ export function CommentThread({
                 projectId={projectId}
                 highlightCommentId={highlightCommentId}
                 queued
+                externalReferences={externalReferences}
               />
             ))}
           </div>
@@ -1053,14 +1062,14 @@ export function CommentThread({
               <InlineEntitySelector
                 value={reassignTarget}
                 options={reassignOptions}
-                placeholder="Assignee"
-                noneLabel="No assignee"
-                searchPlaceholder="Search assignees..."
-                emptyMessage="No assignees found."
+                placeholder="Responsible"
+                noneLabel="No responsible"
+                searchPlaceholder="Search responsible..."
+                emptyMessage="No responsible found."
                 onChange={setReassignTarget}
                 className="text-xs h-8"
                 renderTriggerValue={(option) => {
-                  if (!option) return <span className="text-muted-foreground">Assignee</span>;
+                  if (!option) return <span className="text-muted-foreground">Responsible</span>;
                   const agentId = option.id.startsWith("agent:") ? option.id.slice("agent:".length) : null;
                   const agent = agentId ? agentMap?.get(agentId) : null;
                   return (

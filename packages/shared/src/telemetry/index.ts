@@ -14,11 +14,21 @@ export {
   trackAgentFirstHeartbeat,
   trackAgentTaskCompleted,
   trackErrorHandlerCrash,
+  trackInteractionResolved,
 } from "./events.js";
 export type {
   TelemetryConfig,
   TelemetryState,
   TelemetryEvent,
   TelemetryEventEnvelope,
+  TelemetryDimensions,
+  TelemetryDimensionValue,
+  TelemetryEventDimensions,
   TelemetryEventName,
+  RegisteredPluginEventName,
 } from "./types.js";
+export type {
+  AnyPaperclipTelemetryEvent,
+  EventDimensionsMap,
+  PaperclipEventName,
+} from "./generated/paperclip-telemetry.js";

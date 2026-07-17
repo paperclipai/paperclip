@@ -61,7 +61,7 @@ describe("FileContentViewer", () => {
         contentType: "text/plain; charset=utf-8",
         byteSize: 18,
         previewKind: "text",
-        capabilities: { preview: true, download: false, listChildren: false },
+        capabilities: { preview: true, download: true, listChildren: false },
       },
       content: {
         encoding: "utf8",

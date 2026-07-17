@@ -152,7 +152,7 @@ describe("probeEnvironment", () => {
     expect(mockProbePluginSandboxProviderDriver).toHaveBeenCalledWith({
       db: expect.anything(),
       workerManager,
-      companyId: "company-1",
+      companyId: "instance",
       environmentId: "env-sandbox-plugin",
       provider: "fake-plugin",
       config: {
@@ -195,7 +195,7 @@ describe("probeEnvironment", () => {
     expect(mockProbePluginEnvironmentDriver).toHaveBeenCalledWith({
       db: expect.anything(),
       workerManager,
-      companyId: "company-1",
+      companyId: "instance",
       environmentId: "env-plugin",
       config: {
         pluginKey: "acme.environments",

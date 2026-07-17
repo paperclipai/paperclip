@@ -1,5 +1,6 @@
 import { useMemo, useState, type ReactNode } from "react";
 import type { ActivityEvent, Issue, Agent } from "@paperclipai/shared";
+import { isResponsibleUserDenialCode, responsibleUserLabel } from "@paperclipai/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@/lib/router";
 import { accessApi, type CurrentBoardAccess } from "../api/access";
@@ -18,6 +19,7 @@ import { keepPreviousDataForSameQueryTail } from "../lib/query-placeholder-data"
 import { describeRunRetryState } from "../lib/runRetryState";
 import { readSourceResolvedWatchdogFold } from "../lib/source-resolved-watchdog-fold";
 import { SourceResolvedFoldBadge } from "./SourceResolvedFoldBadge";
+import { ResponsibleUserDenialNotice } from "./ResponsibleUserDenialNotice";
 
 type IssueRunLedgerProps = {
   issueId: string;
@@ -28,6 +30,7 @@ type IssueRunLedgerProps = {
   hasLiveRuns: boolean;
   activityEvents?: ActivityEvent[];
   renderActivityEvent?: (event: ActivityEvent) => ReactNode;
+  resolveUserLabel?: (userId: string) => string | null | undefined;
 };
 
 type IssueRunLedgerContentProps = {
@@ -39,6 +42,7 @@ type IssueRunLedgerContentProps = {
   agentMap: ReadonlyMap<string, Pick<Agent, "name">>;
   activityEvents?: ActivityEvent[];
   renderActivityEvent?: (event: ActivityEvent) => ReactNode;
+  resolveUserLabel?: (userId: string) => string | null | undefined;
   pendingWatchdogDecision?: WatchdogDecisionInput["decision"] | null;
   canRecordWatchdogDecisions?: boolean;
   watchdogDecisionError?: string | null;
@@ -407,6 +411,7 @@ export function IssueRunLedger({
   hasLiveRuns,
   activityEvents,
   renderActivityEvent,
+  resolveUserLabel,
 }: IssueRunLedgerProps) {
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
@@ -469,6 +474,7 @@ export function IssueRunLedger({
       agentMap={agentMap}
       activityEvents={activityEvents}
       renderActivityEvent={renderActivityEvent}
+      resolveUserLabel={resolveUserLabel}
       pendingWatchdogDecision={watchdogDecision.variables?.decision ?? null}
       canRecordWatchdogDecisions={canBoardRecordWatchdogDecision(companyId, boardAccess)}
       watchdogDecisionError={watchdogDecisionError}
@@ -486,6 +492,7 @@ export function IssueRunLedgerContent({
   agentMap,
   activityEvents,
   renderActivityEvent,
+  resolveUserLabel,
   pendingWatchdogDecision,
   canRecordWatchdogDecisions = true,
   watchdogDecisionError,
@@ -695,6 +702,10 @@ export function IssueRunLedgerContent({
             const continuation = continuationLabel(run);
             const retryState = describeRunRetryState(run);
             const agentName = compactAgentName(run, agentMap);
+            const onBehalfOfLabel = run.responsibleUserId
+              ? responsibleUserLabel(resolveUserLabel?.(run.responsibleUserId))
+              : null;
+            const denialCode = isResponsibleUserDenialCode(run.errorCode) ? run.errorCode : null;
             const sourceResolvedFold = readSourceResolvedWatchdogFold(run.resultJson);
             return (
               <article
@@ -710,6 +721,15 @@ export function IssueRunLedgerContent({
                     {run.runId.slice(0, 8)}
                   </Link>
                   <span>by {agentName}</span>
+                  {onBehalfOfLabel ? (
+                    <span
+                      data-testid="run-on-behalf-of"
+                      className="min-w-0 max-w-full truncate text-muted-foreground"
+                      title={`Acting on behalf of ${onBehalfOfLabel}`}
+                    >
+                      on behalf of <span className="text-foreground">{onBehalfOfLabel}</span>
+                    </span>
+                  ) : null}
                   <span className="rounded-md border border-border px-1.5 py-0.5 text-[11px] capitalize text-muted-foreground">
                     {statusLabel(run.status)}
                   </span>
@@ -831,6 +851,13 @@ export function IssueRunLedgerContent({
                   <p className="min-w-0 break-words text-xs leading-5 text-muted-foreground">
                     {run.livenessReason}
                   </p>
+                ) : null}
+
+                {denialCode ? (
+                  <ResponsibleUserDenialNotice
+                    code={denialCode}
+                    userName={run.responsibleUserId ? resolveUserLabel?.(run.responsibleUserId) : null}
+                  />
                 ) : null}
 
                 {run.nextAction ? (

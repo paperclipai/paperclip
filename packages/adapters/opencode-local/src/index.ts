@@ -1,7 +1,7 @@
 import type { AdapterModelProfileDefinition } from "@paperclipai/adapter-utils";
 
 export const type = "opencode_local";
-export const label = "OpenCode (local)";
+export const label = "OpenCode";
 
 // Use OpenCode's official installer instead of `npm install -g opencode-ai`.
 // The npm package reifies four large Linux x64 prebuilt-binary subpackages

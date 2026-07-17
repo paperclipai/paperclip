@@ -32,7 +32,7 @@ export type AgentInvokability =
       invalidOrgChain: boolean;
     };
 
-const DIRECT_NON_INVOKABLE_STATUSES = new Set<AgentStatus>([
+export const DIRECT_NON_INVOKABLE_STATUSES = new Set<AgentStatus>([
   "paused",
   "terminated",
   "pending_approval",

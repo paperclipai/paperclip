@@ -8,7 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import { useQueries, useQuery } from "@tanstack/react-query";
-import { AlertTriangle, ChevronDown, ChevronRight, Cloud, FileCode2, FolderOpen, Loader2, Search } from "lucide-react";
+import { AlertTriangle, ChevronDown, ChevronRight, Cloud, Download, FileCode2, FolderOpen, Loader2, Search } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { fileResourcesApi } from "@/api/file-resources";
@@ -171,9 +171,10 @@ interface WorkspaceFileRowProps {
   depth: number;
   onOpen: () => void;
   onHover: () => void;
+  downloadUrl: string | null;
 }
 
-function WorkspaceFileRow({ item, treeItemId, selected, highlighted, depth, onOpen, onHover }: WorkspaceFileRowProps) {
+function WorkspaceFileRow({ item, treeItemId, selected, highlighted, depth, onOpen, onHover, downloadUrl }: WorkspaceFileRowProps) {
   const name = basename(item.relativePath);
   return (
     <div
@@ -191,6 +192,18 @@ function WorkspaceFileRow({ item, treeItemId, selected, highlighted, depth, onOp
     >
       <FileCode2 aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
       <span className="min-w-0 flex-1 truncate font-mono text-xs text-foreground">{name}</span>
+      {downloadUrl ? (
+        <a
+          href={downloadUrl}
+          download={name}
+          aria-label={`Download ${name}`}
+          title={`Download ${name}`}
+          onClick={(event) => event.stopPropagation()}
+          className="ml-auto inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-70 hover:bg-background/70 hover:text-foreground hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <Download aria-hidden="true" className="h-3.5 w-3.5" />
+        </a>
+      ) : null}
     </div>
   );
 }
@@ -335,6 +348,7 @@ interface WorkspaceFileTreeProps {
   onToggleFolder: (key: string) => void;
   onOpen: (item: WorkspaceFileListFileItem) => void;
   onHoverFile: (item: WorkspaceFileListFileItem) => void;
+  getDownloadUrl: (item: WorkspaceFileListFileItem) => string | null;
 }
 
 function WorkspaceFileTree({
@@ -352,6 +366,7 @@ function WorkspaceFileTree({
   onToggleFolder,
   onOpen,
   onHoverFile,
+  getDownloadUrl,
 }: WorkspaceFileTreeProps) {
   function renderNode(node: WorkspaceFileTreeNode): ReactNode {
     if (node.kind === "folder") {
@@ -419,6 +434,7 @@ function WorkspaceFileTree({
         depth={node.depth}
         onOpen={() => onOpen(node.item)}
         onHover={() => onHoverFile(node.item)}
+        downloadUrl={getDownloadUrl(node.item)}
       />
     );
   }
@@ -918,6 +934,18 @@ export function WorkspaceFileBrowser({
     if (index >= 0) setHighlightedIndex(index);
   }
 
+  function getDownloadUrl(item: WorkspaceFileListFileItem): string | null {
+    if (!item.capabilities.download) return null;
+    const itemTarget = item.projectId
+      ? { projectId: item.projectId, workspaceId: item.workspaceId }
+      : targetRef;
+    return fileResourcesApi.downloadUrl(issueId, {
+      path: item.relativePath,
+      workspace: effectiveWorkspace,
+      ...itemTarget,
+    });
+  }
+
   function lazyChildren(path: string, depth: number) {
     const children = buildWorkspaceDirectoryTree(lazyItemsByFolder.get(path) ?? []);
     return children.map((node) => ({ ...node, depth }));
@@ -1000,6 +1028,7 @@ export function WorkspaceFileBrowser({
         onToggleFolder={toggleFolder}
         onOpen={openItem}
         onHoverFile={handleHoverFile}
+        getDownloadUrl={getDownloadUrl}
       />
     );
   }

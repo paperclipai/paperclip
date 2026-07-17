@@ -1,0 +1,564 @@
+import { randomUUID } from "node:crypto";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { eq } from "drizzle-orm";
+import {
+  companies,
+  createDb,
+  environmentCustomImageSetupSessions,
+  environmentCustomImageTemplates,
+  environments,
+  plugins,
+} from "@paperclipai/db";
+import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
+import {
+  environmentCustomImageService,
+} from "../services/environment-custom-images.js";
+import {
+  fingerprintEnvironmentSandboxProviderConfig,
+} from "../services/environment-custom-image-runtime.js";
+import {
+  resolveEnvironmentDriverConfigForRuntime,
+} from "../services/environment-config.js";
+import {
+  getEmbeddedPostgresTestSupport,
+  startEmbeddedPostgresTestDatabase,
+} from "./helpers/embedded-postgres.js";
+
+const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+
+if (!embeddedPostgresSupport.supported) {
+  console.warn(
+    `Skipping embedded Postgres environment customImage tests on this host: ${embeddedPostgresSupport.reason ?? "unsupported environment"}`,
+  );
+}
+
+function pluginManifest() {
+  return {
+    id: "paperclip.fake-sandbox-provider",
+    apiVersion: 1,
+    version: "0.1.0",
+    displayName: "Fake Sandbox Provider",
+    categories: ["automation"],
+    capabilities: ["environment.drivers.register"],
+    entrypoints: { worker: "./dist/worker.js" },
+    environmentDrivers: [
+      {
+        driverKey: "fake-plugin",
+        kind: "sandbox_provider",
+        displayName: "Fake Sandbox Provider",
+        supportsInteractiveSetup: true,
+        interactiveSetupConnectionTypes: ["ssh"],
+        supportsTemplateCapture: true,
+        templateRefKind: "snapshot",
+        templateConfigBinding: {
+          field: "customTemplate",
+          unsetFields: ["image"],
+        },
+        supportsTemplateDelete: true,
+        configSchema: { type: "object" },
+      },
+    ],
+  } as const;
+}
+
+function createWorkerManager() {
+  const call = vi.fn(async (_pluginId: string, method: string, params: Record<string, unknown>) => {
+    if (method === "environmentStartInteractiveSetup") {
+      return {
+        providerLeaseId: `lease-${params.sessionId}`,
+        status: "waiting_for_user",
+        connectionSummary: {
+          type: "ssh",
+          username: "sandbox",
+          hostRedacted: true,
+          portRedacted: true,
+        },
+        connectionPayload: {
+          type: "ssh",
+          command: "ssh sandbox@203.0.113.10",
+          expiresAt: params.expiresAt,
+        },
+        expiresAt: params.expiresAt,
+        metadata: {
+          connectUrl: "https://203.0.113.10/setup",
+          safeLabel: "setup",
+        },
+      };
+    }
+    if (method === "environmentGetInteractiveSetup") {
+      return {
+        providerLeaseId: params.providerLeaseId,
+        status: "waiting_for_user",
+        connectionSummary: {
+          type: "ssh",
+          username: "sandbox",
+          hostRedacted: true,
+          portRedacted: true,
+        },
+        connectionPayload: {
+          type: "ssh",
+          command: "ssh sandbox@203.0.113.10",
+        },
+        metadata: {
+          safeLabel: "setup",
+        },
+      };
+    }
+    if (method === "environmentCaptureTemplate") {
+      return {
+        templateRef: `snapshot-${String(params.providerLeaseId).slice(-8)}`,
+        templateKind: "snapshot",
+        metadata: {
+          provider: "fake-plugin",
+          sourceTemplateRefRedacted: Boolean(params.sourceTemplateRef),
+          previousTemplateRefRedacted: Boolean(params.previousTemplateRef),
+        },
+      };
+    }
+    if (method === "environmentCancelInteractiveSetup") {
+      return {
+        status: params.reason === "timed_out" ? "timed_out" : "cancelled",
+        metadata: { provider: "fake-plugin", found: true },
+      };
+    }
+    if (method === "environmentDeleteTemplate") {
+      return { deleted: true, metadata: { provider: "fake-plugin" } };
+    }
+    throw new Error(`Unexpected plugin call: ${method}`);
+  });
+  return {
+    call,
+    isRunning: vi.fn(() => true),
+  } as unknown as PluginWorkerManager & { call: typeof call };
+}
+
+describeEmbeddedPostgres("environmentCustomImageService", () => {
+  let stopDb: (() => Promise<void>) | null = null;
+  let db!: ReturnType<typeof createDb>;
+
+  beforeAll(async () => {
+    const started = await startEmbeddedPostgresTestDatabase("environment-custom-images");
+    stopDb = started.stop;
+    db = createDb(started.connectionString);
+  });
+
+  afterEach(async () => {
+    await db.delete(environmentCustomImageSetupSessions);
+    await db.delete(environmentCustomImageTemplates);
+    await db.delete(plugins);
+    await db.delete(environments);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await stopDb?.();
+  });
+
+  async function seed() {
+    const companyId = randomUUID();
+    const environmentId = randomUUID();
+    await db.insert(companies).values(
+      { id: companyId, name: "Acme", issuePrefix: `A${companyId.slice(0, 4)}` },
+    );
+    await db.insert(environments).values({
+      id: environmentId,
+      name: `Fake ${environmentId.slice(0, 8)}`,
+      driver: "sandbox",
+      status: "active",
+      config: {
+        provider: "fake-plugin",
+        image: "fake:base",
+        reuseLease: false,
+      },
+      envVars: {},
+    });
+    await db.insert(plugins).values({
+      pluginKey: "paperclip.fake-sandbox-provider",
+      packageName: "paperclip-plugin-fake-sandbox",
+      version: "0.1.0",
+      apiVersion: 1,
+      categories: ["automation"],
+      manifestJson: pluginManifest(),
+      status: "ready",
+    });
+    return { companyId, environmentId };
+  }
+
+  it("starts, refreshes, finishes, refreshes again, and rolls back setup sessions", async () => {
+    const { environmentId } = await seed();
+    const workerManager = createWorkerManager();
+    const service = environmentCustomImageService(db, { pluginWorkerManager: workerManager });
+
+    const started = await service.startSetupSession({
+      environmentId,
+      actor: { userId: "user-1" },
+      ttlSeconds: 600,
+    });
+
+    expect(started.session.status).toBe("waiting_for_user");
+    expect(started.connectionPayload?.command).toContain("203.0.113.10");
+    expect(JSON.stringify(started.session.metadata)).not.toContain("203.0.113.10");
+
+    const status = await service.refreshSetupSession({
+      sessionId: started.session.id,
+      includeConnectionPayload: true,
+    });
+    expect(status.connectionPayload?.command).toContain("ssh sandbox@203.0.113.10");
+
+    const promoted = await service.finishSetupSession({ sessionId: started.session.id });
+    expect(promoted.session.status).toBe("promoted");
+    expect(promoted.template.status).toBe("active");
+    expect(promoted.template.templateKind).toBe("snapshot");
+    expect(promoted.template.metadata).toMatchObject({
+      runtimeConfigBinding: {
+        field: "customTemplate",
+        unsetFields: ["image"],
+      },
+    });
+
+    const refresh = await service.startSetupSession({
+      environmentId,
+      actor: { userId: "user-1" },
+    });
+    const replacement = await service.finishSetupSession({ sessionId: refresh.session.id });
+    expect(replacement.template.id).not.toBe(promoted.template.id);
+
+    const rollback = await service.rollbackTemplate({ environmentId });
+    expect(rollback.activeTemplate.id).toBe(promoted.template.id);
+    expect(rollback.supersededTemplate.id).toBe(replacement.template.id);
+  });
+
+  it("reuses the setup provider company context across lifecycle calls", async () => {
+    const { companyId, environmentId } = await seed();
+    const workerManager = createWorkerManager();
+    const service = environmentCustomImageService(db, { pluginWorkerManager: workerManager });
+
+    const started = await service.startSetupSession({
+      environmentId,
+      actor: { userId: "user-1" },
+      secretContextCompanyId: companyId,
+    });
+    expect(started.session.metadata).toMatchObject({
+      setupRpcCompanyId: companyId,
+    });
+
+    await service.refreshSetupSession({
+      sessionId: started.session.id,
+      includeConnectionPayload: true,
+    });
+    const promoted = await service.finishSetupSession({ sessionId: started.session.id });
+
+    const lifecycleCalls = workerManager.call.mock.calls
+      .filter(([, method]) => [
+        "environmentStartInteractiveSetup",
+        "environmentGetInteractiveSetup",
+        "environmentCaptureTemplate",
+        "environmentCancelInteractiveSetup",
+      ].includes(method))
+      .map(([, method, params]) => ({
+        method,
+        companyId: (params as Record<string, unknown>).companyId,
+      }));
+
+    expect(lifecycleCalls).toEqual([
+      { method: "environmentStartInteractiveSetup", companyId },
+      { method: "environmentGetInteractiveSetup", companyId },
+      { method: "environmentCaptureTemplate", companyId },
+      { method: "environmentCancelInteractiveSetup", companyId },
+    ]);
+    expect(promoted.session.metadata).toMatchObject({
+      setupRpcCompanyId: companyId,
+    });
+    expect(promoted.template.metadata).toMatchObject({
+      setupRpcCompanyId: companyId,
+    });
+  });
+
+  it("revokes the active template before deleting the provider template", async () => {
+    const { environmentId } = await seed();
+    const workerManager = createWorkerManager();
+    const service = environmentCustomImageService(db, { pluginWorkerManager: workerManager });
+
+    const started = await service.startSetupSession({
+      environmentId,
+      actor: { userId: "user-1" },
+    });
+    const promoted = await service.finishSetupSession({ sessionId: started.session.id });
+    let statusAtProviderDelete: string | null = null;
+    workerManager.call.mockImplementation(async (_pluginId, method) => {
+      if (method !== "environmentDeleteTemplate") {
+        throw new Error(`Unexpected plugin call after setup: ${method}`);
+      }
+      const [row] = await db
+        .select({ status: environmentCustomImageTemplates.status })
+        .from(environmentCustomImageTemplates)
+        .where(eq(environmentCustomImageTemplates.id, promoted.template.id));
+      statusAtProviderDelete = row?.status ?? null;
+      return { deleted: true, metadata: { provider: "fake-plugin" } };
+    });
+
+    const disabled = await service.disableTemplate({
+      environmentId,
+      deleteProviderTemplate: true,
+    });
+
+    expect(disabled.status).toBe("revoked");
+    expect(statusAtProviderDelete).toBe("revoked");
+    expect(workerManager.call).toHaveBeenLastCalledWith(
+      expect.any(String),
+      "environmentDeleteTemplate",
+      expect.objectContaining({
+        templateRef: promoted.template.templateRef,
+        reason: "disabled",
+      }),
+      undefined,
+    );
+  });
+
+  it("does not send provider template refs to a different current provider", async () => {
+    const { environmentId } = await seed();
+    const workerManager = createWorkerManager();
+    const service = environmentCustomImageService(db, { pluginWorkerManager: workerManager });
+
+    const started = await service.startSetupSession({
+      environmentId,
+      actor: { userId: "user-1" },
+    });
+    const promoted = await service.finishSetupSession({ sessionId: started.session.id });
+    const deleteCallsBefore = workerManager.call.mock.calls
+      .filter(([, method]) => method === "environmentDeleteTemplate")
+      .length;
+
+    await db.update(environments)
+      .set({
+        config: {
+          provider: "other-plugin",
+          image: "other:base",
+          reuseLease: false,
+        },
+      })
+      .where(eq(environments.id, environmentId));
+
+    await expect(service.disableTemplate({
+      environmentId,
+      deleteProviderTemplate: true,
+    })).rejects.toThrow("Environment customImage provider changed");
+
+    const deleteCallsAfter = workerManager.call.mock.calls
+      .filter(([, method]) => method === "environmentDeleteTemplate")
+      .length;
+    const [templateRow] = await db
+      .select({ status: environmentCustomImageTemplates.status })
+      .from(environmentCustomImageTemplates)
+      .where(eq(environmentCustomImageTemplates.id, promoted.template.id));
+
+    expect(deleteCallsAfter).toBe(deleteCallsBefore);
+    expect(templateRow?.status).toBe("active");
+  });
+
+  it("cancels and times out setup sessions without changing the active template", async () => {
+    const { environmentId } = await seed();
+    const workerManager = createWorkerManager();
+    const service = environmentCustomImageService(db, { pluginWorkerManager: workerManager });
+
+    const started = await service.startSetupSession({
+      environmentId,
+      actor: { userId: "user-1" },
+    });
+    const cancelled = await service.cancelSetupSession({
+      sessionId: started.session.id,
+      reason: "user_cancelled",
+    });
+    expect(cancelled.status).toBe("cancelled");
+    expect(await service.getActiveTemplate({ environmentId })).toBeNull();
+
+    const expired = await service.startSetupSession({
+      environmentId,
+      actor: { userId: "user-1" },
+      ttlSeconds: 60,
+      now: new Date("2026-06-25T00:00:00.000Z"),
+    });
+    const cleanup = await service.cleanupExpiredSetupSessions({
+      now: new Date("2026-06-25T00:02:00.000Z"),
+    });
+    expect(cleanup).toMatchObject({ scanned: 1, timedOut: 1, failed: 0 });
+    const timedOut = await service.getSessionById(expired.session.id);
+    expect(timedOut?.status).toBe("timed_out");
+  });
+
+  it("rejects templates from another environment", async () => {
+    const { environmentId } = await seed();
+    const otherEnvironmentId = randomUUID();
+    await db.insert(environments).values({
+      id: otherEnvironmentId,
+      name: `Other ${otherEnvironmentId.slice(0, 8)}`,
+      driver: "sandbox",
+      status: "active",
+      config: {
+        provider: "fake-plugin",
+        image: "fake:base",
+        reuseLease: false,
+      },
+      envVars: {},
+    });
+    const workerManager = createWorkerManager();
+    const service = environmentCustomImageService(db, { pluginWorkerManager: workerManager });
+    const [otherTemplate] = await db.insert(environmentCustomImageTemplates).values({
+      environmentId: otherEnvironmentId,
+      provider: "fake-plugin",
+      templateKind: "snapshot",
+      templateRef: "snapshot-other-environment",
+      status: "active",
+    }).returning();
+
+    await expect(service.startSetupSession({
+      environmentId,
+      templateId: otherTemplate!.id,
+      actor: { userId: "user-1" },
+    })).rejects.toThrow("Setup template must be the active template");
+  });
+
+  it("applies the active template regardless of base-config changes and falls back when none exists", async () => {
+    const { companyId, environmentId } = await seed();
+    const environment = await db.select().from(environments).where(eq(environments.id, environmentId)).then((rows) => rows[0]!);
+
+    const fallback = await resolveEnvironmentDriverConfigForRuntime(db, companyId, {
+      id: environment.id,
+      driver: "sandbox",
+      config: environment.config,
+    }, { heartbeatRunId: randomUUID() });
+    expect(fallback.driver).toBe("sandbox");
+    expect(fallback.config).toMatchObject({ image: "fake:base" });
+
+    await db.insert(environmentCustomImageTemplates).values({
+      environmentId,
+      provider: "fake-plugin",
+      templateKind: "snapshot",
+      templateRef: "snapshot-active",
+      sourceEnvironmentConfigFingerprint: fingerprintEnvironmentSandboxProviderConfig(environment.config as any),
+      status: "active",
+    });
+    const resolved = await resolveEnvironmentDriverConfigForRuntime(db, companyId, {
+      id: environment.id,
+      driver: "sandbox",
+      config: environment.config,
+    }, { heartbeatRunId: randomUUID() });
+    expect(resolved.driver).toBe("sandbox");
+    expect(resolved.config).toMatchObject({ snapshot: "snapshot-active" });
+    expect(resolved.config).not.toHaveProperty("image");
+
+    // A stored fingerprint that no longer matches the current base config (e.g. the
+    // config dialog re-saved the environment, or the user tweaked resource/lease
+    // knobs) must NOT silently discard the captured template.
+    await db.update(environmentCustomImageTemplates)
+      .set({ sourceEnvironmentConfigFingerprint: "stale" })
+      .where(eq(environmentCustomImageTemplates.templateRef, "snapshot-active"));
+    const afterConfigChange = await resolveEnvironmentDriverConfigForRuntime(db, companyId, {
+      id: environment.id,
+      driver: "sandbox",
+      config: environment.config,
+    }, { heartbeatRunId: randomUUID() });
+    expect(afterConfigChange.driver).toBe("sandbox");
+    expect(afterConfigChange.config).toMatchObject({ snapshot: "snapshot-active" });
+    expect(afterConfigChange.config).not.toHaveProperty("image");
+  });
+
+  it("applies the active template for ad-hoc Test probes only when applyCustomImageTemplate is set", async () => {
+    const { companyId, environmentId } = await seed();
+    const environment = await db.select().from(environments).where(eq(environments.id, environmentId)).then((rows) => rows[0]!);
+
+    await db.insert(environmentCustomImageTemplates).values({
+      environmentId,
+      provider: "fake-plugin",
+      templateKind: "snapshot",
+      templateRef: "snapshot-active",
+      status: "active",
+    });
+
+    // No issueId/heartbeatRunId and no opt-in: an operator Test probe would
+    // otherwise silently boot the base image instead of the captured template.
+    const withoutOptIn = await resolveEnvironmentDriverConfigForRuntime(db, companyId, {
+      id: environment.id,
+      driver: "sandbox",
+      config: environment.config,
+    });
+    expect(withoutOptIn.config).toMatchObject({ image: "fake:base" });
+    expect(withoutOptIn.config).not.toHaveProperty("snapshot");
+
+    // The Test route opts in explicitly so the probe uses the captured image.
+    const withOptIn = await resolveEnvironmentDriverConfigForRuntime(db, companyId, {
+      id: environment.id,
+      driver: "sandbox",
+      config: environment.config,
+    }, { applyCustomImageTemplate: true });
+    expect(withOptIn.config).toMatchObject({ snapshot: "snapshot-active" });
+    expect(withOptIn.config).not.toHaveProperty("image");
+  });
+
+  it("applies provider-declared runtime config bindings for captured templates", async () => {
+    const { companyId, environmentId } = await seed();
+    const workerManager = createWorkerManager();
+    const service = environmentCustomImageService(db, { pluginWorkerManager: workerManager });
+
+    const started = await service.startSetupSession({
+      environmentId,
+      actor: { userId: "user-1" },
+    });
+    const promoted = await service.finishSetupSession({ sessionId: started.session.id });
+
+    const environment = await db.select().from(environments).where(eq(environments.id, environmentId)).then((rows) => rows[0]!);
+    const resolved = await resolveEnvironmentDriverConfigForRuntime(db, companyId, {
+      id: environment.id,
+      driver: "sandbox",
+      config: environment.config,
+    }, { heartbeatRunId: randomUUID() });
+
+    expect(promoted.template.metadata).toMatchObject({
+      runtimeConfigBinding: {
+        field: "customTemplate",
+        unsetFields: ["image"],
+      },
+    });
+    expect(resolved.driver).toBe("sandbox");
+    expect(resolved.config).toMatchObject({ customTemplate: promoted.template.templateRef });
+    expect(resolved.config).not.toHaveProperty("image");
+    expect(resolved.config).not.toHaveProperty("snapshot");
+  });
+});
+
+describe("fingerprintEnvironmentSandboxProviderConfig", () => {
+  it("ignores excluded secret-ref paths so secretizing a credential on save keeps the fingerprint stable", () => {
+    // Mirrors the real flow: a template is captured before "Save Environment"
+    // rewrites the raw apiKey into a secret ref. Excluding the secret path must
+    // keep the capture-time and run-time fingerprints equal.
+    const rawCredential = {
+      provider: "daytona",
+      image: "daytonaio/sandbox:0.8.0",
+      apiKey: "raw-api-key-value",
+    } as any;
+    const secretRefCredential = {
+      provider: "daytona",
+      image: "daytonaio/sandbox:0.8.0",
+      apiKey: "0d9a7b0e-a3ba-4605-8a68-eb230d494e98",
+    } as any;
+
+    const exclude = { excludePaths: ["apiKey"] };
+    expect(fingerprintEnvironmentSandboxProviderConfig(rawCredential, exclude)).toBe(
+      fingerprintEnvironmentSandboxProviderConfig(secretRefCredential, exclude),
+    );
+
+    // Without exclusion the credential change would (incorrectly) invalidate the template.
+    expect(fingerprintEnvironmentSandboxProviderConfig(rawCredential)).not.toBe(
+      fingerprintEnvironmentSandboxProviderConfig(secretRefCredential),
+    );
+
+    // A meaningful base change (e.g. switching the base image) still changes the fingerprint.
+    expect(fingerprintEnvironmentSandboxProviderConfig(rawCredential, exclude)).not.toBe(
+      fingerprintEnvironmentSandboxProviderConfig(
+        { ...rawCredential, image: "daytonaio/sandbox:0.9.0" } as any,
+        exclude,
+      ),
+    );
+  });
+});

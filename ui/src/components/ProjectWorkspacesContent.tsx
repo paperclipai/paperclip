@@ -41,6 +41,7 @@ export function ProjectWorkspacesContent({
     },
     onSettled: () => {
       setRuntimeActionKey(null);
+      queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.overview(companyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.list(companyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.list(companyId, { projectId }) });
       queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(projectId) });
@@ -104,6 +105,7 @@ export function ProjectWorkspacesContent({
             if (!open) setClosingWorkspace(null);
           }}
           onClosed={() => {
+            queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.overview(companyId) });
             queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.list(companyId) });
             queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.list(companyId, { projectId }) });
             queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(projectId) });

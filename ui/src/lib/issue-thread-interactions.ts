@@ -158,6 +158,12 @@ export function buildIssueThreadInteractionSummary(
   if (interaction.status === "cancelled") {
     return count === 1 ? "Cancelled 1 question" : `Cancelled ${count} questions`;
   }
+  if (interaction.status === "expired") {
+    if (interaction.result?.expirationReason === "superseded_by_comment") {
+      return count === 1 ? "Question expired after comment" : "Questions expired after comment";
+    }
+    return count === 1 ? "Question expired" : "Questions expired";
+  }
   return count === 1 ? "Asked 1 question" : `Asked ${count} questions`;
 }
 

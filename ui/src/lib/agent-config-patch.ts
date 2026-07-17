@@ -1,4 +1,4 @@
-import type { Agent } from "@paperclipai/shared";
+import { ADAPTER_AGNOSTIC_KEYS, type Agent } from "@paperclipai/shared";
 
 export interface AgentModelProfileOverlay {
   enabled?: boolean;
@@ -18,16 +18,6 @@ export interface AgentConfigOverlay {
   runtime: Record<string, unknown>;
   modelProfiles?: { cheap?: AgentModelProfileOverlay };
 }
-
-const ADAPTER_AGNOSTIC_KEYS = [
-  "env",
-  "promptTemplate",
-  "instructionsFilePath",
-  "cwd",
-  "timeoutSec",
-  "graceSec",
-  "bootstrapPromptTemplate",
-] as const;
 
 function omitUndefinedEntries(value: Record<string, unknown>) {
   return Object.fromEntries(

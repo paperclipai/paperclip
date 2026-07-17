@@ -10,10 +10,12 @@ import { EntityRow } from "../components/EntityRow";
 import { ProjectTile } from "../components/ProjectTile";
 import { StatusBadge } from "../components/StatusBadge";
 import { MembershipAction } from "../components/MembershipAction";
+import { StarToggle } from "../components/StarToggle";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { formatDate, formatNumber, formatProjectBudget, projectUrl } from "../lib/utils";
 import {
+  isStarred,
   resourceMembershipState,
   useResourceMembershipMutation,
   useResourceMemberships,
@@ -204,6 +206,9 @@ export function Projects() {
                     const pending = membershipMutation.isPending &&
                       membershipMutation.variables?.resourceType === "project" &&
                       membershipMutation.variables.resourceId === project.id;
+                    const starPending = pending && membershipMutation.variables?.starred !== undefined;
+                    const joinLeavePending = pending && membershipMutation.variables?.starred === undefined;
+                    const starred = isStarred(membershipsQuery.data, "project", project.id);
                     return (
                       <EntityRow
                         key={project.id}
@@ -234,8 +239,8 @@ export function Projects() {
                             <StatusBadge status={project.status} />
                             <MembershipAction
                               state={state}
-                              pending={pending}
-                              pendingState={pending ? membershipMutation.variables?.state : null}
+                              pending={joinLeavePending}
+                              pendingState={joinLeavePending ? membershipMutation.variables?.state : null}
                               resourceName={project.name}
                               onJoin={() => membershipMutation.mutate({
                                 resourceType: "project",
@@ -248,6 +253,18 @@ export function Projects() {
                                 resourceId: project.id,
                                 resourceName: project.name,
                                 state: "left",
+                              })}
+                            />
+                            <StarToggle
+                              size="row"
+                              starred={starred}
+                              pending={starPending}
+                              resourceName={project.name}
+                              onToggle={(next) => membershipMutation.mutate({
+                                resourceType: "project",
+                                resourceId: project.id,
+                                resourceName: project.name,
+                                starred: next,
                               })}
                             />
                           </div>

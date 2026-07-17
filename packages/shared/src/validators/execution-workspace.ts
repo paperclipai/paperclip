@@ -1,4 +1,8 @@
 import { z } from "zod";
+import {
+  WORKSPACE_OVERVIEW_DEFAULT_LIMIT,
+  WORKSPACE_OVERVIEW_MAX_LIMIT,
+} from "../constants.js";
 
 export const executionWorkspaceStatusSchema = z.enum([
   "active",
@@ -7,6 +11,23 @@ export const executionWorkspaceStatusSchema = z.enum([
   "archived",
   "cleanup_failed",
 ]);
+
+const workspaceOverviewStatusFilterSchema = z.preprocess((value) => {
+  if (value === undefined || value === null) return undefined;
+  const rawValues = Array.isArray(value) ? value : [value];
+  const statuses = rawValues.flatMap((entry) => {
+    if (typeof entry !== "string") return [];
+    return entry.split(",").map((part) => part.trim()).filter(Boolean);
+  });
+  return statuses.length > 0 ? statuses : undefined;
+}, z.array(executionWorkspaceStatusSchema).optional());
+
+export const workspaceOverviewQuerySchema = z.object({
+  projectId: z.string().uuid().optional(),
+  status: workspaceOverviewStatusFilterSchema,
+  limit: z.coerce.number().int().min(1).max(WORKSPACE_OVERVIEW_MAX_LIMIT).optional().default(WORKSPACE_OVERVIEW_DEFAULT_LIMIT),
+  offset: z.coerce.number().int().min(0).optional().default(0),
+}).strict();
 
 export const executionWorkspaceConfigSchema = z.object({
   environmentId: z.string().uuid().optional().nullable(),
@@ -129,3 +150,4 @@ export const updateExecutionWorkspaceSchema = z.object({
 }).strict();
 
 export type UpdateExecutionWorkspace = z.infer<typeof updateExecutionWorkspaceSchema>;
+export type WorkspaceOverviewQuery = z.infer<typeof workspaceOverviewQuerySchema>;

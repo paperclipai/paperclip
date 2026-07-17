@@ -746,7 +746,7 @@ export const ReviewSurface: Story = {
         <div className="grid gap-6 xl:grid-cols-2">
           <ScenarioCard
             title="Pending"
-            description="Answers stay local across the whole form and only wake the assignee once after final submit."
+            description="Answers stay local across the whole form until the operator submits the final response."
           >
             <InteractiveAskUserQuestionsCard />
           </ScenarioCard>

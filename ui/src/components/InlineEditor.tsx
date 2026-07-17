@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { cn } from "../lib/utils";
-import { MarkdownBody } from "./MarkdownBody";
+import { MarkdownBody, type MarkdownExternalReferenceMap } from "./MarkdownBody";
 import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./MarkdownEditor";
 import { useAutosaveIndicator } from "../hooks/useAutosaveIndicator";
 import { FoldCurtain } from "./FoldCurtain";
@@ -19,6 +19,11 @@ interface InlineEditorProps {
   nullable?: boolean;
   /** When true, long display-mode markdown is clipped with a fade curtain that expands on click. */
   foldable?: boolean;
+  /**
+   * Optional host-resolved external object metadata. Forwarded to the read-mode
+   * `MarkdownBody` so resolved URLs render with the inline status icon prefix.
+   */
+  externalReferences?: MarkdownExternalReferenceMap;
 }
 
 /** Shared padding so display and edit modes occupy the exact same box. */
@@ -55,6 +60,7 @@ export function InlineEditor({
   onDropFile,
   mentions,
   foldable = false,
+  externalReferences,
 }: InlineEditorProps) {
   const [editing, setEditing] = useState(false);
   const [multilineEditing, setMultilineEditing] = useState(false);
@@ -288,12 +294,18 @@ export function InlineEditor({
         >
           {foldable ? (
             <FoldCurtain>
-              <MarkdownBody className={cn("paperclip-edit-in-place-content", className)}>
+              <MarkdownBody
+                className={cn("paperclip-edit-in-place-content", className)}
+                externalReferences={externalReferences}
+              >
                 {previewValue}
               </MarkdownBody>
             </FoldCurtain>
           ) : (
-            <MarkdownBody className={cn("paperclip-edit-in-place-content", className)}>
+            <MarkdownBody
+              className={cn("paperclip-edit-in-place-content", className)}
+              externalReferences={externalReferences}
+            >
               {previewValue}
             </MarkdownBody>
           )}

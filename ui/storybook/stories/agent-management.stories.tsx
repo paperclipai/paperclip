@@ -254,6 +254,9 @@ const storybookSecrets: CompanySecret[] = [
 	  {
 	    id: "secret-openai",
 	    companyId: COMPANY_ID,
+	    scope: "company",
+	    ownerUserId: null,
+	    userSecretDefinitionId: null,
 	    key: "openai-api-key",
 	    name: "OPENAI_API_KEY",
 	    provider: "local_encrypted",
@@ -275,6 +278,9 @@ const storybookSecrets: CompanySecret[] = [
 	  {
 	    id: "secret-ops-webhook",
 	    companyId: COMPANY_ID,
+	    scope: "company",
+	    ownerUserId: null,
+	    userSecretDefinitionId: null,
 	    key: "ops-webhook-token",
 	    name: "OPS_WEBHOOK_TOKEN",
 	    provider: "local_encrypted",
@@ -298,7 +304,7 @@ const storybookSecrets: CompanySecret[] = [
 const adapterFixtures: AdapterInfo[] = [
   {
     type: "codex_local",
-    label: "Codex Local",
+    label: "Codex",
     source: "builtin",
     modelsCount: 3,
     loaded: true,
@@ -313,7 +319,7 @@ const adapterFixtures: AdapterInfo[] = [
   },
   {
     type: "claude_local",
-    label: "Claude Local",
+    label: "Claude Code",
     source: "builtin",
     modelsCount: 2,
     loaded: true,
@@ -780,7 +786,6 @@ export const ManagementMatrix: Story = {};
 
 const managedKubernetesEnvironment: Environment = {
   id: "env-k8s-storybook",
-  companyId: COMPANY_ID,
   name: "Kubernetes Sandbox",
   description: "Managed Kubernetes sandbox environment for hosted tenant execution.",
   driver: "sandbox",
@@ -792,6 +797,7 @@ const managedKubernetesEnvironment: Environment = {
     runtimeClassName: "gvisor",
     egressMode: "cilium",
   },
+  envVars: {},
   metadata: { managedByPaperclip: true, managedKubernetesSandbox: true },
   createdAt: recent(2_000),
   updatedAt: recent(60),

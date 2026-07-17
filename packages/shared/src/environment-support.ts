@@ -1,6 +1,6 @@
 import type { AgentAdapterType, EnvironmentDriver } from "./constants.js";
 import type { SandboxEnvironmentProvider } from "./types/environment.js";
-import type { JsonSchema } from "./types/plugin.js";
+import type { JsonSchema, PluginEnvironmentTemplateConfigBinding } from "./types/plugin.js";
 
 export type EnvironmentSupportStatus = "supported" | "unsupported";
 
@@ -16,6 +16,12 @@ export interface EnvironmentProviderCapability {
   supportsUnsavedProbe: boolean;
   supportsRunExecution: boolean;
   supportsReusableLeases: boolean;
+  supportsInteractiveSetup: boolean;
+  interactiveSetupConnectionTypes: string[];
+  supportsTemplateCapture: boolean;
+  templateRefKind?: string;
+  templateConfigBinding?: PluginEnvironmentTemplateConfigBinding;
+  supportsTemplateDelete: boolean;
   displayName?: string;
   description?: string;
   source?: "builtin" | "plugin";
@@ -117,6 +123,10 @@ export function getEnvironmentCapabilities(
       supportsUnsavedProbe: true,
       supportsRunExecution: false,
       supportsReusableLeases: true,
+      supportsInteractiveSetup: false,
+      interactiveSetupConnectionTypes: [],
+      supportsTemplateCapture: false,
+      supportsTemplateDelete: false,
       displayName: "Fake",
       source: "builtin",
     },
@@ -128,6 +138,12 @@ export function getEnvironmentCapabilities(
       supportsUnsavedProbe: capability.supportsUnsavedProbe ?? true,
       supportsRunExecution: capability.supportsRunExecution ?? true,
       supportsReusableLeases: capability.supportsReusableLeases ?? true,
+      supportsInteractiveSetup: capability.supportsInteractiveSetup ?? false,
+      interactiveSetupConnectionTypes: capability.interactiveSetupConnectionTypes ?? [],
+      supportsTemplateCapture: capability.supportsTemplateCapture ?? false,
+      templateRefKind: capability.templateRefKind,
+      templateConfigBinding: capability.templateConfigBinding,
+      supportsTemplateDelete: capability.supportsTemplateDelete ?? false,
       displayName: capability.displayName,
       description: capability.description,
       source: capability.source ?? "plugin",

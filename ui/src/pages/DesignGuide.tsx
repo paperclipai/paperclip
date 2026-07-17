@@ -127,6 +127,8 @@ import { Identity } from "@/components/Identity";
 import { IssueReferencePill } from "@/components/IssueReferencePill";
 import { MembershipAction } from "@/components/MembershipAction";
 import { IssueOutputSection } from "@/components/issue-output/IssueOutputSection";
+import { EnvironmentVariablesEditor } from "@/components/environment-variables-editor";
+import type { CompanySecret, EnvBinding } from "@paperclipai/shared";
 import {
   EnvInputsList,
   ExternalSourcesList,
@@ -259,6 +261,84 @@ function TeamCardShowcase() {
   );
 }
 
+// Reusable environment-variables editor: one shared grid, in-field source
+// switch, fuzzy secret picker, sensitive-value detection, inline health.
+const DESIGN_GUIDE_SECRETS: CompanySecret[] = [
+  {
+    id: "dg-github",
+    companyId: "dg",
+    scope: "company",
+    ownerUserId: null,
+    userSecretDefinitionId: null,
+    key: "github_token",
+    name: "GITHUB_TOKEN",
+    provider: "local_encrypted",
+    status: "active",
+    managedMode: "paperclip_managed",
+    externalRef: null,
+    providerConfigId: null,
+    providerMetadata: null,
+    latestVersion: 3,
+    description: null,
+    lastResolvedAt: null,
+    lastRotatedAt: null,
+    deletedAt: null,
+    createdByAgentId: null,
+    createdByUserId: null,
+    createdAt: new Date("2026-03-01T10:00:00.000Z"),
+    updatedAt: new Date("2026-03-01T10:00:00.000Z"),
+  },
+  {
+    id: "dg-db",
+    companyId: "dg",
+    scope: "company",
+    ownerUserId: null,
+    userSecretDefinitionId: null,
+    key: "db_connection",
+    name: "DB_CONNECTION",
+    provider: "local_encrypted",
+    status: "active",
+    managedMode: "paperclip_managed",
+    externalRef: null,
+    providerConfigId: null,
+    providerMetadata: null,
+    latestVersion: 3,
+    description: null,
+    lastResolvedAt: null,
+    lastRotatedAt: null,
+    deletedAt: null,
+    createdByAgentId: null,
+    createdByUserId: null,
+    createdAt: new Date("2026-03-01T10:00:00.000Z"),
+    updatedAt: new Date("2026-03-01T10:00:00.000Z"),
+  },
+];
+
+function EnvironmentVariablesEditorShowcase() {
+  const [env, setEnv] = useState<Record<string, EnvBinding>>({
+    NODE_ENV: { type: "plain", value: "production" },
+    GH_TOKEN: { type: "secret_ref", secretId: "dg-github", version: "latest" },
+    DB_URL: { type: "secret_ref", secretId: "dg-db", version: 3 },
+    STRIPE_API_KEY: { type: "plain", value: "sk-live-51H8xL0aBcDeFgHiJkLmNoPq" },
+  });
+  return (
+    <div className="max-w-[640px] rounded-md border border-border p-4">
+      <EnvironmentVariablesEditor
+        value={env}
+        secrets={DESIGN_GUIDE_SECRETS}
+        onChange={(next) => setEnv(next ?? {})}
+        onCreateSecret={async (name) => ({
+          ...DESIGN_GUIDE_SECRETS[0]!,
+          id: `dg-${name}`,
+          key: name,
+          name: name.toUpperCase(),
+          latestVersion: 1,
+        })}
+      />
+    </div>
+  );
+}
+
 /* ------------------------------------------------------------------ */
 /*  Color swatch                                                       */
 /* ------------------------------------------------------------------ */
@@ -337,7 +417,7 @@ export function DesignGuide() {
               {[
                 "StatusBadge", "StatusIcon", "PriorityIcon", "EntityRow", "EmptyState", "MetricCard",
                 "FilterBar", "InlineEditor", "PageSkeleton", "Identity", "CommentThread", "MarkdownEditor",
-                "PropertiesPanel", "Sidebar", "CommandPalette",
+                "PropertiesPanel", "Sidebar", "CommandPalette", "EnvironmentVariablesEditor",
               ].map((name) => (
                 <Badge key={name} variant="ghost" className="font-mono text-[10px]">
                   {name}
@@ -1038,7 +1118,7 @@ export function DesignGuide() {
             }
             identifier="PAP-001"
             title="Implement authentication flow"
-            subtitle="Assigned to Agent Alpha"
+            subtitle="Responsible: Agent Alpha"
             trailing={<IssueStatusBadge status="in_progress" />}
             onClick={() => {}}
           />
@@ -1344,7 +1424,7 @@ export function DesignGuide() {
             <PriorityIcon priority="high" />
           </div>
           <div className="flex items-center justify-between py-1.5">
-            <span className="text-xs text-muted-foreground">Assignee</span>
+            <span className="text-xs text-muted-foreground">Responsible</span>
             <div className="flex items-center gap-1.5">
               <Avatar size="sm"><AvatarFallback>A</AvatarFallback></Avatar>
               <span className="text-xs">Agent Alpha</span>
@@ -1688,6 +1768,17 @@ export function DesignGuide() {
             at all (no placeholder card).
           </p>
         </SubSection>
+      </Section>
+
+      <Section title="Environment Variables Editor">
+        <p className="text-sm text-muted-foreground">
+          Reusable env-var editor (agents, projects, environments, routines). One shared grid, an
+          in-field Text/Secret source switch, a fuzzy secret picker with a pinned “Create secret”
+          item, automatic sensitive-value detection, and inline secret-health warnings. See the
+          Storybook <span className="font-mono">Product/Environment Variables Editor</span> stories
+          for all 10 states.
+        </p>
+        <EnvironmentVariablesEditorShowcase />
       </Section>
     </div>
   );

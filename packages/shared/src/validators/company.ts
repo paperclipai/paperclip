@@ -18,6 +18,7 @@ export const createCompanySchema = z.object({
   description: z.string().optional().nullable(),
   budgetMonthlyCents: z.number().int().nonnegative().optional().default(0),
   attachmentMaxBytes: attachmentMaxBytesSchema.optional(),
+  defaultResponsibleUserId: z.string().min(1).nullable().optional(),
 });
 
 export type CreateCompany = z.infer<typeof createCompanySchema>;

@@ -24,6 +24,7 @@ import {
   ISSUE_THREAD_INTERACTION_CONTINUATION_POLICIES,
   ISSUE_THREAD_INTERACTION_KINDS,
   ISSUE_THREAD_INTERACTION_STATUSES,
+  ISSUE_WATCHDOG_DISCOVERY_KINDS,
   MODEL_PROFILE_KEYS,
   REQUEST_CHECKBOX_CONFIRMATION_OPTION_LIMIT,
 } from "../constants.js";
@@ -387,6 +388,8 @@ const createIssueBaseSchema = z.object({
   assigneeAgentId: z.string().uuid().optional().nullable(),
   assigneeUserId: z.string().optional().nullable(),
   requestDepth: issueRequestDepthInputSchema.optional().default(0),
+  createdByUserId: z.string().optional().nullable(),
+  responsibleUserId: z.string().optional().nullable(),
   billingCode: z.string().optional().nullable(),
   assigneeAdapterOverrides: issueAssigneeAdapterOverridesSchema.optional().nullable(),
   executionPolicy: issueExecutionPolicySchema.optional().nullable(),
@@ -394,6 +397,14 @@ const createIssueBaseSchema = z.object({
   executionWorkspacePreference: z.enum(ISSUE_EXECUTION_WORKSPACE_PREFERENCES).optional().nullable(),
   executionWorkspaceSettings: issueExecutionWorkspaceSettingsSchema.optional().nullable(),
   labelIds: z.array(z.string().uuid()).optional(),
+  watchdogDiscovery: z.object({
+    kind: z.enum(ISSUE_WATCHDOG_DISCOVERY_KINDS),
+    evidenceMarkdown: multilineTextSchema.optional().nullable(),
+  }).strict().optional().nullable(),
+  watchdog: z.object({
+    agentId: z.string().uuid(),
+    instructions: multilineTextSchema.optional().nullable(),
+  }).strict().optional().nullable(),
 });
 
 export const createIssueInputSchema = createIssueBaseSchema.extend({
@@ -404,10 +415,18 @@ export const createIssueSchema = withCreateIssueStatusDefault(createIssueBaseSch
 
 export type CreateIssue = z.infer<typeof createIssueSchema>;
 
+export const upsertIssueWatchdogSchema = z.object({
+  agentId: z.string().uuid(),
+  instructions: multilineTextSchema.optional().nullable(),
+}).strict();
+
+export type UpsertIssueWatchdog = z.infer<typeof upsertIssueWatchdogSchema>;
+
 export const createChildIssueSchema = withCreateIssueStatusDefault(createIssueBaseSchema
   .omit({
     parentId: true,
     inheritExecutionWorkspaceFromIssueId: true,
+    watchdogDiscovery: true,
   })
   .extend({
     acceptanceCriteria: z.array(z.string().trim().min(1).max(500)).max(20).optional(),
@@ -430,7 +449,11 @@ export const createIssueLabelSchema = z.object({
 
 export type CreateIssueLabel = z.infer<typeof createIssueLabelSchema>;
 
-export const updateIssueSchema = createIssueBaseSchema.partial().extend({
+export const updateIssueSchema = createIssueBaseSchema.omit({
+  createdByUserId: true,
+  responsibleUserId: true,
+  watchdog: true,
+}).partial().extend({
   requestDepth: issueRequestDepthInputSchema.optional(),
   assigneeAgentId: z.string().trim().min(1).optional().nullable(),
   comment: multilineTextSchema.pipe(z.string().min(1)).optional(),
@@ -640,6 +663,7 @@ export const askUserQuestionsPayloadSchema = z.object({
   version: z.literal(1),
   title: z.string().trim().max(240).nullable().optional(),
   submitLabel: z.string().trim().max(120).nullable().optional(),
+  supersedeOnUserComment: z.boolean().optional(),
   questions: z.array(askUserQuestionsQuestionSchema).min(1).max(10),
 }).superRefine((value, ctx) => {
   const seenQuestionIds = new Set<string>();
@@ -678,6 +702,8 @@ export const askUserQuestionsResultSchema = z.object({
   answers: z.array(askUserQuestionsAnswerSchema).max(20),
   cancelled: z.literal(true).optional(),
   cancellationReason: z.string().trim().max(4000).nullable().optional(),
+  expirationReason: z.literal("superseded_by_comment").optional(),
+  commentId: z.string().uuid().nullable().optional(),
   summaryMarkdown: z.string().max(20000).nullable().optional(),
 });
 

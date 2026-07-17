@@ -104,7 +104,7 @@ function installStorybookApiFixtures() {
       return Response.json([
         {
           type: "claude_local",
-          label: "Claude Local",
+          label: "Claude Code",
           source: "builtin",
           modelsCount: 2,
           loaded: true,
@@ -119,7 +119,7 @@ function installStorybookApiFixtures() {
         },
         {
           type: "codex_local",
-          label: "Codex Local",
+          label: "Codex",
           source: "builtin",
           modelsCount: 3,
           loaded: true,

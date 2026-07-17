@@ -320,6 +320,67 @@ describe("CommandPalette", () => {
     });
   });
 
+  it("promotes matching projects above the Tasks group when typing", async () => {
+    const projects = [
+      { id: "p1", urlKey: "mobile", name: "Mobile App", description: "iOS client", archivedAt: null },
+      { id: "p2", urlKey: "billing", name: "Billing Service", description: null, archivedAt: null },
+    ];
+    mockProjectsApi.list.mockResolvedValue(projects);
+    mockIssuesApi.list.mockImplementation((_companyId: string, opts?: { q?: string }) =>
+      Promise.resolve(opts?.q ? [{ id: "i1", identifier: "ENG-9", title: "Fix login" }] : []),
+    );
+
+    const { root } = renderWithQueryClient(<CommandPalette />, container, (queryClient) => {
+      // Seed the caches so the already-loaded data is available synchronously —
+      // this harness's flush model doesn't reliably propagate fresh async fetches.
+      queryClient.setQueryData(queryKeys.projects.list("company-1"), projects);
+      queryClient.setQueryData(queryKeys.issues.search("company-1", "mob", undefined, 10), [
+        { id: "i1", identifier: "ENG-9", title: "Fix login" },
+      ]);
+    });
+
+    act(() => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true }));
+    });
+
+    const input = container.querySelector('input[aria-label="Command search"]') as HTMLInputElement;
+    act(() => {
+      const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      nativeSetter.call(input, "mob");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    await waitForAssertion(() => {
+      const match = container.querySelector('button[data-testid="command-project-match"]');
+      expect(match).not.toBeNull();
+      expect(match!.textContent).toContain("Mobile App");
+    });
+
+    // Non-matching project is excluded from the typeahead results.
+    expect(container.textContent).not.toContain("Billing Service");
+
+    // The promoted project renders above the fold — before the Tasks group.
+    await waitForAssertion(() => {
+      const text = container.textContent ?? "";
+      expect(text).toContain("Fix login");
+      expect(text.indexOf("Mobile App")).toBeLessThan(text.indexOf("Fix login"));
+    });
+
+    // Selecting the promoted project navigates to its URL.
+    act(() => {
+      container
+        .querySelector('button[data-testid="command-project-match"]')!
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await waitForAssertion(() => {
+      expect(navigateState.navigate).toHaveBeenCalledWith("/projects/mobile");
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("navigates to /search when the user clicks the Search-all command", async () => {
     mockIssuesApi.list.mockResolvedValue([]);
     const { root } = renderWithQueryClient(<CommandPalette />, container);

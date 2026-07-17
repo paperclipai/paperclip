@@ -14,6 +14,7 @@ const dialogState = vi.hoisted(() => ({
 }));
 
 const dialogContentState = vi.hoisted(() => ({
+  onEscapeKeyDown: null as null | ((event: KeyboardEvent) => void),
   onPointerDownOutside: null as null | ((event: {
     detail: { originalEvent: { target: EventTarget | null } };
     preventDefault: () => void;
@@ -75,6 +76,7 @@ const mockAssetsApi = vi.hoisted(() => ({
 const mockInstanceSettingsApi = vi.hoisted(() => ({
   getExperimental: vi.fn(),
 }));
+const mockMissingUserSecretsBannerRender = vi.hoisted(() => vi.fn());
 
 vi.mock("../context/DialogContext", () => ({
   useDialog: () => dialogState,
@@ -115,6 +117,20 @@ vi.mock("../api/assets", () => ({
 vi.mock("../api/instanceSettings", () => ({
   instanceSettingsApi: mockInstanceSettingsApi,
 }));
+
+vi.mock("../pages/secrets/MissingUserSecretsBanner", async () => {
+  const React = await import("react");
+  return {
+    MissingUserSecretsBanner: (props: { definitionKeys?: string[] }) => {
+      mockMissingUserSecretsBannerRender(props);
+      return React.createElement(
+        "div",
+        { "data-testid": "missing-user-secrets-banner" },
+        props.definitionKeys?.join(",") ?? "",
+      );
+    },
+  };
+});
 
 vi.mock("../hooks/useProjectOrder", () => ({
   useProjectOrder: ({ projects }: { projects: unknown[] }) => ({
@@ -193,14 +209,15 @@ vi.mock("@/components/ui/dialog", () => ({
   DialogContent: ({
     children,
     showCloseButton: _showCloseButton,
-    onEscapeKeyDown: _onEscapeKeyDown,
+    onEscapeKeyDown,
     onPointerDownOutside,
     ...props
   }: ComponentProps<"div"> & {
     showCloseButton?: boolean;
-    onEscapeKeyDown?: (event: unknown) => void;
+    onEscapeKeyDown?: (event: KeyboardEvent) => void;
     onPointerDownOutside?: (event: unknown) => void;
   }) => {
+    dialogContentState.onEscapeKeyDown = onEscapeKeyDown ?? null;
     dialogContentState.onPointerDownOutside = onPointerDownOutside as typeof dialogContentState.onPointerDownOutside;
     return <div {...props}>{children}</div>;
   },
@@ -221,7 +238,9 @@ vi.mock("@/components/ui/toggle-switch", () => ({
 vi.mock("@/components/ui/popover", () => ({
   Popover: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   PopoverTrigger: ({ children }: { children: ReactNode }) => <>{children}</>,
-  PopoverContent: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  PopoverContent: ({ children, disablePortal }: { children: ReactNode; disablePortal?: boolean }) => (
+    <div data-disable-portal={String(Boolean(disablePortal))}>{children}</div>
+  ),
 }));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -298,14 +317,22 @@ function renderDialog(container: HTMLDivElement) {
 
 describe("NewIssueDialog", () => {
   let container: HTMLDivElement;
+  let originalResizeObserver: typeof ResizeObserver | undefined;
 
   beforeEach(() => {
     vi.useRealTimers();
+    originalResizeObserver = globalThis.ResizeObserver;
+    globalThis.ResizeObserver = class ResizeObserver {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    };
     container = document.createElement("div");
     document.body.appendChild(container);
     dialogState.newIssueOpen = true;
     dialogState.newIssueDefaults = {};
     dialogState.closeNewIssue.mockReset();
+    dialogContentState.onEscapeKeyDown = null;
     dialogContentState.onPointerDownOutside = null;
     toastState.pushToast.mockReset();
     mockIssuesApi.create.mockReset();
@@ -328,6 +355,7 @@ describe("NewIssueDialog", () => {
     mockAuthApi.getSession.mockResolvedValue({ user: { id: "user-1" } });
     mockAssetsApi.uploadImage.mockResolvedValue({ contentPath: "/uploads/asset.png" });
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
+    mockMissingUserSecretsBannerRender.mockReset();
     localStorage.clear();
     mockIssuesApi.create.mockResolvedValue({
       id: "issue-2",
@@ -337,6 +365,7 @@ describe("NewIssueDialog", () => {
   });
 
   afterEach(() => {
+    globalThis.ResizeObserver = originalResizeObserver!;
     document.body.innerHTML = "";
   });
 
@@ -447,6 +476,64 @@ describe("NewIssueDialog", () => {
     act(() => root.unmount());
   });
 
+  it("does not show user-secret warnings when the draft will not run an env binding that needs them", async () => {
+    const { root } = renderDialog(container);
+    await flush();
+
+    expect(mockMissingUserSecretsBannerRender).not.toHaveBeenCalled();
+
+    act(() => root.unmount());
+  });
+
+  it("scopes user-secret warnings to selected runnable agent and project env bindings", async () => {
+    dialogState.newIssueDefaults = {
+      title: "Run with scoped secrets",
+      assigneeAgentId: "agent-1",
+      projectId: "project-1",
+    };
+    mockAgentsApi.list.mockResolvedValue([
+      {
+        id: "agent-1",
+        name: "CodexCoder",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {
+          env: {
+            AGENT_TOKEN: { type: "user_secret_ref", key: "agent_token", required: true },
+            OPTIONAL_TOKEN: { type: "user_secret_ref", key: "optional_token", required: false },
+          },
+        },
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    mockProjectsApi.list.mockResolvedValue([
+      {
+        id: "project-1",
+        name: "Alpha",
+        description: null,
+        archivedAt: null,
+        color: "#445566",
+        env: {
+          PROJECT_TOKEN: { type: "user_secret_ref", key: "project_token", required: true },
+        },
+      },
+    ]);
+
+    const { root } = renderDialog(container);
+    await waitForAssertion(() => {
+      expect(mockMissingUserSecretsBannerRender).toHaveBeenCalledWith(
+        expect.objectContaining({
+          definitionKeys: ["agent_token", "project_token"],
+        }),
+      );
+    });
+
+    expect(container.textContent).toContain("agent_token,project_token");
+
+    act(() => root.unmount());
+  });
+
   it("restores the planning mode from dialog defaults", async () => {
     dialogState.newIssueDefaults = {
       title: "Planned from defaults",
@@ -476,6 +563,41 @@ describe("NewIssueDialog", () => {
       expect.objectContaining({
         title: "Planned from defaults",
         workMode: "planning",
+      }),
+    );
+
+    act(() => root.unmount());
+  });
+
+  it("restores ask mode from dialog defaults", async () => {
+    dialogState.newIssueDefaults = {
+      title: "Question from defaults",
+      workMode: "ask",
+    };
+
+    const { root } = renderDialog(container);
+    await flush();
+
+    const askButton = container.querySelector('[data-issue-work-mode="ask"]');
+    expect(askButton?.className).toContain("bg-accent");
+
+    const submitButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Create Task"));
+    expect(submitButton).not.toBeUndefined();
+    await vi.waitFor(() => {
+      expect(submitButton?.hasAttribute("disabled")).toBe(false);
+    });
+
+    await act(async () => {
+      submitButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(mockIssuesApi.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        title: "Question from defaults",
+        workMode: "ask",
       }),
     );
 
@@ -559,6 +681,57 @@ describe("NewIssueDialog", () => {
         },
       }),
     );
+
+    act(() => root.unmount());
+  });
+
+  it("keeps the reusable workspace search popover inside the modal", async () => {
+    mockProjectsApi.list.mockResolvedValue([
+      {
+        id: "project-1",
+        name: "Alpha",
+        description: null,
+        archivedAt: null,
+        color: "#445566",
+        workspaces: [
+          {
+            id: "project-workspace-1",
+            name: "Primary",
+            isPrimary: true,
+          },
+        ],
+        executionWorkspacePolicy: {
+          enabled: true,
+          defaultMode: "shared_workspace",
+        },
+      },
+    ]);
+    mockExecutionWorkspacesApi.listSummaries.mockResolvedValue([
+      {
+        id: "workspace-1",
+        name: "PAP-11446-on-mobile-the-agent-chat",
+        mode: "isolated_workspace",
+        status: "active",
+        branchName: "PAP-11446-on-mobile-the-agent-chat",
+        cwd: "/tmp/workspace-1",
+        projectWorkspaceId: "project-workspace-1",
+        lastUsedAt: new Date("2026-04-06T16:00:00.000Z"),
+      },
+    ]);
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
+    dialogState.newIssueDefaults = {
+      title: "Follow-up issue",
+      projectId: "project-1",
+      executionWorkspaceId: "workspace-1",
+    };
+
+    const { root } = renderDialog(container);
+    await flush();
+
+    await waitForAssertion(() => {
+      const workspaceInput = container.querySelector('input[placeholder="Search workspaces..."]');
+      expect(workspaceInput?.closest("[data-disable-portal]")?.getAttribute("data-disable-portal")).toBe("true");
+    });
 
     act(() => root.unmount());
   });
@@ -701,6 +874,154 @@ describe("NewIssueDialog", () => {
         workMode: "planning",
       }),
     );
+
+    act(() => root.unmount());
+  });
+
+  it("submits ask work mode when ask is selected", async () => {
+    const { root } = renderDialog(container);
+    await flush();
+
+    const titleInput = container.querySelector('textarea[placeholder="Task title"]') as HTMLTextAreaElement | null;
+    expect(titleInput).not.toBeNull();
+    await typeTextareaValue(titleInput!, "Answer this first");
+
+    const askButton = container.querySelector('[data-issue-work-mode="ask"]');
+    expect(askButton).not.toBeNull();
+    await act(async () => {
+      askButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    const submitButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Create Task"));
+    expect(submitButton).not.toBeUndefined();
+    await vi.waitFor(() => {
+      expect(submitButton?.hasAttribute("disabled")).toBe(false);
+    });
+
+    await act(async () => {
+      submitButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(mockIssuesApi.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        title: "Answer this first",
+        workMode: "ask",
+      }),
+    );
+
+    act(() => root.unmount());
+  });
+
+  it("cycles work modes with cmd-period", async () => {
+    const { root } = renderDialog(container);
+    await flush();
+
+    const modeChip = () => container.querySelector("[data-issue-work-mode-chip]");
+    expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("standard");
+
+    await act(async () => {
+      modeChip()?.dispatchEvent(new KeyboardEvent("keydown", {
+        bubbles: true,
+        code: "",
+        key: ".",
+        metaKey: true,
+      }));
+    });
+    expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("planning");
+
+    await act(async () => {
+      modeChip()?.dispatchEvent(new KeyboardEvent("keydown", {
+        bubbles: true,
+        code: "Period",
+        key: ".",
+        metaKey: true,
+      }));
+    });
+    expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("ask");
+
+    await act(async () => {
+      modeChip()?.dispatchEvent(new KeyboardEvent("keydown", {
+        bubbles: true,
+        code: "Period",
+        key: ".",
+        metaKey: true,
+      }));
+    });
+    expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("standard");
+
+    act(() => root.unmount());
+  });
+
+  it("cycles work modes when iOS reports cmd-period as Escape", async () => {
+    const { root } = renderDialog(container);
+    await flush();
+
+    const modeChip = () => container.querySelector("[data-issue-work-mode-chip]");
+    expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("standard");
+    expect(dialogContentState.onEscapeKeyDown).not.toBeNull();
+
+    const commandPeriodAsEscape = new KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      key: "Escape",
+      metaKey: true,
+    });
+    await act(async () => {
+      dialogContentState.onEscapeKeyDown?.(commandPeriodAsEscape);
+    });
+
+    expect(commandPeriodAsEscape.defaultPrevented).toBe(true);
+    expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("planning");
+    expect(dialogState.closeNewIssue).not.toHaveBeenCalled();
+
+    const plainEscape = new KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      key: "Escape",
+    });
+    await act(async () => {
+      dialogContentState.onEscapeKeyDown?.(plainEscape);
+    });
+
+    expect(plainEscape.defaultPrevented).toBe(false);
+    expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("planning");
+
+    const controlEscape = new KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      ctrlKey: true,
+      key: "Escape",
+    });
+    await act(async () => {
+      dialogContentState.onEscapeKeyDown?.(controlEscape);
+    });
+
+    expect(controlEscape.defaultPrevented).toBe(false);
+    expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("planning");
+
+    act(() => root.unmount());
+  });
+
+  it("cycles work modes with ctrl-period", async () => {
+    const { root } = renderDialog(container);
+    await flush();
+
+    const modeChip = () => container.querySelector("[data-issue-work-mode-chip]");
+    expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("standard");
+
+    await act(async () => {
+      modeChip()?.dispatchEvent(new KeyboardEvent("keydown", {
+        bubbles: true,
+        code: "Period",
+        key: ".",
+        ctrlKey: true,
+      }));
+    });
+    expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("planning");
 
     act(() => root.unmount());
   });
@@ -880,9 +1201,87 @@ describe("NewIssueDialog", () => {
     act(() => root.unmount());
   });
 
-  // PAP-139/PAP-140: work-mode labels and status hues branch on the Conference
-  // Room Chat experimental flag — OFF (default) must match master exactly.
-  describe("Conference Room Chat flag parity (PAP-140)", () => {
+  it("reveals the watchdog editor from the overflow menu", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIsolatedWorkspaces: false,
+      enableTaskWatchdogs: true,
+    });
+
+    const { root } = renderDialog(container);
+    await flush();
+
+    // The watchdog row is hidden until the menu item is toggled on.
+    expect(container.querySelector('textarea[placeholder^="What should the watchdog"]')).toBeNull();
+
+    const watchdogMenuItem = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "Watchdog");
+    expect(watchdogMenuItem).not.toBeUndefined();
+
+    await act(async () => {
+      watchdogMenuItem!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(container.textContent).toContain("Set watchdog");
+    expect(container.querySelector('textarea[placeholder^="What should the watchdog"]')).not.toBeNull();
+
+    act(() => root.unmount());
+  });
+
+  it("submits the configured watchdog from a restored draft", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIsolatedWorkspaces: false,
+      enableTaskWatchdogs: true,
+    });
+    localStorage.setItem(
+      "paperclip:issue-draft",
+      JSON.stringify({
+        title: "Watched task",
+        description: "",
+        status: "todo",
+        priority: "medium",
+        assigneeValue: "",
+        reviewerValue: "",
+        approverValue: "",
+        watchdogAgentId: "agent-9",
+        watchdogInstructions: "Keep it moving",
+        projectId: "",
+        assigneeModelOverride: "",
+        assigneeThinkingEffort: "",
+        assigneeChrome: false,
+        workMode: "standard",
+      }),
+    );
+
+    const { root } = renderDialog(container);
+    await flush();
+
+    expect(container.textContent).toContain("Keep it moving");
+
+    const submitButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Create Task"));
+    expect(submitButton).not.toBeUndefined();
+    await vi.waitFor(() => {
+      expect(submitButton?.hasAttribute("disabled")).toBe(false);
+    });
+
+    await act(async () => {
+      submitButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(mockIssuesApi.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        title: "Watched task",
+        watchdog: { agentId: "agent-9", instructions: "Keep it moving" },
+      }),
+    );
+
+    act(() => root.unmount());
+  });
+
+  describe("graduated work-mode labels and status hues", () => {
     function workModeOption(value: string) {
       return container.querySelector(`[data-issue-work-mode="${value}"]`);
     }
@@ -899,33 +1298,17 @@ describe("NewIssueDialog", () => {
       return button?.querySelector("svg")?.getAttribute("class") ?? "";
     }
 
-    it("uses master's work-mode labels and status hues when the flag is off (default)", async () => {
+    it("uses agent-mode labels and brand status hues by default", async () => {
       const { root } = renderDialog(container);
-      await flush();
-
-      expect(workModeOption("standard")?.textContent).toContain("Standard");
-      expect(workModeOption("standard")?.textContent).not.toContain("Agent mode");
-      expect(workModeOption("planning")?.textContent).toContain("Planning");
-      expect(workModeOption("planning")?.textContent).not.toContain("Plan mode");
-
-      // Master palette: todo → blue, in_progress → yellow.
-      expect(statusOptionIconClass("Todo", "Executable — assignee will be woken")).toContain("text-blue-600");
-      expect(statusOptionIconClass("In Progress")).toContain("text-yellow-600");
-
-      act(() => root.unmount());
-    });
-
-    it("uses NUX work-mode labels and brand status hues when the flag is on", async () => {
-      mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableConferenceRoomChat: true });
-
-      const { root } = renderDialog(container);
-      await flush();
+      await waitForAssertion(() => {
+        expect(workModeOption("standard")?.textContent).toContain("Agent mode");
+      });
 
       expect(workModeOption("standard")?.textContent).toContain("Agent mode");
+      expect(workModeOption("ask")?.textContent).toContain("Ask mode");
       expect(workModeOption("planning")?.textContent).toContain("Plan mode");
 
-      // PAP-75 brand palette: todo → amber, in_progress → blue.
-      expect(statusOptionIconClass("Todo", "Executable — assignee will be woken")).toContain("text-amber-600");
+      expect(statusOptionIconClass("Todo", "Executable - assignee will be woken")).toContain("text-amber-600");
       expect(statusOptionIconClass("In Progress")).toContain("text-blue-600");
 
       act(() => root.unmount());

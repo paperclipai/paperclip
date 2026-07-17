@@ -69,6 +69,7 @@ export const queryKeys = {
       ["issues", companyId, "execution-workspace", executionWorkspaceId] as const,
     detail: (id: string) => ["issues", "detail", id] as const,
     comments: (issueId: string) => ["issues", "comments", issueId] as const,
+    commentsList: (issueId: string) => ["issues", "comments", issueId, "list"] as const,
     interactions: (issueId: string) => ["issues", "interactions", issueId] as const,
     acceptedPlanDecompositions: (issueId: string) =>
       ["issues", "accepted-plan-decompositions", issueId] as const,
@@ -122,22 +123,59 @@ export const queryKeys = {
     runs: (id: string) => ["routines", "runs", id] as const,
     revisions: (id: string) => ["routines", "revisions", id] as const,
     activity: (companyId: string, id: string) => ["routines", "activity", companyId, id] as const,
+    documentAnnotations: (routineId: string, key: "description", status: "open" | "resolved" | "all" = "all") =>
+      ["routines", "document-annotations", routineId, key, status] as const,
+  },
+  pipelines: {
+    list: (companyId: string) => ["pipelines", companyId] as const,
+    detail: (pipelineId: string) => ["pipelines", "detail", pipelineId] as const,
+    cases: (pipelineId: string) => ["pipelines", "cases", pipelineId] as const,
+    caseDetail: (caseId: string) => ["pipelines", "item", caseId] as const,
+    caseChildren: (caseId: string) => ["pipelines", "item", caseId, "children"] as const,
+    caseEvents: (caseId: string) => ["pipelines", "item", caseId, "events"] as const,
+    caseIssueLinks: (caseId: string) => ["pipelines", "item", caseId, "issue-links"] as const,
+    caseOutputs: (caseId: string) => ["pipelines", "item", caseId, "outputs"] as const,
+    caseDocument: (caseId: string, key: string) => ["pipelines", "item", caseId, "document", key] as const,
+    caseDocumentRevisions: (caseId: string, key: string) =>
+      ["pipelines", "item", caseId, "document-revisions", key] as const,
+    intakeForm: (pipelineId: string) => ["pipelines", "intake-form", pipelineId] as const,
+    health: (pipelineId: string) => ["pipelines", "health", pipelineId] as const,
+    document: (pipelineId: string, key: string) => ["pipelines", "document", pipelineId, key] as const,
+    documentRevisions: (pipelineId: string, key: string) =>
+      ["pipelines", "document-revisions", pipelineId, key] as const,
+    attention: (companyId: string) => ["pipelines", "attention", companyId] as const,
+    reviewCases: (companyId: string) => ["pipelines", "review-cases", companyId] as const,
+    learnings: (companyId: string, offset: number) => ["pipelines", "learnings", companyId, offset] as const,
   },
   executionWorkspaces: {
     list: (companyId: string, filters?: Record<string, string | boolean | undefined>) =>
       ["execution-workspaces", companyId, filters ?? {}] as const,
     summaryList: (companyId: string, filters?: Record<string, string | boolean | undefined>) =>
       ["execution-workspaces", companyId, "summary", filters ?? {}] as const,
+    overview: (companyId: string, filters?: Record<string, string | number | boolean | undefined>) =>
+      ["execution-workspaces", companyId, "overview", filters ?? {}] as const,
     detail: (id: string) => ["execution-workspaces", "detail", id] as const,
     closeReadiness: (id: string) => ["execution-workspaces", "close-readiness", id] as const,
     workspaceOperations: (id: string) => ["execution-workspaces", "workspace-operations", id] as const,
   },
   environments: {
     list: (companyId: string) => ["environments", companyId] as const,
+    capabilities: (companyId: string) => ["environment-capabilities", companyId] as const,
+    customImageTemplate: (environmentId: string) =>
+      ["environments", environmentId, "custom-image-template"] as const,
+    customImageSetupSession: (sessionId: string) =>
+      ["environment-custom-image-setup-sessions", sessionId] as const,
   },
   projects: {
     list: (companyId: string) => ["projects", companyId] as const,
     detail: (id: string) => ["projects", "detail", id] as const,
+  },
+  externalObjects: {
+    byIssue: (issueId: string) => ["external-objects", "by-issue", issueId] as const,
+    issueSummary: (issueId: string) => ["external-objects", "issue-summary", issueId] as const,
+    issueSummaries: (companyId: string, issueIds: readonly string[]) =>
+      ["external-objects", "issue-summaries", companyId, issueIds] as const,
+    projectSummary: (projectId: string) => ["external-objects", "project-summary", projectId] as const,
   },
   goals: {
     list: (companyId: string) => ["goals", companyId] as const,
@@ -194,6 +232,7 @@ export const queryKeys = {
     mine: (companyId: string) => ["resource-memberships", companyId, "me"] as const,
   },
   instance: {
+    settings: ["instance", "settings"] as const,
     generalSettings: ["instance", "general-settings"] as const,
     schedulerHeartbeats: ["instance", "scheduler-heartbeats"] as const,
     experimentalSettings: ["instance", "experimental-settings"] as const,
@@ -206,12 +245,17 @@ export const queryKeys = {
     providerConfigs: (companyId: string) => ["secret-provider-configs", companyId] as const,
     usage: (secretId: string) => ["secrets", "usage", secretId] as const,
     accessEvents: (secretId: string) => ["secrets", "access-events", secretId] as const,
+    userDefinitions: (companyId: string) => ["user-secret-definitions", companyId] as const,
+    userDefinitionCoverage: (companyId: string, definitionId: string) =>
+      ["user-secret-definitions", companyId, definitionId, "coverage"] as const,
+    myUserSecrets: (companyId: string) => ["my-user-secrets", companyId] as const,
   },
   companySearch: {
     search: (companyId: string, q: string, scope: string, limit: number, offset: number) =>
       ["company-search", companyId, q, scope, limit, offset] as const,
   },
   dashboard: (companyId: string) => ["dashboard", companyId] as const,
+  workTimeline: (companyId: string, lens?: string) => ["work-timeline", companyId, lens ?? "all"] as const,
   userProfile: (companyId: string, userSlug: string) =>
     ["user-profile", companyId, userSlug] as const,
   sidebarBadges: (companyId: string) => ["sidebar-badges", companyId] as const,

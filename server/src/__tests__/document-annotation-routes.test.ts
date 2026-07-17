@@ -298,6 +298,10 @@ describe("document annotation routes", () => {
     expect(mockIssueReferenceService.syncAnnotationComment).toHaveBeenCalledWith(annotationComment.id);
     expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       action: "issue.document_annotation_thread_created",
+      details: expect.objectContaining({
+        key: "plan",
+        documentKey: "plan",
+      }),
     }));
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
@@ -324,6 +328,10 @@ describe("document annotation routes", () => {
     expect(mockIssueReferenceService.syncAnnotationComment).toHaveBeenCalledWith(annotationComment.id);
     expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       action: "issue.document_annotation_comment_added",
+      details: expect.objectContaining({
+        key: "plan",
+        documentKey: "plan",
+      }),
     }));
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
 
@@ -334,6 +342,10 @@ describe("document annotation routes", () => {
     expect(resolved.body.status).toBe("resolved");
     expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       action: "issue.document_annotation_thread_resolved",
+      details: expect.objectContaining({
+        key: "plan",
+        documentKey: "plan",
+      }),
     }));
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });

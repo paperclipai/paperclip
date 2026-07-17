@@ -66,6 +66,7 @@ describeEmbeddedPostgres("agent service clearError", () => {
       status: "error",
       pauseReason: "system",
       pausedAt: new Date("2026-06-07T00:00:00.000Z"),
+      errorReason: "Secret is not bound to agent at env.ANTHROPIC_API_KEY",
       adapterType: "codex_local",
       adapterConfig: {},
       runtimeConfig: {},
@@ -116,6 +117,7 @@ describeEmbeddedPostgres("agent service clearError", () => {
       status: "idle",
       pauseReason: null,
       pausedAt: null,
+      errorReason: null,
     });
 
     const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));

@@ -1,4 +1,6 @@
 import express from "express";
+import os from "node:os";
+import path from "node:path";
 import request from "supertest";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import type { ServerAdapterModule } from "../adapters/index.js";
@@ -6,6 +8,7 @@ import type { ServerAdapterModule } from "../adapters/index.js";
 const mockAgentService = vi.hoisted(() => ({
   create: vi.fn(),
   getById: vi.fn(),
+  update: vi.fn(),
 }));
 
 const mockAccessService = vi.hoisted(() => ({
@@ -24,6 +27,7 @@ const mockCompanySkillService = vi.hoisted(() => ({
 const mockSecretService = vi.hoisted(() => ({
   normalizeAdapterConfigForPersistence: vi.fn(async (_companyId: string, config: Record<string, unknown>) => config),
   resolveAdapterConfigForRuntime: vi.fn(async (_companyId: string, config: Record<string, unknown>) => ({ config })),
+  syncEnvBindingsForTarget: vi.fn(),
 }));
 
 const mockAgentInstructionsService = vi.hoisted(() => ({
@@ -80,6 +84,10 @@ vi.mock("../services/instance-settings.js", () => ({
   instanceSettingsService: () => mockInstanceSettingsService,
 }));
 
+vi.mock("../services/secrets.js", () => ({
+  secretService: () => mockSecretService,
+}));
+
 function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
     agentService: () => mockAgentService,
@@ -99,6 +107,10 @@ function registerModuleMocks() {
 
   vi.doMock("../services/instance-settings.js", () => ({
     instanceSettingsService: () => mockInstanceSettingsService,
+  }));
+
+  vi.doMock("../services/secrets.js", () => ({
+    secretService: () => mockSecretService,
   }));
 }
 
@@ -202,8 +214,12 @@ describe("agent routes adapter validation", () => {
     mockAccessService.ensureMembership.mockResolvedValue(undefined);
     mockAccessService.setPrincipalPermission.mockResolvedValue(undefined);
     mockLogActivity.mockResolvedValue(undefined);
+    mockSecretService.syncEnvBindingsForTarget.mockResolvedValue(undefined);
+    mockAgentInstructionsService.materializeManagedBundle.mockImplementation(async (agent: { adapterConfig: unknown }) => ({
+      adapterConfig: agent.adapterConfig,
+    }));
     mockAgentService.create.mockImplementation(async (_companyId: string, input: Record<string, unknown>) => ({
-      id: "11111111-1111-4111-8111-111111111111",
+      id: String(input.id ?? "11111111-1111-4111-8111-111111111111"),
       companyId: "company-1",
       name: String(input.name ?? "Agent"),
       urlKey: "agent",
@@ -225,6 +241,34 @@ describe("agent routes adapter validation", () => {
       metadata: null,
       createdAt: new Date(),
       updatedAt: new Date(),
+    }));
+    mockAgentService.getById.mockResolvedValue({
+      id: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      name: "Codex",
+      urlKey: "codex",
+      role: "engineer",
+      title: null,
+      icon: null,
+      status: "idle",
+      reportsTo: null,
+      capabilities: null,
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      budgetMonthlyCents: 0,
+      spentMonthlyCents: 0,
+      pauseReason: null,
+      pausedAt: null,
+      permissions: { canCreateAgents: false },
+      lastHeartbeatAt: null,
+      metadata: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    mockAgentService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...(await mockAgentService.getById()),
+      ...patch,
     }));
     await unregisterTestAdapter("external_test");
     await unregisterTestAdapter(missingAdapterType);
@@ -251,6 +295,116 @@ describe("agent routes adapter validation", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(201);
     expect(res.body.adapterType).toBe("external_test");
+  });
+
+  it("does not inject CODEX_HOME or OPENAI_API_KEY when creating a keyless codex_local agent", async () => {
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post("/api/companies/company-1/agents")
+        .send({
+          name: "Codex Agent",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    const createInput = mockAgentService.create.mock.calls.at(-1)?.[1] as Record<string, unknown>;
+    const adapterConfig = createInput.adapterConfig as Record<string, unknown>;
+    const env = (adapterConfig.env as Record<string, unknown> | undefined) ?? {};
+    expect(env.OPENAI_API_KEY).toBeUndefined();
+    expect(env.CODEX_HOME).toBeUndefined();
+  });
+
+  it("does not re-inject CODEX_HOME or OPENAI_API_KEY when updating a keyless codex_local agent", async () => {
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .patch("/api/agents/11111111-1111-4111-8111-111111111111")
+        .send({
+          adapterConfig: { model: "gpt-5.4" },
+        }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const patch = mockAgentService.update.mock.calls.at(-1)?.[1] as Record<string, unknown>;
+    const adapterConfig = patch.adapterConfig as Record<string, unknown>;
+    const env = (adapterConfig.env as Record<string, unknown> | undefined) ?? {};
+    expect(env.OPENAI_API_KEY).toBeUndefined();
+    expect(env.CODEX_HOME).toBeUndefined();
+  });
+
+  it("isolates CODEX_HOME when updating a codex_local agent to set its own OPENAI_API_KEY", async () => {
+    const agentId = "11111111-1111-4111-8111-111111111111";
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .patch(`/api/agents/${agentId}`)
+        .send({
+          adapterConfig: {
+            env: {
+              OPENAI_API_KEY: "sk-test-key",
+            },
+          },
+        }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const patch = mockAgentService.update.mock.calls.at(-1)?.[1] as Record<string, unknown>;
+    const adapterConfig = patch.adapterConfig as Record<string, unknown>;
+    const env = adapterConfig.env as Record<string, unknown>;
+    expect(env.OPENAI_API_KEY).toBe("sk-test-key");
+    expect(String(env.CODEX_HOME)).toContain(`/companies/company-1/agents/${agentId}/codex-home`);
+  });
+
+  it("allows codex_local agents to share the host Codex home", async () => {
+    const app = await createApp();
+    const sharedHome = path.join(os.homedir(), ".codex");
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post("/api/companies/company-1/agents")
+        .send({
+          name: "Shared Codex",
+          adapterType: "codex_local",
+          adapterConfig: {
+            env: {
+              CODEX_HOME: sharedHome,
+            },
+          },
+        }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    const createInput = mockAgentService.create.mock.calls.at(-1)?.[1] as Record<string, unknown>;
+    const adapterConfig = createInput.adapterConfig as Record<string, unknown>;
+    const env = adapterConfig.env as Record<string, unknown>;
+    expect(env.CODEX_HOME).toBe(sharedHome);
+  });
+
+  it("isolates CODEX_HOME when a codex_local agent sets its own OPENAI_API_KEY", async () => {
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post("/api/companies/company-1/agents")
+        .send({
+          name: "Keyed Codex",
+          adapterType: "codex_local",
+          adapterConfig: {
+            env: {
+              OPENAI_API_KEY: "sk-test-key",
+            },
+          },
+        }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    const createInput = mockAgentService.create.mock.calls.at(-1)?.[1] as Record<string, unknown>;
+    const agentId = String(createInput.id);
+    const adapterConfig = createInput.adapterConfig as Record<string, unknown>;
+    const env = adapterConfig.env as Record<string, unknown>;
+    expect(env.OPENAI_API_KEY).toBe("sk-test-key");
+    expect(String(env.CODEX_HOME)).toContain(`/companies/company-1/agents/${agentId}/codex-home`);
   });
 
   it("rejects unknown adapter types even when schema accepts arbitrary strings", async () => {
