@@ -194,6 +194,79 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
     expect(completed?.responsibleUserId).toBe(triggeringUserId);
   });
 
+  it("stores requester run and responsible user on queued and skipped wakeup requests", async () => {
+    const { companyId, agentId } = await seedCompany();
+    const requesterRunId = randomUUID();
+    const responsibleUserId = `responsible-${randomUUID()}`;
+    await db.insert(heartbeatRuns).values({
+      id: requesterRunId,
+      companyId,
+      agentId,
+      invocationSource: "on_demand",
+      triggerDetail: "manual",
+      status: "completed",
+      responsibleUserId,
+    });
+
+    const run = await heartbeat.wakeup(agentId, {
+      source: "on_demand",
+      triggerDetail: "manual",
+      requestedByActorType: "agent",
+      requestedByActorId: agentId,
+      requestedByRunId: requesterRunId,
+    });
+
+    expect(run).not.toBeNull();
+    const queuedWake = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.runId, run!.id))
+      .then((rows) => rows[0] ?? null);
+    expect(queuedWake?.requestedByActorType).toBe("agent");
+    expect(queuedWake?.requestedByActorId).toBe(agentId);
+    expect(queuedWake?.requestedByAgentId).toBe(agentId);
+    expect(queuedWake?.requestedByRunId).toBe(requesterRunId);
+    expect(queuedWake?.responsibleUserId).toBe(responsibleUserId);
+    const completed = await waitForRun(db, run!.id);
+    expect(completed?.responsibleUserId).toBe(responsibleUserId);
+
+    const skippedAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: skippedAgentId,
+      companyId,
+      name: "SleepingAgent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: false } },
+      permissions: {},
+    });
+    const skippedRequesterRunId = randomUUID();
+    const skippedResponsibleUserId = `responsible-${randomUUID()}`;
+    const skipped = await heartbeat.wakeup(skippedAgentId, {
+      source: "on_demand",
+      triggerDetail: "manual",
+      requestedByActorType: "agent",
+      requestedByActorId: agentId,
+      requestedByRunId: skippedRequesterRunId,
+      responsibleUserId: skippedResponsibleUserId,
+    });
+
+    expect(skipped).toBeNull();
+    const skippedWake = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.agentId, skippedAgentId), eq(agentWakeupRequests.status, "skipped")))
+      .then((rows) => rows[0] ?? null);
+    expect(skippedWake?.reason).toBe("heartbeat.wakeOnDemand.disabled");
+    expect(skippedWake?.requestedByActorType).toBe("agent");
+    expect(skippedWake?.requestedByActorId).toBe(agentId);
+    expect(skippedWake?.requestedByAgentId).toBe(agentId);
+    expect(skippedWake?.requestedByRunId).toBe(skippedRequesterRunId);
+    expect(skippedWake?.responsibleUserId).toBe(skippedResponsibleUserId);
+  });
+
   it("falls back to the company default for system-originated runs without an issue", async () => {
     const { agentId, ownerUserId } = await seedCompany();
     const run = await heartbeat.wakeup(agentId, {

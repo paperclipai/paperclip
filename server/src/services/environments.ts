@@ -156,6 +156,10 @@ function toEnvironmentLease(row: EnvironmentLeaseRow): EnvironmentLease {
     executionWorkspaceId: row.executionWorkspaceId ?? null,
     issueId: row.issueId ?? null,
     heartbeatRunId: row.heartbeatRunId ?? null,
+    actorAgentId: row.actorAgentId ?? null,
+    actorUserId: row.actorUserId ?? null,
+    actorRunId: row.actorRunId ?? null,
+    responsibleUserId: row.responsibleUserId ?? null,
     status: readEnum(row.status, ENVIRONMENT_LEASE_STATUSES, "environment lease status") ?? "active",
     leasePolicy: readEnum(row.leasePolicy, ENVIRONMENT_LEASE_POLICIES, "environment lease policy") ?? "ephemeral",
     provider: row.provider ?? null,
@@ -601,6 +605,10 @@ export function environmentService(db: Db) {
       executionWorkspaceId?: string | null;
       issueId?: string | null;
       heartbeatRunId?: string | null;
+      actorAgentId?: string | null;
+      actorUserId?: string | null;
+      actorRunId?: string | null;
+      responsibleUserId?: string | null;
       leasePolicy?: EnvironmentLeasePolicy;
       provider?: string | null;
       providerLeaseId?: string | null;
@@ -616,6 +624,10 @@ export function environmentService(db: Db) {
           executionWorkspaceId: input.executionWorkspaceId ?? null,
           issueId: input.issueId ?? null,
           heartbeatRunId: input.heartbeatRunId ?? null,
+          actorAgentId: input.actorAgentId ?? null,
+          actorUserId: input.actorUserId ?? null,
+          actorRunId: input.actorRunId ?? null,
+          responsibleUserId: input.responsibleUserId ?? null,
           status: "active",
           leasePolicy: input.leasePolicy ?? "ephemeral",
           provider: input.provider ?? null,

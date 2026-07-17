@@ -10,6 +10,7 @@ import {
   uuid,
 } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
+import { agents } from "./agents.js";
 import { executionWorkspaces } from "./execution_workspaces.js";
 import { heartbeatRuns } from "./heartbeat_runs.js";
 import { issues } from "./issues.js";
@@ -25,6 +26,14 @@ export const workspaceOperations = pgTable(
     heartbeatRunId: uuid("heartbeat_run_id").references(() => heartbeatRuns.id, {
       onDelete: "set null",
     }),
+    actorAgentId: uuid("actor_agent_id").references(() => agents.id, {
+      onDelete: "set null",
+    }),
+    actorUserId: text("actor_user_id"),
+    actorRunId: uuid("actor_run_id").references(() => heartbeatRuns.id, {
+      onDelete: "set null",
+    }),
+    responsibleUserId: text("responsible_user_id"),
     issueId: uuid("issue_id").references(() => issues.id, {
       onDelete: "set null",
     }),
@@ -61,6 +70,21 @@ export const workspaceOperations = pgTable(
       table.companyId,
       table.executionWorkspaceId,
       table.issueId,
+      table.startedAt,
+    ),
+    companyActorAgentStartedIdx: index("workspace_operations_company_actor_agent_started_idx").on(
+      table.companyId,
+      table.actorAgentId,
+      table.startedAt,
+    ),
+    companyActorRunStartedIdx: index("workspace_operations_company_actor_run_started_idx").on(
+      table.companyId,
+      table.actorRunId,
+      table.startedAt,
+    ),
+    companyResponsibleUserStartedIdx: index("workspace_operations_company_responsible_user_started_idx").on(
+      table.companyId,
+      table.responsibleUserId,
       table.startedAt,
     ),
   }),

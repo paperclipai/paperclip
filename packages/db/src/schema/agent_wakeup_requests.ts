@@ -16,6 +16,10 @@ export const agentWakeupRequests = pgTable(
     coalescedCount: integer("coalesced_count").notNull().default(0),
     requestedByActorType: text("requested_by_actor_type"),
     requestedByActorId: text("requested_by_actor_id"),
+    requestedByAgentId: uuid("requested_by_agent_id").references(() => agents.id, { onDelete: "set null" }),
+    requestedByUserId: text("requested_by_user_id"),
+    requestedByRunId: uuid("requested_by_run_id"),
+    responsibleUserId: text("responsible_user_id"),
     idempotencyKey: text("idempotency_key"),
     runId: uuid("run_id"),
     requestedAt: timestamp("requested_at", { withTimezone: true }).notNull().defaultNow(),
@@ -36,5 +40,16 @@ export const agentWakeupRequests = pgTable(
       table.requestedAt,
     ),
     agentRequestedIdx: index("agent_wakeup_requests_agent_requested_idx").on(table.agentId, table.requestedAt),
+    requestedByRunIdx: index("agent_wakeup_requests_requested_by_run_idx").on(table.requestedByRunId),
+    companyRequestedByAgentIdx: index("agent_wakeup_requests_company_requested_by_agent_idx").on(
+      table.companyId,
+      table.requestedByAgentId,
+      table.requestedAt,
+    ),
+    companyResponsibleUserRequestedIdx: index("agent_wakeup_requests_company_responsible_user_requested_idx").on(
+      table.companyId,
+      table.responsibleUserId,
+      table.requestedAt,
+    ),
   }),
 );
