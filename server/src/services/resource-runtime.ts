@@ -155,6 +155,7 @@ type PreparedResource = {
   mountPath: string;
   repoPath: string;
   expectedCommit: string;
+  outputBaselineCommit: string | null;
   resolvedRef: string;
   credentialToken: string | null;
 };
@@ -283,6 +284,12 @@ export function resourceRuntimeService(db: Db) {
         const expectedCommit = resource.repository.startsWith("/") || resource.repository.startsWith(".")
           ? await resolveLocalRef(resource, requestedRef)
           : await resolveRemoteRef(resource, requestedRef, env);
+        const output = attachment.output ?? { action: "none" as const };
+        const outputBaselineCommit = attachment.mode !== "input" && output.action !== "none"
+          ? (resource.repository.startsWith("/") || resource.repository.startsWith(".")
+            ? await resolveLocalRef(resource, normalizePublishRef(output.targetRef, resource.defaultRef))
+            : await resolveRemoteRef(resource, normalizePublishRef(output.targetRef, resource.defaultRef), env))
+          : null;
         // Full Git Resources are cloned directly into their mount. A
         // source_path needs a hidden staging checkout so only that subtree is
         // exposed at the mount; the staging directory remains inside this run
@@ -310,6 +317,7 @@ export function resourceRuntimeService(db: Db) {
           mountPath,
           repoPath,
           expectedCommit,
+          outputBaselineCommit,
           resolvedRef: requestedRef,
           credentialToken: credential.token,
         });
@@ -347,7 +355,7 @@ export function resourceRuntimeService(db: Db) {
             const currentCommit = item.resource.repository.startsWith("/") || item.resource.repository.startsWith(".")
               ? await resolveLocalRef(item.resource, targetRef)
               : await resolveRemoteRef(item.resource, targetRef, env);
-            if (currentCommit !== item.expectedCommit) {
+            if (currentCommit !== item.outputBaselineCommit) {
               throw conflict(`Resource changed while workflow was running: ${item.resource.key}`);
             }
             if (item.resource.sourcePath) {

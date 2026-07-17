@@ -92,6 +92,19 @@ describeEmbeddedPostgres("resourceRuntimeService", () => {
     await git(["clone", "--branch", "main", remotePath, checkPath]);
     expect(await fs.readFile(path.join(checkPath, "context.md"), "utf8")).toBe("after\n");
 
+    await git(["fetch", "origin", "main"], seedPath);
+    await git(["switch", "-c", "feature", "origin/main"], seedPath);
+    await git(["push", "origin", "feature"], seedPath);
+    const mixedRefWorkspace = path.join(fixtureRoot, "mixed-ref-workspace");
+    const mixedRefPrepared = await resourceRuntimeService(db).prepare({
+      companyId,
+      runId: "run-mixed-ref-test",
+      workspaceRoot: mixedRefWorkspace,
+      manifest: { version: 1, resources: [{ resourceId, mode: "input_output", version: "branch:feature", output: { action: "push", targetRef: "main" } }] },
+    });
+    await fs.writeFile(path.join(mixedRefWorkspace, "resources", "context", "context.md"), "mixed-ref\n", "utf8");
+    await expect(mixedRefPrepared!.publish()).resolves.toMatchObject([{ status: "pushed", targetRef: "main" }]);
+
     const commitWorkspace = path.join(fixtureRoot, "commit-workspace");
     const commitPrepared = await resourceRuntimeService(db).prepare({
       companyId,
