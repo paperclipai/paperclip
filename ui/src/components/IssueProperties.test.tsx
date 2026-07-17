@@ -1948,6 +1948,7 @@ describe("IssueProperties", () => {
   });
 
   it("renders monitor controls and clears an existing monitor", async () => {
+    const dateNowSpy = vi.spyOn(Date, "now").mockReturnValue(new Date("2026-04-11T10:00:00.000Z").getTime());
     const onUpdate = vi.fn();
     const root = renderProperties(container, {
       issue: createIssue({
@@ -2025,6 +2026,89 @@ describe("IssueProperties", () => {
     });
 
     act(() => root.unmount());
+    dateNowSpy.mockRestore();
+  });
+
+  it("renders scheduled, retrying, due, overdue, cleared, and empty monitor row states", async () => {
+    const dateNowSpy = vi.spyOn(Date, "now").mockReturnValue(new Date("2026-07-17T13:56:00.000Z").getTime());
+    const baseMonitorState = {
+      status: "scheduled" as const,
+      nextCheckAt: "2026-07-17T16:08:00.000Z",
+      lastTriggeredAt: null,
+      attemptCount: 1,
+      notes: "Verify deployment",
+      scheduledBy: "board" as const,
+      clearedAt: null,
+      clearReason: null,
+    };
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const root = createRoot(container);
+    const renderMonitor = (issue: Issue) => {
+      act(() => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <IssueProperties issue={issue} childIssues={[]} onUpdate={vi.fn()} inline />
+          </QueryClientProvider>,
+        );
+      });
+    };
+
+    renderMonitor(createIssue({
+      executionPolicy: createExecutionPolicy({ monitor: { ...baseMonitorState, serviceName: "vercel-deploy" } }),
+      executionState: createExecutionState({ monitor: baseMonitorState }),
+      monitorAttemptCount: 1,
+    }));
+    await flush();
+    expect(container.textContent).toContain("Next check in 2h 12m");
+    expect(container.textContent).toContain("Jul 17, 4:08 PM · attempt 1");
+
+    renderMonitor(createIssue({
+      executionPolicy: createExecutionPolicy({ monitor: { ...baseMonitorState, serviceName: "vercel-deploy" } }),
+      executionState: createExecutionState({ monitor: { ...baseMonitorState, attemptCount: 3 } }),
+      monitorAttemptCount: 3,
+    }));
+    await flush();
+    expect(container.textContent).toContain("attempt 3");
+
+    renderMonitor(createIssue({
+      executionPolicy: createExecutionPolicy({ monitor: { ...baseMonitorState, nextCheckAt: "2026-07-17T13:56:00.000Z" } }),
+      executionState: createExecutionState({ monitor: { ...baseMonitorState, nextCheckAt: "2026-07-17T13:56:00.000Z" } }),
+    }));
+    await flush();
+    expect(container.textContent).toContain("Due now");
+    expect(container.textContent).toContain("checking momentarily…");
+
+    renderMonitor(createIssue({
+      executionPolicy: createExecutionPolicy({ monitor: { ...baseMonitorState, nextCheckAt: "2026-07-17T13:38:00.000Z" } }),
+      executionState: createExecutionState({ monitor: { ...baseMonitorState, nextCheckAt: "2026-07-17T13:38:00.000Z" } }),
+    }));
+    await flush();
+    expect(container.textContent).toContain("Overdue by 18m");
+
+    renderMonitor(createIssue({
+      executionPolicy: createExecutionPolicy(),
+      executionState: createExecutionState({ monitor: {
+        ...baseMonitorState,
+        status: "cleared",
+        nextCheckAt: null,
+        lastTriggeredAt: "2026-07-17T11:56:00.000Z",
+        attemptCount: 2,
+        clearedAt: "2026-07-17T12:00:00.000Z",
+        clearReason: "manual",
+      } }),
+      monitorAttemptCount: 2,
+      monitorLastTriggeredAt: new Date("2026-07-17T11:56:00.000Z"),
+    }));
+    await flush();
+    expect(container.textContent).toContain("Monitor cleared");
+    expect(container.textContent).toContain("last checked 2h ago · after attempt 2");
+
+    renderMonitor(createIssue());
+    await flush();
+    expect(container.querySelector('[data-testid="monitor-row-trigger"]')?.textContent).toContain("None");
+
+    act(() => root.unmount());
+    dateNowSpy.mockRestore();
   });
 
   const watchdogAgent = {

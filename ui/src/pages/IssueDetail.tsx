@@ -3174,6 +3174,8 @@ export function IssueDetail() {
         externalObjectsLoading={externalObjectsState.isEnabled ? externalObjectsState.isLoading : undefined}
         externalObjectsError={externalObjectsState.isEnabled ? externalObjectsState.isError : undefined}
         onRetryExternalObjects={externalObjectsState.isEnabled ? externalObjectsState.refetch : undefined}
+        onCheckMonitorNow={() => checkIssueMonitorNow.mutate()}
+        checkingMonitorNow={checkIssueMonitorNow.isPending}
       />
     );
     return () => closePanel();
@@ -3186,6 +3188,8 @@ export function IssueDetail() {
     panelChildIssues,
     panelIssue,
     resolvedHasActiveRun,
+    checkIssueMonitorNow.isPending,
+    checkIssueMonitorNow.mutate,
     externalObjectsState.isEnabled,
     externalObjectsState.groups,
     externalObjectsState.isLoading,
@@ -5035,6 +5039,8 @@ export function IssueDetail() {
                 externalObjectsLoading={externalObjectsState.isEnabled ? externalObjectsState.isLoading : undefined}
                 externalObjectsError={externalObjectsState.isEnabled ? externalObjectsState.isError : undefined}
                 onRetryExternalObjects={externalObjectsState.isEnabled ? externalObjectsState.refetch : undefined}
+                onCheckMonitorNow={() => checkIssueMonitorNow.mutate()}
+                checkingMonitorNow={checkIssueMonitorNow.isPending}
               />
             </div>
           </ScrollArea>

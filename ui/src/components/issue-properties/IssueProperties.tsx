@@ -26,7 +26,12 @@ import { getRecentProjectIds, trackRecentProject } from "../../lib/recent-projec
 import { orderItemsBySelectedAndRecent } from "../../lib/recent-selections";
 import { formatAssigneeUserLabel, formatUserLabel } from "../../lib/assignees";
 import { buildExecutionPolicy, stageParticipantValues } from "../../lib/issue-execution-policy";
-import { formatMonitorOffset } from "../../lib/issue-monitor";
+import {
+  formatMonitorAbsolute,
+  formatMonitorAbsoluteFull,
+  formatMonitorEta,
+  formatMonitorOffset,
+} from "../../lib/issue-monitor";
 import { extractProviderIdWithFallback } from "../../lib/model-utils";
 import { formatRetryReason } from "../../lib/runRetryState";
 import { useRetryNowMutation } from "../../hooks/useRetryNowMutation";
@@ -44,6 +49,7 @@ import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { User, ArrowUpRight, Plus, GitBranch, FolderOpen, HardDrive, Check, Clock, RotateCcw, Loader2, CheckCircle2, ArchiveRestore } from "lucide-react";
 import { AgentIcon } from "../AgentIconPicker";
 import { InlineEntitySelector, type InlineEntityOption } from "../InlineEntitySelector";
@@ -126,6 +132,8 @@ interface IssuePropertiesProps {
   externalObjectsLoading?: boolean;
   externalObjectsError?: boolean;
   onRetryExternalObjects?: () => void;
+  onCheckMonitorNow?: () => void;
+  checkingMonitorNow?: boolean;
 }
 
 const ISSUE_BLOCKER_SEARCH_LIMIT = 50;
@@ -142,6 +150,8 @@ export function IssueProperties({
   externalObjectsLoading,
   externalObjectsError,
   onRetryExternalObjects,
+  onCheckMonitorNow,
+  checkingMonitorNow = false,
 }: IssuePropertiesProps) {
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
@@ -176,6 +186,7 @@ export function IssueProperties({
   const [approversOpen, setApproversOpen] = useState(false);
   const [approverSearch, setApproverSearch] = useState("");
   const [monitorOpen, setMonitorOpen] = useState(false);
+  const [monitorDetailsOpen, setMonitorDetailsOpen] = useState(false);
   const [scheduledRetryOpen, setScheduledRetryOpen] = useState(false);
   const [labelsOpen, setLabelsOpen] = useState(false);
   const [assigneeOptionsOpen, setAssigneeOptionsOpen] = useState(false);
@@ -990,45 +1001,97 @@ export function IssueProperties({
     updateMonitor(null);
     setMonitorOpen(false);
   };
-  const currentMonitorLabel = (() => {
-    if (issue.executionPolicy?.monitor?.nextCheckAt) {
-      return `Next check ${formatDate(new Date(issue.executionPolicy.monitor.nextCheckAt))}`;
-    }
-    if (issue.executionState?.monitor?.status === "cleared") {
-      return "Cleared";
-    }
-    if (issue.monitorLastTriggeredAt) {
-      return `Last triggered ${timeAgo(issue.monitorLastTriggeredAt)}`;
-    }
-    return "None";
-  })();
-  const monitorNextCheckAt = issue.executionPolicy?.monitor?.nextCheckAt ?? null;
+  const monitorState = issue.executionState?.monitor ?? null;
+  const monitorNextCheckAt = issue.executionPolicy?.monitor?.nextCheckAt ?? monitorState?.nextCheckAt ?? null;
+  const monitorAttemptCount = issue.monitorAttemptCount ?? monitorState?.attemptCount ?? 0;
+  const monitorLastTriggeredAt = issue.monitorLastTriggeredAt ?? monitorState?.lastTriggeredAt ?? null;
+  const monitorServiceName = issue.executionPolicy?.monitor?.serviceName ?? monitorState?.serviceName ?? null;
+  const monitorNotes = issue.executionPolicy?.monitor?.notes ?? monitorState?.notes ?? null;
+  const monitorRelative = monitorNextCheckAt ? formatMonitorEta(monitorNextCheckAt, new Date(Date.now())) : null;
+  const monitorIsDueNow = monitorRelative === "due now";
+  const monitorIsOverdue = Boolean(monitorRelative?.startsWith("overdue by "));
+  const monitorPrimary = monitorNextCheckAt
+    ? monitorIsDueNow
+      ? "Due now"
+      : monitorIsOverdue
+        ? `Overdue by ${monitorRelative!.slice("overdue by ".length)}`
+        : `Next check ${monitorRelative}`
+    : monitorState?.status === "cleared"
+      ? "Monitor cleared"
+      : "None";
+  const monitorSecondary = monitorNextCheckAt
+    ? monitorIsDueNow
+      ? "checking momentarily…"
+      : `${formatMonitorAbsolute(monitorNextCheckAt)}${monitorAttemptCount > 0 ? ` · attempt ${monitorAttemptCount}` : ""}`
+    : monitorState?.status === "cleared"
+      ? [
+          monitorLastTriggeredAt ? `last checked ${timeAgo(monitorLastTriggeredAt)}` : null,
+          monitorAttemptCount > 0 ? `after attempt ${monitorAttemptCount}` : null,
+        ].filter(Boolean).join(" · ")
+      : null;
   const monitorTrigger = (
-    <span className="inline-flex min-w-0 items-center gap-1.5">
+    <TooltipProvider>
+      <Tooltip open={monitorDetailsOpen} onOpenChange={setMonitorDetailsOpen}>
+      <TooltipTrigger asChild>
+        <span
+          className="inline-flex min-w-0 items-start gap-1.5"
+          data-testid="monitor-row-trigger"
+          onClick={() => setMonitorDetailsOpen(false)}
+        >
       {monitorNextCheckAt ? (
-        <Clock className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+            <Clock className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
       ) : null}
-      <span
-        className={cn(
-          "min-w-0 truncate text-sm",
-          monitorNextCheckAt ? "text-foreground" : "text-muted-foreground",
-        )}
-        title={monitorNextCheckAt ? currentMonitorLabel : undefined}
-      >
-        {monitorNextCheckAt ? `Next check ${formatMonitorOffset(monitorNextCheckAt)}` : currentMonitorLabel}
-      </span>
-      {monitorNextCheckAt ? (
-        <span className="shrink-0 text-xs text-muted-foreground" title={currentMonitorLabel}>
-          {formatDate(new Date(monitorNextCheckAt))}
+          <span className="flex min-w-0 flex-col items-start">
+            <span className={cn("text-sm", monitorNextCheckAt ? "font-semibold text-foreground" : "text-muted-foreground")}>{monitorPrimary}</span>
+            {monitorSecondary ? (
+              <span className="text-xs text-muted-foreground">{monitorSecondary}</span>
+            ) : null}
+          </span>
         </span>
+      </TooltipTrigger>
+      {monitorNextCheckAt ? (
+        <TooltipContent
+          side="left"
+          className="w-80 border border-border bg-popover p-0 text-popover-foreground shadow-md"
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <div className="flex items-center justify-between border-b border-border px-4 py-3">
+            <span className="text-sm font-semibold">Monitor</span>
+            {monitorAttemptCount > 0 ? <span className="text-xs text-muted-foreground">Attempt {monitorAttemptCount}</span> : null}
+          </div>
+          <div className="space-y-3 px-4 py-3 text-left">
+            <div>
+              <div className="text-xs text-muted-foreground">Next check</div>
+              <div className="text-sm">{formatMonitorAbsoluteFull(monitorNextCheckAt)}</div>
+              <div className="text-xs text-muted-foreground">{monitorRelative}</div>
+            </div>
+            <div>
+              <div className="text-xs text-muted-foreground">Watching</div>
+              <div className="text-sm">{monitorServiceName ?? "—"}</div>
+            </div>
+            <div>
+              <div className="text-xs text-muted-foreground">Notes</div>
+              <div className="whitespace-normal text-sm">{monitorNotes ?? "—"}</div>
+            </div>
+            <div>
+              <div className="text-xs text-muted-foreground">Last triggered</div>
+              <div className="text-sm">{monitorLastTriggeredAt ? formatMonitorAbsoluteFull(monitorLastTriggeredAt) : "— not yet triggered"}</div>
+            </div>
+          </div>
+          <div className="flex gap-2 border-t border-border px-4 py-3">
+            {onCheckMonitorNow ? (
+              <Button type="button" size="sm" variant="outline" disabled={checkingMonitorNow} onClick={() => { setMonitorDetailsOpen(false); onCheckMonitorNow(); }}>
+                {checkingMonitorNow ? "Checking…" : "Check now"}
+              </Button>
+            ) : null}
+            <Button type="button" size="sm" variant="outline" onClick={() => { setMonitorDetailsOpen(false); setMonitorOpen(true); }}>Edit</Button>
+            <Button type="button" size="sm" variant="outline" onClick={() => { setMonitorDetailsOpen(false); clearMonitor(); }}>Clear</Button>
+          </div>
+        </TooltipContent>
       ) : null}
-    </span>
+      </Tooltip>
+    </TooltipProvider>
   );
-  const monitorAttemptBadge = issue.monitorAttemptCount && issue.monitorAttemptCount > 0 ? (
-    <span className="text-xs text-muted-foreground">
-      Attempt {issue.monitorAttemptCount}
-    </span>
-  ) : null;
 
   const scheduledRetry = issue.scheduledRetry ?? null;
   const retryNow = useRetryNowMutation(issue.id);
@@ -2191,7 +2254,6 @@ export function IssueProperties({
           triggerContent={monitorTrigger}
           triggerClassName="min-w-0 max-w-full"
           popoverClassName={cn("max-w-full", inline ? "w-full" : "w-80 sm:w-(--sz-32rem)")}
-          extra={monitorAttemptBadge}
         >
           {monitorContent}
         </PropertyPicker>
