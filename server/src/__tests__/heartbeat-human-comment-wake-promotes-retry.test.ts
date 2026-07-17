@@ -281,6 +281,23 @@ describeEmbeddedPostgres("human comment wake promotes parked scheduled retries",
       .then((rows) => rows[0]?.contextSnapshot as Record<string, unknown> | null);
     expect(promotedSnapshot?.wakeCommentId).toBe(commentId);
 
+    // The retry run's original wakeup request is stamped with the
+    // pull-forward, mirroring retryScheduledRetryNow, so support tooling
+    // reading agentWakeupRequests.payload can explain the promotion.
+    const retryWakeupRequestId = await db
+      .select({ wakeupRequestId: heartbeatRuns.wakeupRequestId })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, retryRunId))
+      .then((rows) => rows[0]?.wakeupRequestId ?? null);
+    expect(retryWakeupRequestId).toBeTruthy();
+    const stampedPayload = await db
+      .select({ payload: agentWakeupRequests.payload })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, retryWakeupRequestId!))
+      .then((rows) => rows[0]?.payload as Record<string, unknown> | null);
+    expect(typeof stampedPayload?.retryNowRequestedAt).toBe("string");
+    expect(typeof stampedPayload?.scheduledRetryAt).toBe("string");
+
     // The run leaves scheduled_retry immediately and executes to completion.
     await vi.waitFor(async () => {
       const latest = await db

@@ -15130,25 +15130,58 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     // retry backoff keeps protecting against wake storms.
     const promoteScheduledRetryForHumanWake = async (
       run: typeof heartbeatRuns.$inferSelect,
+      mergedContextSnapshot?: Record<string, unknown>,
     ): Promise<typeof heartbeatRuns.$inferSelect | null> => {
       if (opts.requestedByActorType !== "user" || run.status !== "scheduled_retry") return null;
       const promoteNow = new Date();
-      const pulled = await db
-        .update(heartbeatRuns)
-        .set({
-          scheduledRetryAt: promoteNow,
-          contextSnapshot: {
-            ...parseObject(run.contextSnapshot),
+      // When the caller coalesced this wake into the run, it hands us the
+      // merged snapshot so the merge and the pull-forward land in one guarded
+      // UPDATE. Writing the merge separately and spreading the in-memory
+      // result here would clobber any snapshot write that landed in between.
+      const baseContextSnapshot = mergedContextSnapshot ?? parseObject(run.contextSnapshot);
+      const pulled = await db.transaction(async (tx) => {
+        const row = await tx
+          .update(heartbeatRuns)
+          .set({
+            scheduledRetryAt: promoteNow,
+            contextSnapshot: {
+              ...baseContextSnapshot,
+              scheduledRetryAt: promoteNow.toISOString(),
+              retryNowRequestedAt: promoteNow.toISOString(),
+              retryNowRequestedByActorType: opts.requestedByActorType ?? null,
+              retryNowRequestedByActorId: opts.requestedByActorId ?? null,
+            },
+            updatedAt: promoteNow,
+          })
+          .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "scheduled_retry")))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        if (!row) return null;
+        if (row.wakeupRequestId) {
+          // Mirror retryScheduledRetryNow: stamp the original wakeup request
+          // so support tooling reading agentWakeupRequests.payload can see
+          // the retry was pulled forward.
+          const wakeupPayload = {
+            ...parseObject(
+              await tx
+                .select({ payload: agentWakeupRequests.payload })
+                .from(agentWakeupRequests)
+                .where(eq(agentWakeupRequests.id, row.wakeupRequestId))
+                .then((rows) => rows[0]?.payload ?? null),
+            ),
             scheduledRetryAt: promoteNow.toISOString(),
             retryNowRequestedAt: promoteNow.toISOString(),
-            retryNowRequestedByActorType: opts.requestedByActorType ?? null,
-            retryNowRequestedByActorId: opts.requestedByActorId ?? null,
-          },
-          updatedAt: promoteNow,
-        })
-        .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "scheduled_retry")))
-        .returning()
-        .then((rows) => rows[0] ?? null);
+          };
+          await tx
+            .update(agentWakeupRequests)
+            .set({
+              payload: wakeupPayload,
+              updatedAt: promoteNow,
+            })
+            .where(eq(agentWakeupRequests.id, row.wakeupRequestId));
+        }
+        return row;
+      });
       const rereadRun = () =>
         db
           .select()
@@ -15156,8 +15189,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           .where(eq(heartbeatRuns.id, run.id))
           .then((rows) => rows[0] ?? null);
       if (!pulled) {
-        // Lost the race with the scheduler or a concurrent wake; re-read so
-        // the caller reports the run's real status, not the parked snapshot.
+        // Lost the race with the scheduler or a concurrent wake. Still
+        // persist the coalesced snapshot so the wake isn't dropped, then
+        // re-read so the caller reports the run's real status, not the
+        // parked snapshot.
+        if (mergedContextSnapshot) {
+          await db
+            .update(heartbeatRuns)
+            .set({ contextSnapshot: mergedContextSnapshot, updatedAt: new Date() })
+            .where(eq(heartbeatRuns.id, run.id));
+        }
         return rereadRun();
       }
       await appendRunEvent(pulled, await nextRunEventSeq(pulled.id), {
@@ -16277,15 +16318,26 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         coalescedTargetRun.contextSnapshot,
         enrichedContextSnapshot,
       );
-      const mergedRun = await db
-        .update(heartbeatRuns)
-        .set({
-          contextSnapshot: mergedContextSnapshot,
-          updatedAt: new Date(),
-        })
-        .where(eq(heartbeatRuns.id, coalescedTargetRun.id))
-        .returning()
-        .then((rows) => rows[0] ?? coalescedTargetRun);
+      // Promotion owns the snapshot write for human wakes into a parked
+      // scheduled_retry: it folds the merged snapshot and the retry
+      // pull-forward into a single guarded UPDATE so no concurrent snapshot
+      // mutation can land between two writes and get clobbered. When the
+      // wake isn't promotable the merge is written here as before.
+      const promotedRun = await promoteScheduledRetryForHumanWake(
+        coalescedTargetRun,
+        mergedContextSnapshot,
+      );
+      const mergedRun: typeof heartbeatRuns.$inferSelect =
+        promotedRun ??
+        (await db
+          .update(heartbeatRuns)
+          .set({
+            contextSnapshot: mergedContextSnapshot,
+            updatedAt: new Date(),
+          })
+          .where(eq(heartbeatRuns.id, coalescedTargetRun.id))
+          .returning()
+          .then((rows) => rows[0] ?? coalescedTargetRun));
 
       await db.insert(agentWakeupRequests).values({
         companyId: agent.companyId,
@@ -16303,7 +16355,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         finishedAt: new Date(),
       });
 
-      const promotedRun = await promoteScheduledRetryForHumanWake(mergedRun);
       if (promotedRun) {
         await startNextQueuedRunForAgent(agent.id);
         return promotedRun;
