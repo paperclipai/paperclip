@@ -958,6 +958,64 @@ describe.sequential("agent permission routes", () => {
     expect(mockAgentService.list).not.toHaveBeenCalled();
   });
 
+  it("returns a bounded summary page for fleet enumeration", async () => {
+    const secondAgent = {
+      ...baseAgent,
+      id: "33333333-3333-4333-8333-333333333333",
+      name: "Reviewer",
+      urlKey: "reviewer",
+      role: "manager",
+      title: "Review Manager",
+      reportsTo: agentId,
+      adapterConfig: { token: "must-not-be-returned" },
+      runtimeConfig: { prompt: "must-not-be-returned" },
+    };
+    mockAgentService.list.mockResolvedValueOnce([baseAgent, secondAgent]);
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .get(`/api/companies/${companyId}/agents`)
+      .query({ view: "summary", limit: "1", offset: "1" }));
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([{
+      id: secondAgent.id,
+      companyId,
+      name: "Reviewer",
+      urlKey: "reviewer",
+      role: "manager",
+      title: "Review Manager",
+      status: "idle",
+      reportsTo: agentId,
+    }]);
+    expect(res.body[0]).not.toHaveProperty("adapterConfig");
+    expect(res.body[0]).not.toHaveProperty("runtimeConfig");
+  });
+
+  it("requires summary view for agent list pagination", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .get(`/api/companies/${companyId}/agents`)
+      .query({ limit: "25" }));
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("view=summary");
+    expect(mockAgentService.list).not.toHaveBeenCalled();
+  });
+
   it("normalizes direct agent creation to disable timer heartbeats by default", async () => {
     const app = await createApp({
       type: "board",

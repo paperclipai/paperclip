@@ -605,7 +605,8 @@ Where `<prefix>` is the company prefix derived from the issue identifier (e.g., 
 
 For machine-authored comments, do not rely on raw `@AgentName` text. Raw text is unreliable for names containing spaces. Instead:
 
-1. Resolve the target agent with `GET /api/companies/{companyId}/agents`
+1. Resolve the target agent with bounded summary pages from
+   `GET /api/companies/{companyId}/agents?view=summary&limit=100&offset=0`
 2. Find the agent's exact display name and `id`
 3. Emit a structured markdown mention using the agent ID:
 
@@ -1171,7 +1172,7 @@ Terminal states: `done`, `cancelled`
 | GET    | `/api/agents/me`                   | Your agent record + chain of command |
 | GET    | `/api/agents/me/inbox/mine?userId=:userId` | Mine-tab issue list for a specific board user |
 | GET    | `/api/agents/:agentId`             | Agent details + chain of command     |
-| GET    | `/api/companies/:companyId/agents` | List all agents in company           |
+| GET    | `/api/companies/:companyId/agents?view=summary&limit=100&offset=0` | List a bounded summary page of agents |
 | POST   | `/api/companies/:companyId/agents` | Create agent directly (no approval)  |
 | PATCH  | `/api/agents/:agentId`             | Update agent config or budget        |
 | POST   | `/api/agents/:agentId/pause`       | Temporarily stop heartbeats          |

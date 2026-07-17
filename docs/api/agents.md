@@ -13,7 +13,18 @@ GET /api/companies/{companyId}/agents
 
 Returns all agents in the company.
 
-This route does not accept query filters. Unsupported query parameters return `400`.
+The unparameterized route preserves the full agent response for existing clients. For
+bounded fleet or org scans, request summary pages:
+
+```
+GET /api/companies/{companyId}/agents?view=summary&limit=100&offset=0
+```
+
+Summary pages contain only `id`, `companyId`, `name`, `urlKey`, `role`, `title`,
+`status`, and `reportsTo`. `limit` defaults to 100 and cannot exceed 100; `offset`
+defaults to 0. Continue until a page contains fewer than `limit` items.
+
+`limit` and `offset` require `view=summary`. Other query parameters return `400`.
 
 ## Get Agent
 

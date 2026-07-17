@@ -1635,6 +1635,19 @@ export function agentRoutes(
     };
   }
 
+  function toAgentListSummary(agent: NonNullable<Awaited<ReturnType<typeof svc.getById>>>) {
+    return {
+      id: agent.id,
+      companyId: agent.companyId,
+      name: agent.name,
+      urlKey: agent.urlKey,
+      role: agent.role,
+      title: agent.title,
+      status: agent.status,
+      reportsTo: agent.reportsTo,
+    };
+  }
+
   function redactAgentConfiguration(agent: Awaited<ReturnType<typeof svc.getById>>) {
     if (!agent) return null;
     return {
@@ -1967,11 +1980,42 @@ export function agentRoutes(
   router.get("/companies/:companyId/agents", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    const unsupportedQueryParams = Object.keys(req.query).sort();
+    const supportedQueryParams = new Set(["view", "limit", "offset"]);
+    const unsupportedQueryParams = Object.keys(req.query)
+      .filter((key) => !supportedQueryParams.has(key))
+      .sort();
     if (unsupportedQueryParams.length > 0) {
       res.status(400).json({
         error: `Unsupported query parameter${unsupportedQueryParams.length === 1 ? "" : "s"}: ${unsupportedQueryParams.join(", ")}`,
       });
+      return;
+    }
+    const hasBoundedQuery = Object.keys(req.query).length > 0;
+    if (hasBoundedQuery) {
+      if (req.query.view !== "summary") {
+        res.status(400).json({
+          error: "Agent list pagination requires view=summary",
+        });
+        return;
+      }
+      const rawLimit = req.query.limit ?? "100";
+      const rawOffset = req.query.offset ?? "0";
+      const limit = typeof rawLimit === "string" && /^\d+$/.test(rawLimit)
+        ? Number.parseInt(rawLimit, 10)
+        : Number.NaN;
+      const offset = typeof rawOffset === "string" && /^\d+$/.test(rawOffset)
+        ? Number.parseInt(rawOffset, 10)
+        : Number.NaN;
+      if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+        res.status(400).json({ error: "limit must be an integer between 1 and 100" });
+        return;
+      }
+      if (!Number.isInteger(offset) || offset < 0) {
+        res.status(400).json({ error: "offset must be a non-negative integer" });
+        return;
+      }
+      const result = await filterAgentsForActor(req, await svc.list(companyId));
+      res.json(result.slice(offset, offset + limit).map((agent) => toAgentListSummary(agent)));
       return;
     }
     const result = await filterAgentsForActor(req, await svc.list(companyId));
