@@ -7,6 +7,8 @@ import { activityService, normalizeActivityLimit } from "../services/activity.js
 import { assertAuthenticated, assertBoard, assertCompanyAccess, getAccessibleResource, hasCompanyAccess } from "./authz.js";
 import { accessService, heartbeatService, issueService } from "../services/index.js";
 import { sanitizeRecord } from "../redaction.js";
+import { forbidden } from "../errors.js";
+import { agentActionAuditService } from "../services/agent-action-audit.js";
 
 const createActivitySchema = z.object({
   actorType: z.enum(["agent", "user", "system", "plugin"]).optional().default("system"),
@@ -18,12 +20,35 @@ const createActivitySchema = z.object({
   details: z.record(z.unknown()).optional().nullable(),
 });
 
+const agentActionAuditQuerySchema = z.object({
+  agentId: z.string().uuid().optional(),
+  responsibleUserId: z.string().min(1).optional(),
+  runId: z.string().uuid().optional(),
+  entityType: z.string().min(1).optional(),
+  entityId: z.string().min(1).optional(),
+  action: z.string().min(1).optional(),
+  actorType: z.enum(["agent", "user", "system", "plugin"]).optional(),
+  from: z.coerce.date().optional(),
+  to: z.coerce.date().optional(),
+  cursor: z.string().min(1).optional(),
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+});
+
 export function activityRoutes(db: Db) {
   const router = Router();
   const svc = activityService(db);
   const access = accessService(db);
   const heartbeat = heartbeatService(db);
   const issueSvc = issueService(db);
+  const agentAudit = agentActionAuditService(db);
+
+  async function assertAgentAuditPermission(req: import("express").Request, companyId: string) {
+    assertBoard(req);
+    assertCompanyAccess(req, companyId);
+    if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
+    if (req.actor.userId && await access.canUser(companyId, req.actor.userId, "audit:view_agent_actions")) return;
+    throw forbidden("Missing permission: audit:view_agent_actions");
+  }
 
   async function assertCompanyScopeReadAllowed(req: Parameters<typeof assertCompanyAccess>[0], res: any, companyId: string) {
     const decision = await access.decide({
@@ -86,6 +111,21 @@ export function activityRoutes(db: Db) {
     };
     const result = await svc.list(filters);
     res.json(result);
+  });
+
+  router.get("/companies/:companyId/audit/agent-actions", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    await assertAgentAuditPermission(req, companyId);
+    const query = agentActionAuditQuerySchema.parse(req.query);
+    try {
+      res.json(await agentAudit.list({ companyId, ...query }));
+    } catch (error) {
+      if (error instanceof Error && error.message === "Invalid audit cursor") {
+        res.status(400).json({ error: error.message });
+        return;
+      }
+      throw error;
+    }
   });
 
   router.post("/companies/:companyId/activity", validate(createActivitySchema), async (req, res) => {
