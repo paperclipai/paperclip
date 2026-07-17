@@ -9,6 +9,7 @@ import {
   IssueMonitorBanner,
   IssueMonitorComposerStrip,
   buildMonitorSurfaceCopy,
+  hasVisibleMonitorSurface,
 } from "./IssueMonitorBanner";
 import type { DerivedMonitorState } from "@/lib/issue-monitor";
 
@@ -136,6 +137,7 @@ describe("IssueMonitorBanner / IssueMonitorComposerStrip rendering", () => {
 
   it("renders the banner with a working Check now button while waiting", () => {
     const onCheckNow = vi.fn();
+    expect(hasVisibleMonitorSurface(issueWithMonitor(new Date(NOW.getTime() + 2 * 60 * 60_000).toISOString()))).toBe(true);
     const root = createRoot(container);
     flushSync(() => {
       root.render(
@@ -160,6 +162,7 @@ describe("IssueMonitorBanner / IssueMonitorComposerStrip rendering", () => {
   });
 
   it("hides the banner and strip when there is no monitor", () => {
+    expect(hasVisibleMonitorSurface(issueWithMonitor(null))).toBe(false);
     const root = createRoot(container);
     flushSync(() => {
       root.render(

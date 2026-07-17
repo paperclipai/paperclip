@@ -33,6 +33,11 @@ export function isWaitingMonitorState(state: MonitorDisplayState): boolean {
   return WAITING_STATES.includes(state);
 }
 
+export function hasVisibleMonitorSurface(issue: Issue): boolean {
+  const derived = deriveMonitorState(issue);
+  return isWaitingMonitorState(derived.state) && derived.nextCheckAt !== null;
+}
+
 export interface MonitorSurfaceCopy {
   /** Prominent lead for the top banner, e.g. "Waiting on monitor — resumes in 2h 12m". */
   bannerTitle: string;

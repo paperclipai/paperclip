@@ -102,7 +102,11 @@ import { IssuesList } from "../components/IssuesList";
 import { AgentIcon } from "../components/AgentIconPicker";
 import { IssueReferenceActivitySummary } from "../components/IssueReferenceActivitySummary";
 import { IssueRelatedWorkPanel } from "../components/IssueRelatedWorkPanel";
-import { IssueMonitorBanner, IssueMonitorComposerStrip } from "../components/IssueMonitorBanner";
+import {
+  IssueMonitorBanner,
+  IssueMonitorComposerStrip,
+  hasVisibleMonitorSurface,
+} from "../components/IssueMonitorBanner";
 import { IssueScheduledRetryCard } from "../components/IssueScheduledRetryCard";
 import { IssueProperties } from "../components/IssueProperties";
 import { PauseAffectsSummaryView } from "../components/interrupt-handoff/InterruptHandoffViews";
@@ -4760,11 +4764,13 @@ export function IssueDetail() {
               onRefreshLatestComments={refetchLatestComments}
               composerRef={commentComposerRef}
               composerAccessory={
-                <IssueMonitorComposerStrip
-                  issue={issue}
-                  onCheckNow={() => checkIssueMonitorNow.mutate()}
-                  checkingNow={checkIssueMonitorNow.isPending}
-                />
+                hasVisibleMonitorSurface(issue) ? (
+                  <IssueMonitorComposerStrip
+                    issue={issue}
+                    onCheckNow={() => checkIssueMonitorNow.mutate()}
+                    checkingNow={checkIssueMonitorNow.isPending}
+                  />
+                ) : null
               }
               footer={
                 siblingNavigation ? (
