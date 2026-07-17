@@ -99,7 +99,15 @@ export function capActivityDetails(
     }
   }
 
-  return buildMarker(serialized.slice(0, low));
+  const finalCodeUnit = serialized.charCodeAt(low - 1);
+  const nextCodeUnit = serialized.charCodeAt(low);
+  const splitsSurrogatePair = finalCodeUnit >= 0xd800
+    && finalCodeUnit <= 0xdbff
+    && nextCodeUnit >= 0xdc00
+    && nextCodeUnit <= 0xdfff;
+  const previewEnd = splitsSurrogatePair ? low - 1 : low;
+
+  return buildMarker(serialized.slice(0, previewEnd));
 }
 
 export async function resolveResponsibleUserIdForActivity(db: Db, input: LogActivityInput) {

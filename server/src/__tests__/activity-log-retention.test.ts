@@ -38,6 +38,7 @@ describe("capActivityDetails", () => {
     });
     expect(capped?._paperclipOriginalBytes).toBeGreaterThan(MAX_ACTIVITY_DETAILS_BYTES);
     expect(capped?._paperclipPreview).toEqual(expect.stringContaining("start-"));
+    expect(/[\uD800-\uDBFF]$/.test(String(capped?._paperclipPreview))).toBe(false);
     expect(Buffer.byteLength(JSON.stringify(capped), "utf8")).toBeLessThanOrEqual(
       MAX_ACTIVITY_DETAILS_BYTES,
     );
@@ -161,7 +162,7 @@ describeEmbeddedPostgres("activity log retention", () => {
       action: "test.oversized",
       entityType: "company",
       entityId: companyId,
-      details: { output: "x".repeat(MAX_ACTIVITY_DETAILS_BYTES * 2) },
+      details: { output: "😀".repeat(MAX_ACTIVITY_DETAILS_BYTES) },
     });
 
     const row = await db
