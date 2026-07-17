@@ -127,7 +127,7 @@
   {
     "dir": "packages/plugins/sandbox-providers/docker",
     "name": "@paperclipai/plugin-docker",
-    "publishFromCi": true
+    "publishFromCi": false
   },
   {
     "dir": "packages/plugins/sandbox-providers/daytona",
