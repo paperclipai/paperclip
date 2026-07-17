@@ -33,6 +33,7 @@ import {
 import type { StorageService } from "../storage/types.js";
 import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
 import { COMPANY_IMPORT_ROUTE_PATH } from "./company-import-paths.js";
+import { logRouteActivity } from "./activity-audit.js";
 
 export function companyRoutes(db: Db, storage?: StorageService) {
   const router = Router();
@@ -247,6 +248,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     await assertSameCompanyCeoAgentOrBoard(req, companyId, "company exports");
     const body = companyPortabilityExportSchema.parse(req.body);
     const result = await portability.exportBundle(companyId, body);
+    await logRouteActivity(db, req, { companyId, action: "company.exported", entityType: "company", entityId: companyId });
     res.json(result);
   });
 
@@ -255,6 +257,9 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     const body = companyPortabilityPreviewSchema.parse(req.body);
     assertImportTargetAccess(req, body.target);
     const preview = await portability.previewImport(body);
+    if (body.target.mode === "existing_company") {
+      await logRouteActivity(db, req, { companyId: body.target.companyId, action: "company.import_previewed", entityType: "company", entityId: body.target.companyId });
+    }
     res.json(preview);
   });
 
@@ -307,6 +312,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     await assertSameCompanyCeoAgentOrBoard(req, companyId, "company exports");
     const body = companyPortabilityExportSchema.parse(req.body);
     const preview = await portability.previewExport(companyId, body);
+    await logRouteActivity(db, req, { companyId, action: "company.export_previewed", entityType: "company", entityId: companyId });
     res.json(preview);
   });
 
@@ -315,6 +321,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     await assertSameCompanyCeoAgentOrBoard(req, companyId, "company exports");
     const body = companyPortabilityExportSchema.parse(req.body);
     const result = await portability.exportBundle(companyId, body);
+    await logRouteActivity(db, req, { companyId, action: "company.exported", entityType: "company", entityId: companyId });
     res.json(result);
   });
 
@@ -332,6 +339,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
       mode: "agent_safe",
       sourceCompanyId: companyId,
     });
+    await logRouteActivity(db, req, { companyId, action: "company.import_previewed", entityType: "company", entityId: companyId });
     res.json(preview);
   });
 

@@ -182,6 +182,55 @@ describeEmbeddedPostgres("logActivity responsible-user stamping", () => {
     await tempDb?.cleanup();
   });
 
+  it("persists agent, run, and responsible-user attribution for an in-run read", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Sensitive Read Audit",
+      issuePrefix: `R${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "running",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+      responsibleUserId: "responsible-user",
+    });
+
+    await logActivity(db, activityInput({
+      companyId,
+      actorId: agentId,
+      agentId,
+      runId,
+      action: "activity_log.read",
+      entityType: "company",
+      entityId: companyId,
+    }));
+
+    const row = await db
+      .select({ agentId: activityLog.agentId, runId: activityLog.runId, responsibleUserId: activityLog.responsibleUserId })
+      .from(activityLog)
+      .where(eq(activityLog.companyId, companyId))
+      .then((rows) => rows[0]);
+
+    expect(row).toEqual({ agentId, runId, responsibleUserId: "responsible-user" });
+  });
+
   it("persists API-key attribution for an out-of-run action", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();

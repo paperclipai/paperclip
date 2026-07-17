@@ -12,6 +12,7 @@ import { assertBoard, assertBoardOrAgent, assertCompanyAccess, getActorInfo } fr
 import { ToolGatewayHttpError, type ToolGatewayService } from "../services/tool-gateway.js";
 import { forbidden, HttpError } from "../errors.js";
 import { accessService } from "../services/index.js";
+import { logRouteActivity } from "./activity-audit.js";
 
 const TOOL_GATEWAY_ACTIONS = [
   "tool_gateway.session_created",
@@ -650,6 +651,7 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
       const windowFilter = typeof req.query.window === "string" ? req.query.window.trim() : "24h";
       const searchRaw = typeof req.query.search === "string" ? req.query.search.trim() : null;
       const cursorRaw = typeof req.query.cursor === "string" ? req.query.cursor.trim() : null;
+      await logRouteActivity(db, req, { companyId, action: "tool.audit_read", entityType: "company", entityId: companyId, details: { limit } });
       if (appFilter && !uuidPattern.test(appFilter)) {
         res.status(400).json({ error: "app must be an applicationId or connectionId UUID" });
         return;

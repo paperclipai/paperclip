@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { logRouteActivity } from "./activity-audit.js";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import { z } from "zod";
@@ -10500,6 +10501,8 @@ export function issueRoutes(
       return;
     }
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
+
+    await logRouteActivity(db, req, { companyId: attachment.companyId, action: "attachment.downloaded", entityType: "issue_attachment", entityId: attachment.id, issueId: attachment.issueId, details: { byteSize: attachment.byteSize, contentType: attachment.contentType } });
 
     const contentLength = attachment.byteSize;
     const range = parseAttachmentRangeHeader(

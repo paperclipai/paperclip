@@ -23,6 +23,12 @@ const mockAccessService = vi.hoisted(() => ({
   decide: vi.fn(),
 }));
 
+const mockLogRouteActivity = vi.hoisted(() => vi.fn());
+
+vi.mock("../routes/activity-audit.js", () => ({
+  logRouteActivity: mockLogRouteActivity,
+}));
+
 vi.mock("../services/activity.js", () => ({
   activityService: () => mockActivityService,
   normalizeActivityLimit: (limit: number | undefined) => {
@@ -98,6 +104,8 @@ describe.sequential("activity routes", () => {
     for (const mock of Object.values(mockHeartbeatService)) mock.mockReset();
     for (const mock of Object.values(mockIssueService)) mock.mockReset();
     mockAccessService.decide.mockReset();
+    mockLogRouteActivity.mockReset();
+    mockLogRouteActivity.mockResolvedValue(undefined);
     mockAccessService.decide.mockResolvedValue({
       allowed: true,
       action: "company_scope:read",
@@ -119,6 +127,13 @@ describe.sequential("activity routes", () => {
       entityType: undefined,
       entityId: undefined,
       limit: 100,
+    });
+    expect(mockLogRouteActivity).toHaveBeenCalledWith(expect.anything(), expect.anything(), {
+      companyId: "company-1",
+      action: "activity_log.read",
+      entityType: "company",
+      entityId: "company-1",
+      details: { resultCount: 0 },
     });
   });
 

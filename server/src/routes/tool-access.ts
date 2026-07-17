@@ -1,4 +1,5 @@
 import { Router, type Request } from "express";
+import { logRouteActivity } from "./activity-audit.js";
 import type { Db } from "@paperclipai/db";
 import { agents, companies } from "@paperclipai/db";
 import { eq } from "drizzle-orm";
@@ -518,6 +519,7 @@ export function toolAccessRoutes(
     const connection = await svc.getConnection(req.params.connectionId as string);
     if (!hasCompanyAccess(req, connection.companyId)) throw notFound("Tool connection not found");
     assertCompanyAccess(req, connection.companyId);
+    await logRouteActivity(db, req, { companyId: connection.companyId, action: "tool_connection.read", entityType: "tool_connection", entityId: connection.id });
     res.json(connection);
   });
 
@@ -627,6 +629,7 @@ export function toolAccessRoutes(
         connectionId: connection.id,
         actionRequestId: req.params.actionRequestId as string,
       });
+      await logRouteActivity(db, req, { companyId: connection.companyId, action: "tool.test_call_read", entityType: "tool_action_request", entityId: req.params.actionRequestId as string, details: { connectionId: connection.id } });
       res.json(status);
     } catch (error) {
       if (!sendToolGatewayError(res, error)) throw error;
@@ -757,7 +760,9 @@ export function toolAccessRoutes(
     assertCompanyAccess(req, existing.companyId);
     const limitRaw = Number(req.query.limit ?? 20);
     const limit = Number.isFinite(limitRaw) ? limitRaw : 20;
-    res.json(await svc.listConnectionActivity(existing.id, existing.companyId, limit));
+    const activity = await svc.listConnectionActivity(existing.id, existing.companyId, limit);
+    await logRouteActivity(db, req, { companyId: existing.companyId, action: "tool_connection.activity_read", entityType: "tool_connection", entityId: existing.id });
+    res.json(activity);
   });
 
   router.get("/companies/:companyId/tools/profiles", async (req, res) => {
@@ -1011,7 +1016,9 @@ export function toolAccessRoutes(
     assertBoard(req);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    res.json(await svc.getRunDecisionLookup(companyId, req.params.runId as string));
+    const decisions = await svc.getRunDecisionLookup(companyId, req.params.runId as string);
+    await logRouteActivity(db, req, { companyId, action: "tool.decision_read", entityType: "heartbeat_run", entityId: req.params.runId as string });
+    res.json(decisions);
   });
 
   router.get("/companies/:companyId/tools/trust-rules", async (req, res) => {
