@@ -74,4 +74,11 @@ describe("activity formatting", () => {
       "Run finished without a next step - recovery escalated",
     );
   });
+
+  it("formats the new audit-specific activity verbs", () => {
+    expect(formatActivityVerb("company.skill_policy_evaluated")).toBe("evaluated skill policy for");
+    expect(formatActivityVerb("cloud_upstream.push_cancelled")).toBe("cancelled cloud upstream push for");
+    expect(formatIssueActivityAction("board_chat.responded")).toBe("recorded a board concierge reply");
+    expect(formatIssueActivityAction("board_api_key.created")).toBe("created a board API key");
+  });
 });

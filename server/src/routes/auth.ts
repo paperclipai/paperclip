@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Router, type Request } from "express";
 import { eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { authUsers } from "@paperclipai/db";
@@ -9,6 +9,8 @@ import {
 } from "@paperclipai/shared";
 import { unauthorized } from "../errors.js";
 import { validate } from "../middleware/validate.js";
+import { boardAuthService, logActivity } from "../services/index.js";
+import { getActorInfo } from "./authz.js";
 
 async function loadCurrentUserProfile(db: Db, userId: string) {
   const user = await db
@@ -36,6 +38,27 @@ async function loadCurrentUserProfile(db: Db, userId: string) {
 
 export function authRoutes(db: Db) {
   const router = Router();
+  const boardAuth = boardAuthService(db);
+
+  async function logProfileUpdate(req: Request, details: Record<string, unknown>) {
+    const actor = getActorInfo(req);
+    if (req.actor.type !== "board" || !req.actor.userId) return;
+    const access = await boardAuth.resolveBoardAccess(req.actor.userId);
+    for (const companyId of access.companyIds) {
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
+        action: "user.profile_updated",
+        entityType: "user",
+        entityId: req.actor.userId,
+        details,
+      });
+    }
+  }
 
   router.get("/get-session", async (req, res) => {
     if (req.actor.type !== "board" || !req.actor.userId) {
@@ -87,6 +110,13 @@ export function authRoutes(db: Db) {
     if (!updated) {
       throw unauthorized("Signed-in user not found");
     }
+
+    await logProfileUpdate(req, {
+      changedFields: [
+        "name",
+        ...(patch.image !== undefined ? ["image"] : []),
+      ],
+    });
 
     res.json(currentUserProfileSchema.parse({
       id: updated.id,
