@@ -253,6 +253,45 @@ describePostgres("agent action audit routes", () => {
     });
   });
 
+  it("exports the audit feed as CSV and logs the export action", async () => {
+    const { company } = await seed();
+    const app = await createApp(db, {
+      type: "board", userId: "local-board", companyIds: [company.id], source: "local_implicit", isInstanceAdmin: false,
+    });
+    const response = await request(app).get(`/api/companies/${company.id}/audit/agent-actions.csv`);
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(response.headers["content-type"]).toContain("text/csv");
+    expect(response.headers["content-disposition"]).toContain(`agent-audit-${company.id}.csv`);
+
+    const lines = response.text.trim().split("\r\n");
+    expect(lines[0]).toBe(
+      "createdAt,action,actorType,actorId,agentId,runId,responsibleUserId,entityType,entityId,issueIdentifier,issueTitle,commentExcerpt,documentKey",
+    );
+    // Three seeded activity rows → three CSV data rows (the export reads before it logs itself).
+    expect(lines).toHaveLength(4);
+    // The comment excerpt from the enriched entity is present in the export.
+    expect(response.text).toContain("A useful comment excerpt for the audit feed.");
+
+    // The export is itself recorded as an auditable action.
+    const logged = (await db.select().from(activityLog)).filter((row) => row.action === "audit.exported");
+    expect(logged).toHaveLength(1);
+    expect(logged[0]!.entityType).toBe("company");
+    expect(logged[0]!.entityId).toBe(company.id);
+    expect(logged[0]!.details).toMatchObject({ format: "csv", rowCount: 3, truncated: false });
+  });
+
+  it("denies CSV export without the audit permission and logs nothing", async () => {
+    const { company } = await seed();
+    const response = await request(await createApp(db, {
+      type: "board", userId: "reader", companyIds: [company.id], source: "session", isInstanceAdmin: false,
+    })).get(`/api/companies/${company.id}/audit/agent-actions.csv`);
+    expect(response.status).toBe(403);
+    expect(response.body.error).toContain("audit:view_agent_actions");
+
+    const logged = (await db.select().from(activityLog)).filter((row) => row.action === "audit.exported");
+    expect(logged).toHaveLength(0);
+  });
+
   it("allows a signed-in board user with the explicit permission", async () => {
     const { company } = await seed();
     await db.insert(companyMemberships).values({
