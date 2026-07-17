@@ -2593,6 +2593,23 @@ export function issueRoutes(
   const instanceSettings = instanceSettingsService(db);
   const agentsSvc = agentService(db);
   const projectsSvc = projectService(db);
+
+  // issues.project_id is a uuid column. Callers routinely filter by a project
+  // shortname instead (e.g. ?projectId=QA), which Postgres rejects at the cast.
+  // Resolve the reference first; an unresolvable one yields undefined so the
+  // filter is skipped rather than failing the whole request.
+  async function resolveProjectIdFilter(
+    companyId: string,
+    raw: string | string[] | undefined,
+  ): Promise<string | undefined> {
+    const value = Array.isArray(raw) ? raw[0] : raw;
+    if (typeof value !== "string" || value.trim().length === 0) return undefined;
+    const trimmed = value.trim();
+    if (isUuidLike(trimmed)) return trimmed;
+    const resolved = await projectsSvc.resolveByReference(companyId, trimmed);
+    return resolved.project?.id ?? undefined;
+  }
+
   const goalsSvc = goalService(db);
   const issueApprovalsSvc = issueApprovalService(db);
   const recoveryActionsSvc = issueRecoveryActionService(db);
@@ -2696,9 +2713,13 @@ export function issueRoutes(
     issue?: { companyId: string; projectId?: string | null; executionPolicy?: unknown } | null,
   ): Promise<TrustPresetResolution | null> {
     if (!input.agentId) return null;
+    // heartbeat_runs.id is a uuid column. Manual / non-heartbeat callers may send
+    // a synthetic X-Paperclip-Run-Id (e.g. "manual-<ts>"), which Postgres rejects
+    // at the cast. Treat a non-uuid run id as "no heartbeat run" instead.
+    const runIdForLookup = input.runId && isUuidLike(input.runId) ? input.runId : null;
     const [agent, run] = await Promise.all([
       agentsSvc.getById(input.agentId),
-      input.runId
+      runIdForLookup
         ? db
             .select({
               companyId: heartbeatRuns.companyId,
@@ -2706,7 +2727,7 @@ export function issueRoutes(
               contextSnapshot: heartbeatRuns.contextSnapshot,
             })
             .from(heartbeatRuns)
-            .where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, companyId)))
+            .where(and(eq(heartbeatRuns.id, runIdForLookup), eq(heartbeatRuns.companyId, companyId)))
             .then((rows) => rows[0] ?? null)
         : Promise.resolve(null),
     ]);
@@ -4745,6 +4766,11 @@ export function issueRoutes(
     }
     const offset = parsedOffset ?? 0;
 
+    const resolvedProjectIdFilter = await resolveProjectIdFilter(
+      companyId,
+      req.query.projectId as string | string[] | undefined,
+    );
+
     const listFilters: IssueFilters = {
       attention: attention === "blocked" ? "blocked" : undefined,
       status: req.query.status as string | string[] | undefined,
@@ -4754,7 +4780,7 @@ export function issueRoutes(
       touchedByUserId,
       inboxArchivedByUserId,
       unreadForUserId,
-      projectId: req.query.projectId as string | undefined,
+      projectId: resolvedProjectIdFilter,
       workspaceId: req.query.workspaceId as string | undefined,
       executionWorkspaceId: req.query.executionWorkspaceId as string | undefined,
       parentId: req.query.parentId as string | undefined,
@@ -4946,7 +4972,10 @@ export function issueRoutes(
       assigneeAgentId: req.query.assigneeAgentId as string | undefined,
       participantAgentId: req.query.participantAgentId as string | undefined,
       assigneeUserId: req.query.assigneeUserId as string | undefined,
-      projectId: req.query.projectId as string | undefined,
+      projectId: await resolveProjectIdFilter(
+        companyId,
+        req.query.projectId as string | string[] | undefined,
+      ),
       workspaceId: req.query.workspaceId as string | undefined,
       executionWorkspaceId: req.query.executionWorkspaceId as string | undefined,
       parentId: req.query.parentId as string | undefined,
