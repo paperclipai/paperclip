@@ -651,7 +651,6 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
       const windowFilter = typeof req.query.window === "string" ? req.query.window.trim() : "24h";
       const searchRaw = typeof req.query.search === "string" ? req.query.search.trim() : null;
       const cursorRaw = typeof req.query.cursor === "string" ? req.query.cursor.trim() : null;
-      await logRouteActivity(db, req, { companyId, action: "tool.audit_read", entityType: "company", entityId: companyId, details: { limit } });
       if (appFilter && !uuidPattern.test(appFilter)) {
         res.status(400).json({ error: "app must be an applicationId or connectionId UUID" });
         return;
@@ -819,6 +818,7 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
       });
 
       const last = visible.at(-1)?.row;
+      await logRouteActivity(db, req, { companyId, action: "tool.audit_read", entityType: "company", entityId: companyId, details: { limit } });
       res.json({
         events,
         nextCursor: hasMore && last ? encodeAuditCursor({ createdAt: last.createdAt, id: last.id }) : null,

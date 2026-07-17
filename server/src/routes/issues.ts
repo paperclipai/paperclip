@@ -10502,8 +10502,6 @@ export function issueRoutes(
     }
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
 
-    await logRouteActivity(db, req, { companyId: attachment.companyId, action: "attachment.downloaded", entityType: "issue_attachment", entityId: attachment.id, issueId: attachment.issueId, details: { byteSize: attachment.byteSize, contentType: attachment.contentType } });
-
     const contentLength = attachment.byteSize;
     const range = parseAttachmentRangeHeader(
       typeof req.headers.range === "string" ? req.headers.range : undefined,
@@ -10515,6 +10513,8 @@ export function issueRoutes(
       res.status(416).end();
       return;
     }
+
+    await logRouteActivity(db, req, { companyId: attachment.companyId, action: "attachment.downloaded", entityType: "issue_attachment", entityId: attachment.id, issueId: attachment.issueId, details: { byteSize: attachment.byteSize, contentType: attachment.contentType } });
 
     const object = await storage.getObject(
       attachment.companyId,

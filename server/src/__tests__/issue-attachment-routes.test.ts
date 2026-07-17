@@ -510,6 +510,10 @@ describe("issue attachment routes", () => {
     expect(res.status).toBe(416);
     expect(res.headers["content-range"]).toBe("bytes */4");
     expect(storage.getObject).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: "attachment.downloaded" }),
+    );
   });
 
   it("rejects cross-company attachment content reads", async () => {
