@@ -265,6 +265,10 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
         { timeout: 5_000, interval: 50 },
       )
       .toEqual({ status: "idle", errorReason: null });
+
+    // The persisted run status changes before executeRun finishes its final
+    // activity/event writes. Drain it before afterEach deletes FK parents.
+    await heartbeat.waitForRunExecutionDrain(run!.id);
   });
 
   async function seedMaxTurnFixture(input?: {
