@@ -887,6 +887,32 @@ describeEmbeddedPostgres("attention service", () => {
     expect(feed.items.some((item) => item.dedupKey === `approval:${approvalId}`)).toBe(true);
   });
 
+  it("returns one pending approval row when the approval is linked to multiple tasks", async () => {
+    const { companyId } = await seedCompany("ATM");
+    const approvalId = randomUUID();
+    const firstIssueId = "00000000-0000-4000-8000-000000000001";
+    const secondIssueId = "00000000-0000-4000-8000-000000000002";
+    await insertIssue({ companyId, id: firstIssueId, identifier: "ATM-1", title: "First task", status: "in_progress" });
+    await insertIssue({ companyId, id: secondIssueId, identifier: "ATM-2", title: "Second task", status: "in_progress" });
+    await db.insert(approvals).values({
+      id: approvalId,
+      companyId,
+      type: "request_board_approval",
+      status: "pending",
+      payload: { title: "Approve rollout" },
+    });
+    await db.insert(issueApprovals).values([
+      { companyId, issueId: secondIssueId, approvalId },
+      { companyId, issueId: firstIssueId, approvalId },
+    ]);
+
+    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const approvalItems = feed.items.filter((item) => item.dedupKey === `approval:${approvalId}`);
+
+    expect(approvalItems).toHaveLength(1);
+    expect(approvalItems[0]?.subject.metadata?.issueId).toBe(firstIssueId);
+  });
+
   it("hides snoozed attention rows until snoozedUntil passes, then returns them unconditionally", async () => {
     const { companyId } = await seedCompany("ATS");
     const approvalId = randomUUID();

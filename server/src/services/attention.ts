@@ -610,6 +610,22 @@ export function attentionService(db: Db) {
         .where(and(eq(approvals.companyId, companyId), eq(approvals.status, "pending")))
         .orderBy(desc(approvals.updatedAt), desc(approvals.id));
 
+      const pendingApprovalIds = pendingApprovals.map((approval) => approval.id);
+      const approvalIssueRows = pendingApprovalIds.length > 0
+        ? await db
+          .select({ approvalId: issueApprovals.approvalId, issueId: issueApprovals.issueId })
+          .from(issueApprovals)
+          .where(and(
+            eq(issueApprovals.companyId, companyId),
+            inArray(issueApprovals.approvalId, pendingApprovalIds),
+          ))
+          .orderBy(asc(issueApprovals.approvalId), asc(issueApprovals.issueId))
+        : [];
+      const approvalIssueMap = new Map<string, string>();
+      for (const row of approvalIssueRows) {
+        if (!approvalIssueMap.has(row.approvalId)) approvalIssueMap.set(row.approvalId, row.issueId);
+      }
+
       for (const approval of pendingApprovals) {
         const dedupKey = `approval:${approval.id}`;
         const title = approvalTitle(approval.type, approval.payload);
@@ -628,6 +644,7 @@ export function attentionService(db: Db) {
               type: approval.type,
               requestedByAgentId: approval.requestedByAgentId,
               requestedByUserId: approval.requestedByUserId,
+              issueId: approvalIssueMap.get(approval.id) ?? null,
             },
           },
           whyNow: "Approval is pending a board decision.",
