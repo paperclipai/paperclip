@@ -24,5 +24,5 @@ export function resolveRunFailureCode(run: {
 
 export function formatRunFailureCode(code: string): string {
   if (code === RESTART_INDUCED_SUPERVISOR_LOSS) return "restart-induced supervisor loss";
-  return code;
+  return code.replace(/_/g, " ");
 }

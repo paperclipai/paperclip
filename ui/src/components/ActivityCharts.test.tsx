@@ -108,7 +108,8 @@ describe("ActivityCharts", () => {
     // Tooltip now carries the per-day breakdown (incl. failure error codes).
     const dayCell = container.querySelector("[title^='2026-04-20: 2 runs']");
     expect(dayCell).not.toBeNull();
-    expect(dayCell?.getAttribute("title")).toContain("provider_quota: 1");
+    expect(dayCell?.getAttribute("title")).toContain("provider quota: 1");
+    expect(dayCell?.getAttribute("title")).not.toContain("provider_quota");
   });
 
   it("renders a distinct recovered segment and legend for recovered restart kills", () => {
@@ -180,6 +181,7 @@ describe("ActivityCharts", () => {
 
     const dayCell = container.querySelector("[title^='2026-04-20: 2 runs']");
     expect(dayCell?.getAttribute("title")).toContain("restart-induced supervisor loss: 1");
-    expect(dayCell?.getAttribute("title")).toContain("process_lost: 1");
+    expect(dayCell?.getAttribute("title")).toContain("process lost: 1");
+    expect(dayCell?.getAttribute("title")).not.toContain("process_lost");
   });
 });
