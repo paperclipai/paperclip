@@ -725,6 +725,17 @@ type SuccessfulRunHandoffSuccessionGuard = {
   note: string;
 };
 
+type DoneCloseSuccessionGuard = {
+  sourceRunId: string | null;
+  note: string;
+};
+
+type DoneCloseEvidence = {
+  kind: "successful_run_handoff" | "direct_done_close";
+  sourceRunId: string | null;
+  summary: string;
+};
+
 function buildHeartbeatRunIssueComment(resultJson: unknown): string | null {
   if (!resultJson || typeof resultJson !== "object" || Array.isArray(resultJson)) return null;
   const record = resultJson as Record<string, unknown>;
@@ -742,41 +753,97 @@ function normalizeWhitespace(value: string) {
 
 function summaryNeedsSuccessorSemantics(summary: string) {
   const normalized = normalizeWhitespace(summary).toLowerCase();
-  const notReadySignals = [
+  const successionGapSignals = [
     "not ready",
     "not-ready",
+    "not established",
     "still fails",
     "still failing",
     "remaining blocker",
+    "remaining failure",
+    "remaining failures",
+    "unresolved failure",
+    "unresolved failures",
+    "surviving test failure",
+    "surviving test failures",
+    "standard check fail",
+    "standard check: fail",
   ];
-  const successorSignals = [
-    "next authoritative blocker",
-    "next blocker",
-    "follow-up",
-    "follow up",
-    "next action",
-  ];
-  return notReadySignals.some((signal) => normalized.includes(signal))
-    && successorSignals.some((signal) => normalized.includes(signal));
+  return successionGapSignals.some((signal) => normalized.includes(signal));
 }
 
-function buildSuccessfulRunHandoffSuccessionNeededNote(input: {
+function buildDoneCloseSuccessionNeededNote(input: {
+  evidenceKind: DoneCloseEvidence["kind"];
   issueIdentifier: string | null;
-  sourceRunId: string;
+  sourceRunId: string | null;
   summary: string;
 }) {
   const issueLabel = input.issueIdentifier ?? "this issue";
   const excerpt = normalizeWhitespace(input.summary).slice(0, 220);
+  const intro = input.evidenceKind === "successful_run_handoff"
+    ? "Successful-run handoff preserved succession semantics instead of silently closing this issue."
+    : "Direct done-close preserved succession semantics instead of silently closing this issue.";
+  const sourceLine = input.sourceRunId ? `- Source run: \`${input.sourceRunId}\`` : null;
   return [
-    "Successful-run handoff preserved succession semantics instead of silently closing this issue.",
+    intro,
     "",
     `- Source issue: \`${issueLabel}\``,
-    `- Source run: \`${input.sourceRunId}\``,
-    "- Final summary still reads as not-ready and names follow-up work, but no open successor sibling is linked yet.",
+    sourceLine,
+    "- Final close evidence still reads as not-ready or with unresolved failures, but no open successor sibling is linked yet.",
     `- Summary excerpt: ${excerpt}`,
     "",
     "Required next step: create or link the successor child on the same parent with the same assignee, or replace this review state with the correct blocker/delegation path before marking the issue done.",
-  ].join("\n");
+  ].filter((line): line is string => typeof line === "string").join("\n");
+}
+
+async function resolveDoneCloseSuccessionGuard(input: {
+  db: Db;
+  issue: typeof issueRows.$inferSelect;
+  actor: ReturnType<typeof getActorInfo>;
+  requestedStatus: string | undefined;
+  evidence: DoneCloseEvidence | null;
+}) : Promise<DoneCloseSuccessionGuard | null> {
+  if (input.requestedStatus !== "done") return null;
+  if (input.actor.actorType !== "agent" || !input.actor.agentId) return null;
+  if (!input.issue.parentId || !input.evidence) return null;
+  if (!summaryNeedsSuccessorSemantics(input.evidence.summary)) return null;
+
+  const parentIssue = await input.db
+    .select({
+      id: issueRows.id,
+      status: issueRows.status,
+    })
+    .from(issueRows)
+    .where(and(
+      eq(issueRows.companyId, input.issue.companyId),
+      eq(issueRows.id, input.issue.parentId),
+    ))
+    .then((rows) => rows[0] ?? null);
+  if (!parentIssue || isClosedIssueStatus(parentIssue.status)) return null;
+
+  const openSibling = await input.db
+    .select({ id: issueRows.id })
+    .from(issueRows)
+    .where(and(
+      eq(issueRows.companyId, input.issue.companyId),
+      eq(issueRows.parentId, input.issue.parentId),
+      notInArray(issueRows.status, ["done", "cancelled"]),
+      input.issue.assigneeAgentId ? eq(issueRows.assigneeAgentId, input.issue.assigneeAgentId) : isNull(issueRows.assigneeAgentId),
+      input.issue.assigneeUserId ? eq(issueRows.assigneeUserId, input.issue.assigneeUserId) : isNull(issueRows.assigneeUserId),
+      sql`${issueRows.id} <> ${input.issue.id}`,
+    ))
+    .then((rows) => rows[0] ?? null);
+  if (openSibling) return null;
+
+  return {
+    sourceRunId: input.evidence.sourceRunId,
+    note: buildDoneCloseSuccessionNeededNote({
+      evidenceKind: input.evidence.kind,
+      issueIdentifier: input.issue.identifier,
+      sourceRunId: input.evidence.sourceRunId,
+      summary: input.evidence.summary,
+    }),
+  };
 }
 
 export async function resolveSuccessfulRunHandoffSuccessionGuard(input: {
@@ -826,31 +893,78 @@ export async function resolveSuccessfulRunHandoffSuccessionGuard(input: {
   if (!sourceRun) return null;
 
   const summary = buildHeartbeatRunIssueComment(sourceRun.resultJson);
-  if (!summary || !summaryNeedsSuccessorSemantics(summary)) return null;
+  if (!summary) return null;
 
-  const openSibling = await input.db
-    .select({ id: issueRows.id })
-    .from(issueRows)
-    .where(and(
-      eq(issueRows.companyId, input.issue.companyId),
-      eq(issueRows.parentId, input.issue.parentId),
-      notInArray(issueRows.status, ["done", "cancelled"]),
-      input.issue.assigneeAgentId ? eq(issueRows.assigneeAgentId, input.issue.assigneeAgentId) : isNull(issueRows.assigneeAgentId),
-      input.issue.assigneeUserId ? eq(issueRows.assigneeUserId, input.issue.assigneeUserId) : isNull(issueRows.assigneeUserId),
-      // Exclude the issue being closed so only real successors satisfy the guard.
-      sql`${issueRows.id} <> ${input.issue.id}`,
-    ))
-    .then((rows) => rows[0] ?? null);
-  if (openSibling) return null;
-
-  return {
-    sourceRunId,
-    note: buildSuccessfulRunHandoffSuccessionNeededNote({
-      issueIdentifier: input.issue.identifier,
+  const guard = await resolveDoneCloseSuccessionGuard({
+    db: input.db,
+    issue: input.issue,
+    actor: input.actor,
+    requestedStatus: input.requestedStatus,
+    evidence: {
+      kind: "successful_run_handoff",
       sourceRunId,
       summary,
-    }),
+    },
+  });
+  if (!guard) return null;
+  return {
+    sourceRunId,
+    note: guard.note,
   };
+}
+
+export async function resolveDirectDoneCloseSuccessionGuard(input: {
+  db: Db;
+  issue: typeof issueRows.$inferSelect;
+  actor: ReturnType<typeof getActorInfo>;
+  requestedStatus: string | undefined;
+  commentBody: string | null;
+}) : Promise<DoneCloseSuccessionGuard | null> {
+  if (input.requestedStatus !== "done") return null;
+  if (input.actor.actorType !== "agent" || !input.actor.agentId) return null;
+  if (!input.issue.parentId) return null;
+
+  const commentSummary = typeof input.commentBody === "string" && input.commentBody.trim().length > 0
+    ? input.commentBody
+    : null;
+  if (commentSummary && summaryNeedsSuccessorSemantics(commentSummary)) {
+    return resolveDoneCloseSuccessionGuard({
+      db: input.db,
+      issue: input.issue,
+      actor: input.actor,
+      requestedStatus: input.requestedStatus,
+      evidence: {
+        kind: "direct_done_close",
+        sourceRunId: input.actor.runId ?? null,
+        summary: commentSummary,
+      },
+    });
+  }
+
+  if (!input.actor.runId) return null;
+  const currentRun = await input.db
+    .select({
+      id: heartbeatRuns.id,
+      companyId: heartbeatRuns.companyId,
+      resultJson: heartbeatRuns.resultJson,
+    })
+    .from(heartbeatRuns)
+    .where(and(eq(heartbeatRuns.id, input.actor.runId), eq(heartbeatRuns.companyId, input.issue.companyId)))
+    .then((rows) => rows[0] ?? null);
+  const summary = buildHeartbeatRunIssueComment(currentRun?.resultJson);
+  if (!summary) return null;
+
+  return resolveDoneCloseSuccessionGuard({
+    db: input.db,
+    issue: input.issue,
+    actor: input.actor,
+    requestedStatus: input.requestedStatus,
+    evidence: {
+      kind: "direct_done_close",
+      sourceRunId: input.actor.runId,
+      summary,
+    },
+  });
 }
 
 async function listSuccessfulRunHandoffStates(
@@ -8126,12 +8240,22 @@ export function issueRoutes(
     if (normalizedAssigneeAgentId !== undefined) {
       updateFields.assigneeAgentId = normalizedAssigneeAgentId;
     }
-    const successionGuard = await resolveSuccessfulRunHandoffSuccessionGuard({
+    const requestedStatus = typeof updateFields.status === "string" ? updateFields.status : undefined;
+    let successionGuard = await resolveSuccessfulRunHandoffSuccessionGuard({
       db,
       issue: existing,
       actor,
-      requestedStatus: typeof updateFields.status === "string" ? updateFields.status : undefined,
+      requestedStatus,
     });
+    if (!successionGuard) {
+      successionGuard = await resolveDirectDoneCloseSuccessionGuard({
+        db,
+        issue: existing,
+        actor,
+        requestedStatus,
+        commentBody,
+      });
+    }
     if (successionGuard) {
       updateFields.status = "in_review";
       commentBody = commentBody
@@ -8769,22 +8893,22 @@ export function issueRoutes(
         reason: "issue_commented",
         payload: {
           issueId: issue.id,
-          mutation: "successful_run_handoff_succession_needed",
+          mutation: "done_close_succession_needed",
           sourceRunId: successionGuard.sourceRunId,
         },
-        idempotencyKey: `successful_run_handoff_succession_needed:${issue.id}:${successionGuard.sourceRunId}`,
+        idempotencyKey: `done_close_succession_needed:${issue.id}:${successionGuard.sourceRunId ?? "no-run"}`,
         requestedByActorType: actor.actorType,
         requestedByActorId: actor.actorId,
         contextSnapshot: {
           issueId: issue.id,
           taskId: issue.id,
           wakeReason: "issue_commented",
-          mutation: "successful_run_handoff_succession_needed",
-          source: "successful_run_handoff",
+          mutation: "done_close_succession_needed",
+          source: "issue_done_close",
           sourceRunId: successionGuard.sourceRunId,
         },
       }).catch((err) => {
-        logger.warn({ err, issueId: issue.id }, "failed to queue successful-run handoff succession follow-up wake");
+        logger.warn({ err, issueId: issue.id }, "failed to queue done-close succession follow-up wake");
       });
     }
 
