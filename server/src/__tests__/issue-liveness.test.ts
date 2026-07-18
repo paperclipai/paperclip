@@ -138,6 +138,26 @@ describe("issue graph liveness classifier", () => {
     expect(findings).toEqual([]);
   });
 
+  it("does not flag a blocked unassigned issue with one-character external wait details", () => {
+    const findings = classifyIssueGraphLiveness({
+      issues: [
+        issue({
+          assigneeAgentId: null,
+          createdByAgentId: null,
+          description: [
+            "Waiting on an external owner.",
+            "external owner: A",
+            "external action: B",
+          ].join("\n"),
+        }),
+      ],
+      relations: [],
+      agents: [agent(), manager],
+    });
+
+    expect(findings).toEqual([]);
+  });
+
   it("does not flag a blocked external-wait blocker leaf as an unassigned blocker", () => {
     const findings = classifyIssueGraphLiveness({
       issues: [

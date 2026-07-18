@@ -1,4 +1,5 @@
 import { getAgentWorkEligibility, isAgentInvokable } from "@paperclipai/shared";
+import { hasExternalWaitDescription } from "./external-wait.js";
 import { buildIssueGraphLivenessIncidentKey } from "./origins.js";
 
 export type IssueLivenessSeverity = "warning" | "critical";
@@ -110,12 +111,6 @@ export interface IssueGraphLivenessInput {
 
 function issueLabel(issue: IssueLivenessIssueInput) {
   return issue.identifier ?? issue.id;
-}
-
-function hasExternalWaitDescription(description: string | null | undefined) {
-  if (!description) return false;
-  return /^\s*external owner\s*:\s*\S.+$/im.test(description) &&
-    /^\s*external action\s*:\s*\S.+$/im.test(description);
 }
 
 function pathEntry(issue: IssueLivenessIssueInput): IssueLivenessDependencyPathEntry {
