@@ -993,13 +993,6 @@ export function authorizationService(db: Db) {
       ) {
         return allowIssueMentionGrant(input.action);
       }
-      if (input.action === "issue:comment" && isQaRole(input.actorAgent.role)) {
-        return allow({
-          action: input.action,
-          reason: "allow_same_company_review_comment",
-          explanation: "Allowed for same-company QA review evidence comments.",
-        });
-      }
       return lowTrustDeny("Issue is outside this low-trust boundary.");
     }
 

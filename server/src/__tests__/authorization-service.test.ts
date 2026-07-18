@@ -1219,22 +1219,10 @@ describeEmbeddedPostgres("authorization service", () => {
     })).resolves.toMatchObject({ allowed: false, reason: "deny_low_trust_boundary" });
   });
 
-  it("allows same-company QA agents to comment on CTO-owned issues without granting mutation", async () => {
+  it("allows same-company standard QA agents to comment on CTO-owned issues without granting mutation", async () => {
     const company = await createCompany(db, "QaReviewComment");
     const ctoAgent = await createAgent(db, company.id, { role: "cto" });
-    const qaAgent = await createAgent(db, company.id, {
-      role: "qa",
-      permissions: {
-        trustPreset: LOW_TRUST_REVIEW_PRESET,
-        authorizationPolicy: {
-          trustBoundary: {
-            mode: LOW_TRUST_REVIEW_PRESET,
-            companyId: company.id,
-            projectIds: [randomUUID()],
-          },
-        },
-      },
-    });
+    const qaAgent = await createAgent(db, company.id, { role: "qa" });
     const issue = await createIssue(db, company.id, {
       title: "CTO-owned review target",
       assigneeAgentId: ctoAgent.id,
@@ -1259,6 +1247,48 @@ describeEmbeddedPostgres("authorization service", () => {
     await expect(authorizationService(db).decide({
       actor: { type: "agent", agentId: qaAgent.id, companyId: company.id, source: "agent_key" },
       action: "issue:mutate",
+      resource,
+    })).resolves.toMatchObject({
+      allowed: false,
+      reason: "deny_missing_grant",
+    });
+  });
+
+  it("keeps low-trust QA review comments inside the configured project boundary", async () => {
+    const company = await createCompany(db, "QaLowTrustReviewBoundary");
+    const allowedProject = await createProject(db, company.id, "QaAllowedProject");
+    const targetProject = await createProject(db, company.id, "QaTargetProject");
+    const ctoAgent = await createAgent(db, company.id, { role: "cto" });
+    const qaAgent = await createAgent(db, company.id, {
+      role: "qa",
+      permissions: {
+        trustPreset: LOW_TRUST_REVIEW_PRESET,
+        authorizationPolicy: {
+          trustBoundary: {
+            mode: LOW_TRUST_REVIEW_PRESET,
+            companyId: company.id,
+            projectIds: [allowedProject.id],
+          },
+        },
+      },
+    });
+    const issue = await createIssue(db, company.id, {
+      title: "Out-of-project CTO-owned review target",
+      projectId: targetProject.id,
+      assigneeAgentId: ctoAgent.id,
+    });
+    const resource = {
+      type: "issue" as const,
+      companyId: company.id,
+      issueId: issue.id,
+      projectId: issue.projectId,
+      assigneeAgentId: ctoAgent.id,
+      status: issue.status,
+    };
+
+    await expect(authorizationService(db).decide({
+      actor: { type: "agent", agentId: qaAgent.id, companyId: company.id, source: "agent_key" },
+      action: "issue:comment",
       resource,
     })).resolves.toMatchObject({
       allowed: false,

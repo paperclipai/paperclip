@@ -3376,6 +3376,10 @@ export function issueRoutes(
     await assertCanAssignTasks(req, companyId, assignmentScope);
   }
 
+  type IssueAccessExtraScope = {
+    pmGrooming?: boolean;
+  };
+
   async function decideIssueAccess(
     req: Request,
     issue: {
@@ -3388,7 +3392,7 @@ export function issueRoutes(
       status: string;
     },
     action: "issue:comment" | "issue:read" | "issue:mutate",
-    extraScope: Record<string, unknown> = {},
+    extraScope: IssueAccessExtraScope = {},
   ) {
     return access.decide({
       actor: req.actor,
@@ -3404,12 +3408,12 @@ export function issueRoutes(
         status: issue.status,
       },
       scope: {
+        ...extraScope,
         issueId: issue.id,
         projectId: issue.projectId,
         parentIssueId: issue.parentId,
         assigneeAgentId: issue.assigneeAgentId,
         assigneeUserId: issue.assigneeUserId,
-        ...extraScope,
       },
     });
   }
@@ -3569,7 +3573,12 @@ export function issueRoutes(
       return true;
     }
     if (issue.assigneeAgentId !== actorAgentId) {
-      if (boundaryDecision.reason === "allow_same_company_pm_grooming" && issue.status !== "in_progress") {
+      if (
+        boundaryDecision.reason === "allow_same_company_pm_grooming" &&
+        issue.status !== "in_progress" &&
+        issue.status !== "done" &&
+        issue.status !== "cancelled"
+      ) {
         return true;
       }
       if (await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, issue.assigneeAgentId)) {
