@@ -1,11 +1,13 @@
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  assertSshSyncBackCapacity,
   buildSshSpawnTarget,
   buildSshEnvLabFixtureConfig,
+  createSshSyncBackStagingDir,
   getSshEnvLabSupport,
   prepareWorkspaceForSshExecution,
   readSshEnvLabFixtureStatus,
@@ -89,6 +91,27 @@ describe("ssh env-lab fixture", () => {
       if (!dir) continue;
       await rm(dir, { recursive: true, force: true }).catch(() => undefined);
     }
+  });
+
+  it("allocates sync-back staging beside the workspace instead of in the host temp directory", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-staging-root-test-"));
+    cleanupDirs.push(rootDir);
+    const localDir = path.join(rootDir, "workspace");
+    await mkdir(localDir);
+
+    const stagingDir = await createSshSyncBackStagingDir(localDir);
+    expect(path.dirname(stagingDir)).toBe(rootDir);
+    expect(path.basename(stagingDir)).toMatch(/^\.paperclip-ssh-sync-back-/);
+
+    await rm(stagingDir, { recursive: true, force: true });
+  });
+
+  it("rejects sync-back before transfer when staging capacity lacks safe headroom", () => {
+    expect(() => assertSshSyncBackCapacity({
+      availableBytes: 5n * 1024n * 1024n * 1024n,
+      remoteBytes: 4_700n * 1024n * 1024n,
+      stagingDir: "/workspace/.paperclip-ssh-sync-back-test",
+    })).toThrow(/Insufficient capacity for SSH workspace restore.*5\.00 GiB available.*required/);
   });
 
   it("starts an isolated sshd fixture and executes commands through it", async () => {
@@ -309,14 +332,35 @@ describe("ssh env-lab fixture", () => {
     for (const line of lines) {
       expect(line.raw).toContain("Restoring workspace from ssh");
     }
-    // Terminal completion line: either an exact 100% (probe succeeded) or a
-    // final MB-received line (probe unavailable). Either is a valid terminal.
+    // The capacity preflight supplies a known estimate, so completion is exact.
     const last = lines.at(-1)!;
-    expect(last.percent === 100 || (last.percent === null && last.doneMb !== null)).toBe(true);
+    expect(last.percent).toBe(100);
     // The restored files round-tripped through the byte-counting transport.
     await expect(readFile(path.join(restoreDir, "blob-0.bin"))).resolves.toEqual(
       Buffer.alloc(256 * 1024, 1),
     );
+    expect((await readdir(rootDir)).filter((entry) => entry.startsWith(".paperclip-ssh-sync-back-"))).toEqual([]);
+  }, SSH_FIXTURE_TEST_TIMEOUT_MS);
+
+  it("removes workspace-local sync-back staging after a failed restore", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-fixture-"));
+    cleanupDirs.push(rootDir);
+    const statePath = path.join(rootDir, "state.json");
+    const restoreDir = path.join(rootDir, "restore-target");
+    await mkdir(restoreDir);
+
+    const started = await startSshEnvLabFixtureOrSkip(statePath, "SSH failed restore cleanup test");
+    if (!started) return;
+    const config = await buildSshEnvLabFixtureConfig(started);
+    const spec = { ...config, remoteCwd: started.workspaceDir } as const;
+
+    await expect(syncDirectoryFromSsh({
+      spec,
+      remoteDir: path.posix.join(started.workspaceDir, "missing-restore-source"),
+      localDir: restoreDir,
+    })).rejects.toThrow();
+
+    expect((await readdir(rootDir)).filter((entry) => entry.startsWith(".paperclip-ssh-sync-back-"))).toEqual([]);
   }, SSH_FIXTURE_TEST_TIMEOUT_MS);
 
   it("reports exact git-history import percentage from the known bundle size", async () => {
@@ -734,5 +778,6 @@ describe("ssh env-lab fixture", () => {
     const recentSubjects = await git(localRepo, ["log", "--pretty=%s", "-3"]);
     expect(recentSubjects).toContain("remote update a");
     expect(recentSubjects).toContain("remote update b");
+    expect((await readdir(rootDir)).filter((entry) => entry.startsWith(".paperclip-ssh-sync-back-"))).toEqual([]);
   }, SSH_FIXTURE_TEST_TIMEOUT_MS);
 });
