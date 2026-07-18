@@ -221,7 +221,11 @@ def geo_section(sites_path, environ, today):
         import geo_bots
         from config import load_sites, resolve_credential
         from wpclient import WPClient
-        wk = geo_bots.iso_week(today)
+        # UTC statt lokalem `today`: das mu-Plugin rechnet die Woche mit
+        # gmdate('o-\WW') (UTC). An Wochen-/Jahresgrenzen kann das lokale
+        # Datum von UTC abweichen, sonst faellt current_week_hits() ins
+        # Leere, obwohl der Plugin-Key da ist.
+        wk = geo_bots.iso_week(datetime.datetime.now(datetime.timezone.utc).date())
         lines.append("")
         lines.append(f"**KI-Bot-Zugriffe (Woche {wk}):**")
         for site in load_sites(sites_path):
@@ -266,10 +270,16 @@ def main(argv: list[str] | None = None) -> int:
     diff_md, diff_alert = diff_section(counts, gsc_blocks, hist_dir, today)
     body = body + diff_md + gsc_md
 
-    geo_md, geo_data = geo_section(args.sites, os.environ, today_date)
-    body = body + geo_md
-    with open(os.path.join(hist_dir, f"{today}-geo.json"), "w") as fh:
-        json.dump(geo_data, fh, ensure_ascii=False, indent=2)
+    # GEO-Sektion + History-Datei sind best-effort: ein Fehler hier darf die
+    # onpage+diff+GSC-Mail nicht mitreissen (audit-all.sh macht `|| exit 2`
+    # auf den ganzen Aufruf, nicht nur auf diesen Teil).
+    try:
+        geo_md, geo_data = geo_section(args.sites, os.environ, today_date)
+        body = body + geo_md
+        with open(os.path.join(hist_dir, f"{today}-geo.json"), "w") as fh:
+            json.dump(geo_data, fh, ensure_ascii=False, indent=2)
+    except Exception:  # noqa: BLE001 — niemals die Mail kippen
+        pass
 
     if gsc_blocks:
         with open(os.path.join(hist_dir, f"{today}-gsc.json"), "w") as fh:

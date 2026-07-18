@@ -1,7 +1,11 @@
 import datetime
 import json
 
-from audit_summary import _count, _dated_snapshots, _prev_snapshot, gsc_section, diff_section, geo_section
+import config
+import wpclient
+import audit_summary
+from audit_summary import _count, _dated_snapshots, _prev_snapshot, gsc_section, diff_section, geo_section, main
+from geo_bots import iso_week
 
 
 def test_count_enthaelt_findings():
@@ -93,3 +97,87 @@ def test_geo_section_ohne_prompts_und_ohne_route_ist_failsoft(tmp_path, monkeypa
     assert "GEO-Sichtbarkeit" in md
     assert isinstance(data, dict)
     assert data == {"prompts": [], "bots": {}}
+
+
+def _one_site_sites_json(tmp_path):
+    sites = tmp_path / "sites.json"
+    sites.write_text(
+        '{"report_root":"%s","sites":[{"name":"a","url":"https://a.de",'
+        '"wp_rest_base":"https://a.de/wp-json","credential_ref":"A",'
+        '"crawl_limit":10,"seo_plugin":"yoast"}]}' % tmp_path
+    )
+    return sites
+
+
+def test_geo_section_teil_b_zeigt_bot_counts_der_aktuellen_woche(tmp_path, monkeypatch):
+    sites = _one_site_sites_json(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    # aktuelle UTC-Woche wie im Fix (Finding 2) — mu-Plugin rechnet ebenfalls in UTC
+    current_wk = iso_week(datetime.datetime.now(datetime.timezone.utc).date())
+
+    class FakeClient:
+        def __init__(self, base, auth):
+            pass
+
+        def get_ai_bot_hits(self):
+            return {current_wk: {"gptbot": 3, "claudebot": 1}}
+
+    monkeypatch.setattr(config, "load_sites", lambda path: [
+        config.Site(name="a", url="https://a.de", wp_rest_base="https://a.de/wp-json",
+                    credential_ref="A", crawl_limit=10, seo_plugin="yoast")
+    ])
+    monkeypatch.setattr(wpclient, "WPClient", FakeClient)
+
+    md, data = geo_section(str(sites), {"A_USER": "u", "A_PW": "p"}, datetime.date(2026, 7, 18))
+
+    assert "claudebot: 1" in md
+    assert "gptbot: 3" in md
+    assert data["bots"]["a"] == {"gptbot": 3, "claudebot": 1}
+
+
+def test_geo_section_teil_b_bei_client_fehler_meldet_keine_bot_daten(tmp_path, monkeypatch):
+    sites = _one_site_sites_json(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    class FailingClient:
+        def __init__(self, base, auth):
+            pass
+
+        def get_ai_bot_hits(self):
+            raise RuntimeError("WP nicht erreichbar")
+
+    monkeypatch.setattr(config, "load_sites", lambda path: [
+        config.Site(name="a", url="https://a.de", wp_rest_base="https://a.de/wp-json",
+                    credential_ref="A", crawl_limit=10, seo_plugin="yoast")
+    ])
+    monkeypatch.setattr(wpclient, "WPClient", FailingClient)
+
+    md, data = geo_section(str(sites), {"A_USER": "u", "A_PW": "p"}, datetime.date(2026, 7, 18))
+
+    assert "a: keine Bot-Daten" in md
+    assert "a" not in data["bots"]
+
+
+def test_main_geo_absturz_kippt_nicht_die_mail(tmp_path, monkeypatch):
+    # Finding 1: geo_section (bzw. die <date>-geo.json-Dump) darf abstuerzen,
+    # ohne dass main() den onpage+diff+GSC-Body verliert oder nicht-0 zurueckgibt.
+    report_root = tmp_path / "reports"
+    report_root.mkdir()
+    sites = tmp_path / "sites.json"
+    sites.write_text('{"report_root":"%s","sites":[]}' % report_root)
+    out_file = tmp_path / "out.md"
+
+    def boom(*a, **kw):
+        raise RuntimeError("geo kaputt")
+
+    monkeypatch.setattr(audit_summary, "geo_section", boom)
+
+    rc = main(["--sites", str(sites), "--out", str(out_file)])
+
+    assert rc == 0
+    body = out_file.read_text()
+    assert "SEO/GEO Wochen-Audit" in body
+    hist_dir = report_root / "_audit-history"
+    today = datetime.date.today().isoformat()
+    assert not (hist_dir / f"{today}-geo.json").exists()
+    assert (hist_dir / f"{today}.md").exists()
