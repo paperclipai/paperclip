@@ -45,6 +45,6 @@ describe("pi local skill sync", () => {
 
     const after = await syncPiSkills(ctx, [paperclipKey]);
     expect(after.entries.find((entry) => entry.key === paperclipKey)?.state).toBe("installed");
-    expect((await fs.lstat(path.join(home, ".pi", "agent", "skills", "paperclip"))).isSymbolicLink()).toBe(true);
+    expect((await fs.lstat(path.join(home, ".pi", "agent", "skills", "cortex"))).isSymbolicLink()).toBe(true);
   });
 });

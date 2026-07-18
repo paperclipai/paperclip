@@ -486,6 +486,25 @@ describeEmbeddedPostgres("authorization service", () => {
       companyId: company.id,
       principalType: "user",
       principalId: viewerUserId,
+      status: "active",
+      membershipRole: "viewer",
+    });
+
+    const authorization = authorizationService(db);
+    const actor = { type: "board" as const, userId: viewerUserId, source: "session" as const };
+
+    await expect(authorization.decide({
+      actor,
+      action: "project:read",
+      resource: { type: "project", companyId: company.id, projectId: project.id },
+    })).resolves.toMatchObject({ allowed: true, reason: "allow_simple_company_member" });
+    await expect(authorization.decide({
+      actor,
+      action: "secrets:read",
+      resource: { type: "company", companyId: company.id },
+    })).resolves.toMatchObject({ allowed: false, reason: "deny_missing_grant" });
+  });
+
   it("denies delegated protected assignment when the responsible user lacks matching authority", async () => {
     const company = await createCompany(db, "ResponsibleUserDenied");
     const actorAgent = await createAgent(db, company.id, { role: "engineer" });
@@ -579,19 +598,6 @@ describeEmbeddedPostgres("authorization service", () => {
       membershipRole: "viewer",
     });
 
-    const authorization = authorizationService(db);
-    const actor = { type: "board" as const, userId: viewerUserId, source: "session" as const };
-
-    await expect(authorization.decide({
-      actor,
-      action: "project:read",
-      resource: { type: "project", companyId: company.id, projectId: project.id },
-    })).resolves.toMatchObject({ allowed: true, reason: "allow_simple_company_member" });
-    await expect(authorization.decide({
-      actor,
-      action: "secrets:read",
-      resource: { type: "company", companyId: company.id },
-    })).resolves.toMatchObject({ allowed: false, reason: "deny_missing_grant" });
     await expect(authorizationService(db).decide({
       actor: {
         type: "agent",

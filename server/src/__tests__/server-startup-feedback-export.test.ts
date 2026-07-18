@@ -5,6 +5,8 @@ const ORIGINAL_PAPERCLIP_RUNTIME_API_URL = process.env.PAPERCLIP_RUNTIME_API_URL
 const ORIGINAL_PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
 const ORIGINAL_PAPERCLIP_LISTEN_HOST = process.env.PAPERCLIP_LISTEN_HOST;
 const ORIGINAL_PAPERCLIP_LISTEN_PORT = process.env.PAPERCLIP_LISTEN_PORT;
+const ORIGINAL_BETTER_AUTH_TRUSTED_ORIGINS = process.env.BETTER_AUTH_TRUSTED_ORIGINS;
+const ORIGINAL_BETTER_AUTH_URL = process.env.BETTER_AUTH_URL;
 
 const {
   createAppMock,
@@ -360,6 +362,20 @@ describe("startServer authenticated auth origin setup", () => {
     createBetterAuthInstanceMock.mockReturnValue({});
     deriveAuthTrustedOriginsMock.mockReturnValue([]);
     process.env.BETTER_AUTH_SECRET = "test-secret";
+    // Pin trusted-origin env: index.ts merges BETTER_AUTH_TRUSTED_ORIGINS
+    // (and BETTER_AUTH_URL) from the ambient shell into the effective origins,
+    // which is not routed through the mocked deriveAuthTrustedOrigins. Without
+    // this the test picks up whatever the runner's shell exports.
+    delete process.env.BETTER_AUTH_TRUSTED_ORIGINS;
+    delete process.env.BETTER_AUTH_URL;
+  });
+
+  afterEach(() => {
+    if (ORIGINAL_BETTER_AUTH_TRUSTED_ORIGINS === undefined) delete process.env.BETTER_AUTH_TRUSTED_ORIGINS;
+    else process.env.BETTER_AUTH_TRUSTED_ORIGINS = ORIGINAL_BETTER_AUTH_TRUSTED_ORIGINS;
+
+    if (ORIGINAL_BETTER_AUTH_URL === undefined) delete process.env.BETTER_AUTH_URL;
+    else process.env.BETTER_AUTH_URL = ORIGINAL_BETTER_AUTH_URL;
   });
 
   it("derives trusted origins from the detected listen port before auth initializes", async () => {

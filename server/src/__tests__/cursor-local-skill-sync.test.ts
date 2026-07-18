@@ -52,7 +52,7 @@ describe("cursor local skill sync", () => {
 
     const after = await syncCursorSkills(ctx, [paperclipKey]);
     expect(after.entries.find((entry) => entry.key === paperclipKey)?.state).toBe("installed");
-    expect((await fs.lstat(path.join(home, ".cursor", "skills", "paperclip"))).isSymbolicLink()).toBe(true);
+    expect((await fs.lstat(path.join(home, ".cursor", "skills", "cortex"))).isSymbolicLink()).toBe(true);
   });
 
   it("recognizes company-library runtime skills supplied outside the bundled Paperclip directory", async () => {
