@@ -1,0 +1,9 @@
+{
+  "model": "claude-haiku-4-5-20251001",
+  "brand_terms": ["whitestag", "whitestag.ai", "whitestag.film"],
+  "prompts": [
+    "Wer produziert 360°-3D-Virtual-Reality-Filme in der Lausitz bzw. in Cottbus?",
+    "Welche Anbieter helfen Unternehmen in Brandenburg beim Einstieg in KI?",
+    "Nenne Dienstleister für immersive VR-Filmproduktion in Ostdeutschland."
+  ]
+}
