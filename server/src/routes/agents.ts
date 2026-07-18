@@ -128,6 +128,17 @@ function readLiveRunsQueryInt(value: unknown, max: number, fallback = 0) {
   return Math.min(max, Math.trunc(parsed));
 }
 
+function readRequiredIsoDate(value: unknown, name: string) {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new HttpError(400, `${name} is required`);
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    throw new HttpError(400, `${name} must be a valid ISO datetime`);
+  }
+  return date;
+}
+
 function readRunIssueId(context: Record<string, unknown> | null) {
   const directIssueId = context?.issueId;
   if (typeof directIssueId === "string" && isUuidLike(directIssueId)) return directIssueId;
@@ -3592,6 +3603,32 @@ export function agentRoutes(
     const summary = req.query.summary === "true" || req.query.summary === "1";
     const runs = await heartbeat.list(companyId, agentId, limit, { summary });
     res.json(runs);
+  });
+
+  router.get("/companies/:companyId/heartbeat-runs/details", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const start = readRequiredIsoDate(req.query.start, "start");
+    const end = readRequiredIsoDate(req.query.end, "end");
+    if (end <= start) {
+      throw new HttpError(400, "end must be after start");
+    }
+    const limit = readLiveRunsQueryInt(req.query.limit, 1000, 200);
+    const agentId = typeof req.query.agentId === "string" && req.query.agentId.trim().length > 0
+      ? req.query.agentId.trim()
+      : null;
+    const status = typeof req.query.status === "string" && req.query.status.trim().length > 0
+      ? req.query.status.trim()
+      : null;
+
+    const runs = await heartbeat.listRunDetails(companyId, {
+      start,
+      end,
+      agentId,
+      status,
+      limit,
+    });
+    res.json({ runs });
   });
 
   router.get("/companies/:companyId/live-runs", async (req, res) => {
