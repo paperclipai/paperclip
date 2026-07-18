@@ -253,6 +253,7 @@ function boardRoutes() {
           `/artifacts` in both modes. */}
       <Route element={<ConferenceRoomChatGate />}>
         <Route path="board-chat" element={<BoardChat />} />
+        <Route path="board-chat/:conversationRef" element={<BoardChat />} />
         <Route path="artifacts" element={<Artifacts />} />
       </Route>
       <Route path="decisions" element={<WhatNeedsMe />} />

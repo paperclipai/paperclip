@@ -4616,6 +4616,9 @@ export async function buildPaperclipWakePayload(input: {
           workMode: issueSummary.workMode,
         }
       : null,
+    selectedAgentChat: input.contextSnapshot.selectedAgentChat === true,
+    targetAgentId: readNonEmptyString(input.contextSnapshot.targetAgentId),
+    taskKey: readNonEmptyString(input.contextSnapshot.taskKey),
     childIssueSummaries: Array.isArray(input.contextSnapshot.childIssueSummaries)
       ? input.contextSnapshot.childIssueSummaries
       : [],
