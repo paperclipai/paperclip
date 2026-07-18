@@ -28,6 +28,13 @@ const mockIssueThreadInteractionService = vi.hoisted(() => ({
   expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
   expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
 }));
+const mockEnvironmentRuntimeService = vi.hoisted(() => ({
+  destroyReusableSandboxLeases: vi.fn(async () => undefined),
+}));
+
+vi.mock("../services/environment-runtime.js", () => ({
+  environmentRuntimeService: () => mockEnvironmentRuntimeService,
+}));
 
 vi.mock("../services/index.js", () => ({
   companyService: () => ({
@@ -101,6 +108,9 @@ vi.mock("../services/index.js", () => ({
 }));
 
 function registerModuleMocks() {
+  vi.doMock("../services/environment-runtime.js", () => ({
+    environmentRuntimeService: () => mockEnvironmentRuntimeService,
+  }));
   vi.doMock("../services/index.js", () => ({
     companyService: () => ({
       getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
@@ -472,6 +482,30 @@ describe("issue update comment wakeups", () => {
         }),
       }),
     );
+  });
+
+  it("does not wake the assignee when the same update closes the issue with a comment", async () => {
+    const existing = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "todo",
+    });
+    const updated = { ...existing, status: "done" };
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(updated);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-completed",
+      issueId: existing.id,
+      companyId: existing.companyId,
+      body: "Completed with evidence.",
+    });
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${existing.id}`)
+      .send({ status: "done", comment: "Completed with evidence." });
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
   it("wakes the assignee on top-level board issue comments", async () => {
