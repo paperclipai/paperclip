@@ -68,7 +68,7 @@ add_action('rest_api_init', function () {
         'methods' => 'POST',
         'permission_callback' => function () { return current_user_can('manage_options'); },
         'callback' => function ($req) {
-            $token = sanitize_text_field($req->get_param('token'));
+            $token = sanitize_text_field((string) $req->get_param('token'));
             update_option('whitestag_gsc_verification', $token);
             return ['ok' => true];
         },

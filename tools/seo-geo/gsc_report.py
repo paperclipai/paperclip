@@ -58,12 +58,22 @@ def build_site_block(site, client, windows):
         block["error"] = "nicht in GSC / nicht verifiziert"
         return block
     block["property"] = prop
-    try:
+
+    def _fetch():
         cur = client.fetch_totals(prop, ls, le)
         prev = client.fetch_totals(prop, ps, pe)
         tq = client.fetch_top(prop, "query", ls, le, 5)
         tp = client.fetch_top(prop, "page", ls, le, 5)
         pq = client.fetch_top(prop, "query", ps, pe, 25)
+        cq = client.fetch_top(prop, "query", ls, le, 25)
+        return cur, prev, tq, tp, pq, cq
+
+    # 1x Retry bei transienten Abruf-Fehlern, dann Block.
+    try:
+        try:
+            cur, prev, tq, tp, pq, cq = _fetch()
+        except Exception:
+            cur, prev, tq, tp, pq, cq = _fetch()
     except Exception as e:
         block["error"] = f"GSC-Abruf fehlgeschlagen ({e})"
         return block
@@ -71,7 +81,7 @@ def build_site_block(site, client, windows):
     block["cur"], block["prev"] = cur, prev
     block["deltas"] = {k: delta_pct(cur[k], prev[k]) for k in ("clicks", "impressions", "ctr", "position")}
     block["top_queries"], block["top_pages"] = tq, tp
-    block["winners"], block["losers"] = movers(pq, tq, n=3)
+    block["winners"], block["losers"] = movers(pq, cq, n=3)
     block["ampel"] = ampel(block["deltas"]["clicks"])
     return block
 
@@ -91,7 +101,8 @@ def _fmt_delta(v):
 
 
 def render_markdown(blocks):
-    lines = ["", "## Google Search Console (letzte 7 vs. vorherige 7 Tage)", ""]
+    overall = overall_ampel(blocks)
+    lines = ["", f"## {overall} Google Search Console (letzte 7 vs. vorherige 7 Tage)", ""]
     for b in blocks:
         if not b.get("ok"):
             lines.append(f"**{b['name']}** — {b.get('error') or 'keine Daten'}")
