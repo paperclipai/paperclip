@@ -12,7 +12,7 @@ import {
   heartbeatRuns,
   instanceUserRoles,
 } from "@paperclipai/db";
-import { verifyLocalAgentJwt } from "../agent-auth-jwt.js";
+import { verifyLocalAgentJwtDetailed } from "../agent-auth-jwt.js";
 import { isUuidLike, normalizeAgentApiKeyScope, type DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
@@ -75,6 +75,38 @@ async function loadResponsibleUserMemberships(
       ),
   ]);
   return user ? memberships : [];
+}
+
+/**
+ * ETR-35: a run JWT is minted once, when the run starts executing, with a
+ * fixed TTL. A run whose wall clock stretches past that TTL (machine sleep,
+ * hours-late timers, long turns) would otherwise fail every API call with an
+ * expired token even though the run is still legitimately executing. An
+ * expired-but-signature-valid token therefore stays acceptable while — and
+ * only while — its own run is still `running`, so the token is valid for
+ * exactly the run's execution window. `verifyLocalAgentJwtDetailed` enforces
+ * an absolute `iat + maxRunWindowSeconds` ceiling behind this.
+ */
+async function isRunStillExecuting(
+  db: Db,
+  claims: { run_id: string; sub: string; company_id: string },
+) {
+  if (!isUuidLike(claims.run_id)) return false;
+  const run = await db
+    .select({
+      agentId: heartbeatRuns.agentId,
+      companyId: heartbeatRuns.companyId,
+      status: heartbeatRuns.status,
+    })
+    .from(heartbeatRuns)
+    .where(eq(heartbeatRuns.id, claims.run_id))
+    .then((rows) => rows[0] ?? null);
+  return Boolean(
+    run &&
+      run.agentId === claims.sub &&
+      run.companyId === claims.company_id &&
+      run.status === "running",
+  );
 }
 
 async function auditAgentJwtRunHeaderMismatch(
@@ -260,10 +292,26 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       .then((rows) => rows[0] ?? null);
 
     if (!key) {
-      const claims = verifyLocalAgentJwt(token);
-      if (!claims) {
+      const verification = verifyLocalAgentJwtDetailed(token);
+      if (!verification) {
         next();
         return;
+      }
+      const claims = verification.claims;
+      if (verification.expired) {
+        if (!(await isRunStillExecuting(db, claims))) {
+          next();
+          return;
+        }
+        logger.info(
+          {
+            companyId: claims.company_id,
+            agentId: claims.sub,
+            runId: claims.run_id,
+            tokenExp: claims.exp,
+          },
+          "accepted expired agent run JWT within its run's active execution window",
+        );
       }
 
       const agentRecord = await db

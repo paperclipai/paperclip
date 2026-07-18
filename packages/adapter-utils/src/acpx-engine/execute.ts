@@ -87,6 +87,37 @@ export interface RuntimeCacheEntry {
   fingerprint: string;
   lastUsedAt: number;
   cleanupTimer?: NodeJS.Timeout;
+  /**
+   * `exp` (unix seconds) of the run JWT injected into the cached child's
+   * environment at spawn. A warm child keeps its spawn-time env forever, so
+   * once that token expires every Paperclip API call from the child 401s
+   * (ETR-35). Reuse must respawn instead once the token is stale.
+   */
+  authTokenExp?: number | null;
+}
+
+/**
+ * Best-effort read of the `exp` claim from a JWT without verifying it — the
+ * adapter has no signing secret and only needs the expiry to decide whether a
+ * warm child's injected token is still usable.
+ */
+export function decodeJwtExpSeconds(token: string | null | undefined): number | null {
+  if (!token) return null;
+  const parts = token.split(".");
+  if (parts.length !== 3) return null;
+  try {
+    const claims = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
+    return typeof claims?.exp === "number" && Number.isFinite(claims.exp) ? claims.exp : null;
+  } catch {
+    return null;
+  }
+}
+
+const WARM_HANDLE_TOKEN_EXPIRY_MARGIN_SECONDS = 60;
+
+export function warmHandleTokenStillValid(entry: RuntimeCacheEntry, nowMs: number): boolean {
+  if (typeof entry.authTokenExp !== "number") return true;
+  return nowMs / 1000 < entry.authTokenExp - WARM_HANDLE_TOKEN_EXPIRY_MARGIN_SECONDS;
 }
 
 interface AcpxEngineSettings {
@@ -2022,7 +2053,25 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
     const previousParams = parseObject(ctx.runtime.sessionParams);
     const canResume = isCompatibleSession(previousParams, prepared);
     const resumeSessionId = canResume ? asString(previousParams.acpSessionId, "") || undefined : undefined;
-    const cached = canResume ? warmHandles.get(prepared.sessionKey) : undefined;
+    const cachedCandidate = canResume ? warmHandles.get(prepared.sessionKey) : undefined;
+    let cached = cachedCandidate;
+    if (cachedCandidate && !warmHandleTokenStillValid(cachedCandidate, now())) {
+      // The cached child's injected run JWT has expired; its API calls would
+      // all 401. Close it and fall through to a fresh spawn, which injects
+      // the current run's token (ETR-35).
+      cached = undefined;
+      await ctx.onLog(
+        "stdout",
+        "[paperclip] Warm ACPX session's injected run token has expired; respawning with a fresh token.\n",
+      );
+      await closeWarmHandle({
+        handles: warmHandles,
+        key: prepared.sessionKey,
+        entry: cachedCandidate,
+        reason: "paperclip warm handle token expired",
+        discardPersistentState: false,
+      }).catch(() => {});
+    }
     const runtimeOptions: AcpRuntimeOptions = {
       cwd: prepared.cwd,
       sessionStore: createRuntimeStore({ stateDir: prepared.stateDir }),
@@ -2282,6 +2331,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             handle: sessionHandle,
             fingerprint: prepared.fingerprint,
             lastUsedAt: now(),
+            authTokenExp: decodeJwtExpSeconds(ctx.authToken),
           };
           warmHandles.set(prepared.sessionKey, entry);
           scheduleIdleHandleCleanup({

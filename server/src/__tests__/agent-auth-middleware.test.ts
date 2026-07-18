@@ -33,7 +33,7 @@ function createSelectChain(rowsForTable: (table: unknown) => unknown[]) {
 function createDbState(input: {
   agent: { id: string; companyId: string; status?: string };
   agentKey?: { id: string; agentId: string; companyId: string; keyHash: string; responsibleUserId?: string | null };
-  run?: { id: string; companyId: string; agentId: string; responsibleUserId?: string | null };
+  run?: { id: string; companyId: string; agentId: string; responsibleUserId?: string | null; status?: string };
 }) {
   const activity: Array<Record<string, unknown>> = [];
   const agentRow = {
@@ -58,6 +58,7 @@ function createDbState(input: {
         companyId: input.run.companyId,
         agentId: input.run.agentId,
         responsibleUserId: input.run.responsibleUserId ?? null,
+        status: input.run.status ?? "running",
       }
     : null;
 
@@ -144,6 +145,36 @@ function craftAgentJwtWithoutResponsibleClaim(input: {
   // instance defaults to "default" (beforeEach clears PAPERCLIP_INSTANCE_ID),
   // matching the live control plane this middleware test exercises. This helper
   // only omits the responsible_user_id claim — it is not a cross-instance token.
+  const signingKey = createHmac("sha256", input.secret).update(`jwt:default:${input.companyId}`).digest("hex");
+  const signature = createHmac("sha256", signingKey).update(signingInput).digest("base64url");
+  return `${signingInput}.${signature}`;
+}
+
+function craftExpiredAgentJwt(input: {
+  secret: string;
+  agentId: string;
+  companyId: string;
+  adapterType: string;
+  runId: string;
+  ageSeconds: number;
+}) {
+  const now = Math.floor(Date.now() / 1000);
+  const header = { alg: "HS256", typ: "JWT" };
+  const claims = {
+    sub: input.agentId,
+    company_id: input.companyId,
+    adapter_type: input.adapterType,
+    run_id: input.runId,
+    responsible_user_id: "user-expired",
+    iat: now - input.ageSeconds,
+    exp: now - input.ageSeconds + 3600,
+    iss: "paperclip",
+    aud: "paperclip-api",
+    instance_id: "default",
+  };
+  const headerB64 = Buffer.from(JSON.stringify(header), "utf8").toString("base64url");
+  const claimsB64 = Buffer.from(JSON.stringify(claims), "utf8").toString("base64url");
+  const signingInput = `${headerB64}.${claimsB64}`;
   const signingKey = createHmac("sha256", input.secret).update(`jwt:default:${input.companyId}`).digest("hex");
   const signature = createHmac("sha256", signingKey).update(signingInput).digest("base64url");
   return `${signingInput}.${signature}`;
@@ -304,6 +335,84 @@ describe("agent auth middleware", () => {
       onBehalfOfUserId: "user-legacy",
       source: "agent_jwt",
     });
+  });
+
+  it("accepts an expired run JWT while its own run is still running (ETR-35 execution window)", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const { db } = createDbState({
+      agent: { id: agentId, companyId },
+      run: { id: runId, companyId, agentId, status: "running" },
+    });
+    const token = craftExpiredAgentJwt({
+      secret: process.env.PAPERCLIP_AGENT_JWT_SECRET!,
+      agentId,
+      companyId,
+      adapterType: "claude_local",
+      runId,
+      ageSeconds: 3 * 3600,
+    });
+
+    const res = await request(createApp(db))
+      .get("/actor")
+      .set("Authorization", `Bearer ${token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      type: "agent",
+      agentId,
+      runId,
+      source: "agent_jwt",
+    });
+  });
+
+  it("rejects an expired run JWT once its run is no longer running", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const { db } = createDbState({
+      agent: { id: agentId, companyId },
+      run: { id: runId, companyId, agentId, status: "timed_out" },
+    });
+    const token = craftExpiredAgentJwt({
+      secret: process.env.PAPERCLIP_AGENT_JWT_SECRET!,
+      agentId,
+      companyId,
+      adapterType: "claude_local",
+      runId,
+      ageSeconds: 3 * 3600,
+    });
+
+    const res = await request(createApp(db))
+      .get(`/companies/${companyId}/protected`)
+      .set("Authorization", `Bearer ${token}`);
+
+    expect(res.status).toBe(401);
+  });
+
+  it("rejects an expired run JWT whose run row belongs to a different agent", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const { db } = createDbState({
+      agent: { id: agentId, companyId },
+      run: { id: runId, companyId, agentId: randomUUID(), status: "running" },
+    });
+    const token = craftExpiredAgentJwt({
+      secret: process.env.PAPERCLIP_AGENT_JWT_SECRET!,
+      agentId,
+      companyId,
+      adapterType: "claude_local",
+      runId,
+      ageSeconds: 3 * 3600,
+    });
+
+    const res = await request(createApp(db))
+      .get(`/companies/${companyId}/protected`)
+      .set("Authorization", `Bearer ${token}`);
+
+    expect(res.status).toBe(401);
   });
 
   it("rejects fork-minted run JWTs before issue reads or writes reach live issue data", async () => {

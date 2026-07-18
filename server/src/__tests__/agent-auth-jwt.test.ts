@@ -1,6 +1,6 @@
 import { createHmac } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createLocalAgentJwt, verifyLocalAgentJwt } from "../agent-auth-jwt.js";
+import { createLocalAgentJwt, verifyLocalAgentJwt, verifyLocalAgentJwtDetailed } from "../agent-auth-jwt.js";
 
 describe("agent local JWT", () => {
   const secretEnv = "PAPERCLIP_AGENT_JWT_SECRET";
@@ -109,6 +109,45 @@ describe("agent local JWT", () => {
 
     vi.setSystemTime(new Date("2026-01-01T00:00:05.000Z"));
     expect(verifyLocalAgentJwt(token!)).toBeNull();
+  });
+
+  it("reports an expired token with valid claims via the detailed verifier (ETR-35 run-window path)", () => {
+    process.env[ttlEnv] = "3600";
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    const token = createLocalAgentJwt("agent-1", "company-1", "claude_local", "run-1");
+
+    // 3h later: past TTL, inside the 24h run-window ceiling.
+    vi.setSystemTime(new Date("2026-01-01T03:00:00.000Z"));
+    expect(verifyLocalAgentJwt(token!)).toBeNull();
+    const detailed = verifyLocalAgentJwtDetailed(token!);
+    expect(detailed?.expired).toBe(true);
+    expect(detailed?.claims).toMatchObject({ sub: "agent-1", company_id: "company-1", run_id: "run-1" });
+  });
+
+  it("rejects tokens past the absolute run-window ceiling even via the detailed verifier", () => {
+    process.env[ttlEnv] = "3600";
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    const token = createLocalAgentJwt("agent-1", "company-1", "claude_local", "run-1");
+
+    vi.setSystemTime(new Date("2026-01-02T00:00:01.000Z"));
+    expect(verifyLocalAgentJwtDetailed(token!)).toBeNull();
+  });
+
+  it("honors PAPERCLIP_AGENT_JWT_MAX_RUN_WINDOW_SECONDS for the run-window ceiling", () => {
+    process.env[ttlEnv] = "1";
+    process.env.PAPERCLIP_AGENT_JWT_MAX_RUN_WINDOW_SECONDS = "600";
+    try {
+      vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+      const token = createLocalAgentJwt("agent-1", "company-1", "claude_local", "run-1");
+
+      vi.setSystemTime(new Date("2026-01-01T00:05:00.000Z"));
+      expect(verifyLocalAgentJwtDetailed(token!)?.expired).toBe(true);
+
+      vi.setSystemTime(new Date("2026-01-01T00:10:01.000Z"));
+      expect(verifyLocalAgentJwtDetailed(token!)).toBeNull();
+    } finally {
+      delete process.env.PAPERCLIP_AGENT_JWT_MAX_RUN_WINDOW_SECONDS;
+    }
   });
 
   it("rejects issuer/audience mismatch", () => {

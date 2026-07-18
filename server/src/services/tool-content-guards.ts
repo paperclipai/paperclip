@@ -1,5 +1,6 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { redactEventPayload, redactSensitiveText, REDACTED_EVENT_VALUE } from "../redaction.js";
+import { readServerOnlySecret } from "../server-secret-env.js";
 
 export class ToolContentValidationError extends Error {
   constructor(
@@ -54,8 +55,10 @@ export class ToolActionSigningSecretMissingError extends Error {
   }
 }
 
-export function resolveToolActionSigningSecret(env: ToolActionSigningSecretEnv = process.env as ToolActionSigningSecretEnv) {
-  const secret = env.PAPERCLIP_TOOL_ACTION_SIGNING_SECRET?.trim();
+export function resolveToolActionSigningSecret(env?: ToolActionSigningSecretEnv) {
+  const secret = env
+    ? env.PAPERCLIP_TOOL_ACTION_SIGNING_SECRET?.trim()
+    : readServerOnlySecret("PAPERCLIP_TOOL_ACTION_SIGNING_SECRET")?.trim();
   if (!secret) {
     throw new ToolActionSigningSecretMissingError();
   }

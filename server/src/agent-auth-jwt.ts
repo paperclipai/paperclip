@@ -1,6 +1,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { normalizeAgentApiKeyScope, type AgentApiKeyScope } from "@paperclipai/shared";
 import { resolvePaperclipInstanceId } from "./home-paths.js";
+import { readServerOnlySecret } from "./server-secret-env.js";
 
 interface JwtHeader {
   alg: string;
@@ -37,12 +38,18 @@ function parseBooleanEnv(value: string | undefined): boolean {
 }
 
 function jwtConfig() {
-  const secret = process.env.PAPERCLIP_AGENT_JWT_SECRET?.trim() || process.env.BETTER_AUTH_SECRET?.trim();
+  const secret =
+    readServerOnlySecret("PAPERCLIP_AGENT_JWT_SECRET")?.trim() ||
+    readServerOnlySecret("BETTER_AUTH_SECRET")?.trim();
   if (!secret) return null;
 
   return {
     secret,
     ttlSeconds: parseNumber(process.env.PAPERCLIP_AGENT_JWT_TTL_SECONDS, 60 * 60),
+    // Hard ceiling on how far past `iat` an expired token may still be
+    // accepted for a run that is genuinely still executing (ETR-35). Bounds
+    // the run-execution-window extension in the auth middleware.
+    maxRunWindowSeconds: parseNumber(process.env.PAPERCLIP_AGENT_JWT_MAX_RUN_WINDOW_SECONDS, 24 * 60 * 60),
     issuer: process.env.PAPERCLIP_AGENT_JWT_ISSUER ?? "paperclip",
     audience: process.env.PAPERCLIP_AGENT_JWT_AUDIENCE ?? "paperclip-api",
     // The control-plane instance this process belongs to. The live plane runs as
@@ -154,7 +161,22 @@ export function createLocalAgentJwt(
   return `${signingInput}.${signature}`;
 }
 
-export function verifyLocalAgentJwt(token: string): LocalAgentJwtClaims | null {
+export interface LocalAgentJwtVerification {
+  claims: LocalAgentJwtClaims;
+  /**
+   * True when the token's signature and claims are valid but `exp` has
+   * passed. ETR-35: run JWTs are minted once when a run starts executing, so
+   * a run whose wall clock stretches past the TTL (machine sleep, long
+   * turns) holds an expired-but-otherwise-valid token. The auth middleware
+   * may accept such a token only while the token's `run_id` is still
+   * `running`, making the token valid for exactly the run's execution
+   * window. Tokens older than `iat + maxRunWindowSeconds` are rejected
+   * outright and never reach this flag.
+   */
+  expired: boolean;
+}
+
+export function verifyLocalAgentJwtDetailed(token: string): LocalAgentJwtVerification | null {
   if (!token) return null;
   const config = jwtConfig();
   if (!config) return null;
@@ -216,7 +238,10 @@ export function verifyLocalAgentJwt(token: string): LocalAgentJwtClaims | null {
   const companyId = claimedCompanyId;
 
   const now = Math.floor(Date.now() / 1000);
-  if (exp < now) return null;
+  const expired = exp < now;
+  // Absolute ceiling: even a still-running run cannot extend a token's life
+  // indefinitely. Beyond this window the token is dead regardless of run state.
+  if (now > iat + config.maxRunWindowSeconds) return null;
 
   const issuer = typeof claims.iss === "string" ? claims.iss : undefined;
   const audience = typeof claims.aud === "string" ? claims.aud : undefined;
@@ -233,17 +258,26 @@ export function verifyLocalAgentJwt(token: string): LocalAgentJwtClaims | null {
   if (instanceClaim && instanceClaim !== config.instanceId) return null;
 
   return {
-    sub,
-    company_id: companyId,
-    adapter_type: adapterType,
-    run_id: runId,
-    ...(responsibleUserClaim !== undefined ? { responsible_user_id: responsibleUserClaim } : {}),
-    ...(keyScopeClaim !== undefined ? { key_scope: keyScopeClaim } : {}),
-    iat,
-    exp,
-    ...(issuer ? { iss: issuer } : {}),
-    ...(audience ? { aud: audience } : {}),
-    ...(instanceClaim ? { instance_id: instanceClaim } : {}),
-    jti: typeof claims.jti === "string" ? claims.jti : undefined,
+    claims: {
+      sub,
+      company_id: companyId,
+      adapter_type: adapterType,
+      run_id: runId,
+      ...(responsibleUserClaim !== undefined ? { responsible_user_id: responsibleUserClaim } : {}),
+      ...(keyScopeClaim !== undefined ? { key_scope: keyScopeClaim } : {}),
+      iat,
+      exp,
+      ...(issuer ? { iss: issuer } : {}),
+      ...(audience ? { aud: audience } : {}),
+      ...(instanceClaim ? { instance_id: instanceClaim } : {}),
+      jti: typeof claims.jti === "string" ? claims.jti : undefined,
+    },
+    expired,
   };
+}
+
+export function verifyLocalAgentJwt(token: string): LocalAgentJwtClaims | null {
+  const verification = verifyLocalAgentJwtDetailed(token);
+  if (!verification || verification.expired) return null;
+  return verification.claims;
 }

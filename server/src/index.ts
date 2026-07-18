@@ -32,6 +32,7 @@ import {
 import detectPort from "detect-port";
 import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
+import { scrubServerOnlySecretsFromProcessEnv } from "./server-secret-env.js";
 import { logger } from "./middleware/logger.js";
 import { setupEnvironmentCustomImageTerminalWebSocketServer } from "./realtime/environment-custom-image-terminal-ws.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
@@ -122,6 +123,11 @@ export async function startServer(): Promise<StartedServer> {
   if (process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE === undefined) {
     process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = config.secretsMasterKeyFilePath;
   }
+  // Capture signing secrets into module state and delete them from
+  // process.env before anything can spawn an agent child process — the acpx
+  // spawn path inherits the raw server environment, and the explicit env
+  // overlay can only add keys, never subtract them (ETR-35).
+  scrubServerOnlySecretsFromProcessEnv();
   
   type MigrationSummary =
     | "skipped"

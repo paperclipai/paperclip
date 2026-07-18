@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolvePaperclipConfigPath, resolvePaperclipEnvPath } from "./paths.js";
+import { readServerOnlySecret } from "./server-secret-env.js";
 import type { BindMode, DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
 
 import { parse as parseEnvFileContents } from "dotenv";
@@ -72,7 +73,7 @@ function resolveAgentJwtSecretStatus(
   status: "pass" | "warn";
   message: string;
 } {
-  const envValue = process.env.PAPERCLIP_AGENT_JWT_SECRET?.trim();
+  const envValue = readServerOnlySecret("PAPERCLIP_AGENT_JWT_SECRET")?.trim();
   if (envValue) {
     return {
       status: "pass",

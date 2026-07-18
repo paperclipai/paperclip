@@ -9,11 +9,14 @@ import type { AdapterRuntimeMcpAccess } from "@paperclipai/adapter-utils";
 import { DEFAULT_REMOTE_SANDBOX_ADAPTER_TIMEOUT_SEC } from "@paperclipai/adapter-utils/execution-target";
 import {
   createAcpxEngineExecutor,
+  decodeJwtExpSeconds,
   findAncestorBin,
   geminiVersionSupportsNativeAcpFlag,
   parseGeminiVersionParts,
   rewriteGeminiAcpFlagForVersion,
   summarizeAcpxTurnUsage,
+  warmHandleTokenStillValid,
+  type RuntimeCacheEntry,
 } from "./execute.js";
 import { runChildProcess } from "../server-utils.js";
 
@@ -1878,5 +1881,36 @@ describe("summarizeAcpxTurnUsage no-report turns", () => {
     expect(summary.usageDetail).toBeNull();
     expect(summary.costUsd).toBeCloseTo(0.25);
     expect(summary.cumulativeCostUsd).toBeCloseTo(0.75);
+  });
+});
+
+describe("warm handle run-token expiry gate (ETR-35)", () => {
+  function fakeJwt(claims: Record<string, unknown>) {
+    const b64 = (v: unknown) => Buffer.from(JSON.stringify(v), "utf8").toString("base64url");
+    return `${b64({ alg: "HS256", typ: "JWT" })}.${b64(claims)}.signature`;
+  }
+
+  it("decodes exp from an unverified JWT and tolerates garbage", () => {
+    expect(decodeJwtExpSeconds(fakeJwt({ exp: 1_800_000_000 }))).toBe(1_800_000_000);
+    expect(decodeJwtExpSeconds(fakeJwt({}))).toBeNull();
+    expect(decodeJwtExpSeconds(fakeJwt({ exp: "soon" }))).toBeNull();
+    expect(decodeJwtExpSeconds("not-a-jwt")).toBeNull();
+    expect(decodeJwtExpSeconds(null)).toBeNull();
+    expect(decodeJwtExpSeconds(undefined)).toBeNull();
+  });
+
+  it("refuses reuse once the cached child's token is expired or near expiry", () => {
+    const base = { runtime: {} as never, handle: {} as never, fingerprint: "f", lastUsedAt: 0 };
+    const expSeconds = 1_800_000_000;
+    const entry: RuntimeCacheEntry = { ...base, authTokenExp: expSeconds };
+
+    // Well before expiry: reusable.
+    expect(warmHandleTokenStillValid(entry, (expSeconds - 3_600) * 1000)).toBe(true);
+    // Inside the 60s pre-expiry margin: not reusable.
+    expect(warmHandleTokenStillValid(entry, (expSeconds - 30) * 1000)).toBe(false);
+    // After expiry: not reusable.
+    expect(warmHandleTokenStillValid(entry, (expSeconds + 1) * 1000)).toBe(false);
+    // Entries without a recorded token expiry stay reusable (no token was injected).
+    expect(warmHandleTokenStillValid({ ...base }, (expSeconds + 1) * 1000)).toBe(true);
   });
 });
