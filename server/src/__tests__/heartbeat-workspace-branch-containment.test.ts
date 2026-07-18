@@ -145,6 +145,7 @@ async function createForwardBranchMismatch(input: {
   expectedBranch: string;
   actualBranch: string;
   divergeRecordedBranch?: boolean;
+  deleteRecordedBranch?: boolean;
 }) {
   await mkdir(path.dirname(input.worktreePath), { recursive: true });
   await runGit(input.repoRoot, ["branch", input.expectedBranch]);
@@ -158,6 +159,9 @@ async function createForwardBranchMismatch(input: {
   await writeFile(path.join(input.worktreePath, "actual-branch.txt"), "actual branch work\n", "utf8");
   await runGit(input.worktreePath, ["add", "actual-branch.txt"]);
   await runGit(input.worktreePath, ["commit", "-m", "Add actual branch work"]);
+  if (input.deleteRecordedBranch) {
+    await runGit(input.repoRoot, ["branch", "-D", input.expectedBranch]);
+  }
 }
 
 async function waitForRunToFinish(heartbeat: Heartbeat, runId: string, timeoutMs = 10_000) {
@@ -313,7 +317,7 @@ async function seedBranchContainmentRun(
   db: Db,
   repoRoot: string,
   callSite: BranchContainmentCallSite,
-  opts: { enableWorkspaceBranchReconcileForward?: boolean } = {},
+  opts: { enableWorkspaceBranchReconcileForward?: boolean; deleteRecordedBranch?: boolean } = {},
 ) {
   const companyId = randomUUID();
   const projectId = randomUUID();
@@ -401,6 +405,7 @@ async function seedBranchContainmentRun(
       expectedBranch,
       actualBranch,
       divergeRecordedBranch: opts.enableWorkspaceBranchReconcileForward !== true,
+      deleteRecordedBranch: opts.deleteRecordedBranch === true,
     });
   }
 
@@ -719,6 +724,7 @@ async function expectForwardBranchReconciled(input: {
   worktreePath: string;
   expectsExistingRecordUpdate: boolean;
   expectedResolvedRecoveryActionFingerprint?: string | null;
+  expectedReconcileAncestryVerdict?: "ancestor" | "unknown";
 }) {
   const finishedRun = await waitForRunToFinish(input.heartbeat, input.runId, 10_000);
   expect(finishedRun).toMatchObject({
@@ -796,6 +802,7 @@ async function expectForwardBranchReconciled(input: {
   }
 
   if (input.expectsExistingRecordUpdate) {
+    const expectedAncestryVerdict = input.expectedReconcileAncestryVerdict ?? "ancestor";
     const [updatedWorkspace] = await input.db
       .select({
         name: executionWorkspaces.name,
@@ -850,7 +857,7 @@ async function expectForwardBranchReconciled(input: {
             mode: "forward",
             fromBranch: input.expectedBranch,
             toBranch: input.actualBranch,
-            ancestryVerdict: "ancestor",
+            ancestryVerdict: expectedAncestryVerdict,
           }),
         }),
       ]),
@@ -1105,7 +1112,7 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
   }, 30_000);
 
   it.each([
-    ["workspace-runtime fresh worktree reuse", "fresh_realize" as const, false],
+    ["workspace-runtime fresh worktree reuse", "fresh_realize" as const, true],
     ["workspace-runtime persisted restore", "persisted_restore" as const, true],
     ["heartbeat finalization", "finalize" as const, false],
   ])("auto-reconciles forward branch divergence at %s when the flag is enabled", async (_name, callSite, expectsExistingRecordUpdate) => {
@@ -1209,6 +1216,59 @@ describeEmbeddedPostgres("heartbeat workspace branch containment", () => {
       worktreePath: seeded.worktreePath,
       expectsExistingRecordUpdate,
       expectedResolvedRecoveryActionFingerprint,
+    });
+    expect(adapterExecute).toHaveBeenCalledTimes(1);
+  }, 30_000);
+
+  it("reuses a persisted registered worktree branch when the recorded branch was deleted", async () => {
+    const repoRoot = await createGitRepo();
+    tempRoots.push(repoRoot);
+    const seeded = await seedBranchContainmentRun(db, repoRoot, "persisted_restore", {
+      enableWorkspaceBranchReconcileForward: true,
+      deleteRecordedBranch: true,
+    });
+
+    const expectedWorktreeStateAfterReconcile = {
+      head: await readGit(seeded.worktreePath, ["rev-parse", "HEAD"]),
+      status: await readGit(seeded.worktreePath, ["status", "--porcelain", "--untracked-files=all"]),
+    };
+
+    adapterExecute.mockImplementationOnce(async () => {
+      await db
+        .update(issues)
+        .set({
+          status: "done",
+          completedAt: new Date(),
+          checkoutRunId: null,
+          executionRunId: null,
+          updatedAt: new Date(),
+        })
+        .where(eq(issues.id, seeded.sourceIssueId));
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        summary: "Adapter completed after registered branch reconciliation.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+
+    await expectForwardBranchReconciled({
+      db,
+      heartbeat,
+      runId: seeded.runId,
+      sourceIssueId: seeded.sourceIssueId,
+      sourceExecutionWorkspaceId: seeded.sourceExecutionWorkspaceId,
+      expectedBranch: seeded.expectedBranch,
+      actualBranch: seeded.actualBranch,
+      expectedWorktreeStateAfterReconcile,
+      worktreePath: seeded.worktreePath,
+      expectsExistingRecordUpdate: true,
+      expectedReconcileAncestryVerdict: "unknown",
     });
     expect(adapterExecute).toHaveBeenCalledTimes(1);
   }, 30_000);
