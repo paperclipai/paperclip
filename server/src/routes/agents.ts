@@ -3155,6 +3155,8 @@ export function agentRoutes(
       if (!decision.allowed) {
         throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
       }
+    } else {
+      assertBoard(req);
     }
     if (existing.orgChainHealth?.status === "invalid_org_chain") {
       res.status(409).json({
@@ -3180,10 +3182,14 @@ export function agentRoutes(
       action: "agent.error_cleared",
       entityType: "agent",
       entityId: agent.id,
-      details: {
-        agentId: actor.agentId,
-        runId: actor.runId,
-      },
+      ...(actor.actorType === "agent"
+        ? {
+            details: {
+              agentId: actor.agentId,
+              runId: actor.runId,
+            },
+          }
+        : {}),
     });
 
     res.json(agent);

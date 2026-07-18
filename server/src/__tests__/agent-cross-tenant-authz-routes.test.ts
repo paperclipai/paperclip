@@ -437,6 +437,23 @@ describe.sequential("agent cross-tenant route authorization", () => {
     expect(mockAgentService.clearError).not.toHaveBeenCalled();
   });
 
+  it("denies a non-board, non-agent actor even with company access", async () => {
+    const app = await createApp({
+      type: "user",
+      userId: "future-user",
+      companyIds: [companyId],
+      source: "session",
+    });
+
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).post(`/api/agents/${agentId}/clear-error`).send({}),
+    );
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("Board access required");
+    expect(mockAgentService.clearError).not.toHaveBeenCalled();
+  });
+
   it("allows only the granted agent mutation and records agent/run audit identity", async () => {
     currentAccessCanUser = true;
     const errorAgent = {
@@ -533,6 +550,7 @@ describe.sequential("agent cross-tenant route authorization", () => {
       entityType: "agent",
       entityId: agentId,
     }));
+    expect(mockLogActivity.mock.calls.at(-1)?.[1]).not.toHaveProperty("details");
   });
 
   it("returns 409 and does not mutate when the agent org chain is invalid", async () => {
