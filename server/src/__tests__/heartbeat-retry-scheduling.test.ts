@@ -9,6 +9,7 @@ import {
   budgetPolicies,
   companies,
   companySkills,
+  companyStanding,
   createDb,
   environmentLeases,
   executionWorkspaces,
@@ -16,6 +17,7 @@ import {
   heartbeatRuns,
   issueRelations,
   issues,
+  plugins,
   projects,
 } from "@paperclipai/db";
 import {
@@ -23,6 +25,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { registerServerAdapter, unregisterServerAdapter } from "../adapters/index.ts";
+import { companyStandingService } from "../services/company-standing.ts";
 import {
   BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS,
   INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
@@ -133,6 +136,8 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     await db.delete(budgetPolicies);
     await db.delete(agents);
     await db.delete(companySkills);
+    await db.delete(companyStanding);
+    await db.delete(plugins);
     await db.delete(companies);
   }
 
@@ -1507,6 +1512,66 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       .where(eq(heartbeatRuns.retryOfRunId, dependencyBlocked.runId))
       .then((rows) => rows[0]?.count ?? 0);
     expect(retryRuns).toBe(0);
+  });
+
+  it("suppresses max-turn continuation scheduling when company standing is blocked, and allows it in grace", async () => {
+    const standingBlocked = await seedMaxTurnFixture({ now: new Date("2026-04-20T18:00:00.000Z") });
+    const pluginId = randomUUID();
+    await db.insert(plugins).values({
+      id: pluginId,
+      pluginKey: "paperclip.billing",
+      packageName: "@paperclipai/plugin-billing",
+      version: "1.0.0",
+      manifestJson: {
+        id: "paperclip.billing",
+        name: "Billing",
+        version: "1.0.0",
+        capabilities: ["company.standing.write"],
+      } as never,
+      status: "ready",
+    });
+    await companyStandingService(db).setStanding(pluginId, standingBlocked.companyId, {
+      status: "blocked",
+      reason: "subscription_lapsed",
+      message: "Your subscription has lapsed.",
+      actionUrl: "/billing",
+    });
+
+    const standingResult = await heartbeat.scheduleBoundedRetry(standingBlocked.runId, {
+      now: standingBlocked.now,
+      retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
+      wakeReason: MAX_TURN_CONTINUATION_WAKE_REASON,
+      maxAttempts: 2,
+      delayMs: 1_000,
+    });
+    expect(standingResult).toMatchObject({
+      outcome: "not_scheduled",
+      errorCode: "company_standing_blocked",
+      issueId: standingBlocked.issueId,
+    });
+
+    const standingRetryRuns = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.retryOfRunId, standingBlocked.runId))
+      .then((rows) => rows[0]?.count ?? 0);
+    expect(standingRetryRuns).toBe(0);
+
+    // grace never blocks: switch the same plugin row to grace and retry scheduling proceeds normally.
+    await companyStandingService(db).setStanding(pluginId, standingBlocked.companyId, {
+      status: "grace",
+      reason: "payment_failed",
+      message: "Your last payment failed.",
+    });
+
+    const graceResult = await heartbeat.scheduleBoundedRetry(standingBlocked.runId, {
+      now: standingBlocked.now,
+      retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
+      wakeReason: MAX_TURN_CONTINUATION_WAKE_REASON,
+      maxAttempts: 2,
+      delayMs: 1_000,
+    });
+    expect(graceResult.outcome).toBe("scheduled");
   });
 
   it("does not defer a new assignee behind the previous assignee's scheduled retry", async () => {

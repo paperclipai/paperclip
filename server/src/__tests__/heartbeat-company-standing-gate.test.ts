@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
@@ -60,7 +61,7 @@ describeEmbeddedPostgres("heartbeat company-standing run-start gate", () => {
     await db.delete(agents);
     await db.delete(companySkills);
     await db.delete(companies);
-  });
+  }, 20_000);
 
   afterAll(async () => {
     await closeDbClient(db);
@@ -189,5 +190,95 @@ describeEmbeddedPostgres("heartbeat company-standing run-start gate", () => {
       requestedByActorId: "board-user",
     });
     expect(run).toBeTruthy();
+  });
+
+  // The admission gate above (heartbeat.wakeup) only covers the very first
+  // decision to accept a wake request. A separate universal queued->running
+  // transition happens in claimQueuedRun (invoked via resumeQueuedRuns), and
+  // it must enforce the same blocked standing, mirroring how it already
+  // disposes of a queued run on a budget block (cancelRunInternal).
+  describe("claimQueuedRun: queued -> running transition", () => {
+    async function seedQueuedRun(companyId: string, agentId: string) {
+      const wakeupRequestId = randomUUID();
+      const runId = randomUUID();
+      await db.insert(agentWakeupRequests).values({
+        id: wakeupRequestId,
+        companyId,
+        agentId,
+        source: "on_demand",
+        triggerDetail: "manual",
+        reason: "manual",
+        payload: {},
+        status: "queued",
+      });
+      await db.insert(heartbeatRuns).values({
+        id: runId,
+        companyId,
+        agentId,
+        invocationSource: "on_demand",
+        triggerDetail: "manual",
+        status: "queued",
+        wakeupRequestId,
+        contextSnapshot: {},
+      });
+      await db
+        .update(agentWakeupRequests)
+        .set({ runId })
+        .where(eq(agentWakeupRequests.id, wakeupRequestId));
+      return runId;
+    }
+
+    it("blocked standing: does not transition to running, disposes the run with the standing reason", async () => {
+      // Pre-existing behavior (not introduced by this test): cancelRunInternal
+      // ends with `await startNextQueuedRunForAgent(run.agentId)`, and here it
+      // is invoked from *inside* that same function's withAgentStartLock
+      // closure (claimQueuedRun -> cancelRunInternal). The reentrant call
+      // waits on its own outer lock until agent-start-lock.ts's 30s staleness
+      // fallback releases it, so this assertion is correct but takes ~30s.
+      // Same latent stall would hit the existing budgetBlock branch in
+      // claimQueuedRun if it were ever exercised end-to-end like this.
+      const { companyId, agentId, pluginId } = await insertFixture();
+      const runId = await seedQueuedRun(companyId, agentId);
+      await companyStandingService(db).setStanding(pluginId, companyId, {
+        status: "blocked",
+        reason: "subscription_lapsed",
+        message: "Your subscription has lapsed.",
+        actionUrl: "/billing",
+      });
+
+      const heartbeat = makeHeartbeat(db);
+      await heartbeat.resumeQueuedRuns();
+
+      const [run] = await db
+        .select({ status: heartbeatRuns.status, error: heartbeatRuns.error })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId));
+
+      expect(run?.status).not.toBe("running");
+      expect(run).toMatchObject({
+        status: "cancelled",
+        error: "Your subscription has lapsed.",
+      });
+    }, 45_000);
+
+    it("grace standing: claims normally (transitions to running)", async () => {
+      const { companyId, agentId, pluginId } = await insertFixture();
+      const runId = await seedQueuedRun(companyId, agentId);
+      await companyStandingService(db).setStanding(pluginId, companyId, {
+        status: "grace",
+        reason: "payment_failed",
+        message: "Your last payment failed.",
+      });
+
+      const heartbeat = makeHeartbeat(db);
+      await heartbeat.resumeQueuedRuns();
+
+      const [run] = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId));
+
+      expect(run?.status).toBe("running");
+    }, 20_000);
   });
 });
