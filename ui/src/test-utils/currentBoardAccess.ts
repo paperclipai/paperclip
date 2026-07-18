@@ -19,8 +19,7 @@ export const DEFAULT_PUBLIC_FEATURES: PublicFeatureFlags = {
   enableDecisions: false,
   enableGoalsSidebarLink: false,
   enableServerInfoDebugView: false,
-  cloudBilling: false,
-  cloudTrialBanner: false,
+  enableSummaries: false,
   keyboardShortcuts: false,
   censorUsernameInLogs: false,
   feedbackDataSharingPreference: "prompt",
@@ -45,7 +44,6 @@ export function buildCurrentBoardAccess(overrides?: {
       [{ companyId: "company-1", membershipRole: "owner", status: "active" }],
     source: "session",
     keyId: null,
-    cloudStack: null,
     capabilities: {
       exposedSurfaces: overrides?.exposedSurfaces ?? [...COMPANY_SETTINGS_SURFACES],
       features: { ...DEFAULT_PUBLIC_FEATURES, ...overrides?.features },
