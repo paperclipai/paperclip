@@ -5,13 +5,18 @@ import { resolvePaperclipConfigPath } from "./paths.js";
 export function readConfigFile(): PaperclipConfig | null {
   const configPath = resolvePaperclipConfigPath();
 
-  if (!fs.existsSync(configPath)) return null;
-
   let contents: string;
   try {
     contents = fs.readFileSync(configPath, "utf-8");
   } catch (cause) {
-    throw new Error(`Failed to read Paperclip config at ${configPath}`, { cause });
+    if (
+      cause instanceof Error &&
+      "code" in cause &&
+      cause.code === "ENOENT"
+    ) {
+      return null;
+    }
+    throw new Error(`Failed to read Paperclip config at ${configPath}`);
   }
 
   let raw: unknown;

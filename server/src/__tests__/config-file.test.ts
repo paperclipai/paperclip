@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readConfigFile } from "../config-file.js";
 
 describe("readConfigFile", () => {
@@ -15,6 +15,7 @@ describe("readConfigFile", () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     if (originalConfigPath === undefined) {
       delete process.env.PAPERCLIP_CONFIG;
     } else {
@@ -25,6 +26,27 @@ describe("readConfigFile", () => {
 
   it("returns null when the resolved config file does not exist", () => {
     expect(readConfigFile()).toBeNull();
+  });
+
+  it("throws a safe path-aware error when an existing config cannot be read", () => {
+    const configPath = process.env.PAPERCLIP_CONFIG!;
+    fs.writeFileSync(configPath, '{"secret":"do-not-leak"}');
+    const readError = new Error("permission denied: do-not-leak") as NodeJS.ErrnoException;
+    readError.code = "EACCES";
+    vi.spyOn(fs, "readFileSync").mockImplementationOnce(() => {
+      throw readError;
+    });
+
+    let thrown: unknown;
+    try {
+      readConfigFile();
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(Error);
+    expect(String(thrown)).toContain(`Failed to read Paperclip config at ${configPath}`);
+    expect(String(thrown)).not.toContain("do-not-leak");
+    expect((thrown as Error).cause).toBeUndefined();
   });
 
   it("throws a safe path-aware error for malformed JSON", () => {
