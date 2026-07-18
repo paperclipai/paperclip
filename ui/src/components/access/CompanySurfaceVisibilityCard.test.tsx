@@ -116,4 +116,28 @@ describe("CompanySurfaceVisibilityCard", () => {
 
     await act(async () => root.unmount());
   });
+
+  it("displays error banner when save fails", async () => {
+    mockInstanceSettingsApi.getVisibility.mockResolvedValue({
+      companySurfaces: ["company.general"],
+    });
+    mockInstanceSettingsApi.updateVisibility.mockRejectedValue(
+      new Error("Failed to update visibility settings."),
+    );
+    const root = await renderCard();
+
+    const saveButton = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Save visibility"),
+    );
+    expect(saveButton).toBeDefined();
+    await act(async () => {
+      saveButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(container.textContent).toContain("Failed to update visibility settings.");
+    expect(container.querySelector(".text-destructive")).toBeTruthy();
+
+    await act(async () => root.unmount());
+  });
 });

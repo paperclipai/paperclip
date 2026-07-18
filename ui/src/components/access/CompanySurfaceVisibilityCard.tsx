@@ -23,6 +23,7 @@ export function CompanySurfaceVisibilityCard() {
   const { pushToast } = useToast();
   const queryClient = useQueryClient();
   const [selected, setSelected] = useState<Set<CompanySettingsSurface>>(new Set());
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const visibilityQuery = useQuery({
     queryKey: queryKeys.instance.visibilitySettings,
@@ -41,9 +42,13 @@ export function CompanySurfaceVisibilityCard() {
         companySurfaces: COMPANY_SETTINGS_SURFACES.filter((surface) => selected.has(surface)),
       }),
     onSuccess: async () => {
+      setActionError(null);
       await queryClient.invalidateQueries({ queryKey: queryKeys.instance.visibilitySettings });
       await queryClient.invalidateQueries({ queryKey: queryKeys.access.currentBoardAccess });
       pushToast({ title: "Company settings visibility updated", tone: "success" });
+    },
+    onError: (error) => {
+      setActionError(error instanceof Error ? error.message : "Failed to update visibility settings.");
     },
   });
 
@@ -57,6 +62,11 @@ export function CompanySurfaceVisibilityCard() {
           visible to non-admins.
         </p>
       </div>
+      {actionError && (
+        <div className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+          {actionError}
+        </div>
+      )}
       {visibilityQuery.isLoading ? (
         <div className="text-sm text-muted-foreground">Loading visibility policy…</div>
       ) : visibilityQuery.error ? (
