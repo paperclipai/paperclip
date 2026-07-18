@@ -2373,6 +2373,12 @@ export function agentRoutes(
     await assertCanCreateAgentsForCompany(req, companyId);
     const idempotencyKey = parseAgentHireIdempotencyKey(req);
     const actor = getActorInfo(req);
+    const hireRequestBody = structuredClone(req.body);
+    const validatedAdapterType = assertKnownAdapterType(hireRequestBody.adapterType);
+    const preflightAdapterConfig = (hireRequestBody.adapterConfig ?? {}) as Record<string, unknown>;
+    assertNoNewAgentLegacyPromptTemplate(validatedAdapterType, preflightAdapterConfig);
+    assertNoAgentAdapterConfigMutation(req, preflightAdapterConfig);
+    assertNoAgentRuntimeConfigAdapterConfigMutation(req, hireRequestBody.runtimeConfig);
 
     const performAgentHire = async (
       reservedAgentId?: string,
@@ -2392,22 +2398,16 @@ export function agentRoutes(
         return result;
       }
 
-      const sourceIssueIds = parseSourceIssueIds(req.body);
+      const sourceIssueIds = parseSourceIssueIds(hireRequestBody);
     const {
       desiredSkills: requestedDesiredSkills,
       instructionsBundle,
       sourceIssueId: _sourceIssueId,
       sourceIssueIds: _sourceIssueIds,
       ...hireInput
-    } = req.body;
-    hireInput.adapterType = assertKnownAdapterType(hireInput.adapterType);
+    } = hireRequestBody;
+    hireInput.adapterType = validatedAdapterType;
     const rawHireAdapterConfig = (hireInput.adapterConfig ?? {}) as Record<string, unknown>;
-    assertNoNewAgentLegacyPromptTemplate(
-      hireInput.adapterType,
-      rawHireAdapterConfig,
-    );
-    assertNoAgentAdapterConfigMutation(req, rawHireAdapterConfig);
-    assertNoAgentRuntimeConfigAdapterConfigMutation(req, hireInput.runtimeConfig);
     const hiredAgentId = reservedAgentId ?? randomUUID();
     const requestedAdapterConfig = applyCodexLocalKeyIsolation(
       companyId,
@@ -2645,7 +2645,7 @@ export function agentRoutes(
         principalType: actor.actorType,
         principalId: actor.actorId,
         idempotencyKey,
-        requestHash: hashAgentHireRequest(req.body),
+        requestHash: hashAgentHireRequest(hireRequestBody),
       });
     } catch (error) {
       if (error instanceof AgentHireIdempotencyConflictError) {

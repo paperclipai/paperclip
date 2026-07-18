@@ -98,7 +98,8 @@ returns `202`:
 Query `statusUrl` as the same authenticated principal. It returns
 `pending`, `succeeded`, or `failed`, coarse per-stage timings, and either the
 redacted completed hire response or bounded error metadata. Operation records
-store only a request hash; raw request payloads and credentials are not stored.
+store only hashes of the idempotency key and request; raw keys, request payloads,
+and credentials are not stored.
 A same-key replay after completion returns the original response with
 `Idempotency-Key-Replay: true`.
 

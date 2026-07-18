@@ -28,7 +28,7 @@ export const agentHireOperations = pgTable(
     companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
     principalType: text("principal_type").notNull(),
     principalId: text("principal_id").notNull(),
-    idempotencyKey: text("idempotency_key").notNull(),
+    idempotencyKeyHash: text("idempotency_key_hash").notNull(),
     requestHash: text("request_hash").notNull(),
     status: text("status").notNull().default("pending"),
     stage: text("stage").notNull().default("queued"),
@@ -49,7 +49,7 @@ export const agentHireOperations = pgTable(
       table.companyId,
       table.principalType,
       table.principalId,
-      table.idempotencyKey,
+      table.idempotencyKeyHash,
     ),
     companyOperationIdx: index("agent_hire_operations_company_operation_idx").on(
       table.companyId,

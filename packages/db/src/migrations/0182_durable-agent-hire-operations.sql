@@ -3,7 +3,7 @@ CREATE TABLE IF NOT EXISTS "agent_hire_operations" (
   "company_id" uuid NOT NULL REFERENCES "companies"("id") ON DELETE CASCADE,
   "principal_type" text NOT NULL,
   "principal_id" text NOT NULL,
-  "idempotency_key" text NOT NULL,
+  "idempotency_key_hash" text NOT NULL,
   "request_hash" text NOT NULL,
   "status" text DEFAULT 'pending' NOT NULL,
   "stage" text DEFAULT 'queued' NOT NULL,
@@ -26,7 +26,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS "agent_hire_operations_scoped_key_uq"
     "company_id",
     "principal_type",
     "principal_id",
-    "idempotency_key"
+    "idempotency_key_hash"
   );--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "agent_hire_operations_company_operation_idx"
   ON "agent_hire_operations" USING btree ("company_id", "id");--> statement-breakpoint

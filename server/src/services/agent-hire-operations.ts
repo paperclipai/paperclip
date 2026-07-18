@@ -34,6 +34,10 @@ export function hashAgentHireRequest(value: unknown): string {
   return createHash("sha256").update(stableStringify(value)).digest("hex");
 }
 
+function hashIdempotencyKey(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
 export type AgentHireOperation = typeof agentHireOperations.$inferSelect;
 
 export type PublicAgentHireOperation = Pick<
@@ -80,7 +84,7 @@ export function agentHireOperationService(db: Db) {
     companyId: string;
     principalType: "agent" | "user";
     principalId: string;
-    idempotencyKey: string;
+    idempotencyKeyHash: string;
   }) {
     return db
       .select()
@@ -89,7 +93,7 @@ export function agentHireOperationService(db: Db) {
         eq(agentHireOperations.companyId, input.companyId),
         eq(agentHireOperations.principalType, input.principalType),
         eq(agentHireOperations.principalId, input.principalId),
-        eq(agentHireOperations.idempotencyKey, input.idempotencyKey),
+        eq(agentHireOperations.idempotencyKeyHash, input.idempotencyKeyHash),
       ))
       .then((rows) => rows[0] ?? null);
   }
@@ -121,10 +125,15 @@ export function agentHireOperationService(db: Db) {
       idempotencyKey: string;
       requestHash: string;
     }) => {
+      const idempotencyKeyHash = hashIdempotencyKey(input.idempotencyKey);
       const inserted = await db
         .insert(agentHireOperations)
         .values({
-          ...input,
+          companyId: input.companyId,
+          principalType: input.principalType,
+          principalId: input.principalId,
+          idempotencyKeyHash,
+          requestHash: input.requestHash,
           agentId: randomUUID(),
         })
         .onConflictDoNothing({
@@ -132,12 +141,17 @@ export function agentHireOperationService(db: Db) {
             agentHireOperations.companyId,
             agentHireOperations.principalType,
             agentHireOperations.principalId,
-            agentHireOperations.idempotencyKey,
+            agentHireOperations.idempotencyKeyHash,
           ],
         })
         .returning()
         .then((rows) => rows[0] ?? null);
-      const operation = inserted ?? await getScoped(input);
+      const operation = inserted ?? await getScoped({
+        companyId: input.companyId,
+        principalType: input.principalType,
+        principalId: input.principalId,
+        idempotencyKeyHash,
+      });
       if (!operation) throw new Error("Failed to reserve agent hire operation");
       if (operation.requestHash !== input.requestHash) {
         throw new AgentHireIdempotencyConflictError();

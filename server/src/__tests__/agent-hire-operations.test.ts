@@ -177,11 +177,12 @@ describeEmbeddedPostgres("durable agent hire operations", () => {
     const companyId = await seedCompany();
     const service = agentHireOperationService(db);
     const secret = "sk-test-never-store";
+    const idempotencyKey = `hire-secret-${randomUUID()}`;
     const reservation = await service.reserve({
       companyId,
       principalType: "user",
       principalId: "board-user",
-      idempotencyKey: "hire-secret",
+      idempotencyKey,
       requestHash: hashAgentHireRequest({
         name: "Builder",
         adapterConfig: { apiKey: secret },
@@ -199,6 +200,8 @@ describeEmbeddedPostgres("durable agent hire operations", () => {
     const stored = await service.getById(reservation.operation.id);
     const serialized = JSON.stringify(stored);
     expect(serialized.includes(secret)).toBe(false);
+    expect(serialized.includes(idempotencyKey)).toBe(false);
+    expect(stored?.idempotencyKeyHash).toMatch(/^[a-f0-9]{64}$/);
     expect(serialized).toContain("***REDACTED***");
     expect(stored).not.toHaveProperty("requestPayload");
   });
