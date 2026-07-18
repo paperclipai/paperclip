@@ -167,7 +167,7 @@ export function BoardApprovalPayload({
  * would nest a second bullet inside the first. Strip one leading marker.
  */
 function stripLeadingListMarker(value: string): string {
-  return value.replace(/^[-*•]\s+/, "");
+  return value.replace(/^(?:[-*•]|\d+[.)])\s+/, "");
 }
 
 function BoardApprovalPayloadContent({ payload }: { payload: Record<string, unknown> }) {
@@ -215,8 +215,8 @@ function BoardApprovalPayloadContent({ payload }: { payload: Record<string, unkn
         <div className="space-y-1.5">
           <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">Risks</p>
           <ul className="space-y-1 text-sm text-muted-foreground">
-            {risks.map((risk) => (
-              <li key={risk} className="flex items-start gap-2">
+            {risks.map((risk, index) => (
+              <li key={`${index}-${risk}`} className="flex items-start gap-2">
                 <span className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-muted-foreground/60" />
                 <MarkdownBody className="leading-6">{risk}</MarkdownBody>
               </li>
