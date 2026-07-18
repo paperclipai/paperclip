@@ -9,12 +9,18 @@ class Site:
     credential_ref: str
     crawl_limit: int
     seo_plugin: str
+    gsc_property: str | None = None
 
 def load_sites(path: str) -> list[Site]:
     data = json.loads(open(os.path.expanduser(path)).read())
-    return [Site(**{k: s[k] for k in
-                    ("name", "url", "wp_rest_base", "credential_ref", "crawl_limit", "seo_plugin")})
-            for s in data["sites"]]
+    keys = ("name", "url", "wp_rest_base", "credential_ref", "crawl_limit", "seo_plugin")
+    out = []
+    for s in data["sites"]:
+        kw = {k: s[k] for k in keys}
+        if s.get("gsc_property"):
+            kw["gsc_property"] = s["gsc_property"]
+        out.append(Site(**kw))
+    return out
 
 def resolve_credential(site: Site, environ: dict) -> tuple[str, str]:
     ref = site.credential_ref
