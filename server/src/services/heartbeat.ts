@@ -10841,6 +10841,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         errorCode:
           | "issue_not_found"
           | "issue_assignee_changed"
+          | "issue_blocked_unassigned"
           | "issue_terminal_status"
           | "issue_not_in_progress"
           | "issue_execution_lock_changed"
@@ -10919,6 +10920,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const reviewParticipant = reviewExecutionState?.currentParticipant ?? null;
     const isCurrentReviewParticipant = reviewParticipant?.type === "agent" &&
       reviewParticipant.agentId === run.agentId;
+
+    if (issue.status === "blocked" && issue.assigneeAgentId === null && !isInteractionWake && !wakeCommentId) {
+      return {
+        stale: true,
+        errorCode: "issue_blocked_unassigned",
+        reason:
+          "Cancelled because the target issue is blocked and unassigned; blocked unowned issues need an explicit owner or blocker-resolution wake before dispatch",
+        details: { issueId, currentStatus: issue.status, currentAssigneeAgentId: null },
+      };
+    }
 
     if (issue.assigneeAgentId !== run.agentId && !isInteractionWake && !isCurrentReviewParticipant) {
       return {

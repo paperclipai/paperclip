@@ -1170,7 +1170,7 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
-  it("defaults agent-created root follow-up issues to inherit the current run workspace", async () => {
+  it("defaults agent-created root follow-up issues without a target project to inherit the current run workspace", async () => {
     const app = await createApp(
       ownerActor(),
       createRunContextDb({
@@ -1183,7 +1183,6 @@ describe("agent issue mutation checkout ownership", () => {
       .post(`/api/companies/${companyId}/issues`)
       .send({
         title: "Follow-up in same worktree",
-        projectId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
       });
 
     expect(res.status, JSON.stringify(res.body)).toBe(201);
@@ -1191,6 +1190,39 @@ describe("agent issue mutation checkout ownership", () => {
       companyId,
       expect.objectContaining({
         title: "Follow-up in same worktree",
+        inheritExecutionWorkspaceFromIssueId: issueId,
+      }),
+    );
+  });
+
+  it("does not inherit the current run workspace when an agent-created root issue selects a target project", async () => {
+    const app = await createApp(
+      ownerActor(),
+      createRunContextDb({
+        issueId,
+        executionWorkspaceId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      }),
+    );
+
+    const targetProjectId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const res = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({
+        title: "Follow-up in target project",
+        projectId: targetProjectId,
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockIssueService.create).toHaveBeenCalledWith(
+      companyId,
+      expect.objectContaining({
+        title: "Follow-up in target project",
+        projectId: targetProjectId,
+      }),
+    );
+    expect(mockIssueService.create).toHaveBeenCalledWith(
+      companyId,
+      expect.not.objectContaining({
         inheritExecutionWorkspaceFromIssueId: issueId,
       }),
     );
@@ -1398,6 +1430,35 @@ describe("agent issue mutation checkout ownership", () => {
         assigneeAdapterOverrides: { modelProfile: "cheap" },
       }),
     );
+  });
+
+  it("rejects agent project moves when the target issue scope is outside the actor boundary", async () => {
+    const targetProjectId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    mockAccessService.decide.mockImplementation(async (input: { action: string; resource?: { projectId?: string | null } }) => {
+      if (input.action === "issue:mutate" && input.resource?.projectId === targetProjectId) {
+        return {
+          allowed: false,
+          action: input.action,
+          reason: "deny_project_scope",
+          explanation: "Target project is outside this actor boundary.",
+        };
+      }
+      return {
+        allowed: true,
+        action: input.action,
+        reason: "allow_explicit_grant",
+        explanation: "Allowed by test default.",
+      };
+    });
+
+    const app = await createApp(ownerActor());
+    const res = await request(app)
+      .patch(`/api/issues/${issueId}`)
+      .send({ projectId: targetProjectId });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Target issue scope is outside this actor's authorization boundary");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
   it("preserves committed issue updates, comments, documents, and work product writes when recovery revalidation fails", async () => {

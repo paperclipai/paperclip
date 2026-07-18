@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { agents, companies, createDb, heartbeatRuns } from "@paperclipai/db";
+import { agents, agentWakeupRequests, companies, createDb, heartbeatRunEvents, heartbeatRuns, issues } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -26,7 +26,10 @@ describeEmbeddedPostgres("heartbeat list", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
+    await db.delete(agentWakeupRequests);
+    await db.delete(issues);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -279,6 +282,55 @@ describeEmbeddedPostgres("heartbeat list", () => {
     expect(typeof result?.stdout).toBe("string");
     expect((result?.stdout as string).length).toBeLessThan(oversizedStdout.length);
     expect(result).not.toHaveProperty("nestedHuge");
+  });
+
+  it("cancels queued runs for blocked unassigned issues before adapter dispatch", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Blocked and unassigned",
+      status: "blocked",
+      priority: "critical",
+      assigneeAgentId: null,
+      responsibleUserId: "board-user",
+    });
+
+    const queued = await heartbeatService(db).wakeup(agentId, {
+      source: "assignment",
+      reason: "issue_assigned",
+      contextSnapshot: { issueId, wakeReason: "issue_assigned" },
+    });
+
+    expect(queued).not.toBeNull();
+    const run = await heartbeatService(db).getRun(queued!.id);
+    expect(run).toMatchObject({
+      status: "cancelled",
+      errorCode: "issue_blocked_unassigned",
+    });
+    expect(run?.startedAt).toBeNull();
   });
 });
 

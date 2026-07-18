@@ -6228,13 +6228,18 @@ export function issueService(db: Db) {
           if (issueData.projectId == null && workspaceSource.projectId) {
             issueData.projectId = workspaceSource.projectId;
           }
-          if (projectWorkspaceId == null && workspaceSource.projectWorkspaceId) {
+          const canInheritWorkspaceForProject =
+            issueData.projectId == null ||
+            workspaceSource.projectId == null ||
+            workspaceSource.projectId === issueData.projectId;
+          if (projectWorkspaceId == null && workspaceSource.projectWorkspaceId && canInheritWorkspaceForProject) {
             projectWorkspaceId = workspaceSource.projectWorkspaceId;
           }
           if (
             isolatedWorkspacesEnabled &&
             !hasExplicitExecutionWorkspaceOverride &&
-            workspaceSource.executionWorkspaceId
+            workspaceSource.executionWorkspaceId &&
+            canInheritWorkspaceForProject
           ) {
             const sourceWorkspace = await tx
               .select({
