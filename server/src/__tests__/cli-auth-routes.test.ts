@@ -32,6 +32,10 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
   getVisibility: vi.fn(),
 }));
 
+const mockCompanyStandingService = vi.hoisted(() => ({
+  getEffectiveStandings: vi.fn().mockResolvedValue({}),
+}));
+
 vi.mock("../services/index.js", () => ({
   accessService: () => mockAccessService,
   agentService: () => mockAgentService,
@@ -40,6 +44,7 @@ vi.mock("../services/index.js", () => ({
   notifyHireApproved: vi.fn(),
   deduplicateAgentName: vi.fn((name: string) => name),
   instanceSettingsService: () => mockInstanceSettingsService,
+  companyStandingService: () => mockCompanyStandingService,
 }));
 
 function registerModuleMocks() {
@@ -53,6 +58,7 @@ function registerModuleMocks() {
     notifyHireApproved: vi.fn(),
     deduplicateAgentName: vi.fn((name: string) => name),
     instanceSettingsService: () => mockInstanceSettingsService,
+    companyStandingService: () => mockCompanyStandingService,
   }));
 }
 

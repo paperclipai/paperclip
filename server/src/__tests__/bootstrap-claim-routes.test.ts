@@ -17,6 +17,9 @@ const accessServiceMock = vi.hoisted(() => ({
 const instanceSettingsServiceMock = vi.hoisted(() => ({
   getVisibility: vi.fn(),
 }));
+const companyStandingServiceMock = vi.hoisted(() => ({
+  getEffectiveStandings: vi.fn().mockResolvedValue({}),
+}));
 
 vi.mock("../first-admin-claim.js", () => ({
   claimFirstInstanceAdmin: claimFirstInstanceAdminMock,
@@ -37,6 +40,7 @@ vi.mock("../services/index.js", () => ({
   logActivity: vi.fn(),
   notifyHireApproved: vi.fn(),
   instanceSettingsService: () => instanceSettingsServiceMock,
+  companyStandingService: () => companyStandingServiceMock,
 }));
 
 function hashToken(token: string) {

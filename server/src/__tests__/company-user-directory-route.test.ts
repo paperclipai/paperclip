@@ -33,6 +33,9 @@ vi.mock("../services/index.js", () => ({
       ],
     }),
   }),
+  companyStandingService: () => ({
+    getEffectiveStandings: vi.fn().mockResolvedValue({}),
+  }),
 }));
 
 function createDbStub() {

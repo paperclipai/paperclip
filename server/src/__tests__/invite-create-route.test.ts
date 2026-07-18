@@ -34,6 +34,9 @@ function registerModuleMocks() {
         ],
       }),
     }),
+    companyStandingService: () => ({
+      getEffectiveStandings: vi.fn().mockResolvedValue({}),
+    }),
   }));
 }
 
