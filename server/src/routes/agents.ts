@@ -1993,12 +1993,12 @@ export function agentRoutes(
       return;
     }
     const result = await filterAgentsForActor(req, await svc.list(companyId));
-    const canReadConfigs = await actorCanReadConfigurationsForCompany(req, companyId);
-    if (canReadConfigs) {
-      res.json(result);
-      return;
-    }
-    res.json(result.map((agent) => redactForRestrictedAgentView(agent)));
+    // RIP-1315: always redact adapterConfig/runtimeConfig secrets on the list
+    // endpoint, even when the caller has config-read permission. Without this,
+    // any agent with canCreateAgents (which implies canReadConfigs) can read
+    // every agent's password, authToken, and devicePrivateKeyPem via this list.
+    // Non-secret fields (url, agentId, sessionKey, timeoutSec) are preserved.
+    res.json(result.map((agent) => redactAgentConfiguration(agent)));
   });
 
   router.get("/instance/scheduler-heartbeats", async (req, res) => {
