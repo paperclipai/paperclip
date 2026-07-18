@@ -945,6 +945,7 @@ export function pluginRoutes(
    *
    * Return UI contributions from all plugins in 'ready' state.
    * Used by the frontend to discover plugin UI slots and launcher metadata.
+   * Pass ?companyId=<uuid> to additionally filter out contributions from plugins disabled for that company (asserts company access).
    *
    * The response is normalized for the frontend slot host:
    * - Only includes plugins with at least one declared UI slot or launcher
@@ -979,16 +980,26 @@ export function pluginRoutes(
    */
   router.get("/plugins/ui-contributions", async (req, res) => {
     assertBoardOrgAccess(req);
+    const companyId = typeof req.query.companyId === "string" ? req.query.companyId : undefined;
+    if (companyId) assertCompanyAccess(req, companyId);
+
     const plugins = await registry.listByStatus("ready");
 
-    const contributions: PluginUiContribution[] = plugins
-      .map((plugin) => {
+    const mapped = await Promise.all(
+      plugins.map(async (plugin) => {
         // Safety check: manifestJson should always exist for ready plugins, but guard against null
         const manifest = plugin.manifestJson;
         if (!manifest) return null;
 
         const uiMetadata = getPluginUiContributionMetadata(manifest);
         if (!uiMetadata) return null;
+
+        // Per-company filtering: slots from plugins disabled for this
+        // company never reach that company's UI (manifest default aware).
+        if (companyId) {
+          const settings = await registry.getCompanySettings(plugin.id, companyId);
+          if (!evaluateCompanyEnablement(manifest, settings)) return null;
+        }
 
         return {
           pluginId: plugin.id,
@@ -1000,8 +1011,11 @@ export function pluginRoutes(
           slots: uiMetadata.slots,
           launchers: uiMetadata.launchers,
         };
-      })
-      .filter((item): item is PluginUiContribution => item !== null);
+      }),
+    );
+    const contributions: PluginUiContribution[] = mapped.filter(
+      (item): item is PluginUiContribution => item !== null,
+    );
     res.json(contributions);
   });
 
@@ -1106,6 +1120,20 @@ export function pluginRoutes(
     if (scopeError) {
       res.status(403).json({ error: scopeError });
       return;
+    }
+
+    // Per-company plugin enablement: the owning plugin must be enabled for
+    // the run's company before ANY dispatch path (tool gateway or direct
+    // dispatcher) executes the tool. Tool names are namespaced as
+    // "<pluginKey>:<toolName>" (plugin-tool-dispatcher.ts), so resolve the
+    // owner by key; unknown keys fall through to the existing 404 handling.
+    const namespaceSeparator = tool.indexOf(":");
+    const owningPluginKey = namespaceSeparator > 0 ? tool.slice(0, namespaceSeparator) : null;
+    if (owningPluginKey) {
+      const owningPlugin = await registry.getByKey(owningPluginKey);
+      if (owningPlugin) {
+        await enablement.ensurePluginEnabledForCompany(owningPlugin.id, runContext.companyId);
+      }
     }
 
     if (req.actor.type === "agent" && toolGatewayDeps) {
