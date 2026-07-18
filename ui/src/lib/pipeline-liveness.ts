@@ -40,7 +40,7 @@ export interface LivenessBannerView {
 }
 
 const AUTO_RETRY_NOTE =
-  "Paperclip retries automatically once the blocker clears — you don't need to move the item by hand.";
+  "Cortex retries automatically once the blocker clears — you don't need to move the item by hand.";
 
 /**
  * Prosumer-voice body for the `no_action_path` "stuck" banner. The server's
@@ -49,7 +49,7 @@ const AUTO_RETRY_NOTE =
  * the PAP-11245 voice rule forbids, so we translate it here. See PAP-11259.
  */
 const NO_ACTION_PATH_BODY =
-  "Paperclip can't see anything to work on next here — no automation, retry, blocker, or review. " +
+  "Cortex can't see anything to work on next here — no automation, retry, blocker, or review. " +
   "Re-run the stage to nudge it, or use the ⋯ menu to move it by hand.";
 
 /**
@@ -145,7 +145,7 @@ export function derivePipelineLivenessBanner(
         retryKind: null,
         retryLabel: "",
         helperNote:
-          "Grant the access above to the configured responsible, then Paperclip retries automatically.",
+          "Grant the access above to the configured responsible, then Cortex retries automatically.",
       };
 
     case "automation_failed": {

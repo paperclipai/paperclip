@@ -3340,7 +3340,7 @@ function AwsProviderVaultDiscoveryError({
             <p className="mt-1 leading-relaxed text-destructive/85">
               {isAccessDenied
                 ? details?.actionableMessage ??
-                  "Discovery needs secretsmanager:ListSecrets in the selected region for the Paperclip server runtime/provider credential path."
+                  "Discovery needs secretsmanager:ListSecrets in the selected region for the Cortex server runtime/provider credential path."
                 : message}
             </p>
           </div>

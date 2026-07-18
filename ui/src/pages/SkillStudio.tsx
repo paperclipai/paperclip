@@ -449,7 +449,7 @@ function StudioNewSkillPanel({
       toast?.pushToast({
         tone: "success",
         title: skill.forkedFromSkillId ? "Skill fork created" : "Skill created",
-        body: `${skill.name} is now editable in the Paperclip workspace.`,
+        body: `${skill.name} is now editable in the Cortex workspace.`,
       });
       navigate(skillStudioRoute(skill.id));
     },
@@ -1366,7 +1366,7 @@ function SkillPane({
     onError: onError("Couldn't delete file"),
   });
 
-  // Read-only skills (bundled Paperclip, remote GitHub, URL, skills.sh) reject
+  // Read-only skills (bundled Cortex, remote GitHub, URL, skills.sh) reject
   // file writes server-side; reflect that up-front instead of letting the user
   // type into an editor whose Save silently 422s (PAP-13001 Bug B).
   const readOnly = skill.editable === false || fileQuery.data?.editable === false;

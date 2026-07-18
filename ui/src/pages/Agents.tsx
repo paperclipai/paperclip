@@ -68,8 +68,8 @@ interface EnvironmentDescriptor {
 
 const localEnvironmentDescriptor: EnvironmentDescriptor = {
   label: "Local",
-  detail: "Paperclip host",
-  title: "Local - Paperclip host",
+  detail: "Cortex host",
+  title: "Local - Cortex host",
 };
 
 const loadingEnvironmentDescriptor: EnvironmentDescriptor = {
@@ -132,7 +132,7 @@ function describeEnvironment(
   const detail = environment.driver === "sandbox"
     ? `${getSandboxProviderLabel(environment, capabilities)} sandbox provider`
     : environment.driver === "local"
-      ? "Paperclip host"
+      ? "Cortex host"
       : formatEnvironmentDriver(environment.driver);
 
   return {

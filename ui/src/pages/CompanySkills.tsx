@@ -3947,7 +3947,7 @@ export function CompanySkills() {
       pushToast({
         tone: "success",
         title: skill.forkedFromSkillId ? "Skill fork created" : "Skill created",
-        body: `${skill.name} is now editable in the Paperclip workspace.`,
+        body: `${skill.name} is now editable in the Cortex workspace.`,
       });
     },
     onError: (error) => {
@@ -4370,7 +4370,7 @@ export function CompanySkills() {
   const studioTitle = studioForkFromId ? "Fork skill" : "Create a new skill";
   const studioDescription = studioForkFromId
     ? "Review the fork metadata and create an editable company copy."
-    : "Create an editable company skill in the Paperclip workspace.";
+    : "Create an editable company skill in the Cortex workspace.";
 
   return (
     <>

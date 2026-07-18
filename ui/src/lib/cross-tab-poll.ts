@@ -1,7 +1,7 @@
 /**
  * Cross-tab shared polling coordination (PAP-12557 / Phase 2 of PAP-12542).
  *
- * Goal: when a user restores many Paperclip tabs at once, we do not want every
+ * Goal: when a user restores many Cortex tabs at once, we do not want every
  * tab independently polling the same company-scoped hot endpoints (live-runs,
  * dashboard, inbox list, activity). Instead we elect ONE visible leader tab per
  * company to poll, and the leader broadcasts fresh results to the other tabs.

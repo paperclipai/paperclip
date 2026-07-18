@@ -728,7 +728,7 @@ function CasesEmptyHero() {
 {slug, target_audience, publish_url} and key <release>/<slug>."`}
         </pre>
         <p className="text-xs text-muted-foreground">
-          See the paperclip skill → <code className="font-mono">references/cases.md</code> for the API.
+          See the cortex skill → <code className="font-mono">references/cases.md</code> for the API.
         </p>
       </div>
       <p className="text-xs text-muted-foreground">

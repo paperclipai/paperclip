@@ -62,7 +62,7 @@ export type BuiltInManagedResourceKind = "instructions" | "skill" | "routine";
  * Drift status of one managed resource versus the shipped stock default:
  * - `missing` — expected resource absent; a reconcile will recreate it.
  * - `stock_current` — present and byte-identical to the shipped default.
- * - `stock_update_available` — unedited, but Paperclip shipped a newer default.
+ * - `stock_update_available` — unedited, but Cortex shipped a newer default.
  * - `operator_modified` — operator-edited; reconcile preserves these edits.
  */
 export type BuiltInManagedResourceStockStatus =

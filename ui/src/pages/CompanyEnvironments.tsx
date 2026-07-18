@@ -1055,7 +1055,7 @@ function EnvironmentImageTemplatePanel({
               <span
                 className="break-all font-mono text-foreground"
                 title={templateRef
-                  ? `Provider ${activeTemplate.templateKind} ref ${templateRef} (Paperclip template ${activeTemplate.id})`
+                  ? `Provider ${activeTemplate.templateKind} ref ${templateRef} (Cortex template ${activeTemplate.id})`
                   : activeTemplate.id}
               >
                 {templateRef ?? `id ${formatShortId(activeTemplate.id)}`}
@@ -1711,7 +1711,7 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
             </div>
             <h1 className="text-lg font-semibold">{editingEnvironmentId ? "Edit environment" : "Add environment"}</h1>
             <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
-              Configure a reusable execution target for your agents. Saved changes affect future runs; Paperclip may start fresh sessions or sandbox leases after environment config changes.
+              Configure a reusable execution target for your agents. Saved changes affect future runs; Cortex may start fresh sessions or sandbox leases after environment config changes.
             </p>
           </div>
 

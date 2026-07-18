@@ -39,7 +39,7 @@ interface TargetHealth {
   deploymentExposure?: string;
 }
 
-/** Result of probing the Paperclip instance the CLI is about to talk to. */
+/** Result of probing the Cortex instance the CLI is about to talk to. */
 interface TargetDiagnostics {
   apiBase: string;
   reachable: boolean;
@@ -174,7 +174,7 @@ export function renderLocalPluginInstallHint(packagePath: string): string {
 
 /**
  * Probe `GET /api/health` on the instance the CLI is configured to talk to so a
- * developer can confirm *which* Paperclip they are about to install into. This
+ * developer can confirm *which* Cortex they are about to install into. This
  * exists because a local-path plugin can otherwise be silently installed into a
  * stale control-plane host that does not serve the branch's routes; surfacing
  * the API URL plus the server version/status catches that mismatch before the
@@ -204,7 +204,7 @@ export async function probeTargetDiagnostics(
  * unit-tested without a live server.
  */
 export function formatTargetDiagnostics(diag: TargetDiagnostics): string {
-  const lines = [pc.dim(`Target Paperclip: ${pc.cyan(diag.apiBase)}`)];
+  const lines = [pc.dim(`Target Cortex: ${pc.cyan(diag.apiBase)}`)];
 
   if (!diag.reachable) {
     lines.push(pc.yellow(`  health: unreachable${diag.error ? ` (${diag.error.split("\n")[0]})` : ""}`));
@@ -400,7 +400,7 @@ export function registerPluginCommands(program: Command): void {
       .option("--version <version>", "Specific npm version to install (npm packages only)")
       .option(
         "--no-verify-target",
-        "Skip the pre-install probe that reports which Paperclip instance the plugin installs into",
+        "Skip the pre-install probe that reports which Cortex instance the plugin installs into",
       )
       .action(async (packageArg: string, opts: PluginInstallOptions) => {
         try {
@@ -471,7 +471,7 @@ export function registerPluginCommands(program: Command): void {
     plugin
       .command("target")
       .description(
-        "Show which Paperclip instance plugin commands will talk to.\n" +
+        "Show which Cortex instance plugin commands will talk to.\n" +
           "  Reports the resolved API URL plus the server status/version/mode from\n" +
           "  GET /api/health so you can confirm you are installing into the branch\n" +
           "  runtime and not a stale control-plane host.",

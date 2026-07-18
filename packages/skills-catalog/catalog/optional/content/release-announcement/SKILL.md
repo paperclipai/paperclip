@@ -28,9 +28,9 @@ Write the channel-appropriate announcement for a release without churn. Differen
 - An internal-only change with no user impact. Update internal docs; do not announce.
 - The release is incomplete (still in active development). Wait until it ships, even if marketing wants the post.
 
-## Paperclip Cases output
+## Cortex Cases output
 
-When this skill runs inside Paperclip and `experimental.enableCases` is enabled,
+When this skill runs inside Cortex and `experimental.enableCases` is enabled,
 emit durable release-content cases before handing off the copy. Cases preserve
 the inspectable output; the issue coordinates the work.
 
@@ -45,7 +45,7 @@ Upsert the parent release case first when it does not already exist:
 {
   "caseType": "release",
   "key": "paperclip-release:vYYYY.MDD.P",
-  "title": "Paperclip vYYYY.MDD.P release",
+  "title": "Cortex vYYYY.MDD.P release",
   "status": "in_progress",
   "fields": {
     "schema_version": 1,
@@ -68,7 +68,7 @@ For a dev blog, upsert a child case with `parentCaseId` set to the release case:
 {
   "caseType": "blog_post",
   "key": "paperclip-release:vYYYY.MDD.P:blog-post",
-  "title": "Paperclip vYYYY.MDD.P launch post",
+  "title": "Cortex vYYYY.MDD.P launch post",
   "status": "in_review",
   "parentCaseId": "<release-case-id>",
   "fields": {
@@ -93,7 +93,7 @@ For social output, upsert a sibling child case:
 {
   "caseType": "tweet_storm",
   "key": "paperclip-release:vYYYY.MDD.P:tweet-storm",
-  "title": "Paperclip vYYYY.MDD.P tweet storm",
+  "title": "Cortex vYYYY.MDD.P tweet storm",
   "status": "in_review",
   "parentCaseId": "<release-case-id>",
   "fields": {

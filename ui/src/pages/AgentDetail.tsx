@@ -1215,7 +1215,7 @@ export function AgentDetail() {
             </Button>
           }
         >
-          Ships with Paperclip and powers <strong>{builtInFeatureLabel}</strong>. Configure it like
+          Ships with Cortex and powers <strong>{builtInFeatureLabel}</strong>. Configure it like
           any agent — model, instructions, budget. It can be paused but not deleted; pausing it
           pauses {builtInFeatureLabel}.
         </InlineBanner>

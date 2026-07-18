@@ -999,7 +999,7 @@ export function ExecutionWorkspaceDetail() {
               <CardHeader>
                 <CardTitle>Workspace settings</CardTitle>
                 <CardDescription>
-                  Edit the concrete path, repo, branch, provisioning, teardown, and runtime overrides attached to this execution workspace. Saved changes affect future runs; Paperclip may refresh or replace a reused workspace when config changes.
+                  Edit the concrete path, repo, branch, provisioning, teardown, and runtime overrides attached to this execution workspace. Saved changes affect future runs; Cortex may refresh or replace a reused workspace when config changes.
                 </CardDescription>
                 <CardAction>
                   <Button
@@ -1234,7 +1234,7 @@ export function ExecutionWorkspaceDetail() {
                         </div>
                       ) : null}
                       <p className="text-sm text-muted-foreground">
-                        Paperclip checks fixed ports again when a service starts and rejects cross-workspace conflicts.
+                        Cortex checks fixed ports again when a service starts and rejects cross-workspace conflicts.
                       </p>
                     </div>
                   ) : null}

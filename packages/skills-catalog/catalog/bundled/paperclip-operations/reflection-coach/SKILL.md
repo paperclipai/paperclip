@@ -6,7 +6,7 @@ recommendedForRoles:
   - manager
   - general
 tags:
-  - paperclip
+  - cortex
   - reflection
   - coaching
   - agents
@@ -81,7 +81,7 @@ curl -sS "$PAPERCLIP_API_URL/api/issues/<issueId>" -H "Authorization: Bearer $PA
 curl -sS "$PAPERCLIP_API_URL/api/issues/<issueId>/comments" -H "Authorization: Bearer $PAPERCLIP_API_KEY"
 ```
 
-Keep status transitions, blocker reasons, reviewer comments, approval outcomes, human corrections, and PR-link comments. Comments are the closest thing Paperclip has to an execution trace — treat them as first-class evidence.
+Keep status transitions, blocker reasons, reviewer comments, approval outcomes, human corrections, and PR-link comments. Comments are the closest thing Cortex has to an execution trace — treat them as first-class evidence.
 
 ### 3) Read the target's current guardrails
 

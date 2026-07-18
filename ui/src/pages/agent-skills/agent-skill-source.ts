@@ -1,4 +1,4 @@
-import { Boxes, Folder, Github, Link2, Paperclip, type LucideIcon } from "lucide-react";
+import { Boxes, Folder, Github, Link2, PaperclipIcon, type LucideIcon } from "lucide-react";
 import type { CompanySkillListItem } from "@paperclipai/shared";
 
 export interface AgentSkillSourceMeta {
@@ -103,7 +103,7 @@ export function buildAgentSkillSourceMeta(skill: SourceSkill): AgentSkillSourceM
   }
 
   if (skill.sourceBadge === "paperclip") {
-    return { icon: Paperclip, label: skill.sourceLabel?.trim() || "Paperclip managed" };
+    return { icon: PaperclipIcon, label: skill.sourceLabel?.trim() || "Cortex managed" };
   }
 
   if (skill.sourceBadge === "catalog" || skill.sourceType === "catalog") {

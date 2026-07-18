@@ -291,7 +291,7 @@ function readDecision(payload: Record<string, unknown>) {
 function actorName(event: PipelineCaseEvent) {
   if (event.actorAgent?.name) return event.actorAgent.name;
   if (event.actorType === "user") return "Board";
-  if (event.actorType === "system") return "Paperclip";
+  if (event.actorType === "system") return "Cortex";
   return null;
 }
 

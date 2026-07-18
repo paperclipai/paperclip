@@ -36,7 +36,7 @@ import type {
  * Both "apply an available stock update" and "reset drifted edits" route
  * through the same scoped reset (`onResetResource(kind)` →
  * `built-in-agents/:key/reset { resources: [kind] }`), which re-materializes
- * that one resource to Paperclip's newest shipped default without touching
+ * that one resource to Cortex's newest shipped default without touching
  * adapter credentials or the other resources.
  */
 
@@ -76,7 +76,7 @@ function resourceActionCopy(
   if (resource.stockStatus === "stock_update_available") {
     return {
       title: `Update ${label} to the newest default?`,
-      body: `You haven't edited this, so Paperclip will replace it with the newer shipped version. Nothing you customized is affected, and your adapter credentials and settings are not touched.`,
+      body: `You haven't edited this, so Cortex will replace it with the newer shipped version. Nothing you customized is affected, and your adapter credentials and settings are not touched.`,
       confirmLabel: "Update",
       triggerLabel: "Update",
     };
@@ -84,7 +84,7 @@ function resourceActionCopy(
   if (resource.stockStatus === "operator_modified") {
     return {
       title: `Reset ${label} to the shipped default?`,
-      body: `This replaces your edited version with Paperclip's current default. Your edits can't be recovered. Adapter credentials and settings are not touched.`,
+      body: `This replaces your edited version with Cortex's current default. Your edits can't be recovered. Adapter credentials and settings are not touched.`,
       confirmLabel: `Reset ${label}`,
       triggerLabel: "Reset",
     };
@@ -92,7 +92,7 @@ function resourceActionCopy(
   if (resource.stockStatus === "missing") {
     return {
       title: `Recreate ${label}?`,
-      body: `This resource is missing. Paperclip will recreate it from the shipped default. Adapter credentials and settings are not touched.`,
+      body: `This resource is missing. Cortex will recreate it from the shipped default. Adapter credentials and settings are not touched.`,
       confirmLabel: "Recreate",
       triggerLabel: "Recreate",
     };
@@ -211,7 +211,7 @@ function driftDetail(resource: BuiltInManagedResourceState): string | undefined 
     case "operator_modified":
       return "You've edited this. Your changes are kept until you reset.";
     case "stock_update_available":
-      return "Paperclip shipped a newer default.";
+      return "Cortex shipped a newer default.";
     case "missing":
       return "Not materialized yet — recreate it from the shipped default.";
     default:
@@ -377,7 +377,7 @@ export function BuiltInBundlePanel({
                 {onRunRoutine && (
                   <ConfirmActionButton
                     title="Run Reflection Coach once?"
-                    body="Paperclip will create one routine task now. This does not enable the weekly schedule or turn on background work."
+                    body="Cortex will create one routine task now. This does not enable the weekly schedule or turn on background work."
                     triggerLabel="Run once"
                     confirmLabel="Run once"
                     pending={routineActionPending === "run"}
@@ -388,7 +388,7 @@ export function BuiltInBundlePanel({
                   ? onDisableSchedule && (
                     <ConfirmActionButton
                       title="Disable the weekly schedule?"
-                      body="Paperclip will stop future scheduled Reflection Coach runs. Manual Run once remains available."
+                      body="Cortex will stop future scheduled Reflection Coach runs. Manual Run once remains available."
                       triggerLabel="Disable schedule"
                       confirmLabel="Disable schedule"
                       pending={routineActionPending === "disable"}
@@ -398,7 +398,7 @@ export function BuiltInBundlePanel({
                   : onEnableSchedule && (
                     <ConfirmActionButton
                       title="Enable the weekly schedule?"
-                      body="Paperclip will allow Reflection Coach to create routine tasks on the weekly schedule. It can spend tokens when those tasks run."
+                      body="Cortex will allow Reflection Coach to create routine tasks on the weekly schedule. It can spend tokens when those tasks run."
                       triggerLabel="Enable weekly"
                       confirmLabel="Enable weekly"
                       pending={routineActionPending === "enable"}

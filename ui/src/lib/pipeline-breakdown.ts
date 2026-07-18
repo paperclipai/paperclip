@@ -151,7 +151,7 @@ export function breakdownSummarySentence(
   }
   const noun = config.pieceNoun;
   const parts: string[] = [
-    `Paperclip will create one ${noun} per item in ${names.targetPipelineName} → ${names.entryStageName}`,
+    `Cortex will create one ${noun} per item in ${names.targetPipelineName} → ${names.entryStageName}`,
   ];
   if (names.inheritedFieldLabels.length > 0) {
     parts.push(`carry over ${joinWithAnd(names.inheritedFieldLabels)}`);
@@ -167,7 +167,7 @@ export function breakdownSummarySentence(
 }
 
 /**
- * The read-only "Paperclip handles this" mechanics bullets, composed from the
+ * The read-only "Cortex handles this" mechanics bullets, composed from the
  * config. Bullets 5 and 6 only appear when the wait gate is on.
  */
 export function breakdownMechanicsBullets(

@@ -5,7 +5,7 @@ import { cn } from "@/lib/utils";
 /**
  * Thin design-system wrapper over `react-resizable-panels` (PAP-12962 D2 — the
  * only net-new shared primitive Skill Studio adds). Re-exports the library's
- * Group / Panel / Separator with Paperclip token styling and a comfortable
+ * Group / Panel / Separator with Cortex token styling and a comfortable
  * (≥8px) resize hit-slop so a split view can be dropped in anywhere.
  *
  * Sizes accept the library's units: bare numbers/`"37.5%"` are percentages,

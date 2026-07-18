@@ -1837,7 +1837,7 @@ export function DesignGuide() {
             title="Built-in agent"
             actions={<Button variant="outline" size="sm">Reset to defaults</Button>}
           >
-            Ships with Paperclip and powers <strong>Briefs</strong>. It can be paused but not deleted.
+            Ships with Cortex and powers <strong>Briefs</strong>. It can be paused but not deleted.
           </InlineBanner>
           <InlineBanner
             tone="warning"

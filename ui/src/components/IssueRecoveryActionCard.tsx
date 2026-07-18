@@ -536,7 +536,7 @@ function BreakGlassOverride({
             Break-glass reconciliation
           </div>
           <p className="text-xs leading-5 text-muted-foreground">
-            This overrides Paperclip&apos;s safety check and points the recorded workspace at the live
+            This overrides Cortex&apos;s safety check and points the recorded workspace at the live
             branch{" "}
             <span className="font-medium text-foreground/80">without an ancestry proof</span>. Confirm
             the divergence below and record why before continuing.

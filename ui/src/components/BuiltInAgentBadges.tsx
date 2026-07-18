@@ -23,7 +23,7 @@ export function BuiltInAgentBadge({
         compact && "px-1.5 py-0 text-(length:--text-nano)",
         className,
       )}
-      title="Ships with Paperclip"
+      title="Ships with Cortex"
     >
       Built-in
     </Badge>
