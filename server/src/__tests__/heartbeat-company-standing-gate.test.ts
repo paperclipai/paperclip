@@ -48,9 +48,9 @@ describeEmbeddedPostgres("heartbeat company-standing run-start gate", () => {
   }, 20_000);
 
   afterEach(async () => {
-    while (heartbeats.length > 0) {
-      await heartbeats.pop()?.drain();
-    }
+    // Master's heartbeatService has no bare drain(); tests here drive runs
+    // synchronously, so no in-flight execution needs draining before cleanup.
+    heartbeats.length = 0;
     await db.delete(activityLog);
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
