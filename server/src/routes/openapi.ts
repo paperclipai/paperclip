@@ -3117,6 +3117,19 @@ registerCurrentRoute({
 });
 
 registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/decision-training/preview",
+  tags: ["decision-training"],
+  summary: "Preview a decision training snapshot",
+  body: z.object({
+    sourceKind: decisionTrainingSourceKindSchema,
+    sourceId: z.string().uuid(),
+    issueId: z.string().uuid(),
+  }).strict(),
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+
+registerCurrentRoute({
   method: "get",
   path: "/api/companies/{companyId}/decision-training",
   tags: ["decision-training"],

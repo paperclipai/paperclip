@@ -14,6 +14,11 @@ const createSchema = z.object({
   notes: z.string().max(100_000).default(""),
 }).strict();
 const updateSchema = z.object({ notes: z.string().max(100_000) }).strict();
+const previewSchema = z.object({
+  sourceKind: sourceKindSchema,
+  sourceId: z.string().uuid(),
+  issueId: z.string().uuid(),
+}).strict();
 
 function requireHumanUser(req: Request, res: Response) {
   if (req.actor.type !== "board") {
@@ -78,6 +83,31 @@ export function decisionTrainingRoutes(db: Db) {
         details: { sourceKind: example.sourceKind, sourceId: example.sourceId, issueId: example.issueId },
       });
       res.status(201).json(example);
+    },
+  );
+
+  // Read-only snapshot preview for the create drawer. Same authz as a write
+  // (humans only) since it exposes the same captured decision state, but it
+  // never persists anything.
+  router.post(
+    "/companies/:companyId/decision-training/preview",
+    validate(previewSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      const userId = requireHumanUser(req, res);
+      if (!userId) return;
+      const preview = await svc.preview({
+        companyId,
+        sourceKind: req.body.sourceKind,
+        sourceId: req.body.sourceId,
+        issueId: req.body.issueId,
+      });
+      res.json({
+        cutoffAt: preview.cutoffAt.toISOString(),
+        decisionOutcome: preview.decisionOutcome,
+        snapshot: preview.snapshot,
+      });
     },
   );
 

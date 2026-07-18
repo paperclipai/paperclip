@@ -35,7 +35,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc && cp src/codex-auth-merge-decision.cjs src/codex-auth-merge-extract.sh dist/",
+    "build": "tsc",
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit"
   },

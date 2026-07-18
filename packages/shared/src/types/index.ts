@@ -29,6 +29,7 @@ export type {
 export type {
   DecisionTrainingExample,
   DecisionTrainingNotesHistoryEntry,
+  DecisionTrainingPreview,
   DecisionTrainingRetentionPolicy,
   DecisionTrainingSnapshotV1,
   DecisionTrainingSourceKind,

@@ -6,13 +6,13 @@ import { randomUUID } from "node:crypto";
 import type { SshRemoteExecutionSpec } from "./ssh.js";
 import {
   prepareCommandManagedRuntime,
+  type CommandManagedRuntimeAsset,
   type CommandManagedRuntimeRunner,
 } from "./command-managed-runtime.js";
 import {
   buildRemoteExecutionSessionIdentity,
   prepareRemoteManagedRuntime,
   remoteExecutionSessionMatches,
-  type RemoteManagedRuntimeAsset,
 } from "./remote-managed-runtime.js";
 import {
   createCommandManagedSandboxCallbackBridgeQueueClient,
@@ -83,7 +83,12 @@ export type AdapterExecutionTarget =
 
 export type AdapterRemoteExecutionSpec = SshRemoteExecutionSpec;
 
-export type AdapterManagedRuntimeAsset = RemoteManagedRuntimeAsset;
+// The adapter-facing managed-runtime asset type. Aliased to the sandbox/command
+// asset descriptor so the per-asset lifecycle contributions (`provision` /
+// `restore`) declared on the sandbox core are load-bearing all the way from the
+// adapter call site through to the sandbox runtime. The SSH transport consumes
+// the subset of fields it understands and ignores the rest.
+export type AdapterManagedRuntimeAsset = CommandManagedRuntimeAsset;
 
 export interface PreparedAdapterExecutionTargetRuntime {
   target: AdapterExecutionTarget;

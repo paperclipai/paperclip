@@ -2,6 +2,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import { buildCodexAuthInboundProvision } from "./codex-auth-merge-scripts.js";
+import { copyBackCodexAuth } from "./codex-auth-copyback.js";
 import {
   adapterExecutionTargetIsRemote,
   adapterExecutionTargetRemoteCwd,
@@ -629,6 +631,27 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                 key: "home",
                 localDir: effectiveCodexHome,
                 followSymlinks: true,
+                // Inbound (host→sandbox) auth-merge contribution: stages the two
+                // merge scripts and runs the merge-extract command so a sandbox
+                // that already carries a Codex `auth.json` keeps whichever
+                // credential is newer. The sandbox runtime core stays adapter-
+                // agnostic — it just invokes this generic `provision` seam.
+                provision: buildCodexAuthInboundProvision(),
+                // Outbound (sandbox→host) auth copy-back contribution: at
+                // teardown, read the sandbox's `auth.json` and — guarded by the
+                // same direction-agnostic decision predicate under a directory
+                // lock — atomically install it onto the shared host credential
+                // when it is a strictly-newer same-identity subscription copy.
+                // The sandbox core stays adapter-agnostic; it just awaits this
+                // generic `restore` seam per asset before destroying the sandbox.
+                // Target is the shared symlink SOURCE (what managed homes point
+                // `auth.json` at), not the in-sandbox symlink.
+                restore: async ({ assetDir, readFile }) =>
+                  void (await copyBackCodexAuth({
+                    readSandboxAuth: () => readFile(path.posix.join(assetDir, "auth.json")),
+                    hostAuthPath: path.join(resolveSharedCodexHomeDir(process.env), "auth.json"),
+                    log: (line) => onLog("stdout", `${line}\n`),
+                  })),
                 // Exclude state that the sandbox run never needs so we don't
                 // tar/upload hundreds of MB on every run:
                 // - `tmp`/`.tmp`: transient dirs that can hold symlinks to the
