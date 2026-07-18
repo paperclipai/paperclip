@@ -2,7 +2,7 @@
 /*
 Plugin Name: WHITESTAG SEO/GEO Bridge
 Description: Öffnet Yoast-Meta für REST + serviert /llms.txt + liest/schreibt Avada-Seitenoptionen (pyre_*).
-Version: 0.2.1
+Version: 0.2.2
 */
 if (!defined('ABSPATH')) exit;
 
@@ -40,6 +40,27 @@ add_action('init', function () {
             ]);
         }
     }
+});
+
+add_action('init', function () {
+    $ua = $_SERVER['HTTP_USER_AGENT'] ?? '';
+    if ($ua === '') return;
+    $bots = ['GPTBot','ChatGPT-User','OAI-SearchBot','ClaudeBot','anthropic-ai',
+             'Claude-User','PerplexityBot','Perplexity-User','Google-Extended',
+             'CCBot','Bytespider','Amazonbot'];
+    $hit = null;
+    foreach ($bots as $b) { if (stripos($ua, $b) !== false) { $hit = $b; break; } }
+    if ($hit === null) return;
+    $week = gmdate('o-\WW');                       // ISO-Jahr + KW, z.B. 2026-W29
+    $data = get_option('whitestag_ai_bot_hits', []);
+    if (!is_array($data)) $data = [];
+    if (!isset($data[$week])) $data[$week] = [];
+    $data[$week][$hit] = ($data[$week][$hit] ?? 0) + 1;
+    if (count($data) > 8) {                        // rollierend: 8 Wochen
+        ksort($data);
+        $data = array_slice($data, -8, null, true);
+    }
+    update_option('whitestag_ai_bot_hits', $data, false);
 });
 
 // Meta-Tag im <head> ausgeben, wenn GSC-Verifikationstoken gesetzt.
@@ -109,6 +130,15 @@ add_action('rest_api_init', function () {
             $old = get_post_meta($id, $key, true);
             update_post_meta($id, $key, $val);
             return ['ok' => true, 'id' => $id, 'key' => $key, 'old' => $old, 'new' => $val];
+        },
+    ]);
+
+    register_rest_route('whitestag-seo-geo/v1', '/aibots', [
+        'methods' => 'GET',
+        'permission_callback' => function () { return current_user_can('edit_posts'); },
+        'callback' => function () {
+            $d = get_option('whitestag_ai_bot_hits', []);
+            return is_array($d) ? $d : [];
         },
     ]);
 });
