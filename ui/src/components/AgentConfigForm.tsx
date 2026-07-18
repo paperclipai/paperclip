@@ -58,6 +58,7 @@ import { useDisabledAdaptersSync } from "../adapters/use-disabled-adapters";
 import { buildAgentUpdatePatch, omitUndefinedEntries, type AgentConfigOverlay } from "../lib/agent-config-patch";
 import { useAdapterCapabilities } from "../adapters/use-adapter-capabilities";
 import { resolveForcedKubernetesEnvironment } from "../lib/forced-kubernetes-environment";
+import { useCoarsePointer } from "@/hooks/useCoarsePointer";
 
 /* ---- Create mode values ---- */
 
@@ -1690,7 +1691,9 @@ export function ModelDropdown({
   defaultLabel?: string;
 }) {
   const [modelSearch, setModelSearch] = useState("");
+  const modelSearchInputRef = useRef<HTMLInputElement>(null);
   const [detectingModel, setDetectingModel] = useState(false);
+  const isCoarsePointer = useCoarsePointer();
   const selected = models.find((m) => m.id === value);
   const manualModel = modelSearch.trim();
   const canCreateManualModel = Boolean(
@@ -1745,6 +1748,12 @@ export function ModelDropdown({
       }));
   }, [filteredModels, groupByProvider]);
 
+  useEffect(() => {
+    if (!open) return;
+    if (isCoarsePointer) modelSearchInputRef.current?.blur();
+    else modelSearchInputRef.current?.focus();
+  }, [isCoarsePointer, open]);
+
   async function handleDetectModel() {
     if (!onDetectModel) return;
     setDetectingModel(true);
@@ -1780,14 +1789,27 @@ export function ModelDropdown({
             <ChevronDown className="h-3 w-3 text-muted-foreground" />
           </button>
         </PopoverTrigger>
-        <PopoverContent className="w-(--radix-popover-trigger-width) p-1" align="start">
+        <PopoverContent
+          className="w-(--radix-popover-trigger-width) p-1"
+          align="start"
+          onOpenAutoFocus={(event) => {
+            event.preventDefault();
+            if (!isCoarsePointer) modelSearchInputRef.current?.focus();
+          }}
+        >
           <div className="relative mb-1">
             <input
-              className="w-full px-2 py-1.5 pr-6 text-xs bg-transparent outline-none border-b border-border placeholder:text-muted-foreground/50"
+              ref={modelSearchInputRef}
+              className="paperclip-mobile-control-font-size w-full px-2 py-1.5 pr-6 text-xs bg-transparent outline-none border-b border-border placeholder:text-muted-foreground/50"
               placeholder={creatable ? "Search models... (type to create)" : "Search models..."}
               value={modelSearch}
+              readOnly={isCoarsePointer}
+              inputMode={isCoarsePointer ? "none" : undefined}
+              autoComplete="off"
+              autoCorrect="off"
+              autoCapitalize="off"
+              spellCheck={false}
               onChange={(e) => setModelSearch(e.target.value)}
-              autoFocus
             />
             {modelSearch && (
               <button

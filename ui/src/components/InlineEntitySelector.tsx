@@ -1,6 +1,7 @@
 import { forwardRef, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Check } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { useCoarsePointer } from "@/hooks/useCoarsePointer";
 import { orderItemsBySelectedAndRecent } from "../lib/recent-selections";
 import { cn } from "../lib/utils";
 
@@ -58,6 +59,7 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
     const inputRef = useRef<HTMLInputElement>(null);
     const shouldPreventCloseAutoFocusRef = useRef(false);
     const isPointerDownRef = useRef(false);
+    const isCoarsePointer = useCoarsePointer();
 
     const allOptions = useMemo<InlineEntityOption[]>(() => {
       const baseOptions = [{ id: "", label: noneLabel, searchText: noneLabel }, ...options];
@@ -86,6 +88,15 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
       const selectedIndex = filteredOptions.findIndex((option) => option.id === value);
       setHighlightedIndexValue(selectedIndex >= 0 ? selectedIndex : 0);
     }, [filteredOptions, open, setHighlightedIndexValue, value]);
+
+    useEffect(() => {
+      if (!open) return;
+      if (isCoarsePointer) {
+        inputRef.current?.blur();
+        return;
+      }
+      inputRef.current?.focus();
+    }, [isCoarsePointer, open]);
 
     const commitSelection = (index: number, moveNext: boolean) => {
       const option = filteredOptions[index] ?? filteredOptions[0];
@@ -135,7 +146,7 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
           disablePortal={disablePortal}
           onOpenAutoFocus={(event) => {
             event.preventDefault();
-            inputRef.current?.focus();
+            if (!isCoarsePointer) inputRef.current?.focus();
           }}
           onCloseAutoFocus={(event) => {
             if (!shouldPreventCloseAutoFocusRef.current) return;
@@ -145,9 +156,15 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
         >
           <input
             ref={inputRef}
-            className="w-full border-b border-border bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground/60"
+            className="paperclip-mobile-control-font-size w-full border-b border-border bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground/60"
             placeholder={searchPlaceholder}
             value={query}
+            readOnly={isCoarsePointer}
+            inputMode={isCoarsePointer ? "none" : undefined}
+            autoComplete="off"
+            autoCorrect="off"
+            autoCapitalize="off"
+            spellCheck={false}
             onChange={(event) => {
               setQuery(event.target.value);
             }}
