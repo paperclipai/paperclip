@@ -44,7 +44,8 @@ def test_fetch_top_liefert_keys():
         assert m.last_request.json()["dimensions"] == ["query"]
         assert m.last_request.json()["rowLimit"] == 5
 
-def test_fetch_query_metrics_baut_filter_und_parst():
+def test_fetch_query_metrics_ein_call_je_keyword_and_gruppe():
+    # GSC unterstuetzt nur groupType "and" -> ein Call je Keyword, Einzelfilter.
     prop = "https://www.whitestag.film/"
     with requests_mock.Mocker() as m:
         m.post(f"{API_BASE}/sites/{requests.utils.quote(prop, safe='')}/searchAnalytics/query",
@@ -52,14 +53,17 @@ def test_fetch_query_metrics_baut_filter_und_parst():
                                "ctr": 0.05, "position": 8.3}]})
         rows = _client().fetch_query_metrics(prop, ["360 grad film", "vr cottbus"],
                                              "2026-07-09", "2026-07-15")
+        # zwei Keywords -> zwei POST-Calls
+        assert m.call_count == 2
         assert rows[0] == {"key": "360 grad film", "clicks": 2, "impressions": 40,
                            "ctr": 0.05, "position": 8.3}
         body = m.last_request.json()
         assert body["dimensions"] == ["query"]
         fg = body["dimensionFilterGroups"][0]
-        assert fg["groupType"] == "or"
-        assert {f["expression"] for f in fg["filters"]} == {"360 grad film", "vr cottbus"}
-        assert all(f["dimension"] == "query" and f["operator"] == "equals" for f in fg["filters"])
+        assert fg["groupType"] == "and"
+        assert len(fg["filters"]) == 1
+        assert fg["filters"][0] == {"dimension": "query", "operator": "equals",
+                                    "expression": "vr cottbus"}
 
 def test_fetch_query_metrics_leere_liste_kein_call():
     with requests_mock.Mocker() as m:
