@@ -990,6 +990,7 @@ describe("IssueDetail", () => {
       enableExternalObjects: false,
     });
     mockIssuesApi.listAcceptedPlanDecompositions.mockResolvedValue([]);
+    mockIssuesApi.update.mockClear();
     mockIssuesListRender.mockClear();
     mockIssueChatThreadRender.mockClear();
     mockImageGalleryRender.mockClear();
@@ -1034,6 +1035,84 @@ describe("IssueDetail", () => {
         String(call[0]).includes("React has detected a change in the order of Hooks"),
       ),
     ).toBe(false);
+  });
+
+  it("adds an execution decision note to the visible comment thread", async () => {
+    const issue = createIssue({
+      status: "in_review",
+      executionState: {
+        status: "pending",
+        currentStageId: "stage-1",
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "user", userId: "user-1" },
+        returnAssignee: { type: "agent", agentId: "agent-1" },
+        reviewRequest: null,
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+        monitor: null,
+      },
+    });
+    const existingComment = createIssueComment();
+    const decisionComment = createIssueComment({
+      id: "comment-decision",
+      body: "Approved after verification.",
+      createdAt: new Date("2026-04-21T00:00:10.000Z"),
+      updatedAt: new Date("2026-04-21T00:00:10.000Z"),
+    });
+    mockIssuesApi.get.mockResolvedValue(issue);
+    mockIssuesApi.listComments.mockResolvedValue([existingComment]);
+    mockAuthApi.getSession.mockResolvedValue({
+      session: { userId: "user-1" },
+      user: { id: "user-1" },
+    });
+    mockIssuesApi.update.mockResolvedValue({
+      ...issue,
+      status: "done",
+      executionState: null,
+      comment: decisionComment,
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const propertiesPanel = mockOpenPanel.mock.calls.at(-1)?.[0] as {
+      props?: {
+        onSubmitExecutionDecision?: (input: {
+          status: "done" | "in_progress";
+          comment: string;
+        }) => Promise<unknown>;
+      };
+    };
+    expect(propertiesPanel.props?.onSubmitExecutionDecision).toBeTypeOf("function");
+
+    await act(async () => {
+      await propertiesPanel.props?.onSubmitExecutionDecision?.({
+        status: "done",
+        comment: "Approved after verification.",
+      });
+    });
+    await flushReact();
+
+    expect(mockIssuesApi.update).toHaveBeenCalledWith("PAP-1", {
+      status: "done",
+      comment: "Approved after verification.",
+    });
+    const threadProps = mockIssueChatThreadRender.mock.calls.at(-1)?.[0] as {
+      comments?: IssueComment[];
+    };
+    expect(threadProps.comments?.map((comment) => comment.id)).toEqual([
+      "comment-1",
+      "comment-decision",
+    ]);
   });
 
   it("removes an inbox-origin archived issue from cached inbox variants before navigating back", async () => {

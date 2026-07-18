@@ -2174,7 +2174,7 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
       suggestedCommentAssigneeValue(
         starterAssigneeValue ? parseAssigneeValue(starterAssigneeValue) : activeConversationIssue ?? {},
         conversationComments,
-        currentUserId,
+        { currentUserId },
       ),
     [activeConversationIssue, conversationComments, currentUserId, starterAssigneeValue],
   );

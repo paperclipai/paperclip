@@ -4,6 +4,7 @@ import type { Agent, CompanySecret, EnvBinding, Project, RoutineVariable } from 
 import { Code2, FileText, ListPlus, RotateCcw, Table2 } from "lucide-react";
 import { EnvironmentVariablesEditor } from "@/components/environment-variables-editor";
 import { ExecutionParticipantPicker } from "@/components/ExecutionParticipantPicker";
+import { ExecutionPolicyGate } from "@/components/ExecutionPolicyGate";
 import { FoldCurtain } from "@/components/FoldCurtain";
 import { InlineEditor } from "@/components/InlineEditor";
 import { InlineEntitySelector, type InlineEntityOption } from "@/components/InlineEntitySelector";
@@ -817,4 +818,37 @@ function FoldCurtainStory() {
 export const FoldCurtainShowcase: Story = {
   name: "Fold Curtain",
   render: () => <FoldCurtainStory />,
+};
+
+function ExecutionPolicyDecisionStory() {
+  const [lastDecision, setLastDecision] = useState<string | null>(null);
+
+  return (
+    <StoryShell>
+      <Section
+        eyebrow="Execution policy"
+        title="Active reviewer decision"
+        description="The current human reviewer records a required note and resolves the stage without leaving task properties."
+      >
+        <div className="max-w-sm">
+          <ExecutionPolicyGate
+            stageLabel="Review"
+            onSubmitDecision={async ({ status, comment }) => {
+              setLastDecision(`${status}: ${comment}`);
+            }}
+          />
+          {lastDecision ? (
+            <div className="mt-3 text-xs text-muted-foreground" role="status">
+              {lastDecision}
+            </div>
+          ) : null}
+        </div>
+      </Section>
+    </StoryShell>
+  );
+}
+
+export const ExecutionPolicyDecision: Story = {
+  name: "Execution Policy Decision",
+  render: () => <ExecutionPolicyDecisionStory />,
 };

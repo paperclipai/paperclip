@@ -28,9 +28,14 @@ export function assigneeValueFromSelection(selection: Partial<AssigneeSelection>
 export function suggestedCommentAssigneeValue(
   issue: CommentAssigneeSuggestionInput,
   comments: CommentAssigneeSuggestionComment[] | null | undefined,
-  currentUserId: string | null | undefined,
-  currentAgentId?: string | null | undefined,
+  context: {
+    currentUserId?: string | null;
+    currentAgentId?: string | null;
+    preserveCurrentAssignee?: boolean;
+  },
 ): string {
+  if (context.preserveCurrentAssignee) return assigneeValueFromSelection(issue);
+  const { currentUserId, currentAgentId } = context;
   if (comments && comments.length > 0 && (currentUserId || currentAgentId)) {
     for (let i = comments.length - 1; i >= 0; i--) {
       const comment = comments[i];
