@@ -288,7 +288,7 @@ export function agentMcpToolService(
 
     // Write durable audit row for every allow/deny — fail-closed on audit failure.
     await writeAuditLog({
-      companyId: runContext.companyId,
+      companyId: runContext.companyId ?? selectedBinding.server.companyId,
       mcpServerId: selectedBinding.server.id,
       serverSlug: selectedBinding.server.slug,
       eventType: allowed ? "clearance.allowed" : "clearance.denied",
