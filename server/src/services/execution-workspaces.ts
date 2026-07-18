@@ -370,7 +370,8 @@ async function resolvePathForWorktreeComparison(value: string): Promise<string> 
 function isForwardBranchReconcileInspectionSafe(inspection: ExecutionWorkspaceBranchReconcileInspection) {
   if (inspection.ancestryVerdict === "ancestor") return true;
   return Boolean(
-    !inspection.fromSha &&
+    inspection.cleanliness === "clean" &&
+      !inspection.fromSha &&
       inspection.toSha &&
       inspection.registeredPathFound &&
       inspection.registeredBranchMatchesHead,

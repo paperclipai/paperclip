@@ -27,6 +27,7 @@ import {
   buildWorkspaceRuntimeDesiredStatePatch,
   cleanupExecutionWorkspaceArtifacts,
   ensurePersistedExecutionWorkspaceAvailable,
+  ensureGitWorktreeBranchCoherent,
   ensureServerWorkspaceLinksCurrent,
   ensureRuntimeServicesForRun,
   listConfiguredRuntimeServiceEntries,
@@ -2723,6 +2724,56 @@ describe("realizeExecutionWorkspace", () => {
           }),
           safeRepair: expect.objectContaining({
             reason: "forward reconciliation adoption requires database access to audit after workspace realization",
+          }),
+        }),
+      },
+    });
+  }, 15_000);
+
+  it("rejects deleted recorded-branch adoption when the registered worktree branch does not match HEAD", async () => {
+    const repoRoot = await createTempRepo();
+    const recordedBranch = "internal-review-provenance-mismatch";
+    const registeredBranch = "fix/registered-worktree-branch";
+    const actualBranch = "fix/current-worktree-head";
+    const worktreePath = path.join(repoRoot, ".paperclip", "worktrees", recordedBranch);
+    await fs.mkdir(path.dirname(worktreePath), { recursive: true });
+    await runGit(repoRoot, ["branch", recordedBranch]);
+    await runGit(repoRoot, ["branch", actualBranch, recordedBranch]);
+    await runGit(repoRoot, ["worktree", "add", "-b", registeredBranch, worktreePath, recordedBranch]);
+    await runGit(repoRoot, ["branch", "-D", recordedBranch]);
+
+    await expect(ensureGitWorktreeBranchCoherent({
+      repoRoot,
+      worktreePath,
+      expectedBranchName: recordedBranch,
+      actualBranchName: actualBranch,
+      sourceIssue: {
+        id: "issue-deleted-recorded-registration-mismatch",
+        identifier: "PAP-PUBLIC-MISMATCH",
+        title: "Reject mismatched worktree registration",
+      },
+      executionWorkspaceId: "execution-workspace-deleted-recorded-registration-mismatch",
+      enableWorkspaceBranchReconcileForward: true,
+    })).rejects.toMatchObject({
+      code: "workspace_validation_failed",
+      resultJson: {
+        workspaceValidation: expect.objectContaining({
+          reason: "git_worktree_branch_incoherence",
+          expectedBranch: recordedBranch,
+          actualBranch,
+          cleanliness: "clean",
+          provenance: expect.objectContaining({
+            expectedBranchExists: false,
+            actualBranchExists: true,
+            registeredPathFound: true,
+            registeredBranchRef: `refs/heads/${registeredBranch}`,
+            registeredBranchMatchesHead: false,
+          }),
+          safeRepair: expect.objectContaining({
+            eligible: false,
+            attempted: false,
+            succeeded: false,
+            reason: "registered worktree branch does not match HEAD",
           }),
         }),
       },
