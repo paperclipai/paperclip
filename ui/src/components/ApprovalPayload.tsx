@@ -1,4 +1,5 @@
 import { UserPlus, Lightbulb, ShieldAlert, ShieldCheck } from "lucide-react";
+import { MarkdownBody } from "./MarkdownBody";
 import { formatCents } from "../lib/utils";
 
 export const typeLabel: Record<string, string> = {
@@ -161,11 +162,19 @@ export function BoardApprovalPayload({
   );
 }
 
+/**
+ * Risks render inside a custom bullet row, so a leading markdown list marker
+ * would nest a second bullet inside the first. Strip one leading marker.
+ */
+function stripLeadingListMarker(value: string): string {
+  return value.replace(/^[-*•]\s+/, "");
+}
+
 function BoardApprovalPayloadContent({ payload }: { payload: Record<string, unknown> }) {
   const risks = Array.isArray(payload.risks)
     ? payload.risks
         .filter((value): value is string => typeof value === "string")
-        .map((value) => value.trim())
+        .map((value) => stripLeadingListMarker(value.trim()))
         .filter(Boolean)
     : [];
   const title = firstNonEmptyString(payload.title);
@@ -185,7 +194,7 @@ function BoardApprovalPayloadContent({ payload }: { payload: Record<string, unkn
       {summary && (
         <div className="space-y-1">
           <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">Summary</p>
-          <p className="leading-6 text-foreground/90">{summary}</p>
+          <MarkdownBody className="leading-6 text-foreground/90">{summary}</MarkdownBody>
         </div>
       )}
       {recommendedAction && (
@@ -193,13 +202,13 @@ function BoardApprovalPayloadContent({ payload }: { payload: Record<string, unkn
           <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-amber-700 dark:text-amber-300">
             Recommended action
           </p>
-          <p className="mt-1 leading-6 text-foreground">{recommendedAction}</p>
+          <MarkdownBody className="mt-1 leading-6 text-foreground">{recommendedAction}</MarkdownBody>
         </div>
       )}
       {nextActionOnApproval && (
         <div className="rounded-lg border border-border/60 bg-background/60 px-3.5 py-3">
           <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">On approval</p>
-          <p className="mt-1 leading-6 text-foreground">{nextActionOnApproval}</p>
+          <MarkdownBody className="mt-1 leading-6 text-foreground">{nextActionOnApproval}</MarkdownBody>
         </div>
       )}
       {risks.length > 0 && (
@@ -208,8 +217,8 @@ function BoardApprovalPayloadContent({ payload }: { payload: Record<string, unkn
           <ul className="space-y-1 text-sm text-muted-foreground">
             {risks.map((risk) => (
               <li key={risk} className="flex items-start gap-2">
-                <span className="mt-2 h-1.5 w-1.5 rounded-full bg-muted-foreground/60" />
-                <span className="leading-6">{risk}</span>
+                <span className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-muted-foreground/60" />
+                <MarkdownBody className="leading-6">{risk}</MarkdownBody>
               </li>
             ))}
           </ul>
