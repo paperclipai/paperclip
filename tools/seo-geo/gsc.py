@@ -54,6 +54,25 @@ class GSCClient:
                         "position": float(row.get("position", 0.0))})
         return out
 
+    def fetch_query_metrics(self, property_url, queries, start, end):
+        if not queries:
+            return []
+        body = {"startDate": start, "endDate": end, "dimensions": ["query"],
+                "dimensionFilterGroups": [{
+                    "groupType": "or",
+                    "filters": [{"dimension": "query", "operator": "equals", "expression": q}
+                                for q in queries]}],
+                "rowLimit": max(len(queries), 25)}
+        data = self._query(property_url, body)
+        out = []
+        for row in data.get("rows") or []:
+            out.append({"key": row["keys"][0],
+                        "clicks": int(row.get("clicks", 0)),
+                        "impressions": int(row.get("impressions", 0)),
+                        "ctr": float(row.get("ctr", 0.0)),
+                        "position": float(row.get("position", 0.0))})
+        return out
+
 
 def build_authorized_session(key_file, scopes=(GSC_SCOPE,)):
     """Produktions-Session mit Service-Account-Auth. Nicht unit-getestet (google-Plumbing)."""
