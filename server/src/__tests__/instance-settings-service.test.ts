@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import type { InstanceExperimentalSettings } from "@paperclipai/shared";
+import { COMPANY_SETTINGS_SURFACES, type InstanceExperimentalSettings } from "@paperclipai/shared";
 import {
   applyExperimentalSettingsPatch,
   normalizeExperimentalSettings,
+  normalizeVisibilitySettings,
   resolveWorktreeRunExecutionActivationState,
 } from "../services/instance-settings.js";
 
@@ -353,4 +354,35 @@ describe("instance settings service", () => {
     expect(getExperimental).not.toHaveBeenCalled();
   });
 
+  it("defaults visibility to all company surfaces for empty/legacy rows", () => {
+    expect(normalizeVisibilitySettings(undefined)).toEqual({
+      companySurfaces: [...COMPANY_SETTINGS_SURFACES],
+    });
+    expect(normalizeVisibilitySettings({})).toEqual({
+      companySurfaces: [...COMPANY_SETTINGS_SURFACES],
+    });
+  });
+
+  it("canonicalizes stored visibility order and drops duplicates", () => {
+    expect(
+      normalizeVisibilitySettings({
+        companySurfaces: ["company.secrets", "company.general", "company.secrets"],
+      }),
+    ).toEqual({ companySurfaces: ["company.general", "company.secrets"] });
+  });
+
+  it("keeps an explicit empty visibility list", () => {
+    expect(normalizeVisibilitySettings({ companySurfaces: [] })).toEqual({
+      companySurfaces: [],
+    });
+  });
+
+  it("falls back to the exposed-everything default for corrupt visibility rows", () => {
+    expect(normalizeVisibilitySettings({ companySurfaces: ["nonsense"] })).toEqual({
+      companySurfaces: [...COMPANY_SETTINGS_SURFACES],
+    });
+    expect(normalizeVisibilitySettings("garbage")).toEqual({
+      companySurfaces: [...COMPANY_SETTINGS_SURFACES],
+    });
+  });
 });
