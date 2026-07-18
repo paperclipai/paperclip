@@ -282,6 +282,8 @@
   html {
     height: 100%;
     -webkit-tap-highlight-color: color-mix(in oklab, var(--foreground) 20%, transparent);
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
     @apply font-sans;
   }
   body {
@@ -313,6 +315,19 @@
 }
 
 @media (pointer: coarse) {
+  html {
+    overflow-x: hidden;
+    overscroll-behavior-x: none;
+  }
+
+  body {
+    max-width: 100vw;
+  }
+
+  .paperclip-mobile-control-font-size {
+    font-size: max(var(--paperclip-mobile-control-font-size, 16px), 1em);
+  }
+
   button,
   [role="button"],
   input,
