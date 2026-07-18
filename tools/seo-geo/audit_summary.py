@@ -15,8 +15,11 @@ import argparse
 import datetime
 import json
 import os
+import re
 import sys
 from collections import Counter
+
+_SNAP_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})\.json$")
 
 
 def _load_sites(path: str) -> tuple[str, list[dict]]:
@@ -35,6 +38,7 @@ def _count(report: dict) -> dict:
         "medium": by_sev.get("medium", 0),
         "low": by_sev.get("low", 0),
         "by_field": dict(by_field),
+        "findings": findings,
     }
 
 
@@ -63,19 +67,24 @@ def collect(sites_path: str) -> dict:
     return out
 
 
-def _prev_snapshot(hist_dir: str, today: str) -> dict | None:
+def _dated_snapshots(hist_dir: str) -> list[tuple[str, dict]]:
     if not os.path.isdir(hist_dir):
-        return None
-    files = sorted(
-        f for f in os.listdir(hist_dir)
-        if f.endswith(".json") and f[:-5] < today
-    )
-    if not files:
-        return None
-    try:
-        return json.loads(open(os.path.join(hist_dir, files[-1])).read())
-    except Exception:  # noqa: BLE001
-        return None
+        return []
+    out = []
+    for fn in sorted(os.listdir(hist_dir)):
+        m = _SNAP_RE.match(fn)
+        if not m:
+            continue
+        try:
+            out.append((m.group(1), json.loads(open(os.path.join(hist_dir, fn)).read())))
+        except Exception:  # noqa: BLE001 — defekte Datei überspringen
+            continue
+    return out
+
+
+def _prev_snapshot(hist_dir: str, today: str) -> dict | None:
+    older = [d for d in _dated_snapshots(hist_dir) if d[0] < today]
+    return older[-1][1] if older else None
 
 
 def _delta(cur: int, prev: dict | None, name: str) -> str:
