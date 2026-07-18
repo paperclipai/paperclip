@@ -1334,6 +1334,33 @@ describeEmbeddedPostgres("authorization service", () => {
     });
   });
 
+  it("does not grant ProjectManager peer comments through the grooming carve-out", async () => {
+    const company = await createCompany(db, "PmGroomingComment");
+    const ctoAgent = await createAgent(db, company.id, { role: "cto" });
+    const pmAgent = await createAgent(db, company.id, { role: "ProjectManager" });
+    const issue = await createIssue(db, company.id, {
+      title: "PM grooming comment target",
+      assigneeAgentId: ctoAgent.id,
+    });
+    const actor = { type: "agent" as const, agentId: pmAgent.id, companyId: company.id, source: "agent_key" as const };
+    const resource = {
+      type: "issue" as const,
+      companyId: company.id,
+      issueId: issue.id,
+      assigneeAgentId: ctoAgent.id,
+      status: issue.status,
+    };
+
+    await expect(authorizationService(db).decide({
+      actor,
+      action: "issue:comment",
+      resource,
+    })).resolves.toMatchObject({
+      allowed: false,
+      reason: "deny_missing_grant",
+    });
+  });
+
   it("keeps QA and ProjectManager same-company carve-outs inside the company boundary", async () => {
     const company = await createCompany(db, "RoleBoundary");
     const otherCompany = await createCompany(db, "RoleBoundaryOther");
