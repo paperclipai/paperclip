@@ -136,7 +136,10 @@ import { issueService } from "./issues.js";
 import { createToolGatewayService } from "./tool-gateway.js";
 import { toolAccessService } from "./tool-access.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
-import { ISSUE_BLOCKERS_RESOLVED_WAKE_REASON } from "./issue-dependency-wakeups.js";
+import {
+  ISSUE_BLOCKER_STRANDED_WAKE_REASON,
+  ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
+} from "./issue-dependency-wakeups.js";
 import {
   buildIssueMonitorClearedPatch,
   buildIssueMonitorTriggeredPatch,
@@ -525,6 +528,7 @@ function mergeAdapterRecoveryMetadata(input: {
 const RUNNING_ISSUE_WAKE_REASONS_REQUIRING_FOLLOWUP = new Set([
   "approval_approved",
   ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
+  ISSUE_BLOCKER_STRANDED_WAKE_REASON,
 ]);
 const ISSUE_RESPONSIBLE_USER_WAKE_REASONS = new Set([
   "issue_assigned",
@@ -533,6 +537,7 @@ const ISSUE_RESPONSIBLE_USER_WAKE_REASONS = new Set([
   "issue_comment_mentioned",
   "issue_reopened_via_comment",
   "issue_blockers_resolved",
+  "issue_blocker_stranded",
   "issue_children_completed",
   "issue_status_changed",
   "issue_tree_restored",
