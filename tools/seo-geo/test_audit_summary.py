@@ -55,3 +55,30 @@ def test_diff_section_neues_high_alarmiert(tmp_path):
     md, alert = diff_section(cur, [], str(tmp_path), "2026-07-18")
     assert alert is True
     assert "a" in md
+
+
+def test_diff_section_altformat_ohne_findings_kein_falscher_alarm(tmp_path):
+    # Vorwochen-Snapshot vor Task 5b: nur "total", keine "findings"-Liste.
+    (tmp_path / "2026-07-11.json").write_text('{"a": {"total": 1}}')
+    cur = {"a": {"total": 1, "high": 1, "findings": [
+        {"url": "https://a.de/x", "field": "meta_description", "severity": "high", "issue": "fehlt"}]}}
+    md, alert = diff_section(cur, [], str(tmp_path), "2026-07-18")
+    # total gleich geblieben (1 == 1) -> kein Netto-Anstieg, kein new-high-Alarm,
+    # kein "+ neu"-Spam, weil die Finding-Ebene wie Erstlauf behandelt wird.
+    assert alert is False
+    assert "neues high-Finding" not in md
+    assert "+ neu" not in md
+
+
+def test_diff_section_altformat_ohne_findings_aber_netto_anstieg(tmp_path):
+    # Vorwochen-Snapshot ohne "findings", aber total ist gestiegen -> Netto-Anstieg
+    # bleibt weiterhin als Alarmkanal erhalten, auch ohne Finding-Ebenen-Diff.
+    (tmp_path / "2026-07-11.json").write_text('{"a": {"total": 1}}')
+    cur = {"a": {"total": 2, "high": 1, "findings": [
+        {"url": "https://a.de/x", "field": "meta_description", "severity": "high", "issue": "fehlt"},
+        {"url": "https://a.de/y", "field": "h1", "severity": "medium", "issue": "fehlt"}]}}
+    md, alert = diff_section(cur, [], str(tmp_path), "2026-07-18")
+    assert alert is True
+    assert "gestiegen" in md
+    assert "neues high-Finding" not in md
+    assert "+ neu" not in md

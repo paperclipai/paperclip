@@ -173,9 +173,16 @@ def diff_section(cur_counts: dict, gsc_blocks: list[dict], hist_dir: str, today_
                 continue
             cur_f = cur.get("findings", [])
             prev_entry = prev.get(name, {}) if isinstance(prev, dict) else {}
-            prev_f = prev_entry.get("findings", []) if isinstance(prev_entry, dict) else []
-            d = audit_diff.diff_findings(prev_f, cur_f)
-            regs = audit_diff.find_regressions(d["new"], older_lists_by_site.get(name, []))
+            prev_has_findings = isinstance(prev_entry, dict) and "findings" in prev_entry
+            if prev_has_findings:
+                d = audit_diff.diff_findings(prev_entry["findings"], cur_f)
+                regs = audit_diff.find_regressions(d["new"], older_lists_by_site.get(name, []))
+            else:
+                # Vorwochen-Snapshot ohne "findings" (Alt-Format, vor Task 5b):
+                # auf Finding-Ebene wie Erstlauf behandeln — kein falscher Voll-Alarm.
+                # Netto-Anstieg über total bleibt unten weiterhin möglich.
+                d = {"new": [], "resolved": []}
+                regs = []
             prev_total = prev_entry.get("total") if isinstance(prev_entry, dict) else None
             alerts = audit_diff.site_alerts(d, regs, prev_total, cur.get("total", 0),
                                             gsc_amp.get(name, "\U0001F7E2"))

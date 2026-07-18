@@ -52,3 +52,13 @@ def test_render_markdown_enthaelt_sitename_und_marker():
                            "resolved": [_f("b", "meta_description")],
                            "regressions": [], "alerts": ["1 neues high-Finding"]}])
     assert "whitestag.ai" in md and "⚠️" in md
+
+
+def test_render_markdown_kappt_lange_findingliste():
+    viele_neu = [_f(f"https://a.de/p{i}", "h1") for i in range(20)]
+    md = render_markdown([{"name": "whitestag.ai", "new": viele_neu,
+                           "resolved": [], "regressions": [], "alerts": []}])
+    assert "…und 5 weitere" in md
+    assert "https://a.de/p15" not in md  # ab Index 15 nicht mehr einzeln aufgelistet
+    assert "https://a.de/p0" in md
+    assert "+ neu (20)" in md  # Label zeigt weiterhin die volle Anzahl

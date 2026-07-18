@@ -37,6 +37,8 @@ cat "$BODY"
 # Mail via Sekretaerin-Mailhub-Skript (falls vorhanden)
 SEND="$HOME/.paperclip/instances/default/companies/9cebf3cf-efe8-4597-a400-f06488900a87/agents/e24b8d9d-143e-4141-b413-4361aa618771/bin/send-walter-report.sh"
 DATE="$(date '+%F')"
+# Pfad geht vom Default-report_root ("~/.paperclip/seo-geo") aus (siehe sites.json).
+# Wird report_root dort je auf einen anderen Wert gesetzt, muss dieser Pfad mitgezogen werden.
 ALERT_FILE="$HOME/.paperclip/seo-geo/_audit-history/${DATE}-alert.txt"
 SUBJECT="SEO/GEO Wochen-Audit ${DATE}"
 if [[ -f "$ALERT_FILE" ]] && [[ "$(cat "$ALERT_FILE")" == "ALERT" ]]; then

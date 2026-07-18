@@ -38,8 +38,15 @@ def any_alert(per_site):
     return any(s.get("alerts") for s in per_site)
 
 
+_FMT_CAP = 15
+
+
 def _fmt(findings):
-    return ", ".join(f"{f.get('url')} [{f.get('field')}]" for f in findings)
+    shown = findings[:_FMT_CAP]
+    rest = ", ".join(f"{f.get('url')} [{f.get('field')}]" for f in shown)
+    if len(findings) > _FMT_CAP:
+        rest += f" …und {len(findings) - _FMT_CAP} weitere"
+    return rest
 
 
 def render_markdown(per_site):
