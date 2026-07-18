@@ -525,7 +525,7 @@ describe("instance settings routes", () => {
     });
   });
 
-  it("allows non-admin board users with company access to read but not update experimental settings", async () => {
+  it("rejects non-admin board users from reading or updating experimental settings", async () => {
     const app = await createApp({
       type: "board",
       userId: "user-1",
@@ -534,13 +534,13 @@ describe("instance settings routes", () => {
       companyIds: ["company-1"],
     });
 
-    await request(app).get("/api/instance/settings/experimental").expect(200);
+    await request(app).get("/api/instance/settings/experimental").expect(403);
+    expect(mockInstanceSettingsService.getExperimental).not.toHaveBeenCalled();
 
     await request(app)
       .patch("/api/instance/settings/experimental")
       .send({ enableTaskWatchdogs: true })
       .expect(403);
-
     expect(mockInstanceSettingsService.updateExperimental).not.toHaveBeenCalled();
   });
 
@@ -577,7 +577,7 @@ describe("instance settings routes", () => {
     expect(mockLogActivity).toHaveBeenCalledTimes(2);
   });
 
-  it("allows non-admin board users to read general settings", async () => {
+  it("rejects non-admin board users from reading general settings", async () => {
     const app = await createApp({
       type: "board",
       userId: "user-1",
@@ -587,13 +587,8 @@ describe("instance settings routes", () => {
     });
 
     const res = await request(app).get("/api/instance/settings/general");
-
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({
-      censorUsernameInLogs: false,
-      keyboardShortcuts: false,
-      feedbackDataSharingPreference: "prompt",
-    });
+    expect(res.status).toBe(403);
+    expect(mockInstanceSettingsService.getGeneral).not.toHaveBeenCalled();
   });
 
   it("rejects signed-in users without company access from reading general settings", async () => {
@@ -720,5 +715,32 @@ describe("instance settings routes", () => {
       .send({ companySurfaces: ["instance.general"] });
     expect(res.status).toBe(400);
     expect(mockInstanceSettingsService.updateVisibility).not.toHaveBeenCalled();
+  });
+
+  it("rejects non-admin board users from reading the full instance settings", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "user-1",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: ["company-1"],
+    });
+
+    await request(app).get("/api/instance/settings").expect(403);
+    expect(mockInstanceSettingsService.get).not.toHaveBeenCalled();
+  });
+
+  it("local_trusted regression: the implicit local actor still reads everything", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "local-board",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+
+    await request(app).get("/api/instance/settings").expect(200);
+    await request(app).get("/api/instance/settings/general").expect(200);
+    await request(app).get("/api/instance/settings/experimental").expect(200);
+    await request(app).get("/api/instance/settings/visibility").expect(200);
   });
 });

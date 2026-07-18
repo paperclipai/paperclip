@@ -12,7 +12,7 @@ import { validate } from "../middleware/validate.js";
 import { heartbeatService, instanceSettingsService, logActivity } from "../services/index.js";
 import { environmentService } from "../services/environments.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
-import { assertBoardOrgAccess, getActorInfo } from "./authz.js";
+import { getActorInfo } from "./authz.js";
 
 function assertCanManageInstanceSettings(req: Request) {
   if (req.actor.type !== "board") {
@@ -31,7 +31,7 @@ export function instanceSettingsRoutes(db: Db) {
   const heartbeat = heartbeatService(db);
 
   router.get("/instance/settings", async (req, res) => {
-    assertBoardOrgAccess(req);
+    assertCanManageInstanceSettings(req);
     res.json(await svc.get());
   });
 
@@ -74,9 +74,9 @@ export function instanceSettingsRoutes(db: Db) {
   );
 
   router.get("/instance/settings/general", async (req, res) => {
-    // General settings (e.g. keyboardShortcuts) are readable by any
-    // authenticated org member or instance admin. Only PATCH requires instance-admin.
-    assertBoardOrgAccess(req);
+    // Instance-admin-only read (PR-1). Non-admin UI consumes the public
+    // subset via GET /cli-auth/me capabilities.features instead.
+    assertCanManageInstanceSettings(req);
     res.json(await svc.getGeneral());
   });
 
@@ -112,10 +112,9 @@ export function instanceSettingsRoutes(db: Db) {
   );
 
   router.get("/instance/settings/experimental", async (req, res) => {
-    // Experimental settings are readable by any authenticated org member
-    // or instance admin. Updating them remains instance-admin only because
-    // this payload includes instance-wide operational controls.
-    assertBoardOrgAccess(req);
+    // Instance-admin-only read (PR-1). Non-admin UI consumes the allowlisted
+    // flag subset via GET /cli-auth/me capabilities.features instead.
+    assertCanManageInstanceSettings(req);
     res.json(await svc.getExperimental());
   });
 
