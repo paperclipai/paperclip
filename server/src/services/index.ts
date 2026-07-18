@@ -43,6 +43,7 @@ export { issueTreeControlService } from "./issue-tree-control.js";
 export { issueApprovalService } from "./issue-approvals.js";
 export { issueReferenceService } from "./issue-references.js";
 export { issueRecoveryActionService } from "./issue-recovery-actions.js";
+export { issueDeliveryReceiptService, type DeliveryReceiptInput } from "./issue-delivery-receipts.js";
 export { taskWatchdogService } from "./task-watchdogs.js";
 export {
   issueIsInTaskWatchdogSubtree,

@@ -13,6 +13,7 @@ import {
   environments,
   heartbeatRuns,
   issueComments,
+  issueDeliveryReceipts,
   issueRecoveryActions,
   issueRelations,
   issues,
@@ -114,6 +115,188 @@ describe("issueRecoveryActionService", () => {
     expect(result).toMatchObject({ id: "new-action", status: "active" });
     expect(fakeDb.update).toHaveBeenCalledTimes(1);
     expect(fakeDb.insert).toHaveBeenCalledTimes(1);
+  });
+});
+
+describeEmbeddedPostgres("delivery receipt transitions", () => {
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  let db: ReturnType<typeof createDb>;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-delivery-receipts-");
+    db = createDb(tempDb.connectionString);
+  }, 30_000);
+
+  afterEach(async () => {
+    await db.delete(issueRecoveryActions);
+    await db.delete(issueDeliveryReceipts);
+    await db.delete(issues);
+    await db.delete(agents);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seedReceiptIssue(input: { parentIssueId?: string | null; companyId?: string; agentId?: string } = {}) {
+    const companyId = input.companyId ?? randomUUID();
+    const agentId = input.agentId ?? randomUUID();
+    const issueId = randomUUID();
+    const prefix = `DR${companyId.replaceAll("-", "").slice(0, 6).toUpperCase()}`;
+    if (!input.companyId) {
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Delivery Receipt Co",
+        issuePrefix: prefix,
+        requireBoardApprovalForNewAgents: false,
+      });
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: "Delivery worker",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      });
+    }
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Deliver a requester-facing result",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      parentId: input.parentIssueId ?? null,
+      issueNumber: input.parentIssueId ? 2 : 1,
+      identifier: `${prefix}-${input.parentIssueId ? 2 : 1}`,
+    });
+    return { companyId, agentId, issueId, prefix };
+  }
+
+  function receipt(overrides: Record<string, unknown> = {}) {
+    return {
+      primaryWorkProductKey: "artifact:delivery-summary",
+      revision: "r1",
+      format: "inline_text",
+      summary: "The requested delivery summary is ready.",
+      inlineText: "Final requester-visible delivery text.",
+      ...overrides,
+    };
+  }
+
+  function app() {
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      (req as any).actor = { type: "board", source: "local_implicit" };
+      next();
+    });
+    app.use("/api", issueRoutes(db, {} as any));
+    app.use(errorHandler);
+    return app;
+  }
+
+  it("permits terminal completion with a small inline receipt", async () => {
+    const fixture = await seedReceiptIssue();
+    const response = await request(app()).patch(`/api/issues/${fixture.issueId}`).send({
+      status: "done",
+      deliveryReceipt: receipt(),
+    });
+
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    const [stored] = await db.select().from(issueDeliveryReceipts);
+    expect(stored).toMatchObject({
+      sourceIssueId: fixture.issueId,
+      producerIssueId: fixture.issueId,
+      inlineText: "Final requester-visible delivery text.",
+    });
+  });
+
+  it("rejects a missing receipt and opens only one bounded recovery action", async () => {
+    const fixture = await seedReceiptIssue();
+    const first = await request(app()).patch(`/api/issues/${fixture.issueId}`).send({ status: "done" });
+    const second = await request(app()).patch(`/api/issues/${fixture.issueId}`).send({ status: "done" });
+
+    expect(first.status).toBe(422);
+    expect(first.body).toMatchObject({ code: "missing_delivery_receipt" });
+    expect(second.status).toBe(422);
+    const actions = await db.select().from(issueRecoveryActions);
+    expect(actions).toHaveLength(1);
+    expect(actions[0]).toMatchObject({
+      sourceIssueId: fixture.issueId,
+      cause: "missing_delivery_receipt",
+      maxAttempts: 1,
+      attemptCount: 1,
+    });
+  });
+
+  it("projects a child receipt only to its direct requester-facing source", async () => {
+    const source = await seedReceiptIssue();
+    const child = await seedReceiptIssue({ parentIssueId: source.issueId, companyId: source.companyId, agentId: source.agentId });
+    const [unrelated] = await db.insert(issues).values({
+      id: randomUUID(),
+      companyId: source.companyId,
+      title: "Unrelated source",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: source.agentId,
+      issueNumber: 3,
+      identifier: `${source.prefix}-3`,
+    }).returning({ id: issues.id });
+
+    const denied = await request(app()).patch(`/api/issues/${child.issueId}`).send({
+      status: "done",
+      deliveryReceipt: receipt({ sourceIssueId: unrelated!.id, revision: "r2" }),
+    });
+    const projected = await request(app()).patch(`/api/issues/${child.issueId}`).send({
+      status: "done",
+      deliveryReceipt: receipt({ sourceIssueId: source.issueId }),
+    });
+
+    expect(denied.status).toBe(422);
+    expect(projected.status, JSON.stringify(projected.body)).toBe(200);
+    const stored = await db.select().from(issueDeliveryReceipts);
+    expect(stored).toHaveLength(1);
+    expect(stored[0]).toMatchObject({ sourceIssueId: source.issueId, producerIssueId: child.issueId });
+  });
+
+  it("accepts explicit document-only delivery only with an inspection surface", async () => {
+    const fixture = await seedReceiptIssue();
+    const response = await request(app()).patch(`/api/issues/${fixture.issueId}`).send({
+      status: "done",
+      deliveryReceipt: receipt({
+        primaryWorkProductKey: "document:delivery-brief",
+        format: "document",
+        documentOnly: true,
+        inlineText: undefined,
+        inspectionUrl: "https://example.test/delivery-brief-r1",
+      }),
+    });
+
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    const [stored] = await db.select().from(issueDeliveryReceipts);
+    expect(stored).toMatchObject({ documentOnly: true, inspectionUrl: "https://example.test/delivery-brief-r1" });
+  });
+
+  it("reuses the same receipt identity when a terminal transition is retried", async () => {
+    const fixture = await seedReceiptIssue();
+    const first = await request(app()).patch(`/api/issues/${fixture.issueId}`).send({
+      status: "done",
+      deliveryReceipt: receipt(),
+    });
+    await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, fixture.issueId));
+    const second = await request(app()).patch(`/api/issues/${fixture.issueId}`).send({
+      status: "done",
+      deliveryReceipt: receipt(),
+    });
+
+    expect(first.status, JSON.stringify(first.body)).toBe(200);
+    expect(second.status, JSON.stringify(second.body)).toBe(200);
+    expect(await db.select().from(issueDeliveryReceipts)).toHaveLength(1);
   });
 });
 

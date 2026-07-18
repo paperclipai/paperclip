@@ -109,6 +109,7 @@ import {
   heartbeatService,
   issueApprovalService,
   issueRecoveryActionService,
+  issueDeliveryReceiptService,
   issueThreadInteractionService,
   inboxAgentPolicyService,
   ISSUE_LIST_DEFAULT_LIMIT,
@@ -2600,6 +2601,7 @@ export function issueRoutes(
   const goalsSvc = goalService(db);
   const issueApprovalsSvc = issueApprovalService(db);
   const recoveryActionsSvc = issueRecoveryActionService(db);
+  const deliveryReceiptsSvc = issueDeliveryReceiptService(db);
   const executionWorkspacesSvc = executionWorkspaceServiceDirect(db);
   const workProductsSvc = workProductService(db);
   const documentsSvc = documentService(db);
@@ -7683,6 +7685,7 @@ export function issueRoutes(
       resume: resumeRequested,
       interrupt: interruptRequested,
       hiddenAt: hiddenAtRaw,
+      deliveryReceipt,
       ...updateFields
     } = req.body;
     const shouldCancelActiveRunForCancelledStatus =
@@ -7986,6 +7989,42 @@ export function issueRoutes(
       actorType: req.actor.type,
     });
 
+    const terminalOrReviewRequested =
+      (updateFields.status === "done" || updateFields.status === "in_review") &&
+      updateFields.status !== existing.status;
+    let deliveryReceiptSourceIssueId: string | null = null;
+    if (terminalOrReviewRequested) {
+      const requestedSourceIssueId = deliveryReceipt?.sourceIssueId ?? existing.id;
+      if (requestedSourceIssueId !== existing.id && requestedSourceIssueId !== existing.parentId) {
+        res.status(422).json({ error: "Delivery receipts may target only the producing issue or its direct parent" });
+        return;
+      }
+      const sourceIssue = requestedSourceIssueId === existing.id
+        ? existing
+        : await getAccessibleResource(req, res, svc.getById(requestedSourceIssueId), "Receipt source issue not found");
+      if (!sourceIssue) return;
+      if (sourceIssue.companyId !== existing.companyId) {
+        res.status(404).json({ error: "Receipt source issue not found" });
+        return;
+      }
+      deliveryReceiptSourceIssueId = sourceIssue.id;
+      const hasValidReceipt = deliveryReceipt
+        ? true
+        : await deliveryReceiptsSvc.hasReceipt(existing.companyId, sourceIssue.id);
+      if (!hasValidReceipt) {
+        await deliveryReceiptsSvc.openMissingReceiptRecovery({
+          companyId: existing.companyId,
+          sourceIssueId: sourceIssue.id,
+          ownerAgentId: existing.assigneeAgentId,
+        });
+        res.status(422).json({
+          error: "Requester-visible delivery receipt required before terminal or review transition",
+          code: "missing_delivery_receipt",
+        });
+        return;
+      }
+    }
+
     const nextAssigneeAgentId =
       updateFields.assigneeAgentId === undefined ? existing.assigneeAgentId : (updateFields.assigneeAgentId as string | null);
     const nextAssigneeUserId =
@@ -8092,10 +8131,21 @@ export function issueRoutes(
           return updated;
         });
       } else {
-        issue = await svc.update(id, {
-          ...updateFields,
-          actorAgentId: actor.agentId ?? null,
-          actorUserId: actor.actorType === "user" ? actor.actorId : null,
+        issue = await db.transaction(async (tx) => {
+          if (deliveryReceipt && deliveryReceiptSourceIssueId) {
+            await deliveryReceiptsSvc.publish(tx, {
+              companyId: existing.companyId,
+              producerIssueId: existing.id,
+              sourceIssueId: deliveryReceiptSourceIssueId,
+              createdByRunId: actor.runId ?? null,
+              receipt: deliveryReceipt,
+            });
+          }
+          return svc.update(id, {
+            ...updateFields,
+            actorAgentId: actor.agentId ?? null,
+            actorUserId: actor.actorType === "user" ? actor.actorId : null,
+          }, tx);
         });
       }
     } catch (err) {
