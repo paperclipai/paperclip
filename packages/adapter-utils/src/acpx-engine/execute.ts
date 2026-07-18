@@ -1938,8 +1938,13 @@ async function persistLocalAcpProcessMetadata(input: {
   const recordId = input.handle.acpxRecordId ?? input.handle.sessionKey;
   const record = await input.sessionStore.load(recordId);
   const pid = record?.pid;
-  if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) return;
-  const startedAt = record?.agentStartedAt ?? record?.createdAt ?? new Date().toISOString();
+  if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) {
+    throw new Error("ACPX session record is missing a valid local process PID.");
+  }
+  const startedAt = record?.agentStartedAt ?? record?.createdAt;
+  if (!startedAt) {
+    throw new Error("ACPX session record is missing the local process start time.");
+  }
   await input.ctx.onSpawn({ pid, processGroupId: null, startedAt });
 }
 

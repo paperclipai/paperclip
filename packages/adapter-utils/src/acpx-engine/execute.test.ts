@@ -229,6 +229,55 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(turnStartedAfterSpawn).toBe(true);
   });
 
+  it.each([
+    ["PID", { agentStartedAt: "2026-07-18T12:00:00.000Z" }],
+    ["start time", { pid: process.pid }],
+  ])("fails before the first turn when the ACP session record is missing its process %s", async (field, record) => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    let turnStarted = false;
+    let sessionClosed = false;
+    const execute = createAcpxEngineExecutor({
+      adapterType: "codex_local",
+      createRuntime: (options) => {
+        const loadSession = options.sessionStore.load.bind(options.sessionStore);
+        options.sessionStore.load = async (recordId) =>
+          recordId === "record-1" ? (record as never) : loadSession(recordId);
+        return {
+          ensureSession: async () => ({
+            sessionKey: "session-1",
+            acpxRecordId: "record-1",
+            backendSessionId: "backend-session",
+            agentSessionId: "agent-session",
+            runtimeSessionName: "runtime-session",
+          }),
+          startTurn: () => {
+            turnStarted = true;
+            throw new Error("turn should not start");
+          },
+          close: async () => {
+            sessionClosed = true;
+          },
+        } as never;
+      },
+    });
+
+    const result = await execute({
+      runId: "run-codex-process-metadata",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: { agent: "codex", stateDir, cwd: root, mode: "oneshot" },
+      context: {},
+      onLog: async () => {},
+      onSpawn: async () => {},
+    } as never);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorMessage).toContain(field);
+    expect(turnStarted).toBe(false);
+    expect(sessionClosed).toBe(true);
+  });
+
   it("sets Codex model, effort, and fast mode through CODEX_CONFIG without session config calls", async () => {
     const { configOptions, meta } = await runExecutor({
       agent: "codex",
