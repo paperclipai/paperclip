@@ -41,11 +41,18 @@ import type {
   PaperclipPluginManifestV1,
   PluginBridgeErrorCode,
   PluginLauncherRenderContextSnapshot,
+  PluginRecord,
 } from "@paperclipai/shared";
 import {
   PLUGIN_STATUSES,
 } from "@paperclipai/shared";
 import { pluginRegistryService } from "../services/plugin-registry.js";
+import { accessService } from "../services/access.js";
+import {
+  evaluateCompanyEnablement,
+  pluginCompanyEnablementService,
+} from "../services/plugin-company-enablement.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
 import { pluginLifecycleManager } from "../services/plugin-lifecycle.js";
 import {
   getPluginUiContributionMetadata,
@@ -71,6 +78,7 @@ import {
   assertBoardOrgAccess,
   assertCompanyAccess,
   assertInstanceAdmin,
+  assertSurfaceExposed,
   getActorInfo,
 } from "./authz.js";
 import { validateInstanceConfig } from "../services/plugin-config-validator.js";
@@ -90,7 +98,7 @@ import {
   isWithinBundledPluginRoot,
 } from "../services/plugin-install-guard.js";
 import { secretService } from "../services/secrets.js";
-import { badRequest, forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
+import { badRequest, conflict, forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
 
 /** UI slot declaration extracted from plugin manifest */
 type PluginUiSlotDeclaration = NonNullable<NonNullable<PaperclipPluginManifestV1["ui"]>["slots"]>[number];
@@ -115,6 +123,26 @@ type PluginUiContribution = {
   uiEntryFile: string;
   slots: PluginUiSlotDeclaration[];
   launchers: PluginLauncherDeclaration[];
+};
+
+/**
+ * Company-facing catalog item combining a `ready` plugin's manifest
+ * metadata with its per-company enablement state. Returned by the company
+ * plugin catalog and enablement routes; consumed by the CompanyPlugins UI
+ * page (ui/src/pages/CompanyPlugins.tsx).
+ */
+type CompanyPluginCatalogItem = {
+  pluginId: string;
+  pluginKey: string;
+  displayName: string;
+  version: string;
+  description: string | null;
+  capabilities: string[];
+  enabled: boolean;
+  locked: boolean;
+  defaultEnabled: boolean;
+  hasCompanySettingsPage: boolean;
+  settingsRoutePath: string | null;
 };
 
 /** Request body for POST /api/plugins/install */
@@ -498,6 +526,8 @@ interface PluginToolExecuteRequest {
  * | POST | /plugins/:pluginId/actions/:key | Proxy performAction to plugin worker (key in URL) |
  * | GET | /plugins/:pluginId/bridge/stream/:channel | SSE stream from worker to UI |
  * | GET | /plugins/:pluginId/dashboard | Aggregated health dashboard data |
+ * | GET | /plugins/companies/:companyId/catalog | Company-scoped catalog of ready plugins with enabled state |
+ * | PUT | /plugins/:pluginId/companies/:companyId/enablement | Toggle a plugin's enabled state for a company |
  *
  * **Route Ordering Note:** Static routes (like /ui-contributions, /tools) must be
  * registered before parameterized routes (like /:pluginId) to prevent Express from
@@ -526,6 +556,11 @@ export function pluginRoutes(
     workerManager: bridgeDeps?.workerManager ?? webhookDeps?.workerManager,
   });
   const issuesSvc = issueService(db);
+  const access = accessService(db);
+  const enablement = pluginCompanyEnablementService(registry);
+  const instanceSettingsSvc = instanceSettingsService(db);
+  const getExposedCompanySurfaces = async () =>
+    (await instanceSettingsSvc.getVisibility()).companySurfaces;
 
   function matchScopedApiRoute(route: PluginApiRouteDeclaration, method: string, requestPath: string) {
     if (route.method !== method) return null;
@@ -720,6 +755,31 @@ export function pluginRoutes(
     }
     assertCompanyAccess(req, companyId);
     return companyId;
+  }
+
+  /** Board actor that is an instance admin (mirrors authz.assertInstanceAdmin). */
+  function isInstanceAdminActor(req: Request): boolean {
+    return req.actor.type === "board"
+      && (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin === true);
+  }
+
+  /**
+   * `plugins:manage` gate for the company enablement toggle. Owner/admin
+   * memberships hold it implicitly via role default grants; other
+   * principals need an explicit principal_permission_grants row.
+   * Enforcement shape mirrors assertCompanyPermission in routes/access.ts.
+   */
+  async function assertPluginsManagePermission(req: Request, companyId: string): Promise<void> {
+    if (req.actor.type === "agent") {
+      if (!req.actor.agentId) throw forbidden("Agent authentication required");
+      const allowed = await access.hasPermission(companyId, "agent", req.actor.agentId, "plugins:manage");
+      if (!allowed) throw forbidden('Permission "plugins:manage" is required');
+      return;
+    }
+    if (req.actor.type !== "board") throw unauthorized();
+    if (isInstanceAdminActor(req)) return;
+    const allowed = await access.canUser(companyId, req.actor.userId, "plugins:manage");
+    if (!allowed) throw forbidden('Permission "plugins:manage" is required');
   }
 
   function requirePluginConfigCompanyId(req: Request, companyId: unknown): string {
@@ -2944,6 +3004,141 @@ export function pluginRoutes(
     });
 
     res.json(status);
+  });
+
+  // ===========================================================================
+  // Company plugin catalog & enablement
+  // ===========================================================================
+
+  /** Route path of a plugin's declared `companySettingsPage` UI slot, if any. */
+  function companySettingsPageRoutePath(manifest: PaperclipPluginManifestV1): string | null {
+    const page = manifest.ui?.slots?.find(
+      (slot) => slot.type === "companySettingsPage" && slot.routePath,
+    );
+    return page?.routePath ?? null;
+  }
+
+  /**
+   * Infrastructure plugins (sandbox providers / credential brokers) have no
+   * company-facing surface, so they stay out of the company catalog. This
+   * codebase identifies them via `environmentDrivers[].kind ===
+   * "sandbox_provider"` (there is no dedicated manifest category) — the same
+   * predicate as isSandboxProviderOnly in ui/src/components/CompanySettingsSidebar.tsx.
+   */
+  function isInfrastructureOnlyPlugin(manifest: PaperclipPluginManifestV1 | null): boolean {
+    const drivers = manifest?.environmentDrivers ?? [];
+    if (drivers.length === 0) return false;
+    return drivers.every((driver) => driver.kind === "sandbox_provider");
+  }
+
+  function toCompanyPluginCatalogItem(
+    plugin: PluginRecord,
+    settings: { enabled: boolean } | null,
+  ): CompanyPluginCatalogItem {
+    const manifest = plugin.manifestJson;
+    const settingsRoutePath = companySettingsPageRoutePath(manifest);
+    return {
+      pluginId: plugin.id,
+      pluginKey: plugin.pluginKey,
+      displayName: manifest.displayName ?? plugin.pluginKey,
+      version: plugin.version,
+      description: manifest.description ?? null,
+      capabilities: manifest.capabilities ?? [],
+      enabled: evaluateCompanyEnablement(manifest, settings),
+      locked: manifest.companyEnablement?.locked === true,
+      defaultEnabled: (manifest.companyEnablement?.default ?? "on") === "on",
+      hasCompanySettingsPage: settingsRoutePath !== null,
+      settingsRoutePath,
+    };
+  }
+
+  /**
+   * GET /api/plugins/companies/:companyId/catalog
+   *
+   * Company-facing catalog of `ready`, catalog-eligible plugins annotated
+   * with per-company enablement state (manifest `companyEnablement` default
+   * + plugin_company_settings row), lock state, and the route path of a
+   * declared `companySettingsPage` slot.
+   *
+   * Authz: active company access + the PR-1 `company.plugins` settings
+   * surface. Infrastructure (sandbox-provider-only) plugins are excluded.
+   *
+   * Response: `CompanyPluginCatalogItem[]`
+   */
+  router.get("/plugins/companies/:companyId/catalog", async (req, res) => {
+    assertBoardOrgAccess(req);
+    const { companyId } = req.params;
+    assertCompanyAccess(req, companyId);
+    await assertSurfaceExposed(req, "company.plugins", getExposedCompanySurfaces);
+
+    const plugins = await registry.listByStatus("ready");
+    const items = await Promise.all(
+      plugins
+        .filter((plugin) => !isInfrastructureOnlyPlugin(plugin.manifestJson))
+        .map(async (plugin) =>
+          toCompanyPluginCatalogItem(
+            plugin,
+            await registry.getCompanySettings(plugin.id, companyId),
+          )),
+    );
+    res.json(items);
+  });
+
+  /**
+   * PUT /api/plugins/:pluginId/companies/:companyId/enablement
+   *
+   * Toggle whether a plugin is enabled for a company.
+   *
+   * Authz: active company access (write path) + `plugins:manage`
+   * (implicitly held by owner/admin memberships, grantable via
+   * principal_permission_grants; instance admins bypass).
+   *
+   * Locked plugins (`manifest.companyEnablement.locked`) reject non-admin
+   * toggles with 409 `plugin_enablement_locked`; only instance admins may
+   * write per-company overrides for them.
+   *
+   * Reads the existing plugin_company_settings row and round-trips its
+   * `settingsJson`/`lastError` — the registry upsert overwrites both
+   * wholesale, so this route must preserve them.
+   *
+   * Body: `{ enabled: boolean }`
+   * Response: `CompanyPluginCatalogItem` (the updated item)
+   * Errors: 400 non-boolean `enabled`, 404 unknown plugin, 409 locked.
+   */
+  router.put("/plugins/:pluginId/companies/:companyId/enablement", async (req, res) => {
+    assertBoardOrgAccess(req);
+    const { companyId } = req.params;
+    assertCompanyAccess(req, companyId);
+    await assertPluginsManagePermission(req, companyId);
+
+    const plugin = await resolvePlugin(registry, req.params.pluginId);
+    if (!plugin) throw notFound("Plugin not found");
+
+    const { enabled } = (req.body ?? {}) as { enabled?: unknown };
+    if (typeof enabled !== "boolean") {
+      throw badRequest('"enabled" must be a boolean');
+    }
+
+    if (plugin.manifestJson?.companyEnablement?.locked === true && !isInstanceAdminActor(req)) {
+      throw conflict("Plugin enablement is managed by the instance", {
+        code: "plugin_enablement_locked",
+      });
+    }
+
+    const existing = await registry.getCompanySettings(plugin.id, companyId);
+    const updated = await registry.upsertCompanySettings(plugin.id, companyId, {
+      enabled,
+      settingsJson: existing?.settingsJson ?? {},
+      lastError: existing?.lastError ?? null,
+    });
+    await logPluginMutationActivity(
+      req,
+      enabled ? "plugin.company_enabled" : "plugin.company_disabled",
+      plugin.id,
+      { companyId },
+    );
+
+    res.json(toCompanyPluginCatalogItem(plugin, updated));
   });
 
   // ===========================================================================
