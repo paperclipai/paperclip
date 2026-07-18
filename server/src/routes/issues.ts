@@ -2979,6 +2979,15 @@ export function issueRoutes(
     return null;
   }
 
+  function classifyRejectedSourceRecoveryIssueUpdate(input: {
+    blockedToTodoRecovery?: boolean;
+  }) {
+    if (input.blockedToTodoRecovery === true) {
+      return "Recovery action became stale because the source issue was manually moved from blocked to todo.";
+    }
+    return null;
+  }
+
   async function revalidateActiveSourceRecovery(input: {
     issue: IssueRouteSnapshot;
     trigger: RecoveryRevalidationTrigger;
@@ -7937,18 +7946,7 @@ export function issueRoutes(
         ...existing,
         ...updateFields,
       } as typeof existing;
-      const recoveryRejectionReason = await classifySourceRecoveryRevalidation({
-        issue: prospectiveIssue,
-        trigger: "issue_update",
-        statusChanged: existing.status !== prospectiveIssue.status,
-        assigneeChanged:
-          existing.assigneeAgentId !== prospectiveIssue.assigneeAgentId ||
-          existing.assigneeUserId !== prospectiveIssue.assigneeUserId,
-        blockersChanged: Array.isArray(req.body.blockedByIssueIds),
-        executionPolicyChanged: req.body.executionPolicy !== undefined,
-        monitorChanged,
-        resumeRequested: resumeRequested === true,
-        reopened: false,
+      const recoveryRejectionReason = classifyRejectedSourceRecoveryIssueUpdate({
         blockedToTodoRecovery:
           existing.status === "blocked" &&
           prospectiveIssue.status === "todo" &&
