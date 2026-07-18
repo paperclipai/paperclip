@@ -1983,6 +1983,9 @@ function classifySafeHeartbeatRunFailure(input: {
 
   const code = input.errorCode?.trim() || null;
   if (!code) {
+    if (input.signal) {
+      return { failureClass: "runtime_process", safeReasonSummary: "Run was terminated by a process signal." };
+    }
     return {
       failureClass: "unknown",
       safeReasonSummary: `Run ended with status ${input.status}; no safe error code was recorded.`,

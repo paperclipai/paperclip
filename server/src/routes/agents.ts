@@ -114,6 +114,7 @@ import {
 
 const RUN_LOG_DEFAULT_LIMIT_BYTES = 256_000;
 const RUN_LOG_MAX_LIMIT_BYTES = 1024 * 1024;
+const ISO_DATETIME_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})$/;
 
 function readRunLogLimitBytes(value: unknown) {
   const parsed = Number(value ?? RUN_LOG_DEFAULT_LIMIT_BYTES);
@@ -132,7 +133,11 @@ function readRequiredIsoDate(value: unknown, name: string) {
   if (typeof value !== "string" || value.trim().length === 0) {
     throw new HttpError(400, `${name} is required`);
   }
-  const date = new Date(value);
+  const trimmed = value.trim();
+  if (!ISO_DATETIME_RE.test(trimmed)) {
+    throw new HttpError(400, `${name} must be a valid ISO datetime`);
+  }
+  const date = new Date(trimmed);
   if (Number.isNaN(date.getTime())) {
     throw new HttpError(400, `${name} must be a valid ISO datetime`);
   }

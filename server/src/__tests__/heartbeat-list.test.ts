@@ -288,6 +288,7 @@ describeEmbeddedPostgres("heartbeat list", () => {
     const issueId = randomUUID();
     const failedRunId = randomUUID();
     const missingIssueRunId = randomUUID();
+    const signalRunId = randomUUID();
     const outsideRunId = randomUUID();
 
     await db.insert(companies).values({
@@ -359,6 +360,20 @@ describeEmbeddedPostgres("heartbeat list", () => {
         },
       },
       {
+        id: signalRunId,
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        status: "failed",
+        startedAt: new Date("2026-07-18T10:30:00.000Z"),
+        finishedAt: new Date("2026-07-18T10:31:00.000Z"),
+        errorCode: null,
+        signal: "SIGKILL",
+        contextSnapshot: {
+          issueId,
+        },
+      },
+      {
         id: outsideRunId,
         companyId,
         agentId,
@@ -378,9 +393,17 @@ describeEmbeddedPostgres("heartbeat list", () => {
       limit: 10,
     });
 
-    expect(details.map((run) => run.id)).toEqual([missingIssueRunId, failedRunId]);
+    expect(details.map((run) => run.id)).toEqual([missingIssueRunId, signalRunId, failedRunId]);
 
     expect(details[1]).toMatchObject({
+      id: signalRunId,
+      failure: {
+        failureClass: "runtime_process",
+        safeReasonSummary: "Run was terminated by a process signal.",
+      },
+    });
+
+    expect(details[2]).toMatchObject({
       id: failedRunId,
       agent: {
         id: agentId,

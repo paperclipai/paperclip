@@ -436,6 +436,18 @@ describe("agent live run routes", () => {
     expect(JSON.stringify(res.body)).not.toContain("logRef");
   });
 
+  it("rejects non-ISO heartbeat run detail windows", async () => {
+    const res = await requestApp(
+      await createApp(),
+      (baseUrl) => request(baseUrl).get(
+        "/api/companies/company-1/heartbeat-runs/details?start=July%2018%202026&end=2026-04-11T00:00:00.000Z",
+      ),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(400);
+    expect(mockHeartbeatService.listRunDetails).not.toHaveBeenCalled();
+  });
+
   it("caps company live run polling by default", async () => {
     const rows = Array.from({ length: 75 }, (_, index) => ({
       id: `run-${index}`,
