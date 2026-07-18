@@ -58,6 +58,9 @@ class WPClient:
     def set_llms_txt(self, value):
         return self._post("/whitestag-seo-geo/v1/llms", {"content": value})
 
+    def set_gsc_verification(self, token):
+        return self._post("/whitestag-seo-geo/v1/gsc-verify", {"token": token})
+
     def find_id_by_slug(self, endpoint, slug):
         """WordPress-Objekt-ID per Slug finden. endpoint = 'posts' oder 'pages'.
         Liefert die ID (int) oder None, wenn nichts passt."""

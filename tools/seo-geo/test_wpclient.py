@@ -35,6 +35,13 @@ def test_set_llms_txt_hits_custom_route():
         assert res["ok"] is True
         assert m.last_request.json() == {"content": "# Site\n"}
 
+def test_set_gsc_verification_hits_route():
+    with requests_mock.Mocker() as m:
+        m.post(f"{BASE}/whitestag-seo-geo/v1/gsc-verify", json={"ok": True})
+        res = _client().set_gsc_verification("81fbff23ab17d859")
+        assert res["ok"] is True
+        assert m.last_request.json() == {"token": "81fbff23ab17d859"}
+
 
 def test_check_editable_ok():
     with requests_mock.Mocker() as m:

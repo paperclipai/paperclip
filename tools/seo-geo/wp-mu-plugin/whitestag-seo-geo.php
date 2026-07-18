@@ -2,7 +2,7 @@
 /*
 Plugin Name: WHITESTAG SEO/GEO Bridge
 Description: Öffnet Yoast-Meta für REST + serviert /llms.txt + liest/schreibt Avada-Seitenoptionen (pyre_*).
-Version: 0.2.0
+Version: 0.2.1
 */
 if (!defined('ABSPATH')) exit;
 
@@ -42,6 +42,14 @@ add_action('init', function () {
     }
 });
 
+// Meta-Tag im <head> ausgeben, wenn GSC-Verifikationstoken gesetzt.
+add_action('wp_head', function () {
+    $token = get_option('whitestag_gsc_verification', '');
+    if ($token !== '') {
+        echo '<meta name="google-site-verification" content="' . esc_attr($token) . '" />' . "\n";
+    }
+});
+
 add_action('rest_api_init', function () {
     register_rest_route('whitestag-seo-geo/v1', '/llms', [
         'methods'  => 'POST',
@@ -51,6 +59,17 @@ add_action('rest_api_init', function () {
         },
         'callback' => function ($req) {
             update_option('whitestag_llms_txt', (string) $req->get_param('content'));
+            return ['ok' => true];
+        },
+    ]);
+
+    // REST-Route zum Setzen des GSC-Verifikationstokens (nur Administratoren).
+    register_rest_route('whitestag-seo-geo/v1', '/gsc-verify', [
+        'methods' => 'POST',
+        'permission_callback' => function () { return current_user_can('manage_options'); },
+        'callback' => function ($req) {
+            $token = sanitize_text_field($req->get_param('token'));
+            update_option('whitestag_gsc_verification', $token);
             return ['ok' => true];
         },
     ]);
