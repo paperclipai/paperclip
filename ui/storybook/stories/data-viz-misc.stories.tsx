@@ -96,6 +96,7 @@ function makeHeartbeatRun(overrides: Partial<HeartbeatRun>): HeartbeatRun {
     id: "run-fixture",
     companyId,
     agentId: "agent-codex",
+    responsibleUserId: null,
     invocationSource: "on_demand",
     triggerDetail: "manual",
     status: "succeeded",

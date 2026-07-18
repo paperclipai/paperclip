@@ -358,6 +358,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
       entityId: result.company.id,
       agentId: actor.agentId,
       runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
       action: "company.imported",
       details: {
         include: body.include ?? null,
@@ -375,8 +376,11 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     if (!(req.actor.source === "local_implicit" || req.actor.isInstanceAdmin)) {
       throw forbidden("Instance admin required");
     }
-    const company = await svc.create(req.body);
     const ownerPrincipalId = req.actor.userId ?? "local-board";
+    const company = await svc.create({
+      ...req.body,
+      defaultResponsibleUserId: req.body.defaultResponsibleUserId ?? ownerPrincipalId,
+    });
     await access.ensureMembership(company.id, "user", ownerPrincipalId, "owner", "active");
     await access.ensureRoleDefaultGrants(
       company.id,
@@ -475,6 +479,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         action: "company.updated",
         entityType: "company",
         entityId: companyId,
@@ -500,6 +505,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
       actorId: actor.actorId,
       agentId: actor.agentId,
       runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
       action: "company.branding_updated",
       entityType: "company",
       entityId: companyId,

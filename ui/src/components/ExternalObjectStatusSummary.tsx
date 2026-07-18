@@ -44,6 +44,8 @@ function buildBreakdownTitle(summary: ExternalObjectSummary): string {
  * the dominant severity icon plus a count badge. Hidden when there are zero
  * external objects or every object is in a muted tone.
  */
+// design-allow(pill-pattern): COMPONENT-INVENTORY §5.1 — external-object status is a deliberately
+// separate status-presentation family; not a Badge.
 export function ExternalObjectStatusSummary({
   summary,
   compact,
@@ -68,7 +70,7 @@ export function ExternalObjectStatusSummary({
       aria-label={title}
       title={title}
       className={cn(
-        "inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium tabular-nums leading-none",
+        "inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-(length:--text-nano) font-medium tabular-nums leading-none",
         badgeClass,
         compact && "px-1 py-0.5",
         className,

@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Agent, Environment } from "@paperclipai/shared";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AgentConfigForm } from "./AgentConfigForm";
+import { defaultCreateValues } from "./agent-config-defaults";
 
 const mockAgentsApi = vi.hoisted(() => ({
   adapterModelProfiles: vi.fn(),
@@ -68,7 +69,9 @@ vi.mock("../adapters", () => ({
       adapterType === "hermes_gateway"
         ? <div data-testid="hermes-gateway-config-fields">Hermes Gateway fields</div>
         : null,
-    buildAdapterConfig: () => ({}),
+    buildAdapterConfig: (values: { model?: string }) => ({
+      model: values.model || undefined,
+    }),
     parseStdoutLine: () => [],
   }),
 }));
@@ -82,6 +85,7 @@ vi.mock("../adapters/use-adapter-capabilities", () => ({
           supportsLocalAgentJwt: false,
           requiresMaterializedRuntimeSkills: false,
           supportsModelProfiles: false,
+          supportsAcp: false,
         }
       : {
           supportsInstructionsBundle: true,
@@ -89,6 +93,7 @@ vi.mock("../adapters/use-adapter-capabilities", () => ({
           supportsLocalAgentJwt: true,
           requiresMaterializedRuntimeSkills: false,
           supportsModelProfiles: true,
+          supportsAcp: true,
         },
 }));
 
@@ -221,6 +226,51 @@ async function renderForm(
   return { container, root };
 }
 
+async function renderCreateForm(
+  environments: Environment[],
+  valueOverrides: Partial<typeof defaultCreateValues> = {},
+  options: { showAdapterTestEnvironmentButton?: boolean } = {},
+) {
+  mockEnvironmentsApi.list.mockResolvedValue(environments);
+
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  const queryClient = new QueryClient({
+    defaultOptions: {
+      queries: { retry: false },
+      mutations: { retry: false },
+    },
+  });
+
+  const values = {
+    ...defaultCreateValues,
+    adapterType: "codex_local",
+    ...valueOverrides,
+  };
+  const onChange = vi.fn();
+
+  await act(async () => {
+    root.render(
+      <QueryClientProvider client={queryClient}>
+        <TooltipProvider>
+          <AgentConfigForm
+            mode="create"
+            values={values}
+            onChange={onChange}
+            hidePromptTemplate
+            showAdapterTypeField={false}
+            showAdapterTestEnvironmentButton={options.showAdapterTestEnvironmentButton ?? false}
+          />
+        </TooltipProvider>
+      </QueryClientProvider>,
+    );
+  });
+
+  await flushReact();
+  return { container, root, onChange };
+}
+
 describe("AgentConfigForm environment selector", () => {
   let roots: Root[] = [];
 
@@ -284,6 +334,28 @@ describe("AgentConfigForm environment selector", () => {
     expect(text).not.toContain("Execution");
     expect(text).not.toContain("Leave this unset to inherit the instance default");
     expect(text).not.toContain("Inherit instance default");
+  });
+
+  it("shows the environment override for Grok local agents", async () => {
+    const result = await renderForm(
+      [
+        makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
+        makeEnvironment({
+          id: "sandbox-1",
+          name: "E2B",
+          driver: "sandbox",
+          config: { provider: "e2b" },
+        }),
+      ],
+      { adapterType: "grok_local" },
+    );
+    roots.push(result.root);
+
+    const text = result.container.textContent ?? "";
+    const selector = result.container.querySelector("select");
+
+    expect(text).toContain("Environment override");
+    expect(selector?.textContent).toContain("E2B · sandbox");
   });
 
   it("keeps an existing non-runnable override visible so it can be cleared", async () => {
@@ -369,6 +441,87 @@ describe("AgentConfigForm environment selector", () => {
         provider: "budget-provider",
       }),
     });
+  });
+
+  it("tests a Codex agent after clearing the primary model to the adapter default", async () => {
+    const result = await renderForm([
+      makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
+    ], {
+      adapterConfig: { model: "gpt-5.4" },
+    }, {
+      showAdapterTestEnvironmentButton: true,
+    });
+    roots.push(result.root);
+
+    const modelButton = Array.from(result.container.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "gpt-5.4",
+    );
+    expect(modelButton).toBeTruthy();
+
+    await act(async () => {
+      modelButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    const defaultButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Default",
+    );
+    expect(defaultButton).toBeTruthy();
+
+    await act(async () => {
+      defaultButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    const testButton = Array.from(result.container.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Test",
+    );
+    expect(testButton).toBeTruthy();
+
+    await act(async () => {
+      testButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(mockAgentsApi.testEnvironment).toHaveBeenCalledTimes(1);
+    expect(mockAgentsApi.testEnvironment.mock.calls[0]?.[2]).toMatchObject({
+      adapterConfig: {},
+    });
+    const adapterConfig = (mockAgentsApi.testEnvironment.mock.calls[0]?.[2] as {
+      adapterConfig: Record<string, unknown>;
+    }).adapterConfig;
+    expect(adapterConfig).not.toHaveProperty("model");
+    expect(result.container.textContent).not.toContain("Cannot read properties of undefined");
+  });
+
+  it("omits undefined adapter config entries when testing a create form with the default model", async () => {
+    const result = await renderCreateForm([
+      makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
+    ], {
+      model: "",
+    }, {
+      showAdapterTestEnvironmentButton: true,
+    });
+    roots.push(result.root);
+
+    const testButton = Array.from(result.container.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Test",
+    );
+    expect(testButton).toBeTruthy();
+
+    await act(async () => {
+      testButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(mockAgentsApi.testEnvironment).toHaveBeenCalledTimes(1);
+    expect(mockAgentsApi.testEnvironment.mock.calls[0]?.[2]).toMatchObject({
+      adapterConfig: {},
+    });
+    const adapterConfig = (mockAgentsApi.testEnvironment.mock.calls[0]?.[2] as {
+      adapterConfig: Record<string, unknown>;
+    }).adapterConfig;
+    expect(adapterConfig).not.toHaveProperty("model");
   });
 
   it("flushes pending environment variable edits before testing adapter config", async () => {

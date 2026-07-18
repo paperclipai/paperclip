@@ -68,10 +68,13 @@ describe("paperclip skill utils", () => {
     const skillPath = path.resolve(".agents/skills/create-issue-interaction-ui/SKILL.md");
     const skillBody = await fs.readFile(skillPath, "utf8");
     const normalizedSkillBody = skillBody.replace(/\s+/g, " ");
+    const normalizedLowerSkillBody = normalizedSkillBody.toLowerCase();
 
     expect(skillBody).toContain("name: create-issue-interaction-ui");
-    expect(skillBody).toContain("Developer/maintainer skill");
-    expect(normalizedSkillBody).toContain("Do NOT install this on production Paperclip agents");
+    expect(normalizedLowerSkillBody).toContain("developer/maintainer skill");
+    expect(normalizedLowerSkillBody).toContain(
+      "not the operational agents that run inside a deployed paperclip company",
+    );
     expect(skillBody).toContain("packages/shared/src/constants.ts");
     expect(skillBody).toContain("server/src/services/issue-thread-interactions.ts");
     expect(skillBody).toContain("ui/src/components/IssueThreadInteractionCard.tsx");

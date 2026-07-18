@@ -1,4 +1,4 @@
-import { envBindingSchema, type SecretVersionSelector } from "@paperclipai/shared";
+import { envBindingSchema, type SecretProjectionClass, type SecretVersionSelector } from "@paperclipai/shared";
 
 interface AgentSecretBindingSyncService {
   syncSecretRefsForTarget?: (
@@ -10,6 +10,8 @@ interface AgentSecretBindingSyncService {
       versionSelector?: SecretVersionSelector;
       required?: boolean;
       label?: string | null;
+      projectionClass?: SecretProjectionClass;
+      projectionAllowlistKey?: string | null;
     }>,
     options?: { replaceAll?: boolean },
   ) => Promise<unknown>;
@@ -17,6 +19,20 @@ interface AgentSecretBindingSyncService {
     companyId: string,
     target: { targetType: "agent"; targetId: string; pathPrefix?: string },
     envValue: unknown,
+  ) => Promise<unknown>;
+  syncUserSecretDeclarationsForTarget?: (
+    companyId: string,
+    target: { targetType: "agent"; targetId: string; pathPrefix?: string },
+    refs: Array<{
+      definitionKey: string;
+      configPath: string;
+      envKey: string;
+      versionSelector?: SecretVersionSelector;
+      required?: boolean;
+      allowMissingOverride?: boolean;
+      label?: string | null;
+    }>,
+    options?: { replaceAll?: boolean },
   ) => Promise<unknown>;
 }
 
@@ -29,6 +45,8 @@ function collectSecretRefs(adapterConfig: unknown): Array<{
   secretId: string;
   configPath: string;
   versionSelector?: SecretVersionSelector;
+  projectionClass?: SecretProjectionClass;
+  projectionAllowlistKey?: string | null;
 }> {
   const config = asRecord(adapterConfig);
   if (!config) return [];
@@ -36,6 +54,8 @@ function collectSecretRefs(adapterConfig: unknown): Array<{
     secretId: string;
     configPath: string;
     versionSelector?: SecretVersionSelector;
+    projectionClass?: SecretProjectionClass;
+    projectionAllowlistKey?: string | null;
   }> = [];
 
   const envValue = asRecord(config.env);
@@ -48,6 +68,8 @@ function collectSecretRefs(adapterConfig: unknown): Array<{
       secretId: binding.secretId,
       configPath: `env.${key}`,
       versionSelector: binding.version ?? "latest",
+      projectionClass: binding.projectionClass,
+      projectionAllowlistKey: binding.projectionAllowlistKey ?? null,
     });
   }
 
@@ -61,6 +83,62 @@ function collectSecretRefs(adapterConfig: unknown): Array<{
       secretId: binding.secretId,
       configPath: key,
       versionSelector: binding.version ?? "latest",
+      projectionClass: binding.projectionClass,
+      projectionAllowlistKey: binding.projectionAllowlistKey ?? null,
+    });
+  }
+
+  return refs;
+}
+
+function collectUserSecretRefs(adapterConfig: unknown): Array<{
+  definitionKey: string;
+  configPath: string;
+  envKey: string;
+  versionSelector?: SecretVersionSelector;
+  required?: boolean;
+  allowMissingOverride?: boolean;
+}> {
+  const config = asRecord(adapterConfig);
+  if (!config) return [];
+  const refs: Array<{
+    definitionKey: string;
+    configPath: string;
+    envKey: string;
+    versionSelector?: SecretVersionSelector;
+    required?: boolean;
+    allowMissingOverride?: boolean;
+  }> = [];
+
+  const envValue = asRecord(config.env);
+  for (const [key, rawBinding] of Object.entries(envValue ?? {})) {
+    const parsed = envBindingSchema.safeParse(rawBinding);
+    if (!parsed.success) continue;
+    const binding = parsed.data;
+    if (typeof binding !== "object" || binding === null || binding.type !== "user_secret_ref") continue;
+    refs.push({
+      definitionKey: binding.key,
+      configPath: `env.${key}`,
+      envKey: key,
+      versionSelector: binding.version ?? "latest",
+      required: binding.required ?? true,
+      allowMissingOverride: binding.allowMissingOverride ?? false,
+    });
+  }
+
+  for (const [key, rawBinding] of Object.entries(config)) {
+    if (key === "env") continue;
+    const parsed = envBindingSchema.safeParse(rawBinding);
+    if (!parsed.success) continue;
+    const binding = parsed.data;
+    if (typeof binding !== "object" || binding === null || binding.type !== "user_secret_ref") continue;
+    refs.push({
+      definitionKey: binding.key,
+      configPath: key,
+      envKey: key,
+      versionSelector: binding.version ?? "latest",
+      required: binding.required ?? true,
+      allowMissingOverride: binding.allowMissingOverride ?? false,
     });
   }
 
@@ -78,6 +156,12 @@ export async function syncAgentAdapterEnvBindings(input: {
       input.companyId,
       { targetType: "agent", targetId: input.agentId },
       collectSecretRefs(input.adapterConfig),
+      { replaceAll: true },
+    );
+    await input.secretsSvc.syncUserSecretDeclarationsForTarget?.(
+      input.companyId,
+      { targetType: "agent", targetId: input.agentId },
+      collectUserSecretRefs(input.adapterConfig),
       { replaceAll: true },
     );
     return;

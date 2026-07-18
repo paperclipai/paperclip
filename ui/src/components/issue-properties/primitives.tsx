@@ -1,4 +1,5 @@
 import type { CSSProperties, ReactNode } from "react";
+import { Badge } from "@/components/ui/badge";
 import { cn } from "../../lib/utils";
 
 export function PropertySection({
@@ -74,12 +75,14 @@ export function PropertyChip({
   style?: CSSProperties;
 }) {
   return (
-    <span
-      className={cn("inline-flex max-w-full min-w-0 items-center gap-1 truncate rounded-full border px-2 py-0.5 text-xs", className)}
+    <Badge
+      variant="outline"
+      // Badge chassis; keep this chip's truncation + normal weight + start alignment.
+      className={cn("max-w-full min-w-0 justify-start truncate font-normal", className)}
       style={style}
       title={typeof children === "string" ? children : undefined}
     >
       {children}
-    </span>
+    </Badge>
   );
 }

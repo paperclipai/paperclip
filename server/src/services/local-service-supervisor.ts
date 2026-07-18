@@ -207,6 +207,10 @@ export async function findLocalServiceRegistryRecordByRuntimeServiceId(input: {
     await removeLocalServiceRegistryRecord(record.serviceKey);
     return null;
   }
+  if (!(await doesLocalServiceRecordMatchCwd(candidate))) {
+    await removeLocalServiceRegistryRecord(record.serviceKey);
+    return null;
+  }
 
   return candidate;
 }
@@ -270,6 +274,10 @@ export async function findAdoptableLocalService(input: {
     await removeLocalServiceRegistryRecord(input.serviceKey);
     return null;
   }
+  if (!(await doesLocalServiceRecordMatchCwd(record))) {
+    await removeLocalServiceRegistryRecord(input.serviceKey);
+    return null;
+  }
   if (input.command && record.command !== input.command) return null;
   if (input.cwd && path.resolve(record.cwd) !== path.resolve(input.cwd)) return null;
   if (input.envFingerprint && record.envFingerprint !== input.envFingerprint) return null;
@@ -301,6 +309,13 @@ async function adoptLocalServiceFromPortOwner(input: {
   if (!input.port) return null;
   const ownerPid = await readLocalServicePortOwner(input.port);
   if (!ownerPid) return null;
+
+  if (input.cwd) {
+    const ownerCwd = await readLocalServiceProcessCwd(ownerPid);
+    if (!ownerCwd || !(await isLocalServiceProcessInWorkspace(ownerCwd, input.cwd))) {
+      return null;
+    }
+  }
 
   const processGroupId = await readProcessGroupId(ownerPid);
   const pid = processGroupId && isPidAlive(processGroupId) ? processGroupId : ownerPid;
@@ -401,4 +416,39 @@ export async function readLocalServicePortOwner(port: number) {
   } catch {
     return null;
   }
+}
+
+export async function readLocalServiceProcessCwd(pid: number) {
+  if (!Number.isInteger(pid) || pid <= 0 || process.platform !== "linux") return null;
+  try {
+    return await fs.readlink(`/proc/${pid}/cwd`);
+  } catch {
+    return null;
+  }
+}
+
+export async function isLocalServiceProcessInWorkspace(processCwd: string, workspaceCwd: string) {
+  try {
+    const [resolvedProcessCwd, resolvedWorkspaceCwd] = await Promise.all([
+      fs.realpath(processCwd),
+      fs.realpath(workspaceCwd),
+    ]);
+    const relativePath = path.relative(resolvedWorkspaceCwd, resolvedProcessCwd);
+    return relativePath === "" || (!relativePath.startsWith(`..${path.sep}`) && relativePath !== "..");
+  } catch {
+    return false;
+  }
+}
+
+export async function isLocalServiceRegistryCwdCompatible(processCwd: string | null, workspaceCwd: string) {
+  if (!processCwd) return process.platform !== "linux";
+  return isLocalServiceProcessInWorkspace(processCwd, workspaceCwd);
+}
+
+async function doesLocalServiceRecordMatchCwd(record: LocalServiceRegistryRecord) {
+  if (!record.port) return true;
+  const ownerPid = await readLocalServicePortOwner(record.port);
+  if (!ownerPid) return false;
+  const ownerCwd = await readLocalServiceProcessCwd(ownerPid);
+  return isLocalServiceRegistryCwdCompatible(ownerCwd, record.cwd);
 }

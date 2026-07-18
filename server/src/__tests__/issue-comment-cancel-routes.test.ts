@@ -43,6 +43,9 @@ const mockDocumentAnnotationService = vi.hoisted(() => ({
   cleanupForIssueCommentDeletion: vi.fn(async () => ({ deletedCommentIds: [], resolvedThreadIds: [] })),
   remapOpenThreadsForDocument: vi.fn(async () => []),
 }));
+const mockDecisionTrainingService = vi.hoisted(() => ({
+  scrubDeletedComments: vi.fn(async () => ({ updatedCount: 0 })),
+}));
 const mockIssueReferenceService = vi.hoisted(() => ({
   deleteCommentSource: vi.fn(async () => undefined),
   deleteDocumentSource: vi.fn(async () => undefined),
@@ -94,6 +97,10 @@ function registerModuleMocks() {
     logActivity: mockLogActivity,
   }));
 
+  vi.doMock("../services/decision-training.js", () => ({
+    decisionTrainingService: () => mockDecisionTrainingService,
+  }));
+
   vi.doMock("../services/feedback.js", () => ({
     feedbackService: () => mockFeedbackService,
   }));
@@ -120,6 +127,9 @@ function registerModuleMocks() {
     }),
     accessService: () => mockAccessService,
     agentService: () => ({ getById: vi.fn(async () => null) }),
+    companySkillService: () => ({
+      completeTestRunForIssue: vi.fn(async () => null),
+    }),
     documentAnnotationService: () => mockDocumentAnnotationService,
     documentService: () => ({}),
     executionWorkspaceService: () => ({}),
@@ -203,6 +213,7 @@ describe.sequential("issue comment cancel routes", () => {
     vi.doUnmock("../telemetry.js");
     vi.doUnmock("../services/access.js");
     vi.doUnmock("../services/activity-log.js");
+    vi.doUnmock("../services/decision-training.js");
     vi.doUnmock("../services/external-objects.js");
     vi.doUnmock("../services/feedback.js");
     vi.doUnmock("../services/heartbeat.js");
@@ -388,6 +399,12 @@ describe.sequential("issue comment cancel routes", () => {
     );
     expect(mockIssueReferenceService.deleteCommentSource).toHaveBeenCalledWith("annotation-comment-1", "tx");
     expect(mockExternalObjectService.syncCommentSafely).toHaveBeenCalledWith("annotation-comment-1", "tx");
+    expect(mockDecisionTrainingService.scrubDeletedComments).toHaveBeenCalledWith({
+      companyId: "company-1",
+      issueId: "11111111-1111-4111-8111-111111111111",
+      commentIds: ["comment-1", "annotation-comment-1"],
+      deletedAt: new Date("2026-04-11T15:05:00.000Z"),
+    }, "tx");
     const deletedActivity = mockLogActivity.mock.calls.find((call) => call[1]?.action === "issue.comment_deleted")?.[1];
     expect(deletedActivity).toEqual(expect.objectContaining({
       action: "issue.comment_deleted",

@@ -61,6 +61,7 @@ export const routineVariableSchema = z.object({
 
 export const createRoutineSchema = z.object({
   projectId: z.string().uuid().optional().nullable(),
+  folderId: z.string().uuid().optional().nullable(),
   goalId: z.string().uuid().optional().nullable(),
   parentIssueId: z.string().uuid().optional().nullable(),
   title: z.string().trim().min(1).max(200),
@@ -85,6 +86,7 @@ export const routineRevisionSnapshotRoutineV1Schema = z.object({
   id: z.string().uuid(),
   companyId: z.string().uuid(),
   projectId: z.string().uuid().nullable(),
+  folderId: z.string().uuid().nullable().optional(),
   goalId: z.string().uuid().nullable(),
   parentIssueId: z.string().uuid().nullable(),
   title: z.string().trim().min(1).max(200),
@@ -96,6 +98,7 @@ export const routineRevisionSnapshotRoutineV1Schema = z.object({
   catchUpPolicy: z.enum(ROUTINE_CATCH_UP_POLICIES),
   variables: z.array(routineVariableSchema),
   env: envConfigSchema.nullable().default(null),
+  responsibleUserId: z.string().nullable().default(null),
 }).strict();
 
 export const routineRevisionSnapshotTriggerV1Schema = z.object({

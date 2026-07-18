@@ -90,6 +90,23 @@ describe("buildPaperclipTaskMarkdown", () => {
     expect(assignment).toContain("do not produce an implementation plan");
   });
 
+  it("adds dry-run containment guidance for skill-test issues", () => {
+    const assignment = buildPaperclipTaskMarkdown({
+      issue: {
+        id: "issue-skill-test",
+        identifier: "PAP-417",
+        title: "Test skill draft",
+        workMode: "skill_test",
+        description: null,
+      },
+    });
+
+    expect(assignment).toContain("- Work mode: \"skill_test\"");
+    expect(assignment).toContain("Skill test mode directive:");
+    expect(assignment).toContain("Make no durable changes outside this issue.");
+    expect(assignment).toContain("Write your final output as issue document `output`");
+  });
+
   it("prefers ordinary comment planning guidance over stale accepted confirmation state", () => {
     const commentWake = buildPaperclipTaskMarkdown({
       issue: {

@@ -50,7 +50,7 @@ describe("codex managed-home auth fail-fast", () => {
           companyId: "company-1",
           name: "CodexCoder",
           adapterType: "codex_local",
-          adapterConfig: {},
+          adapterConfig: { engine: "cli" },
         },
         runtime: {
           sessionId: null,
@@ -59,6 +59,7 @@ describe("codex managed-home auth fail-fast", () => {
           taskKey: null,
         },
         config: {
+          engine: "cli",
           command: "codex",
           cwd: workspaceDir,
           env: {

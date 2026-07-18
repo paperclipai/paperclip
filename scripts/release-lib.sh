@@ -142,11 +142,23 @@ next_stable_version() {
 const input = process.argv[2];
 const packageNames = process.argv.slice(3);
 const { execSync } = require("node:child_process");
+const { readFileSync } = require("node:fs");
 
 const date = input ? new Date(`${input}T00:00:00Z`) : new Date();
 if (Number.isNaN(date.getTime())) {
   console.error(`invalid date: ${input}`);
   process.exit(1);
+}
+
+// Optional pre-fetched version data (see release-registry-versions.mjs).
+// Avoids one serial `npm view` round-trip per package.
+let versionsCache = null;
+if (process.env.RELEASE_PACKAGE_VERSIONS_FILE) {
+  try {
+    versionsCache = JSON.parse(readFileSync(process.env.RELEASE_PACKAGE_VERSIONS_FILE, "utf8"));
+  } catch {
+    versionsCache = null;
+  }
 }
 
 const stableSlot = `${date.getUTCFullYear()}.${date.getUTCMonth() + 1}${String(date.getUTCDate()).padStart(2, "0")}`;
@@ -156,18 +168,22 @@ let max = -1;
 for (const packageName of packageNames) {
   let versions = [];
 
-  try {
-    const raw = execSync(`npm view ${JSON.stringify(packageName)} versions --json`, {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
+  if (versionsCache && Array.isArray(versionsCache[packageName])) {
+    versions = versionsCache[packageName];
+  } else {
+    try {
+      const raw = execSync(`npm view ${JSON.stringify(packageName)} versions --json`, {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim();
 
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      versions = Array.isArray(parsed) ? parsed : [parsed];
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        versions = Array.isArray(parsed) ? parsed : [parsed];
+      }
+    } catch {
+      versions = [];
     }
-  } catch {
-    versions = [];
   }
 
   for (const version of versions) {
@@ -189,6 +205,18 @@ next_canary_version() {
 const stable = process.argv[2];
 const packageNames = process.argv.slice(3);
 const { execSync } = require("node:child_process");
+const { readFileSync } = require("node:fs");
+
+// Optional pre-fetched version data (see release-registry-versions.mjs).
+// Avoids one serial `npm view` round-trip per package.
+let versionsCache = null;
+if (process.env.RELEASE_PACKAGE_VERSIONS_FILE) {
+  try {
+    versionsCache = JSON.parse(readFileSync(process.env.RELEASE_PACKAGE_VERSIONS_FILE, "utf8"));
+  } catch {
+    versionsCache = null;
+  }
+}
 
 const pattern = new RegExp(`^${stable.replace(/\./g, '\\.')}-canary\\.(\\d+)$`);
 let max = -1;
@@ -196,20 +224,24 @@ let max = -1;
 for (const packageName of packageNames) {
   let versions = [];
 
-  try {
-    const raw = execSync(`npm view ${JSON.stringify(packageName)} versions --json`, {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
+  if (versionsCache && Array.isArray(versionsCache[packageName])) {
+    versions = versionsCache[packageName];
+  } else {
+    try {
+      const raw = execSync(`npm view ${JSON.stringify(packageName)} versions --json`, {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim();
 
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      versions = Array.isArray(parsed) ? parsed : [parsed];
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        versions = Array.isArray(parsed) ? parsed : [parsed];
+      }
+    } catch {
+      versions = [];
     }
-  } catch {
-    versions = [];
   }
- 
+
   for (const version of versions) {
     const match = version.match(pattern);
     if (!match) continue;

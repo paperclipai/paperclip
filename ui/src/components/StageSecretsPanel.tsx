@@ -59,7 +59,7 @@ export function StageSecretsPanel({
     );
   }
 
-  const displayName = agentName?.trim() || "the assigned agent";
+  const displayName = agentName?.trim() || "the responsible agent";
 
   return (
     <div className="space-y-5">

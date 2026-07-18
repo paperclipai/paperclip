@@ -1,10 +1,11 @@
 // @vitest-environment node
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   FILE_VIEWER_NAVIGATE_OPTIONS,
   readBrowseStateFromSearch,
   readFileViewerStateFromSearch,
+  shouldNavigateFileViewerSearch,
   writeBrowseStateToSearch,
   writeFolderViewerStateToSearch,
   writeFileViewerStateToSearch,
@@ -14,6 +15,35 @@ describe("FILE_VIEWER_NAVIGATE_OPTIONS", () => {
   it("preserves page scroll when the viewer updates URL search params", () => {
     expect(FILE_VIEWER_NAVIGATE_OPTIONS.preventScrollReset).toBe(true);
     expect(FILE_VIEWER_NAVIGATE_OPTIONS.replace).toBe(false);
+  });
+});
+
+describe("shouldNavigateFileViewerSearch", () => {
+  const originalWindow = globalThis.window;
+
+  afterEach(() => {
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: originalWindow,
+    });
+  });
+
+  it("uses the browser URL search when router state is stale", () => {
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: { location: { search: "?browse=1" } },
+    });
+
+    expect(shouldNavigateFileViewerSearch("", "")).toBe(true);
+  });
+
+  it("keeps no-op navigation suppressed when the browser URL already matches", () => {
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: { location: { search: "" } },
+    });
+
+    expect(shouldNavigateFileViewerSearch("", "?browse=1")).toBe(false);
   });
 });
 

@@ -195,14 +195,14 @@ PR CI now checks changed release-enabled package manifests against npm. That cat
 The first publish of a brand-new package still needs one human maintainer with npm write access.
 After that, trusted publishing can take over.
 
-Example for `@paperclipai/adapter-acpx-local` from the repo root:
+Example for a newly added public package from the repo root:
 
 ```bash
 # safe preview
-pnpm run release:bootstrap-package -- @paperclipai/adapter-acpx-local
+pnpm run release:bootstrap-package -- @paperclipai/new-package
 
 # one-time first publish from an authenticated maintainer machine
-pnpm run release:bootstrap-package -- @paperclipai/adapter-acpx-local --publish --otp 123456
+pnpm run release:bootstrap-package -- @paperclipai/new-package --publish --otp 123456
 ```
 
 The helper script:
@@ -223,7 +223,7 @@ The helper now requires `--otp <code>` up front for `--publish`, so it fails bef
 
 After that first publish succeeds:
 
-1. open `https://www.npmjs.com/package/@paperclipai/adapter-acpx-local`
+1. open `https://www.npmjs.com/package/@paperclipai/new-package`
 2. go to `Settings` → `Trusted publishing`
 3. add repository `paperclipai/paperclip`
 4. set workflow filename to `release.yml`

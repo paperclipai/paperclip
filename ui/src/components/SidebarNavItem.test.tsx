@@ -68,6 +68,10 @@ describe("SidebarNavItem", () => {
     return container.querySelector("a") as HTMLAnchorElement;
   }
 
+  function classTokens(element: Element | null | undefined) {
+    return element?.className.toString().split(/\s+/).filter(Boolean) ?? [];
+  }
+
   it("shows the full label and numeric badge when expanded", () => {
     render(<SidebarNavItem to="/inbox" label="Inbox" icon={Inbox} badge={28} badgeLabel="unread" />);
 
@@ -89,8 +93,8 @@ describe("SidebarNavItem", () => {
     const label = Array.from(container.querySelectorAll("span")).find((el) => el.textContent === "Inbox");
     expect(label).toBeTruthy();
     expect(label?.className).not.toContain("sr-only");
-    expect(label?.className).toContain("w-0");
-    expect(label?.className).toContain("overflow-hidden");
+    expect(classTokens(label)).toContain("w-0");
+    expect(classTokens(label)).toContain("overflow-hidden");
 
     // The numeric count is no longer rendered as text; it is a dot with an
     // accessible text equivalent on the link.
@@ -100,6 +104,23 @@ describe("SidebarNavItem", () => {
     // Tooltip wraps the row; the trigger is the wrapper element so the NavLink's
     // own flex className is preserved (PAP-10676), with the <a> nested inside it.
     expect(link().parentElement?.getAttribute("data-slot")).toBe("tooltip-trigger");
+  });
+
+  it("surfaces the trailing status label in the rail aria-label", () => {
+    sidebarState.collapsed = true;
+    render(
+      <SidebarNavItem
+        to="/agents/codexcoder"
+        label="CodexCoder"
+        icon={Inbox}
+        trailing={<span aria-label="Invalid reporting chain" />}
+        trailingLabel="Invalid reporting chain"
+      />,
+    );
+
+    // The trailing warning is hidden in the rail, so its text equivalent must
+    // ride on the link's accessible name.
+    expect(link().getAttribute("aria-label")).toBe("CodexCoder, Invalid reporting chain");
   });
 
   it("keeps the full presentation while peeking even when collapsed", () => {
@@ -125,8 +146,8 @@ describe("SidebarNavItem", () => {
     );
 
     const label = Array.from(container.querySelectorAll("span")).find((el) => el.textContent === "Inbox");
-    expect(label?.className).not.toContain("w-0");
-    expect(label?.className).toContain("flex-1");
+    expect(classTokens(label)).not.toContain("w-0");
+    expect(classTokens(label)).toContain("flex-1");
     // Full numeric badge, no rail aria-label, no tooltip wrapper.
     expect(container.textContent).toContain("28");
     expect(link().getAttribute("aria-label")).toBeNull();

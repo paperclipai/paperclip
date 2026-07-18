@@ -5,7 +5,7 @@ import {
   useState,
 } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, Play, RefreshCw, RotateCcw, Terminal, Trash2, X } from "lucide-react";
+import { ArrowLeft, Check, Play, RefreshCw, RotateCcw, Terminal, Trash2, X } from "lucide-react";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal as XTermTerminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
@@ -21,18 +21,11 @@ import {
   environmentsApi,
   type EnvironmentCustomImageConnectionPayload,
   type EnvironmentCustomImageSetupSessionResult,
+  type EnvironmentUpdateResult,
 } from "@/api/environments";
 import { instanceSettingsApi } from "@/api/instanceSettings";
 import { secretsApi } from "@/api/secrets";
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import {
   EnvironmentVariablesEditor,
   type EnvironmentVariablesEditorHandle,
@@ -42,6 +35,7 @@ import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
 import { useToast } from "@/context/ToastContext";
 import { queryKeys } from "@/lib/queryKeys";
+import { Link, useNavigate, useParams } from "@/lib/router";
 import { buildSameOriginWebSocketUrl } from "@/lib/websocket-url";
 import {
   Field,
@@ -64,6 +58,18 @@ type EnvironmentFormState = {
   sandboxConfig: Record<string, unknown>;
   envVars: Record<string, EnvBinding>;
 };
+
+type CompanyEnvironmentsMode = "list" | "create" | "edit";
+
+type CompanyEnvironmentsProps = {
+  mode?: CompanyEnvironmentsMode;
+};
+
+const ENVIRONMENTS_PATH = "/company/settings/instance/environments";
+
+function environmentEditPath(environmentId: string) {
+  return `${ENVIRONMENTS_PATH}/${encodeURIComponent(environmentId)}/edit`;
+}
 
 function buildEnvironmentPayload(form: EnvironmentFormState) {
   return {
@@ -167,6 +173,70 @@ function readSandboxConfig(environment: Environment) {
   };
 }
 
+function createEnvironmentFormFromEnvironment(environment: Environment): EnvironmentFormState {
+  if (environment.driver === "ssh") {
+    const ssh = readSshConfig(environment);
+    return {
+      ...createEmptyEnvironmentForm(),
+      name: environment.name,
+      description: environment.description ?? "",
+      driver: "ssh",
+      sshHost: ssh.host,
+      sshPort: ssh.port,
+      sshUsername: ssh.username,
+      sshRemoteWorkspacePath: ssh.remoteWorkspacePath,
+      sshPrivateKey: ssh.privateKey,
+      sshPrivateKeySecretId: ssh.privateKeySecretId,
+      sshKnownHosts: ssh.knownHosts,
+      sshStrictHostKeyChecking: ssh.strictHostKeyChecking,
+      envVars: environment.envVars ?? {},
+    };
+  }
+
+  if (environment.driver === "sandbox") {
+    const sandbox = readSandboxConfig(environment);
+    return {
+      ...createEmptyEnvironmentForm(),
+      name: environment.name,
+      description: environment.description ?? "",
+      driver: "sandbox",
+      sandboxProvider: sandbox.provider,
+      sandboxConfig: sandbox.config,
+      envVars: environment.envVars ?? {},
+    };
+  }
+
+  return {
+    ...createEmptyEnvironmentForm(),
+    name: environment.name,
+    description: environment.description ?? "",
+    driver: "local",
+    envVars: environment.envVars ?? {},
+  };
+}
+
+const DISCARD_ENVIRONMENT_CHANGES_MESSAGE = "Discard unsaved environment changes?";
+
+function stableJsonStringify(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableJsonStringify(item)).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .filter(([, entryValue]) => entryValue !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right));
+    return `{${entries
+      .map(([key, entryValue]) => `${JSON.stringify(key)}:${stableJsonStringify(entryValue)}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "undefined";
+}
+
+/** Payload-level fingerprint so cosmetic form state (whitespace, key order) is not "unsaved". */
+function environmentFormKey(form: EnvironmentFormState): string {
+  return stableJsonStringify(buildEnvironmentPayload(form));
+}
+
 function normalizeJsonSchema(schema: unknown): JsonSchema | null {
   return schema && typeof schema === "object" && !Array.isArray(schema)
     ? schema as JsonSchema
@@ -203,6 +273,12 @@ function formatDateTime(value: string | Date | null | undefined): string | null 
   if (!value) return null;
   const date = value instanceof Date ? value : new Date(value);
   return Number.isNaN(date.getTime()) ? null : date.toLocaleString();
+}
+
+function formatShortId(value: string): string {
+  const normalized = value.trim();
+  if (normalized.length <= 12) return normalized;
+  return `${normalized.slice(0, 12)}…`;
 }
 
 function readConnectionCommand(payload: EnvironmentCustomImageConnectionPayload | null | undefined): string | null {
@@ -424,6 +500,7 @@ function EnvironmentCustomImageBrowserTerminal({
       lineHeight: 1.35,
       scrollback: CUSTOM_IMAGE_TERMINAL_SCROLLBACK_ROWS,
       theme: {
+        // token-extraction: allowlisted — xterm.js terminal theme config; functional third-party option object, not a rendered CSS value.
         background: "#0a0a0a",
         foreground: "#f5f5f5",
         cursor: "#22d3ee",
@@ -620,7 +697,7 @@ function EnvironmentCustomImageBrowserTerminal({
           tabIndex={0}
           onFocus={() => xtermRef.current?.focus()}
           onClick={() => xtermRef.current?.focus()}
-          className="h-[18rem] w-full overflow-hidden bg-neutral-950 outline-none sm:h-[22rem] [&_.xterm-cursor-bar]:!border-l-2 [&_.xterm-cursor-bar]:!border-l-cyan-300 [&_.xterm-cursor-layer_.xterm-cursor]:!bg-cyan-300 [&_.xterm-helper-textarea]:!opacity-0 [&_.xterm-screen]:focus:outline-none [&_.xterm-viewport]:!overflow-y-auto [&_.xterm]:h-full"
+          className="h-(--sz-18rem) w-full overflow-hidden bg-neutral-950 outline-none sm:h-(--sz-22rem) [&_.xterm-cursor-bar]:!border-l-2 [&_.xterm-cursor-bar]:!border-l-cyan-300 [&_.xterm-cursor-layer_.xterm-cursor]:!bg-cyan-300 [&_.xterm-helper-textarea]:!opacity-0 [&_.xterm-screen]:focus:outline-none [&_.xterm-viewport]:!overflow-y-auto [&_.xterm]:h-full"
         />
       </div>
       {errorMessage ? (
@@ -679,10 +756,12 @@ function sessionStatusCopy(status: EnvironmentCustomImageSetupSession["status"])
 
 function EnvironmentImageTemplatePanel({
   environment,
+  companyId,
   providerCapability,
   providerDisplayName,
 }: {
   environment: Environment;
+  companyId: string;
   providerCapability: EnvironmentProviderCapability | null | undefined;
   providerDisplayName: string;
 }) {
@@ -693,7 +772,7 @@ function EnvironmentImageTemplatePanel({
 
   const overviewQuery = useQuery({
     queryKey: overviewKey,
-    queryFn: () => environmentsApi.customImageTemplate(environment.id),
+    queryFn: () => environmentsApi.customImageTemplate(environment.id, companyId),
     enabled: state.kind === "supported",
     retry: false,
   });
@@ -721,9 +800,11 @@ function EnvironmentImageTemplatePanel({
 
   const startSetupMutation = useMutation({
     mutationFn: (input: { templateId?: string | null } = {}) =>
-      environmentsApi.startCustomImageSetupSession(environment.id, {
-        templateId: input.templateId ?? null,
-      }),
+      environmentsApi.startCustomImageSetupSession(
+        environment.id,
+        companyId,
+        { templateId: input.templateId ?? null },
+      ),
     onSuccess: (result) => {
       queryClient.setQueryData(overviewKey, (current: typeof overviewQuery.data) => ({
         activeTemplate: current?.activeTemplate ?? null,
@@ -798,7 +879,7 @@ function EnvironmentImageTemplatePanel({
   });
 
   const rollbackTemplateMutation = useMutation({
-    mutationFn: () => environmentsApi.rollbackCustomImageTemplate(environment.id),
+    mutationFn: () => environmentsApi.rollbackCustomImageTemplate(environment.id, companyId),
     onSuccess: (result) => {
       queryClient.setQueryData(overviewKey, (current: typeof overviewQuery.data) => ({
         activeTemplate: result.activeTemplate,
@@ -822,7 +903,7 @@ function EnvironmentImageTemplatePanel({
   });
 
   const disableTemplateMutation = useMutation({
-    mutationFn: () => environmentsApi.disableCustomImageTemplate(environment.id),
+    mutationFn: () => environmentsApi.disableCustomImageTemplate(environment.id, companyId),
     onSuccess: (template) => {
       queryClient.setQueryData(overviewKey, (current: typeof overviewQuery.data) => ({
         activeTemplate: null,
@@ -923,13 +1004,18 @@ function EnvironmentImageTemplatePanel({
               size="sm"
               variant="ghost"
               onClick={() => cancelSetupMutation.mutate(session.id)}
-              disabled={isMutating || isCapturing}
+              disabled={isMutating}
             >
               <X className="mr-1.5 h-3.5 w-3.5" />
               Cancel
             </Button>
           </div>
         </div>
+        {isCapturing ? (
+          <div className="mt-2 text-xs text-muted-foreground">
+            Capture is in progress. If this state remains after a refresh or interrupted request, cancel it to return to the active template controls.
+          </div>
+        ) : null}
         {session.status === "waiting_for_user" && connectionPayload?.type === "ssh" ? (
           <EnvironmentCustomImageBrowserTerminal autoConnect sessionId={session.id} />
         ) : null}
@@ -938,7 +1024,7 @@ function EnvironmentImageTemplatePanel({
             <summary className="cursor-pointer select-none font-medium text-foreground">
               SSH command fallback
             </summary>
-            <code className="mt-2 block overflow-x-auto whitespace-nowrap text-[11px] leading-5">
+            <code className="mt-2 block overflow-x-auto whitespace-nowrap text-(length:--text-micro) leading-5">
               {connectionCommand}
             </code>
           </details>
@@ -956,6 +1042,8 @@ function EnvironmentImageTemplatePanel({
   }
 
   if (activeTemplate) {
+    const templateRef = activeTemplate.templateRef?.trim() || null;
+    const templateOutOfSync = overview?.activeTemplateMatchesConfig === false;
     return (
       <div className="mt-3 border-t border-border/60 pt-3" data-testid={`custom-image-template-state-${environment.id}`}>
         <div className="flex flex-wrap items-start justify-between gap-3">
@@ -963,9 +1051,28 @@ function EnvironmentImageTemplatePanel({
             <div className="text-xs font-medium">Active template</div>
             <div className="text-xs text-muted-foreground">
               {providerDisplayName} · {activeTemplate.templateKind}
+              {" · "}
+              <span
+                className="break-all font-mono text-foreground"
+                title={templateRef
+                  ? `Provider ${activeTemplate.templateKind} ref ${templateRef} (Paperclip template ${activeTemplate.id})`
+                  : activeTemplate.id}
+              >
+                {templateRef ?? `id ${formatShortId(activeTemplate.id)}`}
+              </span>
               {capturedAt ? ` · captured ${capturedAt}` : ""}
               {lastUsedAt ? ` · last used ${lastUsedAt}` : ""}
             </div>
+            {templateOutOfSync ? (
+              <div
+                className="text-xs text-destructive"
+                data-testid={`custom-image-template-out-of-sync-${environment.id}`}
+              >
+                Not in use — the environment configuration changed since this image was
+                captured. Runs fall back to the base configuration until you capture a new
+                image.
+              </div>
+            ) : null}
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <Button
@@ -1029,25 +1136,40 @@ function EnvironmentImageTemplatePanel({
   );
 }
 
-export function CompanyEnvironments() {
+export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps) {
+  const { environmentId: routeEnvironmentId } = useParams<{ environmentId?: string }>();
+  const navigate = useNavigate();
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToast();
   const queryClient = useQueryClient();
-  const [environmentDialogOpen, setEnvironmentDialogOpen] = useState(false);
-  const [editingEnvironmentId, setEditingEnvironmentId] = useState<string | null>(null);
+  const isEnvironmentFormPage = mode === "create" || mode === "edit";
+  const editingEnvironmentId = mode === "edit" ? routeEnvironmentId ?? null : null;
   const [environmentForm, setEnvironmentForm] = useState<EnvironmentFormState>(createEmptyEnvironmentForm);
   const environmentVariablesEditorRef = useRef<EnvironmentVariablesEditorHandle | null>(null);
+  const initializedFormKeyRef = useRef<string | null>(null);
+  // Fingerprint of the form as initialized; null until the form page has loaded its data.
+  const [environmentFormBaselineKey, setEnvironmentFormBaselineKey] = useState<string | null>(null);
+  const [environmentVariablesDirty, setEnvironmentVariablesDirty] = useState(false);
   const [probeResults, setProbeResults] = useState<Record<string, EnvironmentProbeResult | null>>({});
   const [testingEnvironmentId, setTestingEnvironmentId] = useState<string | null>(null);
+  const environmentHasUnsavedChanges =
+    isEnvironmentFormPage &&
+    (environmentVariablesDirty ||
+      (environmentFormBaselineKey !== null && environmentFormKey(environmentForm) !== environmentFormBaselineKey));
 
   useEffect(() => {
-    setBreadcrumbs([
+    const crumbs = [
       { label: "Settings", href: "/company/settings" },
       { label: "Instance settings", href: "/company/settings/instance/general" },
-      { label: "Environments" },
-    ]);
-  }, [setBreadcrumbs]);
+      isEnvironmentFormPage
+        ? { label: "Environments", href: ENVIRONMENTS_PATH }
+        : { label: "Environments" },
+    ];
+    if (mode === "create") crumbs.push({ label: "Add environment" });
+    if (mode === "edit") crumbs.push({ label: "Edit environment" });
+    setBreadcrumbs(crumbs);
+  }, [isEnvironmentFormPage, mode, setBreadcrumbs]);
 
   const { data: instanceSettings } = useQuery({
     queryKey: queryKeys.instance.settings,
@@ -1067,6 +1189,7 @@ export function CompanyEnvironments() {
     queryFn: () => environmentsApi.list(selectedCompanyId!),
     enabled: Boolean(selectedCompanyId) && environmentsEnabled,
   });
+  const savedEnvironments = environments ?? [];
   const { data: environmentCapabilities } = useQuery({
     queryKey: selectedCompanyId ? ["environment-capabilities", selectedCompanyId] : ["environment-capabilities", "none"],
     queryFn: () => environmentsApi.capabilities(selectedCompanyId!),
@@ -1097,23 +1220,45 @@ export function CompanyEnvironments() {
         return await environmentsApi.update(editingEnvironmentId, body);
       }
 
+      if (!selectedCompanyId) throw new Error("Select a company to create environments");
       return await environmentsApi.create(selectedCompanyId!, body);
     },
     onSuccess: async (environment) => {
       const wasEditing = editingEnvironmentId !== null;
+      if (selectedCompanyId) {
+        await queryClient.invalidateQueries({
+          queryKey: queryKeys.environments.list(selectedCompanyId),
+        });
+      }
       await queryClient.invalidateQueries({
-        queryKey: queryKeys.environments.list(selectedCompanyId!),
+        queryKey: queryKeys.environments.customImageTemplate(environment.id),
       });
-      setEnvironmentDialogOpen(false);
-      setEditingEnvironmentId(null);
+      initializedFormKeyRef.current = null;
       setEnvironmentForm(createEmptyEnvironmentForm());
+      setEnvironmentFormBaselineKey(null);
+      setEnvironmentVariablesDirty(false);
       environmentMutation.reset();
       draftEnvironmentProbeMutation.reset();
+      navigate(ENVIRONMENTS_PATH, { replace: true });
       pushToast({
         title: wasEditing ? "Environment updated" : "Environment created",
         body: `${environment.name} is ready.`,
         tone: "success",
       });
+      const reconciliation = (environment as EnvironmentUpdateResult).customImageReconciliation;
+      if (reconciliation?.action === "relinked") {
+        pushToast({
+          title: "Custom image kept active",
+          body: "The captured image was re-linked to the updated configuration automatically.",
+          tone: "info",
+        });
+      } else if (reconciliation?.action === "detached") {
+        pushToast({
+          title: "Custom image no longer applies",
+          body: "This change alters what the captured image was built from. Runs use the base configuration until you capture a new image.",
+          tone: "warn",
+        });
+      }
     },
     onError: (error) => {
       pushToast({
@@ -1145,7 +1290,7 @@ export function CompanyEnvironments() {
   });
 
   const environmentProbeMutation = useMutation({
-    mutationFn: async (environmentId: string) => await environmentsApi.probe(environmentId),
+    mutationFn: async (environmentId: string) => await environmentsApi.probe(environmentId, selectedCompanyId),
     onMutate: (environmentId) => {
       setTestingEnvironmentId(environmentId);
     },
@@ -1184,8 +1329,9 @@ export function CompanyEnvironments() {
 
   const draftEnvironmentProbeMutation = useMutation({
     mutationFn: async (form: EnvironmentFormState) => {
+      if (!selectedCompanyId) throw new Error("Select a company to test environments");
       const body = buildEnvironmentPayload(form);
-      return await environmentsApi.probeConfig(selectedCompanyId!, body);
+      return await environmentsApi.probeConfig(selectedCompanyId, body);
     },
     onSuccess: (probe) => {
       pushToast({
@@ -1204,76 +1350,132 @@ export function CompanyEnvironments() {
   });
 
   useEffect(() => {
-    setEnvironmentDialogOpen(false);
-    setEditingEnvironmentId(null);
+    initializedFormKeyRef.current = null;
     setEnvironmentForm(createEmptyEnvironmentForm());
+    setEnvironmentFormBaselineKey(null);
+    setEnvironmentVariablesDirty(false);
     setProbeResults({});
     setTestingEnvironmentId(null);
   }, [selectedCompanyId]);
 
-  function handleStartCreateEnvironment() {
-    setEditingEnvironmentId(null);
-    setEnvironmentForm(createEmptyEnvironmentForm());
-    environmentMutation.reset();
-    draftEnvironmentProbeMutation.reset();
-    setEnvironmentDialogOpen(true);
-  }
+  const resetEnvironmentMutation = environmentMutation.reset;
+  const resetDraftEnvironmentProbeMutation = draftEnvironmentProbeMutation.reset;
 
-  function handleEditEnvironment(environment: Environment) {
-    environmentMutation.reset();
-    draftEnvironmentProbeMutation.reset();
-    setEditingEnvironmentId(environment.id);
-    setEnvironmentDialogOpen(true);
-    if (environment.driver === "ssh") {
-      const ssh = readSshConfig(environment);
-      setEnvironmentForm({
-        ...createEmptyEnvironmentForm(),
-        name: environment.name,
-        description: environment.description ?? "",
-        driver: "ssh",
-        sshHost: ssh.host,
-        sshPort: ssh.port,
-        sshUsername: ssh.username,
-        sshRemoteWorkspacePath: ssh.remoteWorkspacePath,
-        sshPrivateKey: ssh.privateKey,
-        sshPrivateKeySecretId: ssh.privateKeySecretId,
-        sshKnownHosts: ssh.knownHosts,
-        sshStrictHostKeyChecking: ssh.strictHostKeyChecking,
-        envVars: environment.envVars ?? {},
-      });
+  useEffect(() => {
+    if (!isEnvironmentFormPage) {
+      initializedFormKeyRef.current = null;
+      setEnvironmentFormBaselineKey(null);
+      setEnvironmentVariablesDirty(false);
       return;
     }
 
-    if (environment.driver === "sandbox") {
-      const sandbox = readSandboxConfig(environment);
-      setEnvironmentForm({
-        ...createEmptyEnvironmentForm(),
-        name: environment.name,
-        description: environment.description ?? "",
-        driver: "sandbox",
-        sandboxProvider: sandbox.provider,
-        sandboxConfig: sandbox.config,
-        envVars: environment.envVars ?? {},
-      });
+    const formKey = mode === "create"
+      ? `create:${selectedCompanyId ?? "none"}`
+      : `edit:${selectedCompanyId ?? "none"}:${editingEnvironmentId ?? "missing"}`;
+
+    if (initializedFormKeyRef.current === formKey) return;
+
+    resetEnvironmentMutation();
+    resetDraftEnvironmentProbeMutation();
+
+    if (mode === "create") {
+      const emptyForm = createEmptyEnvironmentForm();
+      setEnvironmentForm(emptyForm);
+      setEnvironmentFormBaselineKey(environmentFormKey(emptyForm));
+      setEnvironmentVariablesDirty(false);
+      initializedFormKeyRef.current = formKey;
       return;
     }
 
-    setEnvironmentForm({
-      ...createEmptyEnvironmentForm(),
-      name: environment.name,
-      description: environment.description ?? "",
-      driver: "local",
-      envVars: environment.envVars ?? {},
-    });
+    const environment = editingEnvironmentId
+      ? (environments ?? []).find((candidate) => candidate.id === editingEnvironmentId) ?? null
+      : null;
+    if (!environment) return;
+
+    const nextForm = createEnvironmentFormFromEnvironment(environment);
+    setEnvironmentForm(nextForm);
+    setEnvironmentFormBaselineKey(environmentFormKey(nextForm));
+    setEnvironmentVariablesDirty(false);
+    initializedFormKeyRef.current = formKey;
+  }, [
+    editingEnvironmentId,
+    environments,
+    isEnvironmentFormPage,
+    mode,
+    resetDraftEnvironmentProbeMutation,
+    resetEnvironmentMutation,
+    selectedCompanyId,
+  ]);
+
+  function confirmDiscardEnvironmentChanges() {
+    return (
+      !environmentHasUnsavedChanges ||
+      typeof window === "undefined" ||
+      window.confirm(DISCARD_ENVIRONMENT_CHANGES_MESSAGE)
+    );
   }
 
-  function closeEnvironmentDialog() {
+  // The form page is routed, so leaving it (tab close, reload, or an in-app
+  // link) silently drops the draft. Intercept both exits while dirty.
+  useEffect(() => {
+    if (!environmentHasUnsavedChanges) return;
+
+    function handleBeforeUnload(event: BeforeUnloadEvent) {
+      event.preventDefault();
+      event.returnValue = "";
+    }
+
+    function handleDocumentClick(event: MouseEvent) {
+      if (
+        event.defaultPrevented ||
+        event.button !== 0 ||
+        event.altKey ||
+        event.ctrlKey ||
+        event.metaKey ||
+        event.shiftKey
+      ) {
+        return;
+      }
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      const anchor = target.closest("a[href]");
+      if (!(anchor instanceof HTMLAnchorElement)) return;
+      if (anchor.target && anchor.target !== "_self") return;
+
+      const nextUrl = new URL(anchor.href, window.location.href);
+      const currentUrl = new URL(window.location.href);
+      if (nextUrl.origin !== currentUrl.origin) return;
+      if (
+        nextUrl.pathname === currentUrl.pathname &&
+        nextUrl.search === currentUrl.search &&
+        nextUrl.hash === currentUrl.hash
+      ) {
+        return;
+      }
+
+      if (window.confirm(DISCARD_ENVIRONMENT_CHANGES_MESSAGE)) return;
+      event.preventDefault();
+      event.stopPropagation();
+    }
+
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    document.addEventListener("click", handleDocumentClick, true);
+    return () => {
+      window.removeEventListener("beforeunload", handleBeforeUnload);
+      document.removeEventListener("click", handleDocumentClick, true);
+    };
+  }, [environmentHasUnsavedChanges]);
+
+  function closeEnvironmentForm() {
     if (environmentMutation.isPending) return;
-    setEnvironmentDialogOpen(false);
-    setEditingEnvironmentId(null);
+    if (!confirmDiscardEnvironmentChanges()) return;
+    initializedFormKeyRef.current = null;
     setEnvironmentForm(createEmptyEnvironmentForm());
+    setEnvironmentFormBaselineKey(null);
+    setEnvironmentVariablesDirty(false);
     environmentMutation.reset();
     draftEnvironmentProbeMutation.reset();
+    navigate(ENVIRONMENTS_PATH);
   }
 
   function flushEnvironmentForm(): EnvironmentFormState {
@@ -1340,7 +1542,6 @@ export function CompanyEnvironments() {
       environmentForm.sandboxProvider !== "fake" &&
       Object.keys(sandboxConfigErrors).length === 0);
 
-  const savedEnvironments = environments ?? [];
   const editingEnvironment = editingEnvironmentId
     ? savedEnvironments.find((environment) => environment.id === editingEnvironmentId) ?? null
     : null;
@@ -1371,13 +1572,14 @@ export function CompanyEnvironments() {
 
   return (
     <div className="max-w-5xl space-y-6" data-testid="instance-settings-environments-section">
+      {!isEnvironmentFormPage ? (
       <div className="space-y-4 rounded-md border border-border px-4 py-4">
         <div className="rounded-md border border-border/60 bg-muted/20 px-3 py-3">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="space-y-1">
               <div className="text-sm font-medium">Default</div>
             </div>
-            <div className="min-w-[18rem] flex-1">
+            <div className="min-w-(--sz-18rem) flex-1">
               <select
                 className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
                 value={instanceDefaultEnvironmentId}
@@ -1398,13 +1600,12 @@ export function CompanyEnvironments() {
 
         <div className="space-y-3">
           <div className="flex justify-end">
-            <Button size="sm" onClick={handleStartCreateEnvironment}>
-              Add environment
+            <Button size="sm" asChild>
+              <Link to={`${ENVIRONMENTS_PATH}/new`}>Add environment</Link>
             </Button>
           </div>
           {savedEnvironments.map((environment) => {
             const probe = probeResults[environment.id] ?? null;
-            const isEditing = editingEnvironmentId === environment.id;
             const sandboxProvider = readEnvironmentSandboxProvider(environment);
             const sandboxProviderCapability = sandboxProvider
               ? environmentCapabilities?.sandboxProviders?.[sandboxProvider]
@@ -1455,12 +1656,8 @@ export function CompanyEnvironments() {
                             : "Test provider"}
                       </Button>
                     ) : null}
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => handleEditEnvironment(environment)}
-                    >
-                      {isEditing ? "Editing" : "Edit"}
+                    <Button size="sm" variant="ghost" asChild>
+                      <Link to={environmentEditPath(environment.id)}>Edit</Link>
                     </Button>
                   </div>
                 </div>
@@ -1474,7 +1671,7 @@ export function CompanyEnvironments() {
                   >
                     <div className="font-medium">{probe.summary}</div>
                     {probe.details?.error && typeof probe.details.error === "string" ? (
-                      <div className="mt-1 font-mono text-[11px]">{probe.details.error}</div>
+                      <div className="mt-1 font-mono text-(length:--text-micro)">{probe.details.error}</div>
                     ) : null}
                   </div>
                 ) : null}
@@ -1483,26 +1680,42 @@ export function CompanyEnvironments() {
           })}
         </div>
       </div>
+      ) : null}
 
-      <Dialog
-        open={environmentDialogOpen}
-        onOpenChange={(open) => {
-          if (open) {
-            setEnvironmentDialogOpen(true);
-            return;
-          }
-          closeEnvironmentDialog();
-        }}
-      >
-        <DialogContent className="flex max-h-[calc(100dvh-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-4xl">
-          <DialogHeader className="border-b border-border/60 px-6 pb-4 pr-12 pt-6">
-            <DialogTitle>{editingEnvironmentId ? "Edit environment" : "Add environment"}</DialogTitle>
-            <DialogDescription>
+      {isEnvironmentFormPage && mode === "edit" && environments === undefined ? (
+        <div className="rounded-md border border-border px-4 py-4 text-sm text-muted-foreground">
+          Loading environment...
+        </div>
+      ) : null}
+
+      {isEnvironmentFormPage && mode === "edit" && environments !== undefined && !editingEnvironment ? (
+        <div className="space-y-3 rounded-md border border-border px-4 py-4 text-sm">
+          <div className="font-medium">Environment not found</div>
+          <div className="text-muted-foreground">The environment may have been removed or is not available in this company.</div>
+          <Button size="sm" variant="outline" asChild>
+            <Link to={ENVIRONMENTS_PATH}>Back to environments</Link>
+          </Button>
+        </div>
+      ) : null}
+
+      {isEnvironmentFormPage && (mode === "create" || editingEnvironment) ? (
+        <div className="rounded-md border border-border bg-background" data-testid="environment-form-page">
+          <div className="border-b border-border/60 px-6 pb-4 pt-6">
+            <div className="mb-4">
+              <Button size="sm" variant="ghost" asChild>
+                <Link to={ENVIRONMENTS_PATH}>
+                  <ArrowLeft className="mr-1.5 h-3.5 w-3.5" />
+                  Environments
+                </Link>
+              </Button>
+            </div>
+            <h1 className="text-lg font-semibold">{editingEnvironmentId ? "Edit environment" : "Add environment"}</h1>
+            <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
               Configure a reusable execution target for your agents. Saved changes affect future runs; Paperclip may start fresh sessions or sandbox leases after environment config changes.
-            </DialogDescription>
-          </DialogHeader>
+            </p>
+          </div>
 
-          <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
+          <div className="px-6 py-4">
             <div className="space-y-4">
               <Field label="Name" hint="Operator-facing name for this execution target.">
                 <input
@@ -1697,7 +1910,8 @@ export function CompanyEnvironments() {
 
               {editingEnvironment &&
               editingEnvironment.driver === "sandbox" &&
-              environmentForm.driver === "sandbox" ? (
+              environmentForm.driver === "sandbox" &&
+              selectedCompanyId ? (
                 <div className="space-y-2 rounded-md border border-border/60 bg-muted/20 px-3 py-3">
                   <div className="text-sm font-medium">Custom image</div>
                   <div className="text-xs text-muted-foreground">
@@ -1706,6 +1920,7 @@ export function CompanyEnvironments() {
                   </div>
                   <EnvironmentImageTemplatePanel
                     environment={editingEnvironment}
+                    companyId={selectedCompanyId}
                     providerCapability={editingSandboxCapability}
                     providerDisplayName={editingSandboxDisplayName}
                   />
@@ -1723,6 +1938,7 @@ export function CompanyEnvironments() {
                   onCreateSecret={async (name, value) => await createSecret.mutateAsync({ name, value })}
                   onChange={(env) =>
                     setEnvironmentForm((current) => ({ ...current, envVars: env ?? {} }))}
+                  onDirtyChange={setEnvironmentVariablesDirty}
                 />
               </Field>
 
@@ -1741,10 +1957,10 @@ export function CompanyEnvironments() {
             </div>
           </div>
 
-          <DialogFooter className="border-t border-border/60 bg-background px-6 py-4">
+          <div className="flex flex-wrap justify-end gap-2 border-t border-border/60 bg-background px-6 py-4">
             <Button
               variant="outline"
-              onClick={closeEnvironmentDialog}
+              onClick={closeEnvironmentForm}
               disabled={environmentMutation.isPending}
             >
               Cancel
@@ -1770,9 +1986,9 @@ export function CompanyEnvironments() {
                   ? "Save environment"
                   : "Create environment"}
             </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

@@ -3,7 +3,9 @@ import type { Readable } from "node:stream";
 
 export interface PutObjectInput {
   objectKey: string;
-  body: Buffer;
+  // Readable bodies stream straight to the backend (contentLength must be the
+  // exact byte size); Buffer stays supported for small payloads.
+  body: Buffer | Readable;
   contentType: string;
   contentLength: number;
 }

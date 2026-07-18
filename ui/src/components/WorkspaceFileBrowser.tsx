@@ -128,7 +128,7 @@ function WorkspaceFileBreadcrumbs({
   if (!rootLabel && segments.length === 0) return null;
 
   return (
-    <nav aria-label="Current folder" className="min-w-0 overflow-hidden text-[11px] text-muted-foreground">
+    <nav aria-label="Current folder" className="min-w-0 overflow-hidden text-(length:--text-micro) text-muted-foreground">
       <ol className="flex min-w-0 items-center gap-1 overflow-hidden">
         {rootLabel ? (
           <li className="min-w-0 shrink">
@@ -185,7 +185,7 @@ function WorkspaceFileRow({ item, treeItemId, selected, highlighted, depth, onOp
       onMouseEnter={onHover}
       title={item.displayPath}
       className={cn(
-        "flex min-h-[36px] cursor-pointer items-center gap-2 rounded-md py-1.5 pr-2 sm:min-h-0",
+        "flex min-h-(--sz-36px) cursor-pointer items-center gap-2 rounded-md py-1.5 pr-2 sm:min-h-0",
         selected ? "bg-accent text-foreground" : highlighted ? "bg-accent/50" : "hover:bg-accent/60",
       )}
       style={{ paddingLeft: `${0.5 + depth * 0.875}rem` }}
@@ -384,7 +384,7 @@ function WorkspaceFileTree({
             aria-expanded={expanded}
             title={node.key}
             onClick={() => onToggleFolder(node.key)}
-            className="flex min-h-[32px] w-full items-center gap-1.5 rounded-md py-1 pr-2 text-left hover:bg-accent/60"
+            className="flex min-h-(--sz-32px) w-full items-center gap-1.5 rounded-md py-1 pr-2 text-left hover:bg-accent/60"
             style={{ paddingLeft: `${0.25 + node.depth * 0.875}rem` }}
           >
             {expanded ? (
@@ -400,7 +400,7 @@ function WorkspaceFileTree({
               {children.map(renderNode)}
               {loading ? (
                 <div
-                  className="flex min-h-[30px] items-center gap-2 py-1 pr-2 text-xs text-muted-foreground"
+                  className="flex min-h-(--sz-30px) items-center gap-2 py-1 pr-2 text-xs text-muted-foreground"
                   style={{ paddingLeft: `${1 + (node.depth + 1) * 0.875}rem` }}
                 >
                   <Loader2 aria-hidden="true" className="h-3.5 w-3.5 animate-spin" />
@@ -411,7 +411,7 @@ function WorkspaceFileTree({
                 <button
                   type="button"
                   onClick={() => onLoadMoreFolder?.(node.key)}
-                  className="flex min-h-[30px] w-full items-center gap-2 rounded-md py-1 pr-2 text-left text-xs text-muted-foreground hover:bg-accent/60 hover:text-foreground"
+                  className="flex min-h-(--sz-30px) w-full items-center gap-2 rounded-md py-1 pr-2 text-left text-xs text-muted-foreground hover:bg-accent/60 hover:text-foreground"
                   style={{ paddingLeft: `${1 + (node.depth + 1) * 0.875}rem` }}
                 >
                   <span className="h-3.5 w-3.5 shrink-0" />
@@ -1072,7 +1072,7 @@ export function WorkspaceFileBrowser({
       <div ref={scrollContainerRef} className="min-h-0 flex-1 overflow-y-auto">{body}</div>
 
       {lazyTruncatedFolders.has(currentFolderKey) || (data?.truncated && !isLazyBrowse) ? (
-        <div className="border-t border-border pt-2 text-[11px] text-muted-foreground">
+        <div className="border-t border-border pt-2 text-(length:--text-micro) text-muted-foreground">
           {isLazyBrowse ? (
             <button
               type="button"

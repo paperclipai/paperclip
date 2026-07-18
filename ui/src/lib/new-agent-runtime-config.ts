@@ -12,6 +12,7 @@ export function buildNewAgentRuntimeConfig(input?: {
       enabled: input?.heartbeatEnabled ?? defaultCreateValues.heartbeatEnabled,
       intervalSec: input?.intervalSec ?? defaultCreateValues.intervalSec,
       wakeOnDemand: true,
+      skipTimerWhenNoActionableWork: true,
       cooldownSec: 10,
       maxConcurrentRuns: AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
     },

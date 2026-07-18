@@ -48,6 +48,24 @@ describe("issue validators", () => {
     expect(parsed.comment).toBe("Done\n\n- Verified the route");
   });
 
+  it("keeps issue attribution fields create-only", () => {
+    const created = createIssueSchema.parse({
+      title: "Preserve attribution input for route checks",
+      createdByUserId: "spoofed-creator",
+      responsibleUserId: "spoofed-responsible",
+    });
+    const updated = updateIssueSchema.parse({
+      title: "Do not update attribution",
+      createdByUserId: "spoofed-creator",
+      responsibleUserId: "spoofed-responsible",
+    });
+
+    expect(created.createdByUserId).toBe("spoofed-creator");
+    expect(created.responsibleUserId).toBe("spoofed-responsible");
+    expect(updated).not.toHaveProperty("createdByUserId");
+    expect(updated).not.toHaveProperty("responsibleUserId");
+  });
+
   it("allows false-positive recovery resolutions to atomically restore the source issue status", () => {
     expect(
       resolveIssueRecoveryActionSchema.parse({
@@ -227,12 +245,18 @@ describe("issue validators", () => {
     }).status).toBe("backlog");
   });
 
-  it("defaults issue work mode to standard and accepts ask and planning", () => {
+  it("defaults issue work mode to standard and accepts ask, planning, and skill_test", () => {
     expect(createIssueSchema.parse({ title: "Plan first" }).workMode).toBe("standard");
     expect(createIssueSchema.parse({ title: "Ask first", workMode: "ask" }).workMode).toBe("ask");
     expect(createIssueSchema.parse({ title: "Plan first", workMode: "planning" }).workMode).toBe("planning");
+    expect(createIssueSchema.parse({
+      title: "Harness test",
+      workMode: "skill_test",
+      harnessKind: "skill_test",
+    })).toMatchObject({ workMode: "skill_test", harnessKind: "skill_test" });
     expect(updateIssueSchema.parse({ workMode: "ask" }).workMode).toBe("ask");
     expect(updateIssueSchema.parse({ workMode: "planning" }).workMode).toBe("planning");
+    expect(updateIssueSchema.parse({ workMode: "skill_test" }).workMode).toBe("skill_test");
     expect(suggestedTaskDraftSchema.parse({
       clientKey: "ask-child",
       title: "Ask child",
@@ -243,6 +267,11 @@ describe("issue validators", () => {
       title: "Plan child",
       workMode: "planning",
     }).workMode).toBe("planning");
+    expect(suggestedTaskDraftSchema.parse({
+      clientKey: "skill-test-child",
+      title: "Test child",
+      workMode: "skill_test",
+    }).workMode).toBe("skill_test");
   });
 
   it("validates blocked inbox attention payloads and requires redacted secret fields", () => {

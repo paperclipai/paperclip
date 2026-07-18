@@ -53,7 +53,7 @@ import {
 const companyId = "company-storybook";
 const issueListViewKey = "storybook:issue-management:list";
 const scopedIssueListViewKey = `${issueListViewKey}:${companyId}`;
-const visibleColumns: InboxIssueColumn[] = ["status", "id", "assignee", "project", "workspace", "labels", "updated"];
+const visibleColumns: InboxIssueColumn[] = ["status", "id", "assignee", "kickedOffBy", "project", "workspace", "labels", "updated"];
 
 const issueDocumentSummaries = storybookIssueDocuments.map(({ body: _body, ...summary }) => summary);
 const primaryIssue: Issue = {
@@ -61,6 +61,19 @@ const primaryIssue: Issue = {
   planDocument: storybookIssueDocuments.find((document) => document.key === "plan") ?? null,
   documentSummaries: issueDocumentSummaries,
   currentExecutionWorkspace: storybookExecutionWorkspaces[0]!,
+};
+const modelOverrideIssue: Issue = {
+  ...primaryIssue,
+  id: "issue-model-override-visual",
+  identifier: "MOD-1",
+  issueNumber: 1,
+  title: "Verify task-level model override provenance",
+  assigneeAdapterOverrides: {
+    adapterConfig: {
+      model: "gpt-5.6",
+      modelReasoningEffort: "high",
+    },
+  },
 };
 const childIssues = storybookIssues.filter((issue) => issue.parentId === primaryIssue.id);
 const longProject: Project = {
@@ -123,6 +136,35 @@ const longValueIssue: Issue = {
     },
   ],
 };
+const attributionIssues: Issue[] = [
+  {
+    ...primaryIssue,
+    id: "issue-attribution-explicit",
+    title: "Human kickoff with explicit responsible owner",
+    createdByAgentId: null,
+    createdByUserId: "user-board",
+    responsibleUserId: "user-product",
+    assigneeAgentId: "agent-codex",
+  },
+  {
+    ...primaryIssue,
+    id: "issue-attribution-collapsed",
+    title: "Responsible auto-derived from kickoff user",
+    createdByAgentId: null,
+    createdByUserId: "user-board",
+    responsibleUserId: null,
+    assigneeAgentId: "agent-codex",
+  },
+  {
+    ...primaryIssue,
+    id: "issue-attribution-unassigned",
+    title: "Agent-created task with no responsible human",
+    createdByAgentId: "agent-codex",
+    createdByUserId: null,
+    responsibleUserId: null,
+    assigneeAgentId: "agent-qa",
+  },
+];
 
 function Section({
   eyebrow,
@@ -168,6 +210,16 @@ function hydrateStorybookQueries(queryClient: ReturnType<typeof useQueryClient>)
           id: "user-board",
           email: "riley@paperclip.local",
           name: "Riley Board",
+          image: null,
+        },
+      },
+      {
+        principalId: "user-product",
+        status: "active",
+        user: {
+          id: "user-product",
+          email: "morgan@paperclip.local",
+          name: "Morgan Product",
           image: null,
         },
       },
@@ -272,6 +324,27 @@ function IssuePropertiesLongValuePane({ inline = false }: { inline?: boolean }) 
   );
 }
 
+function IssuePropertiesModelOverridePane() {
+  return (
+    <StorybookData>
+      <div className="paperclip-story p-6">
+        <div className="mx-auto w-80 border border-border bg-card">
+          <div className="border-b border-border px-4 py-2 text-sm font-medium">Properties</div>
+          <div className="p-4">
+            <IssueProperties
+              issue={modelOverrideIssue}
+              childIssues={[]}
+              onAddSubIssue={() => undefined}
+              onUpdate={() => undefined}
+              inline
+            />
+          </div>
+        </div>
+      </div>
+    </StorybookData>
+  );
+}
+
 function ColumnConfigurationMatrix() {
   const [columns, setColumns] = useState<InboxIssueColumn[]>(visibleColumns);
   const visibleColumnSet = useMemo(() => new Set(columns), [columns]);
@@ -289,8 +362,9 @@ function ColumnConfigurationMatrix() {
       <div className="overflow-hidden rounded-lg border border-border bg-background/70">
         <div className="grid grid-cols-[minmax(0,1fr)_minmax(420px,0.9fr)] items-center border-b border-border px-4 py-2 text-[11px] font-semibold uppercase text-muted-foreground">
           <span>Issue</span>
-          <span className="grid grid-cols-[6rem_7rem_9rem_6rem_4.5rem] gap-2">
+          <span className="grid grid-cols-[6rem_6rem_7rem_9rem_6rem_4.5rem] gap-2">
             <span>Assignee</span>
+            <span>Kicked off by</span>
             <span>Project</span>
             <span>Workspace</span>
             <span>Tags</span>
@@ -317,6 +391,8 @@ function ColumnConfigurationMatrix() {
               workspaceName={issue.currentExecutionWorkspace?.name ?? "Board UI"}
               assigneeName={issue.assigneeAgentId ? storybookAgentMap.get(issue.assigneeAgentId)?.name ?? null : null}
               assigneeUserName={issue.assigneeUserId ? "Riley Board" : null}
+              creatorAgentName={issue.createdByAgentId ? storybookAgentMap.get(issue.createdByAgentId)?.name ?? null : null}
+              creatorUserName={issue.createdByUserId ? "Riley Board" : null}
               currentUserId="user-board"
               parentIdentifier={storybookIssues.find((candidate) => candidate.id === issue.parentId)?.identifier ?? null}
               parentTitle={storybookIssues.find((candidate) => candidate.id === issue.parentId)?.title ?? null}
@@ -746,6 +822,19 @@ function IssueManagementStories() {
                 />
               </div>
             </div>
+            <div className="mt-5 grid gap-4 lg:grid-cols-3">
+              {attributionIssues.map((issue) => (
+                <div key={issue.id} className="rounded-lg border border-border bg-background/70 p-4">
+                  <div className="mb-3 truncate text-sm font-medium">{issue.title}</div>
+                  <IssueProperties
+                    issue={issue}
+                    childIssues={[]}
+                    onUpdate={() => undefined}
+                    inline
+                  />
+                </div>
+              ))}
+            </div>
           </Section>
 
           <Section eyebrow="IssueDocumentsSection" title="Documents list with plan and notes documents">
@@ -831,6 +920,11 @@ export const IssuePropertiesLongValuesDesktop: Story = {
 export const IssuePropertiesLongValuesMobile: Story = {
   name: "IssueProperties - long values mobile inline",
   render: () => <IssuePropertiesLongValuePane inline />,
+};
+
+export const IssuePropertiesModelOverride: Story = {
+  name: "IssueProperties - task model override",
+  render: () => <IssuePropertiesModelOverridePane />,
 };
 
 function ModelProfileLedgerStandalone() {

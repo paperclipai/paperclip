@@ -60,10 +60,11 @@ export interface AdapterDisplayInfo {
 
 const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
   acpx_local: {
-    label: "ACPX",
-    description: "Experimental ACPX multi-agent harness",
+    label: "ACPX (retired)",
+    description: "Retired standalone ACPX adapter",
     icon: Bot,
-    experimental: true,
+    comingSoon: true,
+    disabledLabel: "Use Claude Code or Codex with the ACP engine",
     hideFromVisualSelection: true,
   },
   claude_local: {

@@ -25,6 +25,7 @@ import {
   type SourceTrustMetadata,
 } from "@paperclipai/shared";
 import { notFound } from "../errors.js";
+import { visibleIssueCondition } from "./issue-visibility.js";
 import { isLowTrustQuarantined, LOW_TRUST_QUARANTINED_BODY } from "./source-trust.js";
 
 const PREVIEW_TEXT_MAX_LENGTH = 500;
@@ -300,7 +301,7 @@ export function pipelineCaseOutputsService(db: Db) {
           eq(pipelineCaseIssueLinks.caseId, caseId),
           isNull(pipelineCaseIssueLinks.retiredAt),
           eq(issues.companyId, companyId),
-          isNull(issues.hiddenAt),
+          visibleIssueCondition(),
           isNull(issues.cancelledAt),
           ne(issues.status, "cancelled"),
         ))

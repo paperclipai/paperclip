@@ -5,13 +5,14 @@ import { issues, projects, projectWorkspaces } from "@paperclipai/db";
 import {
   findWorkspaceCommandDefinition,
   matchWorkspaceRuntimeServiceToCommand,
+  reconcileExecutionWorkspaceBranchSchema,
   updateExecutionWorkspaceSchema,
   workspaceOverviewQuerySchema,
   workspaceRuntimeControlTargetSchema,
 } from "@paperclipai/shared";
 import type { WorkspaceRuntimeDesiredState, WorkspaceRuntimeServiceStateMap } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
-import { accessService, executionWorkspaceService, logActivity, workspaceOperationService } from "../services/index.js";
+import { accessService, executionWorkspaceService, heartbeatService, logActivity, workspaceOperationService } from "../services/index.js";
 import { mergeExecutionWorkspaceConfig, readExecutionWorkspaceConfig } from "../services/execution-workspaces.js";
 import { parseProjectExecutionWorkspacePolicy } from "../services/execution-workspace-policy.js";
 import { readProjectWorkspaceRuntimeConfig } from "../services/project-workspace-runtime-config.js";
@@ -24,7 +25,8 @@ import {
   startRuntimeServicesForWorkspaceControl,
   stopRuntimeServicesForExecutionWorkspace,
 } from "../services/workspace-runtime.js";
-import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
+import { logger } from "../middleware/logger.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
   collectExecutionWorkspaceCommandPaths,
@@ -41,6 +43,9 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
   const svc = executionWorkspaceService(db);
   const access = accessService(db);
   const workspaceOperationsSvc = workspaceOperationService(db);
+  const heartbeat = heartbeatService(db, {
+    pluginWorkerManager: opts.pluginWorkerManager,
+  });
   const environmentRuntime = environmentRuntimeService(db, {
     pluginWorkerManager: opts.pluginWorkerManager,
   });
@@ -104,24 +109,16 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
 
   router.get("/execution-workspaces/:id", async (req, res) => {
     const id = req.params.id as string;
-    const workspace = await svc.getById(id);
-    if (!workspace) {
-      res.status(404).json({ error: "Execution workspace not found" });
-      return;
-    }
-    assertCompanyAccess(req, workspace.companyId);
+    const workspace = await getAccessibleResource(req, res, svc.getById(id), "Execution workspace not found");
+    if (!workspace) return;
     if (!(await assertExecutionWorkspaceReadAllowed(req, res, workspace.companyId))) return;
     res.json(workspace);
   });
 
   router.get("/execution-workspaces/:id/close-readiness", async (req, res) => {
     const id = req.params.id as string;
-    const workspace = await svc.getById(id);
-    if (!workspace) {
-      res.status(404).json({ error: "Execution workspace not found" });
-      return;
-    }
-    assertCompanyAccess(req, workspace.companyId);
+    const workspace = await getAccessibleResource(req, res, svc.getById(id), "Execution workspace not found");
+    if (!workspace) return;
     if (!(await assertExecutionWorkspaceReadAllowed(req, res, workspace.companyId))) return;
     const readiness = await svc.getCloseReadiness(id);
     if (!readiness) {
@@ -133,12 +130,8 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
 
   router.get("/execution-workspaces/:id/workspace-operations", async (req, res) => {
     const id = req.params.id as string;
-    const workspace = await svc.getById(id);
-    if (!workspace) {
-      res.status(404).json({ error: "Execution workspace not found" });
-      return;
-    }
-    assertCompanyAccess(req, workspace.companyId);
+    const workspace = await getAccessibleResource(req, res, svc.getById(id), "Execution workspace not found");
+    if (!workspace) return;
     if (!(await assertExecutionWorkspaceReadAllowed(req, res, workspace.companyId))) return;
     const operations = await workspaceOperationsSvc.listForExecutionWorkspace(id);
     res.json(operations);
@@ -152,12 +145,8 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
       return;
     }
 
-    const existing = await svc.getById(id);
-    if (!existing) {
-      res.status(404).json({ error: "Execution workspace not found" });
-      return;
-    }
-    assertCompanyAccess(req, existing.companyId);
+    const existing = await getAccessibleResource(req, res, svc.getById(id), "Execution workspace not found");
+    if (!existing) return;
     if (!(await assertRuntimeManageAllowed(req, res, existing.companyId))) return;
 
     await assertCanManageExecutionWorkspaceRuntimeServices(db, req, {
@@ -469,6 +458,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
       actorId: actor.actorId,
       agentId: actor.agentId,
       runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
       action: `execution_workspace.runtime_${action}`,
       entityType: "execution_workspace",
       entityId: existing.id,
@@ -491,14 +481,99 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
   router.post("/execution-workspaces/:id/runtime-services/:action", validate(workspaceRuntimeControlTargetSchema), handleExecutionWorkspaceRuntimeCommand);
   router.post("/execution-workspaces/:id/runtime-commands/:action", validate(workspaceRuntimeControlTargetSchema), handleExecutionWorkspaceRuntimeCommand);
 
+  router.post("/execution-workspaces/:id/reconcile-branch", validate(reconcileExecutionWorkspaceBranchSchema), async (req, res) => {
+    const id = req.params.id as string;
+    const existing = await getAccessibleResource(req, res, svc.getById(id), "Execution workspace not found");
+    if (!existing) return;
+    assertBoard(req);
+    if (!(await assertRuntimeManageAllowed(req, res, existing.companyId))) return;
+
+    const actor = getActorInfo(req);
+    const result = await svc.reconcileExecutionWorkspaceBranch(id, {
+      mode: req.body.mode,
+      reason: req.body.reason ?? null,
+      actor: {
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+      },
+    });
+
+    await logActivity(db, {
+      companyId: existing.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
+      action: "execution_workspace.branch_reconciled",
+      entityType: "execution_workspace",
+      entityId: existing.id,
+      details: {
+        mode: req.body.mode,
+        reason: req.body.reason ?? null,
+        fromBranch: result.inspection.fromBranch,
+        toBranch: result.inspection.toBranch,
+        fromSha: result.inspection.fromSha,
+        toSha: result.inspection.toSha,
+        ancestryVerdict: result.inspection.ancestryVerdict,
+        fingerprint: result.inspection.fingerprint,
+        sourceIssueId: existing.sourceIssueId,
+        auditCommentId: result.auditCommentId,
+        recoveryActionId: result.recoveryAction?.id ?? null,
+        rescueRef: result.rescueRef,
+        sourceIssueStatus: result.restoredSourceIssue?.status ?? null,
+        actor: {
+          type: actor.actorType,
+          id: actor.actorId,
+          source: actor.actorSource,
+        },
+      },
+    });
+
+    if (
+      result.restoredSourceIssue &&
+      (result.restoredSourceIssue.status === "todo" || result.restoredSourceIssue.status === "in_review") &&
+      result.sourceIssueStatusChanged &&
+      result.restoredSourceIssue.assigneeAgentId
+    ) {
+      void heartbeat.wakeup(result.restoredSourceIssue.assigneeAgentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_recovery_action_restored",
+        payload: {
+          issueId: result.restoredSourceIssue.id,
+          recoveryActionId: result.recoveryAction?.id ?? null,
+          executionWorkspaceId: existing.id,
+          rescueRef: result.rescueRef?.branchName ?? null,
+          mutation: "execution_workspace_quarantine_restore",
+        },
+        requestedByActorType: actor.actorType,
+        requestedByActorId: actor.actorId,
+        contextSnapshot: {
+          issueId: result.restoredSourceIssue.id,
+          taskId: result.restoredSourceIssue.id,
+          wakeReason: "issue_recovery_action_restored",
+          source: "execution_workspace.quarantine_restore",
+          recoveryActionId: result.recoveryAction?.id ?? null,
+          executionWorkspaceId: existing.id,
+          rescueRef: result.rescueRef?.branchName ?? null,
+        },
+      }).catch((err) =>
+        logger.warn(
+          { err, issueId: result.restoredSourceIssue?.id, agentId: result.restoredSourceIssue?.assigneeAgentId },
+          "failed to wake agent after execution workspace quarantine restore",
+        ));
+    }
+
+    res.json(result);
+  });
+
   router.patch("/execution-workspaces/:id", validate(updateExecutionWorkspaceSchema), async (req, res) => {
     const id = req.params.id as string;
-    const existing = await svc.getById(id);
-    if (!existing) {
-      res.status(404).json({ error: "Execution workspace not found" });
-      return;
-    }
-    assertCompanyAccess(req, existing.companyId);
+    const existing = await getAccessibleResource(req, res, svc.getById(id), "Execution workspace not found");
+    if (!existing) return;
     if (!(await assertRuntimeManageAllowed(req, res, existing.companyId))) return;
     assertNoAgentHostWorkspaceCommandMutation(
       req,
@@ -662,6 +737,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
       actorId: actor.actorId,
       agentId: actor.agentId,
       runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
       action: "execution_workspace.updated",
       entityType: "execution_workspace",
       entityId: workspace.id,

@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
-import type { CompanySecret } from "@paperclipai/shared";
+import type { CompanySecret, UserSecretDefinition } from "@paperclipai/shared";
 import {
   computeDuplicateNames,
   computeRowHealth,
+  computeUserSecretRowHealth,
   emptyRow,
   envKeyFromSecretName,
   planSourceSwitch,
@@ -13,9 +14,35 @@ import {
   type EnvRow,
 } from "./model";
 
+function makeUserSecretDefinition(overrides: { key: string; status?: "active" | "disabled" | "archived" }): UserSecretDefinition {
+  return {
+    id: `def-${overrides.key}`,
+    companyId: "co",
+    key: overrides.key,
+    name: overrides.key.toUpperCase(),
+    description: null,
+    status: overrides.status ?? "active",
+    provider: "local_encrypted",
+    managedMode: "paperclip_managed",
+    providerConfigId: null,
+    providerMetadata: null,
+    usageGuidance: null,
+    createdByAgentId: null,
+    createdByUserId: null,
+    updatedByAgentId: null,
+    updatedByUserId: null,
+    deletedAt: null,
+    createdAt: new Date(0),
+    updatedAt: new Date(0),
+  };
+}
+
 function makeSecret(overrides: Partial<CompanySecret> & Pick<CompanySecret, "id">): CompanySecret {
   return {
     companyId: "co",
+    scope: "company",
+    ownerUserId: null,
+    userSecretDefinitionId: null,
     key: overrides.id,
     name: overrides.id.toUpperCase(),
     provider: "local_encrypted",
@@ -43,18 +70,38 @@ describe("rowsFromValue", () => {
     expect(rowsFromValue({})).toEqual([]);
   });
 
-  it("maps legacy string, plain, and secret_ref bindings", () => {
+  it("maps legacy string, plain, secret_ref, and user_secret_ref bindings", () => {
     const rows = rowsFromValue({
       LEGACY: "raw",
       PLAIN: { type: "plain", value: "v" },
       REF: { type: "secret_ref", secretId: "s1", version: 2 },
       REF_LATEST: { type: "secret_ref", secretId: "s2" },
+      USER_REF: { type: "user_secret_ref", key: "github_token", version: "latest", required: false },
     });
-    expect(rows.map((r) => ({ name: r.name, source: r.source, textValue: r.textValue, secretId: r.secretId, version: r.version }))).toEqual([
-      { name: "LEGACY", source: "text", textValue: "raw", secretId: "", version: "latest" },
-      { name: "PLAIN", source: "text", textValue: "v", secretId: "", version: "latest" },
-      { name: "REF", source: "secret", textValue: "", secretId: "s1", version: 2 },
-      { name: "REF_LATEST", source: "secret", textValue: "", secretId: "s2", version: "latest" },
+    expect(
+      rows.map((r) => ({
+        name: r.name,
+        source: r.source,
+        textValue: r.textValue,
+        secretId: r.secretId,
+        userSecretKey: r.userSecretKey,
+        required: r.required,
+        version: r.version,
+      })),
+    ).toEqual([
+      { name: "LEGACY", source: "text", textValue: "raw", secretId: "", userSecretKey: "", required: true, version: "latest" },
+      { name: "PLAIN", source: "text", textValue: "v", secretId: "", userSecretKey: "", required: true, version: "latest" },
+      { name: "REF", source: "secret", textValue: "", secretId: "s1", userSecretKey: "", required: true, version: 2 },
+      { name: "REF_LATEST", source: "secret", textValue: "", secretId: "s2", userSecretKey: "", required: true, version: "latest" },
+      {
+        name: "USER_REF",
+        source: "user_secret",
+        textValue: "",
+        secretId: "",
+        userSecretKey: "github_token",
+        required: false,
+        version: "latest",
+      },
     ]);
   });
 });
@@ -77,15 +124,21 @@ describe("valueFromRows (emit semantics)", () => {
     expect(valueFromRows([row({ name: "A", source: "secret", secretId: "" })])).toBeUndefined();
   });
 
-  it("emits plain and secret_ref bindings", () => {
+  it("drops user-secret rows without a chosen definition key", () => {
+    expect(valueFromRows([row({ name: "A", source: "user_secret", userSecretKey: "" })])).toBeUndefined();
+  });
+
+  it("emits plain, secret_ref, and user_secret_ref bindings", () => {
     expect(
       valueFromRows([
         row({ name: "A", source: "text", textValue: "1" }),
         row({ name: "B", source: "secret", secretId: "s1", version: 2 }),
+        row({ name: "C", source: "user_secret", userSecretKey: "github_token", required: false }),
       ]),
     ).toEqual({
       A: { type: "plain", value: "1" },
       B: { type: "secret_ref", secretId: "s1", version: 2 },
+      C: { type: "user_secret_ref", key: "github_token", version: "latest", required: false },
     });
   });
 
@@ -154,6 +207,25 @@ describe("computeRowHealth", () => {
 
   it("flags a disabled secret as a warning", () => {
     expect(computeRowHealth({ ...emptyRow(), source: "secret", secretId: "disabled" }, secrets)?.kind).toBe("disabled");
+  });
+});
+
+describe("computeUserSecretRowHealth", () => {
+  const definitions = [
+    makeUserSecretDefinition({ key: "active" }),
+    makeUserSecretDefinition({ key: "disabled", status: "disabled" }),
+  ];
+
+  it("returns null for healthy user-secret refs and non-user-secret rows", () => {
+    expect(computeUserSecretRowHealth({ ...emptyRow(), source: "text", name: "A" }, definitions)).toBeNull();
+    expect(
+      computeUserSecretRowHealth({ ...emptyRow(), source: "user_secret", userSecretKey: "active" }, definitions),
+    ).toBeNull();
+  });
+
+  it("flags missing and disabled user-secret definitions", () => {
+    expect(computeUserSecretRowHealth({ ...emptyRow(), source: "user_secret", userSecretKey: "gone" }, definitions)?.kind).toBe("missing");
+    expect(computeUserSecretRowHealth({ ...emptyRow(), source: "user_secret", userSecretKey: "disabled" }, definitions)?.kind).toBe("disabled");
   });
 });
 

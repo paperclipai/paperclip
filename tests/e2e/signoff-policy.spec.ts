@@ -75,6 +75,27 @@ async function getIssueRunLockState(board: APIRequestContext, issueId: string): 
   };
 }
 
+async function retryAgentPatchWithCurrentLockOnConflict(
+  board: APIRequestContext,
+  agent: AgentAuth,
+  issueId: string,
+  failedRes: Awaited<ReturnType<APIRequestContext["patch"]>>,
+  patchData: Record<string, unknown>,
+) {
+  if (failedRes.status() !== 409) return failedRes;
+  const issueRunLock = await getIssueRunLockState(board, issueId);
+  if (issueRunLock.assigneeAgentId !== agent.agentId) return failedRes;
+
+  const lockedRunId = issueRunLock.checkoutRunId ?? issueRunLock.executionRunId;
+  if (!lockedRunId) return failedRes;
+
+  const retryRes = await agent.request.patch(`${BASE_URL}/api/issues/${issueId}`, {
+    headers: { "X-Paperclip-Run-Id": lockedRunId },
+    data: patchData,
+  });
+  return retryRes.ok() ? retryRes : failedRes;
+}
+
 /** PATCH an issue as an agent with a fresh heartbeat run ID. */
 async function agentPatch(
   board: APIRequestContext,
@@ -99,6 +120,12 @@ async function agentCheckoutAndPatch(
   patchData: Record<string, unknown>,
 ) {
   const runId = await invokeHeartbeat(board, agent.agentId);
+  const directPatchRes = await agent.request.patch(`${BASE_URL}/api/issues/${issueId}`, {
+    headers: { "X-Paperclip-Run-Id": runId },
+    data: patchData,
+  });
+  if (directPatchRes.ok()) return directPatchRes;
+
   // Checkout (sets executionRunId so PATCH is allowed)
   const checkoutRes = await agent.request.post(`${BASE_URL}/api/issues/${issueId}/checkout`, {
     headers: { "X-Paperclip-Run-Id": runId },
@@ -106,13 +133,8 @@ async function agentCheckoutAndPatch(
   });
   if (!checkoutRes.ok()) {
     if (checkoutRes.status() === 409) {
-      const issueRunLock = await getIssueRunLockState(board, issueId);
-      const lockedRunId = issueRunLock.checkoutRunId ?? issueRunLock.executionRunId;
-      const res = await agent.request.patch(`${BASE_URL}/api/issues/${issueId}`, {
-        headers: { "X-Paperclip-Run-Id": lockedRunId ?? runId },
-        data: patchData,
-      });
-      if (res.ok() && issueRunLock.assigneeAgentId === agent.agentId) {
+      const res = await retryAgentPatchWithCurrentLockOnConflict(board, agent, issueId, checkoutRes, patchData);
+      if (res.ok()) {
         return res;
       }
     }
@@ -135,7 +157,7 @@ async function agentCheckoutAndPatch(
     headers: { "X-Paperclip-Run-Id": runId },
     data: patchData,
   });
-  return res;
+  return retryAgentPatchWithCurrentLockOnConflict(board, agent, issueId, res, patchData);
 }
 
 async function setupCompany(boardRequest: APIRequestContext): Promise<TestContext> {
@@ -374,10 +396,14 @@ test.describe("Signoff execution policy", () => {
     const issueId = issue.id;
 
     // Executor marks done → routes to reviewer
-    await agentCheckoutAndPatch(
+    const doneRes = await agentCheckoutAndPatch(
       ctx.boardRequest, ctx.executor, issueId, ["in_progress"],
       { status: "done", comment: "Done." },
     );
+    expect(doneRes.ok()).toBe(true);
+    const doneIssue = await doneRes.json();
+    expect(doneIssue.status).toBe("in_review");
+    expect(doneIssue.assigneeAgentId).toBe(ctx.reviewer.agentId);
 
     // Reviewer tries to approve without comment → should fail
     const noCommentRes = await agentPatch(

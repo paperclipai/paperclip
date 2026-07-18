@@ -11,6 +11,7 @@ export const agentApiKeys = pgTable(
     companyId: uuid("company_id").notNull().references(() => companies.id),
     name: text("name").notNull(),
     keyHash: text("key_hash").notNull(),
+    responsibleUserId: text("responsible_user_id"),
     scopeConfig: jsonb("scope_config").$type<AgentApiKeyScope | null>(),
     lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
     revokedAt: timestamp("revoked_at", { withTimezone: true }),
