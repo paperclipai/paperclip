@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import { z } from "zod";
-import { and, asc, desc, eq, inArray, isNull, notInArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -717,6 +717,139 @@ function successfulRunHandoffStateFromActivity(row: {
       ? redactSensitiveText(detectedProgressSummary)
       : null,
     createdAt: row.createdAt,
+  };
+}
+
+type SuccessfulRunHandoffSuccessionGuard = {
+  sourceRunId: string;
+  note: string;
+};
+
+function buildHeartbeatRunIssueComment(resultJson: unknown): string | null {
+  if (!resultJson || typeof resultJson !== "object" || Array.isArray(resultJson)) return null;
+  const record = resultJson as Record<string, unknown>;
+  return (
+    readNonEmptyString(record.summary)
+    ?? readNonEmptyString(record.result)
+    ?? readNonEmptyString(record.message)
+    ?? null
+  );
+}
+
+function normalizeWhitespace(value: string) {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function summaryNeedsSuccessorSemantics(summary: string) {
+  const normalized = normalizeWhitespace(summary).toLowerCase();
+  const notReadySignals = [
+    "not ready",
+    "not-ready",
+    "still fails",
+    "still failing",
+    "remaining blocker",
+  ];
+  const successorSignals = [
+    "next authoritative blocker",
+    "next blocker",
+    "follow-up",
+    "follow up",
+    "next action",
+  ];
+  return notReadySignals.some((signal) => normalized.includes(signal))
+    && successorSignals.some((signal) => normalized.includes(signal));
+}
+
+function buildSuccessfulRunHandoffSuccessionNeededNote(input: {
+  issueIdentifier: string | null;
+  sourceRunId: string;
+  summary: string;
+}) {
+  const issueLabel = input.issueIdentifier ?? "this issue";
+  const excerpt = normalizeWhitespace(input.summary).slice(0, 220);
+  return [
+    "Successful-run handoff preserved succession semantics instead of silently closing this issue.",
+    "",
+    `- Source issue: \`${issueLabel}\``,
+    `- Source run: \`${input.sourceRunId}\``,
+    "- Final summary still reads as not-ready and names follow-up work, but no open successor sibling is linked yet.",
+    `- Summary excerpt: ${excerpt}`,
+    "",
+    "Required next step: create or link the successor child on the same parent with the same assignee, or replace this review state with the correct blocker/delegation path before marking the issue done.",
+  ].join("\n");
+}
+
+export async function resolveSuccessfulRunHandoffSuccessionGuard(input: {
+  db: Db;
+  issue: typeof issueRows.$inferSelect;
+  actor: ReturnType<typeof getActorInfo>;
+  requestedStatus: string | undefined;
+}) : Promise<SuccessfulRunHandoffSuccessionGuard | null> {
+  if (input.requestedStatus !== "done") return null;
+  if (input.actor.actorType !== "agent" || !input.actor.agentId || !input.actor.runId) return null;
+  if (!input.issue.parentId) return null;
+
+  const correctiveRun = await input.db
+    .select({
+      id: heartbeatRuns.id,
+      companyId: heartbeatRuns.companyId,
+      agentId: heartbeatRuns.agentId,
+      contextSnapshot: heartbeatRuns.contextSnapshot,
+    })
+    .from(heartbeatRuns)
+    .where(and(eq(heartbeatRuns.id, input.actor.runId), eq(heartbeatRuns.companyId, input.issue.companyId)))
+    .then((rows) => rows[0] ?? null);
+  if (!correctiveRun || correctiveRun.agentId !== input.actor.agentId) return null;
+
+  const correctiveContext =
+    correctiveRun.contextSnapshot && typeof correctiveRun.contextSnapshot === "object" && !Array.isArray(correctiveRun.contextSnapshot)
+      ? correctiveRun.contextSnapshot as Record<string, unknown>
+      : null;
+  if (!correctiveContext || readNonEmptyString(correctiveContext.wakeReason) !== "finish_successful_run_handoff") {
+    return null;
+  }
+
+  const sourceRunId =
+    readNonEmptyString(correctiveContext.sourceRunId)
+    ?? readNonEmptyString(correctiveContext.resumeFromRunId);
+  if (!sourceRunId) return null;
+
+  const sourceRun = await input.db
+    .select({
+      id: heartbeatRuns.id,
+      companyId: heartbeatRuns.companyId,
+      resultJson: heartbeatRuns.resultJson,
+    })
+    .from(heartbeatRuns)
+    .where(and(eq(heartbeatRuns.id, sourceRunId), eq(heartbeatRuns.companyId, input.issue.companyId)))
+    .then((rows) => rows[0] ?? null);
+  if (!sourceRun) return null;
+
+  const summary = buildHeartbeatRunIssueComment(sourceRun.resultJson);
+  if (!summary || !summaryNeedsSuccessorSemantics(summary)) return null;
+
+  const openSibling = await input.db
+    .select({ id: issueRows.id })
+    .from(issueRows)
+    .where(and(
+      eq(issueRows.companyId, input.issue.companyId),
+      eq(issueRows.parentId, input.issue.parentId),
+      notInArray(issueRows.status, ["done", "cancelled"]),
+      input.issue.assigneeAgentId ? eq(issueRows.assigneeAgentId, input.issue.assigneeAgentId) : isNull(issueRows.assigneeAgentId),
+      input.issue.assigneeUserId ? eq(issueRows.assigneeUserId, input.issue.assigneeUserId) : isNull(issueRows.assigneeUserId),
+      // Exclude the issue being closed so only real successors satisfy the guard.
+      sql`${issueRows.id} <> ${input.issue.id}`,
+    ))
+    .then((rows) => rows[0] ?? null);
+  if (openSibling) return null;
+
+  return {
+    sourceRunId,
+    note: buildSuccessfulRunHandoffSuccessionNeededNote({
+      issueIdentifier: input.issue.identifier,
+      sourceRunId,
+      summary,
+    }),
   };
 }
 
@@ -7802,7 +7935,7 @@ export function issueRoutes(
       Array.isArray(req.body.blockedByIssueIds)
         ? await svc.getRelationSummaries(existing.id)
         : null;
-    const {
+    let {
       comment: commentBody,
       reviewRequest,
       reopen: reopenRequested,
@@ -7992,6 +8125,18 @@ export function issueRoutes(
         : previousExecutionPolicy;
     if (normalizedAssigneeAgentId !== undefined) {
       updateFields.assigneeAgentId = normalizedAssigneeAgentId;
+    }
+    const successionGuard = await resolveSuccessfulRunHandoffSuccessionGuard({
+      db,
+      issue: existing,
+      actor,
+      requestedStatus: typeof updateFields.status === "string" ? updateFields.status : undefined,
+    });
+    if (successionGuard) {
+      updateFields.status = "in_review";
+      commentBody = commentBody
+        ? `${commentBody}\n\n${successionGuard.note}`
+        : successionGuard.note;
     }
     const monitorChanged = monitorPoliciesEqual(previousExecutionPolicy, nextExecutionPolicy) === false;
     await assertCanManageIssueMonitor(
@@ -8615,6 +8760,32 @@ export function issueRoutes(
           (item) => item.issue.identifier ?? item.issue.id,
         ),
       };
+    }
+
+    if (successionGuard && issue.assigneeAgentId) {
+      void heartbeat.wakeup(issue.assigneeAgentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_commented",
+        payload: {
+          issueId: issue.id,
+          mutation: "successful_run_handoff_succession_needed",
+          sourceRunId: successionGuard.sourceRunId,
+        },
+        idempotencyKey: `successful_run_handoff_succession_needed:${issue.id}:${successionGuard.sourceRunId}`,
+        requestedByActorType: actor.actorType,
+        requestedByActorId: actor.actorId,
+        contextSnapshot: {
+          issueId: issue.id,
+          taskId: issue.id,
+          wakeReason: "issue_commented",
+          mutation: "successful_run_handoff_succession_needed",
+          source: "successful_run_handoff",
+          sourceRunId: successionGuard.sourceRunId,
+        },
+      }).catch((err) => {
+        logger.warn({ err, issueId: issue.id }, "failed to queue successful-run handoff succession follow-up wake");
+      });
     }
 
     const assigneeChanged =
