@@ -90,6 +90,11 @@
     "publishFromCi": true
   },
   {
+    "dir": "packages/plugins/plugin-mobile-viewport-guard",
+    "name": "@paperclipai/plugin-mobile-viewport-guard",
+    "publishFromCi": true
+  },
+  {
     "dir": "server",
     "name": "@paperclipai/server",
     "publishFromCi": true
