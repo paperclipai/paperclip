@@ -230,6 +230,7 @@ import {
 } from "../log-redaction.js";
 import { redactSensitiveText } from "../redaction.js";
 import {
+  mergeTranscriptSecurityMetadata,
   redactTranscriptDiagnosticValue,
   secureTranscriptPayload,
   secureTranscriptText,
@@ -8262,13 +8263,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const sanitizedPayload = payloadSecurity.value
       ? redactCurrentUserValue(payloadSecurity.value, currentUserRedactionOptions)
       : payloadSecurity.value;
-    const securityMetadata =
-      messageSecurity.metadata && payloadSecurity.metadata
-        ? {
-          ...messageSecurity.metadata,
-          matchCount: messageSecurity.metadata.matchCount + payloadSecurity.metadata.matchCount,
-        }
-        : messageSecurity.metadata ?? payloadSecurity.metadata;
+    const securityMetadata = mergeTranscriptSecurityMetadata(
+      messageSecurity.metadata,
+      payloadSecurity.metadata,
+    );
     const issueId = readRuntimeStatusIssueIdCandidate(run) ?? null;
     const progress = buildRunEventRuntimeProgress({
       eventType: event.eventType,

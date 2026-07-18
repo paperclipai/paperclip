@@ -26,6 +26,22 @@ export interface TranscriptSecurityResult<T> {
   metadata: TranscriptSecurityMetadata | null;
 }
 
+export function mergeTranscriptSecurityMetadata(
+  first: TranscriptSecurityMetadata | null,
+  second: TranscriptSecurityMetadata | null,
+): TranscriptSecurityMetadata | null {
+  if (!first) return second;
+  if (!second) return first;
+  return {
+    ...first,
+    disposition:
+      first.disposition === "quarantined" || second.disposition === "quarantined"
+        ? "quarantined"
+        : "redacted",
+    matchCount: first.matchCount + second.matchCount,
+  };
+}
+
 export function transcriptCredentialQuarantineEnabled(env = process.env) {
   return env.PAPERCLIP_TRANSCRIPT_CREDENTIAL_QUARANTINE?.trim().toLowerCase() !== "false";
 }

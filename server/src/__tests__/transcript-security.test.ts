@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   TRANSCRIPT_QUARANTINE_MARKER,
+  mergeTranscriptSecurityMetadata,
   redactTranscriptDiagnosticValue,
   secureTranscriptPayload,
   secureTranscriptText,
@@ -79,5 +80,29 @@ describe("transcript credential security boundaries", () => {
         PAPERCLIP_TRANSCRIPT_CREDENTIAL_QUARANTINE: "false",
       } as NodeJS.ProcessEnv),
     ).toBe(false);
+  });
+
+  it("preserves quarantine when merging message and payload security metadata", () => {
+    const merged = mergeTranscriptSecurityMetadata(
+      {
+        disposition: "redacted",
+        boundary: "run_event",
+        detectorVersion: 1,
+        matchCount: 2,
+      },
+      {
+        disposition: "quarantined",
+        boundary: "run_event",
+        detectorVersion: 1,
+        matchCount: 3,
+      },
+    );
+
+    expect(merged).toEqual({
+      disposition: "quarantined",
+      boundary: "run_event",
+      detectorVersion: 1,
+      matchCount: 5,
+    });
   });
 });
