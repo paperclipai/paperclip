@@ -1,9 +1,13 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearchParams } from "@/lib/router";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
-import { agentsApi } from "../api/agents";
+import {
+  agentsApi,
+  createOrReuseAgentHireAttempt,
+  type AgentHireAttempt,
+} from "../api/agents";
 import { companySkillsApi } from "../api/companySkills";
 import { issuesApi } from "../api/issues";
 import { projectsApi } from "../api/projects";
@@ -58,6 +62,7 @@ function createValuesForAdapterType(
 
 export function NewAgent() {
   const { selectedCompanyId } = useCompany();
+  const agentHireAttemptRef = useRef<AgentHireAttempt | null>(null);
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -141,9 +146,15 @@ export function NewAgent() {
   }, [presetAdapterType]);
 
   const createAgent = useMutation({
-    mutationFn: (data: Record<string, unknown>) =>
-      agentsApi.hire(selectedCompanyId!, data),
+    mutationFn: ({
+      data,
+      idempotencyKey,
+    }: {
+      data: Record<string, unknown>;
+      idempotencyKey: string;
+    }) => agentsApi.hire(selectedCompanyId!, data, { idempotencyKey }),
     onSuccess: (result) => {
+      agentHireAttemptRef.current = null;
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(selectedCompanyId!) });
       queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(selectedCompanyId!) });
       navigate(agentUrl(result.agent));
@@ -167,8 +178,7 @@ export function NewAgent() {
         return;
       }
     }
-    createAgent.mutate(
-      buildNewAgentHirePayload({
+    const data = buildNewAgentHirePayload({
         name,
         effectiveRole,
         title,
@@ -177,8 +187,13 @@ export function NewAgent() {
         configValues,
         adapterConfig: buildAdapterConfig(),
         permissions,
-      }),
-    );
+      });
+    const attempt = createOrReuseAgentHireAttempt(agentHireAttemptRef.current, data);
+    agentHireAttemptRef.current = attempt;
+    createAgent.mutate({
+      data,
+      idempotencyKey: attempt.idempotencyKey,
+    });
   }
 
   const availableSkills = (companySkills ?? []).filter((skill) => !skill.key.startsWith("paperclipai/paperclip/"));

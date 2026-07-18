@@ -9,6 +9,7 @@ import { and, eq, isNull, lt, or, sql } from "drizzle-orm";
 import { redactEventPayload, redactSensitiveText } from "../redaction.js";
 
 const DEFAULT_LEASE_MS = 15 * 60 * 1000;
+export const AGENT_HIRE_TERMINAL_POLL_INTERVAL_MS = 150;
 
 export class AgentHireIdempotencyConflictError extends Error {
   constructor() {
@@ -262,7 +263,10 @@ export function agentHireOperationService(db: Db) {
         const operation = await getById(id);
         if (!operation || operation.status !== "pending") return operation;
         if (Date.now() >= deadline) return operation;
-        await new Promise((resolve) => setTimeout(resolve, Math.min(25, Math.max(1, deadline - Date.now()))));
+        await new Promise((resolve) => setTimeout(
+          resolve,
+          Math.min(AGENT_HIRE_TERMINAL_POLL_INTERVAL_MS, Math.max(1, deadline - Date.now())),
+        ));
       } while (true);
     },
   };

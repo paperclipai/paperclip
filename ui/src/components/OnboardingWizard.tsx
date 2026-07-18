@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useRef } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { AdapterEnvironmentTestResult } from "@paperclipai/shared";
 import { useLocation, useNavigate, useParams } from "@/lib/router";
@@ -6,7 +6,11 @@ import { useDialog } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
 import { companiesApi } from "../api/companies";
 import { goalsApi } from "../api/goals";
-import { agentsApi } from "../api/agents";
+import {
+  agentsApi,
+  createOrReuseAgentHireAttempt,
+  type AgentHireAttempt,
+} from "../api/agents";
 import { approvalsApi } from "../api/approvals";
 import { issuesApi } from "../api/issues";
 import { projectsApi } from "../api/projects";
@@ -101,6 +105,7 @@ function loadSavedState(): Record<string, unknown> | null {
 }
 
 export function OnboardingWizard() {
+  const agentHireAttemptRef = useRef<AgentHireAttempt | null>(null);
   const {
     onboardingOpen,
     onboardingOptions,
@@ -625,13 +630,19 @@ export function OnboardingWizard() {
         if (!result) return;
       }
 
-      const hire = await agentsApi.hire(createdCompanyId, {
+      const hirePayload = {
         name: agentName.trim(),
         role: "ceo",
         adapterType,
         adapterConfig: buildAdapterConfig(),
         runtimeConfig: buildNewAgentRuntimeConfig()
+      };
+      const hireAttempt = createOrReuseAgentHireAttempt(agentHireAttemptRef.current, hirePayload);
+      agentHireAttemptRef.current = hireAttempt;
+      const hire = await agentsApi.hire(createdCompanyId, hirePayload, {
+        idempotencyKey: hireAttempt.idempotencyKey,
       });
+      agentHireAttemptRef.current = null;
       if (hire.approval) {
         await approvalsApi.approve(
           hire.approval.id,

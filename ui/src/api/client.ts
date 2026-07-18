@@ -142,7 +142,11 @@ export function __inflightGetCount(): number {
 }
 
 function isRequestOptions(value: unknown): value is RequestOptions {
-  return typeof value === "object" && value !== null && "signal" in value;
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    ("signal" in value || "headers" in value)
+  );
 }
 
 export const api = {

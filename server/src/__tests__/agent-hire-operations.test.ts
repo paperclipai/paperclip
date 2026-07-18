@@ -11,6 +11,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import {
+  AGENT_HIRE_TERMINAL_POLL_INTERVAL_MS,
   AgentHireIdempotencyConflictError,
   agentHireOperationService,
   hashAgentHireRequest,
@@ -92,6 +93,7 @@ describeEmbeddedPostgres("durable agent hire operations", () => {
   });
 
   it("queries a bounded pending operation to completion and replays its result", async () => {
+    expect(AGENT_HIRE_TERMINAL_POLL_INTERVAL_MS).toBeGreaterThanOrEqual(100);
     const companyId = await seedCompany();
     const service = agentHireOperationService(db);
     const input = {
@@ -111,7 +113,7 @@ describeEmbeddedPostgres("durable agent hire operations", () => {
           agent: { id: claim!.operation.agentId, name: "Slow Builder" },
           approval: null,
         }).then(() => resolve());
-      }, 20);
+      }, AGENT_HIRE_TERMINAL_POLL_INTERVAL_MS + 20);
     });
 
     expect((await service.waitForTerminal(reservation.operation.id, 0))?.status).toBe("pending");

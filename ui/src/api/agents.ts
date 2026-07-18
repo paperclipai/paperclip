@@ -76,11 +76,68 @@ export interface AgentHirePendingResponse {
   statusUrl: string;
 }
 
-function createAgentHireIdempotencyKey() {
+export interface AgentHireOptions {
+  /** Caller-owned key. Reuse it when retrying the same logical hire. */
+  idempotencyKey: string;
+  signal?: AbortSignal;
+  timeoutMs?: number;
+}
+
+export interface AgentHireAttempt {
+  idempotencyKey: string;
+  payloadFingerprint: string;
+}
+
+export class AgentHireTimeoutError extends Error {
+  constructor(
+    readonly idempotencyKey: string,
+    readonly timeoutMs: number,
+  ) {
+    super(`Agent hire did not finish within ${timeoutMs} ms`);
+    this.name = "AgentHireTimeoutError";
+  }
+}
+
+const AGENT_HIRE_POLL_INTERVAL_MS = 250;
+const DEFAULT_AGENT_HIRE_TIMEOUT_MS = 30_000;
+
+export function createAgentHireIdempotencyKey() {
   if (typeof globalThis.crypto?.randomUUID === "function") {
     return globalThis.crypto.randomUUID();
   }
   return `hire-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
+export function createOrReuseAgentHireAttempt(
+  previous: AgentHireAttempt | null,
+  data: Record<string, unknown>,
+): AgentHireAttempt {
+  const payloadFingerprint = JSON.stringify(data);
+  if (previous?.payloadFingerprint === payloadFingerprint) return previous;
+  return {
+    idempotencyKey: createAgentHireIdempotencyKey(),
+    payloadFingerprint,
+  };
+}
+
+function abortError(): DOMException {
+  return new DOMException("The operation was aborted.", "AbortError");
+}
+
+function waitForAgentHirePoll(delayMs: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.reject(abortError());
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, delayMs);
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      reject(abortError());
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 export interface AgentPermissionUpdate {
@@ -151,15 +208,24 @@ export const agentsApi = {
     api.post<Agent>(agentPath(id, companyId, `/config-revisions/${revisionId}/rollback`), {}),
   create: (companyId: string, data: Record<string, unknown>) =>
     api.post<Agent>(`/companies/${companyId}/agents`, data),
-  hire: async (companyId: string, data: Record<string, unknown>) => {
-    const idempotencyKey = createAgentHireIdempotencyKey();
+  hire: async (companyId: string, data: Record<string, unknown>, options: AgentHireOptions) => {
+    const timeoutMs = Math.max(0, options.timeoutMs ?? DEFAULT_AGENT_HIRE_TIMEOUT_MS);
+    const deadline = Date.now() + timeoutMs;
     const path = `/companies/${companyId}/agent-hires`;
     while (true) {
+      if (options.signal?.aborted) throw abortError();
+      if (Date.now() >= deadline) {
+        throw new AgentHireTimeoutError(options.idempotencyKey, timeoutMs);
+      }
       const response = await api.post<AgentHireResponse | AgentHirePendingResponse>(path, data, {
-        headers: { "Idempotency-Key": idempotencyKey },
+        headers: { "Idempotency-Key": options.idempotencyKey },
+        signal: options.signal,
       });
       if ("agent" in response) return response;
-      await new Promise((resolve) => setTimeout(resolve, 250));
+      await waitForAgentHirePoll(
+        Math.min(AGENT_HIRE_POLL_INTERVAL_MS, Math.max(0, deadline - Date.now())),
+        options.signal,
+      );
     }
   },
   update: (id: string, data: Record<string, unknown>, companyId?: string) =>
