@@ -1170,7 +1170,7 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
-  it("defaults agent-created root follow-up issues to inherit the current run workspace", async () => {
+  it("defaults agent-created root follow-up issues without project scope to inherit the current run workspace", async () => {
     const app = await createApp(
       ownerActor(),
       createRunContextDb({
@@ -1183,7 +1183,6 @@ describe("agent issue mutation checkout ownership", () => {
       .post(`/api/companies/${companyId}/issues`)
       .send({
         title: "Follow-up in same worktree",
-        projectId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
       });
 
     expect(res.status, JSON.stringify(res.body)).toBe(201);
@@ -1191,6 +1190,39 @@ describe("agent issue mutation checkout ownership", () => {
       companyId,
       expect.objectContaining({
         title: "Follow-up in same worktree",
+        inheritExecutionWorkspaceFromIssueId: issueId,
+      }),
+    );
+  });
+
+  it("does not implicitly inherit the current run workspace when a root issue selects project scope", async () => {
+    const app = await createApp(
+      ownerActor(),
+      createRunContextDb({
+        issueId,
+        executionWorkspaceId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      }),
+    );
+
+    const projectId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const res = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({
+        title: "Follow-up in selected project",
+        projectId,
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockIssueService.create).toHaveBeenCalledWith(
+      companyId,
+      expect.objectContaining({
+        title: "Follow-up in selected project",
+        projectId,
+      }),
+    );
+    expect(mockIssueService.create).toHaveBeenCalledWith(
+      companyId,
+      expect.not.objectContaining({
         inheritExecutionWorkspaceFromIssueId: issueId,
       }),
     );

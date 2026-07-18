@@ -322,6 +322,14 @@ function buildPreRealizationExecutionWorkspaceSettings(raw: unknown): Record<str
   return Object.keys(next).length > 0 ? next : null;
 }
 
+function requiresScopedPreRealizationWorkspace(raw: unknown) {
+  const settings = parseIssueExecutionWorkspaceSettings(raw);
+  if (!settings) return false;
+  return settings.mode === "isolated_workspace" ||
+    settings.mode === "operator_branch" ||
+    settings.workspaceStrategy?.type === "git_worktree";
+}
+
 function toTimestampMs(value: Date | string | null | undefined) {
   if (!value) return null;
   const date = value instanceof Date ? value : new Date(value);
@@ -578,6 +586,7 @@ type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
   labelIds?: string[];
   blockedByIssueIds?: string[];
   inheritExecutionWorkspaceFromIssueId?: string | null;
+  executionWorkspaceInheritanceMode?: "linkage" | "strategy_only";
   skipExecutionWorkspaceInheritance?: boolean;
   watchdog?: { agentId: string; instructions?: string | null } | null;
   watchdogActorRunId?: string | null;
@@ -6111,6 +6120,7 @@ export function issueService(db: Db) {
         labelIds: inputLabelIds,
         blockedByIssueIds,
         inheritExecutionWorkspaceFromIssueId,
+        executionWorkspaceInheritanceMode = "linkage",
         skipExecutionWorkspaceInheritance,
         watchdog,
         watchdogActorRunId,
@@ -6216,6 +6226,7 @@ export function issueService(db: Db) {
         let executionWorkspacePreference = issueData.executionWorkspacePreference ?? null;
         let executionWorkspaceSettings =
           (issueData.executionWorkspaceSettings as Record<string, unknown> | null | undefined) ?? null;
+        const inheritStrategyOnly = executionWorkspaceInheritanceMode === "strategy_only";
         const workspaceInheritanceIssueId = skipExecutionWorkspaceInheritance
           ? null
           : inheritExecutionWorkspaceFromIssueId ?? issueData.parentId ?? null;
@@ -6231,9 +6242,24 @@ export function issueService(db: Db) {
           if (projectWorkspaceId == null && workspaceSource.projectWorkspaceId) {
             projectWorkspaceId = workspaceSource.projectWorkspaceId;
           }
+          if (inheritStrategyOnly && !hasExplicitExecutionWorkspaceOverride) {
+            executionWorkspaceSettings = buildPreRealizationExecutionWorkspaceSettings(workspaceSource.executionWorkspaceSettings);
+            if (
+              requiresScopedPreRealizationWorkspace(executionWorkspaceSettings) &&
+              !issueData.projectId &&
+              !projectWorkspaceId &&
+              !executionWorkspaceId
+            ) {
+              throw unprocessable(
+                WORKSPACE_WORKTREE_REQUIRES_PROJECT_MESSAGE,
+                workspaceWorktreeRequiresProjectDetails(),
+              );
+            }
+          }
           if (
             isolatedWorkspacesEnabled &&
             !hasExplicitExecutionWorkspaceOverride &&
+            !inheritStrategyOnly &&
             workspaceSource.executionWorkspaceId
           ) {
             const sourceWorkspace = await tx

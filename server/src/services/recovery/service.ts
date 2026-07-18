@@ -2651,6 +2651,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         ].join(":"),
         billingCode: input.issue.billingCode,
         inheritExecutionWorkspaceFromIssueId: input.issue.id,
+        executionWorkspaceInheritanceMode: "strategy_only",
       });
     } catch (error) {
       if (!isUniqueStrandedIssueRecoveryConflict(error)) throw error;
@@ -4819,7 +4820,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         originFingerprint: livenessRecoveryLeafFingerprint(input.finding),
         billingCode: recoveryIssue.billingCode,
         ...(reuseRecoveryExecutionWorkspace
-          ? { inheritExecutionWorkspaceFromIssueId: recoveryIssue.id }
+          ? {
+            inheritExecutionWorkspaceFromIssueId: recoveryIssue.id,
+            executionWorkspaceInheritanceMode: "strategy_only",
+          }
           : {
             executionWorkspaceId: null,
             executionWorkspacePreference: null,

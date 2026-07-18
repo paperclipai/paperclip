@@ -2655,7 +2655,9 @@ export function issueRoutes(
 
   function hasExplicitIssueWorkspaceCreateSelection(input: Record<string, unknown>) {
     return input.parentId !== undefined ||
+      input.projectId !== undefined ||
       input.inheritExecutionWorkspaceFromIssueId !== undefined ||
+      input.executionWorkspaceInheritanceMode !== undefined ||
       input.projectWorkspaceId !== undefined ||
       input.executionWorkspaceId !== undefined ||
       input.executionWorkspacePreference !== undefined ||

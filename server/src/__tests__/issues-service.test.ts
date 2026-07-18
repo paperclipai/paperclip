@@ -2989,6 +2989,215 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     });
   });
 
+  it("inherits source workspace strategy without reusing an incoherent execution workspace", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const sourceIssueId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const incoherentExecutionWorkspaceId = "d53d1b18-ecb2-4db8-9656-744b75b1913c";
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
+
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Paperclip Runtime",
+      status: "in_progress",
+    });
+
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "paperclipai/paperclip",
+      isPrimary: true,
+    });
+
+    await db.insert(executionWorkspaces).values({
+      id: incoherentExecutionWorkspaceId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Incoherent source workspace",
+      status: "active",
+      providerType: "git_worktree",
+    });
+
+    await db.insert(issues).values({
+      id: sourceIssueId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      title: "Source-scoped recovery source",
+      status: "blocked",
+      priority: "critical",
+      executionWorkspaceId: incoherentExecutionWorkspaceId,
+      executionWorkspacePreference: "reuse_existing",
+      executionWorkspaceSettings: {
+        mode: "isolated_workspace",
+        workspaceStrategy: {
+          type: "git_worktree",
+          baseRef: "origin/master",
+          branchTemplate: "{issue.identifier}-{issue.slug}",
+        },
+      },
+    });
+
+    const recoveryHandoff = await svc.create(companyId, {
+      title: "Repair source-scoped workspace handoff",
+      inheritExecutionWorkspaceFromIssueId: sourceIssueId,
+      executionWorkspaceInheritanceMode: "strategy_only",
+    });
+
+    expect(recoveryHandoff.projectId).toBe(projectId);
+    expect(recoveryHandoff.projectWorkspaceId).toBe(projectWorkspaceId);
+    expect(recoveryHandoff.executionWorkspaceId).toBeNull();
+    expect(recoveryHandoff.executionWorkspacePreference).toBeNull();
+    expect(recoveryHandoff.executionWorkspaceSettings).toEqual({
+      mode: "isolated_workspace",
+      workspaceStrategy: {
+        type: "git_worktree",
+        baseRef: "origin/master",
+        branchTemplate: "{issue.identifier}-{issue.slug}",
+      },
+    });
+  });
+
+  it("rejects strategy-only workspace inheritance when the source has no project scope", async () => {
+    const companyId = randomUUID();
+    const sourceIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
+
+    await db.insert(issues).values({
+      id: sourceIssueId,
+      companyId,
+      title: "Unscoped recovery source",
+      status: "blocked",
+      priority: "critical",
+      executionWorkspaceSettings: {
+        mode: "reuse_existing",
+        workspaceStrategy: {
+          type: "git_worktree",
+          baseRef: "origin/master",
+          branchTemplate: "{issue.identifier}-{issue.slug}",
+        },
+      },
+    });
+
+    await expect(svc.create(companyId, {
+      title: "Unscoped recovery handoff",
+      inheritExecutionWorkspaceFromIssueId: sourceIssueId,
+      executionWorkspaceInheritanceMode: "strategy_only",
+    })).rejects.toMatchObject({
+      status: 422,
+      message: WORKSPACE_WORKTREE_REQUIRES_PROJECT_MESSAGE,
+      details: {
+        code: WORKSPACE_WORKTREE_REQUIRES_PROJECT_CODE,
+        remediation: WORKSPACE_WORKTREE_REQUIRES_PROJECT_REMEDIATION,
+      },
+    });
+
+    const rows = await db.select({ id: issues.id }).from(issues).where(eq(issues.companyId, companyId));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.id).toBe(sourceIssueId);
+  });
+
+  it("keeps strategy-only recovery scoped when the source settings mode is reuse_existing", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const sourceIssueId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
+
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Paperclip Runtime",
+      status: "in_progress",
+    });
+
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "paperclipai/paperclip",
+      isPrimary: true,
+    });
+
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Reusable source workspace",
+      status: "active",
+      providerType: "git_worktree",
+    });
+
+    await db.insert(issues).values({
+      id: sourceIssueId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      title: "Reuse-existing recovery source",
+      status: "blocked",
+      priority: "critical",
+      executionWorkspaceId,
+      executionWorkspacePreference: "reuse_existing",
+      executionWorkspaceSettings: {
+        mode: "reuse_existing",
+        workspaceStrategy: {
+          type: "git_worktree",
+          baseRef: "origin/master",
+          branchTemplate: "{issue.identifier}-{issue.slug}",
+        },
+      },
+    });
+
+    const recoveryHandoff = await svc.create(companyId, {
+      title: "Reuse-existing strategy handoff",
+      inheritExecutionWorkspaceFromIssueId: sourceIssueId,
+      executionWorkspaceInheritanceMode: "strategy_only",
+    });
+
+    expect(recoveryHandoff.projectId).toBe(projectId);
+    expect(recoveryHandoff.projectWorkspaceId).toBe(projectWorkspaceId);
+    expect(recoveryHandoff.executionWorkspaceId).toBeNull();
+    expect(recoveryHandoff.executionWorkspacePreference).toBeNull();
+    expect(recoveryHandoff.executionWorkspaceSettings).toEqual({
+      workspaceStrategy: {
+        type: "git_worktree",
+        baseRef: "origin/master",
+        branchTemplate: "{issue.identifier}-{issue.slug}",
+      },
+    });
+  });
+
   it("createChild applies parent defaults, acceptance criteria, workspace inheritance, and optional parent blocker chaining", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
