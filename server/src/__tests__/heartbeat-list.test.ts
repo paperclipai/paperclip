@@ -397,10 +397,8 @@ describeEmbeddedPostgres("heartbeat list", () => {
 
     expect(details[1]).toMatchObject({
       id: signalRunId,
-      failure: {
-        failureClass: "runtime_process",
-        safeReasonSummary: "Run was terminated by a process signal.",
-      },
+      failureClass: "runtime_process",
+      safeReasonSummary: "Run was terminated by a process signal.",
     });
 
     expect(details[2]).toMatchObject({
@@ -422,11 +420,8 @@ describeEmbeddedPostgres("heartbeat list", () => {
       },
       status: "failed",
       durationMs: 300_000,
-      wakeReason: "issue_assigned",
-      failure: {
-        failureClass: "provider_quota",
-        safeReasonSummary: "Run failed with safe error code provider_quota.",
-      },
+      failureClass: "provider_quota",
+      safeReasonSummary: "Run failed with safe error code provider_quota.",
     });
 
     expect(details[0]).toMatchObject({
@@ -434,13 +429,20 @@ describeEmbeddedPostgres("heartbeat list", () => {
       linkedIssue: null,
       status: "timed_out",
       durationMs: 1_800_000,
-      failure: {
-        failureClass: "timeout",
-        safeReasonSummary: "Run timed out.",
-      },
+      failureClass: "timeout",
+      safeReasonSummary: "Run timed out.",
     });
 
     const serialized = JSON.stringify(details);
+    expect(details[2]).not.toHaveProperty("companyId");
+    expect(details[2]).not.toHaveProperty("invocationSource");
+    expect(details[2]).not.toHaveProperty("triggerDetail");
+    expect(details[2]).not.toHaveProperty("wakeReason");
+    expect(details[2]).not.toHaveProperty("livenessState");
+    expect(details[2]).not.toHaveProperty("livenessReason");
+    expect(details[2]).not.toHaveProperty("exitCode");
+    expect(details[2]).not.toHaveProperty("signal");
+    expect(details[2]).not.toHaveProperty("failure");
     expect(serialized).not.toContain("Raw stack");
     expect(serialized).not.toContain("transcript");
     expect(serialized).not.toContain("stderr must not leak");

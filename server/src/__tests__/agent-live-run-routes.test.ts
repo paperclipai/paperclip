@@ -233,7 +233,6 @@ describe("agent live run routes", () => {
     mockHeartbeatService.listRunDetails.mockResolvedValue([
       {
         id: "run-1",
-        companyId: "company-1",
         agent: {
           id: "agent-1",
           name: "Builder",
@@ -250,17 +249,8 @@ describe("agent live run routes", () => {
         createdAt: new Date("2026-04-10T09:29:59.000Z"),
         updatedAt: new Date("2026-04-10T09:31:00.000Z"),
         durationMs: 60_000,
-        invocationSource: "assignment",
-        triggerDetail: "issue_assigned",
-        wakeReason: "issue_assigned",
-        livenessState: null,
-        livenessReason: null,
-        exitCode: 1,
-        signal: null,
-        failure: {
-          failureClass: "adapter",
-          safeReasonSummary: "Run failed with safe error code adapter_failed.",
-        },
+        failureClass: "adapter",
+        safeReasonSummary: "Run failed with safe error code adapter_failed.",
       },
     ]);
     mockHeartbeatService.wakeup.mockResolvedValue({
@@ -425,15 +415,22 @@ describe("agent live run routes", () => {
           linkedEntityId: "issue-1",
           status: "failed",
           durationMs: 60_000,
-          failure: {
-            failureClass: "adapter",
-            safeReasonSummary: "Run failed with safe error code adapter_failed.",
-          },
+          failureClass: "adapter",
+          safeReasonSummary: "Run failed with safe error code adapter_failed.",
         },
       ],
     });
     expect(JSON.stringify(res.body)).not.toContain("resultJson");
     expect(JSON.stringify(res.body)).not.toContain("logRef");
+    expect(res.body.runs[0]).not.toHaveProperty("companyId");
+    expect(res.body.runs[0]).not.toHaveProperty("invocationSource");
+    expect(res.body.runs[0]).not.toHaveProperty("triggerDetail");
+    expect(res.body.runs[0]).not.toHaveProperty("wakeReason");
+    expect(res.body.runs[0]).not.toHaveProperty("livenessState");
+    expect(res.body.runs[0]).not.toHaveProperty("livenessReason");
+    expect(res.body.runs[0]).not.toHaveProperty("exitCode");
+    expect(res.body.runs[0]).not.toHaveProperty("signal");
+    expect(res.body.runs[0]).not.toHaveProperty("failure");
   });
 
   it("rejects non-ISO heartbeat run detail windows", async () => {

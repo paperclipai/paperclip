@@ -16890,7 +16890,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
         return {
           id: row.id,
-          companyId: row.companyId,
           agent: {
             id: row.agentId,
             name: row.agentName,
@@ -16914,14 +16913,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           createdAt: row.createdAt,
           updatedAt: row.updatedAt,
           durationMs,
-          invocationSource: row.invocationSource,
-          triggerDetail: row.triggerDetail,
-          wakeReason: row.contextWakeReason,
-          livenessState: row.livenessState,
-          livenessReason: row.livenessReason,
-          exitCode: row.exitCode,
-          signal: row.signal,
-          failure,
+          failureClass: failure.failureClass,
+          safeReasonSummary: failure.safeReasonSummary,
         };
       });
     },
