@@ -84,7 +84,7 @@ import {
   collapseDuplicatePendingHumanJoinRequests,
   findReusableHumanJoinRequest,
 } from "../lib/join-request-dedupe.js";
-import { assertAuthenticated, assertCompanyAccess } from "./authz.js";
+import { assertAuthenticated, assertCompanyAccess, assertSurfaceExposed } from "./authz.js";
 import {
   claimBoardOwnership,
   inspectBoardClaimChallenge
@@ -2614,6 +2614,8 @@ export function accessRoutes(
   const boardAuth = boardAuthService(db);
   const agents = agentService(db);
   const instanceSettings = instanceSettingsService(db);
+  const getExposedCompanySurfaces = async () =>
+    (await instanceSettings.getVisibility()).companySurfaces;
   const routeInviteResolutionNetwork = opts.inviteResolutionNetwork
     ? { ...defaultInviteResolutionNetwork, ...opts.inviteResolutionNetwork }
     : inviteResolutionNetwork;
@@ -3310,6 +3312,7 @@ export function accessRoutes(
     async (req, res) => {
       const companyId = req.params.companyId as string;
       await assertCompanyPermission(req, companyId, "users:invite");
+      await assertSurfaceExposed(req, "company.invites", getExposedCompanySurfaces);
       const { token, created, normalizedAgentMessage } =
         await createCompanyInviteForCompany({
           req,
@@ -3365,6 +3368,7 @@ export function accessRoutes(
     async (req, res) => {
       const companyId = req.params.companyId as string;
       await assertCanGenerateOpenClawInvitePrompt(req, companyId);
+      await assertSurfaceExposed(req, "company.invites", getExposedCompanySurfaces);
       const { token, created, normalizedAgentMessage } =
         await createCompanyInviteForCompany({
           req,
@@ -4126,6 +4130,7 @@ export function accessRoutes(
     } else {
       if (!invite.companyId) throw conflict("Invite is missing company scope");
       await assertCompanyPermission(req, invite.companyId, "users:invite");
+      await assertSurfaceExposed(req, "company.invites", getExposedCompanySurfaces);
     }
     if (invite.acceptedAt) throw conflict("Invite already consumed");
     if (invite.revokedAt) return res.json(invite);
@@ -4157,6 +4162,7 @@ export function accessRoutes(
   router.get("/companies/:companyId/invites", async (req, res) => {
     const companyId = req.params.companyId as string;
     await assertCompanyPermission(req, companyId, "users:invite");
+    await assertSurfaceExposed(req, "company.invites", getExposedCompanySurfaces);
     const query = listCompanyInvitesQuerySchema.parse(req.query);
     const invitesForCompany = await loadCompanyInviteRecords(db, companyId, query);
     res.json(invitesForCompany);
@@ -4165,6 +4171,7 @@ export function accessRoutes(
   router.get("/companies/:companyId/join-requests", async (req, res) => {
     const companyId = req.params.companyId as string;
     await assertCompanyPermission(req, companyId, "joins:approve");
+    await assertSurfaceExposed(req, "company.members", getExposedCompanySurfaces);
     const query = listJoinRequestsQuerySchema.parse(req.query);
     const all = await loadJoinRequestRecords(db, companyId);
     const filtered = all.filter((row) => {
@@ -4182,6 +4189,7 @@ export function accessRoutes(
       const companyId = req.params.companyId as string;
       const requestId = req.params.requestId as string;
       await assertCompanyPermission(req, companyId, "joins:approve");
+      await assertSurfaceExposed(req, "company.members", getExposedCompanySurfaces);
 
       const existing = await db
         .select()
@@ -4331,6 +4339,7 @@ export function accessRoutes(
       const companyId = req.params.companyId as string;
       const requestId = req.params.requestId as string;
       await assertCompanyPermission(req, companyId, "joins:approve");
+      await assertSurfaceExposed(req, "company.members", getExposedCompanySurfaces);
 
       const existing = await db
         .select()
@@ -4460,6 +4469,7 @@ export function accessRoutes(
   router.get("/companies/:companyId/members", async (req, res) => {
     const companyId = req.params.companyId as string;
     await assertCompanyPermission(req, companyId, "users:manage_permissions");
+    await assertSurfaceExposed(req, "company.members", getExposedCompanySurfaces);
     const [members, currentAccess] = await Promise.all([
       loadCompanyMemberRecords(db, companyId),
       loadCompanyAccessSummary(req, access, companyId),
@@ -4484,6 +4494,7 @@ export function accessRoutes(
       const companyId = req.params.companyId as string;
       const memberId = req.params.memberId as string;
       await assertCompanyPermission(req, companyId, "users:manage_permissions");
+      await assertSurfaceExposed(req, "company.members", getExposedCompanySurfaces);
       const memberToUpdate = await access.getMemberById(companyId, memberId);
       if (!memberToUpdate) throw notFound("Member not found");
       await assertCanManageCompanyMember(req, access, companyId, memberToUpdate);
@@ -4581,6 +4592,7 @@ export function accessRoutes(
       const companyId = req.params.companyId as string;
       const memberId = req.params.memberId as string;
       await assertCompanyPermission(req, companyId, "users:manage_permissions");
+      await assertSurfaceExposed(req, "company.members", getExposedCompanySurfaces);
       const memberToUpdate = await access.getMemberById(companyId, memberId);
       if (!memberToUpdate) throw notFound("Member not found");
       await assertCanManageCompanyMember(req, access, companyId, memberToUpdate);
@@ -4708,6 +4720,7 @@ export function accessRoutes(
       const companyId = req.params.companyId as string;
       const memberId = req.params.memberId as string;
       await assertCompanyPermission(req, companyId, "users:manage_permissions");
+      await assertSurfaceExposed(req, "company.members", getExposedCompanySurfaces);
       const memberToArchive = await access.getMemberById(companyId, memberId);
       if (!memberToArchive) throw notFound("Member not found");
       await assertCanManageCompanyMember(req, access, companyId, memberToArchive, "archive");
@@ -4749,6 +4762,7 @@ export function accessRoutes(
       const companyId = req.params.companyId as string;
       const memberId = req.params.memberId as string;
       await assertCompanyPermission(req, companyId, "users:manage_permissions");
+      await assertSurfaceExposed(req, "company.members", getExposedCompanySurfaces);
       const memberToUpdate = await access.getMemberById(companyId, memberId);
       if (!memberToUpdate) throw notFound("Member not found");
       await assertCanManageCompanyMember(req, access, companyId, memberToUpdate);
