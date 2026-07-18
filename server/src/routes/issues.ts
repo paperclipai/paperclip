@@ -3388,6 +3388,7 @@ export function issueRoutes(
       status: string;
     },
     action: "issue:comment" | "issue:read" | "issue:mutate",
+    extraScope: Record<string, unknown> = {},
   ) {
     return access.decide({
       actor: req.actor,
@@ -3408,8 +3409,20 @@ export function issueRoutes(
         parentIssueId: issue.parentId,
         assigneeAgentId: issue.assigneeAgentId,
         assigneeUserId: issue.assigneeUserId,
+        ...extraScope,
       },
     });
+  }
+
+  function isPmGroomingIssuePatchBody(body: unknown) {
+    if (!body || typeof body !== "object" || Array.isArray(body)) return false;
+    const record = body as Record<string, unknown>;
+    const allowedKeys = new Set(["comment", "status", "priority", "blockedByIssueIds"]);
+    if (Object.keys(record).some((key) => !allowedKeys.has(key))) return false;
+    if (typeof record.status === "string" && (record.status === "in_progress" || record.status === "cancelled")) {
+      return false;
+    }
+    return true;
   }
 
   async function assertIssueReadAllowed(req: Request, res: Response, issue: Parameters<typeof decideIssueAccess>[1]) {
@@ -3542,7 +3555,12 @@ export function issueRoutes(
       }
       return assertFreshTaskWatchdogSourceMutation(res, watchdogScope, issue);
     }
-    const boundaryDecision = await decideIssueAccess(req, issue, "issue:mutate");
+    const boundaryDecision = await decideIssueAccess(
+      req,
+      issue,
+      "issue:mutate",
+      { pmGrooming: isPmGroomingIssuePatchBody(req.body) },
+    );
     if (!boundaryDecision.allowed) {
       res.status(403).json({ error: "Issue is outside this actor's authorization boundary" });
       return false;
@@ -3551,6 +3569,9 @@ export function issueRoutes(
       return true;
     }
     if (issue.assigneeAgentId !== actorAgentId) {
+      if (boundaryDecision.reason === "allow_same_company_pm_grooming") {
+        return true;
+      }
       if (await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, issue.assigneeAgentId)) {
         return true;
       }

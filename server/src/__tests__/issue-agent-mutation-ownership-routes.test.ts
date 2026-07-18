@@ -916,6 +916,71 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
+  it("allows ProjectManager-scoped grooming patches on another same-company agent's issue", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "todo", assigneeAgentId: ownerAgentId }));
+    mockAccessService.decide.mockImplementation(async (input: { action: string; scope?: Record<string, unknown> }) => ({
+      allowed: input.action === "issue:mutate" && input.scope?.pmGrooming === true,
+      action: input.action,
+      reason:
+        input.action === "issue:mutate" && input.scope?.pmGrooming === true
+          ? "allow_same_company_pm_grooming"
+          : "deny_missing_grant",
+      explanation:
+        input.action === "issue:mutate" && input.scope?.pmGrooming === true
+          ? "Allowed for same-company ProjectManager delivery grooming."
+          : "Missing permission.",
+    }));
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        comment: "Grooming dependency state.",
+        status: "blocked",
+        priority: "high",
+        blockedByIssueIds: ["88888888-8888-4888-8888-888888888888"],
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({
+        status: "blocked",
+        priority: "high",
+        blockedByIssueIds: ["88888888-8888-4888-8888-888888888888"],
+      }),
+    );
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
+      action: "issue:mutate",
+      scope: expect.objectContaining({ pmGrooming: true }),
+    }));
+  });
+
+  it("does not treat assignee changes as ProjectManager grooming patches", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "todo", assigneeAgentId: ownerAgentId }));
+    mockAccessService.decide.mockImplementation(async (input: { action: string; scope?: Record<string, unknown> }) => ({
+      allowed: input.action === "issue:mutate",
+      action: input.action,
+      reason:
+        input.action === "issue:mutate" && input.scope?.pmGrooming === true
+          ? "allow_same_company_pm_grooming"
+          : "allow_explicit_grant",
+      explanation: "Allowed by test boundary default.",
+    }));
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ assigneeAgentId: peerAgentId });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Agent cannot mutate another agent's issue");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
+      action: "issue:mutate",
+      scope: expect.objectContaining({ pmGrooming: false }),
+    }));
+  });
+
   it("denies cross-company agents before comment authorization is evaluated", async () => {
     const res = await request(await createApp(peerActor({ companyId: "99999999-9999-4999-8999-999999999999" })))
       .post(`/api/issues/${issueId}/comments`)

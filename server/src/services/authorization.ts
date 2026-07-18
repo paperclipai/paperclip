@@ -102,6 +102,8 @@ export type AuthorizationDecision = {
     | "allow_consented_change"
     | "allow_legacy_agent_creator"
     | "allow_issue_mention_grant"
+    | "allow_same_company_review_comment"
+    | "allow_same_company_pm_grooming"
     | "allow_self"
     | "allow_company_agent"
     | "allow_company_member"
@@ -159,6 +161,19 @@ function canCreateAgentsLegacy(agent: { role: string; permissions: unknown }) {
   if (agent.role === "ceo") return true;
   if (!agent.permissions || typeof agent.permissions !== "object") return false;
   return Boolean((agent.permissions as Record<string, unknown>).canCreateAgents);
+}
+
+function normalizedAgentRole(role: string | null | undefined) {
+  return (role ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function isQaRole(role: string | null | undefined) {
+  return normalizedAgentRole(role) === "qa";
+}
+
+function isProjectManagerRole(role: string | null | undefined) {
+  const normalized = normalizedAgentRole(role);
+  return normalized === "pm" || normalized === "projectmanager";
 }
 
 function scopeValueList(value: unknown): string[] {
@@ -895,7 +910,7 @@ export function authorizationService(db: Db) {
   }
 
   async function decideLowTrustAccess(input: {
-    actorAgentId: string;
+    actorAgent: AgentAuthorizationRow;
     action: AuthorizationAction;
     resource: AuthorizationResource;
     resolution: TrustPresetResolution;
@@ -941,7 +956,7 @@ export function authorizationService(db: Db) {
       if (input.resource.type !== "agent") {
         return lowTrustDeny("Low-trust agent action is missing an agent resource.");
       }
-      return agentWithinLowTrustBoundary(boundary, input.actorAgentId, input.resource.agentId)
+      return agentWithinLowTrustBoundary(boundary, input.actorAgent.id, input.resource.agentId)
         ? lowTrustAllow("Allowed inside the low-trust agent boundary.")
         : lowTrustDeny("Agent is outside this low-trust boundary.");
     }
@@ -973,10 +988,17 @@ export function authorizationService(db: Db) {
           companyId: boundary.companyId,
           issueId: input.resource.issueId,
           issueAssigneeAgentId: input.resource.assigneeAgentId ?? null,
-          actorAgentId: input.actorAgentId,
+          actorAgentId: input.actorAgent.id,
         })
       ) {
         return allowIssueMentionGrant(input.action);
+      }
+      if (input.action === "issue:comment" && isQaRole(input.actorAgent.role)) {
+        return allow({
+          action: input.action,
+          reason: "allow_same_company_review_comment",
+          explanation: "Allowed for same-company QA review evidence comments.",
+        });
       }
       return lowTrustDeny("Issue is outside this low-trust boundary.");
     }
@@ -993,7 +1015,7 @@ export function authorizationService(db: Db) {
       }
       if (
         input.resource.assigneeAgentId &&
-        !agentWithinLowTrustBoundary(boundary, input.actorAgentId, input.resource.assigneeAgentId)
+        !agentWithinLowTrustBoundary(boundary, input.actorAgent.id, input.resource.assigneeAgentId)
       ) {
         return lowTrustDeny("Assignee agent is outside this low-trust boundary.");
       }
@@ -1683,7 +1705,7 @@ export function authorizationService(db: Db) {
     }
 
     const lowTrustDecision = await decideLowTrustAccess({
-      actorAgentId,
+      actorAgent,
       action: input.action,
       resource: input.resource,
       resolution: await resolveActorTrust({
@@ -1887,6 +1909,24 @@ export function authorizationService(db: Db) {
           action: input.action,
           reason: "allow_company_agent",
           explanation: "Allowed because the issue has no agent assignee.",
+        });
+      }
+      if (input.action === "issue:comment" && isQaRole(actorAgent.role)) {
+        return allow({
+          action: input.action,
+          reason: "allow_same_company_review_comment",
+          explanation: "Allowed for same-company QA review evidence comments.",
+        });
+      }
+      if (
+        input.action === "issue:mutate" &&
+        isProjectManagerRole(actorAgent.role) &&
+        scopeBoolean(input.scope, "pmGrooming")
+      ) {
+        return allow({
+          action: input.action,
+          reason: "allow_same_company_pm_grooming",
+          explanation: "Allowed for same-company ProjectManager delivery grooming.",
         });
       }
       if (
