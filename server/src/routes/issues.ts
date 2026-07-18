@@ -9693,7 +9693,6 @@ export function issueRoutes(
     const isClosed = isClosedIssueStatus(issue.status);
     const isBlocked = issue.status === "blocked";
     const mentionGrantedPeerAgentCommentOnly =
-      isClosed &&
       req.actor.type === "agent" &&
       issue.assigneeAgentId !== null &&
       issue.assigneeAgentId !== req.actor.agentId &&
@@ -9707,6 +9706,13 @@ export function issueRoutes(
       req.actor.type === "agent" &&
       issue.assigneeAgentId !== null &&
       issue.assigneeAgentId !== req.actor.agentId &&
+      !mentionGrantedPeerAgentCommentOnly
+    ) {
+      if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    }
+    if (
+      issue.status === "in_progress" &&
+      req.actor.type === "agent" &&
       !mentionGrantedPeerAgentCommentOnly
     ) {
       if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;

@@ -752,6 +752,11 @@ describe("agent issue mutation checkout ownership", () => {
           .attach("file", Buffer.from("report"), { filename: "report.txt", contentType: "text/plain" }),
     ],
     ["attachment delete", (app: express.Express) => request(app).delete("/api/attachments/attachment-1")],
+    [
+      "comment",
+      (app: express.Express) =>
+        request(app).post(`/api/issues/${issueId}/comments`).send({ body: "This should not persist." }),
+    ],
   ])("rejects peer agent %s on another agent's active checkout", async (_name, sendRequest) => {
     const res = await sendRequest(await createApp(peerActor()));
 
