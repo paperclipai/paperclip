@@ -60,6 +60,7 @@ import {
   type AcpRuntimeEvent,
   type AcpRuntimeHandle,
   type AcpRuntimeOptions,
+  type AcpSessionStore,
   type AcpRuntimeStatus,
   type AcpRuntimeTurn,
   type AcpRuntimeTurnResult,
@@ -1927,6 +1928,21 @@ function warmHandleMatches(
   return entry !== undefined && entry.runtime === runtime && entry.handle === handle;
 }
 
+async function persistLocalAcpProcessMetadata(input: {
+  ctx: AdapterExecutionContext;
+  prepared: AcpxPreparedRuntime;
+  sessionStore: AcpSessionStore;
+  handle: AcpRuntimeHandle;
+}) {
+  if (!input.ctx.onSpawn || input.prepared.remoteExecutionIdentity) return;
+  const recordId = input.handle.acpxRecordId ?? input.handle.sessionKey;
+  const record = await input.sessionStore.load(recordId);
+  const pid = record?.pid;
+  if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) return;
+  const startedAt = record?.agentStartedAt ?? record?.createdAt ?? new Date().toISOString();
+  await input.ctx.onSpawn({ pid, processGroupId: null, startedAt });
+}
+
 export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
   const createRuntime = deps.createRuntime ?? createAcpRuntime;
   const now = deps.now ?? (() => Date.now());
@@ -1961,9 +1977,10 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
     const canResume = isCompatibleSession(previousParams, prepared);
     const resumeSessionId = canResume ? asString(previousParams.acpSessionId, "") || undefined : undefined;
     const cached = canResume ? warmHandles.get(prepared.sessionKey) : undefined;
+    const sessionStore = createRuntimeStore({ stateDir: prepared.stateDir });
     const runtimeOptions: AcpRuntimeOptions = {
       cwd: prepared.cwd,
-      sessionStore: createRuntimeStore({ stateDir: prepared.stateDir }),
+      sessionStore,
       agentRegistry: prepared.agentRegistry,
       permissionMode: prepared.permissionMode,
       nonInteractivePermissions: prepared.nonInteractivePermissions,
@@ -2051,6 +2068,12 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
     }
     const sessionHandle = handle;
     try {
+      await persistLocalAcpProcessMetadata({
+        ctx,
+        prepared,
+        sessionStore,
+        handle: sessionHandle,
+      });
       await applySessionConfigOptions({
         runtime,
         handle: sessionHandle,

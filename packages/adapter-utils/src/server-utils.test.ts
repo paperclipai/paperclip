@@ -442,6 +442,31 @@ describe("runChildProcess", () => {
     expect(finishedAt - startedAt).toBeGreaterThanOrEqual(spawnDelayMs);
   });
 
+  it("does not send stdin when onSpawn persistence fails", async () => {
+    const run = runChildProcess(
+      randomUUID(),
+      process.execPath,
+      [
+        "-e",
+        "process.stdin.on('data',()=>process.stdout.write('unexpected'));setInterval(()=>{},1000);",
+      ],
+      {
+        cwd: process.cwd(),
+        env: {},
+        stdin: "restart server",
+        timeoutSec: 5,
+        graceSec: 1,
+        onLog: async () => {},
+        onLogError: () => {},
+        onSpawn: async () => {
+          throw new Error("database unavailable");
+        },
+      },
+    );
+
+    await expect(run).rejects.toThrow("database unavailable");
+  });
+
   it.skipIf(process.platform === "win32")("kills descendant processes on timeout via the process group", async () => {
     let descendantPid: number | null = null;
 

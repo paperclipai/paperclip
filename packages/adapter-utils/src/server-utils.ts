@@ -3069,9 +3069,7 @@ export async function runChildProcess(
 
         const spawnPersistPromise =
           typeof child.pid === "number" && child.pid > 0 && opts.onSpawn
-            ? opts.onSpawn({ pid: child.pid, processGroupId, startedAt }).catch((err) => {
-              onLogError(err, runId, "failed to record child process metadata");
-            })
+            ? opts.onSpawn({ pid: child.pid, processGroupId, startedAt })
             : Promise.resolve();
 
         runningProcesses.set(runId, { child, graceSec: opts.graceSec, processGroupId });
@@ -3179,12 +3177,21 @@ export async function runChildProcess(
         });
 
         const stdin = child.stdin;
+        const handleSpawnPersistenceFailure = (err: unknown) => {
+          onLogError(err, runId, "failed to record child process metadata");
+          signalRunningProcess({ child, processGroupId }, "SIGKILL");
+          reject(err instanceof Error ? err : new Error(String(err)));
+        };
         if (opts.stdin != null && stdin) {
-          void spawnPersistPromise.finally(() => {
-            if (child.killed || stdin.destroyed) return;
-            stdin.write(opts.stdin as string);
-            stdin.end();
-          });
+          void spawnPersistPromise
+            .then(() => {
+              if (child.killed || stdin.destroyed) return;
+              stdin.write(opts.stdin as string);
+              stdin.end();
+            })
+            .catch(handleSpawnPersistenceFailure);
+        } else {
+          void spawnPersistPromise.catch(handleSpawnPersistenceFailure);
         }
 
         child.on("error", (err: Error) => {
