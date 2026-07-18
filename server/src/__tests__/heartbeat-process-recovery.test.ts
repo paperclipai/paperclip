@@ -1389,7 +1389,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
   });
 
-  it("does not retry a lost monitor dispatch while another monitor wake remains scheduled", async () => {
+  it("keeps a steady-state pidless gateway loss as plain process_lost when another monitor wake remains scheduled", async () => {
     const { companyId, runId, issueId } = await seedRunFixture({
       adapterType: "openclaw_gateway",
       agentStatus: "idle",
@@ -1415,17 +1415,44 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .then((rows) => rows[0] ?? null);
     expect(failedRun?.resultJson).toMatchObject({
       stopReason: "process_lost",
+    });
+    expect(failedRun?.resultJson as Record<string, unknown>).not.toHaveProperty("stopReasonDetail");
+    expect(failedRun?.resultJson as Record<string, unknown>).not.toHaveProperty("restartRecovery");
+    const retries = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.retryOfRunId, runId)));
+    expect(retries).toHaveLength(0);
+  });
+
+  it("classifies pidless orphan reaping as restart-induced only during startup recovery", async () => {
+    const { runId } = await seedRunFixture({
+      adapterType: "openclaw_gateway",
+      agentStatus: "idle",
+      processPid: null,
+      processGroupId: null,
+      contextSnapshot: {
+        wakeReason: "issue_assigned",
+      },
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reapOrphanedRuns({ startupOrphanReap: true });
+
+    expect(result).toEqual({ reaped: 1, runIds: [runId] });
+    const failedRun = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    expect(failedRun?.resultJson).toMatchObject({
+      stopReason: "process_lost",
       stopReasonDetail: "restart_induced_process_supervisor_loss",
       restartRecovery: {
         classification: "restart_induced_process_supervisor_loss",
         mode: "startup_orphan_reap",
       },
     });
-    const retries = await db
-      .select()
-      .from(heartbeatRuns)
-      .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.retryOfRunId, runId)));
-    expect(retries).toHaveLength(0);
   });
 
   async function withTempPaperclipHome<T>(fn: (home: string) => Promise<T>): Promise<T> {

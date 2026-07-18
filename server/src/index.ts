@@ -893,7 +893,7 @@ export async function startServer(): Promise<StartedServer> {
 
         for (let attempt = 1; attempt <= 2; attempt++) {
           try {
-            const result = await heartbeat.reapOrphanedRuns();
+            const result = await heartbeat.reapOrphanedRuns({ startupOrphanReap: true });
             logger.info(
               { reaped: result.reaped, runIds: result.runIds },
               "startup reap of orphaned heartbeat runs complete",
