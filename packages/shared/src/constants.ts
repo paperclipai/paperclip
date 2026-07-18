@@ -608,6 +608,7 @@ export const SECRET_PROVIDERS = [
   "aws_secrets_manager",
   "gcp_secret_manager",
   "vault",
+  "oci_vault",
 ] as const;
 export type SecretProvider = (typeof SECRET_PROVIDERS)[number];
 

@@ -303,11 +303,44 @@ export const vaultProviderConfigSchema = z.object({
   secretPathPrefix: optionalSafeShortText,
 }).strict();
 
+// OCI region ids look like "il-jerusalem-1", "us-ashburn-1", "eu-frankfurt-1".
+const ociRegionSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(64)
+  .regex(/^[a-z]{2,3}-[a-z]+-\d+$/, "Invalid OCI region");
+// OCIDs look like "ocid1.<type>.<realm>.<region?>.<uniqueId>" (region segment may be empty,
+// e.g. compartment OCIDs use "ocid1.compartment.oc1..aaaa...").
+const ociVaultIdSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(512)
+  .regex(/^ocid1\.vault\.[a-z0-9-]+\.[a-z0-9-]*\.[A-Za-z0-9._-]+$/, "Invalid OCI vault OCID");
+const ociCompartmentIdSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(512)
+  .regex(
+    /^ocid1\.(compartment|tenancy)\.[a-z0-9-]+\.[a-z0-9-]*\.?[A-Za-z0-9._-]+$/,
+    "Invalid OCI compartment OCID",
+  );
+
+export const ociVaultProviderConfigSchema = z.object({
+  region: ociRegionSchema,
+  vaultId: ociVaultIdSchema,
+  compartmentId: ociCompartmentIdSchema.optional().nullable(),
+  secretNamePrefix: optionalSafeShortText,
+}).strict();
+
 export const secretProviderConfigPayloadSchema = z.discriminatedUnion("provider", [
   z.object({ provider: z.literal("local_encrypted"), config: localEncryptedProviderConfigSchema }),
   z.object({ provider: z.literal("aws_secrets_manager"), config: awsSecretsManagerProviderConfigSchema }),
   z.object({ provider: z.literal("gcp_secret_manager"), config: gcpSecretManagerProviderConfigSchema }),
   z.object({ provider: z.literal("vault"), config: vaultProviderConfigSchema }),
+  z.object({ provider: z.literal("oci_vault"), config: ociVaultProviderConfigSchema }),
 ]);
 
 export const createSecretProviderConfigSchema = z.object({

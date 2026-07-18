@@ -43,6 +43,12 @@ describe("secret provider registry", () => {
           supportsExternalReferences: true,
           configured: false,
         }),
+        expect.objectContaining({
+          id: "oci_vault",
+          supportsManagedValues: false,
+          supportsExternalReferences: true,
+          requiresExternalRef: true,
+        }),
       ]),
     );
   });

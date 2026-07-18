@@ -487,6 +487,7 @@ export {
   awsSecretsManagerProviderConfigSchema,
   gcpSecretManagerProviderConfigSchema,
   vaultProviderConfigSchema,
+  ociVaultProviderConfigSchema,
   secretProviderConfigPayloadSchema,
   createSecretBindingSchema,
   rotateSecretSchema,
