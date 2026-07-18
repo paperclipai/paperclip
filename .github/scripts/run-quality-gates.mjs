@@ -2,7 +2,7 @@
 /**
  * run-quality-gates.mjs
  * Orchestrates all quality gates. Fetches PR data once, runs all gates,
- * posts or updates a single consolidated comment via commitperclip.
+ * posts or updates a single consolidated comment via cortex-fleet-bot.
  *
  * Env: GH_TOKEN, GH_REPO, PR_NUMBER, PR_AUTHOR, PR_BRANCH
  * Exit: 0 if all quality gates pass, 1 if any fail.
@@ -17,7 +17,7 @@ import { checkTestCoverage } from './check-pr-test-coverage.mjs';
 import { checkLockfile } from './check-pr-lockfile.mjs';
 import { checkDependencies } from './check-pr-dependencies.mjs';
 
-const COMMENT_SIGNATURE = '— commitperclip';
+const COMMENT_SIGNATURE = '— cortex-fleet-bot';
 
 function buildComment(author, failures, informational) {
   if (failures.length === 0 && informational.length === 0) {
@@ -55,7 +55,7 @@ export async function findExistingComment(fetchFromGitHub, token, repo, prNumber
     );
 
     const existing = comments.find(
-      c => (c.user.login === 'commitperclip[bot]' || c.user.login === 'commitperclip') &&
+      c => (c.user.login === 'cortex-fleet-bot[bot]' || c.user.login === 'cortex-fleet-bot') &&
            c.body.includes(COMMENT_SIGNATURE)
     );
     if (existing) return existing;

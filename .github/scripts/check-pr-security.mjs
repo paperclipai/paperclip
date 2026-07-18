@@ -208,7 +208,7 @@ export function buildAdvisoryPayload(prNumber, prTitle, flags) {
       f.line ? `\n  \`${f.line}\`` : '',
     ].join('')),
     '',
-    '> This advisory was created automatically by commitperclip. Review and dismiss if not a real concern.',
+    '> This advisory was created automatically by cortex-fleet-bot. Review and dismiss if not a real concern.',
     ].join('\n'),
     severity: worstSeverity(flags),
     vulnerabilities: [],

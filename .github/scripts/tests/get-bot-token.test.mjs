@@ -28,6 +28,6 @@ test('resolveInstallationId: rejects ambiguous installations without repo or own
       { id: 1, account: { login: 'org-one' } },
       { id: 2, account: { login: 'org-two' } },
     ]), 'jwt'),
-    /Multiple commitperclip installations found/
+    /Multiple cortex-fleet-bot installations found/
   );
 });

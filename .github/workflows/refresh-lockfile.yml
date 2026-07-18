@@ -77,14 +77,14 @@ jobs:
 
       # The org disables PR creation via the default GITHUB_TOKEN
       # ("GitHub Actions is not permitted to create or approve pull requests").
-      # Mint a short-lived commitperclip App installation token instead — App
-      # tokens are exempt from that restriction and the app already has
+      # Mint a short-lived cortex-fleet-bot App installation token instead — App
+      # tokens are exempt from that restriction and the app has
       # contents:write + pull_requests:write. A PR opened by an App token (unlike
       # GITHUB_TOKEN) also triggers the required PR checks, so auto-merge can
-      # actually satisfy them. Uses the existing COMMITPERCLIP_KEY repo secret.
+      # actually satisfy them. Uses the CORTEX_FLEET_BOT_KEY repo secret.
       # Non-fatal: if the secret is absent the branch is already pushed and the
       # backstop routine (NEO-541) opens the PR out-of-band, so CI stays green.
-      - name: Generate commitperclip token
+      - name: Generate cortex-fleet-bot token
         id: token
         if: steps.push.outputs.pushed == 'true'
         continue-on-error: true
@@ -93,7 +93,7 @@ jobs:
           echo "::add-mask::$TOKEN"
           echo "value=$TOKEN" >> "$GITHUB_OUTPUT"
         env:
-          COMMITPERCLIP_KEY: ${{ secrets.COMMITPERCLIP_KEY }}
+          CORTEX_FLEET_BOT_KEY: ${{ secrets.CORTEX_FLEET_BOT_KEY }}
 
       - name: Create or update pull request
         id: upsert-pr
@@ -127,11 +127,11 @@ jobs:
         run: |
           gh pr merge --auto --squash --delete-branch "${{ steps.upsert-pr.outputs.pr_url }}"
 
-      # If the branch was pushed but no App token was available (COMMITPERCLIP_KEY
+      # If the branch was pushed but no App token was available (CORTEX_FLEET_BOT_KEY
       # unset), leave a loud, actionable trail. The Gene backstop routine (NEO-541)
       # opens/merges the PR out-of-band; this keeps the job green without hiding the
       # fact that CI-native PR creation is degraded until the secret is added.
       - name: Note out-of-band PR handoff
         if: steps.push.outputs.pushed == 'true' && steps.token.outputs.value == ''
         run: |
-          echo "::warning title=Lockfile PR handed to backstop::Branch '${{ steps.push.outputs.branch }}' was pushed but no commitperclip App token was available (COMMITPERCLIP_KEY unset). The out-of-band backstop routine (NEO-541) will open/merge the PR. Add the COMMITPERCLIP_KEY repo secret to restore CI-native PR creation."
+          echo "::warning title=Lockfile PR handed to backstop::Branch '${{ steps.push.outputs.branch }}' was pushed but no cortex-fleet-bot App token was available (CORTEX_FLEET_BOT_KEY unset). The out-of-band backstop routine (NEO-541) will open/merge the PR. Add the CORTEX_FLEET_BOT_KEY repo secret to restore CI-native PR creation."

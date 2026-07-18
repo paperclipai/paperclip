@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
  * get-bot-token.mjs
- * Generates a short-lived GitHub installation token for the commitperclip app.
- * Reads COMMITPERCLIP_KEY env var (PEM content of private key).
+ * Generates a short-lived GitHub installation token for the cortex-fleet-bot app.
+ * Reads CORTEX_FLEET_BOT_KEY env var (PEM content of private key).
  * Prints the token to stdout.
  *
  * Also exports: generateJWT(privateKey), ghFetch(path, token, options)
@@ -11,7 +11,10 @@
 import { createSign } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
-const APP_ID = '3718661';
+// cortex-fleet-bot GitHub App (Neoreef-owned). Replaced the vendor-owned
+// commitperclip App (app_id 3718661) per NEO-543 so CI no longer depends on a
+// private key only the upstream paperclipai org can mint.
+const APP_ID = '4154501';
 const OWNER_PATTERN = /^[a-zA-Z0-9_.-]+$/;
 const REPO_PATTERN = /^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/;
 
@@ -72,7 +75,7 @@ export async function resolveInstallationId(fetchInstallation, token, repo, owne
   const installations = await fetchInstallation('/app/installations', token);
   if (!installations.length) {
     throw new Error(
-      'ERROR: No installations found for commitperclip. Install URL: https://github.com/apps/commitperclip/installations/new'
+      'ERROR: No installations found for cortex-fleet-bot. Install URL: https://github.com/apps/cortex-fleet-bot/installations/new'
     );
   }
 
@@ -95,15 +98,15 @@ export async function resolveInstallationId(fetchInstallation, token, repo, owne
   }
 
   throw new Error(
-    'ERROR: Multiple commitperclip installations found. Set GH_REPO or GITHUB_REPOSITORY so the correct installation can be selected.'
+    'ERROR: Multiple cortex-fleet-bot installations found. Set GH_REPO or GITHUB_REPOSITORY so the correct installation can be selected.'
   );
 }
 
 async function main() {
-  const privateKey = process.env.COMMITPERCLIP_KEY;
+  const privateKey = process.env.CORTEX_FLEET_BOT_KEY;
   if (!privateKey) {
-    console.error('ERROR: COMMITPERCLIP_KEY env var not set.');
-    console.error('Add to ~/.bash_profile: export COMMITPERCLIP_KEY="$(cat ~/.config/commitperclip/private-key.pem)"');
+    console.error('ERROR: CORTEX_FLEET_BOT_KEY env var not set.');
+    console.error('Add to ~/.bash_profile: export CORTEX_FLEET_BOT_KEY="$(cat ~/.config/cortex-fleet-bot/private-key.pem)"');
     process.exit(1);
   }
 

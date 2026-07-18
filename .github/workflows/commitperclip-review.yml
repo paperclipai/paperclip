@@ -1,4 +1,4 @@
-name: commitperclip PR Review
+name: cortex-fleet-bot PR Review
 
 on:
   pull_request_target:
@@ -34,14 +34,14 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Generate commitperclip token
+      - name: Generate cortex-fleet-bot token
         id: token
         run: |
           TOKEN=$(node .github/scripts/get-bot-token.mjs)
           echo "::add-mask::$TOKEN"
           echo "value=$TOKEN" >> $GITHUB_OUTPUT
         env:
-          COMMITPERCLIP_KEY: ${{ secrets.COMMITPERCLIP_KEY }}
+          CORTEX_FLEET_BOT_KEY: ${{ secrets.CORTEX_FLEET_BOT_KEY }}
 
       - name: Run quality gates
         id: quality
@@ -70,5 +70,5 @@ jobs:
           github.event.pull_request.user.login != 'dependabot[bot]' &&
           steps.quality.outcome == 'failure'
         run: |
-          echo "One or more quality gates failed. See commitperclip comment on the PR for details."
+          echo "One or more quality gates failed. See cortex-fleet-bot comment on the PR for details."
           exit 1
