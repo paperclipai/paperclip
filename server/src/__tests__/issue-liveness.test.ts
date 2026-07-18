@@ -77,6 +77,47 @@ describe("issue graph liveness classifier", () => {
     });
   });
 
+  it("detects a blocked unassigned issue with no blocker edge as a visible recovery finding", () => {
+    const findings = classifyIssueGraphLiveness({
+      issues: [
+        issue({
+          assigneeAgentId: null,
+          createdByAgentId: null,
+        }),
+      ],
+      relations: [],
+      agents: [agent(), manager],
+    });
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      issueId: blockedId,
+      state: "blocked_by_unassigned_issue",
+      recoveryIssueId: blockedId,
+      recommendedOwnerAgentId: managerId,
+      dependencyPath: [
+        expect.objectContaining({ issueId: blockedId }),
+      ],
+      incidentKey: `harness_liveness:${companyId}:${blockedId}:blocked_by_unassigned_issue:${blockedId}`,
+    });
+  });
+
+  it("does not flag a blocked unassigned issue when a recovery issue owns the wait", () => {
+    const findings = classifyIssueGraphLiveness({
+      issues: [
+        issue({
+          assigneeAgentId: null,
+          createdByAgentId: null,
+        }),
+      ],
+      relations: [],
+      agents: [agent(), manager],
+      openRecoveryIssues: [{ companyId, issueId: blockedId, status: "todo" }],
+    });
+
+    expect(findings).toEqual([]);
+  });
+
   it("does not use free-form executive role or name matching for recovery ownership", () => {
     const rootAgentId = "root-agent";
     const spoofedExecutiveId = "spoofed-executive";

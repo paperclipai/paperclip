@@ -613,6 +613,29 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
       const review = reviewFinding(issue, issue, [issue]);
       if (review) findings.push(review);
     }
+
+    if (
+      issue.status === "blocked" &&
+      !chainFinding &&
+      !hasUnresolvedBlockerEdge &&
+      !issue.assigneeAgentId &&
+      !issue.assigneeUserId &&
+      !hasExplicitWaitingPath(issue)
+    ) {
+      const ownerCandidates = ownerCandidatesForRecoveryIssue(issue, input.agents, agentsById);
+      findings.push(finding({
+        issue,
+        state: "blocked_by_unassigned_issue",
+        reason: `${issueLabel(issue)} is blocked, unassigned, and has no unresolved blocker, user owner, wake, interaction, approval, monitor, or recovery issue owning the next action.`,
+        dependencyPath: [issue],
+        recoveryIssue: issue,
+        recommendedOwnerCandidateAgentIds: ownerCandidates.map((candidate) => candidate.agentId),
+        recommendedOwnerCandidates: ownerCandidates,
+        recommendedAction:
+          `Assign ${issueLabel(issue)} to an owner, add a first-class blocker that owns the wait, or record an intentional manual resolution.`,
+        blockerIssueId: issue.id,
+      }));
+    }
   }
 
   return findings;

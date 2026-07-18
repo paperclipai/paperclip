@@ -154,7 +154,7 @@ type StrandedRecoveryCause =
   | "execution_review_participant_recovery"
   | typeof SUCCESSFUL_RUN_MISSING_STATE_REASON;
 
-type StrandedPreviousStatus = "todo" | "in_progress" | "in_review";
+type StrandedPreviousStatus = "todo" | "in_progress" | "in_review" | "blocked";
 
 type SuccessfulRunHandoffRecoveryEvidence = {
   sourceRunId: string | null;

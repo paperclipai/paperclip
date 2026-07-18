@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { agents, agentWakeupRequests, companies, createDb, heartbeatRunEvents, heartbeatRuns, issues } from "@paperclipai/db";
+import { activityLog, agents, agentWakeupRequests, companies, createDb, heartbeatRunEvents, heartbeatRuns, issueComments, issueRecoveryActions, issues } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -26,7 +27,10 @@ describeEmbeddedPostgres("heartbeat list", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(activityLog);
+    await db.delete(issueComments);
     await db.delete(heartbeatRunEvents);
+    await db.delete(issueRecoveryActions);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(issues);
@@ -331,6 +335,17 @@ describeEmbeddedPostgres("heartbeat list", () => {
       errorCode: "issue_blocked_unassigned",
     });
     expect(run?.startedAt).toBeNull();
+
+    const [action] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    expect(action).toMatchObject({
+      status: "active",
+      cause: "stranded_assigned_issue",
+      previousOwnerAgentId: null,
+      returnOwnerAgentId: agentId,
+    });
   });
 });
 

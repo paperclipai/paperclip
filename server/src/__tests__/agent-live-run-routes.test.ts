@@ -274,9 +274,39 @@ describe("agent live run routes", () => {
     expect(res.body).toMatchObject({
       id: "run-1",
       status: "failed",
-      failureClass: "adapter_failed",
-      safeReasonSummary: "adapter_failed",
+      failureClass: "failed",
+      failureReasonCode: "adapter_failed",
+      safeReasonSummary: "Run failed with error code: adapter_failed",
     });
+  });
+
+  it("does not expose raw adapter errors in failed run safe summaries", async () => {
+    mockHeartbeatService.getRun.mockResolvedValue({
+      id: "run-1",
+      companyId: "company-1",
+      agentId: "agent-1",
+      status: "failed",
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      error: "connection failed at /home/operator/private with token abc123",
+      errorCode: null,
+    });
+    mockHeartbeatService.decorateActiveRunStatus.mockImplementation((run) => run);
+
+    const res = await requestApp(
+      await createApp(),
+      (baseUrl) => request(baseUrl).get("/api/heartbeat-runs/run-1"),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toMatchObject({
+      status: "failed",
+      failureClass: "failed",
+      failureReasonCode: null,
+      safeReasonSummary: "Run failed; inspect the run log for redacted details.",
+    });
+    expect(res.body.safeReasonSummary).not.toContain("/home/operator/private");
+    expect(res.body.safeReasonSummary).not.toContain("abc123");
   });
 
   it("returns a compact active run payload for issue polling", async () => {
