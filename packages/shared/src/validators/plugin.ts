@@ -727,7 +727,7 @@ export const pluginManifestV1Schema = z.object({
   companyEnablement: z.object({
     default: z.enum(["on", "off"]),
     locked: z.boolean().optional(),
-  }).optional(),
+  }).strict().optional(),
   entrypoints: z.object({
     worker: z.string().min(1),
     ui: z.string().min(1).optional(),

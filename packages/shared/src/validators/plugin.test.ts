@@ -316,4 +316,12 @@ describe("plugin manifest companyEnablement", () => {
     });
     expect(result.success).toBe(false);
   });
+
+  it("rejects unknown keys in companyEnablement", () => {
+    const result = pluginManifestV1Schema.safeParse({
+      ...baseManifest,
+      companyEnablement: { default: "on", unexpectedKey: true },
+    });
+    expect(result.success).toBe(false);
+  });
 });
