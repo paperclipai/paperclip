@@ -3182,16 +3182,20 @@ export async function runChildProcess(
           signalRunningProcess({ child, processGroupId }, "SIGKILL");
           reject(err instanceof Error ? err : new Error(String(err)));
         };
+        const spawnPersistSucceeded = spawnPersistPromise.then(
+          () => true,
+          (err) => {
+            handleSpawnPersistenceFailure(err);
+            return false;
+          },
+        );
         if (opts.stdin != null && stdin) {
-          void spawnPersistPromise
-            .then(() => {
-              if (child.killed || stdin.destroyed) return;
-              stdin.write(opts.stdin as string);
-              stdin.end();
-            })
-            .catch(handleSpawnPersistenceFailure);
-        } else {
-          void spawnPersistPromise.catch(handleSpawnPersistenceFailure);
+          void spawnPersistSucceeded.then((persisted) => {
+            if (!persisted) return;
+            if (child.killed || stdin.destroyed) return;
+            stdin.write(opts.stdin as string);
+            stdin.end();
+          });
         }
 
         child.on("error", (err: Error) => {
@@ -3217,30 +3221,33 @@ export async function runChildProcess(
           clearTerminalCleanupTimers();
           runningProcesses.delete(runId);
           void logChain.finally(() => {
-            void Promise.resolve()
-              .then(() => target.cleanup?.())
-              .finally(() => {
-              resolve({
-                exitCode: code,
-                signal,
-                timedOut,
-                stdout,
-                stderr,
-                pid: child.pid ?? null,
-                startedAt,
-                terminalResultCleanup: terminalCleanupStarted
-                  ? {
-                    kind: "terminal_result_cleanup",
-                    stopped: true,
-                    stopReason: UNMANAGED_BACKGROUND_TASK_STOP_REASON,
-                    reason: UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
-                    terminalResultSeen,
-                    signal: terminalCleanupSignal,
-                    forceKilled: terminalCleanupForceKilled,
-                  }
-                  : null,
-              });
-              });
+            void spawnPersistSucceeded.then((persisted) => {
+              void Promise.resolve()
+                .then(() => target.cleanup?.())
+                .finally(() => {
+                  if (!persisted) return;
+                  resolve({
+                    exitCode: code,
+                    signal,
+                    timedOut,
+                    stdout,
+                    stderr,
+                    pid: child.pid ?? null,
+                    startedAt,
+                    terminalResultCleanup: terminalCleanupStarted
+                      ? {
+                        kind: "terminal_result_cleanup",
+                        stopped: true,
+                        stopReason: UNMANAGED_BACKGROUND_TASK_STOP_REASON,
+                        reason: UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
+                        terminalResultSeen,
+                        signal: terminalCleanupSignal,
+                        forceKilled: terminalCleanupForceKilled,
+                      }
+                      : null,
+                  });
+                });
+            });
           });
         });
       })
