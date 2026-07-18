@@ -684,6 +684,18 @@ describe("Secrets page layout", () => {
     });
     await flushReact();
 
+    const companyKeyInput = document.getElementById("new-secret-key") as HTMLInputElement;
+    expect(companyKeyInput.readOnly).toBe(true);
+
+    const editKeyButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Edit",
+    ) as HTMLButtonElement | undefined;
+    await act(async () => {
+      editKeyButton?.click();
+    });
+    await flushReact();
+    expect(companyKeyInput.readOnly).toBe(false);
+
     const eachUserButton = Array.from(document.body.querySelectorAll("button")).find(
       (button) => button.textContent?.trim() === "Each user",
     ) as HTMLButtonElement | undefined;
@@ -697,6 +709,12 @@ describe("Secrets page layout", () => {
     const nameInput = document.getElementById("new-secret-name") as HTMLInputElement;
     const keyInput = document.getElementById("new-secret-key") as HTMLInputElement;
     const usageGuidance = document.getElementById("new-secret-usage-guidance") as HTMLTextAreaElement;
+    expect(keyInput.readOnly).toBe(true);
+    expect(
+      Array.from(document.body.querySelectorAll("button")).some(
+        (button) => button.textContent?.trim() === "Edit",
+      ),
+    ).toBe(true);
     expect(document.getElementById("new-secret-provider")).toBeNull();
     expect(document.getElementById("new-secret-vault")).toBeNull();
     expect(document.getElementById("new-secret-value")).toBeNull();

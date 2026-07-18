@@ -715,6 +715,14 @@ export function Secrets() {
     () => userDefinitions.find((definition) => definition.id === selectedDefinitionId) ?? null,
     [selectedDefinitionId, userDefinitions],
   );
+  const selectedSecretAccessReference = useMemo<AgentAccessReference | null>(
+    () => selectedSecret ? { kind: "company", secret: selectedSecret } : null,
+    [selectedSecret],
+  );
+  const selectedDefinitionAccessReference = useMemo<AgentAccessReference | null>(
+    () => selectedDefinition ? { kind: "user", definition: selectedDefinition } : null,
+    [selectedDefinition],
+  );
   const selectedDefinitionMyEntry = useMemo(() => {
     if (!selectedDefinition) return null;
     return myUserSecrets.find((entry) => entry.definition.id === selectedDefinition.id) ?? {
@@ -1844,7 +1852,7 @@ export function Secrets() {
                     <div className="space-y-3">
                       <AgentAccessSection
                         companyId={selectedCompanyId}
-                        reference={{ kind: "company", secret: selectedSecret }}
+                        reference={selectedSecretAccessReference!}
                       />
                       <SecretDetailsTab
                         secret={selectedSecret}
@@ -1983,7 +1991,7 @@ export function Secrets() {
                     <div className="space-y-3">
                       <AgentAccessSection
                         companyId={selectedCompanyId}
-                        reference={{ kind: "user", definition: selectedDefinition }}
+                        reference={selectedDefinitionAccessReference!}
                       />
                       <UserSecretDetailsTab
                         companyId={selectedCompanyId}
@@ -2072,6 +2080,7 @@ export function Secrets() {
                   onValueChange={(value) => {
                     const next = value as SecretValueProvider;
                     setSecretValueProvider(next);
+                    setCreateKeyEditable(false);
                     setCreateForm((current) => ({
                       ...current,
                       key: createKeyDirty
