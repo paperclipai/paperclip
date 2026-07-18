@@ -7627,7 +7627,29 @@ export function issueRoutes(
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
     if (!existing) return;
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
-    if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+    const {
+      comment: commentBody,
+      reviewRequest,
+      reopen: reopenRequested,
+      resume: resumeRequested,
+      interrupt: interruptRequested,
+      hiddenAt: hiddenAtRaw,
+      ...updateFields
+    } = req.body;
+    const issueMutationRequested =
+      Object.keys(updateFields).length > 0 ||
+      reviewRequest !== undefined ||
+      reopenRequested === true ||
+      resumeRequested === true ||
+      interruptRequested === true ||
+      hiddenAtRaw !== undefined;
+    if (commentBody) {
+      const commentAccessDecision = await assertAgentIssueCommentAllowed(req, res, existing);
+      if (!commentAccessDecision) return;
+      if (issueMutationRequested && !(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+    } else if (!(await assertAgentIssueMutationAllowed(req, res, existing))) {
+      return;
+    }
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
 
     const actor = getActorInfo(req);
@@ -7642,15 +7664,6 @@ export function issueRoutes(
       Array.isArray(req.body.blockedByIssueIds)
         ? await svc.getRelationSummaries(existing.id)
         : null;
-    const {
-      comment: commentBody,
-      reviewRequest,
-      reopen: reopenRequested,
-      resume: resumeRequested,
-      interrupt: interruptRequested,
-      hiddenAt: hiddenAtRaw,
-      ...updateFields
-    } = req.body;
     const shouldCancelActiveRunForCancelledStatus =
       existing.status !== "cancelled" && updateFields.status === "cancelled";
     if (resumeRequested === true && !commentBody) {
