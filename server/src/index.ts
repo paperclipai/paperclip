@@ -58,6 +58,10 @@ import {
 import { createFeedbackTraceShareClientFromConfig } from "./services/feedback-share-client.js";
 import { buildRuntimeApiCandidateUrls, choosePrimaryRuntimeApiUrl } from "./runtime-api.js";
 import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
+import {
+  createDatabaseBackupCoordinator,
+  startDatabaseBackupScheduler,
+} from "./services/database-backup-scheduler.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
@@ -605,64 +609,62 @@ export async function startServer(): Promise<StartedServer> {
     resolve(config.databaseBackupDir, "db-backup-to-s3.failure"),
     resolve(config.databaseBackupDir, "..", "db-backup-to-s3.failure"),
   ];
-  let databaseBackupInFlight = false;
-  const runServerDatabaseBackup = async (
-    trigger: InstanceDatabaseBackupTrigger,
-  ): Promise<InstanceDatabaseBackupRunResult | null> => {
-    if (databaseBackupInFlight) {
-      const message = "Database backup already in progress";
-      if (trigger === "scheduled") {
-        logger.warn("Skipping scheduled database backup because a previous backup is still running");
-        return null;
-      }
-      throw conflict(message);
-    }
+  const databaseBackupCoordinator = createDatabaseBackupCoordinator<InstanceDatabaseBackupRunResult>({
+    onAutomatedOverlap: (trigger) => {
+      logger.warn(
+        { trigger },
+        `Skipping ${trigger} database backup because a previous backup is still running`,
+      );
+    },
+    execute: async (trigger) => {
+      const startedAt = new Date();
+      const startedAtMs = Date.now();
+      const label = trigger === "manual" ? "Manual" : "Automatic";
+      try {
+        logger.info({ backupDir: config.databaseBackupDir, trigger }, `${label} database backup starting`);
+        // Read retention from Instance Settings (DB) so changes take effect without restart.
+        const generalSettings = await backupSettingsSvc.getGeneral();
+        const retention = generalSettings.backupRetention;
 
-    databaseBackupInFlight = true;
-    const startedAt = new Date();
-    const startedAtMs = Date.now();
-    const label = trigger === "scheduled" ? "Automatic" : "Manual";
-    try {
-      logger.info({ backupDir: config.databaseBackupDir, trigger }, `${label} database backup starting`);
-      // Read retention from Instance Settings (DB) so changes take effect without restart.
-      const generalSettings = await backupSettingsSvc.getGeneral();
-      const retention = generalSettings.backupRetention;
-
-      const result = await runDatabaseBackup({
-        connectionString: activeDatabaseConnectionString,
-        backupDir: config.databaseBackupDir,
-        retention,
-        filenamePrefix: "paperclip",
-      });
-      const finishedAt = new Date();
-      const response: InstanceDatabaseBackupRunResult = {
-        ...result,
-        trigger,
-        backupDir: config.databaseBackupDir,
-        retention,
-        startedAt: startedAt.toISOString(),
-        finishedAt: finishedAt.toISOString(),
-        durationMs: Date.now() - startedAtMs,
-      };
-      logger.info(
-        {
-          backupFile: result.backupFile,
-          sizeBytes: result.sizeBytes,
-          prunedCount: result.prunedCount,
+        const result = await runDatabaseBackup({
+          connectionString: activeDatabaseConnectionString,
           backupDir: config.databaseBackupDir,
           retention,
+          filenamePrefix: "paperclip",
+        });
+        const finishedAt = new Date();
+        const response: InstanceDatabaseBackupRunResult = {
+          ...result,
           trigger,
-          durationMs: response.durationMs,
-        },
-        `${label} database backup complete: ${formatDatabaseBackupResult(result)}`,
-      );
-      return response;
-    } catch (err) {
-      logger.error({ err, backupDir: config.databaseBackupDir, trigger }, `${label} database backup failed`);
-      throw err;
-    } finally {
-      databaseBackupInFlight = false;
-    }
+          backupDir: config.databaseBackupDir,
+          retention,
+          startedAt: startedAt.toISOString(),
+          finishedAt: finishedAt.toISOString(),
+          durationMs: Date.now() - startedAtMs,
+        };
+        logger.info(
+          {
+            backupFile: result.backupFile,
+            sizeBytes: result.sizeBytes,
+            prunedCount: result.prunedCount,
+            backupDir: config.databaseBackupDir,
+            retention,
+            trigger,
+            durationMs: response.durationMs,
+          },
+          `${label} database backup complete: ${formatDatabaseBackupResult(result)}`,
+        );
+        return response;
+      } catch (err) {
+        logger.error({ err, backupDir: config.databaseBackupDir, trigger }, `${label} database backup failed`);
+        throw err;
+      }
+    },
+  });
+  const runServerDatabaseBackup = (
+    trigger: InstanceDatabaseBackupTrigger,
+  ): Promise<InstanceDatabaseBackupRunResult | null> => {
+    return databaseBackupCoordinator.run(trigger);
   };
   const pluginWorkerManager = createPluginWorkerManager();
   const app = await createApp(db as any, {
@@ -1100,23 +1102,7 @@ export async function startServer(): Promise<StartedServer> {
     }, config.heartbeatSchedulerIntervalMs);
   }
   
-  if (config.databaseBackupEnabled) {
-    const backupIntervalMs = config.databaseBackupIntervalMinutes * 60 * 1000;
-
-    logger.info(
-      {
-        intervalMinutes: config.databaseBackupIntervalMinutes,
-        retentionSource: "instance-settings-db",
-        backupDir: config.databaseBackupDir,
-      },
-      "Automatic database backups enabled",
-    );
-    setInterval(() => {
-      void runServerDatabaseBackup("scheduled").catch(() => {
-        // runServerDatabaseBackup already logs the failure with context.
-      });
-    }, backupIntervalMs);
-  }
+  let databaseBackupInterval: ReturnType<typeof setInterval> | null = null;
   
   // Wait for external adapters to finish loading before accepting requests.
   // Without this, adapter type validation (assertKnownAdapterType) would
@@ -1196,9 +1182,30 @@ export async function startServer(): Promise<StartedServer> {
       resolveListen();
     });
   });
+
+  if (config.databaseBackupEnabled) {
+    const backupIntervalMs = config.databaseBackupIntervalMinutes * 60 * 1000;
+    logger.info(
+      {
+        intervalMinutes: config.databaseBackupIntervalMinutes,
+        retentionSource: "instance-settings-db",
+        backupDir: config.databaseBackupDir,
+        startupBackup: true,
+      },
+      "Automatic database backups enabled",
+    );
+    databaseBackupInterval = startDatabaseBackupScheduler({
+      intervalMs: backupIntervalMs,
+      run: runServerDatabaseBackup,
+    });
+  }
   
   {
     const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
+      if (databaseBackupInterval) {
+        clearInterval(databaseBackupInterval);
+        databaseBackupInterval = null;
+      }
       heartbeatSchedulerStopped = true;
       if (heartbeatSchedulerInterval) {
         clearInterval(heartbeatSchedulerInterval);
