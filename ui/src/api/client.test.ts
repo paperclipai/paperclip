@@ -77,6 +77,21 @@ describe("in-tab GET coalescing", () => {
   });
 });
 
+describe("mutation headers", () => {
+  it("keeps JSON content type when a caller supplies an idempotency key", async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ ok: true }));
+
+    await api.post("/agent-hires", { name: "Builder" }, {
+      headers: { "Idempotency-Key": "hire-123" },
+    });
+
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    const headers = new Headers(init.headers);
+    expect(headers.get("Content-Type")).toBe("application/json");
+    expect(headers.get("Idempotency-Key")).toBe("hire-123");
+  });
+});
+
 describe("per-caller abort semantics", () => {
   it("aborting one caller rejects only that caller, not the shared fetch", async () => {
     const d = deferred<Response>();

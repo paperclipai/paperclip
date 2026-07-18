@@ -8,6 +8,12 @@ export { companySkillPolicyService, normalizeSkillPolicySourceType } from "./com
 export { folderService } from "./folders.js";
 export { agentService, deduplicateAgentName } from "./agents.js";
 export {
+  agentHireOperationService,
+  AgentHireIdempotencyConflictError,
+  hashAgentHireRequest,
+  publicAgentHireOperation,
+} from "./agent-hire-operations.js";
+export {
   builtInAgentService,
   deriveBuiltInAgentStatus,
   getBuiltInAgentDefinition,

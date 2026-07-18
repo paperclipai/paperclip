@@ -69,6 +69,20 @@ export interface AgentHireResponse {
   approval: Approval | null;
 }
 
+export interface AgentHirePendingResponse {
+  operationId: string;
+  status: "pending";
+  stage: string;
+  statusUrl: string;
+}
+
+function createAgentHireIdempotencyKey() {
+  if (typeof globalThis.crypto?.randomUUID === "function") {
+    return globalThis.crypto.randomUUID();
+  }
+  return `hire-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
 export interface AgentPermissionUpdate {
   canCreateAgents: boolean;
   canCreateSkills: boolean;
@@ -137,8 +151,17 @@ export const agentsApi = {
     api.post<Agent>(agentPath(id, companyId, `/config-revisions/${revisionId}/rollback`), {}),
   create: (companyId: string, data: Record<string, unknown>) =>
     api.post<Agent>(`/companies/${companyId}/agents`, data),
-  hire: (companyId: string, data: Record<string, unknown>) =>
-    api.post<AgentHireResponse>(`/companies/${companyId}/agent-hires`, data),
+  hire: async (companyId: string, data: Record<string, unknown>) => {
+    const idempotencyKey = createAgentHireIdempotencyKey();
+    const path = `/companies/${companyId}/agent-hires`;
+    while (true) {
+      const response = await api.post<AgentHireResponse | AgentHirePendingResponse>(path, data, {
+        headers: { "Idempotency-Key": idempotencyKey },
+      });
+      if ("agent" in response) return response;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+  },
   update: (id: string, data: Record<string, unknown>, companyId?: string) =>
     api.patch<Agent>(agentPath(id, companyId), data),
   updatePermissions: (id: string, data: AgentPermissionUpdate, companyId?: string) =>

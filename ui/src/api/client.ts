@@ -17,6 +17,8 @@ export class ApiError extends Error {
 export interface RequestOptions {
   /** Abort signal wired through to `fetch` and coalescing (per-caller). */
   signal?: AbortSignal;
+  /** Additional request headers merged with the client's defaults. */
+  headers?: HeadersInit;
 }
 
 function abortError(): DOMException {
@@ -45,9 +47,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   applyObservabilityHeaders(headers);
 
   const res = await fetch(`${BASE}${path}`, {
+    ...init,
     headers,
     credentials: "include",
-    ...init,
   });
   if (!res.ok) {
     const errorBody = await res.json().catch(() => null);
@@ -146,18 +148,43 @@ function isRequestOptions(value: unknown): value is RequestOptions {
 export const api = {
   get: <T>(path: string, options?: RequestOptions) => coalescedGet<T>(path, options),
   post: <T>(path: string, body: unknown, options?: RequestOptions) =>
-    request<T>(path, { method: "POST", body: JSON.stringify(body), signal: options?.signal }),
+    request<T>(path, {
+      method: "POST",
+      body: JSON.stringify(body),
+      signal: options?.signal,
+      headers: options?.headers,
+    }),
   postForm: <T>(path: string, body: FormData, options?: RequestOptions) =>
-    request<T>(path, { method: "POST", body, signal: options?.signal }),
+    request<T>(path, { method: "POST", body, signal: options?.signal, headers: options?.headers }),
   put: <T>(path: string, body: unknown, options?: RequestOptions) =>
-    request<T>(path, { method: "PUT", body: JSON.stringify(body), signal: options?.signal }),
+    request<T>(path, {
+      method: "PUT",
+      body: JSON.stringify(body),
+      signal: options?.signal,
+      headers: options?.headers,
+    }),
   patch: <T>(path: string, body: unknown, options?: RequestOptions) =>
-    request<T>(path, { method: "PATCH", body: JSON.stringify(body), signal: options?.signal }),
+    request<T>(path, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+      signal: options?.signal,
+      headers: options?.headers,
+    }),
   delete: <T>(path: string, bodyOrOptions?: unknown, options?: RequestOptions) => {
     const requestOptions = isRequestOptions(bodyOrOptions) ? bodyOrOptions : options;
     const body = bodyOrOptions === undefined || isRequestOptions(bodyOrOptions) ? undefined : JSON.stringify(bodyOrOptions);
-    return request<T>(path, { method: "DELETE", ...(body === undefined ? {} : { body }), signal: requestOptions?.signal });
+    return request<T>(path, {
+      method: "DELETE",
+      ...(body === undefined ? {} : { body }),
+      signal: requestOptions?.signal,
+      headers: requestOptions?.headers,
+    });
   },
   deleteWithBody: <T>(path: string, body: unknown, options?: RequestOptions) =>
-    request<T>(path, { method: "DELETE", body: JSON.stringify(body), signal: options?.signal }),
+    request<T>(path, {
+      method: "DELETE",
+      body: JSON.stringify(body),
+      signal: options?.signal,
+      headers: options?.headers,
+    }),
 };

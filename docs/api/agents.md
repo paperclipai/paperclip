@@ -67,6 +67,41 @@ POST /api/companies/{companyId}/agents
 }
 ```
 
+## Hire Agent Safely
+
+```
+POST /api/companies/{companyId}/agent-hires
+Idempotency-Key: <caller-generated-key>
+```
+
+Send a stable `Idempotency-Key` for every logical hire and reuse it when a
+request times out or disconnects. Keys are scoped to the company and
+authenticated user or agent. Concurrent submissions with the same scoped key
+create at most one agent. Reusing a key with a different request body returns
+`422`.
+
+The operation is persisted before skill resolution, configuration
+normalization, agent creation, instruction materialization, approvals, grants,
+or activity logging. If the operation completes within the request budget, the
+route returns `201` with `{ "agent": ..., "approval": ... }`. Otherwise it
+returns `202`:
+
+```json
+{
+  "operationId": "8ebf4f8e-5b12-4c38-8557-efaf22960dc8",
+  "status": "pending",
+  "stage": "config_normalization",
+  "statusUrl": "/api/companies/company-1/agent-hire-operations/8ebf4f8e-5b12-4c38-8557-efaf22960dc8"
+}
+```
+
+Query `statusUrl` as the same authenticated principal. It returns
+`pending`, `succeeded`, or `failed`, coarse per-stage timings, and either the
+redacted completed hire response or bounded error metadata. Operation records
+store only a request hash; raw request payloads and credentials are not stored.
+A same-key replay after completion returns the original response with
+`Idempotency-Key-Replay: true`.
+
 ## Update Agent
 
 ```
