@@ -7932,6 +7932,42 @@ export function issueRoutes(
       }
     }
 
+    if (activeRecoveryActionBeforeUpdate) {
+      const prospectiveIssue = {
+        ...existing,
+        ...updateFields,
+      } as typeof existing;
+      const recoveryRejectionReason = await classifySourceRecoveryRevalidation({
+        issue: prospectiveIssue,
+        trigger: "issue_update",
+        statusChanged: existing.status !== prospectiveIssue.status,
+        assigneeChanged:
+          existing.assigneeAgentId !== prospectiveIssue.assigneeAgentId ||
+          existing.assigneeUserId !== prospectiveIssue.assigneeUserId,
+        blockersChanged: Array.isArray(req.body.blockedByIssueIds),
+        executionPolicyChanged: req.body.executionPolicy !== undefined,
+        monitorChanged,
+        resumeRequested: resumeRequested === true,
+        reopened: false,
+        blockedToTodoRecovery:
+          existing.status === "blocked" &&
+          prospectiveIssue.status === "todo" &&
+          req.body.status !== undefined,
+      });
+      if (recoveryRejectionReason) {
+        res.status(409).json({
+          error: "Issue update rejected by active recovery action",
+          details: {
+            issueId: existing.id,
+            recoveryActionId: activeRecoveryActionBeforeUpdate.id,
+            reason: recoveryRejectionReason,
+            securityPrinciples: ["Fail Securely", "Complete Mediation", "Reviewability"],
+          },
+        });
+        return;
+      }
+    }
+
     let issue;
     try {
       if (transition.decision && decisionId) {
