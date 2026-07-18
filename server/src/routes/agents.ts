@@ -661,10 +661,28 @@ export function agentRoutes(
       buildAgentAccessState(agent),
     ]);
 
+    // RIP-1313/RIP-1265: always redact adapterConfig + runtimeConfig secrets
+    // before returning, even in the self-view (non-restricted) path. The
+    // restricted path nukes adapterConfig entirely; the self-view path keeps
+    // non-secret fields (url, agentId, sessionKey, timeoutSec) but masks
+    // password, authToken, devicePrivateKeyPem, and headers.x-openclaw-token
+    // via redactEventPayload. Without this, /agents/me leaks every secret.
+    const base = options?.restricted
+      ? redactForRestrictedAgentView(agent)
+      : redactAgentSelfView(agent);
     return {
-      ...(options?.restricted ? redactForRestrictedAgentView(agent) : agent),
+      ...base,
       chainOfCommand,
       access: accessState,
+    };
+  }
+
+  function redactAgentSelfView(agent: Awaited<ReturnType<typeof svc.getById>>) {
+    if (!agent) return null;
+    return {
+      ...agent,
+      adapterConfig: redactEventPayload(agent.adapterConfig),
+      runtimeConfig: redactEventPayload(agent.runtimeConfig),
     };
   }
 
