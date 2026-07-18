@@ -202,7 +202,9 @@ describe("adapter routes", () => {
     expect(hermesGateway.source).toBe("builtin");
     expect(hermesGateway.capabilities).toMatchObject({
       supportsInstructionsBundle: false,
-      supportsSkills: false,
+      // hermes_gateway wires listSkills/syncSkills (spec-309 Layers 1+2) —
+      // adapters.ts:120 derives supportsSkills from their presence.
+      supportsSkills: true,
       supportsLocalAgentJwt: false,
       requiresMaterializedRuntimeSkills: false,
     });
