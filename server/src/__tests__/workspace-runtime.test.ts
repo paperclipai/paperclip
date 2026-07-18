@@ -2616,7 +2616,7 @@ describe("realizeExecutionWorkspace", () => {
       recordedBranch: "LP-1119-internal-provenance",
       publicBranch: "fix/public-safe-lp-1119",
     },
-  ])("adopts $identifier public-safe branch when it matches the recorded provenance HEAD", async ({
+  ])("stages pending audited reconciliation for $identifier public-safe branch when it matches the recorded provenance HEAD", async ({
     identifier,
     recordedBranch,
     publicBranch,
@@ -2628,6 +2628,7 @@ describe("realizeExecutionWorkspace", () => {
     await runGit(repoRoot, ["worktree", "add", "-b", publicBranch, worktreePath, recordedBranch]);
 
     const restored = await ensurePersistedExecutionWorkspaceAvailable({
+      db: {} as ReturnType<typeof createDb>,
       base: {
         baseCwd: repoRoot,
         source: "project_primary",
@@ -2648,11 +2649,7 @@ describe("realizeExecutionWorkspace", () => {
         baseRef: "HEAD",
         branchName: recordedBranch,
       },
-      issue: {
-        id: `issue-${identifier.toLowerCase()}`,
-        identifier,
-        title: "Publish public-safe branch",
-      },
+      issue: null,
       agent: {
         id: "agent-1",
         name: "Codex Coder",
@@ -2663,6 +2660,12 @@ describe("realizeExecutionWorkspace", () => {
 
     expect(restored?.branchName).toBe(publicBranch);
     expect(restored?.warnings).toEqual([]);
+    expect(restored?.pendingForwardBranchReconcile).toEqual(expect.objectContaining({
+      recordedBranchName: recordedBranch,
+      adoptedBranchName: publicBranch,
+      prePersistenceFingerprint: expect.stringMatching(/^workspace_incoherence:v1:sha256:/),
+      reason: "Automatic branch provenance reconciliation: recorded branch and checked-out branch resolve to the same commit.",
+    }));
     await expect(readGit(worktreePath, ["branch", "--show-current"])).resolves.toBe(publicBranch);
   }, 15_000);
 

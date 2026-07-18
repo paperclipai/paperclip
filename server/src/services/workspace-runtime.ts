@@ -1836,15 +1836,6 @@ export async function ensureGitWorktreeBranchCoherent(input: {
     }
 
     if (!input.db) {
-      if (evidence.provenance.sameHead) {
-        evidence.safeRepair.succeeded = true;
-        evidence.safeRepair.reason = "clean worktree adopted the checked-out branch because it matches the recorded branch HEAD";
-        return {
-          branchName: currentBranch,
-          reconciledForward: true,
-          warnings: [],
-        };
-      }
       evidence.safeRepair.reason = "forward reconciliation adoption requires database access to audit after workspace realization";
       throw branchIncoherenceValidationFailure(evidence);
     }
