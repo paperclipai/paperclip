@@ -23,7 +23,6 @@ import { SecretProviderClientError } from "./types.js";
 // instance principals (the runtime's compute instance is a member of a dynamic group granted
 // `read secret-family`); a config-file profile is supported for local development only.
 const OCI_VAULT_SCHEME = "oci_vault_v1";
-const OCI_SECRET_RETRIEVAL_TIMEOUT_MS = 30_000;
 const DEFAULT_AUTH_MODE = "instance_principal";
 const OCI_STAGE_VALUES = new Set(["CURRENT", "PENDING", "LATEST", "PREVIOUS", "DEPRECATED"]);
 const OCI_RUNTIME_CREDENTIAL_WARNING =
@@ -371,10 +370,12 @@ async function getOciSecretsClient(config: OciVaultConfig): Promise<{
   cached.pending = (async () => {
     const { SecretsClient } = await import("oci-secrets");
     const authenticationDetailsProvider = await buildOciAuthProvider(config);
-    const client = new SecretsClient(
-      { authenticationDetailsProvider: authenticationDetailsProvider as never },
-      { httpOptions: { timeout: OCI_SECRET_RETRIEVAL_TIMEOUT_MS } as never },
-    );
+    // Construct with the SDK's default client configuration (timeouts + retry/backoff). Passing a
+    // custom `httpOptions` object here breaks the SDK's response handling ("response.text is not a
+    // function"); the OCI SDK manages its own HTTP client and sane defaults, so we don't override it.
+    const client = new SecretsClient({
+      authenticationDetailsProvider: authenticationDetailsProvider as never,
+    });
     client.regionId = config.region;
     cached!.client = client;
     return client;
