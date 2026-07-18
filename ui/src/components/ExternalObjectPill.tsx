@@ -11,6 +11,7 @@ import {
 } from "../lib/status-colors";
 import {
   externalObjectCategoryLabel,
+  externalObjectDisplayLabel,
   externalObjectLivenessLabel,
   externalObjectIconForKey,
   externalObjectProviderLabel,
@@ -112,14 +113,15 @@ export function ExternalObjectPill({
   const overlay = externalObjectLivenessOverlay[object.liveness] ?? "";
   const providerLabel = externalObjectProviderLabel(object.providerKey);
   const typeLabel = externalObjectTypeLabel(object.objectType);
-  const displayKey = object.displayKey?.trim() || `${providerLabel} ${typeLabel}`;
+  const displayKey = externalObjectDisplayLabel(object.providerKey, object.objectType, object.displayKey);
   const statusLabel = object.statusLabel ?? externalObjectCategoryLabel(object.statusCategory);
   const tone = externalObjectPillTone(object, statusLabel);
   const valueLabel = externalObjectValueLabel(object, displayKey, statusLabel);
   const statusIconKey = externalObjectStatusIconKey(object, statusLabel);
   const livenessLabel = externalObjectLivenessLabel(object.liveness);
   const ProviderIcon = externalObjectIconForKey(object.iconKey);
-  const ariaLabel = `${providerLabel} ${typeLabel} — ${statusLabel}${
+  const ariaKey = displayKey;
+  const ariaLabel = `${ariaKey} — ${statusLabel}${
     object.liveness === "fresh" || object.liveness === "unknown" ? "" : ` (${livenessLabel})`
   }${object.displayTitle ? `: ${object.displayTitle}` : ""}`;
 
@@ -132,7 +134,7 @@ export function ExternalObjectPill({
     tone.split(" ").filter((c) => c.startsWith("text-")).join(" "),
     overlay,
     interactive
-      && "hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring",
+      && "hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-(length:--rad-3) focus-visible:ring-ring",
     className,
   );
   const titleAttr = sourceSummary
@@ -147,11 +149,11 @@ export function ExternalObjectPill({
         sizeClassName="h-3 w-3"
         label={`${providerLabel}: ${statusLabel}`}
       />
-      <span className="max-w-[16rem] truncate font-medium">{valueLabel}</span>
+      <span className="max-w-(--sz-16rem) truncate font-medium">{valueLabel}</span>
     </>
   );
   const countSuffix = typeof sourceCount === "number" && sourceCount > 1 ? (
-    <span className="tabular-nums text-[10px] font-medium opacity-80">×{sourceCount}</span>
+    <span className="tabular-nums text-(length:--text-nano) font-medium opacity-80">×{sourceCount}</span>
   ) : null;
   const innerContent = (
     <>

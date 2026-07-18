@@ -1,5 +1,7 @@
 import {
+  Component,
   type ClipboardEvent,
+  type ErrorInfo,
   forwardRef,
   useCallback,
   useEffect,
@@ -11,6 +13,7 @@ import {
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
   type TouchEvent as ReactTouchEvent,
+  type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -48,6 +51,8 @@ import { normalizeMarkdown } from "../lib/normalize-markdown";
 import { pasteNormalizationPlugin } from "../lib/paste-normalization";
 import { cn } from "../lib/utils";
 import { useEditorAutocomplete, type SlashCommandOption } from "../context/EditorAutocompleteContext";
+import { TtsDebugLog, describeBeforeInput, isTtsDebugEnabled } from "../lib/tts-debug";
+import { TtsDebugPanel } from "./TtsDebugPanel";
 
 /* ---- Mention types ---- */
 
@@ -90,6 +95,31 @@ interface MarkdownEditorProps {
 
 export interface MarkdownEditorRef {
   focus: () => void;
+  insertMarkdown: (markdown: string) => void;
+}
+
+class MarkdownEditorRichErrorBoundary extends Component<
+  { children: ReactNode; onError: (error: unknown) => void },
+  { hasError: boolean }
+> {
+  state = { hasError: false };
+
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+
+  componentDidCatch(error: unknown, info: ErrorInfo) {
+    console.error("Markdown rich editor failed; falling back to raw textarea", {
+      error,
+      componentStack: info.componentStack,
+    });
+    this.props.onError(error);
+  }
+
+  render() {
+    if (this.state.hasError) return null;
+    return this.props.children;
+  }
 }
 
 function readHtmlAttribute(attrs: string, name: string): string | null {
@@ -175,6 +205,12 @@ function isSafeMarkdownLinkUrl(url: string): boolean {
   return !/^(javascript|data|vbscript):/i.test(trimmed);
 }
 
+function richEditorErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === "string") return error;
+  return "Rich editor failed to render";
+}
+
 /* ---- Mention detection helpers ---- */
 
 interface MentionState {
@@ -219,6 +255,14 @@ const MENTION_MENU_CHROME_HEIGHT = 8;
 const MAX_AUTOCOMPLETE_OPTIONS = 50;
 /** Roughly one space-width of breathing room between the caret and the menu. */
 const MENTION_MENU_CARET_GAP = 10;
+/**
+ * NEO-411: how long after the last input event we consider the editor "settled"
+ * and safe to reconcile a controlled-value change into it. iOS dictation streams
+ * `insertText` events a few hundred ms apart, so this window must comfortably span
+ * the gaps within one dictation burst without stranding a legitimate external
+ * update for long once input actually stops.
+ */
+const INPUT_SETTLE_MS = 350;
 
 const CODE_BLOCK_LANGUAGES: Record<string, string> = {
   txt: "Text",
@@ -614,10 +658,59 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
    * normalize or transform values cannot loop. Replaces the older blur/focus gate for the same concern.
    */
   const echoIgnoreMarkdownRef = useRef<string | null>(null);
+  /**
+   * NEO-411: true while the OS/user is actively feeding input into the editor
+   * (typing, iOS dictation `insertText` stream, or desktop IME composition).
+   * While true we do NOT push a controlled-value change back in via
+   * `setMarkdown` — doing so mid-stream desyncs the editor from the OS input
+   * buffer (the iPhone-dictation duplication in NEO-405). A deferred external
+   * update is flushed once input settles, so remote/external changes are never
+   * swallowed — only postponed. Driven by `beforeinput`/`input` (iOS dictation
+   * never emits composition events) and composition events (CJK / macOS IME).
+   */
+  const inputActiveRef = useRef(false);
+  const inputSettleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /**
+   * NEO-411 rev 8: the authoritative transcript of an in-flight iOS dictation.
+   * iOS dictation streams full-field-replace `insertText` events whose `data` is
+   * the whole cumulative text; we latch the latest such `data` here (including the
+   * paragraph-break replace that Lexical drops with no `onChange`). At commit iOS
+   * re-lays the whole transcript as a same-tick burst of *collapsed* inserts that
+   * duplicates (or, at scattered offsets, eats) text — corrupting what the editor
+   * emits. On settle we reconcile back to this latched transcript once, so the
+   * spoken text lands verbatim exactly once. `null` when no dictation is in flight.
+   */
+  const dictationTranscriptRef = useRef<string | null>(null);
+  /** True between compositionstart/compositionend (desktop CJK / macOS IME). iOS
+   * dictation never composes; gating transcript capture on this keeps the repair
+   * off the IME path the plan's Risks call out. */
+  const isComposingRef = useRef(false);
+  /** Latest parent onChange, kept in a ref so the settle repair can emit without
+   * churning `markInputActive`/listener identity across renders. */
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
   const [richEditorError, setRichEditorError] = useState<string | null>(null);
   const dragDepthRef = useRef(0);
+
+  /* ---- NEO-405/NEO-409 dictation logging harness (instrumentation only) ---- */
+  // Gated opt-in, evaluated once per mount. When false, every hook below is a
+  // no-op and no listeners are attached, so normal users are unaffected.
+  const ttsDebug = useMemo(() => isTtsDebugEnabled(), []);
+  const ttsLogRef = useRef<TtsDebugLog | null>(null);
+  if (ttsDebug && !ttsLogRef.current) ttsLogRef.current = new TtsDebugLog();
+  // Capture is a PURE append to the ref buffer — no setState, so recording an
+  // event never re-renders the editor subtree. The panel (<TtsDebugPanel>) reads
+  // the buffer on its own interval from a portal outside this tree. This is the
+  // NEO-409 observer-effect fix: the instrument must not perturb the setMarkdown
+  // reconcile timing it measures.
+  const recordTts = useCallback(
+    (type: string, detail: Record<string, unknown> = {}) => {
+      ttsLogRef.current?.record(type, detail);
+    },
+    [],
+  );
 
   // Stable ref for imageUploadHandler so plugins don't recreate on every render
   const imageUploadHandlerRef = useRef(imageUploadHandler);
@@ -659,10 +752,11 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
     if (valueRef.current !== latestValueRef.current) {
       // Re-apply the latest controlled value once MDXEditor exposes its imperative API.
       echoIgnoreMarkdownRef.current = valueRef.current;
+      recordTts("setMarkdown", { origin: "ref-attach", len: valueRef.current.length });
       instance.setMarkdown(valueRef.current);
       latestValueRef.current = valueRef.current;
     }
-  }, []);
+  }, [recordTts]);
 
   const filteredMentions = useMemo<AutocompleteOption[]>(() => {
     if (!mentionState) return [];
@@ -681,6 +775,28 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       .slice(0, MAX_AUTOCOMPLETE_OPTIONS);
   }, [mentionState, mentions, slashCommands]);
 
+  const insertMarkdown = useCallback((markdown: string) => {
+    if (readOnly) return;
+    if (!richEditorError && ref.current) {
+      ref.current.insertMarkdown(markdown);
+      return;
+    }
+    const textarea = fallbackTextareaRef.current;
+    if (!textarea) {
+      onChange(`${value}${markdown}`);
+      return;
+    }
+    const start = textarea.selectionStart ?? value.length;
+    const end = textarea.selectionEnd ?? value.length;
+    const next = `${value.slice(0, start)}${markdown}${value.slice(end)}`;
+    onChange(next);
+    requestAnimationFrame(() => {
+      textarea.focus();
+      const cursor = start + markdown.length;
+      textarea.setSelectionRange(cursor, cursor);
+    });
+  }, [onChange, readOnly, richEditorError, value]);
+
   useImperativeHandle(forwardedRef, () => ({
     focus: () => {
       if (richEditorError) {
@@ -689,7 +805,8 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       }
       ref.current?.focus(undefined, { defaultSelection: "rootEnd" });
     },
-  }), [richEditorError]);
+    insertMarkdown,
+  }), [insertMarkdown, richEditorError]);
 
   const autoSizeFallbackTextarea = useCallback((element: HTMLTextAreaElement | null) => {
     if (!element) return;
@@ -761,6 +878,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
               if (updated !== current) {
                 latestValueRef.current = updated;
                 echoIgnoreMarkdownRef.current = updated;
+                recordTts("setMarkdown", { origin: "image", len: updated.length });
                 ref.current?.setMarkdown(updated);
                 onChange(updated);
                 requestAnimationFrame(() => {
@@ -799,16 +917,183 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
     return all;
   }, [hasImageUpload]);
 
-  useEffect(() => {
-    if (editorValue !== latestValueRef.current) {
-      if (ref.current) {
-        // Pair with onChange echo suppression (echoIgnoreMarkdownRef).
-        echoIgnoreMarkdownRef.current = editorValue;
-        ref.current.setMarkdown(editorValue);
-        latestValueRef.current = editorValue;
+  // Push a controlled-value change into the editor. Pairs with the onChange echo
+  // suppression (echoIgnoreMarkdownRef) so the resulting onChange doesn't loop.
+  const applyReconcile = useCallback((nextEditorValue: string) => {
+    const instance = ref.current;
+    if (!instance) return;
+    echoIgnoreMarkdownRef.current = nextEditorValue;
+    recordTts("setMarkdown", { origin: "prop-sync", len: nextEditorValue.length });
+    instance.setMarkdown(nextEditorValue);
+    latestValueRef.current = nextEditorValue;
+  }, [recordTts]);
+
+  // Whether the editor already holds `candidate` — either verbatim (our own
+  // echoed onChange round-trip) or once normalized through the same prepare step
+  // the controlled value goes through. NEO-411 Phase 2: an editor-originated
+  // value that round-trips back as the controlled prop must never re-enter
+  // setMarkdown, so we compare against the *last value the editor emitted*
+  // rather than only the raw-prepared value.
+  const editorAlreadyHolds = useCallback((candidate: string) => {
+    const lastEmitted = latestValueRef.current;
+    return candidate === lastEmitted || candidate === prepareMarkdownForEditor(lastEmitted);
+  }, []);
+
+  // Mark input as active and (re)arm the settle timer. When input finally stops,
+  // flush any controlled-value change that was deferred while input was flowing.
+  const markInputActive = useCallback(() => {
+    inputActiveRef.current = true;
+    if (inputSettleTimerRef.current) clearTimeout(inputSettleTimerRef.current);
+    inputSettleTimerRef.current = setTimeout(() => {
+      inputSettleTimerRef.current = null;
+      inputActiveRef.current = false;
+      // NEO-411 rev 8 — dictation commit-burst repair. If iOS dictation ran this
+      // session we hold its authoritative transcript. The commit burst may have
+      // duplicated or eaten text in what the editor actually emitted; reconcile
+      // back to the transcript once so the spoken text lands verbatim (and the
+      // paragraph break the transcript carries survives). Authoritative for this
+      // settle — we skip the external reconcile below, since the parent's value
+      // currently holds the corrupted emit and would just fight this.
+      const transcript = dictationTranscriptRef.current;
+      dictationTranscriptRef.current = null;
+      if (transcript !== null && ref.current) {
+        const prepared = prepareMarkdownForEditor(transcript);
+        if (prepared !== latestValueRef.current) {
+          echoIgnoreMarkdownRef.current = prepared;
+          recordTts("setMarkdown", { origin: "dictation-repair", len: prepared.length });
+          ref.current.setMarkdown(prepared);
+          latestValueRef.current = prepared;
+          onChangeRef.current(transcript);
+          return;
+        }
+        // Clean dictation (editor already emitted the transcript verbatim) — fall
+        // through so a genuine external update isn't stranded.
       }
-    }
+      // valueRef holds the freshest prepared controlled value. Flush only a
+      // genuine external change; an editor-originated value the editor already
+      // holds is dropped (no self-inflicted round-trip).
+      if (ref.current && !editorAlreadyHolds(valueRef.current)) {
+        applyReconcile(valueRef.current);
+      }
+    }, INPUT_SETTLE_MS);
+  }, [applyReconcile, editorAlreadyHolds, recordTts]);
+
+  // NEO-411 Phase 1+2: reconcile the controlled value into the editor, but never
+  // while input is actively streaming (defer to settle) and never for a value the
+  // editor already emitted (drop the round-trip).
+  //
+  // NEO-419d: trigger ONLY on `editorValue`. `applyReconcile`/`editorAlreadyHolds`
+  // are memoized on `recordTts`, which churns identity across renders; listing them
+  // here made the effect re-fire on spurious renders and race the editor's own
+  // content commit, stranding async-loaded external values as empty content
+  // ("applies async external value updates once the editor ref becomes ready").
+  // Both callbacks read live refs, so excluding them from deps is safe.
+  useEffect(() => {
+    if (editorAlreadyHolds(editorValue)) return;
+    if (!ref.current) return;
+    // Defer while dictation/composition/typing is in flight; the settle timer
+    // flushes the latest controlled value once input stops.
+    if (inputActiveRef.current) return;
+    applyReconcile(editorValue);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editorValue]);
+
+  // NEO-411 Phase 1: track active input at the container so the reconcile effect
+  // above can gate on it. Capture-phase + container-level so it survives the
+  // contenteditable remounting and sees events before Lexical consumes them.
+  // Always attached (not gated behind the debug harness) — this is the fix path.
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    const onInputActivity = () => markInputActive();
+    // NEO-411 rev 8: composition = desktop CJK / macOS IME. iOS dictation never
+    // composes, so we only latch a dictation transcript while NOT composing —
+    // keeping the repair off the IME path (plan Risks: don't disturb CJK/macOS).
+    const onCompositionStart = () => { isComposingRef.current = true; };
+    const onCompositionEnd = () => { isComposingRef.current = false; };
+    // NEO-411 rev 8: latch the iOS dictation transcript. A full-field-replace
+    // `insertText`/`insertReplacementText` carries the whole cumulative text in
+    // `data` (length >= the current field) — that's dictation streaming, and also
+    // the paragraph-break replace Lexical drops silently. Normal typing (collapsed,
+    // 1-char data), selection-replace (data shorter than the field), and paste
+    // (`insertFromPaste`) are all excluded, so `dictationTranscriptRef` only ever
+    // holds a real dictation transcript. The collapsed commit-burst inserts are
+    // shorter than the field too, so they never overwrite the latched transcript.
+    const onBeforeInputCapture = (event: Event) => {
+      if (!(event instanceof InputEvent)) return;
+      if (isComposingRef.current) return;
+      const { inputType, data } = event;
+      if (inputType !== "insertText" && inputType !== "insertReplacementText") return;
+      if (typeof data !== "string" || data.length <= 1) return;
+      if (data.length >= latestValueRef.current.length) {
+        dictationTranscriptRef.current = data;
+      }
+    };
+    const events = ["beforeinput", "input", "compositionstart", "compositionupdate", "compositionend"];
+    for (const type of events) container.addEventListener(type, onInputActivity, true);
+    container.addEventListener("beforeinput", onBeforeInputCapture, true);
+    container.addEventListener("compositionstart", onCompositionStart, true);
+    container.addEventListener("compositionend", onCompositionEnd, true);
+    return () => {
+      for (const type of events) container.removeEventListener(type, onInputActivity, true);
+      container.removeEventListener("beforeinput", onBeforeInputCapture, true);
+      container.removeEventListener("compositionstart", onCompositionStart, true);
+      container.removeEventListener("compositionend", onCompositionEnd, true);
+      if (inputSettleTimerRef.current) {
+        clearTimeout(inputSettleTimerRef.current);
+        inputSettleTimerRef.current = null;
+      }
+    };
+  }, [markInputActive]);
+
+  // NEO-405/NEO-409: capture the raw input timeline (beforeinput + composition)
+  // that Lexical/MDXEditor otherwise swallow. Container-level capture listeners
+  // survive contenteditable remounts and catch the async `insertReplacementText`
+  // corrections iOS delivers after dictation. Gated — attaches only when opted in.
+  useEffect(() => {
+    if (!ttsDebug) return;
+    const container = containerRef.current;
+    if (!container) return;
+
+    const snapshotMarkdown = (): number => {
+      try {
+        return ref.current?.getMarkdown().length ?? -1;
+      } catch {
+        return -1;
+      }
+    };
+
+    const onBeforeInput = (event: Event) => {
+      if (!(event instanceof InputEvent)) return;
+      recordTts("beforeinput", describeBeforeInput(event));
+    };
+    const onCompositionStart = (event: Event) => {
+      recordTts("compositionstart", {
+        data: (event as CompositionEvent).data ?? null,
+        markdownLen: snapshotMarkdown(),
+      });
+    };
+    const onCompositionUpdate = (event: Event) => {
+      recordTts("compositionupdate", { data: (event as CompositionEvent).data ?? null });
+    };
+    const onCompositionEnd = (event: Event) => {
+      recordTts("compositionend", {
+        data: (event as CompositionEvent).data ?? null,
+        markdownLen: snapshotMarkdown(),
+      });
+    };
+
+    container.addEventListener("beforeinput", onBeforeInput, true);
+    container.addEventListener("compositionstart", onCompositionStart, true);
+    container.addEventListener("compositionupdate", onCompositionUpdate, true);
+    container.addEventListener("compositionend", onCompositionEnd, true);
+    return () => {
+      container.removeEventListener("beforeinput", onBeforeInput, true);
+      container.removeEventListener("compositionstart", onCompositionStart, true);
+      container.removeEventListener("compositionupdate", onCompositionUpdate, true);
+      container.removeEventListener("compositionend", onCompositionEnd, true);
+    };
+  }, [ttsDebug, recordTts]);
 
   const decorateProjectMentions = useCallback(() => {
     const editable = containerRef.current?.querySelector('[contenteditable="true"]');
@@ -966,6 +1251,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       if (next !== current) {
         latestValueRef.current = next;
         echoIgnoreMarkdownRef.current = next;
+        recordTts("setMarkdown", { origin: "mention", len: next.length });
         ref.current?.setMarkdown(next);
         onChange(next);
       }
@@ -995,7 +1281,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       setMentionState(null);
       return true;
     },
-    [decorateProjectMentions, onChange],
+    [decorateProjectMentions, onChange, recordTts],
   );
 
   const handleAutocompletePress = useCallback((
@@ -1068,6 +1354,10 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
     ref.current.insertMarkdown(normalizeMarkdown(rawText));
   }, []);
 
+  const handleRichEditorError = useCallback((error: unknown) => {
+    setRichEditorError(richEditorErrorMessage(error));
+  }, []);
+
   const mentionMenuPosition = mentionState
     ? computeMentionMenuPosition(
         mentionState,
@@ -1116,7 +1406,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
             }
           }}
           className={cn(
-            "min-h-[12rem] w-full resize-none bg-transparent px-3 pb-3 pt-2 font-mono text-sm leading-6 outline-none",
+            "min-h-(--sz-12rem) w-full resize-none bg-transparent px-3 pb-3 pt-2 font-mono text-sm leading-6 outline-none",
             contentClassName,
           )}
         />
@@ -1234,47 +1524,55 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       }}
       onPasteCapture={handlePasteCapture}
     >
-      <MDXEditor
-        ref={setEditorRef}
-        markdown={editorValue}
-        suppressHtmlProcessing
-        placeholder={placeholder}
-        readOnly={readOnly}
-        onChange={(next) => {
-          if (readOnly) return;
-          const echo = echoIgnoreMarkdownRef.current;
-          if (echo !== null && next === echo) {
-            echoIgnoreMarkdownRef.current = null;
-            latestValueRef.current = next;
-            return;
-          }
-          if (echo !== null) {
-            echoIgnoreMarkdownRef.current = null;
-          }
-
-          if (initialChildOnChangeRef.current) {
-            initialChildOnChangeRef.current = false;
-            if (next === "" && editorValue !== "") {
-              echoIgnoreMarkdownRef.current = editorValue;
-              ref.current?.setMarkdown(editorValue);
+      <MarkdownEditorRichErrorBoundary onError={handleRichEditorError}>
+        <MDXEditor
+          ref={setEditorRef}
+          markdown={editorValue}
+          suppressHtmlProcessing
+          placeholder={placeholder}
+          readOnly={readOnly}
+          onChange={(next) => {
+            if (readOnly) return;
+            const echo = echoIgnoreMarkdownRef.current;
+            recordTts("onChange", {
+              len: next.length,
+              echo: echo !== null && next === echo,
+              preview: next.slice(0, 60),
+            });
+            if (echo !== null && next === echo) {
+              echoIgnoreMarkdownRef.current = null;
+              latestValueRef.current = next;
               return;
             }
-          }
-          latestValueRef.current = next;
-          onChange(next);
-        }}
-        onBlur={() => onBlur?.()}
-        onError={(payload) => {
-          setRichEditorError(payload.error);
-        }}
-        className={cn("paperclip-mdxeditor", !bordered && "paperclip-mdxeditor--borderless")}
-        contentEditableClassName={cn(
-          "paperclip-mdxeditor-content focus:outline-none [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_li]:list-item",
-          contentClassName,
-        )}
-        additionalLexicalNodes={[MentionAwareLinkNode, mentionAwareLinkNodeReplacement]}
-        plugins={plugins}
-      />
+            if (echo !== null) {
+              echoIgnoreMarkdownRef.current = null;
+            }
+
+            if (initialChildOnChangeRef.current) {
+              initialChildOnChangeRef.current = false;
+              if (next === "" && editorValue !== "") {
+                echoIgnoreMarkdownRef.current = editorValue;
+                recordTts("setMarkdown", { origin: "initial-empty", len: editorValue.length });
+                ref.current?.setMarkdown(editorValue);
+                return;
+              }
+            }
+            latestValueRef.current = next;
+            onChange(next);
+          }}
+          onBlur={() => onBlur?.()}
+          onError={(payload) => {
+            handleRichEditorError(payload.error);
+          }}
+          className={cn("paperclip-mdxeditor", !bordered && "paperclip-mdxeditor--borderless")}
+          contentEditableClassName={cn(
+            "paperclip-mdxeditor-content focus:outline-none [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_li]:list-item",
+            contentClassName,
+          )}
+          additionalLexicalNodes={[MentionAwareLinkNode, mentionAwareLinkNodeReplacement]}
+          plugins={plugins}
+        />
+      </MarkdownEditorRichErrorBoundary>
 
       {/* Mention dropdown — rendered via portal so it isn't clipped by overflow containers */}
       {mentionActive && filteredMentions.length > 0 && mentionMenuPosition &&
@@ -1282,7 +1580,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
           <div
             data-paperclip-floating-ui=""
             data-testid="mention-autocomplete-menu"
-            className="pointer-events-auto fixed z-[9999] min-w-[180px] max-w-[calc(100vw-16px)] max-h-[208px] overflow-y-auto rounded-md border border-border bg-popover shadow-md"
+            className="pointer-events-auto fixed z-(--z-9999) min-w-(--sz-180px) max-w-(--sz-calc-15) max-h-(--sz-208px) overflow-y-auto rounded-md border border-border bg-popover shadow-md"
             style={{
               top: mentionMenuPosition.top,
               left: mentionMenuPosition.left,
@@ -1328,7 +1626,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
                 ) : option.kind === "project" && option.projectId ? (
                   <span
                     className="inline-flex h-2 w-2 rounded-full border border-border/50"
-                    style={{ backgroundColor: option.projectColor ?? "#64748b" }}
+                    style={{ backgroundColor: option.projectColor ?? "var(--project-none)" }}
                   />
                 ) : option.kind === "user" ? (
                   <User className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
@@ -1340,7 +1638,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
                 )}
                 {option.kind === "issue" && option.issueIdentifier ? (
                   <span className="flex min-w-0 items-baseline gap-1.5">
-                    <span className="shrink-0 font-mono text-[11px] text-muted-foreground">
+                    <span className="shrink-0 font-mono text-(length:--text-micro) text-muted-foreground">
                       {option.issueIdentifier}
                     </span>
                     <span className="truncate">{issueMentionTitle(option)}</span>
@@ -1353,27 +1651,27 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
                   </span>
                 )}
                 {option.kind === "issue" && (
-                  <span className="ml-auto text-[10px] uppercase tracking-wide text-muted-foreground">
+                  <span className="ml-auto text-(length:--text-nano) uppercase tracking-wide text-muted-foreground">
                     Task
                   </span>
                 )}
                 {option.kind === "project" && option.projectId && (
-                  <span className="ml-auto text-[10px] uppercase tracking-wide text-muted-foreground">
+                  <span className="ml-auto text-(length:--text-nano) uppercase tracking-wide text-muted-foreground">
                     Project
                   </span>
                 )}
                 {option.kind === "user" && (
-                  <span className="ml-auto text-[10px] uppercase tracking-wide text-muted-foreground">
+                  <span className="ml-auto text-(length:--text-nano) uppercase tracking-wide text-muted-foreground">
                     User
                   </span>
                 )}
                 {option.kind === "skill" && (
-                  <span className="ml-auto text-[10px] uppercase tracking-wide text-muted-foreground">
+                  <span className="ml-auto text-(length:--text-nano) uppercase tracking-wide text-muted-foreground">
                     Skill
                   </span>
                 )}
                 {option.kind === "routine" && (
-                  <span className="ml-auto text-[10px] uppercase tracking-wide text-muted-foreground">
+                  <span className="ml-auto text-(length:--text-nano) uppercase tracking-wide text-muted-foreground">
                     Routine
                   </span>
                 )}
@@ -1396,6 +1694,13 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       {uploadError && (
         <p className="px-3 pb-2 text-xs text-destructive">{uploadError}</p>
       )}
+
+      {/* NEO-405/NEO-409 dictation logging panel — dev-only, gated behind
+          ?ttsdebug=1 or localStorage["neo405-tts-debug"]="1". Never renders for
+          normal users. Rendered via portal on document.body (see TtsDebugPanel)
+          so it lives outside this editor tree and cannot perturb dictation.
+          Instrumentation only; removed before promotion to live. */}
+      {ttsDebug && ttsLogRef.current && <TtsDebugPanel log={ttsLogRef.current} />}
     </div>
   );
 });

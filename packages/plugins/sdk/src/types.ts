@@ -35,6 +35,7 @@ import type {
   PluginManagedProjectResolution,
   PluginManagedRoutineResolution,
   PluginManagedSkillResolution,
+  PluginManagedMCPServerResolution,
   CompanySkill,
   Routine,
   RoutineRun,
@@ -59,6 +60,7 @@ export type {
   PluginWebhookDeclaration,
   PluginToolDeclaration,
   PluginEnvironmentDriverDeclaration,
+  PluginEnvironmentTemplateConfigBinding,
   PluginManagedAgentDeclaration,
   PluginManagedAgentResolution,
   PluginManagedProjectDeclaration,
@@ -68,6 +70,8 @@ export type {
   PluginManagedSkillDeclaration,
   PluginManagedSkillFileDeclaration,
   PluginManagedSkillResolution,
+  PluginManagedMCPServerDeclaration,
+  PluginManagedMCPServerResolution,
   CompanySkill,
   Routine,
   RoutineRun,
@@ -933,6 +937,31 @@ export interface PluginSkillsClient {
 }
 
 /**
+ * `ctx.mcpServers` — resolve and reconcile plugin-managed company MCP servers.
+ *
+ * Requires `mcp.servers.managed` capability, and the host must run with the
+ * MCP client feature enabled (`PAPERCLIP_MCP_CLIENT_ENABLED=true`).
+ * Reconciled servers are created disabled and become reachable only after
+ * company governance enables them and binds agents; credentials are passed
+ * here (never in the manifest) and sealed by the host.
+ */
+export interface PluginMcpServersClient {
+  managed: {
+    get(serverKey: string, companyId: string): Promise<PluginManagedMCPServerResolution>;
+    reconcile(
+      serverKey: string,
+      companyId: string,
+      options?: { credential?: string | null },
+    ): Promise<PluginManagedMCPServerResolution>;
+    reset(
+      serverKey: string,
+      companyId: string,
+      options?: { credential?: string | null },
+    ): Promise<PluginManagedMCPServerResolution>;
+  };
+}
+
+/**
  * `ctx.data` — register `getData` handlers that back `usePluginData()` in the
  * plugin's frontend components.
  *
@@ -1487,6 +1516,32 @@ export interface PluginAgentsClient {
   resume(agentId: string, companyId: string): Promise<Agent>;
   /** Invoke (wake up) an agent with a prompt payload. Throws if paused, terminated, pending_approval, or not found. Requires `agents.invoke`. */
   invoke(agentId: string, companyId: string, opts: { prompt: string; reason?: string }): Promise<{ runId: string }>;
+  /**
+   * Register/finalize first-class runs for channel-dispatched turns (NEO-447).
+   * `register` persists the requester snapshot onto the trusted run row and
+   * returns a run-scoped agent JWT for the spawned harness (null when the
+   * host's local agent JWT secret is unset). Requires `agents.invoke`.
+   */
+  channelRuns: {
+    register(
+      agentId: string,
+      companyId: string,
+      opts: {
+        requester: {
+          userId: string | null;
+          channelUserId?: string | null;
+          channelId?: string | null;
+          source?: string | null;
+        } | null;
+        reason?: string;
+      },
+    ): Promise<{ runId: string; token: string | null }>;
+    finalize(
+      runId: string,
+      companyId: string,
+      opts: { status: "succeeded" | "failed" | "timed_out" | "cancelled"; error?: string | null },
+    ): Promise<{ finalized: boolean }>;
+  };
   /** Resolve and reconcile manifest-declared plugin-managed agents by stable key. Requires `agents.managed`. */
   managed: {
     get(agentKey: string, companyId: string): Promise<PluginManagedAgentResolution>;
@@ -1892,6 +1947,9 @@ export interface PluginContext {
 
   /** Resolve and reconcile plugin-managed company skills. Requires `skills.managed`. */
   skills: PluginSkillsClient;
+
+  /** Resolve and reconcile plugin-managed company MCP servers. Requires `mcp.servers.managed`. */
+  mcpServers: PluginMcpServersClient;
 
   /** Read company metadata. Requires `companies.read`. */
   companies: PluginCompaniesClient;

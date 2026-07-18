@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
 import type {
   TelemetryConfig,
+  TelemetryDimensions,
   TelemetryEvent,
+  TelemetryEventDimensions,
   TelemetryEventName,
   TelemetryState,
 } from "./types.js";
@@ -12,6 +14,11 @@ const DEFAULT_ENDPOINTS = [
 ] as const;
 const BATCH_SIZE = 50;
 const SEND_TIMEOUT_MS = 5_000;
+
+type TrackArgs<K extends TelemetryEventName> =
+  keyof TelemetryEventDimensions<K> extends never
+    ? [dimensions?: TelemetryEventDimensions<K>]
+    : [dimensions: TelemetryEventDimensions<K>];
 
 export class TelemetryClient {
   private queue: TelemetryEvent[] = [];
@@ -27,14 +34,32 @@ export class TelemetryClient {
     this.version = version;
   }
 
-  track(eventName: TelemetryEventName, dimensions?: Record<string, string | number | boolean>): void {
+  /**
+   * Tracks first-party Paperclip telemetry events registered in the generated
+   * backend event schema.
+   */
+  track<K extends TelemetryEventName>(eventName: K, ...args: TrackArgs<K>): void {
+    const [dimensions] = args;
+    this.enqueue(eventName, dimensions);
+  }
+
+  /**
+   * Tracks plugin telemetry bridge events whose names are built dynamically
+   * from third-party plugin input. The backend accepts only explicitly
+   * registered plugin events.
+   */
+  trackDynamic(eventName: string, dimensions?: TelemetryDimensions): void {
+    this.enqueue(eventName, dimensions);
+  }
+
+  private enqueue(eventName: string, dimensions?: object): void {
     if (!this.config.enabled) return;
     this.getState(); // ensure state is initialised (side-effect: creates state file on first call)
 
     this.queue.push({
       name: eventName,
       occurredAt: new Date().toISOString(),
-      dimensions: dimensions ?? {},
+      dimensions: { ...dimensions } as TelemetryDimensions,
     });
 
     if (this.queue.length >= BATCH_SIZE) {

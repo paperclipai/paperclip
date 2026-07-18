@@ -13,6 +13,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
 import { Settings, CloudUpload, Download, Upload } from "lucide-react";
 import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
+import { BrandKitEditor } from "../components/brand-kit/BrandKitEditor";
 import {
   Field,
   ToggleField,
@@ -217,7 +218,7 @@ export function CompanySettings() {
                 companyName={companyName || selectedCompany.name}
                 logoUrl={logoUrl || null}
                 brandColor={brandColor || null}
-                className="rounded-[14px]"
+                className="rounded-(--rad-14)"
               />
             </div>
             <div className="flex-1 space-y-3">
@@ -267,6 +268,7 @@ export function CompanySettings() {
                 hint="Sets the hue for the company icon. Leave empty for auto-generated color."
               >
                 <div className="flex items-center gap-2">
+                  {/* token-extraction: allowlisted — <input type="color"> value must be a real hex string, not a var() reference. */}
                   <input
                     type="color"
                     value={brandColor || "#6366f1"}
@@ -348,6 +350,14 @@ export function CompanySettings() {
           )}
         </div>
       )}
+
+      {/* Brand Kit — structured DESIGN.md editor (NEO-271) */}
+      <div className="space-y-4">
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Brand Kit
+        </div>
+        <BrandKitEditor companyId={selectedCompany.id} />
+      </div>
 
       {/* Hiring */}
       <div className="space-y-4" data-testid="company-settings-team-section">

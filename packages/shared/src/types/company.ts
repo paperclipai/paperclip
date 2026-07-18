@@ -12,11 +12,14 @@ export interface Company {
   budgetMonthlyCents: number;
   spentMonthlyCents: number;
   attachmentMaxBytes: number;
+  defaultResponsibleUserId: string | null;
   requireBoardApprovalForNewAgents: boolean;
   feedbackDataSharingEnabled: boolean;
   feedbackDataSharingConsentAt: Date | null;
   feedbackDataSharingConsentByUserId: string | null;
   feedbackDataSharingTermsVersion: string | null;
+  /** Per-company MCP client gate (NEO-286 D2-5); false until piloted. */
+  mcpClientEnabled: boolean;
   brandColor: string | null;
   logoAssetId: string | null;
   logoUrl: string | null;

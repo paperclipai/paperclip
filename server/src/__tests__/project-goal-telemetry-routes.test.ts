@@ -150,7 +150,7 @@ describe("project and goal telemetry routes", () => {
       .send({ name: "Telemetry project" });
 
     expect([200, 201], JSON.stringify(res.body)).toContain(res.status);
-    expect(mockTelemetryTrack).toHaveBeenCalledWith("project.created");
+    expect(mockTelemetryTrack).toHaveBeenCalledWith("project.created", {});
   });
 
   it("emits telemetry when a goal is created", async () => {

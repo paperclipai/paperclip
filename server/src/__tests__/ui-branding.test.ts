@@ -67,6 +67,30 @@ describe("ui branding", () => {
     expect(meta).toContain('name="paperclip-worktree-color"');
   });
 
+  it("surfaces the runtime instance id so the UI can fail closed on copied rows", () => {
+    const branding = getWorktreeUiBranding({
+      PAPERCLIP_IN_WORKTREE: "true",
+      PAPERCLIP_WORKTREE_NAME: "paperclip-pr-432",
+      PAPERCLIP_WORKTREE_COLOR: "#4f86f7",
+      PAPERCLIP_INSTANCE_ID: "inst-abc123",
+    });
+    expect(branding.instanceId).toBe("inst-abc123");
+
+    const meta = renderRuntimeBrandingMeta(branding);
+    expect(meta).toContain('name="paperclip-instance-id"');
+    expect(meta).toContain('content="inst-abc123"');
+  });
+
+  it("omits the instance-id meta when the runtime id is unset", () => {
+    const branding = getWorktreeUiBranding({
+      PAPERCLIP_IN_WORKTREE: "true",
+      PAPERCLIP_WORKTREE_NAME: "paperclip-pr-432",
+      PAPERCLIP_WORKTREE_COLOR: "#4f86f7",
+    });
+    expect(branding.instanceId).toBeNull();
+    expect(renderRuntimeBrandingMeta(branding)).not.toContain('name="paperclip-instance-id"');
+  });
+
   it("stamps the product name onto the served title and apple-mobile meta", () => {
     const shell = `<!doctype html>
 <head>

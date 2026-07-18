@@ -30,6 +30,7 @@ export const issueThreadInteractions = pgTable(
     resolvedByUserId: text("resolved_by_user_id"),
     payload: jsonb("payload").$type<IssueThreadInteractionPayload>().notNull(),
     result: jsonb("result").$type<IssueThreadInteractionResult>(),
+    authContext: jsonb("auth_context").$type<Record<string, unknown>>(),
     resolvedAt: timestamp("resolved_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

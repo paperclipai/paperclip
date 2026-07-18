@@ -67,6 +67,7 @@ V1 implementation extends this baseline into a company-centric, governance-aware
 - Company lifecycle (create/list/get/update/archive)
 - Goal hierarchy linked to company mission
 - Agent lifecycle with org structure and adapter configuration
+- Company-scoped MCP server registry plus agent MCP bindings
 - Task lifecycle with parent/child hierarchy and comments
 - Atomic task checkout and explicit task status transitions
 - Board approvals for hires and CEO strategy proposal
@@ -74,6 +75,7 @@ V1 implementation extends this baseline into a company-centric, governance-aware
 - Cost event ingestion and rollups (agent/task/project/company)
 - Budget settings and hard-stop enforcement
 - Board web UI for dashboard, org chart, tasks, agents, approvals, costs
+- Board web UI for MCP server registration, discovery, and agent bindings
 - Agent-facing API contract (task read/write, heartbeat report, cost report)
 - Auditable activity log for all mutating actions
 
@@ -83,8 +85,13 @@ V1 implementation extends this baseline into a company-centric, governance-aware
 - Revenue/expense accounting beyond model/token costs
 - Knowledge base subsystem
 - Public marketplace (ClipHub)
-- Multi-board governance or role-based human permission granularity
+- Multi-board governance (multiple board UIs for a single company)
 - Automatic self-healing orchestration (auto-reassign/retry planners)
+- Full HTTP MCP streaming discovery/runtime support beyond persisted configuration
+
+Role-based human permission granularity is V1 — see the `humans-and-permissions`
+plan, the `principal_permission_grants` table, and the `PERMISSION_KEYS` set
+in `packages/shared/src/constants.ts`.
 
 ## 6. Architecture
 
@@ -153,7 +160,7 @@ Invariant: every business record belongs to exactly one company.
 - `status` enum: `active | paused | idle | running | error | pending_approval | terminated`
 - `reports_to` uuid fk `agents.id` null
 - `capabilities` text null
-- `adapter_type` text; built-ins include `process`, `http`, `claude_local`, `codex_local`, `gemini_local`, `opencode_local`, `pi_local`, `cursor`, and `openclaw_gateway`
+- `adapter_type` text; built-ins include `process`, `http`, `claude_local`, `codex_local`, `gemini_local`, `opencode_local`, `pi_local`, `cursor`, `hermes_local`, `hermes_gateway`, and `openclaw_gateway`
 - `adapter_config` jsonb not null
 - `runtime_config` jsonb not null default `{}`; may include Paperclip runtime policy such as `modelProfiles.cheap.adapterConfig` for an optional low-cost model lane that does not change the primary adapter config
 - `default_environment_id` uuid fk `environments.id` null
@@ -359,6 +366,20 @@ Operational policy:
 - Activity and approval payloads must not persist raw sensitive values.
 - Config revisions may include redacted placeholders; such revisions are non-restorable for redacted fields.
 
+### MCP server registry
+
+V1 may also register and bind MCP servers at the company level:
+
+- `mcp_servers` stores the canonical MCP connection definition (`stdio` or `http`) plus health/discovery metadata.
+- `agent_mcp_servers` binds allowed MCP servers to a specific agent with `allowed | preferred | required` mode and optional tool allowlists.
+- `mcp_server_catalog_snapshots` stores discovery snapshots (`tools`, `resources`, `prompts`, server info, health result).
+
+Operational notes:
+
+- Sensitive stdio env values use the same secret-aware env binding model as agent/project config.
+- `stdio` discovery is supported in V1.
+- `http` MCP settings can be persisted in V1, but runtime discovery/execution remains deferred until HTTP transport support lands.
+
 ## 7.14 Required Indexes
 
 - `agents(company_id, status)`
@@ -487,6 +508,10 @@ V1 non-terminal liveness rule:
 - agent-owned `todo`, `in_progress`, `in_review`, and `blocked` issues must have a live execution path, an explicit waiting path, or an explicit recovery path
 - `in_review` is healthy only when a typed execution participant, pending issue-thread interaction or approval, user owner, active run, queued wake, or explicit recovery action owns the next action
 - a blocked chain is covered only when each unresolved leaf issue is live or explicitly waiting
+- external waits are durable only when persisted as a bounded monitor/scheduled wake, a first-class blocker with a named owner and action, or healthy delegated child work connected by a blocker edge when the source must wait; parent/child structure alone is not a wait path
+- unmanaged shell jobs, detached sessions, adapter child processes, local polling loops, PIDs, logs, and comments are evidence rather than liveness; a managed runtime service counts only when paired with a persisted monitor, wake, blocker, or delegated issue that owns the next check
+- heartbeat finalization evaluates liveness from persisted Paperclip state; an issue cannot remain healthy `in_progress` solely because the exiting heartbeat started a local/background watcher
+- invalid external-wait recovery queues at most one normal-model continuation per source-state fingerprint, then requires a real blocker or explicit recovery action instead of repeating equivalent recovery wakes; new durable source activity may establish a new fingerprint
 - when Paperclip cannot safely infer the next action, it surfaces the problem through visible blocked/recovery work instead of silently completing or reassigning work
 - explicit recovery actions are the liveness primitive; source-scoped actions are the default form, issue-backed recovery is a fallback for independent repair work or safety boundaries, and comments alone are evidence rather than a healthy liveness path
 
@@ -692,6 +717,15 @@ All endpoints are under `/api` and return JSON.
 - `POST /agents/:agentId/terminate`
 - `POST /agents/:agentId/keys` (create API key)
 - `POST /agents/:agentId/heartbeat/invoke`
+- `GET /agents/:agentId/mcp-servers`
+- `POST /agents/:agentId/mcp-servers`
+- `PATCH /agents/:agentId/mcp-servers/:mcpServerId`
+- `DELETE /agents/:agentId/mcp-servers/:mcpServerId`
+
+### 10.3.1 Agent MCP tool access
+
+- `GET /agents/me/mcp-tools`
+- `POST /agents/me/mcp-tools/execute`
 
 ## 10.4 Tasks (Issues)
 
@@ -793,6 +827,16 @@ Dashboard payload must include:
 - `409` state conflict (checkout conflict, invalid transition)
 - `422` semantic rule violation
 - `500` server error
+
+## 10.12 MCP Servers
+
+- `GET /companies/:companyId/mcp-servers`
+- `POST /companies/:companyId/mcp-servers`
+- `GET /mcp-servers/:id`
+- `PATCH /mcp-servers/:id`
+- `DELETE /mcp-servers/:id`
+- `POST /mcp-servers/:id/test`
+- `GET /mcp-servers/:id/catalog-snapshots/latest`
 
 ## 10.11 Current Implementation API Addenda
 
@@ -978,6 +1022,7 @@ Required UX behaviors:
 
 - global company selector
 - quick actions: pause/resume agent, create task, approve/reject request
+- company settings page for MCP server registration/test and agent detail bindings for MCP access
 - conflict toasts on atomic checkout failure
 - no silent background failures; every failed run visible in UI
 

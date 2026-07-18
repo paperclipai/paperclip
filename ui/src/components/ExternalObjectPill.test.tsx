@@ -112,8 +112,26 @@ describe("ExternalObjectPill", () => {
     expect(html).toContain("PR 241 - Merged");
     expect(html).not.toContain("acme/web#241</span>");
     expect(html).toContain("text-violet-600");
-    expect(html).not.toContain("Github Pull Request");
-    expect(html).toContain('aria-label="GitHub pull request — Merged: acme/web#241: Add rich object presentation metadata"');
+    expect(html).not.toContain(">Github Pull Request</span>");
+    expect(html).toContain('aria-label="Github Pull Request — Merged: acme/web#241: Add rich object presentation metadata"');
+  });
+
+  it("labels generic URL link objects as URL instead of URL link", () => {
+    const html = renderToStaticMarkup(
+      <ExternalObjectPill
+        object={{
+          providerKey: "url",
+          objectType: "link",
+          statusCategory: "unknown",
+          liveness: "unknown",
+          displayTitle: null,
+          url: "https://example.com/",
+        }}
+      />,
+    );
+
+    expect(html).toContain('aria-label="URL — Not yet resolved"');
+    expect(html).not.toContain("URL link");
   });
 });
 

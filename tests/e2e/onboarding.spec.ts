@@ -48,14 +48,14 @@ test.describe("Onboarding wizard", () => {
     if (await startBtn.count()) {
       await startBtn.first().click();
     }
-    const createCard = page.getByRole("button", { name: /Build a new team/ });
+    const createCard = page.getByRole("button", { name: /Build a new company/ });
     if (await createCard.count()) {
       await createCard.first().click();
     }
 
-    // Step 1 — Name your team.
+    // Step 1 — Name your company.
     await expect(
-      page.getByRole("heading", { name: "Name your team" }),
+      page.getByRole("heading", { name: "Name your company" }),
     ).toBeVisible({ timeout: 15_000 });
     await page.getByPlaceholder("Acme Corp").fill(COMPANY_NAME);
     await page.getByRole("button", { name: /^Next/ }).click();

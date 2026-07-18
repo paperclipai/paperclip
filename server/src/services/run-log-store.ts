@@ -31,7 +31,7 @@ export interface RunLogStore {
   begin(input: { companyId: string; agentId: string; runId: string }): Promise<RunLogHandle>;
   append(
     handle: RunLogHandle,
-    event: { stream: "stdout" | "stderr" | "system"; chunk: string; ts: string },
+    event: { stream: "stdout" | "stderr" | "system"; chunk: string; ts: string; seq?: number },
   ): Promise<number>;
   finalize(handle: RunLogHandle): Promise<RunLogFinalizeSummary>;
   read(handle: RunLogHandle, opts?: RunLogReadOptions): Promise<RunLogReadResult>;
@@ -113,6 +113,10 @@ function createLocalFileRunLogStore(basePath: string): RunLogStore {
         ts: event.ts,
         stream: event.stream,
         chunk: event.chunk,
+        // Monotonic per-run sequence so readers can dedupe and order records
+        // even when several identical chunks share the same millisecond ts
+        // (common for ACP-style token deltas).
+        ...(typeof event.seq === "number" && Number.isFinite(event.seq) ? { seq: event.seq } : {}),
       });
       const persisted = `${line}\n`;
       await fs.appendFile(absPath, persisted, "utf8");

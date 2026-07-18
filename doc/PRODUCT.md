@@ -25,6 +25,7 @@ Each employee has:
 - **Adapter type + config** — how this agent runs and what defines its identity/behavior. This is adapter-specific (e.g., an OpenClaw agent might use SOUL.md and HEARTBEAT.md files; a Claude Code agent might use CLAUDE.md; a bare script might use CLI args). Paperclip doesn't prescribe the format — the adapter does.
 - **Role & reporting** — their title, who they report to, who reports to them
 - **Capabilities description** — a short paragraph on what this agent does and when they're relevant (helps other agents discover who can help with what)
+- **Tool access** — agents can also be granted access to company-registered MCP servers so they can call approved external tools during work
 
 Example: A CEO agent's adapter config tells it to "review what your executives are doing, check company metrics, reprioritize if needed, assign new strategic initiatives" on each heartbeat. An engineer's config tells it to "check assigned tasks, pick the highest priority, and work it."
 
@@ -68,7 +69,7 @@ The current issue model includes stable issue identifiers, parent/sub-issues, bl
 
 4. **All work traces to the goal.** Hierarchical task management means nothing exists in isolation. If you can't explain why a task matters to the company goal, it shouldn't exist.
 
-5. **Control plane, not execution plane.** Paperclip orchestrates. Agents run wherever they run and phone home.
+5. **Control plane, not execution plane.** Paperclip orchestrates. Agents run wherever they run and phone home. That also means Paperclip can register MCP servers, bind them to agents, and route tool calls without owning the underlying tool runtime itself.
 
 ## User Flow (Dream Scenario)
 

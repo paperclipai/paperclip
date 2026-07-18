@@ -14,36 +14,27 @@ import {
   linkIssueApprovalSchema,
 } from "@paperclipai/shared";
 import { PaperclipApiClient } from "./client.js";
+import { RequestContext, assertPathCompanyAccess } from "./context.js";
 import { formatErrorResponse, formatTextResponse } from "./format.js";
+import type { ToolTelemetry } from "./telemetry.js";
 
 export interface ToolDefinition {
   name: string;
   description: string;
   schema: z.AnyZodObject;
-  execute: (input: Record<string, unknown>) => Promise<{
+  /**
+   * Execute the tool for a resolved actor. The request-scoped
+   * {@link RequestContext} carries the authenticated identity and enforces
+   * per-tool company access; when omitted it defaults to the context the tool
+   * set was built with (the per-request identity in --http mode, the env
+   * identity in --stdio mode).
+   */
+  execute: (
+    input: Record<string, unknown>,
+    context?: RequestContext,
+  ) => Promise<{
     content: Array<{ type: "text"; text: string }>;
   }>;
-}
-
-function makeTool<TSchema extends z.ZodRawShape>(
-  name: string,
-  description: string,
-  schema: z.ZodObject<TSchema>,
-  execute: (input: z.infer<typeof schema>) => Promise<unknown>,
-): ToolDefinition {
-  return {
-    name,
-    description,
-    schema,
-    execute: async (input) => {
-      try {
-        const parsed = schema.parse(input);
-        return formatTextResponse(await execute(parsed));
-      } catch (error) {
-        return formatErrorResponse(error);
-      }
-    },
-  };
 }
 
 function parseOptionalJson(raw: string | undefined | null): unknown {
@@ -74,6 +65,7 @@ const listIssuesSchema = z.object({
   originKind: z.string().optional(),
   originId: z.string().optional(),
   includeRoutineExecutions: z.boolean().optional(),
+  includeLiveDescendantSummary: z.boolean().optional(),
   q: z.string().optional(),
 });
 
@@ -233,7 +225,55 @@ async function getIssueWorkspaceRuntime(client: PaperclipApiClient, issueId: str
   };
 }
 
-export function createToolDefinitions(client: PaperclipApiClient): ToolDefinition[] {
+export function createToolDefinitions(
+  client: PaperclipApiClient,
+  telemetry?: ToolTelemetry,
+): ToolDefinition[] {
+  // The actor/company are fixed by the resolved config (token binding in --http
+  // mode, env in --stdio mode) and are the security-relevant identity behind
+  // every call: captured once here for structured telemetry (NEO-296) and
+  // threaded into every tool as its default request context (NEO-294), which
+  // enforces per-tool company access.
+  const emit = telemetry?.sink;
+  const actor = client.defaults.agentId;
+  const company = client.defaults.companyId;
+  const defaultContext = client.context;
+
+  function makeTool<TSchema extends z.ZodRawShape>(
+    name: string,
+    description: string,
+    schema: z.ZodObject<TSchema>,
+    execute: (input: z.infer<typeof schema>, context: RequestContext) => Promise<unknown>,
+  ): ToolDefinition {
+    return {
+      name,
+      description,
+      schema,
+      execute: async (input, context = defaultContext) => {
+        const startedAt = Date.now();
+        let status: "ok" | "error" = "ok";
+        let errorName: string | undefined;
+        try {
+          const parsed = schema.parse(input);
+          return formatTextResponse(await execute(parsed, context));
+        } catch (error) {
+          status = "error";
+          errorName = error instanceof Error ? error.name : "Error";
+          return formatErrorResponse(error);
+        } finally {
+          emit?.({
+            tool: name,
+            actor,
+            company,
+            status,
+            durationMs: Date.now() - startedAt,
+            ...(errorName ? { errorName } : {}),
+          });
+        }
+      },
+    };
+  }
+
   return [
     makeTool(
       "paperclipMe",
@@ -251,13 +291,14 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
       "paperclipListAgents",
       "List agents in a company",
       z.object({ companyId: companyIdOptional }),
-      async ({ companyId }) => client.requestJson("GET", `/companies/${client.resolveCompanyId(companyId)}/agents`),
+      async ({ companyId }, ctx) => client.requestJson("GET", `/companies/${ctx.resolveCompanyId(companyId)}/agents`),
     ),
     makeTool(
       "paperclipGetAgent",
       "Get a single agent by id",
       z.object({ agentId: z.string().min(1), companyId: companyIdOptional }),
-      async ({ agentId, companyId }) => {
+      async ({ agentId, companyId }, ctx) => {
+        if (companyId) ctx.assertCompanyAccess(companyId);
         const qs = companyId ? `?companyId=${encodeURIComponent(companyId)}` : "";
         return client.requestJson("GET", `/agents/${encodeURIComponent(agentId)}${qs}`);
       },
@@ -266,8 +307,8 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
       "paperclipListIssues",
       "List issues for a company with optional filters",
       listIssuesSchema,
-      async (input) => {
-        const companyId = client.resolveCompanyId(input.companyId);
+      async (input, ctx) => {
+        const companyId = ctx.resolveCompanyId(input.companyId);
         const params = new URLSearchParams();
         for (const [key, value] of Object.entries(input)) {
           if (key === "companyId" || value === undefined || value === null) continue;
@@ -345,13 +386,14 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
       "paperclipListProjects",
       "List projects in a company",
       z.object({ companyId: companyIdOptional }),
-      async ({ companyId }) => client.requestJson("GET", `/companies/${client.resolveCompanyId(companyId)}/projects`),
+      async ({ companyId }, ctx) => client.requestJson("GET", `/companies/${ctx.resolveCompanyId(companyId)}/projects`),
     ),
     makeTool(
       "paperclipGetProject",
       "Get a project by id or company-scoped short reference",
       z.object({ projectId: projectIdSchema, companyId: companyIdOptional }),
-      async ({ projectId, companyId }) => {
+      async ({ projectId, companyId }, ctx) => {
+        if (companyId) ctx.assertCompanyAccess(companyId);
         const qs = companyId ? `?companyId=${encodeURIComponent(companyId)}` : "";
         return client.requestJson("GET", `/projects/${encodeURIComponent(projectId)}${qs}`);
       },
@@ -409,7 +451,7 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
       "paperclipListGoals",
       "List goals in a company",
       z.object({ companyId: companyIdOptional }),
-      async ({ companyId }) => client.requestJson("GET", `/companies/${client.resolveCompanyId(companyId)}/goals`),
+      async ({ companyId }, ctx) => client.requestJson("GET", `/companies/${ctx.resolveCompanyId(companyId)}/goals`),
     ),
     makeTool(
       "paperclipGetGoal",
@@ -421,17 +463,17 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
       "paperclipListApprovals",
       "List approvals in a company",
       z.object({ companyId: companyIdOptional, status: z.string().optional() }),
-      async ({ companyId, status }) => {
+      async ({ companyId, status }, ctx) => {
         const qs = status ? `?status=${encodeURIComponent(status)}` : "";
-        return client.requestJson("GET", `/companies/${client.resolveCompanyId(companyId)}/approvals${qs}`);
+        return client.requestJson("GET", `/companies/${ctx.resolveCompanyId(companyId)}/approvals${qs}`);
       },
     ),
     makeTool(
       "paperclipCreateApproval",
       "Create a board approval request, optionally linked to one or more issues",
       createApprovalToolSchema,
-      async ({ companyId, ...body }) =>
-        client.requestJson("POST", `/companies/${client.resolveCompanyId(companyId)}/approvals`, {
+      async ({ companyId, ...body }, ctx) =>
+        client.requestJson("POST", `/companies/${ctx.resolveCompanyId(companyId)}/approvals`, {
           body,
         }),
     ),
@@ -457,8 +499,8 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
       "paperclipCreateIssue",
       "Create a new issue",
       createIssueToolSchema,
-      async ({ companyId, ...body }) =>
-        client.requestJson("POST", `/companies/${client.resolveCompanyId(companyId)}/issues`, { body }),
+      async ({ companyId, ...body }, ctx) =>
+        client.requestJson("POST", `/companies/${ctx.resolveCompanyId(companyId)}/issues`, { body }),
     ),
     makeTool(
       "paperclipUpdateIssue",
@@ -471,10 +513,10 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
       "paperclipCheckoutIssue",
       "Checkout an issue for an agent",
       checkoutIssueToolSchema,
-      async ({ issueId, agentId, expectedStatuses }) =>
+      async ({ issueId, agentId, expectedStatuses }, ctx) =>
         client.requestJson("POST", `/issues/${encodeURIComponent(issueId)}/checkout`, {
           body: {
-            agentId: client.resolveAgentId(agentId),
+            agentId: ctx.resolveAgentId(agentId),
             expectedStatuses: expectedStatuses ?? ["todo", "backlog", "blocked"],
           },
         }),
@@ -620,10 +662,15 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
       "paperclipApiRequest",
       "Make a JSON request to an existing Paperclip /api endpoint for unsupported operations",
       apiRequestSchema,
-      async ({ method, path, jsonBody }) => {
+      async ({ method, path, jsonBody }, ctx) => {
         if (!path.startsWith("/") || path.includes("..")) {
           throw new Error("path must start with / and be relative to /api, and must not contain '..'");
         }
+        // Best-effort authz for the generic escape hatch: a company-scoped path
+        // (/companies/<id>/...) is validated against the bound actor before it
+        // is proxied, so this tool cannot be used to sidestep per-tool company
+        // access. Non-company paths defer to the REST route's own checks.
+        assertPathCompanyAccess(ctx, path);
         return client.requestJson(method, path, {
           body: parseOptionalJson(jsonBody),
         });

@@ -46,6 +46,6 @@ describe("opencode local skill sync", () => {
 
     const after = await syncOpenCodeSkills(ctx, [paperclipKey]);
     expect(after.entries.find((entry) => entry.key === paperclipKey)?.state).toBe("installed");
-    expect((await fs.lstat(path.join(home, ".claude", "skills", "paperclip"))).isSymbolicLink()).toBe(true);
+    expect((await fs.lstat(path.join(home, ".claude", "skills", "cortex"))).isSymbolicLink()).toBe(true);
   });
 });

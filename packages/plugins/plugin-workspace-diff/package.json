@@ -52,7 +52,7 @@
   },
   "dependencies": {
     "@paperclipai/plugin-sdk": "workspace:*",
-    "@pierre/diffs": "^1.1.22"
+    "@pierre/diffs": "^1.2.11"
   },
   "devDependencies": {
     "@types/node": "^22.19.21",

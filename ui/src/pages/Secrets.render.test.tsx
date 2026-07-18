@@ -1,13 +1,17 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
 import { createRoot } from "react-dom/client";
+import { flushSync } from "react-dom";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type {
+  CompanySecret,
   CompanySecretProviderConfig,
+  RemoteSecretImportPreviewResult,
   SecretProviderConfigDiscoveryPreviewResult,
   SecretProviderDescriptor,
+  UserSecretCoverageSummary,
+  UserSecretDefinition,
 } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ProviderVaultsTab, Secrets } from "./Secrets";
@@ -25,6 +29,8 @@ const mockSecretsApi = vi.hoisted(() => ({
   removeProviderConfig: vi.fn(),
   setDefaultProviderConfig: vi.fn(),
   checkProviderConfigHealth: vi.fn(),
+  remoteImportPreview: vi.fn(),
+  remoteImport: vi.fn(),
   create: vi.fn(),
   update: vi.fn(),
   rotate: vi.fn(),
@@ -34,6 +40,16 @@ const mockSecretsApi = vi.hoisted(() => ({
   remove: vi.fn(),
   usage: vi.fn(),
   accessEvents: vi.fn(),
+  listUserSecretDefinitions: vi.fn(),
+  createUserSecretDefinition: vi.fn(),
+  updateUserSecretDefinition: vi.fn(),
+  removeUserSecretDefinition: vi.fn(),
+  userSecretDefinitionCoverage: vi.fn(),
+  listMyUserSecrets: vi.fn(),
+  createMyUserSecret: vi.fn(),
+  updateMyUserSecret: vi.fn(),
+  rotateMyUserSecret: vi.fn(),
+  removeMyUserSecret: vi.fn(),
 }));
 
 const mockSetBreadcrumbs = vi.hoisted(() => vi.fn());
@@ -133,6 +149,14 @@ const providerConfigs = [
   },
 ] satisfies Partial<CompanySecretProviderConfig>[];
 
+async function act(callback: () => void | Promise<void>) {
+  let result: void | Promise<void> = undefined;
+  flushSync(() => {
+    result = callback();
+  });
+  await result;
+}
+
 async function flushReact() {
   await act(async () => {
     await Promise.resolve();
@@ -187,10 +211,88 @@ function makeDiscoveryPreview(
   };
 }
 
+function makeRemoteImportPreview(
+  overrides: Partial<RemoteSecretImportPreviewResult> = {},
+): RemoteSecretImportPreviewResult {
+  return {
+    providerConfigId: "vault-aws",
+    provider: "aws_secrets_manager",
+    nextToken: null,
+    candidates: [],
+    ...overrides,
+  };
+}
+
+function makeCompanySecret(overrides: Partial<CompanySecret> = {}): CompanySecret {
+  return {
+    id: "secret-openai",
+    companyId: "company-1",
+    scope: "company",
+    ownerUserId: null,
+    userSecretDefinitionId: null,
+    key: "openai_api_key",
+    name: "OPENAI_API_KEY",
+    provider: "local_encrypted",
+    status: "active",
+    managedMode: "paperclip_managed",
+    externalRef: null,
+    providerConfigId: null,
+    providerMetadata: null,
+    latestVersion: 1,
+    description: null,
+    lastResolvedAt: null,
+    lastRotatedAt: null,
+    deletedAt: null,
+    createdByAgentId: null,
+    createdByUserId: "user-1",
+    referenceCount: 2,
+    createdAt: new Date("2026-05-06T00:00:00.000Z"),
+    updatedAt: new Date("2026-05-06T00:00:00.000Z"),
+    ...overrides,
+  };
+}
+
+function makeUserSecretDefinition(overrides: Partial<UserSecretDefinition> = {}): UserSecretDefinition {
+  return {
+    id: "def-github",
+    companyId: "company-1",
+    key: "PERSONAL_GH_TOKEN",
+    name: "Personal GitHub token",
+    description: "Used when the responsible user's own repos must be reached.",
+    status: "active",
+    provider: "local_encrypted",
+    managedMode: "paperclip_managed",
+    providerConfigId: null,
+    providerMetadata: null,
+    usageGuidance: "Create a fine-grained PAT with repo read access.",
+    createdByAgentId: null,
+    createdByUserId: "user-1",
+    updatedByAgentId: null,
+    updatedByUserId: "user-1",
+    deletedAt: null,
+    createdAt: new Date("2026-06-01T00:00:00.000Z"),
+    updatedAt: new Date("2026-06-02T00:00:00.000Z"),
+    ...overrides,
+  };
+}
+
+const userSecretCoverage: UserSecretCoverageSummary = {
+  definitionId: "def-github",
+  configuredCount: 3,
+  missingCount: 2,
+  inactiveCount: 0,
+};
+
 function setInputValue(input: HTMLInputElement, value: string) {
   const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
   setter?.call(input, value);
   input.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+function setTextareaValue(textarea: HTMLTextAreaElement, value: string) {
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")?.set;
+  setter?.call(textarea, value);
+  textarea.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
 async function openAwsVaultDialog() {
@@ -234,6 +336,10 @@ describe("Secrets page layout", () => {
     });
     mockSecretsApi.providerConfigs.mockResolvedValue(providerConfigs);
     mockSecretsApi.providerConfigDiscoveryPreview.mockResolvedValue(makeDiscoveryPreview());
+    mockSecretsApi.remoteImportPreview.mockResolvedValue(makeRemoteImportPreview());
+    mockSecretsApi.listUserSecretDefinitions.mockResolvedValue([]);
+    mockSecretsApi.userSecretDefinitionCoverage.mockResolvedValue(userSecretCoverage);
+    mockSecretsApi.listMyUserSecrets.mockResolvedValue([]);
   });
 
   afterEach(() => {
@@ -284,6 +390,7 @@ describe("Secrets page layout", () => {
           onRemove={vi.fn()}
           onSetDefault={vi.fn()}
           onHealthCheck={vi.fn()}
+          onImportSecrets={vi.fn()}
           pendingActionId={null}
         />,
       );
@@ -297,6 +404,58 @@ describe("Secrets page layout", () => {
 
     await act(async () => {
       vaultRoot.unmount();
+    });
+  });
+
+  it("refreshes existing AWS secrets from a provider vault card", async () => {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <QueryClientProvider client={queryClient}>
+            <Secrets />
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const vaultTabButton = [...document.querySelectorAll("button")].find(
+      (button) => button.textContent?.includes("Provider vaults"),
+    ) as HTMLButtonElement | undefined;
+    await act(async () => {
+      vaultTabButton?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+      vaultTabButton?.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
+      vaultTabButton?.click();
+    });
+    await flushReact();
+
+    const refreshButton = document.querySelector(
+      '[data-testid="provider-vault-refresh-secrets-vault-aws"]',
+    ) as HTMLButtonElement | null;
+    expect(refreshButton).not.toBeNull();
+
+    await act(async () => {
+      refreshButton?.click();
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(document.body.textContent).toContain("Import from AWS Secrets Manager");
+    expect(mockSecretsApi.remoteImportPreview).toHaveBeenCalledWith("company-1", {
+      providerConfigId: "vault-aws",
+      query: null,
+      nextToken: null,
+      pageSize: 50,
+    });
+
+    await act(async () => {
+      root.unmount();
     });
   });
 
@@ -358,31 +517,8 @@ describe("Secrets page layout", () => {
     });
   });
 
-  it("opens reference details from the secrets table count", async () => {
-    mockSecretsApi.list.mockResolvedValue([
-      {
-        id: "secret-openai",
-        companyId: "company-1",
-        key: "openai_api_key",
-        name: "OPENAI_API_KEY",
-        provider: "local_encrypted",
-        status: "active",
-        managedMode: "paperclip_managed",
-        externalRef: null,
-        providerConfigId: null,
-        providerMetadata: null,
-        latestVersion: 1,
-        description: null,
-        lastResolvedAt: null,
-        lastRotatedAt: null,
-        deletedAt: null,
-        createdByAgentId: null,
-        createdByUserId: "user-1",
-        referenceCount: 2,
-        createdAt: new Date("2026-05-06T00:00:00.000Z"),
-        updatedAt: new Date("2026-05-06T00:00:00.000Z"),
-      },
-    ]);
+  it("keeps references reachable from the compact secrets row and detail drawer", async () => {
+    mockSecretsApi.list.mockResolvedValue([makeCompanySecret()]);
     mockSecretsApi.usage.mockResolvedValue({
       secretId: "secret-openai",
       bindings: [
@@ -427,19 +563,249 @@ describe("Secrets page layout", () => {
     await flushReact();
 
     const referencesButton = container.querySelector(
-      'button[aria-label="View references for OPENAI_API_KEY"]',
+      'button[aria-label="Actions for OPENAI_API_KEY"]',
     ) as HTMLButtonElement | null;
-    expect(referencesButton?.textContent).toBe("2");
+    expect(referencesButton).not.toBeNull();
 
+    const companyRow = Array.from(container.querySelectorAll("[role='row']")).find(
+      (row) => row.textContent?.includes("OPENAI_API_KEY"),
+    ) as HTMLElement | undefined;
     await act(async () => {
-      referencesButton?.click();
+      companyRow?.click();
+    });
+    await flushReact();
+
+    const viewUsageButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("View in Usage"),
+    ) as HTMLButtonElement | undefined;
+    await act(async () => {
+      viewUsageButton?.click();
     });
     await flushReact();
 
     expect(mockSecretsApi.usage).toHaveBeenCalledWith("secret-openai");
-    expect(document.body.textContent).toContain("Secret references");
     expect(document.body.textContent).toContain("CodexCoder");
     expect(document.body.textContent).toContain("env.OPENAI_API_KEY");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("merges company secrets and each-user definitions into the Secrets list", async () => {
+    mockSecretsApi.list.mockResolvedValue([makeCompanySecret()]);
+    mockSecretsApi.listUserSecretDefinitions.mockResolvedValue([makeUserSecretDefinition()]);
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <QueryClientProvider client={queryClient}>
+            <Secrets />
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).toContain("OPENAI_API_KEY");
+    expect(container.textContent).toContain("Personal GitHub token");
+    expect(container.textContent).toContain("Company");
+    expect(container.textContent).toContain("Each user");
+    expect(container.textContent).toContain("3/5 set");
+    expect(container.textContent).not.toContain("User secret definitions");
+
+    const listContainer = container.querySelector('[data-testid="secrets-list-container"]');
+    const tableView = container.querySelector('[data-testid="secrets-table-view"]');
+    const cardView = container.querySelector('[data-testid="secrets-card-view"]');
+    expect(listContainer?.className).toContain("@container");
+    expect(tableView?.className).toContain("@min-[40rem]:block");
+    expect(tableView?.className).not.toContain("md:block");
+    // Grid template lives in the token layer: --gtc-54 in ui/src/index.css
+    // carries the original minmax(12rem,2.4fr)... template verbatim.
+    expect(tableView?.querySelector("[role='row']")?.className).toContain("grid-cols-(--gtc-54)");
+    expect(cardView?.className).toContain("@min-[40rem]:hidden");
+    expect(cardView?.className).not.toContain("md:hidden");
+
+    expect(mockSecretsApi.list).toHaveBeenCalledWith("company-1");
+    expect(mockSecretsApi.listUserSecretDefinitions).toHaveBeenCalledWith("company-1");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("creates an each-user secret from the unified New secret dialog", async () => {
+    const definition = makeUserSecretDefinition({ name: "Personal GitHub token" });
+    mockSecretsApi.createUserSecretDefinition.mockResolvedValueOnce(definition);
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <QueryClientProvider client={queryClient}>
+            <Secrets />
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const newSecretButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("New secret"),
+    ) as HTMLButtonElement | undefined;
+    await act(async () => {
+      newSecretButton?.click();
+    });
+    await flushReact();
+
+    const eachUserButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Each user",
+    ) as HTMLButtonElement | undefined;
+    await act(async () => {
+      eachUserButton?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+      eachUserButton?.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
+      eachUserButton?.click();
+    });
+    await flushReact();
+
+    const nameInput = document.getElementById("new-secret-name") as HTMLInputElement;
+    const keyInput = document.getElementById("new-secret-key") as HTMLInputElement;
+    const usageGuidance = document.getElementById("new-secret-usage-guidance") as HTMLTextAreaElement;
+    expect(document.getElementById("new-secret-provider")).toBeNull();
+    expect(document.getElementById("new-secret-vault")).toBeNull();
+    expect(document.getElementById("new-secret-value")).toBeNull();
+
+    await act(async () => {
+      setInputValue(nameInput, "Personal GitHub token");
+      setTextareaValue(usageGuidance, "Create a fine-grained PAT with repo read access.");
+    });
+    await flushReact();
+
+    expect(keyInput.value).toBe("PERSONAL_GITHUB_TOKEN");
+
+    const createButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("Create user-provided secret"),
+    ) as HTMLButtonElement | undefined;
+    await act(async () => {
+      createButton?.click();
+    });
+    await flushReact();
+
+    expect(mockSecretsApi.createUserSecretDefinition).toHaveBeenCalledWith("company-1", {
+      name: "Personal GitHub token",
+      description: null,
+      usageGuidance: "Create a fine-grained PAT with repo read access.",
+      key: "PERSONAL_GITHUB_TOKEN",
+      status: "active",
+    });
+    expect(mockSecretsApi.create).not.toHaveBeenCalled();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("opens the New secret dialog when provider queries fail", async () => {
+    mockSecretsApi.providers.mockRejectedValueOnce(new ApiError("Providers unavailable", 403, null));
+    mockSecretsApi.providerConfigs.mockRejectedValueOnce(new ApiError("Provider vaults unavailable", 403, null));
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <QueryClientProvider client={queryClient}>
+            <Secrets />
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const newSecretButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("New secret"),
+    ) as HTMLButtonElement | undefined;
+    await act(async () => {
+      newSecretButton?.click();
+    });
+    await flushReact();
+
+    expect(document.body.textContent).toContain("Create secret");
+    expect(document.body.textContent).toContain("Select a provider.");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("opens the each-user detail sheet with coverage and set-my-value actions", async () => {
+    const definition = makeUserSecretDefinition();
+    mockSecretsApi.listUserSecretDefinitions.mockResolvedValue([definition]);
+    mockSecretsApi.listMyUserSecrets.mockResolvedValue([{ definition, secret: null }]);
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <QueryClientProvider client={queryClient}>
+            <Secrets />
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const definitionRow = Array.from(container.querySelectorAll("[role='row']")).find(
+      (row) => row.textContent?.includes("Personal GitHub token"),
+    ) as HTMLElement | undefined;
+    await act(async () => {
+      definitionRow?.click();
+    });
+    await flushReact();
+
+    expect(document.body.textContent).toContain("Personal GitHub token");
+    expect(document.body.textContent).toContain("Details");
+    expect(document.body.textContent).toContain("Coverage");
+    expect(document.body.textContent).toContain("Usage");
+    expect(document.body.textContent).toContain("Access events");
+
+    const viewCoverageButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("View in Coverage"),
+    ) as HTMLButtonElement | undefined;
+    await act(async () => {
+      viewCoverageButton?.click();
+    });
+    await flushReact();
+
+    expect(document.body.textContent).toContain("3 of 5 set");
+    expect(document.body.textContent).toContain("Secret values are never shown here");
+
+    const setValueButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("Set my value"),
+    ) as HTMLButtonElement | undefined;
+    await act(async () => {
+      setValueButton?.click();
+    });
+    await flushReact();
+
+    expect(document.body.textContent).toContain("Set your value");
+    expect(document.body.textContent).toContain("PERSONAL_GH_TOKEN");
 
     await act(async () => {
       root.unmount();
@@ -564,9 +930,24 @@ describe("Secrets page layout", () => {
   });
 
   it("shows AWS discovery errors without replacing manual vault form values", async () => {
+    const rawProviderMessage =
+      "AccessDeniedException: User: arn:aws:sts::123456789012:assumed-role/prod/Paperclip is not authorized";
     mockSecretsApi.providerConfigDiscoveryPreview.mockRejectedValueOnce(
       new ApiError("AWS Secrets Manager denied the request. Check IAM permissions for this provider vault.", 403, {
-        details: { code: "access_denied" },
+        details: {
+          code: "access_denied",
+          provider: "aws_secrets_manager",
+          operation: "secret_provider_config.discovery.preview",
+          providerConfigId: "discovery-preview",
+          providerVaultContext: "draft_config",
+          region: "us-west-2",
+          credentialPath: "Paperclip server runtime/provider credential path",
+          requiredCapability: "secretsmanager:ListSecrets",
+          actionableMessage:
+            "AWS discovery preview needs secretsmanager:ListSecrets in the selected region for the Paperclip server runtime/provider credential path.",
+          safeAlternative:
+            "If the operator already knows the exact AWS Secrets Manager ARN, paste/link that ARN instead of using discovery. Exact-resource DescribeSecret and runtime read permissions are still required.",
+        },
       }),
     );
     const root = createRoot(container);
@@ -604,9 +985,75 @@ describe("Secrets page layout", () => {
     await flushReact();
     await flushReact();
 
-    expect(document.body.textContent).toContain("AWS Secrets Manager denied the request");
+    const errorBanner = document.querySelector('[data-testid="aws-vault-discovery-error"]');
+    expect(errorBanner).not.toBeNull();
+    expect(errorBanner?.textContent).toContain("AWS discovery needs ListSecrets permission");
+    expect(errorBanner?.textContent).toContain("secretsmanager:ListSecrets");
+    expect(errorBanner?.textContent).toContain("Paperclip server runtime/provider credential path");
+    expect(errorBanner?.textContent).toContain("paste/link that ARN");
+    expect(errorBanner?.textContent).toContain("DescribeSecret");
+    expect(errorBanner?.textContent).toContain("us-west-2");
+    expect(errorBanner?.textContent).toContain("secret_provider_config.discovery.preview");
+    expect(errorBanner?.textContent).toContain("aws_secrets_manager");
+    expect(errorBanner?.textContent).toContain("Safe request/error details");
+    expect(errorBanner?.textContent).not.toContain(rawProviderMessage);
+    expect(errorBanner?.textContent).not.toContain("arn:aws");
+    expect(errorBanner?.textContent).not.toContain("123456789012");
     expect(regionInput.value).toBe("us-west-2");
     expect(namespaceInput.value).toBe("manual-prod");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("keeps generic AWS discovery 403 errors on the generic failure path", async () => {
+    mockSecretsApi.providerConfigDiscoveryPreview.mockRejectedValueOnce(
+      new ApiError("AWS discovery request failed before IAM evaluation.", 403, {
+        details: {
+          code: "proxy_forbidden",
+          provider: "aws_secrets_manager",
+          operation: "secret_provider_config.discovery.preview",
+          region: "us-west-1",
+        },
+      }),
+    );
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <QueryClientProvider client={queryClient}>
+            <Secrets />
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+    await openAwsVaultDialog();
+
+    const regionInput = document.getElementById("provider-vault-aws-region") as HTMLInputElement;
+    await act(async () => {
+      setInputValue(regionInput, "us-west-1");
+    });
+    await flushReact();
+
+    await act(async () => {
+      (document.querySelector('[data-testid="aws-vault-discovery-button"]') as HTMLButtonElement | null)?.click();
+    });
+    await flushReact();
+    await flushReact();
+
+    const errorBanner = document.querySelector('[data-testid="aws-vault-discovery-error"]');
+    expect(errorBanner).not.toBeNull();
+    expect(errorBanner?.textContent).toContain("AWS discovery failed");
+    expect(errorBanner?.textContent).toContain("AWS discovery request failed before IAM evaluation.");
+    expect(errorBanner?.textContent).toContain("proxy_forbidden");
+    expect(errorBanner?.textContent).not.toContain("AWS discovery needs ListSecrets permission");
 
     await act(async () => {
       root.unmount();

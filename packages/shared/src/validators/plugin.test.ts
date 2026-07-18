@@ -37,6 +37,66 @@ describe("plugin manifest validators", () => {
 
     expect(parsed.capabilities).toEqual(["ui.dashboardWidget.register"]);
   });
+
+  it("accepts sandbox provider template config bindings", () => {
+    const parsed = pluginManifestV1Schema.parse({
+      id: "paperclip.template-provider",
+      apiVersion: 1,
+      version: "0.1.0",
+      displayName: "Template Provider",
+      description: "Sandbox provider with captured template config binding.",
+      author: "Paperclip",
+      categories: ["automation"],
+      capabilities: ["environment.drivers.register"],
+      entrypoints: { worker: "./dist/worker.js" },
+      environmentDrivers: [
+        {
+          driverKey: "template-provider",
+          kind: "sandbox_provider",
+          displayName: "Template Provider",
+          supportsTemplateCapture: true,
+          templateRefKind: "provider_template",
+          templateConfigBinding: {
+            field: "templateId",
+            unsetFields: ["image"],
+          },
+          configSchema: { type: "object" },
+        },
+      ],
+    });
+
+    expect(parsed.environmentDrivers?.[0]?.templateConfigBinding).toEqual({
+      field: "templateId",
+      unsetFields: ["image"],
+    });
+  });
+
+  it("rejects template config bindings that replace provider identity", () => {
+    const parsed = pluginManifestV1Schema.safeParse({
+      id: "paperclip.bad-template-provider",
+      apiVersion: 1,
+      version: "0.1.0",
+      displayName: "Bad Template Provider",
+      categories: ["automation"],
+      capabilities: ["environment.drivers.register"],
+      entrypoints: { worker: "./dist/worker.js" },
+      environmentDrivers: [
+        {
+          driverKey: "bad-template-provider",
+          kind: "sandbox_provider",
+          displayName: "Bad Template Provider",
+          templateConfigBinding: {
+            field: "provider",
+          },
+          configSchema: { type: "object" },
+        },
+      ],
+    });
+
+    expect(parsed.success).toBe(false);
+    if (parsed.success) return;
+    expect(parsed.error.issues.some((issue) => issue.message.includes("provider key"))).toBe(true);
+  });
 });
 
 describe("plugin managed routine validators", () => {
@@ -93,6 +153,69 @@ describe("plugin managed skill validators", () => {
     });
 
     expect(parsed.skills?.[0]?.skillKey).toBe("wiki-maintainer");
+  });
+});
+
+describe("plugin managed MCP server validators", () => {
+  const baseManifest = {
+    id: "paperclip.test-managed-mcp",
+    apiVersion: 1,
+    version: "0.1.0",
+    displayName: "Managed MCP",
+    description: "Managed MCP servers test plugin.",
+    author: "Paperclip",
+    categories: ["automation"],
+    entrypoints: { worker: "./dist/worker.js" },
+  } as const;
+  const declaration = {
+    serverKey: "linear",
+    displayName: "Linear MCP",
+    transport: "http",
+    url: "https://mcp.example.com/linear",
+  } as const;
+
+  it("accepts managed MCP servers with the mcp.servers.managed capability", () => {
+    const parsed = pluginManifestV1Schema.parse({
+      ...baseManifest,
+      capabilities: ["mcp.servers.managed"],
+      mcpServers: [declaration],
+    });
+
+    expect(parsed.mcpServers?.[0]?.serverKey).toBe("linear");
+  });
+
+  it("requires mcp.servers.managed when managed MCP servers are declared", () => {
+    const parsed = pluginManifestV1Schema.safeParse({
+      ...baseManifest,
+      capabilities: ["companies.read"],
+      mcpServers: [declaration],
+    });
+
+    expect(parsed.success).toBe(false);
+    if (parsed.success) return;
+    expect(parsed.error.issues.some((issue) => issue.message.includes("mcp.servers.managed"))).toBe(true);
+  });
+
+  it("rejects stdio transports in plugin-managed MCP server declarations", () => {
+    const parsed = pluginManifestV1Schema.safeParse({
+      ...baseManifest,
+      capabilities: ["mcp.servers.managed"],
+      mcpServers: [{ ...declaration, transport: "stdio" }],
+    });
+
+    expect(parsed.success).toBe(false);
+  });
+
+  it("rejects duplicate managed MCP server keys", () => {
+    const parsed = pluginManifestV1Schema.safeParse({
+      ...baseManifest,
+      capabilities: ["mcp.servers.managed"],
+      mcpServers: [declaration, { ...declaration, displayName: "Linear MCP (dup)" }],
+    });
+
+    expect(parsed.success).toBe(false);
+    if (parsed.success) return;
+    expect(parsed.error.issues.some((issue) => issue.message.includes("Duplicate managed MCP server keys"))).toBe(true);
   });
 });
 

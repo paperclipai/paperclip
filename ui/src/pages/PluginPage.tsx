@@ -178,7 +178,7 @@ export function PluginPage() {
       <PluginSlotMount
         slot={pageSlot}
         context={context}
-        className="min-h-[200px]"
+        className="min-h-(--sz-200px)"
         missingBehavior="placeholder"
       />
     </div>

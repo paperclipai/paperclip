@@ -6,6 +6,7 @@ export { cloudUpstreamConnections, cloudUpstreamRuns } from "./cloud_upstreams.j
 export { instanceUserRoles } from "./instance_user_roles.js";
 export { userSidebarPreferences } from "./user_sidebar_preferences.js";
 export { agents } from "./agents.js";
+export { builtInManagedResources } from "./built_in_managed_resources.js";
 export { agentMemberships } from "./agent_memberships.js";
 export { boardApiKeys } from "./board_api_keys.js";
 export { cliAuthChallenges } from "./cli_auth_challenges.js";
@@ -21,14 +22,20 @@ export { agentApiKeys } from "./agent_api_keys.js";
 export { agentRuntimeState } from "./agent_runtime_state.js";
 export { agentTaskSessions } from "./agent_task_sessions.js";
 export { agentWakeupRequests } from "./agent_wakeup_requests.js";
+export { agentMcpServers } from "./agent_mcp_servers.js";
 export { projects } from "./projects.js";
 export { projectMemberships } from "./project_memberships.js";
 export { projectWorkspaces } from "./project_workspaces.js";
 export { executionWorkspaces } from "./execution_workspaces.js";
 export { environments } from "./environments.js";
 export { environmentLeases } from "./environment_leases.js";
+export { environmentCustomImageTemplates } from "./environment_custom_image_templates.js";
+export { environmentCustomImageSetupSessions } from "./environment_custom_image_setup_sessions.js";
 export { workspaceOperations } from "./workspace_operations.js";
 export { workspaceRuntimeServices } from "./workspace_runtime_services.js";
+export { mcpServers } from "./mcp_servers.js";
+export { mcpServerCatalogSnapshots } from "./mcp_server_catalog_snapshots.js";
+export { mcpServerAuditLog } from "./mcp_server_audit_log.js";
 export { projectGoals } from "./project_goals.js";
 export { goals } from "./goals.js";
 export { issues } from "./issues.js";
@@ -40,6 +47,24 @@ export { externalObjects } from "./external_objects.js";
 export { externalObjectMentions } from "./external_object_mentions.js";
 export { issueRelations } from "./issue_relations.js";
 export { routines, routineRevisions, routineTriggers, routineRuns } from "./routines.js";
+export { pipelines, pipelineStages, pipelineTransitions } from "./pipelines.js";
+export {
+  cases,
+  caseAttachments,
+  caseDocuments,
+  caseEvents,
+  caseIssueLinks,
+  caseLabels,
+} from "./cases.js";
+export {
+  pipelineCases,
+  pipelineCaseIssueLinks,
+  pipelineCaseBlockers,
+  pipelineDocuments,
+  pipelineCaseDocuments,
+  pipelineAutomationExecutions,
+} from "./pipeline_cases.js";
+export { pipelineCaseEvents } from "./pipeline_case_events.js";
 export { issueWorkProducts } from "./issue_work_products.js";
 export { labels } from "./labels.js";
 export { issueLabels } from "./issue_labels.js";
@@ -55,6 +80,7 @@ export { feedbackVotes } from "./feedback_votes.js";
 export { feedbackExports } from "./feedback_exports.js";
 export { issueReadStates } from "./issue_read_states.js";
 export { assets } from "./assets.js";
+export { brandKits, brandKitAssets } from "./brand_kits.js";
 export { issueAttachments } from "./issue_attachments.js";
 export { documents } from "./documents.js";
 export { documentRevisions } from "./document_revisions.js";
@@ -72,11 +98,21 @@ export { approvals } from "./approvals.js";
 export { approvalComments } from "./approval_comments.js";
 export { activityLog } from "./activity_log.js";
 export { companySecretProviderConfigs } from "./company_secret_provider_configs.js";
+export { userSecretDefinitions } from "./user_secret_definitions.js";
 export { companySecrets } from "./company_secrets.js";
 export { companySecretVersions } from "./company_secret_versions.js";
 export { companySecretBindings } from "./company_secret_bindings.js";
+export { userSecretDeclarations } from "./user_secret_declarations.js";
 export { secretAccessEvents } from "./secret_access_events.js";
-export { companySkills, companySkillVersions, companySkillStars, companySkillComments } from "./company_skills.js";
+export {
+  companySkills,
+  companySkillVersions,
+  companySkillStars,
+  companySkillComments,
+  companySkillTestInputs,
+  companySkillTestRunTemplates,
+  companySkillTestRuns,
+} from "./company_skills.js";
 export { plugins } from "./plugins.js";
 export { pluginConfig } from "./plugin_config.js";
 export { pluginCompanySettings } from "./plugin_company_settings.js";
@@ -87,3 +123,4 @@ export { pluginDatabaseNamespaces, pluginMigrations } from "./plugin_database.js
 export { pluginJobs, pluginJobRuns } from "./plugin_jobs.js";
 export { pluginWebhookDeliveries } from "./plugin_webhooks.js";
 export { pluginLogs } from "./plugin_logs.js";
+export * from "./identity_maps.js";

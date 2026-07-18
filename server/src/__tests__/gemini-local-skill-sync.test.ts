@@ -45,6 +45,6 @@ describe("gemini local skill sync", () => {
 
     const after = await syncGeminiSkills(ctx, [paperclipKey]);
     expect(after.entries.find((entry) => entry.key === paperclipKey)?.state).toBe("installed");
-    expect((await fs.lstat(path.join(home, ".gemini", "skills", "paperclip"))).isSymbolicLink()).toBe(true);
+    expect((await fs.lstat(path.join(home, ".gemini", "skills", "cortex"))).isSymbolicLink()).toBe(true);
   });
 });

@@ -51,6 +51,114 @@ Project env applies to every issue run in that project. When a project env key
 matches an agent env key, the project value wins before Paperclip injects its
 own `PAPERCLIP_*` runtime variables.
 
+## User-Specific Secrets
+
+User-specific secrets let a shared agent or project declare a slot such as
+`github_api_token`, then resolve the value owned by the run's responsible user
+at dispatch time. The environment binding stores only the definition key:
+
+```json
+{
+  "env": {
+    "GITHUB_TOKEN": {
+      "type": "user_secret_ref",
+      "key": "github_api_token",
+      "required": true,
+      "allowMissingOverride": false
+    }
+  }
+}
+```
+
+Paperclip stores the feature as value-free metadata plus the user's own secret
+value record:
+
+- `user_secret_definitions`: company-level metadata for the reusable slot.
+- `user_secret_declarations`: target/config-path declarations for
+  `user_secret_ref` bindings, including required/optional policy.
+- `company_secrets` rows with `scope = "user"`, `owner_user_id`, and
+  `user_secret_definition_id`: the current user's actual value record.
+- `company_secret_versions`: encrypted or provider-backed version metadata for
+  the value record.
+
+Board/admin operators manage definitions and coverage. Individual users manage
+their own values. Board/admin coverage views must stay metadata-only: they can
+show missing, configured, inactive, provider, and vault status, but not
+plaintext values, raw external refs, provider credentials, or provider error
+payloads.
+
+Required user-secret refs fail closed when the responsible user is missing,
+the definition is missing, or the responsible user has no active value.
+Optional refs may omit the env var. They must not inject blank credentials or
+fall back to another user's value.
+
+### Vault Placement
+
+User-scoped values can use the same provider families as company secrets:
+
+- `local_encrypted`: the default local path. It is appropriate for local
+  trusted installs and small self-hosted deployments. The same master key
+  protects both company and user-scoped values.
+- `aws_secrets_manager`: the hosted/provider-vault path. Use it when the
+  deployment already relies on AWS Secrets Manager, KMS, CloudTrail, and
+  infrastructure IAM for custody.
+- Dedicated provider vaults: optional. Use a dedicated vault only when you need
+  a separate AWS account, Region, KMS key, prefix, retention posture, or
+  import boundary for user-owned values. Do not create one vault per user by
+  default; prefer one vault per environment or compliance boundary.
+
+A user-secret definition can carry provider and vault defaults. A user's value
+may also carry provider/vault metadata when the implementation path supports
+overrides. In both cases, provider vault config contains non-secret routing
+metadata only. Provider credentials still come from deployment infrastructure
+identity, not from Paperclip secrets.
+
+### External Reference Naming
+
+External vault references are secret-adjacent metadata. Treat paths, ARNs,
+versions, aliases, and tags as operationally sensitive even though they are not
+plaintext secret values.
+
+Recommended external ref shape for operator-owned AWS paths:
+
+```text
+paperclip-ext/{environment}/{company-id}/user-secrets/{definition-key}/{opaque-owner-id}
+```
+
+Guidance:
+
+- Use the user-secret definition key for the credential type, such as
+  `github_api_token`.
+- Use an opaque stable user id or one-way mapped subject id for the owner
+  segment. Avoid emails, personal names, customer names, OAuth scopes, or
+  ticket identifiers in provider paths.
+- Keep provider metadata value-free. Safe metadata examples are provider id,
+  vault id, Region, KMS key id or alias, tag counts, and fingerprint hashes.
+  Do not store raw AWS descriptions, full tag maps, token scopes, provider
+  error bodies, or anything copied from the secret value.
+- Keep Paperclip-managed AWS values under the Paperclip managed namespace.
+  External refs under that namespace are blocked by guardrails; use the
+  Paperclip-managed flow when Paperclip should create and rotate the value.
+
+### IAM Caveats
+
+Paperclip enforces company scoping, responsible-user derivation, declaration
+policy, current-user value APIs, redaction, and access-event metadata. It does
+not replace the IAM policy of an external vault.
+
+For AWS Secrets Manager, the Paperclip runtime role needs `GetSecretValue` and
+any required KMS decrypt permission for every user-scoped value it may resolve.
+If you link user-specific external refs outside the Paperclip managed prefix,
+scope those permissions to the approved external prefixes and KMS keys. AWS
+tag/name filters help operators search, but they are not a reliable permission
+boundary for resolution.
+
+If stronger provider-side isolation is required, split user-secret workloads by
+provider vault, AWS account, Region, prefix, or runtime role before linking the
+refs. Paperclip can prevent an agent from choosing another credential owner,
+but a runtime role with broad external vault read permissions can still read
+what IAM allows if another code path is introduced outside Paperclip.
+
 ## Default Provider: `local_encrypted`
 
 Secrets are encrypted with a local master key stored at:
@@ -319,13 +427,18 @@ Each provider family has a different backup story:
 - `local_encrypted`: back up the local master key file and the Paperclip
   database together. Either alone is not enough to restore the encrypted
   values, and the vault row only records the path and acknowledgement, not the
-  key bytes.
+  key bytes. This includes user-scoped values: the database holds
+  `user_secret_definitions`, `user_secret_declarations`,
+  `company_secrets.scope = "user"` rows, version metadata, and owner ids; the
+  key file is required to decrypt their local material.
 - `aws_secrets_manager`: back up Paperclip's database for vault metadata
   (vault id, region, prefix, KMS key id, default flag, bindings, version
-  pointers). The actual secret values live in AWS Secrets Manager under the
-  configured prefix; restore by pointing the same Paperclip company at the
-  same AWS namespace and confirming the runtime role still has
-  `GetSecretValue` plus KMS decrypt. The full restore checklist lives in
+  pointers, user-secret definitions/declarations, owner ids, and access-event
+  metadata). The actual secret values live in AWS Secrets Manager under the
+  configured prefix or operator-owned external refs; restore by pointing the
+  same Paperclip company at the same AWS namespace and confirming the runtime
+  role still has `GetSecretValue` plus KMS decrypt for both managed and linked
+  user-scoped values. The full restore checklist lives in
   `doc/SECRETS-AWS-PROVIDER.md`.
 - `gcp_secret_manager` and `vault`: while these are coming soon, only the
   draft vault config exists in Paperclip. Database backups capture it. There

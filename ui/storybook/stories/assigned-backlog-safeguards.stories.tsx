@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import type { ReactNode } from "react";
-import { CircleDot, Flag, MoreHorizontal, Paperclip } from "lucide-react";
+import { CircleDot, Flag, MoreHorizontal, PaperclipIcon } from "lucide-react";
 import type { IssueRelationIssueSummary } from "@paperclipai/shared";
 import { IssueAssignedBacklogNotice } from "@/components/IssueAssignedBacklogNotice";
 import { IssueBlockedNotice } from "@/components/IssueBlockedNotice";
@@ -56,7 +56,7 @@ function CreationFormPanel() {
             High
           </span>
           <span className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground">
-            <Paperclip className="h-3 w-3" />
+            <PaperclipIcon className="h-3 w-3" />
             Upload
           </span>
           <span className="inline-flex items-center justify-center rounded-md border border-border p-1 text-xs text-muted-foreground">

@@ -8,6 +8,8 @@ import type {
   PluginManagedAgentResolution,
   PluginManagedRoutineResolution,
   PluginManagedSkillResolution,
+  PluginManagedMCPServerResolution,
+  McpServer,
   CompanySkill,
   Company,
   Project,
@@ -57,6 +59,15 @@ import type {
   PluginEnvironmentRealizeWorkspaceResult,
   PluginEnvironmentExecuteParams,
   PluginEnvironmentExecuteResult,
+  PluginEnvironmentStartInteractiveSetupParams,
+  PluginEnvironmentInteractiveSetupSession,
+  PluginEnvironmentGetInteractiveSetupParams,
+  PluginEnvironmentCaptureTemplateParams,
+  PluginEnvironmentCaptureTemplateResult,
+  PluginEnvironmentCancelInteractiveSetupParams,
+  PluginEnvironmentCancelInteractiveSetupResult,
+  PluginEnvironmentDeleteTemplateParams,
+  PluginEnvironmentDeleteTemplateResult,
   PluginPerformActionActorContext,
   PluginPerformActionContext,
 } from "./protocol.js";
@@ -147,7 +158,12 @@ export interface EnvironmentEventRecord {
     | "releaseLease"
     | "destroyLease"
     | "realizeWorkspace"
-    | "execute";
+    | "execute"
+    | "startInteractiveSetup"
+    | "getInteractiveSetup"
+    | "captureTemplate"
+    | "cancelInteractiveSetup"
+    | "deleteTemplate";
   driverKey: string;
   environmentId: string;
   timestamp: string;
@@ -169,6 +185,11 @@ export interface EnvironmentTestHarnessOptions extends TestHarnessOptions {
     onDestroyLease?: (params: PluginEnvironmentDestroyLeaseParams) => Promise<void>;
     onRealizeWorkspace?: (params: PluginEnvironmentRealizeWorkspaceParams) => Promise<PluginEnvironmentRealizeWorkspaceResult>;
     onExecute?: (params: PluginEnvironmentExecuteParams) => Promise<PluginEnvironmentExecuteResult>;
+    onStartInteractiveSetup?: (params: PluginEnvironmentStartInteractiveSetupParams) => Promise<PluginEnvironmentInteractiveSetupSession>;
+    onGetInteractiveSetup?: (params: PluginEnvironmentGetInteractiveSetupParams) => Promise<PluginEnvironmentInteractiveSetupSession>;
+    onCaptureTemplate?: (params: PluginEnvironmentCaptureTemplateParams) => Promise<PluginEnvironmentCaptureTemplateResult>;
+    onCancelInteractiveSetup?: (params: PluginEnvironmentCancelInteractiveSetupParams) => Promise<PluginEnvironmentCancelInteractiveSetupResult>;
+    onDeleteTemplate?: (params: PluginEnvironmentDeleteTemplateParams) => Promise<PluginEnvironmentDeleteTemplateResult>;
   };
 }
 
@@ -192,6 +213,16 @@ export interface EnvironmentTestHarness extends TestHarness {
   realizeWorkspace(params: PluginEnvironmentRealizeWorkspaceParams): Promise<PluginEnvironmentRealizeWorkspaceResult>;
   /** Invoke the environment driver's execute hook. */
   execute(params: PluginEnvironmentExecuteParams): Promise<PluginEnvironmentExecuteResult>;
+  /** Invoke the environment driver's interactive setup start hook. */
+  startInteractiveSetup(params: PluginEnvironmentStartInteractiveSetupParams): Promise<PluginEnvironmentInteractiveSetupSession>;
+  /** Invoke the environment driver's interactive setup status hook. */
+  getInteractiveSetup(params: PluginEnvironmentGetInteractiveSetupParams): Promise<PluginEnvironmentInteractiveSetupSession>;
+  /** Invoke the environment driver's template capture hook. */
+  captureTemplate(params: PluginEnvironmentCaptureTemplateParams): Promise<PluginEnvironmentCaptureTemplateResult>;
+  /** Invoke the environment driver's interactive setup cancel hook. */
+  cancelInteractiveSetup(params: PluginEnvironmentCancelInteractiveSetupParams): Promise<PluginEnvironmentCancelInteractiveSetupResult>;
+  /** Invoke the environment driver's optional template delete hook. */
+  deleteTemplate(params: PluginEnvironmentDeleteTemplateParams): Promise<PluginEnvironmentDeleteTemplateResult>;
 }
 
 // ---------------------------------------------------------------------------
@@ -1177,6 +1208,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
             parentIssueId: null,
             title: declaration.title,
             description: declaration.description ?? null,
+            responsibleUserId: null,
             assigneeAgentId,
             priority: declaration.priority ?? "medium",
             status: declaration.status ?? (assigneeAgentId ? "active" : "paused"),
@@ -1475,6 +1507,115 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         },
       },
     },
+    mcpServers: {
+      managed: {
+        async get(serverKey, companyId) {
+          requireCapability(manifest, capabilitySet, "mcp.servers.managed");
+          const declaration = manifest.mcpServers?.find((server) => server.serverKey === serverKey);
+          const missing = {
+            pluginKey: manifest.id,
+            resourceKind: "mcp_server",
+            resourceKey: serverKey,
+            companyId,
+            mcpServerId: null,
+            server: null,
+            status: "missing",
+            defaultDrift: null,
+          } satisfies PluginManagedMCPServerResolution;
+          if (!declaration) return missing;
+          const existingEntity = [...entities.values()].find((entity) =>
+            entity.entityType === "managed_resource"
+            && entity.scopeKind === "company"
+            && entity.scopeId === companyId
+            && entity.externalId === `${manifest.id}:mcp_server:${serverKey}`
+          );
+          const server = existingEntity?.data?.server as McpServer | undefined;
+          if (server && server.companyId === companyId) {
+            return {
+              ...missing,
+              mcpServerId: server.id,
+              server,
+              status: "resolved",
+            } satisfies PluginManagedMCPServerResolution;
+          }
+          return missing;
+        },
+        async reconcile(serverKey, companyId, options) {
+          const existing = await this.get(serverKey, companyId);
+          if (existing.server) return existing;
+          const declaration = manifest.mcpServers?.find((server) => server.serverKey === serverKey);
+          if (!declaration) return existing;
+          const now = new Date();
+          const server = {
+            id: randomUUID(),
+            companyId,
+            name: declaration.displayName,
+            slug: declaration.slug
+              ?? `plugin-${manifest.id.replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")}-${serverKey.replace(/[^a-z0-9._-]+/g, "-")}`,
+            description: declaration.description ?? null,
+            transport: declaration.transport,
+            command: null,
+            args: [],
+            cwd: null,
+            url: declaration.url,
+            headers: declaration.headers ?? {},
+            env: {},
+            credentialSecretRef: options?.credential ? `sealed:${randomUUID()}` : null,
+            enabled: false,
+            // Governance defaults mirror the server-side reconcile path: a fresh
+            // plugin-managed server starts pending (execution denied until allowlisted).
+            governanceStatus: "pending" as const,
+            riskLevel: "unknown" as const,
+            riskFactors: [],
+            governanceUpdatedAt: null,
+            governanceUpdatedBy: null,
+            governanceReason: null,
+            lastHealthStatus: "unknown",
+            lastHealthcheckAt: null,
+            lastDiscoveryAt: null,
+            lastError: null,
+            metadata: {
+              ...(declaration.metadata ?? {}),
+              pluginManaged: { pluginKey: manifest.id, resourceKey: serverKey },
+            },
+            createdByAgentId: null,
+            createdByUserId: null,
+            createdAt: now,
+            updatedAt: now,
+          } satisfies McpServer;
+          const nowIso = now.toISOString();
+          const record: PluginEntityRecord = {
+            id: randomUUID(),
+            entityType: "managed_resource",
+            scopeKind: "company",
+            scopeId: companyId,
+            externalId: `${manifest.id}:mcp_server:${serverKey}`,
+            title: declaration.displayName,
+            status: null,
+            data: { resourceKind: "mcp_server", resourceKey: serverKey, mcpServerId: server.id, server },
+            createdAt: nowIso,
+            updatedAt: nowIso,
+          };
+          entities.set(record.id, record);
+          return {
+            pluginKey: manifest.id,
+            resourceKind: "mcp_server",
+            resourceKey: serverKey,
+            companyId,
+            mcpServerId: server.id,
+            server,
+            status: "created",
+            defaultDrift: null,
+          } satisfies PluginManagedMCPServerResolution;
+        },
+        async reset(serverKey, companyId, options) {
+          requireCapability(manifest, capabilitySet, "mcp.servers.managed");
+          const reconciled = await this.reconcile(serverKey, companyId, options);
+          if (!reconciled.server) return reconciled;
+          return { ...reconciled, status: "reset" } satisfies PluginManagedMCPServerResolution;
+        },
+      },
+    },
     companies: {
       async list(input) {
         requireCapability(manifest, capabilitySet, "companies.read");
@@ -1545,6 +1686,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           executionLockedAt: null,
           createdByAgentId: null,
           createdByUserId: null,
+          responsibleUserId: null,
           issueNumber: null,
           identifier: null,
           originKind,
@@ -1914,6 +2056,20 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         }
         return { runId: randomUUID() };
       },
+      channelRuns: {
+        async register(agentId, companyId, _opts) {
+          requireCapability(manifest, capabilitySet, "agents.invoke");
+          const cid = requireCompanyId(companyId);
+          const agent = agents.get(agentId);
+          if (!isInCompany(agent, cid)) throw new Error(`Agent not found: ${agentId}`);
+          return { runId: randomUUID(), token: null };
+        },
+        async finalize(_runId, companyId, _opts) {
+          requireCapability(manifest, capabilitySet, "agents.invoke");
+          requireCompanyId(companyId);
+          return { finalized: true };
+        },
+      },
       managed: {
         async get(agentKey, companyId) {
           requireCapability(manifest, capabilitySet, "agents.managed");
@@ -1956,7 +2112,10 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
             spentMonthlyCents: 0,
             pauseReason: null,
             pausedAt: null,
-            permissions: { canCreateAgents: Boolean(declaration.permissions?.canCreateAgents) },
+            permissions: {
+              canCreateAgents: Boolean(declaration.permissions?.canCreateAgents),
+              canCreateSkills: declaration.permissions?.canCreateSkills !== false,
+            },
             lastHeartbeatAt: null,
             metadata: managedAgentMetadata(agentKey),
             createdAt: now,
@@ -1994,7 +2153,10 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
               spentMonthlyCents: 0,
               pauseReason: null,
               pausedAt: null,
-              permissions: { canCreateAgents: Boolean(declaration.permissions?.canCreateAgents) },
+              permissions: {
+                canCreateAgents: Boolean(declaration.permissions?.canCreateAgents),
+                canCreateSkills: declaration.permissions?.canCreateSkills !== false,
+              },
               lastHeartbeatAt: null,
               metadata: managedAgentMetadata(agentKey),
               createdAt: now,
@@ -2015,7 +2177,10 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
             adapterConfig: declaration.adapterConfig ?? {},
             runtimeConfig: declaration.runtimeConfig ?? {},
             budgetMonthlyCents: declaration.budgetMonthlyCents ?? 0,
-            permissions: { canCreateAgents: Boolean(declaration.permissions?.canCreateAgents) },
+            permissions: {
+              canCreateAgents: Boolean(declaration.permissions?.canCreateAgents),
+              canCreateSkills: declaration.permissions?.canCreateSkills !== false,
+            },
             metadata: managedAgentMetadata(agentKey, resolved.agent.metadata),
             updatedAt: new Date(),
           };
@@ -2514,6 +2679,46 @@ export function createEnvironmentTestHarness(options: EnvironmentTestHarnessOpti
     },
     async execute(params) {
       return callHook("execute", driver.onExecute, params, "onExecute");
+    },
+    async startInteractiveSetup(params) {
+      return callHook(
+        "startInteractiveSetup",
+        driver.onStartInteractiveSetup,
+        params,
+        "onStartInteractiveSetup",
+      );
+    },
+    async getInteractiveSetup(params) {
+      return callHook(
+        "getInteractiveSetup",
+        driver.onGetInteractiveSetup,
+        params,
+        "onGetInteractiveSetup",
+      );
+    },
+    async captureTemplate(params) {
+      return callHook(
+        "captureTemplate",
+        driver.onCaptureTemplate,
+        params,
+        "onCaptureTemplate",
+      );
+    },
+    async cancelInteractiveSetup(params) {
+      return callHook(
+        "cancelInteractiveSetup",
+        driver.onCancelInteractiveSetup,
+        params,
+        "onCancelInteractiveSetup",
+      );
+    },
+    async deleteTemplate(params) {
+      return callHook(
+        "deleteTemplate",
+        driver.onDeleteTemplate,
+        params,
+        "onDeleteTemplate",
+      );
     },
   };
 

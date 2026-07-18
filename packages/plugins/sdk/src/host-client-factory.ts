@@ -215,6 +215,13 @@ export interface HostServices {
     managedReset(params: WorkerToHostMethods["skills.managed.reset"][0]): Promise<WorkerToHostMethods["skills.managed.reset"][1]>;
   };
 
+  /** Provides `mcpServers.managed.*`. */
+  mcpServers: {
+    managedGet(params: WorkerToHostMethods["mcpServers.managed.get"][0]): Promise<WorkerToHostMethods["mcpServers.managed.get"][1]>;
+    managedReconcile(params: WorkerToHostMethods["mcpServers.managed.reconcile"][0]): Promise<WorkerToHostMethods["mcpServers.managed.reconcile"][1]>;
+    managedReset(params: WorkerToHostMethods["mcpServers.managed.reset"][0]): Promise<WorkerToHostMethods["mcpServers.managed.reset"][1]>;
+  };
+
   /** Provides issue read/write, relation, checkout, wakeup, summary, comment methods. */
   issues: {
     list(params: WorkerToHostMethods["issues.list"][0]): Promise<WorkerToHostMethods["issues.list"][1]>;
@@ -250,6 +257,8 @@ export interface HostServices {
     pause(params: WorkerToHostMethods["agents.pause"][0]): Promise<WorkerToHostMethods["agents.pause"][1]>;
     resume(params: WorkerToHostMethods["agents.resume"][0]): Promise<WorkerToHostMethods["agents.resume"][1]>;
     invoke(params: WorkerToHostMethods["agents.invoke"][0]): Promise<WorkerToHostMethods["agents.invoke"][1]>;
+    channelRunsRegister(params: WorkerToHostMethods["agents.channelRuns.register"][0]): Promise<WorkerToHostMethods["agents.channelRuns.register"][1]>;
+    channelRunsFinalize(params: WorkerToHostMethods["agents.channelRuns.finalize"][0]): Promise<WorkerToHostMethods["agents.channelRuns.finalize"][1]>;
     managedGet(params: WorkerToHostMethods["agents.managed.get"][0]): Promise<WorkerToHostMethods["agents.managed.get"][1]>;
     managedReconcile(params: WorkerToHostMethods["agents.managed.reconcile"][0]): Promise<WorkerToHostMethods["agents.managed.reconcile"][1]>;
     managedReset(params: WorkerToHostMethods["agents.managed.reset"][0]): Promise<WorkerToHostMethods["agents.managed.reset"][1]>;
@@ -421,6 +430,9 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
     "skills.managed.get": "skills.managed",
     "skills.managed.reconcile": "skills.managed",
     "skills.managed.reset": "skills.managed",
+    "mcpServers.managed.get": "mcp.servers.managed",
+    "mcpServers.managed.reconcile": "mcp.servers.managed",
+    "mcpServers.managed.reset": "mcp.servers.managed",
 
   // Issues
   "issues.list": "issues.read",
@@ -452,6 +464,10 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   "agents.pause": "agents.pause",
   "agents.resume": "agents.resume",
   "agents.invoke": "agents.invoke",
+  // Registering/finalizing a channel run is an invoke-class operation: it
+  // mints run-scoped agent authority. Gated under the same capability.
+  "agents.channelRuns.register": "agents.invoke",
+  "agents.channelRuns.finalize": "agents.invoke",
   "agents.managed.get": "agents.managed",
   "agents.managed.reconcile": "agents.managed",
   "agents.managed.reset": "agents.managed",
@@ -790,6 +806,17 @@ export function createHostClientHandlers(
       return services.skills.managedReset(params);
     }),
 
+    // Plugin-managed MCP servers
+    "mcpServers.managed.get": gated("mcpServers.managed.get", async (params) => {
+      return services.mcpServers.managedGet(params);
+    }),
+    "mcpServers.managed.reconcile": gated("mcpServers.managed.reconcile", async (params) => {
+      return services.mcpServers.managedReconcile(params);
+    }),
+    "mcpServers.managed.reset": gated("mcpServers.managed.reset", async (params) => {
+      return services.mcpServers.managedReset(params);
+    }),
+
     // Issues
     "issues.list": gated("issues.list", async (params) => {
       return services.issues.list(params);
@@ -869,6 +896,12 @@ export function createHostClientHandlers(
     }),
     "agents.invoke": gated("agents.invoke", async (params) => {
       return services.agents.invoke(params);
+    }),
+    "agents.channelRuns.register": gated("agents.channelRuns.register", async (params) => {
+      return services.agents.channelRunsRegister(params);
+    }),
+    "agents.channelRuns.finalize": gated("agents.channelRuns.finalize", async (params) => {
+      return services.agents.channelRunsFinalize(params);
     }),
     "agents.managed.get": gated("agents.managed.get", async (params) => {
       return services.agents.managedGet(params);

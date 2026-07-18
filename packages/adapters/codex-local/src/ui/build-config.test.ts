@@ -36,6 +36,17 @@ function makeValues(overrides: Partial<CreateConfigValues> = {}): CreateConfigVa
 }
 
 describe("buildCodexLocalConfig", () => {
+  it("omits engine for the auto default so runtime fallback remains available", () => {
+    const config = buildCodexLocalConfig(makeValues({ codexEngine: "auto" }));
+
+    expect(config).not.toHaveProperty("engine");
+  });
+
+  it("persists explicit engine pins", () => {
+    expect(buildCodexLocalConfig(makeValues({ codexEngine: "cli" }))).toMatchObject({ engine: "cli" });
+    expect(buildCodexLocalConfig(makeValues({ codexEngine: "acp" }))).toMatchObject({ engine: "acp" });
+  });
+
   it("persists the fastMode toggle into adapter config", () => {
     const config = buildCodexLocalConfig(
       makeValues({

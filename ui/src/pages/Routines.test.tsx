@@ -6,7 +6,7 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Issue, RoutineListItem } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { Routines, buildRoutineGroups, sortRoutines } from "./Routines";
+import { Routines, buildRoutineGroups, buildRoutineSections, sortRoutines } from "./Routines";
 
 let currentSearch = "";
 
@@ -253,6 +253,7 @@ function createRoutine(overrides: Partial<RoutineListItem>): RoutineListItem {
     projectId: "project-1",
     goalId: null,
     parentIssueId: null,
+    responsibleUserId: null,
     title: "Routine title",
     description: null,
     assigneeAgentId: "agent-1",
@@ -293,6 +294,7 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     priority: "medium",
     assigneeAgentId: "agent-1",
     assigneeUserId: null,
+    responsibleUserId: null,
     createdByAgentId: null,
     createdByUserId: null,
     issueNumber: 1000,
@@ -372,6 +374,28 @@ describe("Routines page", () => {
     expect(groups.map((group) => group.label)).toEqual(["Project Alpha", "Project Beta"]);
     expect(groups[0]?.items.map((item) => item.title)).toEqual(["Morning sync"]);
     expect(groups[1]?.items.map((item) => item.title)).toEqual(["Weekly digest"]);
+  });
+
+  it("keeps built-in routines in their own section after configured groups", () => {
+    const groups = buildRoutineSections(
+      [
+        createRoutine({
+          id: "routine-1",
+          title: "Reflection review",
+          projectId: "project-1",
+          originKind: "built_in_agent_bundle",
+          originId: "reflection-coach:recent-agent-reflection",
+        }),
+        createRoutine({ id: "routine-2", title: "Morning sync", projectId: "project-1" }),
+      ],
+      "project",
+      new Map([["project-1", { name: "Project Alpha" }]]),
+      new Map([["agent-1", { name: "Agent One" }]]),
+    );
+
+    expect(groups.map((group) => group.label)).toEqual(["Project Alpha", "Built-in routines"]);
+    expect(groups[0]?.items.map((item) => item.title)).toEqual(["Morning sync"]);
+    expect(groups[1]?.items.map((item) => item.title)).toEqual(["Reflection review"]);
   });
 
   it("sorts routines by selected field and direction without mutating the source list", () => {
@@ -500,6 +524,55 @@ describe("Routines page", () => {
     expect(text.indexOf("Morning sync")).toBeLessThan(text.indexOf("Weekly digest"));
     expect(text.indexOf("Project Alpha")).toBeLessThan(text.indexOf("Morning sync"));
     expect(text.indexOf("Weekly digest")).toBeLessThan(text.indexOf("Project Beta"));
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("renders built-in routines in a dedicated section on the routines tab", async () => {
+    routinesListMock.mockResolvedValue([
+      createRoutine({
+        id: "routine-1",
+        title: "Morning sync",
+        projectId: "project-1",
+      }),
+      createRoutine({
+        id: "routine-2",
+        title: "Reflection review",
+        projectId: null,
+        originKind: "built_in_agent_bundle",
+        originId: "reflection-coach:recent-agent-reflection",
+      }),
+    ]);
+    issuesListMock.mockResolvedValue([]);
+
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+      },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Routines />
+        </QueryClientProvider>,
+      );
+      await flush();
+    });
+
+    for (let attempts = 0; attempts < 5 && !container.textContent?.includes("Built-in routines"); attempts += 1) {
+      await act(async () => {
+        await flush();
+      });
+    }
+
+    const text = container.textContent ?? "";
+    expect(text.indexOf("Project Alpha")).toBeLessThan(text.indexOf("Morning sync"));
+    expect(text.indexOf("Morning sync")).toBeLessThan(text.indexOf("Built-in routines"));
+    expect(text.indexOf("Built-in routines")).toBeLessThan(text.indexOf("Reflection review"));
 
     await act(async () => {
       root.unmount();

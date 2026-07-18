@@ -155,6 +155,7 @@ export function boardChatRoutes(
 
     const issueSvc = issueService(db);
     let issueId = taskId;
+    const actor = getActorInfo(req);
 
     // Find or create the standing "Board Operations" issue that anchors the
     // board conversation + decision log.
@@ -178,6 +179,9 @@ export function boardChatRoutes(
           // assignee.
           status: "todo",
           priority: "medium",
+          createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+          responsibleUserId: actor.actorType === "user" ? actor.actorId : null,
+          trustExplicitResponsibleUserId: actor.actorType === "user",
         });
         issueId = created.id;
       }
@@ -188,7 +192,6 @@ export function boardChatRoutes(
     // Persist the user's message. Use the authenticated board/user actor so
     // attribution and author-type checks pass; "board" (the local fallback)
     // is distinct from the "board-concierge" sentinel used for replies.
-    const actor = getActorInfo(req);
     await issueSvc.addComment(resolvedIssueId, message, {
       agentId: actor.agentId ?? undefined,
       userId: actor.agentId ? undefined : actor.actorId,

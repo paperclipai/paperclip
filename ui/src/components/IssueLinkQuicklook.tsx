@@ -64,6 +64,18 @@ function useIsQuicklookOpen(id: symbol) {
  *  as the pointer crosses cards on its way somewhere else. */
 const QUICKLOOK_OPEN_DELAY_MS = 120;
 
+export type IssueQuicklookIssue = Pick<Issue, "id" | "title" | "updatedAt"> & {
+  identifier?: string | null;
+  status: string;
+  priority: string;
+  description?: string | null;
+  blockerAttention?: Issue["blockerAttention"];
+  projectId?: string | null;
+  project?: { name?: string | null } | null;
+  originKind?: string;
+  originId?: string | null;
+};
+
 function summarizeIssueDescription(description: string | null | undefined) {
   if (!description) return null;
   const summary = description
@@ -83,7 +95,7 @@ export function IssueQuicklookCard({
   linkState,
   compact = false,
 }: {
-  issue: Issue;
+  issue: IssueQuicklookIssue;
   linkTo: RouterDom.To;
   linkState?: unknown;
   compact?: boolean;

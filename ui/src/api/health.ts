@@ -1,3 +1,5 @@
+import type { ServerInfoSnapshot } from "@paperclipai/shared";
+
 export type DevServerHealthStatus = {
   enabled: true;
   restartRequired: boolean;
@@ -22,7 +24,9 @@ export type HealthStatus = {
   bootstrapInviteActive?: boolean;
   features?: {
     companyDeletionEnabled?: boolean;
+    mcpClientEnabled?: boolean;
   };
+  serverInfo?: ServerInfoSnapshot;
   devServer?: DevServerHealthStatus;
 };
 

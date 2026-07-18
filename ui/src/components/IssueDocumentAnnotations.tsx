@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Profiler, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { Agent, DocumentAnnotationThreadWithComments, IssueDocument } from "@paperclipai/shared";
 import { MessageSquare } from "lucide-react";
@@ -7,6 +7,11 @@ import { cn } from "@/lib/utils";
 import { documentAnnotationsApi, type DocumentAnnotationTarget } from "@/api/document-annotations";
 import { queryKeys } from "@/lib/queryKeys";
 import { parseDocumentAnnotationHash } from "@/lib/document-annotation-hash";
+import {
+  initializeSelectionDebug,
+  isSelectionDebugEnabled,
+  recordAnnotationCommit,
+} from "@/lib/document-annotation-debug";
 import { DocumentAnnotationLayer, type PendingAnchor } from "./DocumentAnnotationLayer";
 import { DocumentAnnotationPanel } from "./DocumentAnnotationPanel";
 import type { CompanyUserProfile } from "@/lib/company-members";
@@ -41,6 +46,12 @@ export interface IssueDocumentAnnotationsProps {
   userProfileMap?: ReadonlyMap<string, CompanyUserProfile>;
   /** Seed which thread is focused on mount. Used by Storybook/screenshot harness. */
   defaultFocusedThreadId?: string;
+  /**
+   * Seed the composer with a pending anchor and open the panel once. Used when
+   * a host captures a selection before the annotated document wrapper exists.
+   */
+  initialComposerAnchor?: PendingAnchor | null;
+  onInitialComposerAnchorConsumed?: () => void;
 }
 
 export function IssueDocumentAnnotations({
@@ -58,7 +69,11 @@ export function IssueDocumentAnnotations({
   agentMap,
   userProfileMap,
   defaultFocusedThreadId,
+  initialComposerAnchor,
+  onInitialComposerAnchorConsumed,
 }: IssueDocumentAnnotationsProps) {
+  const selectionDebugEnabled = isSelectionDebugEnabled();
+  if (selectionDebugEnabled) initializeSelectionDebug();
   const containerRef = useRef<HTMLElement | null>(null);
   const [focusedThreadId, setFocusedThreadId] = useState<string | null>(defaultFocusedThreadId ?? null);
   const [focusedCommentId, setFocusedCommentId] = useState<string | null>(null);
@@ -74,6 +89,7 @@ export function IssueDocumentAnnotations({
   const hashHandledRef = useRef<string | null>(null);
   // Bus token to ask the body layer to capture the current selection into a pendingAnchor.
   const [captureSelectionRequestId, setCaptureSelectionRequestId] = useState(0);
+  const consumedInitialAnchorRef = useRef<PendingAnchor | null>(null);
 
   useEffect(() => {
     if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
@@ -158,6 +174,8 @@ export function IssueDocumentAnnotations({
   const annotationsQuery = useQuery({
     queryKey: target?.kind === "routine"
       ? queryKeys.routines.documentAnnotations(target.routineId, target.documentKey, "all")
+      : target?.kind === "case"
+        ? queryKeys.cases.documentAnnotations(target.caseId, target.documentKey, "all")
       : queryKeys.issues.documentAnnotations(issueId, doc.key, "all"),
     queryFn: () => target
       ? documentAnnotationsApi.listForTarget(target, { status: "all", includeComments: true })
@@ -205,6 +223,16 @@ export function IssueDocumentAnnotations({
     setComposerAnchor(anchor);
     onPanelOpenChange(true);
   }, [newCommentDisabled, onPanelOpenChange]);
+
+  useEffect(() => {
+    if (!initialComposerAnchor) return;
+    if (consumedInitialAnchorRef.current === initialComposerAnchor) return;
+    if (newCommentDisabled) return;
+    consumedInitialAnchorRef.current = initialComposerAnchor;
+    setComposerAnchor(initialComposerAnchor);
+    onPanelOpenChange(true);
+    onInitialComposerAnchorConsumed?.();
+  }, [initialComposerAnchor, newCommentDisabled, onInitialComposerAnchorConsumed, onPanelOpenChange]);
 
   const handleThreadFocus = useCallback((threadId: string | null) => {
     setFocusedThreadId(threadId);
@@ -316,7 +344,7 @@ export function IssueDocumentAnnotations({
     />
   ) : null;
 
-  return (
+  const content = (
     <div className="paperclip-doc-annotation-host relative">
       <section
         ref={(element) => {
@@ -325,7 +353,7 @@ export function IssueDocumentAnnotations({
         className="relative min-w-0"
         data-testid={`document-annotation-body-${doc.key}`}
       >
-        <div className="relative z-[1]">
+        <div className="relative z-(--z-1)">
           {children}
         </div>
         {!historicalPreview && doc.latestRevisionId ? (
@@ -349,7 +377,7 @@ export function IssueDocumentAnnotations({
       {panelOpen && !isMobile && renderedDesktopPanelFrame ? (
         <div
           data-testid="document-annotation-panel-anchor"
-          className="pointer-events-auto fixed z-[60] hidden lg:block"
+          className="pointer-events-auto fixed z-(--z-60) hidden lg:block"
           style={{
             left: renderedDesktopPanelFrame.left,
             maxHeight: renderedDesktopPanelFrame.maxHeight,
@@ -363,6 +391,12 @@ export function IssueDocumentAnnotations({
       {panelOpen && isMobile ? annotationPanel : null}
     </div>
   );
+
+  return selectionDebugEnabled ? (
+    <Profiler id="IssueDocumentAnnotations" onRender={recordAnnotationCommit}>
+      {content}
+    </Profiler>
+  ) : content;
 }
 
 export interface DocumentAnnotationsCountChipProps {
@@ -387,6 +421,8 @@ export function DocumentAnnotationsCountChip({
   const annotationsQuery = useQuery({
     queryKey: target?.kind === "routine"
       ? queryKeys.routines.documentAnnotations(target.routineId, target.documentKey, "all")
+      : target?.kind === "case"
+        ? queryKeys.cases.documentAnnotations(target.caseId, target.documentKey, "all")
       : queryKeys.issues.documentAnnotations(issueId, docKey, "all"),
     queryFn: () => target
       ? documentAnnotationsApi.listForTarget(target, { status: "all", includeComments: true })
@@ -406,7 +442,7 @@ export function DocumentAnnotationsCountChip({
       variant="ghost"
       data-state={panelOpen ? "open" : "closed"}
       className={cn(
-        "h-auto gap-1 rounded-md px-1.5 py-0 text-[11px] font-normal text-muted-foreground hover:text-foreground",
+        "h-auto gap-1 rounded-md px-1.5 py-0 text-(length:--text-micro) font-normal text-muted-foreground hover:text-foreground",
         panelOpen && "bg-muted text-foreground",
         openCount > 0 && "text-foreground",
       )}

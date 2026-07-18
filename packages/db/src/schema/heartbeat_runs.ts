@@ -12,6 +12,7 @@ export const heartbeatRuns = pgTable(
     invocationSource: text("invocation_source").notNull().default("on_demand"),
     triggerDetail: text("trigger_detail"),
     status: text("status").notNull().default("queued"),
+    responsibleUserId: text("responsible_user_id"),
     startedAt: timestamp("started_at", { withTimezone: true }),
     finishedAt: timestamp("finished_at", { withTimezone: true }),
     error: text("error"),
@@ -54,6 +55,9 @@ export const heartbeatRuns = pgTable(
     lastUsefulActionAt: timestamp("last_useful_action_at", { withTimezone: true }),
     nextAction: text("next_action"),
     contextSnapshot: jsonb("context_snapshot").$type<Record<string, unknown>>(),
+    // Per-run auth context for BYOK / per-org identity resolution (NEO-28 identity-auth
+    // framework; NEO-259). Nullable reserve column — populated by per-org auth wiring.
+    authContext: jsonb("auth_context").$type<Record<string, unknown>>(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -62,6 +66,11 @@ export const heartbeatRuns = pgTable(
       table.companyId,
       table.agentId,
       table.startedAt,
+    ),
+    companyResponsibleUserIdx: index("heartbeat_runs_company_responsible_user_idx").on(
+      table.companyId,
+      table.responsibleUserId,
+      table.createdAt,
     ),
     companyLivenessIdx: index("heartbeat_runs_company_liveness_idx").on(
       table.companyId,
@@ -77,6 +86,10 @@ export const heartbeatRuns = pgTable(
       table.companyId,
       table.status,
       table.processStartedAt,
+    ),
+    companyCreatedAtDescIdx: index("heartbeat_runs_company_created_at_desc_idx").on(
+      table.companyId,
+      table.createdAt.desc(),
     ),
   }),
 );

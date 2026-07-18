@@ -346,3 +346,75 @@ export async function reconcileManagedCodexHome(
     !apiKey && hadUsableAuth ? "already_seeded" : "seeded";
   return { status, home: resolved };
 }
+
+export type CodexCredentialAuthMode = "api" | "subscription";
+
+export interface CodexCredentialReadinessInput {
+  env?: NodeJS.ProcessEnv;
+  companyId: string | undefined;
+  /** `config.env.CODEX_HOME` for the run, if any. */
+  configuredCodexHome: string | null | undefined;
+  /** Resolved `config.env.OPENAI_API_KEY` value (after secret resolution). */
+  configuredApiKey: string | null | undefined;
+}
+
+export interface CodexCredentialReadiness {
+  /** True when Paperclip owns the effective home and is responsible for its auth. */
+  managed: boolean;
+  authMode: CodexCredentialAuthMode;
+  /** True when a run launched now would be able to authenticate. */
+  ready: boolean;
+  effectiveHome: string;
+  /** The shared source home subscription auth is symlinked from (managed homes only). */
+  sharedSourceHome: string;
+}
+
+/**
+ * Read-only predictor for whether a `codex_local` run will be able to
+ * authenticate, without seeding or mutating any home. Mirrors the execute-time
+ * fail-fast in `execute.ts`, factored out so the control plane can run the same
+ * check *before* dispatch and surface a configuration-incomplete blocker instead
+ * of dispatching a run that is guaranteed to fail with "no Codex credentials".
+ *
+ * - An external/user-supplied `CODEX_HOME` override manages its own auth, so it
+ *   is always treated as ready (Paperclip must not seed or inspect it).
+ * - A non-empty resolved `OPENAI_API_KEY` means API-key auth, always ready.
+ * - Otherwise (subscription mode) the run needs a usable `auth.json`. Because a
+ *   managed home symlinks `auth.json` from the shared source home at seed time,
+ *   we treat the run as ready when either the (possibly already-seeded) effective
+ *   home or the shared source home carries usable auth.
+ */
+export async function evaluateCodexCredentialReadiness(
+  input: CodexCredentialReadinessInput,
+): Promise<CodexCredentialReadiness> {
+  const env = input.env ?? process.env;
+  const configuredRaw = nonEmpty(input.configuredCodexHome ?? undefined);
+  const configuredCodexHome = configuredRaw ? path.resolve(configuredRaw) : null;
+  const configuredApiKey = nonEmpty(input.configuredApiKey ?? undefined);
+  const sharedSourceHome = resolveSharedCodexHomeDir(env);
+
+  const configuredHomeIsManaged =
+    configuredCodexHome != null && isManagedCodexHomePath(env, input.companyId, configuredCodexHome);
+  const effectiveHomeIsManaged = configuredCodexHome == null || configuredHomeIsManaged;
+  const effectiveHome = configuredCodexHome ?? resolveManagedCodexHomeDir(env, input.companyId);
+
+  if (!effectiveHomeIsManaged) {
+    // Genuine external override: Paperclip never seeds or inspects it.
+    return {
+      managed: false,
+      authMode: configuredApiKey ? "api" : "subscription",
+      ready: true,
+      effectiveHome,
+      sharedSourceHome,
+    };
+  }
+
+  if (configuredApiKey) {
+    return { managed: true, authMode: "api", ready: true, effectiveHome, sharedSourceHome };
+  }
+
+  const ready =
+    (await codexHomeHasUsableAuth(effectiveHome)) ||
+    (await codexHomeHasUsableAuth(sharedSourceHome));
+  return { managed: true, authMode: "subscription", ready, effectiveHome, sharedSourceHome };
+}

@@ -365,6 +365,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         installCommand: SANDBOX_INSTALL_COMMAND,
         detectCommand: command,
         onProgress: (line) => onLog("stdout", line),
+        onRuntimeProgress: ctx.onRuntimeProgress,
         assets: [{
           key: "skills",
           localDir: localSkillsDir,
@@ -636,6 +637,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       graceSec,
       stdin: prompt,
       onSpawn,
+      onRuntimeProgress: ctx.onRuntimeProgress,
       onLog: async (stream, chunk) => {
         if (stream !== "stdout") {
           await onLog(stream, chunk);
@@ -643,6 +645,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         }
         await flushStdoutChunk(chunk);
       },
+      runLogTail: paperclipBridge?.runLogTail,
     });
     await flushStdoutChunk("", true);
 

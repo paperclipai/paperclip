@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import { config as loadDotenv } from "dotenv";
 import { resolvePaperclipEnvPath } from "./paths.js";
 import { maybeRepairLegacyWorktreeConfigAndEnvFiles } from "./worktree-config.js";
+import { isMcpClientEnabled } from "./mcp-client-flag.js";
 import {
   AUTH_BASE_URL_MODES,
   BIND_MODES,
@@ -79,6 +80,7 @@ export interface Config {
   databaseBackupDir: string;
   serveUi: boolean;
   uiDevMiddleware: boolean;
+  localPluginDir: string | undefined;
   secretsProvider: SecretProvider;
   secretsStrictMode: boolean;
   secretsMasterKeyFilePath: string;
@@ -95,6 +97,13 @@ export interface Config {
   heartbeatSchedulerIntervalMs: number;
   companyDeletionEnabled: boolean;
   telemetryEnabled: boolean;
+  /**
+   * PAPERCLIP_MCP_CLIENT_ENABLED (legacy alias: CORTEX_MCP_CLIENT_ENABLED),
+   * off by default (NEO-286 D2-5). Mounts the MCP registry + agent tool
+   * routes; per-tenant exposure is additionally gated by
+   * `companies.mcp_client_enabled`.
+   */
+  mcpClientEnabled: boolean;
 }
 
 function detectTailnetBindHost(): string | undefined {
@@ -351,6 +360,12 @@ export function loadConfig(): Config {
         ? process.env.SERVE_UI === "true"
         : fileConfig?.server.serveUi ?? true,
     uiDevMiddleware: process.env.PAPERCLIP_UI_DEV_MIDDLEWARE === "true",
+    // Override the homedir-derived default plugin dir (~/.paperclip/plugins). This is
+    // load-bearing for running a second instance (e.g. cortex-beta) on the same host as
+    // live: without it both resolve the same plugin dir off os.homedir() and share plugins.
+    localPluginDir: process.env.PAPERCLIP_LOCAL_PLUGIN_DIR?.trim()
+      ? resolveHomeAwarePath(process.env.PAPERCLIP_LOCAL_PLUGIN_DIR.trim())
+      : undefined,
     secretsProvider,
     secretsStrictMode,
     secretsMasterKeyFilePath:
@@ -372,5 +387,6 @@ export function loadConfig(): Config {
     heartbeatSchedulerIntervalMs: Math.max(10000, Number(process.env.HEARTBEAT_SCHEDULER_INTERVAL_MS) || 30000),
     companyDeletionEnabled,
     telemetryEnabled: fileConfig?.telemetry?.enabled ?? true,
+    mcpClientEnabled: isMcpClientEnabled(),
   };
 }

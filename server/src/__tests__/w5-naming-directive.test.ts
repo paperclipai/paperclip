@@ -20,10 +20,10 @@ const D6_DIRECTIVE =
   'This product is called Cortex. Never refer to it as "Paperclip" in user-facing output.';
 
 // The two prompts appended as system prompts at runtime:
-//  - board-chat: skills/paperclip-board/SKILL.md (loadBoardSkill -> --append-system-prompt)
+//  - board-chat: skills/cortex-board/SKILL.md (loadBoardSkill -> --append-system-prompt)
 //  - agent base: server/src/onboarding-assets/default/AGENTS.md
 const AGENT_BASE_PROMPT = "server/src/onboarding-assets/default/AGENTS.md";
-const BOARD_SYSTEM_PROMPT = "skills/paperclip-board/SKILL.md";
+const BOARD_SYSTEM_PROMPT = "skills/cortex-board/SKILL.md";
 
 function read(rel: string): string {
   return readFileSync(resolve(REPO_ROOT, rel), "utf8");

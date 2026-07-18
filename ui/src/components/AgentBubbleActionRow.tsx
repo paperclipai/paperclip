@@ -109,7 +109,7 @@ export function AgentBubbleActionRow({
           <TooltipTrigger asChild>
             <a
               href={anchorHref}
-              className="text-[11px] text-muted-foreground hover:text-foreground hover:underline"
+              className="text-(length:--text-micro) text-muted-foreground hover:text-foreground hover:underline"
             >
               {dateLabel}
             </a>

@@ -58,6 +58,9 @@ jobs:
       - name: Test general-server shard partition
         run: node --test ./scripts/__tests__/run-vitest-stable-shard.test.mjs
 
+      - name: Test release verify workflow wiring
+        run: node --test ./scripts/__tests__/release-verify-workflow.test.mjs
+
       - name: Test standalone package build concurrency
         run: node --test ./scripts/__tests__/build-standalone-concurrency.test.mjs
 
@@ -166,6 +169,9 @@ jobs:
 
       - name: Verify release registry test coverage
         run: pnpm run test:release-registry
+
+      - name: Check MCP tool schemas vs REST validators
+        run: pnpm run check:mcp-schema-drift
 
   general_tests:
     name: General tests (${{ matrix.group_label }})

@@ -136,6 +136,7 @@ describeEmbeddedPostgres("plugin-managed routines", () => {
       id: companyId,
       name: "Paperclip",
       issuePrefix: issuePrefix(companyId),
+      defaultResponsibleUserId: "responsible-user",
     });
     await db.insert(plugins).values({
       id: pluginId,

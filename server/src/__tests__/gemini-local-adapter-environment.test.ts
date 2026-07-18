@@ -55,6 +55,7 @@ describe("gemini_local environment diagnostics", () => {
       companyId: "company-1",
       adapterType: "gemini_local",
       config: {
+        engine: "cli",
         command: process.execPath,
         cwd,
       },
@@ -82,6 +83,7 @@ describe("gemini_local environment diagnostics", () => {
       companyId: "company-1",
       adapterType: "gemini_local",
       config: {
+        engine: "cli",
         command: "gemini",
         cwd,
         model: "gemini-2.5-pro",
@@ -118,6 +120,7 @@ describe("gemini_local environment diagnostics", () => {
       companyId: "company-1",
       adapterType: "gemini_local",
       config: {
+        engine: "cli",
         command: "gemini",
         cwd,
         env: {
@@ -139,6 +142,7 @@ describe("gemini_local environment diagnostics", () => {
       companyId: "company-1",
       adapterType: "gemini_local",
       config: {
+        engine: "cli",
         command: "gemini",
       },
       executionTarget: {

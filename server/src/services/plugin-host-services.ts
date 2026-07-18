@@ -48,6 +48,8 @@ import { pluginDatabaseService } from "./plugin-database.js";
 import { pluginManagedAgentService } from "./plugin-managed-agents.js";
 import { pluginManagedRoutineService } from "./plugin-managed-routines.js";
 import { pluginManagedSkillService } from "./plugin-managed-skills.js";
+import { pluginManagedMcpServerService } from "./plugin-managed-mcp-servers.js";
+import { isMcpClientEnabled } from "../mcp-client-flag.js";
 import {
   assertConfiguredLocalFolder,
   assertWritableConfiguredLocalFolder,
@@ -563,6 +565,18 @@ export function buildHostServices(
     pluginKey,
     manifest: options.manifest,
   });
+  const managedMcpServers = pluginManagedMcpServerService(db, {
+    pluginId,
+    pluginKey,
+    manifest: options.manifest,
+  });
+  const ensureMcpClientEnabled = () => {
+    if (!isMcpClientEnabled()) {
+      throw new Error(
+        "Plugin-managed MCP servers require PAPERCLIP_MCP_CLIENT_ENABLED=true on this host",
+      );
+    }
+  };
   const heartbeat = heartbeatService(db, {
     pluginWorkerManager: options.pluginWorkerManager,
   });
@@ -1328,7 +1342,7 @@ export function buildHostServices(
         }
         const telemetryClient = getTelemetryClient();
         if (!telemetryClient) return;
-        telemetryClient.track(`plugin.${pluginKey}.${eventName}`, params.dimensions);
+        telemetryClient.trackDynamic(`plugin.${pluginKey}.${eventName}`, params.dimensions);
       },
     },
 
@@ -1562,6 +1576,31 @@ export function buildHostServices(
       },
     },
 
+    mcpServers: {
+      async managedGet(params) {
+        ensureMcpClientEnabled();
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return managedMcpServers.get(params.serverKey, companyId);
+      },
+      async managedReconcile(params) {
+        ensureMcpClientEnabled();
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return managedMcpServers.reconcile(params.serverKey, companyId, {
+          credential: params.credential,
+        });
+      },
+      async managedReset(params) {
+        ensureMcpClientEnabled();
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return managedMcpServers.reset(params.serverKey, companyId, {
+          credential: params.credential,
+        });
+      },
+    },
+
     issues: {
       async list(params) {
         const companyId = ensureCompanyId(params.companyId);
@@ -1591,6 +1630,8 @@ export function buildHostServices(
           originRunId: params.originRunId ?? actorRunId ?? null,
           createdByAgentId: actorAgentId ?? null,
           createdByUserId: actorUserId ?? null,
+          actorResponsibleUserId: actorUserId ?? null,
+          trustExplicitResponsibleUserId: true,
         })) as Issue;
         await logPluginActivity({
           companyId,
@@ -2192,6 +2233,32 @@ export function buildHostServices(
         if (!run) throw new Error("Agent wakeup was skipped by heartbeat policy");
         return { runId: run.id };
       },
+      // NEO-447: first-class runs for channel-dispatched turns. The requester
+      // snapshot is persisted onto the trusted run row HERE (host-side, at
+      // dispatch time) — the spawned agent can never self-assert it. Returns
+      // a run-scoped agent JWT for the harness.
+      async channelRunsRegister(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const agent = await agents.getById(params.agentId);
+        requireInCompany("Agent", agent, companyId);
+        return heartbeat.registerChannelRun({
+          agentId: params.agentId,
+          companyId,
+          requester: params.requester ?? null,
+          reason: params.reason ?? null,
+        });
+      },
+      async channelRunsFinalize(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return heartbeat.finalizeChannelRun({
+          runId: params.runId,
+          companyId,
+          status: params.status,
+          error: params.error ?? null,
+        });
+      },
       async managedGet(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
@@ -2676,7 +2743,7 @@ export function buildHostServices(
         // Track the subscription so it can be cleaned up on dispose() if the run
         // never reaches a terminal status (hang, crash, network partition).
         if (notifyWorker) {
-          const TERMINAL_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out"]);
+          const TERMINAL_STATUSES = new Set(["succeeded", "interrupted", "failed", "cancelled", "timed_out"]);
 
           const cleanup = () => {
             unsubscribe();

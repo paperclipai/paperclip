@@ -71,7 +71,7 @@ const REQUIRED_METADATA: SystemNoticeMetadataSection[] = [
       },
       {
         kind: "agent",
-        label: "Assignee",
+        label: "Responsible",
         name: "CodexCoder",
         href: "/PAP/agents/codexcoder",
       },

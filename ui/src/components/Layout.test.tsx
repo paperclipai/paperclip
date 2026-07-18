@@ -485,6 +485,44 @@ describe("Layout", () => {
     });
   });
 
+  it("forces the app sidebar rail only for the Skills Store route", async () => {
+    async function renderAt(pathname: string) {
+      currentPathname = pathname;
+      const root = createRoot(container);
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false } },
+      });
+
+      await act(async () => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <Layout />
+          </QueryClientProvider>,
+        );
+      });
+      await flushReact();
+      await flushReact();
+      return root;
+    }
+
+    let root = await renderAt("/PAP/skills/studio");
+    expect(mockSetForceCollapsed).toHaveBeenCalledWith(true);
+    await act(async () => {
+      root.unmount();
+    });
+
+    mockSetForceCollapsed.mockClear();
+    container.innerHTML = "";
+
+    root = await renderAt("/PAP/agents/briefing-analyst/skills");
+    expect(mockSetForceCollapsed).not.toHaveBeenCalledWith(true);
+    expect(mockSetForceCollapsed).toHaveBeenCalledWith(false);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it("renders a route-scoped plugin sidebar for a matching plugin page route", async () => {
     currentPathname = "/PAP/wiki";
     mockPluginSlots.slots = [

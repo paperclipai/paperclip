@@ -27,6 +27,11 @@ const baseManifest: PaperclipPluginManifestV1 = {
     {
       driverKey: "fake-plugin",
       displayName: "Fake plugin",
+      supportsInteractiveSetup: true,
+      interactiveSetupConnectionTypes: ["ssh"],
+      supportsTemplateCapture: true,
+      templateRefKind: "snapshot",
+      supportsTemplateDelete: true,
       configSchema: {
         type: "object",
         properties: {
@@ -69,6 +74,9 @@ describe("plugin environment driver seam", () => {
     expect(validator.getRequiredCapabilities("environment.acquireLease")).toEqual([
       "environment.drivers.register",
     ]);
+    expect(validator.getRequiredCapabilities("environment.captureTemplate")).toEqual([
+      "environment.drivers.register",
+    ]);
     expect(validator.checkOperation(baseManifest, "environment.execute").allowed).toBe(true);
 
     const withoutCapability = {
@@ -93,6 +101,20 @@ describe("plugin environment driver seam", () => {
         return {
           ok: true,
           summary: `probed ${params.driverKey}`,
+          metadata: { environmentId: params.environmentId },
+        };
+      },
+      async onEnvironmentStartInteractiveSetup(params) {
+        return {
+          providerLeaseId: `setup-${params.sessionId}`,
+          status: "waiting_for_user",
+          connectionSummary: {
+            type: "ssh",
+            username: "sandbox",
+            hostRedacted: true,
+            portRedacted: true,
+          },
+          connectionPayload: null,
           metadata: { environmentId: params.environmentId },
         };
       },
@@ -121,6 +143,7 @@ describe("plugin environment driver seam", () => {
     expect(isJsonRpcSuccessResponse(initializeResponse)).toBe(true);
     if (!isJsonRpcSuccessResponse(initializeResponse)) return;
     expect(initializeResponse.result.supportedMethods).toContain("environmentProbe");
+    expect(initializeResponse.result.supportedMethods).toContain("environmentStartInteractiveSetup");
 
     stdin.write(serializeMessage(createRequest("environmentProbe", {
       driverKey: "fake-plugin",
@@ -139,6 +162,28 @@ describe("plugin environment driver seam", () => {
       metadata: { environmentId: "environment-1" },
     });
 
+    stdin.write(serializeMessage(createRequest("environmentStartInteractiveSetup", {
+      driverKey: "fake-plugin",
+      companyId: "company-1",
+      environmentId: "environment-1",
+      sessionId: "session-1",
+      config: { template: "base" },
+    }, 3)));
+    await waitForResponses(responses, 3);
+
+    const setupResponse = responses[2];
+    expect(isJsonRpcSuccessResponse(setupResponse)).toBe(true);
+    if (!isJsonRpcSuccessResponse(setupResponse)) return;
+    expect(setupResponse.result).toMatchObject({
+      providerLeaseId: "setup-session-1",
+      status: "waiting_for_user",
+      connectionSummary: {
+        type: "ssh",
+        hostRedacted: true,
+        portRedacted: true,
+      },
+    });
+
     stdin.write(serializeMessage(createRequest("environmentExecute", {
       driverKey: "fake-plugin",
       companyId: "company-1",
@@ -146,10 +191,10 @@ describe("plugin environment driver seam", () => {
       config: { template: "base" },
       lease: { providerLeaseId: "lease-1" },
       command: "echo",
-    }, 3)));
-    await waitForResponses(responses, 3);
+    }, 4)));
+    await waitForResponses(responses, 4);
 
-    const executeResponse = responses[2];
+    const executeResponse = responses[3];
     expect(isJsonRpcErrorResponse(executeResponse)).toBe(true);
     if (!isJsonRpcErrorResponse(executeResponse)) return;
     expect(executeResponse.error.code).toBe(PLUGIN_RPC_ERROR_CODES.METHOD_NOT_IMPLEMENTED);

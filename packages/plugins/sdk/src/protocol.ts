@@ -34,6 +34,7 @@ import type {
   PluginManagedProjectResolution,
   PluginManagedRoutineResolution,
   PluginManagedSkillResolution,
+  PluginManagedMCPServerResolution,
   Routine,
   RoutineRun,
   Agent,
@@ -647,6 +648,107 @@ export interface PluginEnvironmentExecuteResult {
   metadata?: Record<string, unknown>;
 }
 
+export type PluginEnvironmentInteractiveSetupStatus =
+  | "starting"
+  | "waiting_for_user"
+  | "capturing"
+  | "promoted"
+  | "cancelled"
+  | "timed_out"
+  | "failed"
+  | "missing";
+
+export type PluginEnvironmentInteractiveSetupConnectionType =
+  | "ssh"
+  | (string & {});
+
+export type PluginEnvironmentTemplateRefKind =
+  | "snapshot"
+  | "image"
+  | "provider_template"
+  | "unknown"
+  | (string & {});
+
+export interface PluginEnvironmentInteractiveSetupConnectionSummary {
+  type: PluginEnvironmentInteractiveSetupConnectionType;
+  username?: string | null;
+  hostRedacted: boolean;
+  portRedacted: boolean;
+  commandRedacted?: boolean;
+  expiresAt?: string | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface PluginEnvironmentInteractiveSetupConnectionPayload {
+  type: PluginEnvironmentInteractiveSetupConnectionType;
+  command?: string | null;
+  token?: string | null;
+  expiresAt?: string | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface PluginEnvironmentInteractiveSetupSession {
+  providerLeaseId: string | null;
+  status: PluginEnvironmentInteractiveSetupStatus;
+  connectionSummary: PluginEnvironmentInteractiveSetupConnectionSummary | null;
+  connectionPayload?: PluginEnvironmentInteractiveSetupConnectionPayload | null;
+  expiresAt?: string | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface PluginEnvironmentStartInteractiveSetupParams extends PluginEnvironmentDriverBaseParams {
+  sessionId: string;
+  sourceTemplateRef?: string | null;
+  sourceTemplateKind?: PluginEnvironmentTemplateRefKind | null;
+  connectionExpiresInMinutes?: number | null;
+  expiresAt?: string | null;
+}
+
+export interface PluginEnvironmentGetInteractiveSetupParams extends PluginEnvironmentDriverBaseParams {
+  providerLeaseId: string | null;
+  setupMetadata?: Record<string, unknown>;
+  includeConnectionPayload?: boolean;
+  connectionExpiresInMinutes?: number | null;
+}
+
+export interface PluginEnvironmentCaptureTemplateParams extends PluginEnvironmentDriverBaseParams {
+  providerLeaseId: string | null;
+  setupMetadata?: Record<string, unknown>;
+  sourceTemplateRef?: string | null;
+  previousTemplateRef?: string | null;
+  templateLabel?: string | null;
+  timeoutMs?: number | null;
+}
+
+export interface PluginEnvironmentCaptureTemplateResult {
+  templateRef: string;
+  templateKind: PluginEnvironmentTemplateRefKind;
+  metadata?: Record<string, unknown>;
+}
+
+export interface PluginEnvironmentCancelInteractiveSetupParams extends PluginEnvironmentDriverBaseParams {
+  providerLeaseId: string | null;
+  setupMetadata?: Record<string, unknown>;
+  reason?: string | null;
+}
+
+export interface PluginEnvironmentCancelInteractiveSetupResult {
+  status: Extract<PluginEnvironmentInteractiveSetupStatus, "cancelled" | "timed_out" | "failed" | "missing">;
+  metadata?: Record<string, unknown>;
+}
+
+export interface PluginEnvironmentDeleteTemplateParams extends PluginEnvironmentDriverBaseParams {
+  templateRef: string;
+  templateKind?: PluginEnvironmentTemplateRefKind;
+  metadata?: Record<string, unknown>;
+  reason?: string | null;
+}
+
+export interface PluginEnvironmentDeleteTemplateResult {
+  deleted: boolean;
+  metadata?: Record<string, unknown>;
+}
+
 // ---------------------------------------------------------------------------
 // UI launcher / modal host interaction payloads
 // ---------------------------------------------------------------------------
@@ -760,6 +862,26 @@ export interface HostToWorkerMethods {
     params: PluginEnvironmentExecuteParams,
     result: PluginEnvironmentExecuteResult,
   ];
+  environmentStartInteractiveSetup: [
+    params: PluginEnvironmentStartInteractiveSetupParams,
+    result: PluginEnvironmentInteractiveSetupSession,
+  ];
+  environmentGetInteractiveSetup: [
+    params: PluginEnvironmentGetInteractiveSetupParams,
+    result: PluginEnvironmentInteractiveSetupSession,
+  ];
+  environmentCaptureTemplate: [
+    params: PluginEnvironmentCaptureTemplateParams,
+    result: PluginEnvironmentCaptureTemplateResult,
+  ];
+  environmentCancelInteractiveSetup: [
+    params: PluginEnvironmentCancelInteractiveSetupParams,
+    result: PluginEnvironmentCancelInteractiveSetupResult,
+  ];
+  environmentDeleteTemplate: [
+    params: PluginEnvironmentDeleteTemplateParams,
+    result: PluginEnvironmentDeleteTemplateResult,
+  ];
 }
 
 /** Union of all host→worker method names. */
@@ -794,6 +916,11 @@ export const HOST_TO_WORKER_OPTIONAL_METHODS: readonly HostToWorkerMethodName[] 
   "environmentDestroyLease",
   "environmentRealizeWorkspace",
   "environmentExecute",
+  "environmentStartInteractiveSetup",
+  "environmentGetInteractiveSetup",
+  "environmentCaptureTemplate",
+  "environmentCancelInteractiveSetup",
+  "environmentDeleteTemplate",
 ] as const;
 
 // ---------------------------------------------------------------------------
@@ -1093,6 +1220,20 @@ export interface WorkerToHostMethods {
     result: PluginManagedSkillResolution,
   ];
 
+  // Plugin-managed MCP servers
+  "mcpServers.managed.get": [
+    params: { serverKey: string; companyId: string },
+    result: PluginManagedMCPServerResolution,
+  ];
+  "mcpServers.managed.reconcile": [
+    params: { serverKey: string; companyId: string; credential?: string | null },
+    result: PluginManagedMCPServerResolution,
+  ];
+  "mcpServers.managed.reset": [
+    params: { serverKey: string; companyId: string; credential?: string | null },
+    result: PluginManagedMCPServerResolution,
+  ];
+
   // Issues
   "issues.list": [
     params: {
@@ -1311,6 +1452,35 @@ export interface WorkerToHostMethods {
   "agents.invoke": [
     params: { agentId: string; companyId: string; prompt: string; reason?: string },
     result: { runId: string },
+  ];
+  // NEO-447: channel adapters (Cliq etc.) spawn the harness directly, so they
+  // register each conversational turn as a first-class run. The requester
+  // snapshot is persisted onto the trusted run row by the HOST at dispatch
+  // time (the agent can never self-assert it); the MCP execute PEP re-derives
+  // identity + authority from that row. `token` is a run-scoped agent JWT for
+  // the spawned harness (null when the local agent JWT secret is unset).
+  "agents.channelRuns.register": [
+    params: {
+      agentId: string;
+      companyId: string;
+      requester: {
+        userId: string | null;
+        channelUserId?: string | null;
+        channelId?: string | null;
+        source?: string | null;
+      } | null;
+      reason?: string;
+    },
+    result: { runId: string; token: string | null },
+  ];
+  "agents.channelRuns.finalize": [
+    params: {
+      runId: string;
+      companyId: string;
+      status: "succeeded" | "failed" | "timed_out" | "cancelled";
+      error?: string | null;
+    },
+    result: { finalized: boolean },
   ];
   "agents.managed.get": [
     params: { agentKey: string; companyId: string },

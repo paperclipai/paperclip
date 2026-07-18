@@ -144,6 +144,48 @@ function AllStatesPanel() {
         })}
         canFalsePositive
       />
+      <CardPanel
+        caption="State 7 · Invalid external wait — killed background watcher (kind: stranded_assigned_issue)"
+        action={buildAction({
+          kind: "stranded_assigned_issue",
+          cause: "stranded_assigned_issue",
+          fingerprint: "fp-external-wait",
+          attemptCount: 1,
+          maxAttempts: 1,
+          evidence: {
+            summary: "Unmanaged background task stopped; no durable live path.",
+            latestRunStatus: "failed",
+            latestRunErrorCode: "unmanaged_background_task_stopped",
+            sourceRunId: "7accd7a4-c9ca-4db2-9233-3228a037cc09",
+          },
+          wakePolicy: { type: "wake_owner" },
+          nextAction:
+            "Inspect the external result, then replace the local watcher with a monitor, blocker, or delegated child issue — or record a valid disposition.",
+        })}
+        canFalsePositive
+      />
+      <CardPanel
+        caption="State 8 · Invalid external wait — escalated after the single continuation (kind: stranded_assigned_issue)"
+        action={buildAction({
+          kind: "stranded_assigned_issue",
+          cause: "stranded_assigned_issue",
+          status: "escalated",
+          fingerprint: "fp-external-wait",
+          attemptCount: 1,
+          maxAttempts: 1,
+          wakePolicy: { type: "board_escalation" },
+          evidence: {
+            summary: "Unmanaged background task stopped; no durable live path.",
+            latestRunStatus: "failed",
+            latestRunErrorCode: "unmanaged_background_task_stopped",
+            sourceRunId: "7accd7a4-c9ca-4db2-9233-3228a037cc09",
+          },
+          nextAction:
+            "Name the real external dependency as a blocker, or open an explicit recovery action with a named owner and repair step. Do not re-queue another equivalent continuation.",
+        })}
+        forcedState="escalated"
+        canFalsePositive
+      />
     </div>
   );
 }

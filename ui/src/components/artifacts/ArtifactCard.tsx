@@ -193,11 +193,12 @@ function SecondaryAction({
 export function ArtifactCard({ artifact }: ArtifactCardProps) {
   return (
     <Link
+      // design-allow(card-pattern): navigation <Link> card; Card renders a div and would break anchor semantics (C5a Run 3)
       to={artifact.href}
       disableIssueQuicklook
       data-testid="artifact-card"
       data-media-kind={artifact.mediaKind}
-      className="group flex flex-col overflow-hidden rounded-[8px] border border-border bg-card transition-colors hover:border-foreground/20"
+      className="group flex flex-col overflow-hidden rounded-lg border border-border bg-card cursor-pointer transition-colors hover:border-foreground/20 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
     >
       <ArtifactPreview artifact={artifact} />
 
@@ -223,7 +224,7 @@ export function ArtifactCard({ artifact }: ArtifactCardProps) {
           </div>
         </div>
 
-        <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-muted-foreground/65">
+        <div className="mt-0.5 flex items-center gap-1.5 text-(length:--text-micro) text-muted-foreground/65">
           <span>Last edited {formatDate(artifact.updatedAt)}</span>
           {artifact.createdByAgent ? (
             <>

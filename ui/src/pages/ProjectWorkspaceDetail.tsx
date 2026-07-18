@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { isUuidLike, type ProjectWorkspace } from "@paperclipai/shared";
 import { ArrowLeft, Check, ExternalLink, Loader2, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { Tabs } from "@/components/ui/tabs";
 import { ChoosePathButton } from "../components/PathInstructionsModal";
@@ -70,6 +71,19 @@ function orderProjectWorkspaceTabItems(items: OrderedProjectWorkspaceTabItem[]) 
     .map(({ item }) => item);
 }
 
+const MCP_RUNTIME_EXAMPLE = `{
+  "mcpServers": [
+    {
+      "name": "filesystem",
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
+      "cwd": ".",
+      "enabled": true
+    }
+  ]
+}`;
+
 const SOURCE_TYPE_OPTIONS: Array<{ value: ProjectWorkspaceSourceType; label: string; description: string }> = [
   { value: "local_path", label: "Local git checkout", description: "A local path Cortex can use directly." },
   { value: "non_git_path", label: "Local non-git path", description: "A local folder without git semantics." },
@@ -135,10 +149,10 @@ function parseRuntimeConfigJson(value: string) {
   try {
     const parsed = JSON.parse(trimmed);
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return {
-        ok: false as const,
-        error: "Workspace commands JSON must be a JSON object.",
-      };
+        return {
+          ok: false as const,
+          error: "Workspace runtime JSON must be a JSON object.",
+        };
     }
     return { ok: true as const, value: parsed as Record<string, unknown> };
   } catch (error) {
@@ -226,8 +240,8 @@ function Field({
   return (
     <label className="space-y-1.5">
       <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
-        <span className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">{label}</span>
-        {hint ? <span className="text-[11px] leading-relaxed text-muted-foreground sm:text-right">{hint}</span> : null}
+        <span className="text-xs font-medium uppercase tracking-(--tracking-eyebrow) text-muted-foreground">{label}</span>
+        {hint ? <span className="text-(length:--text-micro) leading-relaxed text-muted-foreground sm:text-right">{hint}</span> : null}
       </div>
       {children}
     </label>
@@ -445,7 +459,7 @@ export function ProjectWorkspaceDetail() {
 
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0 space-y-2">
-          <div className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">
+          <div className="text-xs font-medium uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
             Project workspace
           </div>
           <h1 className="truncate text-xl font-semibold sm:text-2xl">{workspace.name}</h1>
@@ -480,9 +494,9 @@ export function ProjectWorkspaceDetail() {
       </Tabs>
 
       {activeTab === "configuration" ? (
-      <div className="grid gap-6 lg:grid-cols-[minmax(0,1.4fr)_minmax(18rem,0.9fr)]">
+      <div className="grid gap-6 lg:grid-cols-(--gtc-53)">
         <div className="space-y-6">
-          <div className="rounded-2xl border border-border bg-card p-5">
+          <Card className="block p-5">
             <p className="max-w-2xl text-sm text-muted-foreground">
               Configure the concrete workspace Cortex attaches to this project. These values drive per-workspace
               checkout behavior, default runtime services for child execution workspaces, and let you override setup
@@ -531,7 +545,7 @@ export function ProjectWorkspaceDetail() {
                 </select>
               </Field>
 
-              <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_auto]">
+              <div className="grid gap-4 md:grid-cols-(--gtc-13)">
                 <Field label="Local path">
                   <input
                     className="w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm outline-none"
@@ -627,12 +641,12 @@ export function ProjectWorkspaceDetail() {
                   Cortex derives Services and Jobs from this JSON. Prefer editing named commands first; use raw JSON for advanced lifecycle, port, readiness, or environment settings.
                 </p>
                 <div className="mt-3">
-                  <Field label="Workspace commands JSON" hint="Execution workspaces inherit this config unless they override it. Legacy `services` arrays still work, but `commands` supports both services and jobs.">
+                  <Field label="Workspace runtime JSON" hint="Execution workspaces inherit this config unless they override it. Legacy `services` arrays still work, `commands` supports services/jobs, and `mcpServers` defines MCP endpoints for workspace-aware agents.">
                     <textarea
                       className="min-h-96 w-full rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm outline-none"
                       value={form.runtimeConfig}
                       onChange={(event) => setForm((current) => current ? { ...current, runtimeConfig: event.target.value } : current)}
-                      placeholder={"{\n  \"commands\": [\n    {\n      \"id\": \"web\",\n      \"name\": \"web\",\n      \"kind\": \"service\",\n      \"command\": \"pnpm dev\",\n      \"cwd\": \".\",\n      \"port\": { \"type\": \"auto\" },\n      \"readiness\": {\n        \"type\": \"http\",\n        \"urlTemplate\": \"http://127.0.0.1:${port}\"\n      },\n      \"expose\": {\n        \"type\": \"url\",\n        \"urlTemplate\": \"http://127.0.0.1:${port}\"\n      },\n      \"lifecycle\": \"shared\",\n      \"reuseScope\": \"project_workspace\"\n    },\n    {\n      \"id\": \"db-migrate\",\n      \"name\": \"db:migrate\",\n      \"kind\": \"job\",\n      \"command\": \"pnpm db:migrate\",\n      \"cwd\": \".\"\n    }\n  ]\n}"}
+                      placeholder={MCP_RUNTIME_EXAMPLE}
                     />
                   </Field>
                 </div>
@@ -659,13 +673,13 @@ export function ProjectWorkspaceDetail() {
               {!errorMessage && runtimeActionMessage ? <p className="text-sm text-muted-foreground">{runtimeActionMessage}</p> : null}
               {!errorMessage && !isDirty ? <p className="text-sm text-muted-foreground">No unsaved changes.</p> : null}
             </div>
-          </div>
+          </Card>
         </div>
 
         <div className="space-y-6">
-          <div className="rounded-2xl border border-border bg-card p-5">
+          <Card className="block p-5">
             <div className="space-y-1">
-              <div className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">Workspace facts</div>
+              <div className="text-xs font-medium uppercase tracking-(--tracking-eyebrow) text-muted-foreground">Workspace facts</div>
               <h2 className="text-lg font-semibold">Current state</h2>
             </div>
             <Separator className="my-4" />
@@ -690,12 +704,12 @@ export function ProjectWorkspaceDetail() {
             </DetailRow>
             <DetailRow label="Default ref">{workspace.defaultRef ?? "None"}</DetailRow>
             <DetailRow label="Updated">{new Date(workspace.updatedAt).toLocaleString()}</DetailRow>
-          </div>
+          </Card>
 
-          <div className="rounded-2xl border border-border bg-card p-5">
+          <Card className="block p-5">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
               <div className="space-y-1">
-                <div className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">Workspace commands</div>
+                <div className="text-xs font-medium uppercase tracking-(--tracking-eyebrow) text-muted-foreground">Workspace commands</div>
                 <h2 className="text-lg font-semibold">Services and jobs</h2>
                 <p className="text-sm text-muted-foreground">
                   Long-running services stay supervised here, while one-shot jobs run on demand against this workspace. Execution workspaces inherit this config unless they override it.
@@ -716,7 +730,7 @@ export function ProjectWorkspaceDetail() {
               disabledHint="Project workspaces need a working directory before local commands can run, and services also need runtime config."
               onAction={(request) => controlRuntimeServices.mutate(request)}
             />
-          </div>
+          </Card>
         </div>
       </div>
       ) : null}

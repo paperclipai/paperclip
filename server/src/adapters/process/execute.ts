@@ -50,6 +50,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     timeoutSec,
     graceSec,
     onLog,
+    onSpawn: ctx.onSpawn,
   });
 
   if (proc.timedOut) {

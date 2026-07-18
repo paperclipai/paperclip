@@ -8,7 +8,6 @@ import {
   writeAgentOrder,
   type AgentSidebarOrderOptions,
 } from "../lib/agent-order";
-import { useConferenceRoomChatEnabled } from "./useConferenceRoomChatEnabled";
 
 type UseAgentOrderParams = {
   agents: Agent[];
@@ -34,12 +33,9 @@ function buildOrderIds(agents: Agent[], orderedIds: string[], options: AgentSide
 }
 
 export function useAgentOrder({ agents, companyId, userId }: UseAgentOrderParams) {
-  // Leadership-first sidebar ordering (PAP-52) ships behind the Conference
-  // Room Chat flag (PAP-139); OFF keeps master's alphabetical sibling order.
-  const { enabled: conferenceRoomChatEnabled } = useConferenceRoomChatEnabled();
   const sortOptions = useMemo<AgentSidebarOrderOptions>(
-    () => ({ leadershipFirst: conferenceRoomChatEnabled }),
-    [conferenceRoomChatEnabled],
+    () => ({ leadershipFirst: true }),
+    [],
   );
   const storageKey = useMemo(() => {
     if (!companyId) return null;

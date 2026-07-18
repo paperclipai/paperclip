@@ -117,6 +117,42 @@ export const pluginToolDeclarationSchema = z.object({
   parametersSchema: jsonSchemaSchema,
 });
 
+const pluginEnvironmentTemplateConfigFieldSchema = z.string()
+  .min(1)
+  .max(100)
+  .regex(
+    /^[A-Za-z_][A-Za-z0-9_-]*$/,
+    "Template config binding fields must be top-level config keys using letters, digits, underscores, or hyphens",
+  )
+  .refine((value) => value !== "provider", {
+    message: "Template config binding must not replace the sandbox provider key",
+  });
+
+export const pluginEnvironmentTemplateConfigBindingSchema = z.object({
+  field: pluginEnvironmentTemplateConfigFieldSchema,
+  unsetFields: z.array(pluginEnvironmentTemplateConfigFieldSchema).max(20).optional(),
+}).strict().superRefine((value, ctx) => {
+  const unsetFields = value.unsetFields ?? [];
+  const seen = new Set<string>();
+  for (const [index, field] of unsetFields.entries()) {
+    if (field === value.field) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Template config binding cannot unset the same field it sets",
+        path: ["unsetFields", index],
+      });
+    }
+    if (seen.has(field)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Template config binding unsetFields must be unique",
+        path: ["unsetFields", index],
+      });
+    }
+    seen.add(field);
+  }
+});
+
 export const pluginEnvironmentDriverDeclarationSchema = z.object({
   driverKey: z.string().min(1).regex(
     /^[a-z0-9][a-z0-9._-]*$/,
@@ -126,6 +162,13 @@ export const pluginEnvironmentDriverDeclarationSchema = z.object({
   displayName: z.string().min(1).max(100),
   description: z.string().max(500).optional(),
   supportsReusableLeases: z.boolean().optional(),
+  supportsInteractiveSetup: z.boolean().optional(),
+  interactiveSetupConnectionTypes: z.array(z.string().min(1).max(100)).max(10).optional(),
+  supportsTemplateCapture: z.boolean().optional(),
+  templateRefKind: z.string().min(1).max(100).optional(),
+  templateConfigBinding: pluginEnvironmentTemplateConfigBindingSchema.optional(),
+  templateIdentityPaths: z.array(z.string().min(1).max(200)).max(20).optional(),
+  supportsTemplateDelete: z.boolean().optional(),
   configSchema: jsonSchemaSchema,
 });
 
@@ -270,6 +313,30 @@ export const pluginManagedSkillDeclarationSchema = z.object({
 });
 
 export type PluginManagedSkillDeclarationInput = z.infer<typeof pluginManagedSkillDeclarationSchema>;
+
+/**
+ * Validates a `PluginManagedMCPServerDeclaration` — a company-scoped MCP
+ * server the plugin manages. Remote transports only (`http`/`sse`); `stdio`
+ * is gated behind its own approval flow and cannot be plugin-declared.
+ * Credentials never live in the manifest — they are passed at
+ * reconcile/reset time and sealed by the server.
+ */
+export const pluginManagedMcpServerDeclarationSchema = z.object({
+  serverKey: z.string().min(1).max(100).regex(/^[a-z0-9][a-z0-9._:-]*$/, {
+    message: "serverKey must start with a lowercase alphanumeric and contain only lowercase letters, digits, dots, colons, underscores, or hyphens",
+  }),
+  displayName: z.string().min(1).max(100),
+  slug: z.string().min(1).max(100).regex(/^[a-z0-9][a-z0-9._-]*$/, {
+    message: "slug must start with a lowercase alphanumeric and contain only lowercase letters, digits, dots, underscores, or hyphens",
+  }).optional(),
+  description: z.string().max(2000).nullable().optional(),
+  transport: z.enum(["http", "sse"]),
+  url: z.string().url().max(2000),
+  headers: z.record(z.string()).optional(),
+  metadata: z.record(z.unknown()).optional(),
+});
+
+export type PluginManagedMcpServerDeclarationInput = z.infer<typeof pluginManagedMcpServerDeclarationSchema>;
 
 /**
  * Validates a {@link PluginUiSlotDeclaration} — a UI extension slot the plugin
@@ -696,6 +763,7 @@ export const pluginManifestV1Schema = z.object({
   projects: z.array(pluginManagedProjectDeclarationSchema).optional(),
   routines: z.array(pluginManagedRoutineDeclarationSchema).optional(),
   skills: z.array(pluginManagedSkillDeclarationSchema).optional(),
+  mcpServers: z.array(pluginManagedMcpServerDeclarationSchema).optional(),
   localFolders: z.array(pluginLocalFolderDeclarationSchema).optional(),
   objectReferences: z.array(pluginObjectReferenceProviderDeclarationSchema).optional(),
   launchers: z.array(pluginLauncherDeclarationSchema).optional(),
@@ -791,6 +859,16 @@ export const pluginManifestV1Schema = z.object({
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message: "Capability 'skills.managed' is required when managed skills are declared",
+        path: ["capabilities"],
+      });
+    }
+  }
+
+  if (manifest.mcpServers && manifest.mcpServers.length > 0) {
+    if (!manifest.capabilities.includes("mcp.servers.managed")) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Capability 'mcp.servers.managed' is required when managed MCP servers are declared",
         path: ["capabilities"],
       });
     }
@@ -1022,6 +1100,18 @@ export const pluginManifestV1Schema = z.object({
         code: z.ZodIssueCode.custom,
         message: `Duplicate managed skill keys: ${[...new Set(duplicates)].join(", ")}`,
         path: ["skills"],
+      });
+    }
+  }
+
+  if (manifest.mcpServers) {
+    const serverKeys = manifest.mcpServers.map((server) => server.serverKey);
+    const duplicates = serverKeys.filter((key, i) => serverKeys.indexOf(key) !== i);
+    if (duplicates.length > 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `Duplicate managed MCP server keys: ${[...new Set(duplicates)].join(", ")}`,
+        path: ["mcpServers"],
       });
     }
   }

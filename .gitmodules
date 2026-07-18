@@ -1,0 +1,15 @@
+[submodule "honcho"]
+	path = plugins/honcho
+	url = https://github.com/Neoreef/plugin-honcho.git
+[submodule "knowledge-bridge"]
+	path = plugins/knowledge-bridge
+	url = https://github.com/Neoreef/plugin-knowledge-bridge.git
+[submodule "project-bridge"]
+	path = plugins/project-bridge
+	url = https://github.com/Neoreef/plugin-project-bridge.git
+[submodule "agent-channels"]
+	path = plugins/agent-channels
+	url = https://github.com/Neoreef/plugin-agent-channels.git
+[submodule "cortex-monitor"]
+	path = plugins/cortex-monitor
+	url = https://github.com/Neoreef/plugin-cortex-monitor.git

@@ -9,6 +9,7 @@ import type {
   RoutineVariableType,
 } from "../constants.js";
 import type { EnvBinding } from "./secrets.js";
+import type { ExecutionWorkspaceMode, IssueExecutionWorkspaceSettings } from "./workspace-runtime.js";
 
 export interface RoutineDescriptionDocument {
   id: string;
@@ -79,12 +80,15 @@ export interface Routine {
   status: string;
   concurrencyPolicy: string;
   catchUpPolicy: string;
+  originKind?: string;
+  originId?: string | null;
   variables: RoutineVariable[];
   env?: RoutineEnvConfig | null;
   latestRevisionId: string | null;
   latestRevisionNumber: number;
   createdByAgentId: string | null;
   createdByUserId: string | null;
+  responsibleUserId: string | null;
   updatedByAgentId: string | null;
   updatedByUserId: string | null;
   lastTriggeredAt: Date | null;
@@ -119,8 +123,11 @@ export interface RoutineRevisionSnapshotRoutineV1 {
   status: RoutineStatus;
   concurrencyPolicy: RoutineConcurrencyPolicy;
   catchUpPolicy: RoutineCatchUpPolicy;
+  originKind?: string;
+  originId?: string | null;
   variables: RoutineVariable[];
   env: RoutineEnvConfig | null;
+  responsibleUserId: string | null;
 }
 
 export interface RoutineRevisionSnapshotTriggerV1 {
@@ -228,6 +235,14 @@ export interface RoutineExecutionIssueOrigin {
   kind: Extract<IssueOriginKind, "routine_execution">;
   routineId: string;
   runId: string | null;
+}
+
+export interface RoutineRunWorkspaceContext {
+  projectId?: string | null;
+  projectWorkspaceId?: string | null;
+  executionWorkspaceId?: string | null;
+  executionWorkspacePreference?: ExecutionWorkspaceMode | null;
+  executionWorkspaceSettings?: IssueExecutionWorkspaceSettings | null;
 }
 
 export interface RoutineListItem extends Routine {

@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
+import { useState } from "react";
+import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { buildIssueReferenceHref, buildProjectMentionHref, buildRoutineMentionHref, buildSkillMentionHref } from "@paperclipai/shared";
@@ -20,8 +21,12 @@ const mdxEditorMockState = vi.hoisted(() => ({
   emitMountEmptyReset: false,
   emitMountParseError: false,
   emitMountSilentEmptyState: false,
+  throwOnRender: false,
   markdownValues: [] as string[],
   suppressHtmlProcessingValues: [] as boolean[],
+  // Test seam: the latest `onChange` the editor was given, so tests can simulate
+  // editor-originated emissions (streaming dictation, corrupted commit output).
+  lastOnChange: null as ((value: string) => void) | null,
 }));
 
 function containsHtmlLikeTag(markdown: string) {
@@ -59,8 +64,12 @@ vi.mock("@mdxeditor/editor", async () => {
     },
     forwardedRef: React.ForwardedRef<{ setMarkdown: (value: string) => void; focus: () => void } | null>,
   ) {
+    if (mdxEditorMockState.throwOnRender) {
+      throw new Error("Rich editor render crashed");
+    }
     mdxEditorMockState.markdownValues.push(markdown);
     mdxEditorMockState.suppressHtmlProcessingValues.push(Boolean(suppressHtmlProcessing));
+    mdxEditorMockState.lastOnChange = onChange ?? null;
     const [content, setContent] = React.useState(markdown);
     const editableRef = React.useRef<HTMLDivElement>(null);
     const handle = React.useMemo(() => ({
@@ -148,20 +157,55 @@ vi.mock("../lib/paste-normalization", () => ({
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
+async function act(callback: () => void | Promise<void>) {
+  let result: void | Promise<void> = undefined;
+  flushSync(() => {
+    result = callback();
+  });
+  await result;
+}
+
 async function flush() {
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
 }
 
+// NEO-411 rev 8: dispatch a native `beforeinput` on the contenteditable so the
+// editor's container capture-phase listeners (transcript latch + settle timer)
+// run exactly as they do in the browser. jsdom's InputEvent constructor doesn't
+// always surface `inputType`/`data`, so pin them explicitly.
+function dispatchBeforeInput(el: Element, inputType: string, data: string | null) {
+  const event = new InputEvent("beforeinput", { bubbles: true, cancelable: true });
+  Object.defineProperty(event, "inputType", { configurable: true, value: inputType });
+  Object.defineProperty(event, "data", { configurable: true, value: data });
+  act(() => {
+    el.dispatchEvent(event);
+  });
+}
+
+// Wait past INPUT_SETTLE_MS (350ms) so the deferred reconcile / dictation repair fires.
+async function waitForInputSettle() {
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 420));
+  });
+}
+
 function createFileDragEvent(type: string) {
-  const event = new Event(type, { bubbles: true, cancelable: true }) as Event & {
+  const event = (
+    typeof DragEvent === "function"
+      ? new DragEvent(type, { bubbles: true, cancelable: true })
+      : new Event(type, { bubbles: true, cancelable: true })
+  ) as Event & {
     dataTransfer: { types: string[]; files: File[]; dropEffect?: string };
   };
-  event.dataTransfer = {
-    types: ["Files"],
-    files: [],
-  };
+  Object.defineProperty(event, "dataTransfer", {
+    configurable: true,
+    value: {
+      types: ["Files"],
+      files: [],
+    },
+  });
   return event;
 }
 
@@ -223,8 +267,10 @@ describe("MarkdownEditor", () => {
     mdxEditorMockState.emitMountEmptyReset = false;
     mdxEditorMockState.emitMountParseError = false;
     mdxEditorMockState.emitMountSilentEmptyState = false;
+    mdxEditorMockState.throwOnRender = false;
     mdxEditorMockState.markdownValues = [];
     mdxEditorMockState.suppressHtmlProcessingValues = [];
+    mdxEditorMockState.lastOnChange = null;
   });
 
   it("applies async external value updates once the editor ref becomes ready", async () => {
@@ -386,6 +432,44 @@ describe("MarkdownEditor", () => {
     });
   });
 
+  it("falls back to a raw textarea when the rich editor crashes during render", async () => {
+    mdxEditorMockState.throwOnRender = true;
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const handleChange = vi.fn();
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <MarkdownEditor
+          value="5. python3 circleback/sync_insights.py --input <tmp> -- writes insights/<group>/*.md"
+          onChange={handleChange}
+          placeholder="Markdown body"
+        />,
+      );
+    });
+
+    await vi.waitFor(() => {
+      expect(container.querySelector("textarea")).not.toBeNull();
+    });
+    const textarea = container.querySelector("textarea");
+    expect(textarea).not.toBeNull();
+    expect(textarea?.value).toBe("5. python3 circleback/sync_insights.py --input <tmp> -- writes insights/<group>/*.md");
+    expect(container.textContent).toContain("Rich editor unavailable for this markdown");
+    expect(consoleError).toHaveBeenCalledWith(
+      "Markdown rich editor failed; falling back to raw textarea",
+      expect.objectContaining({
+        error: expect.any(Error),
+        componentStack: expect.any(String),
+      }),
+    );
+    consoleError.mockRestore();
+    expect(handleChange).not.toHaveBeenCalled();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it("falls back to a raw textarea when the rich editor mounts into the placeholder without callbacks", async () => {
     mdxEditorMockState.emitMountSilentEmptyState = true;
     const handleChange = vi.fn();
@@ -435,16 +519,18 @@ describe("MarkdownEditor", () => {
     const scope = container.querySelector('[data-testid="mdx-editor"]')?.parentElement as HTMLDivElement | null;
     expect(scope).not.toBeNull();
 
-    act(() => {
+    await act(async () => {
       scope?.dispatchEvent(createFileDragEvent("dragenter"));
     });
+    await flush();
 
     expect(scope?.className).toContain("ring-1");
     expect(container.textContent).toContain("Drop image to upload");
 
-    act(() => {
+    await act(async () => {
       scope?.dispatchEvent(createFileDragEvent("dragleave"));
     });
+    await flush();
 
     expect(scope?.className).not.toContain("ring-1");
 
@@ -890,7 +976,7 @@ describe("MarkdownEditor", () => {
 
     const options = Array.from(menu.querySelectorAll('button[type="button"]'));
     expect(options).toHaveLength(12);
-    expect(menu.className).toContain("max-h-[208px]");
+    expect(menu.className).toContain("max-h-(--sz-208px)");
     expect(menu.className).toContain("overflow-y-auto");
     expect(menu.style.touchAction).toBe("pan-y");
 
@@ -990,6 +1076,136 @@ describe("MarkdownEditor", () => {
 
     await act(async () => {
       root.unmount();
+    });
+  });
+
+  // NEO-411 rev 8 — dictation commit-burst repair. Replays the two on-device
+  // captures (NEO-405 plan rev cd982795): iOS dictation streams full-field-replace
+  // `insertText` events (data = whole cumulative text), Lexical silently drops the
+  // paragraph-break replace, then a same-tick burst of collapsed inserts re-lays the
+  // transcript — duplicating or eating text. The fix latches the streamed transcript
+  // and, once input settles, reconciles the editor back to it exactly once.
+  describe("iOS dictation commit-burst repair", () => {
+    // Controlled wrapper mirrors InlineEditor: onChange feeds value back in, so the
+    // reconcile path sees a faithful controlled parent (not a stale empty value).
+    function ControlledEditor({ initial, onEmit }: { initial: string; onEmit: (value: string) => void }) {
+      const [val, setVal] = useState(initial);
+      return (
+        <MarkdownEditor
+          value={val}
+          onChange={(next) => {
+            setVal(next);
+            onEmit(next);
+          }}
+        />
+      );
+    }
+
+    function dispatchComposition(el: Element, type: "compositionstart" | "compositionend", data: string | null) {
+      const event = new CompositionEvent(type, { bubbles: true, data: data ?? "" });
+      act(() => {
+        el.dispatchEvent(event);
+      });
+    }
+
+    async function mountControlled(onEmit: (value: string) => void) {
+      const root = createRoot(container);
+      await act(async () => {
+        root.render(<ControlledEditor initial="" onEmit={onEmit} />);
+      });
+      await flush();
+      const editable = container.querySelector('[contenteditable="true"]');
+      expect(editable).not.toBeNull();
+      return { root, editable: editable! };
+    }
+
+    function emitFromEditor(value: string) {
+      act(() => {
+        mdxEditorMockState.lastOnChange?.(value);
+      });
+    }
+
+    it("collapses a commit-burst duplication back to the verbatim transcript", async () => {
+      const onEmit = vi.fn();
+      const { root, editable } = await mountControlled(onEmit);
+
+      // Streaming phase — full-field replace, editor tracks it via onChange.
+      dispatchBeforeInput(editable, "insertText", "Hello world.");
+      emitFromEditor("Hello world.");
+      // Paragraph-break replace: Lexical drops this one (no onChange fires).
+      dispatchBeforeInput(editable, "insertText", "Hello world.\n\n");
+      // Commit burst: collapsed re-lay inserts (shorter than the field, so they do
+      // NOT overwrite the latched transcript), and the editor emits the corrupted
+      // duplicated result.
+      dispatchBeforeInput(editable, "insertText", "Hello");
+      emitFromEditor("Hello world.\n\nHello world.");
+
+      onEmit.mockClear();
+      await waitForInputSettle();
+
+      // Repaired once, to the spoken text verbatim, paragraph break preserved.
+      expect(onEmit).toHaveBeenCalledTimes(1);
+      expect(onEmit).toHaveBeenLastCalledWith("Hello world.\n\n");
+      expect(container.textContent).not.toContain("world.Hello");
+
+      await act(async () => { root.unmount(); });
+    });
+
+    it("restores eaten text when the commit burst drops a span", async () => {
+      const onEmit = vi.fn();
+      const { root, editable } = await mountControlled(onEmit);
+
+      dispatchBeforeInput(editable, "insertText", "The quick brown fox jumps.");
+      emitFromEditor("The quick brown fox jumps.");
+      // Burst lands at scattered offsets and eats a span — editor emits a truncated value.
+      dispatchBeforeInput(editable, "insertText", "fox");
+      emitFromEditor("The quick jumps.");
+
+      onEmit.mockClear();
+      await waitForInputSettle();
+
+      expect(onEmit).toHaveBeenCalledTimes(1);
+      expect(onEmit).toHaveBeenLastCalledWith("The quick brown fox jumps.");
+
+      await act(async () => { root.unmount(); });
+    });
+
+    it("leaves a clean dictation untouched (no spurious repair)", async () => {
+      const onEmit = vi.fn();
+      const { root, editable } = await mountControlled(onEmit);
+
+      dispatchBeforeInput(editable, "insertText", "All good here.");
+      emitFromEditor("All good here.");
+      dispatchBeforeInput(editable, "insertText", "All good here.\n\n");
+      emitFromEditor("All good here.\n\n");
+
+      onEmit.mockClear();
+      await waitForInputSettle();
+
+      // Editor already holds the transcript → no repair, no extra emit.
+      expect(onEmit).not.toHaveBeenCalled();
+      expect(container.textContent).toContain("All good here.");
+
+      await act(async () => { root.unmount(); });
+    });
+
+    it("does not repair desktop IME composition input (CJK / macOS)", async () => {
+      const onEmit = vi.fn();
+      const { root, editable } = await mountControlled(onEmit);
+
+      // Composition path: transcript must NOT latch while composing.
+      dispatchComposition(editable, "compositionstart", "");
+      dispatchBeforeInput(editable, "insertText", "你好世界啊");
+      dispatchComposition(editable, "compositionend", "你好世界啊");
+      emitFromEditor("你好世界啊");
+
+      onEmit.mockClear();
+      await waitForInputSettle();
+
+      expect(onEmit).not.toHaveBeenCalled();
+      expect(container.textContent).toContain("你好世界啊");
+
+      await act(async () => { root.unmount(); });
     });
   });
 });

@@ -1053,3 +1053,78 @@ export function applyIssueExecutionPolicyTransition(input: TransitionInput): Tra
   Object.assign(stageResult.patch, monitorPatch);
   return stageResult;
 }
+
+export type OrphanedPendingStageReconciliation = {
+  patch: Record<string, unknown>;
+  stageId: string;
+  stageType: IssueExecutionStage["type"];
+  participant: IssueExecutionStagePrincipal;
+};
+
+/**
+ * Self-heal for died-run stage orphaning (NEO-415, folds into NEO-393 family).
+ *
+ * A run can advance the stage machine into a `review`/`approval` stage (executionState
+ * persisted as `pending` on a stage that still resolves in the policy) and then die on
+ * terminal-recovery before the issue's own `status`/assignee are driven to `in_review` +
+ * the stage participant. The stage stays `pending` but no affordance is presented, and the
+ * in-band drift-repair in `applyIssueExecutionStageTransition` never fires because nothing
+ * ever re-touches the issue. This detects that orphaned end-state and re-mints the affordance
+ * by replaying the existing drift-repair in heal mode (no requested status/assignee change).
+ *
+ * Returns `null` when there is nothing to heal:
+ *  - no policy / no execution state / state is not `pending`
+ *  - the current stage id no longer resolves in the policy (dead stage — a distinct case that
+ *    the clear-branch handles; re-minting is not appropriate)
+ *  - the affordance is already present (issue is `in_review` and assigned to the participant)
+ *  - no eligible participant can be selected (cannot auto-heal; leave for an operator)
+ */
+export function reconcileOrphanedPendingStage(input: {
+  issue: IssueLike;
+  policy: IssueExecutionPolicy | null;
+}): OrphanedPendingStageReconciliation | null {
+  const policy = input.policy;
+  if (!policy) return null;
+
+  const state = parseIssueExecutionState(input.issue.executionState);
+  if (!state || state.status !== PENDING_STATUS || !state.currentStageId) return null;
+
+  const stage = findStageById(policy, state.currentStageId);
+  if (!stage) return null;
+
+  const participant =
+    state.currentParticipant ??
+    selectStageParticipant(stage, { exclude: state.returnAssignee ?? null });
+  if (!participant) return null;
+
+  const affordancePresent =
+    input.issue.status === "in_review" &&
+    !!state.currentParticipant &&
+    principalsEqual(assigneePrincipal(input.issue), state.currentParticipant);
+  if (affordancePresent) return null;
+
+  let result: TransitionResult;
+  try {
+    // Heal mode: no requestedStatus and an empty assignee patch route through the
+    // `stageStateDrifted` branch, which re-mints the pending-stage affordance.
+    result = applyIssueExecutionStageTransition({
+      issue: input.issue,
+      policy,
+      requestedAssigneePatch: {},
+      actor: {},
+    });
+  } catch {
+    return null;
+  }
+
+  if (result.patch.executionState === undefined && result.patch.status === undefined) {
+    return null;
+  }
+
+  return {
+    patch: result.patch,
+    stageId: stage.id,
+    stageType: stage.type,
+    participant,
+  };
+}

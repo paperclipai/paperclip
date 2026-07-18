@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   codexHomeHasUsableAuth,
   ensureSymlink,
+  evaluateCodexCredentialReadiness,
   isManagedCodexHomePath,
   prepareManagedCodexHome,
   reconcileManagedCodexHome,
@@ -497,6 +498,131 @@ describe("reconcileManagedCodexHome", () => {
       expect(JSON.parse(await fs.readFile(fx.agentAuth, "utf8"))).toEqual({
         OPENAI_API_KEY: "sk-reconcile-1",
       });
+    } finally {
+      await fs.rm(fx.root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("evaluateCodexCredentialReadiness", () => {
+  async function makeFixture() {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-readiness-"));
+    const sharedCodexHome = path.join(root, "shared-codex-home");
+    const paperclipHome = path.join(root, "paperclip-home");
+    const companyRoot = path.join(
+      paperclipHome,
+      "instances",
+      "default",
+      "companies",
+      "company-1",
+    );
+    const managedCompanyHome = path.join(companyRoot, "codex-home");
+    const managedAgentHome = path.join(companyRoot, "agents", "agent-1", "codex-home");
+    const env: NodeJS.ProcessEnv = {
+      CODEX_HOME: sharedCodexHome,
+      PAPERCLIP_HOME: paperclipHome,
+      PAPERCLIP_INSTANCE_ID: "default",
+    };
+    await fs.mkdir(sharedCodexHome, { recursive: true });
+    return { root, sharedCodexHome, managedCompanyHome, managedAgentHome, env };
+  }
+
+  async function writeUsableAuth(home: string) {
+    await fs.mkdir(home, { recursive: true });
+    await fs.writeFile(path.join(home, "auth.json"), '{"OPENAI_API_KEY":"sk-live"}\n', "utf8");
+  }
+
+  it("flags a managed home with no source auth and empty OPENAI_API_KEY as not ready", async () => {
+    const fx = await makeFixture();
+    try {
+      const result = await evaluateCodexCredentialReadiness({
+        env: fx.env,
+        companyId: "company-1",
+        configuredCodexHome: fx.managedAgentHome,
+        configuredApiKey: "",
+      });
+      expect(result).toMatchObject({ managed: true, authMode: "subscription", ready: false });
+      expect(result.effectiveHome).toBe(path.resolve(fx.managedAgentHome));
+    } finally {
+      await fs.rm(fx.root, { recursive: true, force: true });
+    }
+  });
+
+  it("treats a non-empty resolved OPENAI_API_KEY as ready without touching disk", async () => {
+    const fx = await makeFixture();
+    try {
+      const result = await evaluateCodexCredentialReadiness({
+        env: fx.env,
+        companyId: "company-1",
+        configuredCodexHome: fx.managedAgentHome,
+        configuredApiKey: "sk-agent-key",
+      });
+      expect(result).toMatchObject({ managed: true, authMode: "api", ready: true });
+    } finally {
+      await fs.rm(fx.root, { recursive: true, force: true });
+    }
+  });
+
+  it("is ready when the shared source home carries usable subscription auth", async () => {
+    const fx = await makeFixture();
+    try {
+      await writeUsableAuth(fx.sharedCodexHome);
+      const result = await evaluateCodexCredentialReadiness({
+        env: fx.env,
+        companyId: "company-1",
+        configuredCodexHome: fx.managedAgentHome,
+        configuredApiKey: "",
+      });
+      expect(result).toMatchObject({ managed: true, authMode: "subscription", ready: true });
+    } finally {
+      await fs.rm(fx.root, { recursive: true, force: true });
+    }
+  });
+
+  it("is ready when the already-seeded effective home carries usable auth", async () => {
+    const fx = await makeFixture();
+    try {
+      await writeUsableAuth(fx.managedAgentHome);
+      const result = await evaluateCodexCredentialReadiness({
+        env: fx.env,
+        companyId: "company-1",
+        configuredCodexHome: fx.managedAgentHome,
+        configuredApiKey: "",
+      });
+      expect(result).toMatchObject({ managed: true, authMode: "subscription", ready: true });
+    } finally {
+      await fs.rm(fx.root, { recursive: true, force: true });
+    }
+  });
+
+  it("defaults to the managed company home when no CODEX_HOME is configured", async () => {
+    const fx = await makeFixture();
+    try {
+      const result = await evaluateCodexCredentialReadiness({
+        env: fx.env,
+        companyId: "company-1",
+        configuredCodexHome: null,
+        configuredApiKey: "",
+      });
+      expect(result).toMatchObject({ managed: true, authMode: "subscription", ready: false });
+      expect(result.effectiveHome).toBe(path.resolve(fx.managedCompanyHome));
+    } finally {
+      await fs.rm(fx.root, { recursive: true, force: true });
+    }
+  });
+
+  it("treats an external/user-supplied CODEX_HOME override as self-managed and ready", async () => {
+    const fx = await makeFixture();
+    try {
+      const externalHome = path.join(fx.root, "user-codex-home");
+      await fs.mkdir(externalHome, { recursive: true });
+      const result = await evaluateCodexCredentialReadiness({
+        env: fx.env,
+        companyId: "company-1",
+        configuredCodexHome: externalHome,
+        configuredApiKey: "",
+      });
+      expect(result).toMatchObject({ managed: false, ready: true });
     } finally {
       await fs.rm(fx.root, { recursive: true, force: true });
     }

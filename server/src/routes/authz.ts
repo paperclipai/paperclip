@@ -1,5 +1,26 @@
 import type { Request } from "express";
-import { forbidden, unauthorized } from "../errors.js";
+import { forbidden, HttpError, unauthorized } from "../errors.js";
+import { logger } from "../middleware/logger.js";
+import { responsibleUserAuthzShadowMode } from "../services/authorization.js";
+
+function throwOrShadowResponsibleUserCompanyAccessDeny(
+  req: Request,
+  companyId: string,
+  code: "RESPONSIBLE_USER_UNAUTHORIZED" | "RESPONSIBLE_USER_UNAVAILABLE",
+  message: string,
+) {
+  logger.warn({
+    authzMode: responsibleUserAuthzShadowMode() ? "shadow" : "enforce",
+    code,
+    action: "company_access",
+    companyId,
+    actorAgentId: req.actor.agentId ?? null,
+    responsibleUserId: req.actor.onBehalfOfUserId ?? null,
+    method: req.method,
+  }, "responsible-user company access intersection denied");
+  if (responsibleUserAuthzShadowMode()) return;
+  throw new HttpError(403, message, { code });
+}
 
 export function assertAuthenticated(req: Request) {
   if (req.actor.type === "none") {
@@ -54,6 +75,30 @@ export function assertCompanyAccess(req: Request, companyId: string) {
   assertAuthenticated(req);
   if (req.actor.type === "agent" && req.actor.companyId !== companyId) {
     throw forbidden("Agent key cannot access another company");
+  }
+  if (req.actor.type === "agent" && req.actor.onBehalfOfUserId?.trim()) {
+    const membership = req.actor.onBehalfOfMemberships?.find(
+      (item) => item.companyId === companyId && item.status === "active",
+    );
+    if (!membership) {
+      throwOrShadowResponsibleUserCompanyAccessDeny(
+        req,
+        companyId,
+        "RESPONSIBLE_USER_UNAVAILABLE",
+        "Responsible user is unavailable for this company",
+      );
+      return;
+    }
+    const method = typeof req.method === "string" ? req.method.toUpperCase() : "GET";
+    const isSafeMethod = ["GET", "HEAD", "OPTIONS"].includes(method);
+    if (!isSafeMethod && membership.membershipRole === "viewer") {
+      throwOrShadowResponsibleUserCompanyAccessDeny(
+        req,
+        companyId,
+        "RESPONSIBLE_USER_UNAUTHORIZED",
+        "Responsible user is not authorized for write access",
+      );
+    }
   }
   if (req.actor.type === "board" && req.actor.source !== "local_implicit") {
     const allowedCompanies = req.actor.companyIds ?? [];

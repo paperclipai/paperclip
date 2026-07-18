@@ -133,6 +133,13 @@ done < <(printf '%s\n' "$PUBLIC_PACKAGE_INFO" | cut -f2)
 
 [ -n "$PUBLIC_PACKAGE_INFO" ] || release_fail "no public packages were found in the workspace."
 
+# Pre-fetch published versions for every public package in parallel so the
+# version helpers below do not each issue one serial `npm view` call per
+# package (see scripts/release-registry-versions.mjs).
+RELEASE_PACKAGE_VERSIONS_FILE="$(mktemp)"
+export RELEASE_PACKAGE_VERSIONS_FILE
+node "$REPO_ROOT/scripts/release-registry-versions.mjs" fetch "${PUBLIC_PACKAGE_NAMES[@]}" > "$RELEASE_PACKAGE_VERSIONS_FILE"
+
 TARGET_STABLE_VERSION="$(next_stable_version "$RELEASE_DATE" "${PUBLIC_PACKAGE_NAMES[@]}")"
 TARGET_PUBLISH_VERSION="$TARGET_STABLE_VERSION"
 DIST_TAG="latest"
@@ -145,6 +152,9 @@ if [ "$channel" = "canary" ]; then
 else
   tag_name="$(stable_tag_name "$TARGET_STABLE_VERSION")"
 fi
+
+rm -f "$RELEASE_PACKAGE_VERSIONS_FILE"
+unset RELEASE_PACKAGE_VERSIONS_FILE
 
 if [ "$print_version_only" = true ]; then
   printf '%s\n' "$TARGET_PUBLISH_VERSION"
@@ -168,12 +178,10 @@ if git_local_tag_exists "$tag_name" || git_remote_tag_exists "$tag_name" "$PUBLI
   release_fail "git tag $tag_name already exists locally or on $PUBLISH_REMOTE."
 fi
 
-while IFS= read -r package_name; do
-  [ -z "$package_name" ] && continue
-  if npm_package_version_exists "$package_name" "$TARGET_PUBLISH_VERSION"; then
-    release_fail "npm version ${package_name}@${TARGET_PUBLISH_VERSION} already exists."
-  fi
-done <<< "$(printf '%s\n' "${PUBLIC_PACKAGE_NAMES[@]}")"
+# Fresh (non-cached) existence check, batched in parallel. Prints the
+# offending package@version pairs itself before failing.
+node "$REPO_ROOT/scripts/release-registry-versions.mjs" assert-absent "$TARGET_PUBLISH_VERSION" "${PUBLIC_PACKAGE_NAMES[@]}" \
+  || release_fail "npm version ${TARGET_PUBLISH_VERSION} already exists for one or more packages."
 
 release_info ""
 release_info "==> Release plan"

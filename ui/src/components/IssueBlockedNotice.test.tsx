@@ -223,6 +223,182 @@ describe("IssueBlockedNotice", () => {
     expect(node.textContent).toBe("");
   });
 
+  it("keeps the amber notice when a covered chain has no confirmed live blocker", () => {
+    const node = render(
+      <IssueBlockedNotice
+        issueStatus="blocked"
+        liveIssueIds={new Set(["unrelated-live"])}
+        blockerAttention={{
+          state: "covered",
+          reason: "active_dependency",
+          unresolvedBlockerCount: 1,
+          coveredBlockerCount: 1,
+          stalledBlockerCount: 0,
+          attentionBlockerCount: 0,
+          sampleBlockerIdentifier: "TASK-1",
+          sampleStalledBlockerIdentifier: null,
+        }}
+        blockers={[
+          {
+            id: "blocker-1",
+            identifier: "TASK-1",
+            title: "Dependency work",
+            status: "in_progress",
+            priority: "medium",
+            assigneeAgentId: "agent-1",
+            assigneeUserId: null,
+          },
+        ]}
+        allBlockers={[
+          {
+            id: "blocker-1",
+            identifier: "TASK-1",
+            title: "Dependency work",
+            status: "in_progress",
+            priority: "medium",
+            assigneeAgentId: "agent-1",
+            assigneeUserId: null,
+          },
+        ]}
+      />,
+    );
+
+    expect(node.querySelector('[data-testid="issue-blocked-notice-live"]')).toBeNull();
+    expect(node.textContent).toContain("Work on this task is blocked by the linked task");
+    expect(node.querySelector('[data-blocker-attention-state="covered"]')).not.toBeNull();
+  });
+
+  it("sorts same-status live-work steps with numeric identifier ordering", () => {
+    const node = render(
+      <IssueBlockedNotice
+        issueStatus="blocked"
+        liveIssueIds={new Set(["blocker-11"])}
+        blockerAttention={{
+          state: "covered",
+          reason: "active_dependency",
+          unresolvedBlockerCount: 1,
+          coveredBlockerCount: 3,
+          stalledBlockerCount: 0,
+          attentionBlockerCount: 0,
+          sampleBlockerIdentifier: "TASK-11",
+          sampleStalledBlockerIdentifier: null,
+        }}
+        blockers={[
+          {
+            id: "blocker-11",
+            identifier: "TASK-11",
+            title: "Running work",
+            status: "in_progress",
+            priority: "medium",
+            assigneeAgentId: "agent-1",
+            assigneeUserId: null,
+          },
+        ]}
+        allBlockers={[
+          {
+            id: "blocker-10",
+            identifier: "TASK-10",
+            title: "Tenth done step",
+            status: "done",
+            priority: "medium",
+            assigneeAgentId: "agent-1",
+            assigneeUserId: null,
+          },
+          {
+            id: "blocker-9",
+            identifier: "TASK-9",
+            title: "Ninth done step",
+            status: "done",
+            priority: "medium",
+            assigneeAgentId: "agent-1",
+            assigneeUserId: null,
+          },
+          {
+            id: "blocker-11",
+            identifier: "TASK-11",
+            title: "Running work",
+            status: "in_progress",
+            priority: "medium",
+            assigneeAgentId: "agent-1",
+            assigneeUserId: null,
+          },
+        ]}
+      />,
+    );
+
+    const stepLinks = Array.from(
+      node.querySelectorAll('[data-testid="issue-blocked-notice-steps"] a'),
+    ).map((link) => link.textContent ?? "");
+
+    expect(stepLinks[0]).toContain("TASK-9");
+    expect(stepLinks[1]).toContain("TASK-10");
+    expect(stepLinks[2]).toContain("TASK-11");
+
+    const runningStep = node.querySelectorAll('[data-testid="issue-blocked-notice-steps"] a')[2];
+    if (!runningStep) throw new Error("Expected a running live-work step.");
+    expect(runningStep.querySelector('svg[aria-label="In Progress status"]')).not.toBeNull();
+    expect(node.querySelector('[data-testid="issue-blocked-notice-now-running"]')).toBeNull();
+  });
+
+  it("shows external now-running blockers beneath the label on a separate line", () => {
+    const node = render(
+      <IssueBlockedNotice
+        issueStatus="blocked"
+        liveIssueIds={new Set(["terminal-live"])}
+        blockerAttention={{
+          state: "covered",
+          reason: "active_dependency",
+          unresolvedBlockerCount: 1,
+          coveredBlockerCount: 1,
+          stalledBlockerCount: 0,
+          attentionBlockerCount: 0,
+          sampleBlockerIdentifier: "TASK-99",
+          sampleStalledBlockerIdentifier: null,
+        }}
+        blockers={[
+          {
+            id: "blocker-1",
+            identifier: "TASK-1",
+            title: "Queued dependency",
+            status: "todo",
+            priority: "medium",
+            assigneeAgentId: "agent-1",
+            assigneeUserId: null,
+            terminalBlockers: [
+              {
+                id: "terminal-live",
+                identifier: "TASK-99",
+                title: "External running task",
+                status: "in_progress",
+                priority: "medium",
+                assigneeAgentId: "agent-1",
+                assigneeUserId: null,
+              },
+            ],
+          },
+        ]}
+        allBlockers={[
+          {
+            id: "blocker-1",
+            identifier: "TASK-1",
+            title: "Queued dependency",
+            status: "todo",
+            priority: "medium",
+            assigneeAgentId: "agent-1",
+            assigneeUserId: null,
+          },
+        ]}
+      />,
+    );
+
+    const nowRunning = node.querySelector('[data-testid="issue-blocked-notice-now-running"]');
+    expect(nowRunning).not.toBeNull();
+    expect(nowRunning!.children[0]?.textContent?.trim()).toBe("Now running");
+    expect(nowRunning!.children[1]?.querySelector("a")?.textContent).toContain("TASK-99");
+    const stepText = node.querySelector('[data-testid="issue-blocked-notice-steps"]')?.textContent;
+    expect(stepText).not.toContain("TASK-99");
+  });
+
   it("renders a recovery indicator on a blocker chip when the blocker has an active recovery action", () => {
     const node = render(
       <IssueBlockedNotice

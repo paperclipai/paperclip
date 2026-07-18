@@ -395,4 +395,24 @@ describe("command managed runtime", () => {
     expect(progress.every((entry) => entry.total === payload.length)).toBe(true);
     expect(progress.at(-1)?.done).toBe(payload.length);
   });
+
+  it("includes stdout diagnostics when a managed runtime command fails", async () => {
+    const startedAt = new Date().toISOString();
+    const runner: CommandManagedRuntimeRunner = {
+      execute: async () => ({
+        exitCode: 2,
+        signal: null,
+        timedOut: false,
+        stdout: "tar: workspace-download.tar: Cannot open: Permission denied\n",
+        stderr: "",
+        pid: null,
+        startedAt,
+      }),
+    };
+    const client = createCommandManagedRuntimeClient({ runner, commandCwd: "/", timeoutMs: 30_000 });
+
+    await expect(client.run("tar -cf workspace-download.tar .", { timeoutMs: 30_000 })).rejects.toThrow(
+      /stdout: tar: workspace-download\.tar: Cannot open: Permission denied/,
+    );
+  });
 });
