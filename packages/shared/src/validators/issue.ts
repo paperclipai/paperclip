@@ -418,12 +418,25 @@ const createIssueDuplicateGuardSchema = {
     .default(false),
 };
 
+export const issueCreateSourceRefSchema = z.object({
+  namespace: z.string().trim().min(1).max(64).regex(/^[a-z0-9][a-z0-9._-]*$/),
+  kind: z.string().trim().min(1).max(64).regex(/^[a-z0-9][a-z0-9._-]*$/),
+  id: z.string().trim().min(1).max(255),
+  payloadFingerprint: z.string().regex(/^sha256:[a-f0-9]{64}$/).optional(),
+}).strict();
+
+export type IssueCreateSourceRef = z.infer<typeof issueCreateSourceRefSchema>;
+
 export const createIssueInputSchema = createIssueBaseSchema.extend({
   status: createIssueBaseSchema.shape.status.optional(),
+  sourceRef: issueCreateSourceRefSchema.optional().nullable(),
   ...createIssueDuplicateGuardSchema,
 });
 
-export const createIssueSchema = withCreateIssueStatusDefault(createIssueBaseSchema.extend(createIssueDuplicateGuardSchema));
+export const createIssueSchema = withCreateIssueStatusDefault(createIssueBaseSchema.extend({
+  sourceRef: issueCreateSourceRefSchema.optional().nullable(),
+  ...createIssueDuplicateGuardSchema,
+}));
 
 export type CreateIssue = z.infer<typeof createIssueSchema>;
 
@@ -474,6 +487,7 @@ export const updateIssueSchema = createIssueBaseSchema.omit({
   resume: z.boolean().optional(),
   interrupt: z.boolean().optional(),
   hiddenAt: z.string().datetime().nullable().optional(),
+  expectedUpdatedAt: z.string().datetime().optional(),
 });
 
 export type UpdateIssue = z.infer<typeof updateIssueSchema>;

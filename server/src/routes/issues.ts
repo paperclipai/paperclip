@@ -2,10 +2,11 @@ import { createHash, randomUUID } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import { z } from "zod";
-import { and, asc, desc, eq, inArray, isNull, notInArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
+  agentWakeupRequests,
   agents,
   documents,
   executionWorkspaces,
@@ -83,6 +84,8 @@ import {
   type IssueWakeDiagnosticWakeRequest,
   type IssueWakeDiagnosticsResponse,
   type IssueRelationIssueSummary,
+  type IssueCreateReceipt,
+  type IssueCreateSourceRef,
   type IssueWatchdogDiscoveryKind,
   type ProjectWorkspace,
   type SourceTrustMetadata,
@@ -195,6 +198,23 @@ const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
 });
+const activatePlanningIssueSchema = z.object({
+  agentId: z.string().uuid(),
+  expectedUpdatedAt: z.string().datetime().optional(),
+  activationKey: z.string().trim().min(1).max(255),
+}).strict();
+const planningWorkContractEnvelopeSchema = z.object({
+  version: z.string().trim().min(1).max(100),
+  phase: z.enum(["seed", "ready"]),
+  planningAgentId: z.string().uuid(),
+  completionPolicy: z.literal("issue_done_and_all_evidence_verified"),
+  source: z.object({
+    channel: z.string().trim().min(1),
+    conversationId: z.string().trim().min(1),
+    turnId: z.string().trim().min(1),
+    capturedAt: z.string().datetime(),
+  }).passthrough(),
+}).passthrough();
 const refreshExternalObjectsSchema = z.object({
   objectIds: z.array(z.string().uuid()).max(50).optional(),
 }).strict();
@@ -431,6 +451,51 @@ function readNonEmptyString(value: unknown): string | null {
 
 function readObject(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function stableIssueCreateJson(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
+  if (Array.isArray(value)) return `[${value.map(stableIssueCreateJson).join(",")}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record)
+    .filter((key) => record[key] !== undefined)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${stableIssueCreateJson(record[key])}`)
+    .join(",")}}`;
+}
+
+function externalIssueSource(input: IssueCreateSourceRef, createBody: Record<string, unknown>) {
+  const canonical = { ...createBody };
+  delete canonical.idempotencyKey;
+  delete canonical.allowDuplicate;
+  canonical.sourcePayloadFingerprint = input.payloadFingerprint ?? null;
+  const fingerprint = `sha256:${createHash("sha256").update(stableIssueCreateJson(canonical)).digest("hex")}`;
+  return {
+    originKind: `external:${input.namespace}:${input.kind}` as const,
+    originId: input.id,
+    fingerprint,
+    payloadFingerprint: input.payloadFingerprint ?? null,
+    sourceRef: input,
+  };
+}
+
+function issueCreateReceipt(input: {
+  issue: { id: string; companyId: string; identifier: string | null };
+  created: boolean;
+  deduplicationReason: IssueCreateReceipt["deduplicationReason"];
+  idempotencyKey: string | null | undefined;
+  sourceRef: IssueCreateSourceRef | null;
+}): IssueCreateReceipt {
+  return {
+    version: 1,
+    companyId: input.issue.companyId,
+    issueId: input.issue.id,
+    identifier: input.issue.identifier,
+    created: input.created,
+    deduplicationReason: input.deduplicationReason,
+    idempotencyKey: input.idempotencyKey?.trim() || null,
+    sourceRef: input.sourceRef,
+  };
 }
 
 function hasOwn(record: Record<string, unknown>, key: string) {
@@ -2566,6 +2631,7 @@ export function issueRoutes(
       agentId: string,
       options: Parameters<ReturnType<typeof heartbeatService>["wakeup"]>[1],
     ) => ReturnType<ReturnType<typeof heartbeatService>["wakeup"]>;
+    activationEnqueueWakeup?: ReturnType<typeof heartbeatService>["wakeup"];
     issueListDiagnostics?: IssueListDiagnostics;
     approveToolActionRequest?: (input: {
       companyId: string;
@@ -2582,6 +2648,26 @@ export function issueRoutes(
   const heartbeat = heartbeatService(db, {
     pluginWorkerManager: opts.pluginWorkerManager,
   });
+  const activationEnqueueWakeup = opts.activationEnqueueWakeup ?? heartbeat.wakeup;
+  async function ensureUniqueIssueActivity(entry: Parameters<typeof logActivity>[1]) {
+    const guardKey = `issue-activity:${entry.companyId}:${entry.entityId}:${entry.action}`;
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${guardKey}, 0))`);
+      const existing = await tx
+        .select({ id: activityLog.id })
+        .from(activityLog)
+        .where(and(
+          eq(activityLog.companyId, entry.companyId),
+          eq(activityLog.entityType, entry.entityType),
+          eq(activityLog.entityId, entry.entityId),
+          eq(activityLog.action, entry.action),
+        ))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (existing) return;
+      await logActivity(tx as unknown as Db, entry);
+    });
+  }
   const enqueueRecoveryActionWakeup = opts.recoveryActionEnqueueWakeup ?? heartbeat.wakeup;
   const feedback = feedbackService(db);
   const companiesSvc = companyService(db);
@@ -6959,7 +7045,13 @@ export function issueRoutes(
       surface: "issues.create",
     });
     if (!sanitizedBody) return;
-    const { watchdogDiscovery: rawWatchdogDiscovery, ...rawCreateBody } = sanitizedBody;
+    const {
+      watchdogDiscovery: rawWatchdogDiscovery,
+      sourceRef: rawSourceRef,
+      ...rawCreateBody
+    } = sanitizedBody;
+    const sourceRef = rawSourceRef ?? null;
+    if (sourceRef) assertBoard(req);
     const watchdogDiscovery = normalizeWatchdogDiscovery(rawWatchdogDiscovery);
     const watchdogProductBugFollowUp = await resolveTaskWatchdogProductBugFollowUp(
       req,
@@ -7061,13 +7153,17 @@ export function issueRoutes(
       projectId: createBody.projectId ?? null,
       executionPolicy,
     }, actor);
-    let deduplicationReason: "idempotency_key" | "recent_open_title" | null = null;
+    const externalSource = sourceRef
+      ? externalIssueSource(sourceRef, { ...createBody, executionPolicy })
+      : null;
+    let deduplicationReason: "source_ref" | "idempotency_key" | "recent_open_title" | null = null;
     const issue = await svc.create(companyId, {
       ...createBody,
       ...(taskBridgeOriginForActor(req) ?? {}),
       id: issueId,
       originRunId: createBody.originRunId ?? actor.runId,
       executionPolicy,
+      externalSource,
       ...(sourceTrust ? { sourceTrust } : {}),
       createdByAgentId: actor.agentId,
       createdByUserId: actor.actorType === "user" ? actor.actorId : null,
@@ -7080,11 +7176,37 @@ export function issueRoutes(
       },
     });
     if (deduplicationReason) {
+      // A response can be lost after the issue commit but before derived syncs complete.
+      // Replays repair idempotent projections before returning the canonical receipt.
+      await issueReferencesSvc.syncIssue(issue.id);
+      await externalObjectsSvc.syncIssueSafely(issue.id);
+      if (sourceRef) {
+        const replayActor = getActorInfo(req);
+        await ensureUniqueIssueActivity({
+          companyId,
+          actorType: replayActor.actorType,
+          actorId: replayActor.actorId,
+          agentId: replayActor.agentId,
+          runId: replayActor.runId,
+          agentApiKeyId: replayActor.agentApiKeyId,
+          action: "issue.created",
+          entityType: "issue",
+          entityId: issue.id,
+          details: { title: issue.title, identifier: issue.identifier, repairedOnReplay: true },
+        });
+      }
       const referenceSummary = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
       res.status(200).json({
         ...issue,
         deduplicated: true,
         deduplicationReason,
+        receipt: issueCreateReceipt({
+          issue,
+          created: false,
+          deduplicationReason,
+          idempotencyKey: rawCreateBody.idempotencyKey,
+          sourceRef,
+        }),
         relatedWork: referenceSummary,
         referencedIssueIdentifiers: referenceSummary.outbound.map((item) => item.issue.identifier ?? item.issue.id),
       });
@@ -7098,7 +7220,7 @@ export function issueRoutes(
       referenceSummary,
     );
 
-    await logActivity(db, {
+    const issueCreatedActivity: Parameters<typeof logActivity>[1] = {
       companyId,
       actorType: actor.actorType,
       actorId: actor.actorId,
@@ -7131,7 +7253,9 @@ export function issueRoutes(
           currentReferencedIssues: referenceDiff.currentReferencedIssues.map(summarizeIssueRelationForActivity),
         }),
       },
-    });
+    };
+    if (sourceRef) await ensureUniqueIssueActivity(issueCreatedActivity);
+    else await logActivity(db, issueCreatedActivity);
 
     if (executionPolicy?.monitor) {
       await logActivity(db, {
@@ -7190,6 +7314,13 @@ export function issueRoutes(
 
     res.status(201).json({
       ...issue,
+      receipt: issueCreateReceipt({
+        issue,
+        created: true,
+        deduplicationReason: null,
+        idempotencyKey: rawCreateBody.idempotencyKey,
+        sourceRef,
+      }),
       relatedWork: referenceSummary,
       referencedIssueIdentifiers: referenceSummary.outbound.map((item) => item.issue.identifier ?? item.issue.id),
     });
@@ -7649,6 +7780,7 @@ export function issueRoutes(
       resume: resumeRequested,
       interrupt: interruptRequested,
       hiddenAt: hiddenAtRaw,
+      expectedUpdatedAt: expectedUpdatedAtRaw,
       ...updateFields
     } = req.body;
     const shouldCancelActiveRunForCancelledStatus =
@@ -7941,6 +8073,7 @@ export function issueRoutes(
               ...updateFields,
               actorAgentId: actor.agentId ?? null,
               actorUserId: actor.actorType === "user" ? actor.actorId : null,
+              expectedUpdatedAt: expectedUpdatedAtRaw ? new Date(expectedUpdatedAtRaw) : undefined,
             },
             tx,
           );
@@ -7966,6 +8099,7 @@ export function issueRoutes(
           ...updateFields,
           actorAgentId: actor.agentId ?? null,
           actorUserId: actor.actorType === "user" ? actor.actorId : null,
+          expectedUpdatedAt: expectedUpdatedAtRaw ? new Date(expectedUpdatedAtRaw) : undefined,
         });
       }
     } catch (err) {
@@ -8808,6 +8942,153 @@ export function issueRoutes(
 
     await queueTaskWatchdogEvaluation(existing, actor.runId);
     res.json(issue);
+  });
+
+  router.post("/issues/:id/activate-planning", validate(activatePlanningIssueSchema), async (req, res) => {
+    assertBoard(req);
+    const id = req.params.id as string;
+    let issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    if (!issue) return;
+    if (issue.workMode !== "planning") {
+      res.status(409).json({ error: "Only planning work can use the planning activation boundary" });
+      return;
+    }
+    const contractDocument = await documentsSvc.getIssueDocumentByKey(issue.id, "work-contract");
+    if (!contractDocument) {
+      res.status(409).json({ error: "Planning activation requires a persisted work-contract document" });
+      return;
+    }
+    if (!issue.originPayloadFingerprint) {
+      res.status(409).json({ error: "Planning activation requires a source-bound Work Contract fingerprint" });
+      return;
+    }
+    const contractBody = contractDocument.body;
+    if (typeof contractBody !== "string") {
+      res.status(409).json({ error: "Persisted work-contract must contain a JSON document" });
+      return;
+    }
+    const persistedContractFingerprint = `sha256:${createHash("sha256").update(contractBody).digest("hex")}`;
+    if (persistedContractFingerprint !== issue.originPayloadFingerprint) {
+      res.status(409).json({
+        error: "Persisted Work Contract does not match the canonical source receipt",
+        details: { issueId: issue.id, expectedFingerprint: issue.originPayloadFingerprint, persistedContractFingerprint },
+      });
+      return;
+    }
+    let contractEnvelope: z.infer<typeof planningWorkContractEnvelopeSchema>;
+    try {
+      contractEnvelope = planningWorkContractEnvelopeSchema.parse(JSON.parse(contractBody));
+    } catch {
+      res.status(409).json({ error: "Persisted work-contract is not a valid planning contract" });
+      return;
+    }
+    if (contractEnvelope.planningAgentId !== req.body.agentId) {
+      res.status(409).json({ error: "Planning agent does not match the persisted Work Contract" });
+      return;
+    }
+    await assertCanAssignTasks(req, issue.companyId, {
+      issueId: issue.id,
+      projectId: issue.projectId ?? null,
+      parentIssueId: issue.parentId ?? null,
+      assigneeAgentId: req.body.agentId,
+      assigneeUserId: null,
+    });
+
+    let activated = false;
+    if (issue.status === "backlog" && issue.assigneeAgentId === null) {
+      if (!req.body.expectedUpdatedAt) {
+        res.status(400).json({ error: "expectedUpdatedAt is required for first planning activation" });
+        return;
+      }
+      try {
+        const updated = await svc.update(issue.id, {
+          status: "todo",
+          assigneeAgentId: req.body.agentId,
+          expectedUpdatedAt: new Date(req.body.expectedUpdatedAt),
+        });
+        if (!updated) {
+          res.status(404).json({ error: "Issue not found" });
+          return;
+        }
+        issue = updated;
+        activated = true;
+      } catch (error) {
+        if (!(error instanceof HttpError) || error.status !== 409) throw error;
+        const winner = await svc.getById(issue.id);
+        if (!winner) {
+          res.status(404).json({ error: "Issue not found" });
+          return;
+        }
+        issue = winner;
+      }
+    }
+    if (issue.assigneeAgentId !== req.body.agentId || !["todo", "in_progress"].includes(issue.status)) {
+      res.status(409).json({
+        error: "Planning activation conflict",
+        details: { issueId: issue.id, status: issue.status, assigneeAgentId: issue.assigneeAgentId },
+      });
+      return;
+    }
+
+    const wakeIdempotencyKey = `planning-activation:${issue.id}:v1`;
+    const wakeResult = await db.transaction(async (tx) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${wakeIdempotencyKey}, 0))`);
+      const existingWake = await tx
+        .select({ id: agentWakeupRequests.id, status: agentWakeupRequests.status })
+        .from(agentWakeupRequests)
+        .where(and(
+          eq(agentWakeupRequests.companyId, issue.companyId),
+          eq(agentWakeupRequests.idempotencyKey, wakeIdempotencyKey),
+          notInArray(agentWakeupRequests.status, ["skipped", "cancelled", "failed"]),
+        ))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (existingWake) return { repaired: false, wakeupRequestId: existingWake.id };
+      const queued = await activationEnqueueWakeup(req.body.agentId, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "planning_contract_activated",
+        payload: { issueId: issue.id, mutation: "activate_planning" },
+        idempotencyKey: wakeIdempotencyKey,
+        requestedByActorType: "user",
+        requestedByActorId: getActorInfo(req).actorId,
+        contextSnapshot: { issueId: issue.id, source: "issue.activate_planning" },
+      });
+      return queued ? { repaired: true, wakeupRequestId: null } : null;
+    });
+    if (!wakeResult) {
+      res.status(503).json({ error: "Planning activation was stored but the planner wake was not queued; retry safely" });
+      return;
+    }
+
+    const activationActor = getActorInfo(req);
+    await ensureUniqueIssueActivity({
+      companyId: issue.companyId,
+      actorType: activationActor.actorType,
+      actorId: activationActor.actorId,
+      agentId: activationActor.agentId,
+      runId: activationActor.runId,
+      agentApiKeyId: activationActor.agentApiKeyId,
+      action: "issue.planning_activated",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        agentId: req.body.agentId,
+        activationKey: req.body.activationKey,
+        wakeIdempotencyKey,
+      },
+    });
+
+    res.json({
+      ...issue,
+      activation: {
+        version: 1,
+        activationKey: req.body.activationKey,
+        wakeIdempotencyKey,
+        activated,
+        wakeRepaired: wakeResult.repaired,
+      },
+    });
   });
 
   router.post("/issues/:id/checkout", validate(checkoutIssueSchema), async (req, res) => {

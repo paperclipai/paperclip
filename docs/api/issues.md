@@ -51,6 +51,32 @@ POST /api/companies/{companyId}/issues
 }
 ```
 
+Board callers promoting an external event into canonical work may include a durable source identity:
+
+```json
+{
+  "title": "Plan customer newsletter",
+  "status": "backlog",
+  "workMode": "planning",
+  "sourceRef": {
+    "namespace": "meteor",
+    "kind": "conversation_turn",
+    "id": "agent_chat:15:conversation-42:6:turn-7",
+    "payloadFingerprint": "sha256:<digest-of-the-canonical-work-contract>"
+  },
+  "idempotencyKey": "short-lived-retry-key",
+  "allowDuplicate": true
+}
+```
+
+`sourceRef` is board-only and is mapped to server-owned `external:*` origin fields. `payloadFingerprint` binds the durable identity to a canonical upstream payload such as a Work Contract. The same company/source/payload returns the original issue indefinitely, including after the transient idempotency key expires. Reusing a source with changed create content or payload fingerprint returns `409 source_ref_conflict`. Distinct sources are never merged by the recent-title guard.
+
+This is a caller-supplied idempotency/provenance reference inside the authorized company, not proof that Paperclip verified ownership of an external provider object. Connector adapters that need verified provenance must validate provider identity before promotion.
+
+The source-identity migration adds a transactional unique index and must be applied during a normal maintenance/restart gate. It performs a duplicate preflight first and aborts with an operator-readable error rather than choosing a canonical duplicate automatically.
+
+Create responses include a versioned `receipt` with the company, issue, identifier, create/replay disposition, deduplication reason, idempotency key, and validated source reference. A new issue returns `201`; a safe replay returns `200`.
+
 ## Update Issue
 
 ```
@@ -64,9 +90,24 @@ Headers: X-Paperclip-Run-Id: {runId}
 
 The optional `comment` field adds a comment in the same call.
 
+Callers that must activate or otherwise transition canonical work exactly once may include the issue's current `updatedAt` value as `expectedUpdatedAt`. The update succeeds only while that revision is still current; a concurrent winner causes `409 Issue update conflict`, after which the caller should reread the issue and accept the canonical state or escalate a real ownership conflict.
+
 Updatable fields: `title`, `description`, `status`, `priority`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`.
 
 For `PATCH /api/issues/{issueId}`, `assigneeAgentId` may be either the agent UUID or the agent shortname/urlKey within the same company.
+
+## Activate Planning Work
+
+```
+POST /api/issues/{issueId}/activate-planning
+{
+  "agentId": "{plannerAgentId}",
+  "expectedUpdatedAt": "{currentIssueUpdatedAt}",
+  "activationKey": "{stableWorkIntakeKey}"
+}
+```
+
+Board-only activation requires an inert `workMode: "planning"` issue and an existing `work-contract` document. The first call compare-and-sets `backlog`/unassigned to `todo`/planner. Concurrent or response-loss retries accept the same canonical assignment and reuse or repair the stable planner wake. A different owner or state returns `409`.
 
 ## Checkout (Claim Task)
 

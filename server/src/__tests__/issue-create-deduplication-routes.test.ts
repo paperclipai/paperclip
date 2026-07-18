@@ -1,10 +1,11 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
+  agentWakeupRequests,
   agents,
   companies,
   createDb,
@@ -46,7 +47,9 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
 
   afterEach(async () => {
     await db.delete(activityLog);
+    await db.delete(agentWakeupRequests);
     await db.delete(issueCreateIdempotencyKeys);
+    await db.delete(activityLog);
     await db.delete(issues);
     await db.delete(heartbeatRuns);
     await db.delete(agents);
@@ -57,11 +60,11 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
     await tempDb?.cleanup();
   });
 
-  function createApp() {
+  function createApp(options: Parameters<typeof issueRoutes>[2] = {}) {
     const app = express();
     app.use(express.json());
     app.use(actorMiddleware(db, { deploymentMode: "local_trusted" }));
-    app.use("/api", issueRoutes(db, {} as any));
+    app.use("/api", issueRoutes(db, {} as any, options));
     app.use(errorHandler);
     return app;
   }
@@ -85,6 +88,18 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
       priority: "medium",
     }).returning();
     return parent;
+  }
+
+  async function seedAgent(companyId: string) {
+    const [agent] = await db.insert(agents).values({
+      companyId,
+      name: "Planner",
+      role: "planner",
+      adapterType: "process",
+      adapterConfig: {},
+      status: "idle",
+    }).returning();
+    return agent;
   }
 
   it("replays the existing issue for the same company idempotency key", async () => {
@@ -113,6 +128,327 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
       deduplicationReason: "idempotency_key",
     });
     expect(await db.select().from(issueCreateIdempotencyKeys)).toHaveLength(1);
+  });
+
+  it("returns a durable canonical receipt for an external source after transient key expiry", async () => {
+    const companyId = await seedCompany();
+    const app = createApp();
+    const body = {
+      title: "Plan customer newsletter",
+      status: "backlog",
+      workMode: "planning",
+      allowDuplicate: true,
+      idempotencyKey: "meteor:conversation-1:turn-1",
+      sourceRef: { namespace: "meteor", kind: "conversation_turn", id: "conversation-1:turn-1" },
+    };
+
+    const first = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send(body)
+      .expect(201);
+
+    await db.delete(issueCreateIdempotencyKeys);
+
+    const replay = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({ ...body, idempotencyKey: "meteor:replacement-transient-key" })
+      .expect(200);
+
+    expect(first.body.receipt).toEqual({
+      version: 1,
+      companyId,
+      issueId: first.body.id,
+      identifier: first.body.identifier,
+      created: true,
+      deduplicationReason: null,
+      idempotencyKey: body.idempotencyKey,
+      sourceRef: body.sourceRef,
+    });
+    expect(replay.body).toMatchObject({
+      id: first.body.id,
+      deduplicated: true,
+      deduplicationReason: "source_ref",
+      receipt: {
+        issueId: first.body.id,
+        created: false,
+        deduplicationReason: "source_ref",
+        idempotencyKey: "meteor:replacement-transient-key",
+        sourceRef: body.sourceRef,
+      },
+    });
+    const [stored] = await db.select().from(issues).where(eq(issues.id, first.body.id));
+    expect(stored).toMatchObject({
+      originKind: "external:meteor:conversation_turn",
+      originId: "conversation-1:turn-1",
+    });
+    expect(stored.originFingerprint).toMatch(/^sha256:[a-f0-9]{64}$/);
+    const repairedActivities = await db.select().from(activityLog).where(eq(activityLog.entityId, first.body.id));
+    expect(repairedActivities.filter((row) => row.action === "issue.created")).toHaveLength(1);
+  });
+
+  it("serializes concurrent external-source submissions into one issue", async () => {
+    const companyId = await seedCompany();
+    const app = createApp();
+    const body = {
+      title: "Prepare launch proposal",
+      status: "backlog",
+      workMode: "planning",
+      sourceRef: { namespace: "meteor", kind: "conversation_turn", id: "conversation-2:turn-4" },
+      allowDuplicate: true,
+    };
+
+    const responses = await Promise.all([
+      request(app).post(`/api/companies/${companyId}/issues`).send(body),
+      request(app).post(`/api/companies/${companyId}/issues`).send(body),
+    ]);
+
+    expect(responses.map((response) => response.status).sort()).toEqual([200, 201]);
+    expect(responses[0].body.id).toBe(responses[1].body.id);
+    expect(await db.select().from(issues)).toHaveLength(1);
+  });
+
+  it("rejects changed content for an already-linked external source", async () => {
+    const companyId = await seedCompany();
+    const app = createApp();
+    const sourceRef = { namespace: "meteor", kind: "conversation_turn", id: "conversation-3:turn-2" };
+    const first = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({ title: "Create a proposal", status: "backlog", sourceRef, allowDuplicate: true })
+      .expect(201);
+
+    const conflict = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({ title: "Create a different proposal", status: "backlog", sourceRef, allowDuplicate: true })
+      .expect(409);
+
+    expect(conflict.body).toMatchObject({
+      code: "source_ref_conflict",
+      details: { issueId: first.body.id, sourceRef },
+    });
+    expect(await db.select().from(issues)).toHaveLength(1);
+  });
+
+  it("binds the durable source receipt to the caller's canonical payload fingerprint", async () => {
+    const companyId = await seedCompany();
+    const app = createApp();
+    const baseSource = { namespace: "meteor", kind: "conversation_turn", id: "conversation-3:turn-3" };
+    await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({
+        title: "Create a proposal",
+        status: "backlog",
+        sourceRef: { ...baseSource, payloadFingerprint: `sha256:${"a".repeat(64)}` },
+        allowDuplicate: true,
+      })
+      .expect(201);
+
+    await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({
+        title: "Create a proposal",
+        status: "backlog",
+        sourceRef: { ...baseSource, payloadFingerprint: `sha256:${"b".repeat(64)}` },
+        allowDuplicate: true,
+      })
+      .expect(409);
+  });
+
+  it("does not merge different source turns that have the same title", async () => {
+    const companyId = await seedCompany();
+    const app = createApp();
+    const first = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({
+        title: "Create newsletter",
+        status: "backlog",
+        sourceRef: { namespace: "meteor", kind: "conversation_turn", id: "conversation-4:turn-1" },
+      })
+      .expect(201);
+    const second = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({
+        title: "Create newsletter",
+        status: "backlog",
+        sourceRef: { namespace: "meteor", kind: "conversation_turn", id: "conversation-4:turn-2" },
+      })
+      .expect(201);
+
+    expect(second.body.id).not.toBe(first.body.id);
+    expect(await db.select().from(issues)).toHaveLength(2);
+  });
+
+  it("rejects malformed external source references at the API edge", async () => {
+    const companyId = await seedCompany();
+    const app = createApp();
+    await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({
+        title: "Invalid source",
+        sourceRef: { namespace: "Meteor Org", kind: "conversation/turn", id: "" },
+      })
+      .expect(400);
+    expect(await db.select().from(issues)).toHaveLength(0);
+  });
+
+  it("allows only one concurrent update for a canonical issue revision", async () => {
+    const companyId = await seedCompany();
+    const app = createApp();
+    const created = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({
+        title: "Plan customer launch",
+        status: "backlog",
+        workMode: "planning",
+        sourceRef: { namespace: "meteor", kind: "conversation_turn", id: "conversation-5:turn-1" },
+      })
+      .expect(201);
+
+    const responses = await Promise.all([
+      request(app)
+        .patch(`/api/issues/${created.body.id}`)
+        .send({ title: "Plan customer launch A", expectedUpdatedAt: created.body.updatedAt }),
+      request(app)
+        .patch(`/api/issues/${created.body.id}`)
+        .send({ title: "Plan customer launch B", expectedUpdatedAt: created.body.updatedAt }),
+    ]);
+
+    expect(responses.map((response) => response.status).sort()).toEqual([200, 409]);
+    expect(responses.find((response) => response.status === 409)?.body).toMatchObject({
+      error: "Issue update conflict",
+      details: {
+        code: "issue_update_conflict",
+        issueId: created.body.id,
+        expectedUpdatedAt: created.body.updatedAt,
+      },
+    });
+    const [stored] = await db.select().from(issues).where(eq(issues.id, created.body.id));
+    expect(["Plan customer launch A", "Plan customer launch B"]).toContain(stored.title);
+  });
+
+  it("atomically activates planning once and reuses the durable wake on a concurrent retry", async () => {
+    const companyId = await seedCompany();
+    const agent = await seedAgent(companyId);
+    const enqueueWakeup = vi.fn(async (agentId: string, options: Record<string, any>) => {
+      const [wake] = await db.insert(agentWakeupRequests).values({
+        companyId,
+        agentId,
+        source: options.source,
+        triggerDetail: options.triggerDetail,
+        reason: options.reason,
+        payload: options.payload,
+        status: "queued",
+        requestedByActorType: options.requestedByActorType,
+        requestedByActorId: options.requestedByActorId,
+        idempotencyKey: options.idempotencyKey,
+      }).returning();
+      return wake;
+    });
+    const app = createApp({ activationEnqueueWakeup: enqueueWakeup as any });
+    const contractBody = JSON.stringify({
+      version: "meteor.work.v1",
+      phase: "ready",
+      planningAgentId: agent.id,
+      completionPolicy: "issue_done_and_all_evidence_verified",
+      source: {
+        channel: "agent_chat",
+        conversationId: "conversation-6",
+        turnId: "turn-1",
+        capturedAt: "2026-07-18T10:00:00.000Z",
+      },
+    });
+    const contractFingerprint = `sha256:${createHash("sha256").update(contractBody).digest("hex")}`;
+    const created = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({
+        title: "Plan launch",
+        status: "backlog",
+        workMode: "planning",
+        sourceRef: {
+          namespace: "meteor",
+          kind: "conversation_turn",
+          id: "conversation-6:turn-1",
+          payloadFingerprint: contractFingerprint,
+        },
+      })
+      .expect(201);
+    await request(app)
+      .put(`/api/issues/${created.body.id}/documents/work-contract`)
+      .send({ title: "Work Contract", format: "markdown", body: contractBody })
+      .expect(201);
+    const activation = {
+      agentId: agent.id,
+      expectedUpdatedAt: created.body.updatedAt,
+      activationKey: "meteor-work-v1:activation-1",
+    };
+
+    const responses = await Promise.all([
+      request(app).post(`/api/issues/${created.body.id}/activate-planning`).send(activation),
+      request(app).post(`/api/issues/${created.body.id}/activate-planning`).send(activation),
+    ]);
+
+    expect(responses.map((response) => response.status)).toEqual([200, 200]);
+    expect(responses.every((response) => response.body.status === "todo")).toBe(true);
+    expect(responses.every((response) => response.body.assigneeAgentId === agent.id)).toBe(true);
+    expect(enqueueWakeup).toHaveBeenCalledTimes(1);
+    expect(await db.select().from(agentWakeupRequests)).toHaveLength(1);
+
+    await request(app)
+      .post(`/api/issues/${created.body.id}/activate-planning`)
+      .send({ agentId: agent.id, activationKey: "a-different-client-retry-key" })
+      .expect(200);
+    expect(enqueueWakeup).toHaveBeenCalledTimes(1);
+
+    const [firstWake] = await db.select().from(agentWakeupRequests);
+    await db.update(agentWakeupRequests).set({ status: "failed" }).where(eq(agentWakeupRequests.id, firstWake.id));
+    await request(app)
+      .post(`/api/issues/${created.body.id}/activate-planning`)
+      .send({ agentId: agent.id, activationKey: "repair-after-failed-wake" })
+      .expect(200);
+    expect(enqueueWakeup).toHaveBeenCalledTimes(2);
+    const activities = await db.select().from(activityLog).where(eq(activityLog.entityId, created.body.id));
+    expect(activities.filter((row) => row.action === "issue.created")).toHaveLength(1);
+    expect(activities.filter((row) => row.action === "issue.planning_activated")).toHaveLength(1);
+  });
+
+  it("refuses activation when the source-bound document is not a valid planning contract", async () => {
+    const companyId = await seedCompany();
+    const agent = await seedAgent(companyId);
+    const enqueueWakeup = vi.fn();
+    const app = createApp({ activationEnqueueWakeup: enqueueWakeup as any });
+    const contractBody = "{}";
+    const contractFingerprint = `sha256:${createHash("sha256").update(contractBody).digest("hex")}`;
+    const created = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({
+        title: "Reject invalid planning contract",
+        status: "backlog",
+        workMode: "planning",
+        sourceRef: {
+          namespace: "meteor",
+          kind: "conversation_turn",
+          id: "conversation-invalid:turn-1",
+          payloadFingerprint: contractFingerprint,
+        },
+      })
+      .expect(201);
+    await request(app)
+      .put(`/api/issues/${created.body.id}/documents/work-contract`)
+      .send({ title: "Work Contract", format: "markdown", body: contractBody })
+      .expect(201);
+
+    await request(app)
+      .post(`/api/issues/${created.body.id}/activate-planning`)
+      .send({
+        agentId: agent.id,
+        expectedUpdatedAt: created.body.updatedAt,
+        activationKey: "invalid-contract-attempt",
+      })
+      .expect(409, { error: "Persisted work-contract is not a valid planning contract" });
+
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+    const [stored] = await db.select().from(issues).where(eq(issues.id, created.body.id));
+    expect(stored.status).toBe("backlog");
+    expect(stored.assigneeAgentId).toBeNull();
   });
 
   it("expires old idempotency keys before replay lookup", async () => {

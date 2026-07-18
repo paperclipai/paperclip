@@ -638,6 +638,8 @@ export type {
   IssueWatchdog,
   IssueWatchdogStatus,
   IssueWatchdogSummary,
+  IssueCreateReceipt,
+  IssueCreateDeduplicationReason,
 } from "./issue.js";
 export type {
   IssueTreeControlPreview,

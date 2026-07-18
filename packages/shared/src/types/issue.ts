@@ -702,6 +702,26 @@ export interface IssueWatchdog extends IssueWatchdogSummary {
   updatedByRunId: string | null;
 }
 
+export interface IssueCreateSourceRef {
+  namespace: string;
+  kind: string;
+  id: string;
+  payloadFingerprint?: string;
+}
+
+export type IssueCreateDeduplicationReason = "source_ref" | "idempotency_key" | "recent_open_title";
+
+export interface IssueCreateReceipt {
+  version: 1;
+  companyId: string;
+  issueId: string;
+  identifier: string | null;
+  created: boolean;
+  deduplicationReason: IssueCreateDeduplicationReason | null;
+  idempotencyKey: string | null;
+  sourceRef: IssueCreateSourceRef | null;
+}
+
 export interface Issue {
   id: string;
   companyId: string;
@@ -730,6 +750,7 @@ export interface Issue {
   originId?: string | null;
   originRunId?: string | null;
   originFingerprint?: string | null;
+  originPayloadFingerprint?: string | null;
   requestDepth: number;
   billingCode: string | null;
   assigneeAdapterOverrides: IssueAssigneeAdapterOverrides | null;

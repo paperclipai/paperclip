@@ -586,7 +586,14 @@ type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
   trustExplicitResponsibleUserId?: boolean;
   idempotencyKey?: string | null;
   allowDuplicate?: boolean;
-  onDeduplicated?: (reason: "idempotency_key" | "recent_open_title") => void;
+  externalSource?: {
+    originKind: `external:${string}:${string}`;
+    originId: string;
+    fingerprint: string;
+    payloadFingerprint: string | null;
+    sourceRef: { namespace: string; kind: string; id: string };
+  } | null;
+  onDeduplicated?: (reason: "source_ref" | "idempotency_key" | "recent_open_title") => void;
 };
 type IssueChildCreateInput = IssueCreateInput & {
   acceptanceCriteria?: string[];
@@ -2507,6 +2514,7 @@ const issueListSelect = {
   originId: issues.originId,
   originRunId: issues.originRunId,
   originFingerprint: issues.originFingerprint,
+  originPayloadFingerprint: issues.originPayloadFingerprint,
   requestDepth: issues.requestDepth,
   billingCode: issues.billingCode,
   assigneeAdapterOverrides: issues.assigneeAdapterOverrides,
@@ -6119,6 +6127,7 @@ export function issueService(db: Db) {
         trustExplicitResponsibleUserId,
         idempotencyKey: rawIdempotencyKey,
         allowDuplicate,
+        externalSource,
         onDeduplicated,
         ...issueData
       } = data;
@@ -6143,7 +6152,11 @@ export function issueService(db: Db) {
       return db.transaction(async (tx) => {
         const idempotencyKey = rawIdempotencyKey?.trim() || null;
         const normalizedTitle = normalizeCreateIssueTitle(issueData.title);
-        if (allowDuplicate === false) {
+        if (externalSource) {
+          const sourceGuardKey = `issue-create:source:${companyId}:${externalSource.originKind}:${externalSource.originId}`;
+          await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${sourceGuardKey}, 0))`);
+        }
+        if (allowDuplicate === false && !externalSource) {
           const titleGuardKey =
             `issue-create:title:${companyId}:${issueData.parentId ?? "root"}:${normalizedTitle}`;
           await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${titleGuardKey}, 0))`);
@@ -6154,7 +6167,27 @@ export function issueService(db: Db) {
         }
 
         let existingIssue: typeof issues.$inferSelect | undefined;
-        let deduplicationReason: "idempotency_key" | "recent_open_title" | null = null;
+        let deduplicationReason: "source_ref" | "idempotency_key" | "recent_open_title" | null = null;
+        if (externalSource) {
+          [existingIssue] = await tx
+            .select()
+            .from(issues)
+            .where(and(
+              eq(issues.companyId, companyId),
+              eq(issues.originKind, externalSource.originKind),
+              eq(issues.originId, externalSource.originId),
+            ))
+            .limit(1);
+          if (existingIssue && existingIssue.originFingerprint !== externalSource.fingerprint) {
+            throw conflict("External source is already linked to different work", {
+              code: "source_ref_conflict",
+              issueId: existingIssue.id,
+              identifier: existingIssue.identifier,
+              sourceRef: externalSource.sourceRef,
+            });
+          }
+          if (existingIssue) deduplicationReason = "source_ref";
+        }
         if (idempotencyKey) {
           const idempotencyKeyRetentionCutoff = new Date(Date.now() - ISSUE_CREATE_IDEMPOTENCY_KEY_RETENTION_MS);
           await tx.execute(sql`
@@ -6169,7 +6202,7 @@ export function issueService(db: Db) {
             )
           `);
 
-          [existingIssue] = await tx
+          const [keyedIssue] = await tx
             .select()
             .from(issueCreateIdempotencyKeys)
             .innerJoin(issues, eq(issueCreateIdempotencyKeys.issueId, issues.id))
@@ -6179,9 +6212,32 @@ export function issueService(db: Db) {
             ))
             .limit(1)
             .then((rows) => rows.map((row) => row.issues));
-          if (existingIssue) deduplicationReason = "idempotency_key";
+          if (keyedIssue && existingIssue && keyedIssue.id !== existingIssue.id) {
+            throw conflict("Idempotency key is already linked to different work", {
+              code: "idempotency_conflict",
+              issueId: keyedIssue.id,
+              identifier: keyedIssue.identifier,
+              sourceRef: externalSource?.sourceRef ?? null,
+            });
+          }
+          if (!existingIssue && keyedIssue) {
+            existingIssue = keyedIssue;
+            if (externalSource && (
+              existingIssue.originKind !== externalSource.originKind
+              || existingIssue.originId !== externalSource.originId
+              || existingIssue.originFingerprint !== externalSource.fingerprint
+            )) {
+              throw conflict("Idempotency key is already linked to different work", {
+                code: "idempotency_conflict",
+                issueId: existingIssue.id,
+                identifier: existingIssue.identifier,
+                sourceRef: externalSource.sourceRef,
+              });
+            }
+            deduplicationReason = externalSource ? "source_ref" : "idempotency_key";
+          }
         }
-        if (!existingIssue && allowDuplicate === false) {
+        if (!existingIssue && allowDuplicate === false && !externalSource) {
           [existingIssue] = await tx
             .select()
             .from(issues)
@@ -6349,7 +6405,7 @@ export function issueService(db: Db) {
           explicitResponsibleUserId: issueData.responsibleUserId ?? null,
           createdByUserId: issueData.createdByUserId ?? null,
           parentId: issueData.parentId ?? null,
-          originKind: issueData.originKind ?? "manual",
+          originKind: externalSource?.originKind ?? issueData.originKind ?? "manual",
           originRunId: issueData.originRunId ?? null,
           actorRunId: actorRunId ?? null,
           actorResponsibleUserId: actorResponsibleUserId ?? null,
@@ -6360,7 +6416,14 @@ export function issueService(db: Db) {
           ...issueData,
           responsibleUserId,
           requestDepth: clampIssueRequestDepth(issueData.requestDepth),
-          originKind: issueData.originKind ?? "manual",
+          originKind: externalSource?.originKind ?? issueData.originKind ?? "manual",
+          ...(externalSource
+            ? {
+              originId: externalSource.originId,
+              originFingerprint: externalSource.fingerprint,
+              originPayloadFingerprint: externalSource.payloadFingerprint,
+            }
+            : {}),
           goalId: resolveIssueGoalId({
             projectId: issueData.projectId,
             goalId: issueData.goalId,
@@ -6441,6 +6504,7 @@ export function issueService(db: Db) {
         blockedByIssueIds?: string[];
         actorAgentId?: string | null;
         actorUserId?: string | null;
+        expectedUpdatedAt?: Date;
       },
       dbOrTx: any = db,
     ) => {
@@ -6456,6 +6520,7 @@ export function issueService(db: Db) {
         blockedByIssueIds,
         actorAgentId,
         actorUserId,
+        expectedUpdatedAt,
         ...issueData
       } = data;
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
@@ -6471,7 +6536,9 @@ export function issueService(db: Db) {
 
       const patch: Partial<typeof issues.$inferInsert> = {
         ...issueData,
-        updatedAt: new Date(),
+        updatedAt: expectedUpdatedAt
+          ? new Date(Math.max(Date.now(), existing.updatedAt.getTime() + 1))
+          : new Date(),
       };
       if (issueData.requestDepth !== undefined) {
         patch.requestDepth = clampIssueRequestDepth(issueData.requestDepth);
@@ -6605,9 +6672,31 @@ export function issueService(db: Db) {
         const updated = await tx
           .update(issues)
           .set(patch)
-          .where(eq(issues.id, id))
+          .where(and(
+            eq(issues.id, id),
+            expectedUpdatedAt
+              ? and(
+                gte(issues.updatedAt, expectedUpdatedAt),
+                lt(issues.updatedAt, new Date(expectedUpdatedAt.getTime() + 1)),
+              )
+              : undefined,
+          ))
           .returning()
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
+        if (!updated && expectedUpdatedAt) {
+          const current = await tx
+            .select({ updatedAt: issues.updatedAt })
+            .from(issues)
+            .where(eq(issues.id, id))
+            .then((rows: Array<{ updatedAt: Date }>) => rows[0] ?? null);
+          if (!current) return null;
+          throw conflict("Issue update conflict", {
+            code: "issue_update_conflict",
+            issueId: id,
+            expectedUpdatedAt: expectedUpdatedAt.toISOString(),
+            currentUpdatedAt: current.updatedAt.toISOString(),
+          });
+        }
         if (!updated) return null;
         if (
           (updated.status === "done" || updated.status === "cancelled") &&
