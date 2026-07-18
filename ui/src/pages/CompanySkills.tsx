@@ -469,7 +469,7 @@ function CompatChip({ compatibility }: { compatibility: CompanySkillCompatibilit
       icon: HelpCircle,
       label: "Unknown format",
       tooltip: "Cortex could not validate this skill as Agent Skills markdown. Install at your own risk.",
-      className: "border-yellow-500/40 bg-yellow-500/10 text-yellow-200",
+      className: "border-yellow-500/40 bg-yellow-500/10 text-yellow-800 dark:text-yellow-200",
     },
     invalid: {
       icon: XOctagon,
@@ -3873,31 +3873,6 @@ export function CompanySkills() {
     },
   });
 
-  const createSkill = useMutation({
-    mutationFn: (payload: CompanySkillCreateRequest) => companySkillsApi.create(selectedCompanyId!, payload),
-    onSuccess: async (skill) => {
-      await queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.list(selectedCompanyId!) });
-      navigate(routeForSkill(skill));
-      setCreateDialogOpen(false);
-      setCreateError(null);
-      setCreateDraft(buildBlankSkillDraft());
-      pushToast({
-        tone: "success",
-        title: skill.forkedFromSkillId ? "Skill fork created" : "Skill created",
-        body: `${skill.name} is now editable in the Cortex workspace.`,
-      });
-    },
-    onError: (error) => {
-      const message = error instanceof Error ? error.message : "Failed to create skill.";
-      setCreateError(message);
-      pushToast({
-        tone: "error",
-        title: "Skill creation failed",
-        body: message,
-      });
-    },
-  });
-
   const scanProjects = useMutation({
     mutationFn: () => companySkillsApi.scanProjects(selectedCompanyId!),
     onMutate: () => {
@@ -4485,26 +4460,6 @@ export function CompanySkills() {
           });
         }}
       />
-
-      <Dialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
-        <DialogContent className="flex max-h-[85vh] flex-col overflow-y-auto sm:max-w-3xl">
-          <DialogHeader>
-            <DialogTitle>{createDraft.forkedFromSkillId ? "Fork skill" : "Create a new skill"}</DialogTitle>
-            <DialogDescription>
-              {createDraft.forkedFromSkillId
-                ? "Review the fork metadata and create an editable company copy."
-                : "Create an editable company skill in the Cortex workspace."}
-            </DialogDescription>
-          </DialogHeader>
-          <NewSkillWizard
-            initialDraft={createDraft}
-            onCreate={(payload) => createSkill.mutate(payload)}
-            isPending={createSkill.isPending}
-            error={createError}
-            onCancel={() => setCreateDialogOpen(false)}
-          />
-        </DialogContent>
-      </Dialog>
 
       <Dialog open={importDialogOpen} onOpenChange={setImportDialogOpen}>
         <DialogContent className="sm:max-w-md">
