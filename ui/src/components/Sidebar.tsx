@@ -22,6 +22,7 @@ import {
   AppWindow,
   MessagesSquare,
   GanttChartSquare,
+  ShieldCheck,
 } from "lucide-react";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -241,6 +242,7 @@ export function Sidebar() {
               aria-hidden="true"
             />
           ) : null}
+          <SidebarNavItem to="/qsl-review" label="QSL Review" icon={ShieldCheck} />
           <SidebarNavItem to="/artifacts" label="Artifacts" icon={Package} />
           <SidebarNavItem to="/skills" label="Skills" icon={Boxes} />
           {showWorkspacesLink ? (

@@ -67,6 +67,8 @@ const explicitOpenApiCoverageExclusions = new Set([
   "cases.ts",
   // Smoke lab routes are experimental and not yet represented in the public OpenAPI document.
   "smoke-lab.ts",
+  // QSL bridge routes are experimental and not yet represented in the public OpenAPI document.
+  "qsl-bridge.ts",
 ]);
 
 function createApp() {
