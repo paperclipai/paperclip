@@ -147,25 +147,32 @@ async function buildHermesSkillSnapshot(config: Record<string, unknown>): Promis
   // Paperclip-managed skills
   for (const entry of paperclipEntries) {
     const desired = desiredSet.has(entry.key);
-    const sourceMissing = entry.sourceStatus === "missing";
-    if (desired && sourceMissing) {
-      warnings.push(
-        entry.missingDetail || `Desired managed skill "${entry.key}" has no executable source path.`,
-      );
+    const skillMdPath = path.join(entry.source, "SKILL.md");
+    const skillMdStat = desired ? await fs.lstat(skillMdPath).catch(() => null) : null;
+    const sourceMissing = entry.sourceStatus === "missing" || (desired && !skillMdStat);
+    const sourceInvalid = desired && !!skillMdStat && (skillMdStat.isSymbolicLink() || !skillMdStat.isFile());
+    const sourceUnavailable = sourceMissing || sourceInvalid;
+    const unavailableDetail = entry.sourceStatus === "missing"
+      ? entry.missingDetail || `Desired managed skill "${entry.key}" has no executable source path.`
+      : sourceInvalid
+        ? `Desired managed skill "${entry.key}" SKILL.md must be a regular file and not a symbolic link.`
+        : `Desired managed skill "${entry.key}" is missing SKILL.md.`;
+    if (desired && sourceUnavailable) {
+      warnings.push(unavailableDetail);
     }
     entries.push({
       key: entry.key,
       runtimeName: entry.runtimeName,
       desired,
       managed: true,
-      state: desired && sourceMissing ? "missing" : desired ? "configured" : "available",
+      state: desired && sourceUnavailable ? "missing" : desired ? "configured" : "available",
       origin: "company_managed",
       originLabel: "Managed by Paperclip",
       readOnly: false,
       sourcePath: entry.source,
       targetPath: null,
-      detail: desired && sourceMissing
-        ? entry.missingDetail || "The managed skill source is unavailable; execution will fail closed."
+      detail: desired && sourceUnavailable
+        ? `${unavailableDetail} Execution will fail closed.`
         : desired
           ? "Will be materialized ephemerally and preloaded with Hermes --skills on the next run."
           : null,

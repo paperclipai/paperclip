@@ -13,7 +13,7 @@ interface PreparedHermesManagedSkills {
   cleanup: () => Promise<void>;
 }
 
-const HERMES_PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+const HERMES_PROFILE_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 const SAFE_SEGMENT_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
 function configEnv(config: Record<string, unknown>): Record<string, unknown> {
@@ -56,13 +56,22 @@ function readProfile(extraArgs: unknown): string | null {
   return null;
 }
 
+function absoluteEnvPath(value: string | null, label: "HERMES_HOME" | "HOME"): string | null {
+  if (!value) return null;
+  if (!path.isAbsolute(value)) throw new Error(`${label} must be an absolute path.`);
+  if (value.split(/[\\/]+/).includes("..")) {
+    throw new Error(`${label} must not contain traversal components.`);
+  }
+  return path.normalize(value);
+}
+
 function resolveHermesSkillsHome(config: Record<string, unknown>): string {
   const env = configEnv(config);
-  const explicitHermesHome = envString(env.HERMES_HOME);
-  const home = envString(env.HOME);
+  const explicitHermesHome = absoluteEnvPath(envString(env.HERMES_HOME), "HERMES_HOME");
+  const home = absoluteEnvPath(envString(env.HOME), "HOME");
   const hermesHome = explicitHermesHome
-    ? path.resolve(explicitHermesHome)
-    : path.join(home ? path.resolve(home) : os.homedir(), ".hermes");
+    ? explicitHermesHome
+    : path.join(home ?? os.homedir(), ".hermes");
   const profile = readProfile(config.extraArgs);
   if (profile && !HERMES_PROFILE_NAME_RE.test(profile)) {
     throw new Error(`Invalid Hermes profile name ${JSON.stringify(profile)}.`);
@@ -85,7 +94,10 @@ function safeRunSegment(runId: string): string {
 
 async function copySkillDirectory(source: string, target: string): Promise<void> {
   const sourceRoot = path.resolve(source);
-  const stat = await fs.stat(sourceRoot);
+  const stat = await fs.lstat(sourceRoot);
+  if (stat.isSymbolicLink()) {
+    throw new Error(`Managed skill source must not be a symbolic link: ${sourceRoot}`);
+  }
   if (!stat.isDirectory()) throw new Error(`Managed skill source is not a directory: ${sourceRoot}`);
   await fs.mkdir(path.dirname(target), { recursive: true });
   await fs.cp(sourceRoot, target, {
@@ -115,9 +127,16 @@ export async function prepareHermesManagedSkills(input: {
     if (entry.sourceStatus === "missing") {
       throw new Error(entry.missingDetail || `Managed Hermes skill source is missing: ${entry.source}`);
     }
-    await fs.stat(path.join(entry.source, "SKILL.md")).catch(() => {
+    const skillMdPath = path.join(entry.source, "SKILL.md");
+    const skillMdStat = await fs.lstat(skillMdPath).catch(() => null);
+    if (!skillMdStat) {
       throw new Error(`Managed Hermes skill source is missing SKILL.md: ${entry.source}`);
-    });
+    }
+    if (skillMdStat.isSymbolicLink() || !skillMdStat.isFile()) {
+      throw new Error(
+        `Managed Hermes skill SKILL.md must be a regular file and not a symbolic link: ${skillMdPath}`,
+      );
+    }
   }
 
   const skillsHome = resolveHermesSkillsHome(input.config);

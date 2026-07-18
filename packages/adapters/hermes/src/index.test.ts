@@ -1,4 +1,8 @@
-import { expect, test } from "vitest";
+import { afterEach, expect, test } from "vitest";
+
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 
 import {
   createHermesGatewayServerAdapter,
@@ -7,6 +11,12 @@ import {
   hermesGatewayType,
 } from "./index.js";
 import { createServerAdapter as createGatewayServerAdapterFromSubpath } from "./gateway/index.js";
+
+const tempRoots: string[] = [];
+
+afterEach(async () => {
+  await Promise.all(tempRoots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })));
+});
 
 test("root package export exposes Paperclip external adapter entrypoint", () => {
   const adapter = createServerAdapter();
@@ -60,4 +70,29 @@ test("Hermes adapter exposes bundled Paperclip task bridge skill", async () => {
   });
 
   expect(snapshot?.entries.some((entry) => entry.runtimeName === "paperclip-task-bridge")).toBe(true);
+});
+
+test("Hermes snapshot reports a desired source without SKILL.md as missing", async () => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-hermes-snapshot-"));
+  tempRoots.push(tempRoot);
+  const source = path.join(tempRoot, "paperclip");
+  await fs.mkdir(source, { recursive: true });
+  const adapter = createServerAdapter();
+
+  const snapshot = await adapter.listSkills?.({
+    adapterType: "hermes_local",
+    agentId: "11111111-1111-4111-8111-111111111111",
+    companyId: "22222222-2222-4222-8222-222222222222",
+    config: {
+      paperclipRuntimeSkills: [
+        { key: "paperclipai/paperclip/paperclip", runtimeName: "paperclip", source },
+      ],
+      paperclipSkillSync: { desiredSkills: ["paperclipai/paperclip/paperclip"] },
+    },
+  });
+
+  expect(snapshot?.entries.find((entry) => entry.key === "paperclipai/paperclip/paperclip")).toMatchObject({
+    state: "missing",
+  });
+  expect(snapshot?.warnings).toContainEqual(expect.stringContaining("missing SKILL.md"));
 });

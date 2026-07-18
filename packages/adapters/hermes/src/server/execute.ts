@@ -19,6 +19,7 @@
  */
 
 import fs from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -419,7 +420,7 @@ export async function execute(
   const preparedManagedSkills = await prepareHermesManagedSkills({
     config,
     moduleDir: __moduleDir,
-    runId: ctx.runId || `paperclip-${Date.now()}`,
+    runId: ctx.runId || `paperclip-${randomUUID()}`,
   });
 
   // ── Build command args ─────────────────────────────────────────────────

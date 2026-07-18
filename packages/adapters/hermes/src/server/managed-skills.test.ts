@@ -104,6 +104,87 @@ describe("Hermes managed runtime skills", () => {
     ).rejects.toThrow("Managed source was not materialized");
   });
 
+  test("fails closed when the desired source directory is a symlink", async () => {
+    const realSource = await writeSkill(path.join(tempRoot, "runtime skills"), "paperclip-real");
+    const linkedSource = path.join(tempRoot, "paperclip-linked");
+    await fs.symlink(realSource, linkedSource);
+
+    await expect(
+      prepareHermesManagedSkills({
+        config: {
+          env: { HERMES_HOME: path.join(tempRoot, "hermes") },
+          paperclipRuntimeSkills: [
+            { key: "paperclip", runtimeName: "paperclip", source: linkedSource },
+          ],
+          paperclipSkillSync: { desiredSkills: ["paperclip"] },
+        },
+        moduleDir: tempRoot,
+        runId: "symlink-source",
+      }),
+    ).rejects.toThrow("must not be a symbolic link");
+  });
+
+  test("fails closed when the desired SKILL.md is a symlink", async () => {
+    const source = path.join(tempRoot, "runtime skills", "paperclip");
+    await fs.mkdir(source, { recursive: true });
+    const externalSkillMd = path.join(tempRoot, "external-SKILL.md");
+    await fs.writeFile(externalSkillMd, "---\nname: paperclip\n---\n", "utf8");
+    await fs.symlink(externalSkillMd, path.join(source, "SKILL.md"));
+
+    await expect(
+      prepareHermesManagedSkills({
+        config: {
+          env: { HERMES_HOME: path.join(tempRoot, "hermes") },
+          paperclipRuntimeSkills: [
+            { key: "paperclip", runtimeName: "paperclip", source },
+          ],
+          paperclipSkillSync: { desiredSkills: ["paperclip"] },
+        },
+        moduleDir: tempRoot,
+        runId: "symlink-skill-md",
+      }),
+    ).rejects.toThrow("SKILL.md must be a regular file and not a symbolic link");
+  });
+
+  test.each([
+    ["HERMES_HOME", "relative-hermes-home"],
+    ["HOME", "relative-home"],
+  ])("rejects a relative %s runtime root", async (envKey, unsafeValue) => {
+    const source = await writeSkill(path.join(tempRoot, "runtime skills"), "paperclip");
+
+    await expect(
+      prepareHermesManagedSkills({
+        config: {
+          env: { [envKey]: unsafeValue },
+          paperclipRuntimeSkills: [
+            { key: "paperclip", runtimeName: "paperclip", source },
+          ],
+          paperclipSkillSync: { desiredSkills: ["paperclip"] },
+        },
+        moduleDir: tempRoot,
+        runId: "relative-runtime-root",
+      }),
+    ).rejects.toThrow(`${envKey} must be an absolute path`);
+  });
+
+  test.each(["HERMES_HOME", "HOME"])("rejects traversal components in %s", async (envKey) => {
+    const source = await writeSkill(path.join(tempRoot, "runtime skills"), "paperclip");
+
+    await expect(
+      prepareHermesManagedSkills({
+        config: {
+          env: { [envKey]: `${tempRoot}/safe/../outside` },
+          paperclipRuntimeSkills: [
+            { key: "paperclip", runtimeName: "paperclip", source },
+          ],
+          paperclipSkillSync: { desiredSkills: ["paperclip"] },
+        },
+        moduleDir: tempRoot,
+        runId: "traversal-runtime-root",
+      }),
+    ).rejects.toThrow(`${envKey} must not contain traversal components`);
+  });
+
   test("rejects profile traversal and preserves argv-safe paths with spaces", async () => {
     const source = await writeSkill(path.join(tempRoot, "runtime skills"), "paperclip");
 
