@@ -451,6 +451,7 @@ describe.sequential("agent cross-tenant route authorization", () => {
 
     expect(res.status).toBe(403);
     expect(res.body.error).toContain("Board access required");
+    expect(mockAccessService.decide).not.toHaveBeenCalled();
     expect(mockAgentService.clearError).not.toHaveBeenCalled();
   });
 
