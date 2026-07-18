@@ -50,7 +50,6 @@ import { pluginRegistryService } from "../services/plugin-registry.js";
 import { accessService } from "../services/access.js";
 import {
   evaluateCompanyEnablement,
-  pluginCompanyEnablementService,
 } from "../services/plugin-company-enablement.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { pluginLifecycleManager } from "../services/plugin-lifecycle.js";
@@ -557,7 +556,6 @@ export function pluginRoutes(
   });
   const issuesSvc = issueService(db);
   const access = accessService(db);
-  const enablement = pluginCompanyEnablementService(registry);
   const instanceSettingsSvc = instanceSettingsService(db);
   const getExposedCompanySurfaces = async () =>
     (await instanceSettingsSvc.getVisibility()).companySurfaces;
@@ -768,14 +766,9 @@ export function pluginRoutes(
    * memberships hold it implicitly via role default grants; other
    * principals need an explicit principal_permission_grants row.
    * Enforcement shape mirrors assertCompanyPermission in routes/access.ts.
+   * Board-only: these management routes sit behind assertBoardOrgAccess; agent principals are intentionally not eligible.
    */
   async function assertPluginsManagePermission(req: Request, companyId: string): Promise<void> {
-    if (req.actor.type === "agent") {
-      if (!req.actor.agentId) throw forbidden("Agent authentication required");
-      const allowed = await access.hasPermission(companyId, "agent", req.actor.agentId, "plugins:manage");
-      if (!allowed) throw forbidden('Permission "plugins:manage" is required');
-      return;
-    }
     if (req.actor.type !== "board") throw unauthorized();
     if (isInstanceAdminActor(req)) return;
     const allowed = await access.canUser(companyId, req.actor.userId, "plugins:manage");

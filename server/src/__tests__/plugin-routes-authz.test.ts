@@ -1348,6 +1348,17 @@ describe.sequential("company plugin catalog and enablement authz", () => {
     );
   });
 
+  it("rejects enablement toggles from a member of another company", async () => {
+    const { app } = await createApp(boardActor({ companyIds: [companyB] }));
+
+    const res = await request(app)
+      .put(`/api/plugins/${pluginId}/companies/${companyA}/enablement`)
+      .send({ enabled: false });
+
+    expect(res.status).toBe(403);
+    expect(mockRegistry.upsertCompanySettings).not.toHaveBeenCalled();
+  });
+
   it("rejects a non-boolean enabled value", async () => {
     mockRegistry.getById.mockResolvedValue(catalogPluginRecord());
     const { app } = await createApp(boardActor());
