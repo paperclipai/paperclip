@@ -40,8 +40,25 @@ export interface FleetPatrolResult {
   after?: Record<string, unknown> | null;
 }
 
+export interface FleetPatrolExecutionHooks {
+  afterClearAgentErrorEvidenceRead?: () => Promise<void>;
+  beforeWorkspaceValidityLock?: () => Promise<void>;
+}
+
 const TERMINAL_RUN_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out"]);
 const ACTIVE_RUN_STATUSES = new Set(["queued", "running", "scheduled_retry"]);
+
+function processLossEvidenceReason(
+  runs: Array<{ status: string; errorCode: string | null }>,
+) {
+  if (runs[0]?.status !== "failed" || runs[0].errorCode !== "process_lost") {
+    return "error_cause_not_allowed";
+  }
+  if (runs[1]?.status === "failed" && runs[1].errorCode === "process_lost") {
+    return "repeated_error_cause";
+  }
+  return null;
+}
 
 function targetType(operation: string) {
   return operation === "clear_agent_error" ? "agent" : "issue";
@@ -117,6 +134,7 @@ export function fleetPatrolRemediationService(db: Db) {
       actor: FleetPatrolActor,
       input: FleetPatrolRequest,
       now = new Date(),
+      hooks: FleetPatrolExecutionHooks = {},
     ): Promise<FleetPatrolResult> =>
       db.transaction(async (tx) => {
         const finish = async (result: FleetPatrolResult) => {
@@ -152,6 +170,41 @@ export function fleetPatrolRemediationService(db: Db) {
         }
 
         if (input.operation === "clear_agent_error") {
+          const observedTarget = await tx
+            .select()
+            .from(agents)
+            .where(and(eq(agents.id, input.targetId), eq(agents.companyId, actor.companyId)))
+            .then((rows) => rows[0] ?? null);
+          if (!observedTarget) return finish({ allowed: false, reasonCode: "target_not_found", status: 403 });
+          if (observedTarget.status !== "error") {
+            return finish({ allowed: false, reasonCode: "agent_not_remediable", status: 409 });
+          }
+          if (!(await validateOrgChain(tx, observedTarget))) {
+            return finish({ allowed: false, reasonCode: "invalid_org_chain", status: 409 });
+          }
+          const observedLatestRuns = await tx
+            .select({
+              status: heartbeatRuns.status,
+              errorCode: heartbeatRuns.errorCode,
+            })
+            .from(heartbeatRuns)
+            .where(and(
+              eq(heartbeatRuns.companyId, actor.companyId),
+              eq(heartbeatRuns.agentId, observedTarget.id),
+            ))
+            .orderBy(desc(heartbeatRuns.createdAt))
+            .limit(2);
+          const observedCauseDenial = processLossEvidenceReason(observedLatestRuns);
+          if (observedCauseDenial) {
+            return finish({ allowed: false, reasonCode: observedCauseDenial, status: 409 });
+          }
+
+          await hooks.afterClearAgentErrorEvidenceRead?.();
+
+          // heartbeat_runs takes a FOR SHARE lock on this agent before a run is
+          // inserted or activated. Taking the conflicting lock here establishes
+          // a single ordering point, then the fresh reads below prove that the
+          // evidence is still current before mutation.
           const target = await tx
             .select()
             .from(agents)
@@ -165,7 +218,7 @@ export function fleetPatrolRemediationService(db: Db) {
           if (!(await validateOrgChain(tx, target))) {
             return finish({ allowed: false, reasonCode: "invalid_org_chain", status: 409 });
           }
-          const latestRun = await tx
+          const latestRuns = await tx
             .select({
               status: heartbeatRuns.status,
               errorCode: heartbeatRuns.errorCode,
@@ -176,10 +229,10 @@ export function fleetPatrolRemediationService(db: Db) {
               eq(heartbeatRuns.agentId, target.id),
             ))
             .orderBy(desc(heartbeatRuns.createdAt))
-            .limit(1)
-            .then((rows) => rows[0] ?? null);
-          if (latestRun?.status !== "failed" || latestRun.errorCode !== "process_lost") {
-            return finish({ allowed: false, reasonCode: "error_cause_not_allowed", status: 409 });
+            .limit(2);
+          const causeDenial = processLossEvidenceReason(latestRuns);
+          if (causeDenial) {
+            return finish({ allowed: false, reasonCode: causeDenial, status: 409 });
           }
 
           const before = {
@@ -503,6 +556,8 @@ export function fleetPatrolRemediationService(db: Db) {
         if (!failedRun || failedRunDetails?.status !== "failed" || failedRunDetails.errorCode !== "workspace_validation_failed") {
           return finish({ allowed: false, reasonCode: "workspace_failure_not_proven", status: 409 });
         }
+        await hooks.beforeWorkspaceValidityLock?.();
+
         const workspace = issue.executionWorkspaceId
           ? await tx
             .select({
@@ -513,6 +568,7 @@ export function fleetPatrolRemediationService(db: Db) {
             })
             .from(executionWorkspaces)
             .where(eq(executionWorkspaces.id, issue.executionWorkspaceId))
+            .for("update")
             .then((rows) => rows[0] ?? null)
           : null;
         const invalidWorkspace = !workspace

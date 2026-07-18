@@ -22,12 +22,22 @@ const requestSchema = z.discriminatedUnion("operation", [
   }).strict(),
 ]);
 
-function safeAuditLabel(value: unknown, fallback: string) {
-  if (typeof value !== "string") return fallback;
-  const normalized = value.trim();
-  return /^[a-z_]{1,64}$/.test(normalized) || /^[0-9a-f-]{36}$/i.test(normalized)
-    ? normalized
-    : fallback;
+const AUDITABLE_OPERATIONS = new Set([
+  "clear_agent_error",
+  "release_issue_lock",
+  "reset_workspace_pin",
+]);
+
+function safeAuditOperation(value: unknown) {
+  return typeof value === "string" && AUDITABLE_OPERATIONS.has(value)
+    ? value
+    : "schema_invalid";
+}
+
+function safeAuditTargetId(value: unknown) {
+  return typeof value === "string" && z.string().uuid().safeParse(value).success
+    ? value
+    : "unknown";
 }
 
 function fleetPatrolActor(req: Express.Request): FleetPatrolActor | null {
@@ -64,8 +74,8 @@ export function fleetPatrolRemediationRoutes(db: Db) {
       const parsed = requestSchema.safeParse(req.body);
       if (!parsed.success) {
         await auditMalformedFleetPatrolRequest(db, actor, {
-          operation: safeAuditLabel(req.body?.operation, "schema_invalid"),
-          targetId: safeAuditLabel(req.body?.targetId, "unknown"),
+          operation: safeAuditOperation(req.body?.operation),
+          targetId: safeAuditTargetId(req.body?.targetId),
         });
         res.status(422).json({
           error: "Invalid fleet patrol remediation request",

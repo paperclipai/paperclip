@@ -23,7 +23,11 @@ import {
 import { errorHandler } from "../middleware/index.js";
 import { agentRoutes } from "../routes/agents.js";
 import { fleetPatrolRemediationRoutes } from "../routes/fleet-patrol-remediation.js";
-import { FLEET_PATROL_AGENT_ID } from "../services/fleet-patrol-remediation.js";
+import {
+  FLEET_PATROL_AGENT_ID,
+  fleetPatrolRemediationService,
+  type FleetPatrolActor,
+} from "../services/fleet-patrol-remediation.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -33,6 +37,15 @@ describeEmbeddedPostgres("fleet patrol remediation authorization", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   let companyId: string;
   let runId: string;
+
+  const serviceActor = (): FleetPatrolActor => ({
+    agentId: FLEET_PATROL_AGENT_ID,
+    companyId,
+    runId,
+    apiKeyId: "sha256:test-run-credential",
+    credentialId: "sha256:test-run-credential",
+    source: "agent_jwt",
+  });
 
   const actor = (): Express.Request["actor"] => ({
     type: "agent",
@@ -95,8 +108,8 @@ describeEmbeddedPostgres("fleet patrol remediation authorization", () => {
   afterEach(async () => {
     delete process.env.PAPERCLIP_FLEET_PATROL_REMEDIATION_ENABLED;
     await db.delete(issueRecoveryActions);
-    await db.delete(issues);
     await db.delete(executionWorkspaces);
+    await db.delete(issues);
     await db.delete(heartbeatRuns);
     await db.delete(projects);
     await db.delete(agents);
@@ -130,6 +143,32 @@ describeEmbeddedPostgres("fleet patrol remediation authorization", () => {
       executionLockedAt: new Date(Date.now() - 60 * 60 * 1000),
     });
     return { issueId, ownerRunId };
+  }
+
+  async function seedErrorTarget(errorCode = "process_lost") {
+    const targetId = randomUUID();
+    await db.insert(agents).values({
+      id: targetId,
+      companyId,
+      name: "Recoverable target",
+      role: "engineer",
+      status: "error",
+      errorReason: "sensitive provider detail",
+      adapterType: "process",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      companyId,
+      agentId: targetId,
+      status: "failed",
+      errorCode,
+      error: "raw error must not enter audit",
+      invocationSource: "manual",
+      finishedAt: new Date(),
+    });
+    return targetId;
   }
 
   async function seedEscalatedExecutiveWorkspaceFailure(options: {
@@ -247,10 +286,15 @@ describeEmbeddedPostgres("fleet patrol remediation authorization", () => {
 
   it("audits schema-invalid requests before returning 422 without raw bodies or errors", async () => {
     const targetId = randomUUID();
-    const secret = "super-secret-token";
+    const privateBodyMarker = "private-body-marker";
     const response = await request(createApp())
       .post("/api/fleet-patrol/remediation")
-      .send({ operation: "release_issue_lock", targetId, secret, nested: { rawError: "database exploded" } });
+      .send({
+        operation: "release_issue_lock",
+        targetId,
+        privateBodyMarker,
+        nested: { rawError: "database exploded" },
+      });
 
     expect(response.status).toBe(422);
     const row = await db
@@ -268,8 +312,24 @@ describeEmbeddedPostgres("fleet patrol remediation authorization", () => {
       reasonCode: "schema_invalid",
       credentialId: "sha256:test-run-credential",
     });
-    expect(JSON.stringify(row)).not.toContain(secret);
+    expect(JSON.stringify(row)).not.toContain(privateBodyMarker);
     expect(JSON.stringify(row)).not.toContain("database exploded");
+  });
+
+  it("replaces attacker-controlled malformed operation content with a fixed audit sentinel", async () => {
+    const invalidOperation = "sensitive_token_marker";
+    await request(createApp())
+      .post("/api/fleet-patrol/remediation")
+      .send({ operation: invalidOperation, targetId: randomUUID() })
+      .expect(422);
+
+    const row = await db
+      .select()
+      .from(fleetPatrolAudit)
+      .where(eq(fleetPatrolAudit.authenticatedRunId, runId))
+      .then((rows) => rows.at(-1)!);
+    expect(row.operation).toBe("schema_invalid");
+    expect(JSON.stringify(row)).not.toContain(invalidOperation);
   });
 
   it("denies and audits a wrong-company target", async () => {
@@ -308,29 +368,69 @@ describeEmbeddedPostgres("fleet patrol remediation authorization", () => {
     expect(response.body.reasonCode).toBe("signed_run_not_running");
   });
 
-  it("clears only a proven process-loss error", async () => {
-    const targetId = randomUUID();
-    await db.insert(agents).values({
-      id: targetId,
-      companyId,
-      name: "Recoverable target",
-      role: "engineer",
-      status: "error",
-      errorReason: "sensitive provider detail",
-      adapterType: "process",
-      adapterConfig: {},
-      runtimeConfig: {},
-      permissions: {},
-    });
+  it("denies another agent principal", async () => {
+    const response = await request(createApp({
+      ...actor(),
+      agentId: randomUUID(),
+    }))
+      .post("/api/fleet-patrol/remediation")
+      .send({ operation: "clear_agent_error", targetId: randomUUID() });
+    expect(response.status).toBe(403);
+    expect(response.body.reasonCode).toBe("principal_denied");
+  });
+
+  it("denies a static agent key even for the allowlisted principal", async () => {
+    const response = await request(createApp({
+      ...actor(),
+      source: "agent_key",
+    }))
+      .post("/api/fleet-patrol/remediation")
+      .send({ operation: "clear_agent_error", targetId: randomUUID() });
+    expect(response.status).toBe(403);
+    expect(response.body.reasonCode).toBe("principal_denied");
+  });
+
+  it("denies a run-scoped credential whose run is missing", async () => {
+    const response = await request(createApp({
+      ...actor(),
+      runId: randomUUID(),
+    }))
+      .post("/api/fleet-patrol/remediation")
+      .send({ operation: "clear_agent_error", targetId: randomUUID() });
+    expect(response.status).toBe(403);
+    expect(response.body.reasonCode).toBe("signed_run_not_running");
+  });
+
+  it("denies an agent error whose latest run cause is not allowlisted", async () => {
+    const targetId = await seedErrorTarget("provider_auth_failed");
+    const response = await request(createApp())
+      .post("/api/fleet-patrol/remediation")
+      .send({ operation: "clear_agent_error", targetId });
+    expect(response.status).toBe(409);
+    expect(response.body.reasonCode).toBe("error_cause_not_allowed");
+  });
+
+  it("denies repeated consecutive process-loss causes", async () => {
+    const targetId = await seedErrorTarget();
     await db.insert(heartbeatRuns).values({
       companyId,
       agentId: targetId,
       status: "failed",
       errorCode: "process_lost",
-      error: "raw error must not enter audit",
       invocationSource: "manual",
       finishedAt: new Date(),
+      createdAt: new Date(Date.now() + 1_000),
     });
+
+    const response = await request(createApp())
+      .post("/api/fleet-patrol/remediation")
+      .send({ operation: "clear_agent_error", targetId });
+    expect(response.status).toBe(409);
+    expect(response.body.reasonCode).toBe("repeated_error_cause");
+  });
+
+  it("clears only a proven process-loss error", async () => {
+    const targetId = await seedErrorTarget();
 
     const response = await request(createApp())
       .post("/api/fleet-patrol/remediation")
@@ -350,6 +450,15 @@ describeEmbeddedPostgres("fleet patrol remediation authorization", () => {
       .send({ operation: "release_issue_lock", targetId: issueId });
     expect(response.status).toBe(409);
     expect(response.body.reasonCode).toBe("lock_owner_unknown_status");
+  });
+
+  it("denies releasing a lock whose owner run is still live", async () => {
+    const { issueId } = await seedIssueLock("running");
+    const response = await request(createApp())
+      .post("/api/fleet-patrol/remediation")
+      .send({ operation: "release_issue_lock", targetId: issueId });
+    expect(response.status).toBe(409);
+    expect(response.body.reasonCode).toBe("lock_owner_active");
   });
 
   it("denies an invalid workspace reset while the issue run is active", async () => {
@@ -412,6 +521,151 @@ describeEmbeddedPostgres("fleet patrol remediation authorization", () => {
       assigneeAgentId: FLEET_PATROL_AGENT_ID,
       executionWorkspacePreference: "agent_default",
       executionWorkspaceId: null,
+    });
+  });
+
+  it("denies resetting a healthy workspace after a validation failure", async () => {
+    const projectId = randomUUID();
+    const issueId = randomUUID();
+    const workspaceId = randomUUID();
+    const failedRunId = randomUUID();
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Healthy workspace project",
+      status: "in_progress",
+    });
+    await db.insert(heartbeatRuns).values({
+      id: failedRunId,
+      companyId,
+      agentId: FLEET_PATROL_AGENT_ID,
+      status: "failed",
+      errorCode: "workspace_validation_failed",
+      invocationSource: "manual",
+      finishedAt: new Date(),
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      projectId,
+      title: "Healthy pinned issue",
+      status: "blocked",
+      executionRunId: failedRunId,
+      executionWorkspacePreference: "reuse_existing",
+    });
+    await db.insert(executionWorkspaces).values({
+      id: workspaceId,
+      companyId,
+      projectId,
+      sourceIssueId: issueId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Healthy workspace",
+      status: "active",
+      providerType: "local_fs",
+      cwd: "/tmp/paperclip-healthy-workspace",
+    });
+    await db
+      .update(issues)
+      .set({ executionWorkspaceId: workspaceId })
+      .where(eq(issues.id, issueId));
+
+    const response = await request(createApp())
+      .post("/api/fleet-patrol/remediation")
+      .send({ operation: "reset_workspace_pin", targetId: issueId });
+    expect(response.status).toBe(409);
+    expect(response.body.reasonCode).toBe("workspace_still_valid");
+  });
+
+  it("denies a workspace reset when a concurrent repair makes the workspace valid", async () => {
+    const projectId = randomUUID();
+    const issueId = randomUUID();
+    const workspaceId = randomUUID();
+    const failedRunId = randomUUID();
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Concurrent workspace repair project",
+      status: "in_progress",
+    });
+    await db.insert(heartbeatRuns).values({
+      id: failedRunId,
+      companyId,
+      agentId: FLEET_PATROL_AGENT_ID,
+      status: "failed",
+      errorCode: "workspace_validation_failed",
+      invocationSource: "manual",
+      finishedAt: new Date(),
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      projectId,
+      title: "Concurrently repaired workspace pin",
+      status: "blocked",
+      executionRunId: failedRunId,
+      executionWorkspacePreference: "reuse_existing",
+    });
+    await db.insert(executionWorkspaces).values({
+      id: workspaceId,
+      companyId,
+      projectId,
+      sourceIssueId: issueId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Repairing workspace",
+      status: "archived",
+      providerType: "local_fs",
+      cwd: "/tmp/paperclip-repairing-workspace",
+    });
+    await db
+      .update(issues)
+      .set({ executionWorkspaceId: workspaceId })
+      .where(eq(issues.id, issueId));
+
+    let predicateReached!: () => void;
+    const predicateReachedPromise = new Promise<void>((resolve) => {
+      predicateReached = resolve;
+    });
+    let continueReset!: () => void;
+    const continueResetPromise = new Promise<void>((resolve) => {
+      continueReset = resolve;
+    });
+    const resetPromise = fleetPatrolRemediationService(db).execute(
+      serviceActor(),
+      { operation: "reset_workspace_pin", targetId: issueId },
+      new Date(),
+      {
+        beforeWorkspaceValidityLock: async () => {
+          predicateReached();
+          await continueResetPromise;
+        },
+      },
+    );
+
+    await predicateReachedPromise;
+    await db
+      .update(executionWorkspaces)
+      .set({ status: "active", updatedAt: new Date() })
+      .where(eq(executionWorkspaces.id, workspaceId));
+    continueReset();
+
+    await expect(resetPromise).resolves.toMatchObject({
+      allowed: false,
+      status: 409,
+      reasonCode: "workspace_still_valid",
+    });
+    const issue = await db
+      .select({
+        executionWorkspacePreference: issues.executionWorkspacePreference,
+        executionWorkspaceId: issues.executionWorkspaceId,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(issue).toEqual({
+      executionWorkspacePreference: "reuse_existing",
+      executionWorkspaceId: workspaceId,
     });
   });
 
@@ -498,21 +752,52 @@ describeEmbeddedPostgres("fleet patrol remediation authorization", () => {
     await request(createApp()).post(`/api/agents/${targetId}/clear-error`).send({}).expect(403);
   });
 
-  it("serializes a genuinely concurrent stale-evidence race", async () => {
-    const { issueId } = await seedIssueLock();
-    const app = createApp();
-    const [first, second] = await Promise.all([
-      request(app).post("/api/fleet-patrol/remediation").send({
-        operation: "release_issue_lock",
-        targetId: issueId,
-      }),
-      request(app).post("/api/fleet-patrol/remediation").send({
-        operation: "release_issue_lock",
-        targetId: issueId,
-      }),
-    ]);
-    expect([first.status, second.status].sort()).toEqual([200, 409]);
-    expect([first.body.reasonCode, second.body.reasonCode]).toContain("lock_missing");
+  it("denies clear-error when a newer active run is inserted after evidence is read", async () => {
+    const targetId = await seedErrorTarget();
+    let evidenceRead!: () => void;
+    const evidenceReadPromise = new Promise<void>((resolve) => {
+      evidenceRead = resolve;
+    });
+    let continueClear!: () => void;
+    const continueClearPromise = new Promise<void>((resolve) => {
+      continueClear = resolve;
+    });
+
+    const clearPromise = fleetPatrolRemediationService(db).execute(
+      serviceActor(),
+      { operation: "clear_agent_error", targetId },
+      new Date(),
+      {
+        afterClearAgentErrorEvidenceRead: async () => {
+          evidenceRead();
+          await continueClearPromise;
+        },
+      },
+    );
+    await evidenceReadPromise;
+    await db.insert(heartbeatRuns).values({
+      companyId,
+      agentId: targetId,
+      status: "queued",
+      invocationSource: "manual",
+      createdAt: new Date(Date.now() + 1_000),
+    });
+    continueClear();
+
+    await expect(clearPromise).resolves.toMatchObject({
+      allowed: false,
+      status: 409,
+      reasonCode: "error_cause_not_allowed",
+    });
+    const target = await db
+      .select({ status: agents.status, errorReason: agents.errorReason })
+      .from(agents)
+      .where(eq(agents.id, targetId))
+      .then((rows) => rows[0]);
+    expect(target).toMatchObject({
+      status: "error",
+      errorReason: "sensitive provider detail",
+    });
   });
 
   it("keeps the capability default-off", async () => {
