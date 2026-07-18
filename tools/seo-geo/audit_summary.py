@@ -249,7 +249,6 @@ def geo_section(sites_path, environ, today):
 
 def rank_section(sites_path, environ, today):
     """Fail-soft Keyword-Rank-Tracking via GSC (Kern-Keywords + Auto-Top-Queries)."""
-    import json as _json
     ranks_data = {}
     key_file = environ.get("GSC_SA_KEY_FILE")
     if not key_file or not os.path.exists(os.path.expanduser(key_file)):
@@ -259,13 +258,14 @@ def rank_section(sites_path, environ, today):
         import gsc, gsc_report, rank_tracking
         from config import load_sites
         kw_path = os.path.join(os.path.dirname(os.path.abspath(sites_path)), "geo_keywords.json")
-        kw_cfg = _json.loads(open(kw_path).read()) if os.path.exists(kw_path) else {"auto_top": 10, "keywords": {}}
+        kw_cfg = json.loads(open(kw_path).read()) if os.path.exists(kw_path) else {"auto_top": 10, "keywords": {}}
         auto_top = kw_cfg.get("auto_top", 10)
         core_map = kw_cfg.get("keywords", {})
         session = gsc.build_authorized_session(os.path.expanduser(key_file))
         client = gsc.GSCClient(session)
         (ls, le), (ps, pe) = gsc.report_windows(today)
         per_site = []
+        errs = []
         for site in load_sites(sites_path):
             try:
                 prop = gsc_report.resolve_property(site, client)
@@ -285,12 +285,9 @@ def rank_section(sites_path, environ, today):
                 ranks = rank_tracking.build_site_ranks(cur, prev, set(core))
                 per_site.append({"name": site.name, "ranks": ranks})
                 ranks_data[site.name] = ranks
-            except Exception as e:  # noqa: BLE001
-                per_site.append({"name": site.name, "ranks": []})
-                per_site[-1]["_err"] = f"  - {site.name}: keine Rank-Daten ({e})"
+            except Exception as e:  # noqa: BLE001 — Site mit Fehler nur als Fehlerzeile, nicht doppelt
+                errs.append(f"  - {site.name}: keine Rank-Daten ({e})")
         md = rank_tracking.render_markdown(per_site)
-        # etwaige Fehlerzeilen anhängen
-        errs = [s["_err"] for s in per_site if s.get("_err")]
         if errs:
             md = md + "\n".join(errs) + "\n"
         return md, ranks_data
@@ -332,10 +329,13 @@ def main(argv: list[str] | None = None) -> int:
     except Exception:  # noqa: BLE001 — niemals die Mail kippen
         pass
 
-    rank_md, rank_data = rank_section(args.sites, os.environ, today_date)
-    body = body + rank_md
-    with open(os.path.join(hist_dir, f"{today}-ranks.json"), "w") as fh:
-        json.dump(rank_data, fh, ensure_ascii=False, indent=2)
+    try:  # Rank-Sektion darf die Mail nie kippen (wie GEO/Diff)
+        rank_md, rank_data = rank_section(args.sites, os.environ, today_date)
+        body = body + rank_md
+        with open(os.path.join(hist_dir, f"{today}-ranks.json"), "w") as fh:
+            json.dump(rank_data, fh, ensure_ascii=False, indent=2)
+    except Exception:  # noqa: BLE001
+        pass
 
     if gsc_blocks:
         with open(os.path.join(hist_dir, f"{today}-gsc.json"), "w") as fh:
