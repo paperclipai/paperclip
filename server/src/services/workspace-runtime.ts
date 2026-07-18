@@ -1747,11 +1747,12 @@ export async function ensureGitWorktreeBranchCoherent(input: {
   if (
     input.enableWorkspaceBranchReconcileForward === true &&
     evidence.provenance.ancestryVerdict === "ancestor" &&
-    !evidence.provenance.sameHead &&
     evidence.cleanliness === "clean" &&
     currentBranch
   ) {
-    const reason = "Automatic forward reconciliation: recorded branch is an ancestor of the checked-out branch.";
+    const reason = evidence.provenance.sameHead
+      ? "Automatic branch provenance reconciliation: recorded branch and checked-out branch resolve to the same commit."
+      : "Automatic forward reconciliation: recorded branch is an ancestor of the checked-out branch.";
     if (input.executionWorkspaceId && input.persistForwardReconcile !== false) {
       if (!input.db) {
         evidence.safeRepair.reason = "forward reconciliation requires database access to update the execution workspace record";
@@ -1815,6 +1816,15 @@ export async function ensureGitWorktreeBranchCoherent(input: {
     }
 
     if (!input.db) {
+      if (evidence.provenance.sameHead) {
+        evidence.safeRepair.succeeded = true;
+        evidence.safeRepair.reason = "clean worktree adopted the checked-out branch because it matches the recorded branch HEAD";
+        return {
+          branchName: currentBranch,
+          reconciledForward: true,
+          warnings: [],
+        };
+      }
       evidence.safeRepair.reason = "forward reconciliation adoption requires database access to audit after workspace realization";
       throw branchIncoherenceValidationFailure(evidence);
     }

@@ -2603,6 +2603,67 @@ describe("realizeExecutionWorkspace", () => {
     await expect(readGit(initial.cwd, ["branch", "--show-current"])).resolves.toBe(actualBranch);
   }, 15_000);
 
+  it.each([
+    {
+      identifier: "LP-1083",
+      recordedBranch: "LP-1083-internal-provenance",
+      publicBranch: "fix/public-safe-lp-1083",
+    },
+    {
+      identifier: "LP-1119",
+      recordedBranch: "LP-1119-internal-provenance",
+      publicBranch: "fix/public-safe-lp-1119",
+    },
+  ])("adopts $identifier public-safe branch when it matches the recorded provenance HEAD", async ({
+    identifier,
+    recordedBranch,
+    publicBranch,
+  }) => {
+    const repoRoot = await createTempRepo();
+    const worktreePath = path.join(repoRoot, ".paperclip", "worktrees", recordedBranch);
+    await fs.mkdir(path.dirname(worktreePath), { recursive: true });
+    await runGit(repoRoot, ["branch", recordedBranch]);
+    await runGit(repoRoot, ["worktree", "add", "-b", publicBranch, worktreePath, recordedBranch]);
+
+    const restored = await ensurePersistedExecutionWorkspaceAvailable({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      workspace: {
+        id: `execution-workspace-${identifier.toLowerCase()}`,
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        cwd: worktreePath,
+        providerRef: worktreePath,
+        projectId: "project-1",
+        projectWorkspaceId: "workspace-1",
+        repoUrl: null,
+        baseRef: "HEAD",
+        branchName: recordedBranch,
+      },
+      issue: {
+        id: `issue-${identifier.toLowerCase()}`,
+        identifier,
+        title: "Publish public-safe branch",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+      enableWorkspaceBranchReconcileForward: true,
+    });
+
+    expect(restored?.branchName).toBe(publicBranch);
+    expect(restored?.warnings).toEqual([]);
+    await expect(readGit(worktreePath, ["branch", "--show-current"])).resolves.toBe(publicBranch);
+  }, 15_000);
+
   it("classifies persisted git worktree branch incoherence as diverged when the checked-out branch is not forward", async () => {
     const repoRoot = await createTempRepo();
     const expectedBranch = "PAP-457-recorded-work";

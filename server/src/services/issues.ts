@@ -4176,7 +4176,11 @@ export function issueService(db: Db) {
     if (!workspace) throw notFound("Project workspace not found");
     if (workspace.companyId !== companyId) throw unprocessable("Project workspace must belong to same company");
     if (projectId && workspace.projectId !== projectId) {
-      throw unprocessable("Project workspace must belong to the selected project");
+      throw unprocessable("Project workspace must belong to the selected project", {
+        selectedProjectId: projectId,
+        projectWorkspaceId,
+        workspaceProjectId: workspace.projectId,
+      });
     }
     return workspace;
   }
@@ -4199,7 +4203,11 @@ export function issueService(db: Db) {
     if (!workspace) throw notFound("Execution workspace not found");
     if (workspace.companyId !== companyId) throw unprocessable("Execution workspace must belong to same company");
     if (projectId && workspace.projectId !== projectId) {
-      throw unprocessable("Execution workspace must belong to the selected project");
+      throw unprocessable("Execution workspace must belong to the selected project", {
+        selectedProjectId: projectId,
+        executionWorkspaceId,
+        workspaceProjectId: workspace.projectId,
+      });
     }
     return workspace;
   }
@@ -5791,11 +5799,13 @@ export function issueService(db: Db) {
         inheritStrategyOnly && !hasExplicitExecutionWorkspaceOverride
           ? buildPreRealizationExecutionWorkspaceSettings(parent.executionWorkspaceSettings)
           : null;
+      const childProjectId = issueData.projectId ?? parent.projectId;
+      const canInheritParentProjectWorkspace = childProjectId == null || childProjectId === parent.projectId;
       let child = await issueService(db).create(parent.companyId, {
         ...issueData,
         parentId: parent.id,
-        projectId: issueData.projectId ?? parent.projectId,
-        projectWorkspaceId: issueData.projectWorkspaceId ?? (inheritStrategyOnly ? parent.projectWorkspaceId : undefined),
+        projectId: childProjectId,
+        projectWorkspaceId: issueData.projectWorkspaceId ?? (inheritStrategyOnly && canInheritParentProjectWorkspace ? parent.projectWorkspaceId : undefined),
         goalId: issueData.goalId ?? parent.goalId,
         actorResponsibleUserId: issueData.actorResponsibleUserId ?? null,
         trustExplicitResponsibleUserId: issueData.trustExplicitResponsibleUserId === true,
@@ -5803,7 +5813,7 @@ export function issueService(db: Db) {
           Math.max(clampIssueRequestDepth(parent.requestDepth) + 1, issueData.requestDepth ?? 0),
         ),
         description: appendAcceptanceCriteriaToDescription(issueData.description, acceptanceCriteria),
-        ...(inheritedPreRealizationWorkspaceSettings
+        ...(inheritedPreRealizationWorkspaceSettings && canInheritParentProjectWorkspace
           ? { executionWorkspaceSettings: inheritedPreRealizationWorkspaceSettings }
           : {}),
         ...(inheritStrategyOnly
@@ -6228,10 +6238,15 @@ export function issueService(db: Db) {
           if (issueData.projectId == null && workspaceSource.projectId) {
             issueData.projectId = workspaceSource.projectId;
           }
-          if (projectWorkspaceId == null && workspaceSource.projectWorkspaceId) {
+          const canInheritWorkspaceLinkage =
+            issueData.projectId == null ||
+            workspaceSource.projectId == null ||
+            issueData.projectId === workspaceSource.projectId;
+          if (canInheritWorkspaceLinkage && projectWorkspaceId == null && workspaceSource.projectWorkspaceId) {
             projectWorkspaceId = workspaceSource.projectWorkspaceId;
           }
           if (
+            canInheritWorkspaceLinkage &&
             isolatedWorkspacesEnabled &&
             !hasExplicitExecutionWorkspaceOverride &&
             workspaceSource.executionWorkspaceId
