@@ -10,6 +10,7 @@ import {
   createDb,
   heartbeatRuns,
   issueCreateIdempotencyKeys,
+  issueComments,
   issues,
 } from "@paperclipai/db";
 import {
@@ -46,6 +47,7 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
 
   afterEach(async () => {
     await db.delete(activityLog);
+    await db.delete(issueComments);
     await db.delete(issueCreateIdempotencyKeys);
     await db.delete(issues);
     await db.delete(heartbeatRuns);
@@ -173,6 +175,43 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
       deduplicated: true,
       deduplicationReason: "recent_open_title",
     });
+  });
+
+  it("returns the canonical source-note issue and records a visible dedup decision", async () => {
+    const companyId = await seedCompany();
+    const app = createApp();
+    const sourceKey = "raw/telegram-personal/2026-07-10_2000_founder#2026-07-10T20:00:00";
+
+    const first = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({
+        title: "Canonical founder note issue",
+        originKind: "source_note",
+        originId: sourceKey,
+      })
+      .expect(201);
+    const duplicate = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({
+        title: "Different title from same source note",
+        originKind: "source_note",
+        originId: sourceKey,
+        allowDuplicate: true,
+      })
+      .expect(200);
+
+    expect(duplicate.body).toMatchObject({
+      id: first.body.id,
+      identifier: first.body.identifier,
+      deduplicated: true,
+      deduplicationReason: "source_note",
+    });
+    expect(await db.select().from(issues).where(eq(issues.companyId, companyId))).toHaveLength(1);
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, first.body.id));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toContain(`Suppressed source key: source_note:${sourceKey}`);
+    expect(comments[0]?.body).toContain(`Canonical issue: ${first.body.identifier}`);
   });
 
   it("serializes keyed and title-only creates for the same issue", async () => {

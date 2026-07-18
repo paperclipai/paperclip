@@ -7073,10 +7073,10 @@ export function issueRoutes(
       projectId: createBody.projectId ?? null,
       executionPolicy,
     }, actor);
-    let deduplicationReason: "idempotency_key" | "recent_open_title" | null = null;
+    let deduplicationReason: "idempotency_key" | "source_note" | "recent_open_title" | null = null;
     const issue = await svc.create(companyId, {
-      ...createBody,
       ...(taskBridgeOriginForActor(req) ?? {}),
+      ...createBody,
       id: issueId,
       originRunId: createBody.originRunId ?? actor.runId,
       executionPolicy,

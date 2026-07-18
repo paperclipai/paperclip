@@ -275,9 +275,11 @@ export type IssueThreadInteractionContinuationPolicy =
   (typeof ISSUE_THREAD_INTERACTION_CONTINUATION_POLICIES)[number];
 
 export const TASK_WATCHDOG_PRODUCT_BUG_ORIGIN_KIND = "task_watchdog_product_bug";
+export const SOURCE_NOTE_ORIGIN_KIND = "source_note";
 
 export const ISSUE_ORIGIN_KINDS = [
   "manual",
+  SOURCE_NOTE_ORIGIN_KIND,
   "routine_execution",
   "stale_active_run_evaluation",
   "harness_liveness_escalation",

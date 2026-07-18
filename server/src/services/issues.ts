@@ -57,6 +57,7 @@ import type {
   SuccessfulRunHandoffState,
 } from "@paperclipai/shared";
 import {
+  SOURCE_NOTE_ORIGIN_KIND,
   clampIssueRequestDepth,
   extractAgentMentionIds,
   extractProjectMentionIds,
@@ -588,7 +589,7 @@ type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
   trustExplicitResponsibleUserId?: boolean;
   idempotencyKey?: string | null;
   allowDuplicate?: boolean;
-  onDeduplicated?: (reason: "idempotency_key" | "recent_open_title") => void;
+  onDeduplicated?: (reason: "idempotency_key" | "source_note" | "recent_open_title") => void;
 };
 type IssueChildCreateInput = IssueCreateInput & {
   acceptanceCriteria?: string[];
@@ -6156,7 +6157,10 @@ export function issueService(db: Db) {
         }
 
         let existingIssue: typeof issues.$inferSelect | undefined;
-        let deduplicationReason: "idempotency_key" | "recent_open_title" | null = null;
+        let deduplicationReason: "idempotency_key" | "source_note" | "recent_open_title" | null = null;
+        const sourceNoteOriginId = issueData.originKind === SOURCE_NOTE_ORIGIN_KIND
+          ? issueData.originId?.trim() || null
+          : null;
         if (idempotencyKey) {
           const idempotencyKeyRetentionCutoff = new Date(Date.now() - ISSUE_CREATE_IDEMPOTENCY_KEY_RETENTION_MS);
           await tx.execute(sql`
@@ -6183,6 +6187,21 @@ export function issueService(db: Db) {
             .then((rows) => rows.map((row) => row.issues));
           if (existingIssue) deduplicationReason = "idempotency_key";
         }
+        if (!existingIssue && sourceNoteOriginId) {
+          const sourceNoteGuardKey = `issue-create:source-note:${companyId}:${sourceNoteOriginId}`;
+          await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${sourceNoteGuardKey}, 0))`);
+          [existingIssue] = await tx
+            .select()
+            .from(issues)
+            .where(and(
+              eq(issues.companyId, companyId),
+              eq(issues.originKind, SOURCE_NOTE_ORIGIN_KIND),
+              eq(issues.originId, sourceNoteOriginId),
+            ))
+            .orderBy(asc(issues.createdAt), asc(issues.id))
+            .limit(1);
+          if (existingIssue) deduplicationReason = "source_note";
+        }
         if (!existingIssue && allowDuplicate === false) {
           [existingIssue] = await tx
             .select()
@@ -6205,6 +6224,22 @@ export function issueService(db: Db) {
               .insert(issueCreateIdempotencyKeys)
               .values({ companyId, idempotencyKey, issueId: existingIssue.id })
               .onConflictDoNothing();
+          }
+          if (deduplicationReason === "source_note" && sourceNoteOriginId) {
+            const canonicalIssueIdentifier = existingIssue.identifier ?? existingIssue.id;
+            await tx.insert(issueComments).values({
+              companyId,
+              issueId: existingIssue.id,
+              authorType: "system",
+              createdByRunId: actorRunId ?? null,
+              body: [
+                "Source-note duplicate suppressed.",
+                "",
+                `Suppressed source key: ${SOURCE_NOTE_ORIGIN_KIND}:${sourceNoteOriginId}`,
+                `Canonical issue: ${canonicalIssueIdentifier}`,
+              ].join("\n"),
+            });
+            await tx.update(issues).set({ updatedAt: new Date() }).where(eq(issues.id, existingIssue.id));
           }
           if (deduplicationReason) onDeduplicated?.(deduplicationReason);
           const [enriched] = await withIssueLabels(tx, [existingIssue]);
