@@ -42,6 +42,9 @@ async function createApp(
     jobDeps?: unknown;
     toolDeps?: unknown;
     bridgeDeps?: unknown;
+    installAuthDeps?: { localDeployToken?: string };
+    /** Override the request peer address (defaults to the real loopback peer). */
+    remoteAddress?: string;
     captureJsonContext?: (context: unknown, body: unknown) => void;
   } = {},
 ) {
@@ -69,6 +72,15 @@ async function createApp(
   }
   app.use((req, _res, next) => {
     req.actor = actor as typeof req.actor;
+    if (routeOverrides.remoteAddress) {
+      // Simulate an off-box peer: override both the resolved `req.ip` and the
+      // genuine socket peer so the loopback guard sees a non-loopback address.
+      Object.defineProperty(req, "ip", {
+        configurable: true,
+        get: () => routeOverrides.remoteAddress,
+      });
+      (req as { socket: unknown }).socket = { remoteAddress: routeOverrides.remoteAddress };
+    }
     next();
   });
   app.use("/api", pluginRoutes(
@@ -78,6 +90,7 @@ async function createApp(
     undefined,
     routeOverrides.toolDeps as never,
     routeOverrides.bridgeDeps as never,
+    routeOverrides.installAuthDeps as never,
   ));
   app.use(errorHandler);
 
@@ -224,6 +237,51 @@ describe.sequential("plugin install and upgrade authz", () => {
     expect(mockLifecycle.load).toHaveBeenCalledWith(pluginId);
   }, 20_000);
 
+  it.each([
+    ["github: spec with sha", "github:Neoreef/plugin-agent-channels#0c0d47f1"],
+    ["git+https: spec", "git+https://github.com/Neoreef/plugin-agent-channels#0c0d47f1"],
+    ["npm scoped package", "@paperclipai/plugin-agent-channels"],
+    ["npm package with version", "paperclip-plugin-example@1.2.3"],
+  ])("accepts valid package spec: %s", async (_label, packageName) => {
+    const pluginKey = "paperclip.example";
+    mockRegistry.getByKey.mockResolvedValue({
+      id: "11111111-1111-4111-8111-111111111111",
+      pluginKey,
+      packageName,
+      version: "1.0.0",
+    });
+    mockRegistry.getById.mockResolvedValue({
+      id: "11111111-1111-4111-8111-111111111111",
+      pluginKey,
+      packageName,
+      version: "1.0.0",
+    });
+    mockLifecycle.load.mockResolvedValue(undefined);
+    const { app, loader } = await createApp(
+      { type: "board", userId: "admin-1", source: "session", isInstanceAdmin: true, companyIds: [] },
+      { installPlugin: vi.fn().mockResolvedValue({ manifest: { id: pluginKey } }) },
+    );
+    const res = await request(app).post("/api/plugins/install").send({ packageName });
+    expect(res.status).not.toBe(400);
+    expect(loader.installPlugin).toHaveBeenCalled();
+  }, 20_000);
+
+  it.each([
+    ["shell pipe", "pkg|rm -rf /"],
+    ["redirect", "pkg>evil"],
+    ["wildcard", "pkg*"],
+    ["double-quote injection", 'pkg"evil'],
+    ["space injection", "pkg evil"],
+  ])("rejects injection attempt in package spec: %s", async (_label, packageName) => {
+    const { app, loader } = await createApp(
+      { type: "board", userId: "admin-1", source: "session", isInstanceAdmin: true, companyIds: [] },
+    );
+    const res = await request(app).post("/api/plugins/install").send({ packageName });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/invalid characters/i);
+    expect(loader.installPlugin).not.toHaveBeenCalled();
+  }, 20_000);
+
   it("rejects plugin upgrades for non-admin board users", async () => {
     const pluginId = "11111111-1111-4111-8111-111111111111";
     const { app } = await createApp({
@@ -358,6 +416,131 @@ describe.sequential("plugin install and upgrade authz", () => {
 
     expect(res.status).toBe(200);
     expect(mockLifecycle.upgrade).toHaveBeenCalledWith(pluginId, "1.1.0");
+  }, 20_000);
+});
+
+// NEO-234 Option 2 / NEO-236 — scoped, install-only loopback deploy token.
+describe.sequential("plugin install loopback deploy-token authz", () => {
+  const deployToken = "deploy-secret-abc123";
+  // The deploy token is not a board key, so the deploy's request lands with no
+  // resolved actor — exactly the `type: "none"` state described in NEO-236.
+  const noActor = { type: "none", source: "none" };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function primeInstallSuccess() {
+    const localPluginId = "11111111-1111-4111-8111-111111111111";
+    const pluginKey = "paperclip.example";
+    mockRegistry.getByKey.mockResolvedValue({
+      id: localPluginId,
+      pluginKey,
+      packageName: "paperclip-plugin-example",
+      version: "1.0.0",
+    });
+    mockRegistry.getById.mockResolvedValue({
+      id: localPluginId,
+      pluginKey,
+      packageName: "paperclip-plugin-example",
+      version: "1.0.0",
+    });
+    mockLifecycle.load.mockResolvedValue(undefined);
+    return { installPlugin: vi.fn().mockResolvedValue({ manifest: { id: pluginKey } }) };
+  }
+
+  it("authorizes a loopback install with the correct deploy token (no 403)", async () => {
+    const { app, loader } = await createApp(noActor, primeInstallSuccess(), {
+      installAuthDeps: { localDeployToken: deployToken },
+    });
+
+    const res = await request(app)
+      .post("/api/plugins/install")
+      .set("Authorization", `Bearer ${deployToken}`)
+      .send({ packageName: "paperclip-plugin-example" });
+
+    expect(res.status).toBe(200);
+    expect(loader.installPlugin).toHaveBeenCalledWith({
+      packageName: "paperclip-plugin-example",
+      version: undefined,
+    });
+  }, 20_000);
+
+  it("rejects a loopback install with a wrong deploy token (403)", async () => {
+    const { app, loader } = await createApp(noActor, {}, {
+      installAuthDeps: { localDeployToken: deployToken },
+    });
+
+    const res = await request(app)
+      .post("/api/plugins/install")
+      .set("Authorization", "Bearer wrong-token")
+      .send({ packageName: "paperclip-plugin-example" });
+
+    expect(res.status).toBe(403);
+    expect(loader.installPlugin).not.toHaveBeenCalled();
+  }, 20_000);
+
+  it("rejects a loopback install with no bearer token (403)", async () => {
+    const { app, loader } = await createApp(noActor, {}, {
+      installAuthDeps: { localDeployToken: deployToken },
+    });
+
+    const res = await request(app)
+      .post("/api/plugins/install")
+      .send({ packageName: "paperclip-plugin-example" });
+
+    expect(res.status).toBe(403);
+    expect(loader.installPlugin).not.toHaveBeenCalled();
+  }, 20_000);
+
+  it("rejects the correct deploy token from a non-loopback peer (403)", async () => {
+    const { app, loader } = await createApp(noActor, primeInstallSuccess(), {
+      installAuthDeps: { localDeployToken: deployToken },
+      remoteAddress: "203.0.113.7",
+    });
+
+    const res = await request(app)
+      .post("/api/plugins/install")
+      .set("Authorization", `Bearer ${deployToken}`)
+      .send({ packageName: "paperclip-plugin-example" });
+
+    expect(res.status).toBe(403);
+    expect(loader.installPlugin).not.toHaveBeenCalled();
+  }, 20_000);
+
+  it("requires instance admin when no deploy token is configured (unchanged behavior)", async () => {
+    const { app, loader } = await createApp(noActor, {}, {
+      installAuthDeps: {},
+    });
+
+    const res = await request(app)
+      .post("/api/plugins/install")
+      .set("Authorization", `Bearer ${deployToken}`)
+      .send({ packageName: "paperclip-plugin-example" });
+
+    expect(res.status).toBe(403);
+    expect(loader.installPlugin).not.toHaveBeenCalled();
+  }, 20_000);
+
+  it("still allows real instance admins to install when a deploy token is configured", async () => {
+    const { app, loader } = await createApp(
+      {
+        type: "board",
+        userId: "admin-1",
+        source: "session",
+        isInstanceAdmin: true,
+        companyIds: [],
+      },
+      primeInstallSuccess(),
+      { installAuthDeps: { localDeployToken: deployToken } },
+    );
+
+    const res = await request(app)
+      .post("/api/plugins/install")
+      .send({ packageName: "paperclip-plugin-example" });
+
+    expect(res.status).toBe(200);
+    expect(loader.installPlugin).toHaveBeenCalled();
   }, 20_000);
 });
 

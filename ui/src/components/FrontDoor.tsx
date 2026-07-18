@@ -10,7 +10,7 @@ export function FrontDoor({ onChoose }: FrontDoorProps) {
     <div className="flex flex-col items-center justify-center min-h-(--sz-60vh) px-8">
       <div className="text-center mb-10">
         <h2 className="text-2xl font-bold tracking-tight">
-          Welcome to Paperclip
+          Welcome to Cortex
         </h2>
         <p className="text-sm text-muted-foreground mt-2">
           How would you like to get started?

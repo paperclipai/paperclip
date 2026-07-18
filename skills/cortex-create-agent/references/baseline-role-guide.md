@@ -21,14 +21,14 @@ Every new-role `AGENTS.md` should cover these sections in order. Remove a sectio
 
 ### 1. Identity and reporting line
 
-One or two sentences. Name the agent, its role, and its company. State the reporting line. Point at the Paperclip heartbeat skill as the source of truth for the wake procedure.
+One or two sentences. Name the agent, its role, and its company. State the reporting line. Point at the Cortex heartbeat skill as the source of truth for the wake procedure.
 
 Reference phrasing:
 
 ```md
 You are agent {{agentName}} ({{roleTitle}}) at {{companyName}}.
 
-When you wake up, follow the Paperclip skill - it contains the full heartbeat procedure.
+When you wake up, follow the Cortex skill - it contains the full heartbeat procedure.
 
 You report to {{managerTitle}}.
 ```
@@ -132,7 +132,7 @@ Copy this scaffold into your draft and fill each section. Delete the comments (`
 ```md
 You are agent {{agentName}} ({{roleTitle}}) at {{companyName}}.
 
-When you wake up, follow the Paperclip skill. It contains the full heartbeat procedure.
+When you wake up, follow the Cortex skill. It contains the full heartbeat procedure.
 
 You report to {{managerTitle}}. Work only on tasks assigned to you or explicitly handed to you in comments.
 

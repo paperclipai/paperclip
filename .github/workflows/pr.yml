@@ -98,6 +98,41 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
+  # NEO-473 (NEO-436 W3): merge-time branding guard. Fails the PR when the
+  # "Paperclip" brand word is (re)introduced into the rendered / model-echoable
+  # surface (Buckets A+B+G+H-text) — the usual vector being an upstream sync
+  # from paperclipai/paperclip. Zero-dependency (plain Node, reads git ls-files),
+  # so it needs no pnpm install and stays off the lockfile critical path.
+  #
+  # NOT yet in the `verify` aggregate / required-check set: the guarded surface
+  # still has residual matches (see doc/UPSTREAM_MERGE_SOP.md + NEO-473), so
+  # flipping this to a required status check now would red-wall PRs to master.
+  # Promote to required once the tree lints clean.
+  branding_guard:
+    name: branding-guard (no "Paperclip" in rendered surface)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      # Lint the guarded globs (Buckets A+B+G+H-text). Non-zero exit fails the PR.
+      # Frozen contracts (PAPERCLIP_* / @paperclipai/* / paths / headers /
+      # identifiers / tests) are exempt by the boundary-aware detector.
+      - name: Branding guard (lint)
+        run: node scripts/check-branding-no-paperclip.mjs
+
+      # Self-test of the guard itself, so a bad edit to the detector/codemod is
+      # caught in the same job rather than silently weakening the gate.
+      - name: Branding guard self-test
+        run: node scripts/check-branding-no-paperclip.test.mjs
+
   typecheck_release_registry:
     name: Typecheck + Release Registry
     needs: [policy]

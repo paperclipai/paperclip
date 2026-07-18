@@ -1566,6 +1566,7 @@ export async function assertGitSensitiveAdapterWorkspaceValid(input: {
     identifier: string | null;
     projectId: string | null;
     projectWorkspaceId: string | null;
+    executionWorkspacePreference?: string | null;
   } | null;
   resolvedWorkspace: ResolvedWorkspaceForRun;
   executionWorkspace: RealizedExecutionWorkspace;
@@ -1581,6 +1582,18 @@ export async function assertGitSensitiveAdapterWorkspaceValid(input: {
 
   const issue = input.issue;
   if (!issue) return;
+
+  // QA-by-artifact issues (NEO-369 Option B) are deliberately workspace-less: no project, no
+  // project workspace, and agent_default execution. There is no repo to check out, so a
+  // git-sensitive adapter (e.g. hermes_local) must run in the agent's normal env exactly like a
+  // non-git task instead of hard-failing on missing .git metadata. The issue's own truth (no
+  // project + no project workspace) is authoritative here — do not infer a git expectation from an
+  // incidental resolved workspace id or worktree strategy, which produced the false positive that
+  // deadlocked QA in NEO-394/NEO-399.
+  const issueDeclaresNoProjectWorkspace = !issue.projectId && !issue.projectWorkspaceId;
+  const prefersAgentDefaultExecution =
+    issue.executionWorkspacePreference == null || issue.executionWorkspacePreference === "agent_default";
+  if (issueDeclaresNoProjectWorkspace && prefersAgentDefaultExecution) return;
 
   const environmentDriver = readNonEmptyString(input.environmentDriver) ?? "local";
   const leaseMetadata = parseObject(input.leaseMetadata);
@@ -12624,6 +12637,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               identifier: issueRef.identifier,
               projectId: issueRef.projectId,
               projectWorkspaceId: issueRef.projectWorkspaceId,
+              executionWorkspacePreference: issueRef.executionWorkspacePreference,
             }
           : null,
         resolvedWorkspace,
@@ -13653,7 +13667,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }) {
     const failureSummary = summarizeRunFailureForIssueComment(input.latestRun);
     return (
-      "Paperclip stopped before dispatching the adapter because required secret/env bindings are missing. " +
+      "Cortex stopped before dispatching the adapter because required secret/env bindings are missing. " +
       `Resolving them as a runtime failure would only produce repeated opaque setup failures.${failureSummary ?? ""} ` +
       "Moving it to `blocked` with a source-scoped recovery action so an operator can bind the missing secret(s) before resuming."
     );

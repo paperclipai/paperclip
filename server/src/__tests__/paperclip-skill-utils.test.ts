@@ -46,9 +46,36 @@ describe("paperclip skill utils", () => {
     expect(entries[1]?.source).toBe(path.join(root, "skills", "paperclip-create-agent"));
   });
 
-  it("documents artifact uploads in the installed Paperclip skill", async () => {
-    const skillBody = await fs.readFile(path.resolve("skills/paperclip/SKILL.md"), "utf8");
-    const referenceBody = await fs.readFile(path.resolve("skills/paperclip/references/artifacts.md"), "utf8");
+  it("honors a pinned SKILL.md key so renamed cortex* dirs keep the pre-rename skill key", async () => {
+    // NEO-441 back-compat: a skill dir renamed paperclip* -> cortex* pins its
+    // canonical key in SKILL.md frontmatter so existing skill-sync configs that
+    // key off `paperclipai/paperclip/paperclip` keep resolving after the flip.
+    const root = await makeTempDir("paperclip-skill-pinned-");
+    cleanupDirs.add(root);
+
+    const moduleDir = path.join(root, "a", "b", "c", "d", "e");
+    await fs.mkdir(moduleDir, { recursive: true });
+    await fs.mkdir(path.join(root, "skills", "cortex"), { recursive: true });
+    await fs.writeFile(
+      path.join(root, "skills", "cortex", "SKILL.md"),
+      "---\nname: cortex\nkey: paperclipai/paperclip/paperclip\n---\n\n# Cortex\n",
+      "utf8",
+    );
+    // A cortex* dir with no pinned key falls back to the directory-derived key.
+    await fs.mkdir(path.join(root, "skills", "cortex-create-agent"), { recursive: true });
+
+    const entries = await listPaperclipSkillEntries(moduleDir);
+
+    expect(entries.map((entry) => entry.key)).toEqual([
+      "paperclipai/paperclip/paperclip",
+      "paperclipai/paperclip/cortex-create-agent",
+    ]);
+    expect(entries.map((entry) => entry.runtimeName)).toEqual(["cortex", "cortex-create-agent"]);
+  });
+
+  it("documents artifact uploads in the installed Cortex skill", async () => {
+    const skillBody = await fs.readFile(path.resolve("skills/cortex/SKILL.md"), "utf8");
+    const referenceBody = await fs.readFile(path.resolve("skills/cortex/references/artifacts.md"), "utf8");
 
     expect(skillBody).toContain("Generated Artifacts and Work Products");
     expect(skillBody).toContain("references/artifacts.md");
@@ -59,7 +86,7 @@ describe("paperclip skill utils", () => {
     expect(referenceBody).toContain("/api/companies/$PAPERCLIP_COMPANY_ID/issues/$PAPERCLIP_TASK_ID/attachments");
     expect(referenceBody).toContain("/api/issues/$PAPERCLIP_TASK_ID/work-products");
     await expect(
-      fs.access(path.resolve("skills/paperclip/scripts/paperclip-upload-artifact.sh")),
+      fs.access(path.resolve("skills/cortex/scripts/paperclip-upload-artifact.sh")),
     ).resolves.toBeUndefined();
     await expect(fs.access(path.resolve("scripts/paperclip-upload-artifact.sh"))).rejects.toThrow();
   });

@@ -784,8 +784,8 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
             </div>
 
             {hasAdditionalLegacyWorkspaces && (
-              <div className="text-(length:--text-micro) text-muted-foreground">
-                Additional legacy workspace records exist on this project. Paperclip is using the primary workspace as the codebase view.
+              <div className="text-[11px] text-muted-foreground">
+                Additional legacy workspace records exist on this project. Cortex is using the primary workspace as the codebase view.
               </div>
             )}
 

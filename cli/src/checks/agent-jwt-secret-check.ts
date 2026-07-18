@@ -23,7 +23,7 @@ export function agentJwtSecretCheck(configPath?: string): CheckResult {
       name: "Agent JWT secret",
       status: "warn",
       message: `PAPERCLIP_AGENT_JWT_SECRET is present in ${envPath} but not loaded into environment`,
-      repairHint: `Set the value from ${envPath} in your shell before starting the Paperclip server`,
+      repairHint: `Set the value from ${envPath} in your shell before starting the Cortex server`,
     };
   }
 

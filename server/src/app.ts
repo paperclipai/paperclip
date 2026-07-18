@@ -155,6 +155,8 @@ export async function createApp(
     databaseBackupHealth?: InspectDatabaseBackupHealthOptions;
     deploymentMode: DeploymentMode;
     deploymentExposure: DeploymentExposure;
+    /** NEO-234 Option 2: scoped install-only loopback deploy token. */
+    localDeployToken?: string;
     allowedHostnames: string[];
     pluginHttpAllowedPrivateHosts?: string[];
     bindHost: string;
@@ -348,6 +350,7 @@ export async function createApp(
       { workerManager },
       { toolDispatcher },
       { workerManager },
+      { localDeployToken: opts.localDeployToken },
     ),
   );
   if (isMcpClientEnabled()) {

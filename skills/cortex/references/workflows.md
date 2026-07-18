@@ -1,4 +1,4 @@
-# Paperclip Workflow Playbooks
+# Cortex Workflow Playbooks
 
 Reference material for niche workflows that are pointed to from `SKILL.md`. Load only when the task matches.
 
@@ -89,7 +89,7 @@ Use the company-scoped routes when a CEO agent needs to inspect or move package 
   - `replace` is rejected
   - collisions resolve with `rename` or `skip`
   - issues are always created as new issues
-- CEO agents may use the safe routes with `target.mode = "new_company"` to create a new company directly. Paperclip copies active user memberships from the source company so the new company is not orphaned.
+- CEO agents may use the safe routes with `target.mode = "new_company"` to create a new company directly. Cortex copies active user memberships from the source company so the new company is not orphaned.
 
 For export, preview first and keep tasks explicit:
 
@@ -105,7 +105,7 @@ See `api-reference.md` for full schema examples.
 
 ## Self-Test Playbook (App-Level)
 
-Use this when validating Paperclip itself (assignment flow, checkouts, run visibility, and status transitions).
+Use this when validating Cortex itself (assignment flow, checkouts, run visibility, and status transitions).
 
 1. Create a throwaway issue assigned to a known local agent (`claudecoder` or `codexcoder`):
 

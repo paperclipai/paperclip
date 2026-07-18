@@ -390,7 +390,7 @@ export function CompanySettings() {
               <Button size="sm" asChild>
                 <a href="/company/settings/cloud-upstream">
                   <CloudUpload className="mr-1.5 h-3.5 w-3.5" />
-                  Send to Paperclip Cloud
+                  Send to Cortex Cloud
                 </a>
               </Button>
             ) : null}

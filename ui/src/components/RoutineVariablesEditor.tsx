@@ -292,7 +292,7 @@ export function RoutineVariablesHint() {
           <DialogHeader>
             <DialogTitle>Routine variables</DialogTitle>
             <DialogDescription>
-              How to prompt for inputs and which variables Paperclip fills in automatically.
+              How to prompt for inputs and which variables Cortex fills in automatically.
             </DialogDescription>
           </DialogHeader>
 
@@ -306,7 +306,7 @@ export function RoutineVariablesHint() {
                 <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs text-foreground">
                   {"{{variable_name}}"}
                 </code>{" "}
-                anywhere in the title or instructions. Paperclip detects each placeholder, lists it
+                anywhere in the title or instructions. Cortex detects each placeholder, lists it
                 under <span className="font-medium text-foreground">Variables</span>, and prompts
                 for a value before each run.
               </p>

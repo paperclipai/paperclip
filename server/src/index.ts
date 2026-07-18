@@ -684,6 +684,7 @@ export async function startServer(): Promise<StartedServer> {
       : undefined,
     deploymentMode: config.deploymentMode,
     deploymentExposure: config.deploymentExposure,
+    localDeployToken: config.localDeployToken,
     allowedHostnames: config.allowedHostnames,
     pluginHttpAllowedPrivateHosts: config.pluginHttpAllowedPrivateHosts,
     bindHost: config.host,

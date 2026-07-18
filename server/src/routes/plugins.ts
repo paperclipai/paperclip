@@ -21,7 +21,7 @@
 
 import { access, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { Router } from "express";
 import type { Request, Response } from "express";
@@ -84,7 +84,7 @@ import {
   extractSecretRefPathsFromConfig,
   PLUGIN_SECRET_REFS_DISABLED_MESSAGE,
 } from "../services/plugin-secrets-handler.js";
-import { badRequest, forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
+import { HttpError, badRequest, forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
 
 /** UI slot declaration extracted from plugin manifest */
 type PluginUiSlotDeclaration = NonNullable<NonNullable<PaperclipPluginManifestV1["ui"]>["slots"]>[number];
@@ -422,6 +422,18 @@ export interface PluginRouteBridgeDeps {
   streamBus?: PluginStreamBus;
 }
 
+/**
+ * NEO-234 Option 2 — scoped, install-only loopback deploy authz.
+ *
+ * Threads the box-local deploy token (config.localDeployToken) into the plugins
+ * router so `POST /plugins/install` can authorize the deploy's loopback install
+ * without a standing board admin credential. The token grants install ONLY.
+ */
+export interface PluginRouteInstallAuthDeps {
+  /** Box-local deploy token; `undefined` disables the loopback exception. */
+  localDeployToken?: string;
+}
+
 interface PluginScopedApiRequest {
   routeKey: string;
   method: string;
@@ -507,6 +519,7 @@ export function pluginRoutes(
   webhookDeps?: PluginRouteWebhookDeps,
   toolDeps?: PluginRouteToolDeps,
   bridgeDeps?: PluginRouteBridgeDeps,
+  installAuthDeps?: PluginRouteInstallAuthDeps,
 ) {
   const router = Router();
   const registry = pluginRegistryService(db);
@@ -605,6 +618,57 @@ export function pluginRoutes(
     if (!issueId) return null;
     const issue = await issuesSvc.getById(issueId);
     return issue?.companyId ?? null;
+  }
+
+  // NEO-234 Option 2 — scoped, install-only loopback deploy authz. The
+  // box-local deploy already checks out, builds, and runs this exact plugin
+  // code as `ubuntu` and restarts the stack, so an install-only loopback path
+  // grants no privilege it does not already hold. The token is read here and
+  // nowhere else.
+  const LOOPBACK_ADDRESSES = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
+
+  function isLoopbackRequest(req: Request): boolean {
+    // Use the genuine TCP peer plus Express's resolved `req.ip`. Both must be
+    // present-and-loopback (a non-loopback in either rejects), so a spoofed
+    // forwarded address can never relax the check below loopback-only.
+    const candidates = [req.ip, req.socket?.remoteAddress];
+    const present = candidates.filter((addr): addr is string => Boolean(addr));
+    return present.length > 0 && present.every((addr) => LOOPBACK_ADDRESSES.has(addr));
+  }
+
+  function bearerToken(req: Request): string | undefined {
+    const header = req.header("authorization");
+    if (!header?.toLowerCase().startsWith("bearer ")) return undefined;
+    return header.slice("bearer ".length).trim() || undefined;
+  }
+
+  function timingSafeTokenEqual(presented: string, expected: string): boolean {
+    // Compare fixed-width sha256 digests so timingSafeEqual never throws on a
+    // raw length mismatch and the comparison stays constant-time.
+    const presentedDigest = createHash("sha256").update(presented).digest();
+    const expectedDigest = createHash("sha256").update(expected).digest();
+    return timingSafeEqual(presentedDigest, expectedDigest);
+  }
+
+  function isAuthorizedLocalDeploy(req: Request): boolean {
+    const expected = installAuthDeps?.localDeployToken;
+    if (!expected) return false;
+    if (!isLoopbackRequest(req)) return false;
+    const presented = bearerToken(req);
+    if (!presented) return false;
+    return timingSafeTokenEqual(presented, expected);
+  }
+
+  function assertInstallAuthorized(req: Request) {
+    try {
+      assertInstanceAdmin(req);
+      return;
+    } catch (err) {
+      // Only the instance-admin `forbidden` is eligible for the loopback
+      // exception; anything else (e.g. an `unauthorized`) propagates unchanged.
+      if (!(err instanceof HttpError) || err.status !== 403) throw err;
+      if (!isAuthorizedLocalDeploy(req)) throw err;
+    }
   }
 
   function assertScopedApiAuth(req: Request, route: PluginApiRouteDeclaration) {
@@ -1013,7 +1077,10 @@ export function pluginRoutes(
    * Install a plugin from npm or a local filesystem path.
    *
    * Instance-wide plugin installation is restricted to instance admins because
-   * the install flow fetches and inspects package contents on the host.
+   * the install flow fetches and inspects package contents on the host. As a
+   * narrow exception (NEO-234 Option 2), the box-local deploy may also authorize
+   * over loopback by presenting the configured `PAPERCLIP_LOCAL_DEPLOY_TOKEN`
+   * as a bearer credential — this grants install only.
    *
    * Request body:
    * - packageName: npm package name or local path (required)
@@ -1033,7 +1100,9 @@ export function pluginRoutes(
    * - `500` — installation succeeded but manifest is missing (indicates a loader bug)
    */
   router.post("/plugins/install", async (req, res) => {
-    assertInstanceAdmin(req);
+    // NEO-234 Option 2: instance admins (and local_trusted) as before, plus a
+    // scoped install-only loopback deploy token. See assertInstallAuthorized.
+    assertInstallAuthorized(req);
     const { packageName, version, isLocalPath } = req.body as PluginInstallRequest;
 
     // Input validation
@@ -1059,8 +1128,10 @@ export function pluginRoutes(
       return;
     }
 
-    // Basic security check for package name (prevent injection)
-    if (!isLocalPath && /[<>:"|?*]/.test(trimmedPackage)) {
+    // Basic security check for package name (prevent injection).
+    // Allow: A-Za-z0-9 . _ / @ : # + - (covers npm, github:, git+https:, etc.)
+    // Block: whitespace, shell-redirect chars < > " | ? * and NUL
+    if (!isLocalPath && /[\s<>"|?*\x00]/.test(trimmedPackage)) {
       res.status(400).json({ error: "packageName contains invalid characters" });
       return;
     }

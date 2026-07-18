@@ -59,7 +59,7 @@ interface BoardKeyRow {
 }
 
 export function registerTokenCommands(program: Command): void {
-  const token = program.command("token").description("Manage Paperclip API tokens");
+  const token = program.command("token").description("Manage Cortex API tokens");
   const agent = token.command("agent").description("Manage agent API keys");
 
   addCommonClientOptions(

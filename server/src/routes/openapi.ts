@@ -5432,7 +5432,7 @@ export function buildOpenApiDocument(): any {
     info: {
       title: "Paperclip API",
       version: "1.0.0",
-      description: "REST API for the Paperclip AI agent management platform",
+      description: "REST API for the Cortex AI agent management platform",
     },
     servers: [{ url: "/" }],
     components: registry.buildComponents(),

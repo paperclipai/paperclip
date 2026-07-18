@@ -53,6 +53,13 @@ type DatabaseMode = "embedded-postgres" | "postgres";
 export interface Config {
   deploymentMode: DeploymentMode;
   deploymentExposure: DeploymentExposure;
+  /**
+   * Scoped, install-only loopback deploy token (NEO-234 Option 2). When set,
+   * the box-local deploy may authorize `POST /plugins/install` over loopback by
+   * presenting this token as a bearer credential — without a standing board
+   * admin credential. Read by the plugins router guard and nowhere else.
+   */
+  localDeployToken: string | undefined;
   bind: BindMode;
   customBindHost: string | undefined;
   host: string;
@@ -173,6 +180,9 @@ export function loadConfig(): Config {
       ? (deploymentModeFromEnvRaw as DeploymentMode)
       : null;
   const deploymentMode: DeploymentMode = deploymentModeFromEnv ?? fileConfig?.server.deploymentMode ?? "local_trusted";
+  // NEO-234 Option 2: scoped install-only loopback deploy token. Box-local
+  // (firstboot-provisioned into pod.env); never a board credential.
+  const localDeployToken = process.env.PAPERCLIP_LOCAL_DEPLOY_TOKEN?.trim() || undefined;
   const strictModeFromEnv = process.env.PAPERCLIP_SECRETS_STRICT_MODE;
   const secretsStrictMode =
     strictModeFromEnv !== undefined
@@ -324,6 +334,7 @@ export function loadConfig(): Config {
   return {
     deploymentMode,
     deploymentExposure,
+    localDeployToken,
     bind: resolvedBind.bind,
     customBindHost: resolvedBind.customBindHost,
     host: resolvedBind.host,

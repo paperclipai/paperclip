@@ -1,16 +1,21 @@
 ---
-name: paperclip-converting-plans-to-tasks
+name: cortex-converting-plans-to-tasks
+key: paperclipai/paperclip/paperclip-converting-plans-to-tasks
 description: >
-  Convert Paperclip plans into executable issue graphs. Use when asked to plan,
-  scope, or break down Paperclip company work into assigned tasks with specialty
-  fit, dependencies, blockers, and parallelization.
+  The Cortex way of converting a plan into executable tasks. Use whenever
+  you are asked to plan, scope, or break down work inside a Cortex company.
+  Industry-agnostic guidance on how to translate a plan into assigned issues
+  with the right specialty, dependencies, and parallelization so Cortex's
+  executor can pick up the work — it does not prescribe a plan format. Pair
+  with the `cortex` skill, which covers the mechanics of writing the plan
+  document and reassigning the issue.
 ---
 
-# Paperclip — Converting Plans to Tasks
+# Cortex — Converting Plans to Tasks
 
-A companion skill for turning a plan into executable Paperclip work. It does **not** dictate a plan structure — bring whatever format fits the work and the user's preference. It tells you _how_ to translate that plan into issues so that the rest of Paperclip works for you.
+A companion skill for turning a plan into executable Cortex work. It does **not** dictate a plan structure — bring whatever format fits the work and the user's preference. It tells you _how_ to translate that plan into issues so that the rest of Cortex works for you.
 
-For the **mechanics** of recording a plan (issue document with key `plan`, comment links, approval gating, who to reassign back to), follow the _Planning_ section of the `paperclip` skill. This skill covers planning method, not the API surface.
+For the **mechanics** of recording a plan (issue document with key `plan`, comment links, approval gating, who to reassign back to), follow the _Planning_ section of the `cortex` skill. This skill covers planning method, not the API surface.
 
 ## When you're asked to plan
 
@@ -18,7 +23,7 @@ For the **mechanics** of recording a plan (issue document with key `plan`, comme
 - **Know your team.** Before assigning anything, look up the company's agents and their specialties (reporting lines, role descriptions, prior work). Don't default work to yourself when a better-suited agent exists; don't assign to a name you haven't checked.
 - **Assign for specialty.** Hand each piece of work to the agent most relevant to it. If no one fits, call that out — a hire, a tool, an external dependency, a board decision — instead of papering over the gap.
 - **Take responsibility.** Specialty-matching cuts both ways: when _you_ are the best-suited agent for a piece of work, assign it to yourself instead of reflexively delegating. Don't hand off to avoid load.
-- **Use the dependency tree.** Paperclip's executor automatically starts any assigned task with no open blockers. Parent/child issue nesting is structure, not execution blocking. Express every concrete deliverable as an issue, and wire every hard dependency from the plan through `blockedByIssueIds` on the dependent issue (not prose like "blocked by X"). When a blocker reaches `done`, dependents auto-wake.
+- **Use the dependency tree.** Cortex's executor automatically starts any assigned task with no open blockers. Parent/child issue nesting is structure, not execution blocking. Express every concrete deliverable as an issue, and wire every hard dependency from the plan through `blockedByIssueIds` on the dependent issue (not prose like "blocked by X"). When a blocker reaches `done`, dependents auto-wake.
 - **Order, then parallelize.** Sequence work by real dependencies, not by personal preference. Independent branches of the graph should start in parallel. Unlike humans, most agents allow concurrent runs, so you can assign parallel work to the same agent.
 - **Enough is enough.** Plans exist to unblock execution, not replace it. If the next step is small and clear, just do it or allow the plan to stand on its own. Re-planning a plan, or splitting work that one agent could finish in the time it took to break it up, is procrastination — ship something.
 
@@ -44,4 +49,4 @@ After creating the tasks, re-fetch the created issues or otherwise verify the is
 
 - Not a plan template. Use any format — prose, outline, table, RACI, Gantt, whatever fits.
 - Not software-development–specific. The same rules apply to marketing, research, ops, design, hiring, finance, etc.
-- Not a replacement for the `paperclip` skill's planning mechanics. Use both.
+- Not a replacement for the `cortex` skill's planning mechanics. Use both.

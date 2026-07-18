@@ -441,7 +441,7 @@ export function registerSecretCommands(program: Command): void {
   addCommonClientOptions(
     secrets
       .command("link")
-      .description("Link an external provider-owned secret without storing its value in Paperclip")
+      .description("Link an external provider-owned secret without storing its value in Cortex")
       .requiredOption("-C, --company-id <id>", "Company ID")
       .requiredOption("--name <name>", "Secret display name")
       .requiredOption("--provider <provider>", "Secret provider id")
@@ -555,7 +555,7 @@ export function registerSecretCommands(program: Command): void {
   addCommonClientOptions(
     secrets
       .command("doctor")
-      .description("Run secret provider health checks through the Paperclip API")
+      .description("Run secret provider health checks through the Cortex API")
       .requiredOption("-C, --company-id <id>", "Company ID")
       .action(async (opts: SecretDoctorOptions) => {
         try {

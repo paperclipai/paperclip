@@ -85,7 +85,7 @@ export const issueChatUxMentions: MentionOption[] = [
   },
   {
     id: "mention-project-1",
-    name: "Paperclip Board UI",
+    name: "Cortex Board UI",
     kind: "project",
     projectId: "project-1",
     projectColor: "#0f766e",

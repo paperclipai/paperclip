@@ -1,3 +1,5 @@
+import { PRODUCT_NAME } from "@paperclipai/shared";
+
 const FAVICON_BLOCK_START = "<!-- PAPERCLIP_FAVICON_START -->";
 const FAVICON_BLOCK_END = "<!-- PAPERCLIP_FAVICON_END -->";
 const RUNTIME_BRANDING_BLOCK_START = "<!-- PAPERCLIP_RUNTIME_BRANDING_START -->";
@@ -218,9 +220,30 @@ function replaceMarkedBlock(html: string, startMarker: string, endMarker: string
   return `${before}${indentedContent}${after}`;
 }
 
+/**
+ * Stamp the product name onto the served HTML shell at request time (D2).
+ * The static `ui/index.html` keeps upstream's `<title>` verbatim so fork
+ * merges never conflict on the shell; the served document always renders
+ * {@link PRODUCT_NAME}. No-op when the markup carries no title/meta.
+ */
+export function applyProductName(html: string): string {
+  return html
+    .replace(/<title>[^<]*<\/title>/i, `<title>${PRODUCT_NAME}</title>`)
+    .replace(
+      /(<meta\s+name="apple-mobile-web-app-title"\s+content=")[^"]*(")/i,
+      `$1${PRODUCT_NAME}$2`,
+    );
+}
+
 export function applyUiBranding(html: string, env: NodeJS.ProcessEnv = process.env): string {
   const branding = getWorktreeUiBranding(env);
-  const withFavicon = replaceMarkedBlock(html, FAVICON_BLOCK_START, FAVICON_BLOCK_END, renderFaviconLinks(branding));
+  const withProductName = applyProductName(html);
+  const withFavicon = replaceMarkedBlock(
+    withProductName,
+    FAVICON_BLOCK_START,
+    FAVICON_BLOCK_END,
+    renderFaviconLinks(branding),
+  );
   return replaceMarkedBlock(
     withFavicon,
     RUNTIME_BRANDING_BLOCK_START,

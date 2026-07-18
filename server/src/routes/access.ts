@@ -140,11 +140,29 @@ function buildCliAuthApprovalPath(challengeId: string, token: string) {
   return `/cli-auth/${challengeId}?token=${encodeURIComponent(token)}`;
 }
 
+/**
+ * Back-compat aliases for the Paperclip→Cortex skill rename (NEO-441). The
+ * directories were renamed `paperclip*` → `cortex*`; these entries let callers
+ * that still request the pre-rename skill name resolve to the renamed skill so
+ * existing `AGENTS.md` / API callers do not break during the transition.
+ */
+const SKILL_NAME_ALIASES: Record<string, string> = {
+  paperclip: "cortex",
+  "paperclip-board": "cortex-board",
+  "paperclip-create-agent": "cortex-create-agent",
+  "paperclip-converting-plans-to-tasks": "cortex-converting-plans-to-tasks",
+};
+
+function resolveSkillNameAlias(name: string): string {
+  return SKILL_NAME_ALIASES[name] ?? name;
+}
+
 function readSkillMarkdown(skillName: string): string | null {
-  const normalized = skillName.trim().toLowerCase();
-  if (!isSafeSkillName(normalized)) {
+  const requested = skillName.trim().toLowerCase();
+  if (!isSafeSkillName(requested)) {
     return null;
   }
+  const normalized = resolveSkillNameAlias(requested);
   const moduleDir = path.dirname(fileURLToPath(import.meta.url));
   const claudeSkillsDir = resolveClaudeSkillsDir();
   const candidates = [
@@ -1696,7 +1714,7 @@ function buildInviteOnboardingManifest(
   }
 ) {
   const baseUrl = requestBaseUrl(req);
-  const skillPath = `/api/invites/${token}/skills/paperclip`;
+  const skillPath = `/api/invites/${token}/skills/cortex`;
   const skillUrl = baseUrl ? `${baseUrl}${skillPath}` : skillPath;
   const registrationEndpointPath = `/api/invites/${token}/accept`;
   const registrationEndpointUrl = baseUrl
@@ -1772,10 +1790,10 @@ function buildInviteOnboardingManifest(
         contentType: "text/plain"
       },
       skill: {
-        name: "paperclip",
+        name: "cortex",
         path: skillPath,
         url: skillUrl,
-        installPath: "runtime-specific Paperclip skill location"
+        installPath: "runtime-specific Cortex skill location"
       }
     }
   };
@@ -3216,18 +3234,18 @@ export function accessRoutes(
     assertAuthenticated(req);
     res.json({
       skills: [
-        { name: "paperclip", path: "/api/skills/paperclip" },
+        { name: "cortex", path: "/api/skills/cortex" },
         {
           name: "para-memory-files",
           path: "/api/skills/para-memory-files"
         },
         {
-          name: "paperclip-create-agent",
-          path: "/api/skills/paperclip-create-agent"
+          name: "cortex-create-agent",
+          path: "/api/skills/cortex-create-agent"
         },
         {
-          name: "paperclip-converting-plans-to-tasks",
-          path: "/api/skills/paperclip-converting-plans-to-tasks"
+          name: "cortex-converting-plans-to-tasks",
+          path: "/api/skills/cortex-converting-plans-to-tasks"
         }
       ]
     });
@@ -3493,8 +3511,8 @@ export function accessRoutes(
     res.json({
       skills: [
         {
-          name: "paperclip",
-          path: `/api/invites/${token}/skills/paperclip`,
+          name: "cortex",
+          path: `/api/invites/${token}/skills/cortex`,
         },
       ],
     });
@@ -3513,7 +3531,8 @@ export function accessRoutes(
     }
 
     const skillName = (req.params.skillName as string).trim().toLowerCase();
-    if (skillName !== "paperclip") throw notFound("Skill not found");
+    // Accept the Cortex name and its pre-rename alias (NEO-441 back-compat).
+    if (resolveSkillNameAlias(skillName) !== "cortex") throw notFound("Skill not found");
     const markdown = readSkillMarkdown(skillName);
     if (!markdown) throw notFound("Skill not found");
     res.type("text/markdown").send(markdown);

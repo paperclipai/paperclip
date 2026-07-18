@@ -114,7 +114,7 @@ import {
   Lock,
   ExternalLink,
   FlaskConical,
-  Paperclip,
+  PaperclipIcon,
   Pause,
   Pencil,
   Pin,
@@ -237,7 +237,7 @@ function sourceMeta(sourceBadge: CompanySkillSourceBadge, sourceLabel: string | 
     case "local":
       return { icon: Folder, label: sourceLabel ?? "Folder", managedLabel: "Folder managed" };
     case "paperclip":
-      return { icon: Paperclip, label: sourceLabel ?? "Paperclip", managedLabel: "Paperclip managed" };
+      return { icon: PaperclipIcon, label: sourceLabel ?? "Cortex", managedLabel: "Cortex managed" };
     default:
       return { icon: Boxes, label: sourceLabel ?? "Catalog", managedLabel: "Catalog managed" };
   }
@@ -468,8 +468,8 @@ function CompatChip({ compatibility }: { compatibility: CompanySkillCompatibilit
     unknown: {
       icon: HelpCircle,
       label: "Unknown format",
-      tooltip: "Paperclip could not validate this skill as Agent Skills markdown. Install at your own risk.",
-      className: "border-yellow-500/40 bg-yellow-500/10 text-yellow-800 dark:text-yellow-200",
+      tooltip: "Cortex could not validate this skill as Agent Skills markdown. Install at your own risk.",
+      className: "border-yellow-500/40 bg-yellow-500/10 text-yellow-200",
     },
     invalid: {
       icon: XOctagon,
@@ -641,7 +641,7 @@ function buildDiscoveryCards(
       catalogRef: entry.id,
       name: entry.name,
       slug: entry.slug,
-      author: entry.packageName ?? "Paperclip",
+      author: entry.packageName ?? "Cortex",
       version: discoveryVersionLabel({ packageVersion: entry.packageVersion ?? null, sourceRef: null }, required),
       tagline: null,
       description: entry.description,
@@ -3873,6 +3873,31 @@ export function CompanySkills() {
     },
   });
 
+  const createSkill = useMutation({
+    mutationFn: (payload: CompanySkillCreateRequest) => companySkillsApi.create(selectedCompanyId!, payload),
+    onSuccess: async (skill) => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.companySkills.list(selectedCompanyId!) });
+      navigate(routeForSkill(skill));
+      setCreateDialogOpen(false);
+      setCreateError(null);
+      setCreateDraft(buildBlankSkillDraft());
+      pushToast({
+        tone: "success",
+        title: skill.forkedFromSkillId ? "Skill fork created" : "Skill created",
+        body: `${skill.name} is now editable in the Cortex workspace.`,
+      });
+    },
+    onError: (error) => {
+      const message = error instanceof Error ? error.message : "Failed to create skill.";
+      setCreateError(message);
+      pushToast({
+        tone: "error",
+        title: "Skill creation failed",
+        body: message,
+      });
+    },
+  });
+
   const scanProjects = useMutation({
     mutationFn: () => companySkillsApi.scanProjects(selectedCompanyId!),
     onMutate: () => {
@@ -4460,6 +4485,26 @@ export function CompanySkills() {
           });
         }}
       />
+
+      <Dialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
+        <DialogContent className="flex max-h-[85vh] flex-col overflow-y-auto sm:max-w-3xl">
+          <DialogHeader>
+            <DialogTitle>{createDraft.forkedFromSkillId ? "Fork skill" : "Create a new skill"}</DialogTitle>
+            <DialogDescription>
+              {createDraft.forkedFromSkillId
+                ? "Review the fork metadata and create an editable company copy."
+                : "Create an editable company skill in the Cortex workspace."}
+            </DialogDescription>
+          </DialogHeader>
+          <NewSkillWizard
+            initialDraft={createDraft}
+            onCreate={(payload) => createSkill.mutate(payload)}
+            isPending={createSkill.isPending}
+            error={createError}
+            onCancel={() => setCreateDialogOpen(false)}
+          />
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={importDialogOpen} onOpenChange={setImportDialogOpen}>
         <DialogContent className="sm:max-w-md">

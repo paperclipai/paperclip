@@ -77,8 +77,16 @@ export function boardChatRoutes(
   function loadBoardSkill(): string {
     if (_boardSkillCache) return _boardSkillCache;
     const here = path.dirname(fileURLToPath(import.meta.url));
-    const skillPath = path.resolve(here, "../../../skills/paperclip-board/SKILL.md");
+    // The board skill was renamed `paperclip-board` → `cortex-board` (NEO-441).
+    // Prefer the current name; fall back to the pre-rename path so an older
+    // checkout / partially-applied rename still resolves.
+    const skillCandidates = [
+      path.resolve(here, "../../../skills/cortex-board/SKILL.md"),
+      path.resolve(here, "../../../skills/paperclip-board/SKILL.md"),
+    ];
     try {
+      const skillPath =
+        skillCandidates.find((candidate) => fs.existsSync(candidate)) ?? skillCandidates[0];
       let content = fs.readFileSync(skillPath, "utf-8");
       // Strip YAML frontmatter — the model only needs the body.
       content = content.replace(/^---[\s\S]*?---\s*\n/, "");
@@ -87,7 +95,7 @@ export function boardChatRoutes(
     } catch {
       return (
         "You are a board-level assistant helping a human manage their AI-agent " +
-        "company through Paperclip. Help them create companies, hire agents, " +
+        "company through Cortex. Help them create companies, hire agents, " +
         "approve tasks, and monitor their organization. Be conversational, " +
         "strategic, and concise."
       );

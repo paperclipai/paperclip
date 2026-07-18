@@ -436,6 +436,94 @@ describe("assertGitSensitiveAdapterWorkspaceValid", () => {
     );
   });
 
+  it("allows a workspace-less agent_default issue on a git-sensitive adapter (QA-by-artifact)", async () => {
+    const cwd = "/tmp/paperclip-agent-home-without-git-metadata";
+
+    await expect(
+      assertGitSensitiveAdapterWorkspaceValid(
+        buildWorkspaceValidationInput({
+          adapterType: "hermes_local",
+          issue: {
+            id: "issue-1",
+            identifier: "NEO-394",
+            projectId: null,
+            projectWorkspaceId: null,
+            executionWorkspacePreference: "agent_default",
+          },
+          resolvedWorkspace: buildResolvedWorkspace({
+            cwd,
+            source: "task_session",
+            projectId: null,
+            workspaceId: "workspace-1",
+          }),
+          executionWorkspace: {
+            ...buildWorkspaceValidationInput().executionWorkspace,
+            baseCwd: cwd,
+            cwd,
+            projectId: null,
+            workspaceId: "workspace-1",
+          },
+          persistedExecutionWorkspace: null,
+        }),
+      ),
+    ).resolves.toBeUndefined();
+  });
+
+  it("allows a workspace-less issue with an unset execution preference on a git-sensitive adapter", async () => {
+    const cwd = "/tmp/paperclip-agent-home-without-git-metadata";
+
+    await expect(
+      assertGitSensitiveAdapterWorkspaceValid(
+        buildWorkspaceValidationInput({
+          adapterType: "hermes_local",
+          issue: {
+            id: "issue-1",
+            identifier: "NEO-394",
+            projectId: null,
+            projectWorkspaceId: null,
+          },
+          resolvedWorkspace: buildResolvedWorkspace({ cwd, source: "task_session", projectId: null, workspaceId: null }),
+          executionWorkspace: {
+            ...buildWorkspaceValidationInput().executionWorkspace,
+            baseCwd: cwd,
+            cwd,
+            projectId: null,
+            workspaceId: null,
+          },
+          persistedExecutionWorkspace: null,
+        }),
+      ),
+    ).resolves.toBeUndefined();
+  });
+
+  it("still enforces the git guard when a workspace-less issue explicitly requests a project workspace", async () => {
+    const cwd = "/tmp/paperclip-workspace-without-git-metadata";
+
+    await expectWorkspaceValidationFailure(
+      buildWorkspaceValidationInput({
+        adapterType: "hermes_local",
+        issue: {
+          id: "issue-1",
+          identifier: "NEO-394",
+          projectId: null,
+          projectWorkspaceId: null,
+          executionWorkspacePreference: "isolated_workspace",
+        },
+        resolvedWorkspace: buildResolvedWorkspace({ cwd, source: "task_session", projectId: null, workspaceId: "workspace-1" }),
+        executionWorkspace: {
+          ...buildWorkspaceValidationInput().executionWorkspace,
+          baseCwd: cwd,
+          cwd,
+          projectId: null,
+          workspaceId: "workspace-1",
+        },
+        persistedExecutionWorkspace: null,
+      }),
+      "missing_persisted_execution_workspace",
+      "requires a project execution workspace",
+    );
+  });
+
   it("does not apply the git-sensitive workspace guard to non-local execution targets", async () => {
     const input = buildWorkspaceValidationInput();
 
