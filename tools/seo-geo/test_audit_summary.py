@@ -1,7 +1,7 @@
 import datetime
 import json
 
-from audit_summary import _count, _dated_snapshots, _prev_snapshot, gsc_section
+from audit_summary import _count, _dated_snapshots, _prev_snapshot, gsc_section, diff_section
 
 
 def test_count_enthaelt_findings():
@@ -37,3 +37,21 @@ def test_gsc_section_ohne_key_ist_failsoft(tmp_path):
     assert "nicht konfiguriert" in md
     assert amp == "🟢"
     assert blocks == []
+
+
+def test_diff_section_erstlauf_ohne_basis(tmp_path):
+    cur = {"a": {"total": 2, "high": 0, "findings": [
+        {"url": "https://a.de/", "field": "h1", "severity": "medium", "issue": "x"}]}}
+    md, alert = diff_section(cur, [], str(tmp_path), "2026-07-18")
+    assert "keine Vergleichsbasis" in md
+    assert alert is False
+
+
+def test_diff_section_neues_high_alarmiert(tmp_path):
+    (tmp_path / "2026-07-11.json").write_text(
+        '{"a": {"total": 0, "high": 0, "findings": []}}')
+    cur = {"a": {"total": 1, "high": 1, "findings": [
+        {"url": "https://a.de/x", "field": "meta_description", "severity": "high", "issue": "fehlt"}]}}
+    md, alert = diff_section(cur, [], str(tmp_path), "2026-07-18")
+    assert alert is True
+    assert "a" in md

@@ -152,6 +152,40 @@ def gsc_section(sites_path: str, environ: dict, today: datetime.date) -> tuple[s
         return (f"\n## Google Search Console\n\nGSC-Abruf global fehlgeschlagen ({e}).\n", "\U0001F7E2", [])
 
 
+def diff_section(cur_counts: dict, gsc_blocks: list[dict], hist_dir: str, today_str: str) -> tuple[str, bool]:
+    """Fail-soft: Erstlauf/defekte History/Exception → Sektion meldet das, Flag False."""
+    import audit_diff
+    try:
+        snaps = [d for d in _dated_snapshots(hist_dir) if d[0] < today_str]
+        if not snaps:
+            return ("\n## Veränderungen seit Vorwoche\n\n"
+                    "keine Vergleichsbasis — Diff ab nächster Woche.\n", False)
+        prev = snaps[-1][1]
+        older_lists_by_site = {}
+        for _, snap in snaps[:-1]:
+            for name, entry in snap.items():
+                if isinstance(entry, dict) and "findings" in entry:
+                    older_lists_by_site.setdefault(name, []).append(entry["findings"])
+        gsc_amp = {b.get("name"): b.get("ampel") for b in (gsc_blocks or [])}
+        per_site = []
+        for name, cur in cur_counts.items():
+            if "error" in cur:
+                continue
+            cur_f = cur.get("findings", [])
+            prev_entry = prev.get(name, {}) if isinstance(prev, dict) else {}
+            prev_f = prev_entry.get("findings", []) if isinstance(prev_entry, dict) else []
+            d = audit_diff.diff_findings(prev_f, cur_f)
+            regs = audit_diff.find_regressions(d["new"], older_lists_by_site.get(name, []))
+            prev_total = prev_entry.get("total") if isinstance(prev_entry, dict) else None
+            alerts = audit_diff.site_alerts(d, regs, prev_total, cur.get("total", 0),
+                                            gsc_amp.get(name, "\U0001F7E2"))
+            per_site.append({"name": name, "new": d["new"], "resolved": d["resolved"],
+                             "regressions": regs, "alerts": alerts})
+        return audit_diff.render_markdown(per_site), audit_diff.any_alert(per_site)
+    except Exception as e:  # noqa: BLE001 — niemals die Mail kippen
+        return (f"\n## Veränderungen seit Vorwoche\n\nDiff fehlgeschlagen ({e}).\n", False)
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="audit-summary")
     ap.add_argument("--sites", default="sites.json")
@@ -172,10 +206,13 @@ def main(argv: list[str] | None = None) -> int:
     body = render(counts, report_root, today)
 
     gsc_md, gsc_amp, gsc_blocks = gsc_section(args.sites, os.environ, today_date)
-    body = body + gsc_md
+    diff_md, diff_alert = diff_section(counts, gsc_blocks, hist_dir, today)
+    body = body + diff_md + gsc_md
     if gsc_blocks:
         with open(os.path.join(hist_dir, f"{today}-gsc.json"), "w") as fh:
             json.dump(gsc_blocks, fh, ensure_ascii=False, indent=2)
+    with open(os.path.join(hist_dir, f"{today}-alert.txt"), "w") as fh:
+        fh.write("ALERT" if diff_alert else "OK")
 
     with open(os.path.join(hist_dir, f"{today}.md"), "w") as fh:
         fh.write(body)
