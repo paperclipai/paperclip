@@ -97,4 +97,3 @@ Every allowed row retains safe `before` values:
 
 Use a normal board-authorized repair for rollback. Never bypass the
 transactional predicates or append-only audit enforcement.
-
