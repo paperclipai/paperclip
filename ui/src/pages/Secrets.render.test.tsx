@@ -52,11 +52,21 @@ const mockSecretsApi = vi.hoisted(() => ({
   removeMyUserSecret: vi.fn(),
 }));
 
+const mockAgentsApi = vi.hoisted(() => ({
+  list: vi.fn(),
+  get: vi.fn(),
+  update: vi.fn(),
+}));
+
 const mockSetBreadcrumbs = vi.hoisted(() => vi.fn());
 const mockPushToast = vi.hoisted(() => vi.fn());
 
 vi.mock("../api/secrets", () => ({
   secretsApi: mockSecretsApi,
+}));
+
+vi.mock("../api/agents", () => ({
+  agentsApi: mockAgentsApi,
 }));
 
 vi.mock("../context/CompanyContext", () => ({
@@ -346,6 +356,7 @@ describe("Secrets page layout", () => {
     mockSecretsApi.listUserSecretDefinitions.mockResolvedValue([]);
     mockSecretsApi.userSecretDefinitionCoverage.mockResolvedValue(userSecretCoverage);
     mockSecretsApi.listMyUserSecrets.mockResolvedValue([]);
+    mockAgentsApi.list.mockResolvedValue([]);
   });
 
   afterEach(() => {
@@ -673,6 +684,18 @@ describe("Secrets page layout", () => {
     });
     await flushReact();
 
+    const companyKeyInput = document.getElementById("new-secret-key") as HTMLInputElement;
+    expect(companyKeyInput.readOnly).toBe(true);
+
+    const editKeyButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Edit",
+    ) as HTMLButtonElement | undefined;
+    await act(async () => {
+      editKeyButton?.click();
+    });
+    await flushReact();
+    expect(companyKeyInput.readOnly).toBe(false);
+
     const eachUserButton = Array.from(document.body.querySelectorAll("button")).find(
       (button) => button.textContent?.trim() === "Each user",
     ) as HTMLButtonElement | undefined;
@@ -686,6 +709,12 @@ describe("Secrets page layout", () => {
     const nameInput = document.getElementById("new-secret-name") as HTMLInputElement;
     const keyInput = document.getElementById("new-secret-key") as HTMLInputElement;
     const usageGuidance = document.getElementById("new-secret-usage-guidance") as HTMLTextAreaElement;
+    expect(keyInput.readOnly).toBe(true);
+    expect(
+      Array.from(document.body.querySelectorAll("button")).some(
+        (button) => button.textContent?.trim() === "Edit",
+      ),
+    ).toBe(true);
     expect(document.getElementById("new-secret-provider")).toBeNull();
     expect(document.getElementById("new-secret-vault")).toBeNull();
     expect(document.getElementById("new-secret-value")).toBeNull();
@@ -1185,6 +1214,185 @@ describe("Secrets page layout", () => {
     expect(errorBanner?.textContent).toContain("AWS discovery request failed before IAM evaluation.");
     expect(errorBanner?.textContent).toContain("proxy_forbidden");
     expect(errorBanner?.textContent).not.toContain("AWS discovery needs ListSecrets permission");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("auto-generates the key from the name and keeps it read-only until Edit", async () => {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <QueryClientProvider client={queryClient}>
+            <Secrets />
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const newSecretButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("New secret"),
+    ) as HTMLButtonElement | undefined;
+    await act(async () => {
+      newSecretButton?.click();
+    });
+    await flushReact();
+
+    const nameInput = document.getElementById("new-secret-name") as HTMLInputElement;
+    const keyInput = document.getElementById("new-secret-key") as HTMLInputElement;
+    const valueTextarea = document.getElementById("new-secret-value") as HTMLTextAreaElement;
+
+    // Path-style placeholder and value directly after name for natural tab order.
+    expect(nameInput.placeholder).toBe("/dev/foo/bar");
+    expect(
+      nameInput.compareDocumentPosition(valueTextarea) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      valueTextarea.compareDocumentPosition(keyInput) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+
+    expect(keyInput.readOnly).toBe(true);
+    await act(async () => {
+      setInputValue(nameInput, "OpenAI API Key");
+    });
+    await flushReact();
+    expect(keyInput.value).toBe("openai-api-key");
+
+    const editKeyButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Edit",
+    ) as HTMLButtonElement | undefined;
+    expect(editKeyButton).toBeDefined();
+    await act(async () => {
+      editKeyButton?.click();
+    });
+    await flushReact();
+
+    expect((document.getElementById("new-secret-key") as HTMLInputElement).readOnly).toBe(false);
+
+    await act(async () => {
+      setInputValue(document.getElementById("new-secret-key") as HTMLInputElement, "custom-key");
+      setInputValue(nameInput, "OpenAI API Key v2");
+    });
+    await flushReact();
+
+    // Once edited, the key stops following the name.
+    expect((document.getElementById("new-secret-key") as HTMLInputElement).value).toBe("custom-key");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("grants and revokes agent access from the secret detail sheet", async () => {
+    mockSecretsApi.list.mockResolvedValue([makeCompanySecret()]);
+    mockSecretsApi.usage.mockResolvedValue({ secretId: "secret-openai", bindings: [] });
+    mockSecretsApi.accessEvents.mockResolvedValue([]);
+    const coder = {
+      id: "agent-coder",
+      name: "CodexCoder",
+      status: "active",
+      adapterConfig: {},
+    };
+    const reviewer = {
+      id: "agent-reviewer",
+      name: "Reviewer",
+      status: "active",
+      adapterConfig: {
+        env: { OPENAI_API_KEY: { type: "secret_ref", secretId: "secret-openai" } },
+      },
+    };
+    mockAgentsApi.list.mockResolvedValue([coder, reviewer]);
+    mockAgentsApi.get.mockImplementation(async (id: string) =>
+      id === "agent-coder" ? coder : reviewer,
+    );
+    mockAgentsApi.update.mockImplementation(async (id: string) =>
+      id === "agent-coder" ? coder : reviewer,
+    );
+
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <QueryClientProvider client={queryClient}>
+            <Secrets />
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const companyRow = Array.from(container.querySelectorAll("[role='row']")).find(
+      (row) => row.textContent?.includes("OPENAI_API_KEY"),
+    ) as HTMLElement | undefined;
+    await act(async () => {
+      companyRow?.click();
+    });
+    await flushReact();
+    await flushReact();
+
+    // Existing access is listed right in the Details tab.
+    expect(document.body.textContent).toContain("Agent access");
+    expect(document.body.textContent).toContain("Reviewer");
+
+    const agentSelect = document.getElementById("agent-access-agent") as HTMLSelectElement;
+    const envKeyInput = document.getElementById("agent-access-env-key") as HTMLInputElement;
+    expect(envKeyInput.value).toBe("OPENAI_API_KEY");
+    // Agents that already have access are not offered again.
+    expect(Array.from(agentSelect.options).map((option) => option.textContent)).not.toContain("Reviewer");
+
+    await act(async () => {
+      setSelectValue(agentSelect, "agent-coder");
+    });
+    await flushReact();
+
+    const addButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Add",
+    ) as HTMLButtonElement | undefined;
+    await act(async () => {
+      addButton?.click();
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(mockAgentsApi.update).toHaveBeenCalledWith(
+      "agent-coder",
+      {
+        adapterConfig: {
+          env: { OPENAI_API_KEY: { type: "secret_ref", secretId: "secret-openai" } },
+        },
+        replaceAdapterConfig: true,
+      },
+      "company-1",
+    );
+
+    const revokeButton = document.body.querySelector(
+      'button[aria-label="Remove access for Reviewer"]',
+    ) as HTMLButtonElement | null;
+    expect(revokeButton).not.toBeNull();
+    await act(async () => {
+      revokeButton?.click();
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(mockAgentsApi.update).toHaveBeenCalledWith(
+      "agent-reviewer",
+      { adapterConfig: { env: {} }, replaceAdapterConfig: true },
+      "company-1",
+    );
 
     await act(async () => {
       root.unmount();
