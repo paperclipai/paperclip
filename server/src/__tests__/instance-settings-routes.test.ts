@@ -6,9 +6,11 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
   get: vi.fn(),
   getGeneral: vi.fn(),
   getExperimental: vi.fn(),
+  getVisibility: vi.fn(),
   update: vi.fn(),
   updateGeneral: vi.fn(),
   updateExperimental: vi.fn(),
+  updateVisibility: vi.fn(),
   listCompanyIds: vi.fn(),
 }));
 const mockHeartbeatService = vi.hoisted(() => ({
@@ -62,6 +64,8 @@ describe("instance settings routes", () => {
     mockInstanceSettingsService.update.mockReset();
     mockInstanceSettingsService.updateGeneral.mockReset();
     mockInstanceSettingsService.updateExperimental.mockReset();
+    mockInstanceSettingsService.getVisibility.mockReset();
+    mockInstanceSettingsService.updateVisibility.mockReset();
     mockInstanceSettingsService.listCompanyIds.mockReset();
     mockHeartbeatService.buildIssueGraphLivenessAutoRecoveryPreview.mockReset();
     mockHeartbeatService.reconcileIssueGraphLiveness.mockReset();
@@ -184,6 +188,19 @@ describe("instance settings routes", () => {
       },
     });
     mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1", "company-2"]);
+    mockInstanceSettingsService.getVisibility.mockResolvedValue({
+      companySurfaces: [
+        "company.general",
+        "company.members",
+        "company.invites",
+        "company.secrets",
+        "company.plugins",
+      ],
+    });
+    mockInstanceSettingsService.updateVisibility.mockResolvedValue({
+      id: "instance-settings-1",
+      visibility: { companySurfaces: ["company.general", "company.members"] },
+    });
     mockHeartbeatService.buildIssueGraphLivenessAutoRecoveryPreview.mockResolvedValue({
       lookbackHours: 24,
       cutoff: "2026-04-26T12:00:00.000Z",
@@ -626,5 +643,76 @@ describe("instance settings routes", () => {
 
     expect(res.status).toBe(403);
     expect(mockInstanceSettingsService.updateGeneral).not.toHaveBeenCalled();
+  });
+
+  it("allows instance admins to read and update the visibility policy", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "local-board",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+
+    const getRes = await request(app).get("/api/instance/settings/visibility");
+    expect(getRes.status).toBe(200);
+    expect(getRes.body.companySurfaces).toContain("company.members");
+
+    const patchRes = await request(app)
+      .patch("/api/instance/settings/visibility")
+      .send({ companySurfaces: ["company.general", "company.members"] });
+    expect(patchRes.status).toBe(200);
+    expect(patchRes.body).toEqual({
+      companySurfaces: ["company.general", "company.members"],
+    });
+    expect(mockInstanceSettingsService.updateVisibility).toHaveBeenCalledWith({
+      companySurfaces: ["company.general", "company.members"],
+    });
+    expect(mockLogActivity).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects non-admin board users from reading or updating the visibility policy", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "user-1",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: ["company-1"],
+    });
+
+    await request(app).get("/api/instance/settings/visibility").expect(403);
+    await request(app)
+      .patch("/api/instance/settings/visibility")
+      .send({ companySurfaces: [] })
+      .expect(403);
+    expect(mockInstanceSettingsService.updateVisibility).not.toHaveBeenCalled();
+  });
+
+  it("rejects agent callers from the visibility policy", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      source: "agent_key",
+    });
+
+    await request(app)
+      .patch("/api/instance/settings/visibility")
+      .send({ companySurfaces: [] })
+      .expect(403);
+  });
+
+  it("rejects unknown surfaces in the visibility patch with a validation error", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "local-board",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+
+    const res = await request(app)
+      .patch("/api/instance/settings/visibility")
+      .send({ companySurfaces: ["instance.general"] });
+    expect(res.status).toBe(400);
+    expect(mockInstanceSettingsService.updateVisibility).not.toHaveBeenCalled();
   });
 });
