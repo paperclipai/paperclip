@@ -716,7 +716,9 @@ representation, and recorded as metadata-only
 contains the boundary, detector version, disposition, match count, record type,
 and stream; it never contains the matched value. Run-detail, event, and log
 responses apply the same redaction again when rendering diagnostics so legacy
-records are covered.
+records are covered. When one persisted event has findings in both its message
+and payload, Paperclip sums the match counts and records the strictest
+disposition: `quarantined` if either finding is quarantined.
 
 Treat a suspected false positive as a detector issue, not as permission to put
 the original value back into a transcript. Reproduce with a synthetic value,
