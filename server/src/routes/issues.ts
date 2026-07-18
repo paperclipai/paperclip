@@ -3569,7 +3569,7 @@ export function issueRoutes(
       return true;
     }
     if (issue.assigneeAgentId !== actorAgentId) {
-      if (boundaryDecision.reason === "allow_same_company_pm_grooming") {
+      if (boundaryDecision.reason === "allow_same_company_pm_grooming" && issue.status !== "in_progress") {
         return true;
       }
       if (await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, issue.assigneeAgentId)) {
