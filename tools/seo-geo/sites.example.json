@@ -7,7 +7,8 @@
       "wp_rest_base": "https://whitestag.ai/wp-json",
       "credential_ref": "WHITESTAG_AI_WP",
       "crawl_limit": 200,
-      "seo_plugin": "yoast"
+      "seo_plugin": "yoast",
+      "gsc_property": "https://www.example.com/  (oder sc-domain:example.com; optional, sonst Auto-Match)"
     }
   ]
 }
