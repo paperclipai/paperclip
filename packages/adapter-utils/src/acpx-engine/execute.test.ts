@@ -261,6 +261,113 @@ describe("shared ACPX engine runtime behavior", () => {
     });
   });
 
+  it("skips unsupported reasoning_effort on resumed sessions and continues the run", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const logs: Array<{ stream: "stdout" | "stderr"; text: string }> = [];
+    const setConfigInputs: Array<{ key: string; value: string }> = [];
+    let startTurnCalls = 0;
+    let runtimeCreations = 0;
+    const execute = createAcpxEngineExecutor({
+      createRuntime: () => {
+        runtimeCreations += 1;
+        return {
+          ensureSession: async () => ({
+            backendSessionId: "backend-session",
+            agentSessionId: "agent-session",
+            runtimeSessionName: "runtime-session",
+          }),
+          setConfigOption: async (input: { key: string; value: string }) => {
+            setConfigInputs.push({ key: input.key, value: input.value });
+            if (runtimeCreations > 1 && input.key === "reasoning_effort") {
+              throw new Error(
+                "ACP session paperclip:test does not advertise config option 'reasoning_effort'. Supported config options: mode, model.",
+              );
+            }
+          },
+          startTurn: () => {
+            startTurnCalls += 1;
+            return {
+              events: (async function* () {
+                yield { type: "done", stopReason: "end_turn" };
+              })(),
+              result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+              cancel: async () => {},
+            };
+          },
+          close: async () => {},
+        } as never;
+      },
+    });
+
+    const first = await execute({
+      runId: "run-config-baseline",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: "PAP-1",
+      },
+      config: {
+        agent: "codex",
+        stateDir,
+        modelReasoningEffort: "high",
+        fastMode: true,
+      },
+      context: { paperclipWorkspace: { cwd: root, source: "project_workspace", workspaceId: "workspace-1" } },
+      onLog: async () => {},
+      onMeta: async () => {},
+    } as never);
+
+    expect(first.exitCode).toBe(0);
+
+    const second = await execute({
+      runId: "run-config-resume",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+      },
+      runtime: {
+        sessionId: first.sessionId,
+        sessionParams: first.sessionParams,
+        sessionDisplayId: first.sessionDisplayId,
+        taskKey: "PAP-1",
+      },
+      config: {
+        agent: "codex",
+        stateDir,
+        modelReasoningEffort: "high",
+        fastMode: true,
+      },
+      context: { paperclipWorkspace: { cwd: root, source: "project_workspace", workspaceId: "workspace-1" } },
+      onLog: async (stream: "stdout" | "stderr", text: string) => {
+        logs.push({ stream, text });
+      },
+      onMeta: async () => {},
+    } as never);
+
+    expect(second.exitCode).toBe(0);
+    expect(second.errorCode).toBeNull();
+    expect(startTurnCalls).toBe(2);
+    expect(setConfigInputs).toEqual([
+      { key: "reasoning_effort", value: "high" },
+      { key: "service_tier", value: "fast" },
+      { key: "features.fast_mode", value: "true" },
+      { key: "reasoning_effort", value: "high" },
+      { key: "service_tier", value: "fast" },
+      { key: "features.fast_mode", value: "true" },
+    ]);
+    expect(logs).toContainEqual({
+      stream: "stdout",
+      text:
+        '[paperclip] ACPX resumed session "runtime-session" does not advertise config reasoning_effort; skipping the override and continuing.\n',
+    });
+  });
+
   it("captures per-run usage, cost deltas, and billing identity from the ACP runtime", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");

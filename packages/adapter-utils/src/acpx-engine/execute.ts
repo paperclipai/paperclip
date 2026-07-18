@@ -1290,6 +1290,7 @@ async function applySessionConfigOptions(input: {
   handle: AcpRuntimeHandle;
   prepared: AcpxPreparedRuntime;
   onLog: AdapterExecutionContext["onLog"];
+  resumedSession: boolean;
 }) {
   const options = sessionConfigOptions(input.prepared);
   if (options.length === 0) return;
@@ -1300,16 +1301,37 @@ async function applySessionConfigOptions(input: {
     throw new Error(message);
   }
   for (const option of options) {
-    await input.runtime.setConfigOption({
-      handle: input.handle,
-      key: option.key,
-      value: option.value,
-    });
+    try {
+      await input.runtime.setConfigOption({
+        handle: input.handle,
+        key: option.key,
+        value: option.value,
+      });
+    } catch (err) {
+      if (!shouldSkipUnsupportedResumeConfigOption(err, option.key, input.resumedSession)) throw err;
+      await input.onLog(
+        "stdout",
+        `[paperclip] ACPX resumed session "${input.handle.runtimeSessionName}" does not advertise config ${option.key}; skipping the override and continuing.\n`,
+      );
+      continue;
+    }
     await input.onLog(
       "stdout",
       `[paperclip] Applied ACPX ${input.prepared.acpxAgent} config ${option.key}=${option.value}\n`,
     );
   }
+}
+
+function shouldSkipUnsupportedResumeConfigOption(
+  err: unknown,
+  key: string,
+  resumedSession: boolean,
+): boolean {
+  if (!resumedSession) return false;
+  const message = err instanceof Error ? err.message : String(err);
+  const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const unsupportedKeyPattern = new RegExp(`does not advertise config option ['"]${escapedKey}['"]`, "i");
+  return unsupportedKeyPattern.test(message);
 }
 
 async function cleanupRemoteBridges(prepared: AcpxPreparedRuntime): Promise<void> {
@@ -1969,6 +1991,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         handle: sessionHandle,
         prepared,
         onLog: ctx.onLog,
+        resumedSession,
       });
     } catch (err) {
       const { classified, message } = await emitAcpxFailure({
