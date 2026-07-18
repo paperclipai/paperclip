@@ -595,6 +595,70 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(routine.status).toBe("paused");
   });
 
+  it("serializes routine detail with assignee identity but without protected agent configuration", async () => {
+    const { agentId, companyId, routine, svc } = await seedFixture();
+    const sentinelSecret = "routine-assignee-secret-sentinel";
+    await db
+      .update(agents)
+      .set({
+        adapterConfig: {
+          env: {
+            ROUTINE_ASSIGNEE_SECRET: { type: "plain", value: sentinelSecret },
+          },
+        },
+        runtimeConfig: {
+          modelProfiles: {
+            cheap: {
+              adapterConfig: {
+                env: {
+                  ROUTINE_ASSIGNEE_RUNTIME_SECRET: { type: "plain", value: sentinelSecret },
+                },
+              },
+            },
+          },
+        },
+      })
+      .where(eq(agents.id, agentId));
+    const { trigger } = await svc.createTrigger(routine.id, {
+      kind: "schedule",
+      label: "Daily",
+      cronExpression: "0 10 * * *",
+      timezone: "UTC",
+    }, {});
+
+    const detail = await svc.getDetail(routine.id);
+
+    expect(detail).toMatchObject({
+      id: routine.id,
+      companyId,
+      title: "ascii frog",
+      assignee: {
+        id: agentId,
+        name: "CodexCoder",
+        role: "engineer",
+        title: null,
+      },
+      triggers: [{
+        id: trigger.id,
+        kind: "schedule",
+        label: "Daily",
+        cronExpression: "0 10 * * *",
+        timezone: "UTC",
+      }],
+    });
+    expect(detail?.assignee).toEqual({
+      id: agentId,
+      name: "CodexCoder",
+      role: "engineer",
+      title: null,
+    });
+
+    const serialized = JSON.stringify(detail);
+    expect(serialized).not.toContain(sentinelSecret);
+    expect(serialized).not.toContain("adapterConfig");
+    expect(serialized).not.toContain("runtimeConfig");
+  });
+
   it("creates revision 1 on routine create and appends revisions for real updates only", async () => {
     const { routine, svc } = await seedFixture();
 
