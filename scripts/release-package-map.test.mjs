@@ -35,6 +35,24 @@ test("Hermes release surface publishes the unified built-in package and keeps ga
   assert.equal(gatewayShim?.publishFromCi, false);
 });
 
+test("mcp-transport fork-original and its mcp-server consumer stay de-enrolled from CI publish (NEO-544)", () => {
+  // @paperclipai/mcp-transport is a Neoreef fork-original (extracted by NEO-293)
+  // living under the vendor @paperclipai scope the fork cannot publish into. It
+  // must stay out of the CI publish ring so the release-bootstrap `npm view`
+  // check does not E404 and suppress the whole PR matrix. mcp-server flips with
+  // it because release-package-map forbids a publishFromCi:true package from
+  // depending on a non-publishable workspace:* package. Guards against an
+  // upstream sync silently re-enabling either and re-breaking release-manifest CI.
+  const packages = buildReleasePackagePlan();
+  const transport = packages.find((pkg) => pkg.name === "@paperclipai/mcp-transport");
+  const server = packages.find((pkg) => pkg.name === "@paperclipai/mcp-server");
+
+  assert.equal(transport?.dir, "packages/mcp-transport");
+  assert.equal(transport?.publishFromCi, false);
+  assert.equal(server?.dir, "packages/mcp-server");
+  assert.equal(server?.publishFromCi, false);
+});
+
 test("release package configuration validates successfully", () => {
   assert.doesNotThrow(() => checkConfiguration());
 });

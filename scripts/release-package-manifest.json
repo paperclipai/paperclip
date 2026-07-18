@@ -112,12 +112,12 @@
   {
     "dir": "packages/mcp-transport",
     "name": "@paperclipai/mcp-transport",
-    "publishFromCi": true
+    "publishFromCi": false
   },
   {
     "dir": "packages/mcp-server",
     "name": "@paperclipai/mcp-server",
-    "publishFromCi": true
+    "publishFromCi": false
   },
   {
     "dir": "packages/plugins/create-paperclip-plugin",
