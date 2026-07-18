@@ -654,22 +654,32 @@ export function agentRoutes(
 
   async function buildAgentDetail(
     agent: NonNullable<Awaited<ReturnType<typeof svc.getById>>>,
-    options?: { restricted?: boolean },
+    options?: { restricted?: boolean; self?: boolean },
   ) {
     const [chainOfCommand, accessState] = await Promise.all([
       svc.getChainOfCommand(agent.id),
       buildAgentAccessState(agent),
     ]);
 
-    // RIP-1313/RIP-1265: always redact adapterConfig + runtimeConfig secrets
-    // before returning, even in the self-view (non-restricted) path. The
-    // restricted path nukes adapterConfig entirely; the self-view path keeps
-    // non-secret fields (url, agentId, sessionKey, timeoutSec) but masks
-    // password, authToken, devicePrivateKeyPem, and headers.x-openclaw-token
-    // via redactEventPayload. Without this, /agents/me leaks every secret.
-    const base = options?.restricted
-      ? redactForRestrictedAgentView(agent)
-      : redactAgentSelfView(agent);
+    // RIP-1313/RIP-1315/RIP-1265: three redaction tiers.
+    //   restricted   -> blank adapterConfig + runtimeConfig entirely
+    //                  (used when caller lacks config-read for this company)
+    //   self         -> mask secrets via redactEventPayload, preserve non-secret
+    //                  fields (url, agentId, sessionKey, timeoutSec). Used for
+    //                  /agents/me so an agent can read its own runtime config
+    //                  without seeing the plaintext secrets it uses.
+    //   neither set  -> raw agent. Used when an instance admin / board user
+    //                  with config-read permission is inspecting an agent for
+    //                  ops/troubleshooting. They legitimately need to see
+    //                  plaintext (e.g. verify a key, debug a connection).
+    let base;
+    if (options?.restricted) {
+      base = redactForRestrictedAgentView(agent);
+    } else if (options?.self) {
+      base = redactAgentSelfView(agent);
+    } else {
+      base = agent;
+    }
     return {
       ...base,
       chainOfCommand,
@@ -2134,7 +2144,7 @@ export function agentRoutes(
       });
       return;
     }
-    res.json(await buildAgentDetail(agent));
+    res.json(await buildAgentDetail(agent, { self: true }));
   });
 
   router.get("/agents/me/inbox-lite", async (req, res) => {
