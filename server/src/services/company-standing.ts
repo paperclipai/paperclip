@@ -45,10 +45,32 @@ export function companyStandingService(db: Db) {
       const message = typeof input.message === "string" ? input.message.trim() : "";
       if (!reason) throw badRequest("Standing 'reason' is required");
       if (!message) throw badRequest("Standing 'message' is required");
-      const actionUrl =
-        typeof input.actionUrl === "string" && input.actionUrl.trim().length > 0
-          ? input.actionUrl.trim()
-          : null;
+
+      let actionUrl: string | null = null;
+      if (typeof input.actionUrl === "string" && input.actionUrl.trim().length > 0) {
+        const trimmed = input.actionUrl.trim();
+        // Allow app-relative paths starting with "/" or absolute http/https URLs
+        if (!trimmed.startsWith("/")) {
+          try {
+            const url = new URL(trimmed);
+            if (!["http:", "https:"].includes(url.protocol)) {
+              throw badRequest(
+                `Invalid actionUrl scheme. Only app-relative paths (starting with "/") or http/https URLs are allowed`,
+              );
+            }
+            actionUrl = trimmed;
+          } catch (err) {
+            if (err instanceof Error && err.message.includes("Invalid standing")) {
+              throw err;
+            }
+            throw badRequest(
+              `Invalid actionUrl scheme. Only app-relative paths (starting with "/") or http/https URLs are allowed`,
+            );
+          }
+        } else {
+          actionUrl = trimmed;
+        }
+      }
 
       await db
         .insert(companyStanding)
