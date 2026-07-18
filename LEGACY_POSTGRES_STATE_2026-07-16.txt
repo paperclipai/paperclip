@@ -1,0 +1,67 @@
+﻿Paperclip Legacy PostgreSQL Runtime State Capture
+==================================================
+Timestamp (UTC): 2026-07-16T10:45:26.666Z
+
+Process Details
+---------------
+PID: 
+Process Name: 
+Process Path: 
+Start Time: 
+CPU Time (total): 
+Working Set (MB): 0
+
+WMI Command Line: 
+Parent Process ID: 
+Parent Process Name: 
+Parent Process Path: 
+
+Port Binding
+------------
+Local Address: 
+Local Port: 
+State: 
+Owning Process: 
+
+PostgreSQL Data Directory
+-------------------------
+postmaster.pid contents (first 5 lines):
+87504
+C:/Users/mikeb/.paperclip/instances/default/db
+1782232746
+54329
+
+
+Data directory (from line 2 of postmaster.pid): C:/Users/mikeb/.paperclip/instances/default/db
+
+Files in data directory (top-level):
+
+Name                 LastWriteTime        
+----                 -------------        
+base                 5/12/2026 8:36:32 PM 
+global               6/23/2026 12:39:08 PM
+pg_commit_ts         3/29/2026 10:40:13 AM
+pg_dynshmem          3/29/2026 10:40:13 AM
+pg_logical           6/23/2026 12:39:07 PM
+pg_multixact         3/29/2026 10:40:13 AM
+pg_notify            3/29/2026 10:40:13 AM
+pg_replslot          3/29/2026 10:40:13 AM
+pg_serial            3/29/2026 10:40:13 AM
+pg_snapshots         3/29/2026 10:40:13 AM
+pg_stat              3/29/2026 10:44:01 AM
+pg_stat_tmp          3/29/2026 10:40:13 AM
+pg_subtrans          5/12/2026 11:04:57 PM
+pg_tblspc            3/29/2026 10:40:13 AM
+pg_twophase          3/29/2026 10:40:13 AM
+pg_wal               6/6/2026 5:13:10 PM  
+pg_xact              3/29/2026 10:40:13 AM
+pg_hba.conf          3/29/2026 10:40:10 AM
+pg_ident.conf        3/29/2026 10:40:10 AM
+PG_VERSION           3/29/2026 10:40:10 AM
+postgresql.auto.conf 3/29/2026 10:40:10 AM
+postgresql.conf      3/29/2026 10:40:10 AM
+postmaster.opts      6/23/2026 12:39:07 PM
+postmaster.pid       6/23/2026 12:39:08 PM
+
+
+

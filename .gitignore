@@ -66,3 +66,27 @@ tests/storybook-visual/playwright-report/
 .superpowers/
 .claude/worktrees/
 .herenow
+# Legacy runtime artifacts
+.env.legacy
+# AI runtime artifacts
+.opencode-recovery/
+.playwright-mcp/
+
+# Logs
+logs/
+*.log
+
+# Local snapshots
+paperclip-untracked-inventory.txt
+# AI runtime artifacts
+.opencode-recovery/
+.playwright-mcp/
+
+# Logs
+logs/
+*.log
+
+# Local snapshots
+paperclip-untracked-inventory.txt
+# Runtime error logs
+*.err
