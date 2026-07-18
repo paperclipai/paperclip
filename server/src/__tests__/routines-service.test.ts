@@ -637,6 +637,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
         name: "CodexCoder",
         role: "engineer",
         title: null,
+        urlKey: "codexcoder",
       },
       triggers: [{
         id: trigger.id,
@@ -651,6 +652,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       name: "CodexCoder",
       role: "engineer",
       title: null,
+      urlKey: "codexcoder",
     });
 
     const serialized = JSON.stringify(detail);

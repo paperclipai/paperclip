@@ -51,6 +51,7 @@ import {
   extractRoutineVariableNames,
   interpolateRoutineTemplate,
   isValidRoutineDateString,
+  normalizeAgentUrlKey,
   pluginOperationIssueOriginKind,
   stringifyRoutineVariableValue,
   syncRoutineVariablesWithTemplate,
@@ -654,7 +655,10 @@ export function routineService(
       })
       .from(agents)
       .where(and(eq(agents.companyId, companyId), eq(agents.id, agentId)))
-      .then((rows) => rows[0] ?? null);
+      .then((rows) => {
+        const row = rows[0];
+        return row ? { ...row, urlKey: normalizeAgentUrlKey(row.name) ?? row.id } : null;
+      });
   }
 
   async function getManagedRoutineBinding(routine: typeof routines.$inferSelect) {
