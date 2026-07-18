@@ -9,7 +9,7 @@ import {
   type RoutineVariable,
 } from "@paperclipai/shared";
 import { useQuery } from "@tanstack/react-query";
-import { instanceSettingsApi } from "../api/instanceSettings";
+import { useFeatures } from "../hooks/useFeatures";
 import { queryKeys } from "../lib/queryKeys";
 import { IssueWorkspaceCard } from "./IssueWorkspaceCard";
 import { AgentIcon } from "./AgentIconPicker";
@@ -248,11 +248,7 @@ export function RoutineRunVariablesDialog({
   const [workspaceConfigValid, setWorkspaceConfigValid] = useState(true);
   const [workspaceBranchName, setWorkspaceBranchName] = useState<string | null>(null);
 
-  const { data: experimentalSettings } = useQuery({
-    queryKey: queryKeys.instance.experimentalSettings,
-    queryFn: () => instanceSettingsApi.getExperimental(),
-    retry: false,
-  });
+  const { data: experimentalSettings } = useFeatures();
 
   const workspaceSelectionEnabled = supportsRoutineRunWorkspaceSelection(
     selectedProject,

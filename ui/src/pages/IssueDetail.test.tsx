@@ -70,11 +70,6 @@ const mockProjectsApi = vi.hoisted(() => ({
   list: vi.fn(),
 }));
 
-const mockInstanceSettingsApi = vi.hoisted(() => ({
-  getGeneral: vi.fn(),
-  getExperimental: vi.fn(),
-}));
-
 const mockNavigate = vi.hoisted(() => vi.fn());
 const mockLocation = vi.hoisted(() => ({
   pathname: "/issues/PAP-1",
@@ -135,9 +130,6 @@ vi.mock("../api/projects", () => ({
   projectsApi: mockProjectsApi,
 }));
 
-vi.mock("../api/instanceSettings", () => ({
-  instanceSettingsApi: mockInstanceSettingsApi,
-}));
 
 vi.mock("@/lib/router", () => ({
   Link: ({
@@ -970,26 +962,22 @@ describe("IssueDetail", () => {
     mockHeartbeatsApi.liveRunsForIssue.mockResolvedValue([]);
     mockHeartbeatsApi.activeRunForIssue.mockResolvedValue(null);
     mockAgentsApi.list.mockResolvedValue([]);
-    mockAccessApi.getCurrentBoardAccess.mockResolvedValue({
-      companyIds: ["company-1"],
-      isInstanceAdmin: true,
-      source: "session",
-      keyId: null,
-      user: null,
-      userId: null,
-    });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({
+        companyIds: ["company-1"],
+        isInstanceAdmin: true,
+        features: {
+          keyboardShortcuts: false,
+          feedbackDataSharingPreference: "prompt",
+          enableIssuePlanDecompositions: false,
+          enableExperimentalFileViewer: false,
+          enableExternalObjects: false,
+        },
+      }),
+    );
     mockAccessApi.listUserDirectory.mockResolvedValue({ users: [] });
     mockAuthApi.getSession.mockResolvedValue({ session: null, user: null });
     mockProjectsApi.list.mockResolvedValue([]);
-    mockInstanceSettingsApi.getGeneral.mockResolvedValue({
-      keyboardShortcuts: false,
-      feedbackDataSharingPreference: "prompt",
-    });
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableIssuePlanDecompositions: false,
-      enableExperimentalFileViewer: false,
-      enableExternalObjects: false,
-    });
     mockIssuesApi.listAcceptedPlanDecompositions.mockResolvedValue([]);
     mockIssuesListRender.mockClear();
     mockIssueChatThreadRender.mockClear();
@@ -1461,10 +1449,13 @@ describe("IssueDetail", () => {
 
   it("shows file viewer entry points when the experimental flag is enabled", async () => {
     mockIssuesApi.get.mockResolvedValue(createIssue());
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableIssuePlanDecompositions: false,
-      enableExperimentalFileViewer: true,
-    });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({
+        companyIds: ["company-1"],
+        isInstanceAdmin: true,
+        features: { enableIssuePlanDecompositions: false, enableExperimentalFileViewer: true },
+      }),
+    );
 
     await act(async () => {
       root.render(
@@ -1485,10 +1476,13 @@ describe("IssueDetail", () => {
 
   it("shows the plan decomposition panel when the experimental flag is enabled", async () => {
     mockIssuesApi.get.mockResolvedValue(createIssue());
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableIssuePlanDecompositions: true,
-      enableExperimentalFileViewer: false,
-    });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({
+        companyIds: ["company-1"],
+        isInstanceAdmin: true,
+        features: { enableIssuePlanDecompositions: true, enableExperimentalFileViewer: false },
+      }),
+    );
     mockIssuesApi.listAcceptedPlanDecompositions.mockResolvedValue([
       {
         id: "decomp-1",

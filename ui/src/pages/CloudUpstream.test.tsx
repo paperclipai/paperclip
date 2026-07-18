@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { CloudUpstreamRun, CloudUpstreamsState } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CloudUpstream, buildActivationRows } from "./CloudUpstream";
+import { buildCurrentBoardAccess } from "@/test-utils/currentBoardAccess";
 
 const mockCloudUpstreamsApi = vi.hoisted(() => ({
   list: vi.fn(),
@@ -16,8 +17,8 @@ const mockCloudUpstreamsApi = vi.hoisted(() => ({
   cancelRun: vi.fn(),
   activateEntities: vi.fn(),
 }));
-const mockInstanceSettingsApi = vi.hoisted(() => ({
-  getExperimental: vi.fn(),
+const mockAccessApi = vi.hoisted(() => ({
+  getCurrentBoardAccess: vi.fn(),
 }));
 const mockSetBreadcrumbs = vi.hoisted(() => vi.fn());
 const mockCompanyState = vi.hoisted(() => ({
@@ -35,8 +36,8 @@ vi.mock("@/api/cloudUpstreams", () => ({
   cloudUpstreamsApi: mockCloudUpstreamsApi,
 }));
 
-vi.mock("@/api/instanceSettings", () => ({
-  instanceSettingsApi: mockInstanceSettingsApi,
+vi.mock("@/api/access", () => ({
+  accessApi: mockAccessApi,
 }));
 
 vi.mock("@/context/BreadcrumbContext", () => ({
@@ -87,7 +88,9 @@ describe("CloudUpstream", () => {
     mockCompanyState.selectedCompanyId = "company-1";
     mockLocationState.pathname = "/PAP/company/settings/cloud-upstream";
     mockLocationState.search = "";
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableCloudSync: true });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue(
+      buildCurrentBoardAccess({ features: { enableCloudSync: true } }),
+    );
     mockCloudUpstreamsApi.list.mockResolvedValue(stateWithRun(buildRun({ status: "succeeded" })));
     mockCloudUpstreamsApi.activateEntities.mockImplementation((_connectionId, _runId, input) =>
       Promise.resolve(buildRun({
