@@ -434,9 +434,8 @@ def movers(prev_rows, cur_rows, n=3):
 
 
 def _host(value):
-    if value.startswith("sc-domain:"):
-        return value.split(":", 1)[1].lstrip("www.")
-    return urlparse(value).netloc.lstrip("www.")
+    host = value.split(":", 1)[1] if value.startswith("sc-domain:") else urlparse(value).netloc
+    return host.removeprefix("www.")
 
 
 def resolve_property(site, client):
