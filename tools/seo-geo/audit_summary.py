@@ -247,6 +247,57 @@ def geo_section(sites_path, environ, today):
     return "\n".join(lines), geo_data
 
 
+def rank_section(sites_path, environ, today):
+    """Fail-soft Keyword-Rank-Tracking via GSC (Kern-Keywords + Auto-Top-Queries)."""
+    import json as _json
+    ranks_data = {}
+    key_file = environ.get("GSC_SA_KEY_FILE")
+    if not key_file or not os.path.exists(os.path.expanduser(key_file)):
+        return ("\n## Keyword-Rankings (GSC, Ø-Position)\n\n"
+                "GSC nicht konfiguriert — kein Rank-Tracking.\n", {})
+    try:
+        import gsc, gsc_report, rank_tracking
+        from config import load_sites
+        kw_path = os.path.join(os.path.dirname(os.path.abspath(sites_path)), "geo_keywords.json")
+        kw_cfg = _json.loads(open(kw_path).read()) if os.path.exists(kw_path) else {"auto_top": 10, "keywords": {}}
+        auto_top = kw_cfg.get("auto_top", 10)
+        core_map = kw_cfg.get("keywords", {})
+        session = gsc.build_authorized_session(os.path.expanduser(key_file))
+        client = gsc.GSCClient(session)
+        (ls, le), (ps, pe) = gsc.report_windows(today)
+        per_site = []
+        for site in load_sites(sites_path):
+            try:
+                prop = gsc_report.resolve_property(site, client)
+                if not prop:
+                    per_site.append({"name": site.name, "ranks": []})
+                    continue
+                core = core_map.get(site.name, [])
+                cur = client.fetch_top(prop, "query", ls, le, auto_top)
+                if core:
+                    cur = cur + client.fetch_query_metrics(prop, core, ls, le)
+                prev = client.fetch_top(prop, "query", ps, pe, auto_top)
+                if core:
+                    prev = prev + client.fetch_query_metrics(prop, core, ps, pe)
+                # Dedupe cur/prev nach key (fetch_top + fetch_query_metrics können überlappen)
+                cur = list({r["key"]: r for r in cur}.values())
+                prev = list({r["key"]: r for r in prev}.values())
+                ranks = rank_tracking.build_site_ranks(cur, prev, set(core))
+                per_site.append({"name": site.name, "ranks": ranks})
+                ranks_data[site.name] = ranks
+            except Exception as e:  # noqa: BLE001
+                per_site.append({"name": site.name, "ranks": []})
+                per_site[-1]["_err"] = f"  - {site.name}: keine Rank-Daten ({e})"
+        md = rank_tracking.render_markdown(per_site)
+        # etwaige Fehlerzeilen anhängen
+        errs = [s["_err"] for s in per_site if s.get("_err")]
+        if errs:
+            md = md + "\n".join(errs) + "\n"
+        return md, ranks_data
+    except Exception as e:  # noqa: BLE001
+        return (f"\n## Keyword-Rankings (GSC, Ø-Position)\n\nRank-Tracking fehlgeschlagen ({e}).\n", {})
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="audit-summary")
     ap.add_argument("--sites", default="sites.json")
@@ -280,6 +331,11 @@ def main(argv: list[str] | None = None) -> int:
             json.dump(geo_data, fh, ensure_ascii=False, indent=2)
     except Exception:  # noqa: BLE001 — niemals die Mail kippen
         pass
+
+    rank_md, rank_data = rank_section(args.sites, os.environ, today_date)
+    body = body + rank_md
+    with open(os.path.join(hist_dir, f"{today}-ranks.json"), "w") as fh:
+        json.dump(rank_data, fh, ensure_ascii=False, indent=2)
 
     if gsc_blocks:
         with open(os.path.join(hist_dir, f"{today}-gsc.json"), "w") as fh:

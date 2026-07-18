@@ -4,7 +4,10 @@ import json
 import config
 import wpclient
 import audit_summary
-from audit_summary import _count, _dated_snapshots, _prev_snapshot, gsc_section, diff_section, geo_section, main
+from audit_summary import (
+    _count, _dated_snapshots, _prev_snapshot, gsc_section, diff_section,
+    geo_section, rank_section, main,
+)
 from geo_bots import iso_week
 
 
@@ -156,6 +159,15 @@ def test_geo_section_teil_b_bei_client_fehler_meldet_keine_bot_daten(tmp_path, m
 
     assert "a: keine Bot-Daten" in md
     assert "a" not in data["bots"]
+
+
+def test_rank_section_ohne_key_ist_failsoft(tmp_path):
+    sites = tmp_path / "sites.json"
+    sites.write_text('{"report_root":"%s","sites":[]}' % tmp_path)
+    md, data = rank_section(str(sites), {}, datetime.date(2026, 7, 18))
+    assert "Keyword-Rankings" in md
+    assert "nicht konfiguriert" in md
+    assert isinstance(data, dict)
 
 
 def test_main_geo_absturz_kippt_nicht_die_mail(tmp_path, monkeypatch):
