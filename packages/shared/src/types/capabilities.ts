@@ -42,8 +42,9 @@ export interface PublicFeatureFlags {
 }
 
 /**
- * Effective company standing (PR-3 contract, defined in PR-1).
- * PR-1 always returns an empty `companyStandings` map.
+ * Per-company effective standing (most severe across governance plugins;
+ * companies with no rows report status "active"), populated by the
+ * company-standing service.
  */
 export type EffectiveStanding = {
   status: "active" | "grace" | "blocked";
@@ -56,7 +57,7 @@ export interface BoardCapabilities {
   /** Company surfaces the caller may use. Full list for instance admins. */
   exposedSurfaces: CompanySettingsSurface[];
   features: PublicFeatureFlags;
-  /** Keyed by company id. Empty until PR-3 populates it. */
+  /** Keyed by company id. Per-company effective standing, populated by company-standing service. */
   companyStandings: Record<string, EffectiveStanding>;
 }
 

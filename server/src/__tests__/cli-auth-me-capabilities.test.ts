@@ -200,6 +200,7 @@ describeEmbeddedPostgres("GET /cli-auth/me capabilities", () => {
     expect(res.status).toBe(200);
     expect(res.body.isInstanceAdmin).toBe(true);
     expect(res.body.capabilities.exposedSurfaces).toEqual([...COMPANY_SETTINGS_SURFACES]);
+    expect(res.body.capabilities.companyStandings).toEqual({});
   });
 
   it("fills capabilities.companyStandings with the effective standing per actor company", async () => {
