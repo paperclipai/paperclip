@@ -105,6 +105,15 @@ describe("transcript credential security boundaries", () => {
       detectorVersion: 1,
       matchCount: 5,
     });
+    expect(mergeTranscriptSecurityMetadata(
+      { ...merged!, disposition: "quarantined", matchCount: 3 },
+      { ...merged!, disposition: "redacted", matchCount: 2 },
+    )).toEqual({
+      disposition: "quarantined",
+      boundary: "run_event",
+      detectorVersion: 1,
+      matchCount: 5,
+    });
   });
 
   it("caps repeated run-log security events per stream and disposition", () => {
