@@ -186,10 +186,6 @@ function buildAuthHeaders(apiKey: string): Record<string, string> {
   return { Authorization: `Bearer ${apiKey}`, Accept: "application/json" };
 }
 
-function isAbortError(err: unknown): boolean {
-  return err instanceof Error && err.name === "AbortError";
-}
-
 interface WireConfig {
   baseUrl: URL;
   headers: Record<string, string>;
@@ -333,8 +329,8 @@ async function postActivation(
       body,
       wire.timeoutMs,
     );
-  } catch (err) {
-    return { kind: "failed", code: isAbortError(err) ? "transient_error" : "transient_error" };
+  } catch {
+    return { kind: "failed", code: "transient_error" };
   }
 
   if (response.status === 403) return { kind: "fail_fast", token: "wrong_scope" };

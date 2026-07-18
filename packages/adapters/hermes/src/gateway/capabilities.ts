@@ -143,10 +143,6 @@ function buildAuthHeaders(apiKey: string): Record<string, string> {
   return { Authorization: `Bearer ${apiKey}`, Accept: "application/json" };
 }
 
-function isAbortError(err: unknown): boolean {
-  return err instanceof Error && err.name === "AbortError";
-}
-
 async function requestWithDeadline(
   url: string,
   headers: Record<string, string>,
@@ -274,8 +270,7 @@ export async function negotiateCapability(config: NegotiateCapabilityConfig): Pr
     const record = asRecord(parsed);
     if (!record) return outcomeResult("malformed", negotiatedAt);
     capabilitiesRecord = record;
-  } catch (err) {
-    if (isAbortError(err)) return outcomeResult("transient_error", negotiatedAt);
+  } catch {
     return outcomeResult("transient_error", negotiatedAt);
   }
 
@@ -340,8 +335,7 @@ export async function negotiateCapability(config: NegotiateCapabilityConfig): Pr
       },
       inventory: data,
     };
-  } catch (err) {
-    if (isAbortError(err)) return outcomeResult("transient_error", negotiatedAt, remoteVersion);
+  } catch {
     return outcomeResult("transient_error", negotiatedAt, remoteVersion);
   }
 }

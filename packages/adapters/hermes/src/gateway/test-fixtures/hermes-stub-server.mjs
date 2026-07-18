@@ -567,11 +567,16 @@ export function startHermesStub(mode) {
       return;
     }
 
+    if (activationMatch && mode === "auth_fail") {
+      // Reachable regardless of LAYER2_MODES membership — a real shared-Bearer
+      // remote rejects an invalid/revoked key on the activation route the
+      // same as every other route, independent of which skill-contract modes
+      // that remote otherwise supports.
+      authInvalid(res);
+      return;
+    }
+
     if (activationMatch && LAYER2_MODES.has(mode)) {
-      if (mode === "auth_fail") {
-        authInvalid(res);
-        return;
-      }
       if (!hasValidAuth) {
         authInvalid(res);
         return;
