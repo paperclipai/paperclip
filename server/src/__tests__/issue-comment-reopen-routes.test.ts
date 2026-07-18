@@ -635,7 +635,10 @@ describe.sequential("issue comment reopen routes", () => {
         .send({ body: "Please continue this closed issue.", ...intent });
 
       expect(res.status, JSON.stringify(res.body)).toBe(403);
-      expect(res.body).toEqual({ error: "Issue is outside this actor's authorization boundary" });
+      expect(res.body).toEqual({
+        error: "Issue is in a terminal state and does not accept agent mutations",
+      });
+      expect(res.body.error).not.toBe("Issue is outside this actor's authorization boundary");
       expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({ action: "issue:comment" }));
       expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({ action: "issue:mutate" }));
       expect(mockIssueService.update).not.toHaveBeenCalled();

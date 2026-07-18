@@ -193,6 +193,8 @@ import {
 } from "../services/trust-preset-resolver.js";
 import { externalObjectService } from "../services/external-objects.js";
 
+const ISSUE_AUTHORIZATION_BOUNDARY_ERROR = "Issue is outside this actor's authorization boundary";
+const TERMINAL_ISSUE_AGENT_MUTATION_ERROR = "Issue is in a terminal state and does not accept agent mutations";
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
@@ -3566,7 +3568,12 @@ export function issueRoutes(
       { pmGrooming: isPmGroomingIssuePatchBody(req.body) },
     );
     if (!boundaryDecision.allowed) {
-      res.status(403).json({ error: "Issue is outside this actor's authorization boundary" });
+      res.status(403).json({
+        error:
+          issue.status === "done" || issue.status === "cancelled"
+            ? TERMINAL_ISSUE_AGENT_MUTATION_ERROR
+            : ISSUE_AUTHORIZATION_BOUNDARY_ERROR,
+      });
       return false;
     }
     if (issue.assigneeAgentId === null) {
