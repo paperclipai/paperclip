@@ -116,6 +116,27 @@ echo '<candidate-sha>' > /var/tmp/cortex-release-approval.token
 scripts/cortex-weekly-train.sh --promote          # canary (§5 → live) + fleet
 ```
 
+## Auto-raise the approval request (522i / NEO-557)
+
+`scripts/request-release-approval.sh` — raised in **agent-context** (Paperclip routine) shortly
+after the weekly train tick so the board is notified automatically. The systemd service has no
+Paperclip API token; the routine supplies one via the heartbeat.
+
+```sh
+# Wire as the train's hook (drop-in):
+sudo systemctl edit cortex-weekly-train.service
+# [Service]
+# Environment=CORTEX_RELEASE_APPROVAL_REQUEST_CMD=/home/ubuntu/projects/cortex-beta/scripts/request-release-approval.sh
+
+# Check pending state / dry-run the payload:
+scripts/request-release-approval.sh --status
+scripts/request-release-approval.sh --dry-run
+```
+
+The Paperclip routine (agent `ubuntu`, Mon ~09:10 weekly) reads the spool file written by the
+train hook and POSTs an idempotent `request_confirmation` to the board issue. Brian accepts it;
+acceptance writes the approval token and restarts the train.
+
 ## Failure behaviour (each stage independently rollback-capable)
 
 | failure                         | outcome                                                                       |

@@ -103,11 +103,11 @@ test.describe("NUX Phase 4 visual QA", () => {
     await openWizard(page);
     // Reach the full-screen front door (step 0): either it shows directly or
     // "← Back to start" returns to it from the create step.
-    if (!(await page.getByRole("heading", { name: "Welcome to Paperclip" }).count())) {
+    if (!(await page.getByRole("heading", { name: "Welcome to Cortex" }).count())) {
       await page.getByRole("button", { name: /Back to start/ }).click();
     }
     await expect(
-      page.getByRole("heading", { name: "Welcome to Paperclip" }),
+      page.getByRole("heading", { name: "Welcome to Cortex" }),
     ).toBeVisible({ timeout: 10_000 });
     await expect(
       page.getByRole("heading", { name: "Build a new company" }),
