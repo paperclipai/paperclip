@@ -53,7 +53,7 @@ function fleetPatrolActor(req: Express.Request): FleetPatrolActor | null {
     agentId: req.actor.agentId,
     companyId: req.actor.companyId,
     runId: req.actor.runId,
-    apiKeyId: req.actor.keyId ?? req.actor.credentialId ?? null,
+    apiKeyId: req.actor.keyId ?? null,
     credentialId: req.actor.credentialId ?? `unidentified:${req.actor.source ?? "unknown"}`,
     source: req.actor.source ?? "unknown",
   };

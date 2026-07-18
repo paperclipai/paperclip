@@ -281,7 +281,7 @@ describeEmbeddedPostgres("fleet patrol remediation authorization", () => {
         contextSnapshot: { issueId },
       });
     }
-    return { issueId, projectWorkspaceId, executionWorkspaceId };
+    return { issueId, projectWorkspaceId, executionWorkspaceId, executiveAgentId };
   }
 
   it("audits schema-invalid requests before returning 422 without raw bodies or errors", async () => {
@@ -708,6 +708,65 @@ describeEmbeddedPostgres("fleet patrol remediation authorization", () => {
     });
   });
 
+  it("preserves a new queued run introduced while C-suite repair is in flight", async () => {
+    const candidate = await seedEscalatedExecutiveWorkspaceFailure();
+    let predicateReached!: () => void;
+    const predicateReachedPromise = new Promise<void>((resolve) => {
+      predicateReached = resolve;
+    });
+    let continueRepair!: () => void;
+    const continueRepairPromise = new Promise<void>((resolve) => {
+      continueRepair = resolve;
+    });
+
+    const repairPromise = fleetPatrolRemediationService(db).execute(
+      serviceActor(),
+      { operation: "reset_workspace_pin", targetId: candidate.issueId },
+      new Date(),
+      {
+        beforeEscalatedWorkspaceMutation: async () => {
+          predicateReached();
+          await continueRepairPromise;
+        },
+      },
+    );
+    await predicateReachedPromise;
+    const queuedRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: queuedRunId,
+      companyId,
+      agentId: candidate.executiveAgentId,
+      status: "queued",
+      invocationSource: "manual",
+      createdAt: new Date(Date.now() + 1_000),
+      contextSnapshot: { issueId: candidate.issueId },
+    });
+    continueRepair();
+
+    await expect(repairPromise).resolves.toMatchObject({
+      allowed: false,
+      status: 409,
+      reasonCode: "concurrent_change",
+    });
+    const untouched = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, candidate.issueId))
+      .then((rows) => rows[0]);
+    expect(untouched).toMatchObject({
+      status: "blocked",
+      projectWorkspaceId: candidate.projectWorkspaceId,
+      executionWorkspacePreference: "reuse_existing",
+      executionWorkspaceId: candidate.executionWorkspaceId,
+    });
+    const queuedRun = await db
+      .select({ status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, queuedRunId))
+      .then((rows) => rows[0]);
+    expect(queuedRun).toEqual({ status: "queued" });
+  });
+
   it("preserves dependency, cancellation, stale-evidence, unrelated, and live-run cases", async () => {
     const cases = [
       await seedEscalatedExecutiveWorkspaceFailure({ withBlocker: true }),
@@ -825,7 +884,7 @@ describeEmbeddedPostgres("fleet patrol remediation authorization", () => {
       companyId,
       authenticatedAgentId: FLEET_PATROL_AGENT_ID,
       authenticatedRunId: runId,
-      apiKeyId: "sha256:test-run-credential",
+      apiKeyId: null,
       credentialId: "sha256:test-run-credential",
       operation: "release_issue_lock",
       targetType: "issue",

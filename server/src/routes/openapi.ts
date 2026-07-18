@@ -650,6 +650,7 @@ function registerCurrentRoute(input: {
 type OpenApiAuthLevel =
   | "public"
   | "authenticated"
+  | "run_scoped_agent"
   | "board"
   | "instance_admin";
 
@@ -670,6 +671,10 @@ const AUTHENTICATED_SECURITY: Array<Record<string, string[]>> = [
   ...BOARD_SECURITY,
   securityRequirement(AGENT_BEARER_AUTH_SCHEME),
 ];
+
+const RUN_SCOPED_AGENT_OPERATIONS = new Set([
+  "POST /api/fleet-patrol/remediation",
+]);
 
 const PUBLIC_OPERATIONS = new Set([
   "GET /api/health",
@@ -920,6 +925,7 @@ function isBoardOnlyOperation(method: string, path: string) {
 function resolveOperationAuthLevel(method: string, path: string): OpenApiAuthLevel {
   const key = operationKey(method, path);
   if (PUBLIC_OPERATIONS.has(key)) return "public";
+  if (RUN_SCOPED_AGENT_OPERATIONS.has(key)) return "run_scoped_agent";
   if (INSTANCE_ADMIN_OPERATIONS.has(key)) return "instance_admin";
   if (isBoardOnlyOperation(method, path)) return "board";
   return "authenticated";
@@ -969,6 +975,8 @@ function applyDocumentFixups(document: any): any {
         operation.security = [];
       } else if (authLevel === "authenticated") {
         operation.security = AUTHENTICATED_SECURITY;
+      } else if (authLevel === "run_scoped_agent") {
+        operation.security = [securityRequirement(AGENT_BEARER_AUTH_SCHEME)];
       } else {
         operation.security = BOARD_SECURITY;
       }
@@ -980,6 +988,12 @@ function applyDocumentFixups(document: any): any {
             ? { actor: "board" }
             : authLevel === "authenticated"
               ? { actor: "board_or_agent" }
+              : authLevel === "run_scoped_agent"
+                ? {
+                    actor: "agent",
+                    credential: "run_scoped_jwt",
+                    principal: "fleet_patrol",
+                  }
               : { actor: "public" };
 
       const key = operationKey(method, path);
@@ -1002,6 +1016,36 @@ function applyDocumentFixups(document: any): any {
 }
 
 // ─── Health ──────────────────────────────────────────────────────────────────
+
+const fleetPatrolRemediationRequestSchema = z.discriminatedUnion("operation", [
+  z.object({
+    operation: z.literal("clear_agent_error"),
+    targetId: z.string().uuid(),
+  }).strict(),
+  z.object({
+    operation: z.literal("release_issue_lock"),
+    targetId: z.string().uuid(),
+  }).strict(),
+  z.object({
+    operation: z.literal("reset_workspace_pin"),
+    targetId: z.string().uuid(),
+  }).strict(),
+]);
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/fleet-patrol/remediation",
+  tags: ["fleet-patrol"],
+  summary: "Run a bounded fleet patrol remediation",
+  body: fleetPatrolRemediationRequestSchema,
+  responses: {
+    200: r.ok(),
+    401: r.unauthorized,
+    403: r.forbidden,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
+});
 
 registry.registerPath({
   method: "get",

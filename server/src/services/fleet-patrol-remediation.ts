@@ -42,6 +42,7 @@ export interface FleetPatrolResult {
 
 export interface FleetPatrolExecutionHooks {
   afterClearAgentErrorEvidenceRead?: () => Promise<void>;
+  beforeEscalatedWorkspaceMutation?: () => Promise<void>;
   beforeWorkspaceValidityLock?: () => Promise<void>;
 }
 
@@ -201,10 +202,11 @@ export function fleetPatrolRemediationService(db: Db) {
 
           await hooks.afterClearAgentErrorEvidenceRead?.();
 
-          // heartbeat_runs takes a FOR SHARE lock on this agent before a run is
-          // inserted or activated. Taking the conflicting lock here establishes
-          // a single ordering point, then the fresh reads below prove that the
-          // evidence is still current before mutation.
+          // Serialize the rare remediation transaction against run writes without
+          // taxing every ordinary heartbeat transition with a permanent trigger.
+          await tx.execute(sql`lock table ${heartbeatRuns} in share row exclusive mode`);
+
+          // Fresh reads after the table lock prove the evidence is still current.
           const target = await tx
             .select()
             .from(agents)
@@ -332,7 +334,7 @@ export function fleetPatrolRemediationService(db: Db) {
             executionAgentNameKey: issue.executionAgentNameKey,
             executionLockedAt: issue.executionLockedAt.toISOString(),
           };
-          await tx
+          const released = await tx
             .update(issues)
             .set({
               checkoutRunId: null,
@@ -350,7 +352,12 @@ export function fleetPatrolRemediationService(db: Db) {
               issue.executionRunId
                 ? eq(issues.executionRunId, issue.executionRunId)
                 : isNull(issues.executionRunId),
-            ));
+            ))
+            .returning({ id: issues.id })
+            .then((rows) => rows[0] ?? null);
+          if (!released) {
+            return finish({ allowed: false, reasonCode: "concurrent_change", status: 409, before });
+          }
           return finish({
             allowed: true,
             reasonCode: "terminal_stale_lock_released",
@@ -408,6 +415,7 @@ export function fleetPatrolRemediationService(db: Db) {
               eq(issueRecoveryActions.sourceIssueId, issue.id),
               inArray(issueRecoveryActions.status, ["active", "escalated"]),
             ))
+            .for("update")
             .limit(1)
             .then((rows) => rows[0] ?? null),
           tx
@@ -444,6 +452,7 @@ export function fleetPatrolRemediationService(db: Db) {
             executionWorkspacePreference: issue.executionWorkspacePreference,
             executionWorkspaceId: issue.executionWorkspaceId,
           };
+          await hooks.beforeEscalatedWorkspaceMutation?.();
           const updated = await tx
             .update(issues)
             .set({
@@ -521,7 +530,7 @@ export function fleetPatrolRemediationService(db: Db) {
             .returning({ id: issueRecoveryActions.id })
             .then((rows) => rows[0] ?? null);
           if (!resolvedRecovery) {
-            throw new Error("Fleet workspace repair lost its recovery-action CAS");
+            throw new Error("Fleet workspace repair lost its locked recovery action");
           }
 
           return finish({
