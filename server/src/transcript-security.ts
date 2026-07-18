@@ -26,6 +26,16 @@ export interface TranscriptSecurityResult<T> {
   metadata: TranscriptSecurityMetadata | null;
 }
 
+export function createTranscriptSecurityEventLimiter() {
+  const recorded = new Set<string>();
+  return (metadata: TranscriptSecurityMetadata, stream: string | null) => {
+    const key = `${metadata.boundary}:${metadata.disposition}:${stream ?? ""}`;
+    if (recorded.has(key)) return false;
+    recorded.add(key);
+    return true;
+  };
+}
+
 export function mergeTranscriptSecurityMetadata(
   first: TranscriptSecurityMetadata | null,
   second: TranscriptSecurityMetadata | null,

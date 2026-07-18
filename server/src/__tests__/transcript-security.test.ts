@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   TRANSCRIPT_QUARANTINE_MARKER,
+  createTranscriptSecurityEventLimiter,
   mergeTranscriptSecurityMetadata,
   redactTranscriptDiagnosticValue,
   secureTranscriptPayload,
@@ -104,5 +105,20 @@ describe("transcript credential security boundaries", () => {
       detectorVersion: 1,
       matchCount: 5,
     });
+  });
+
+  it("caps repeated run-log security events per stream and disposition", () => {
+    const shouldRecord = createTranscriptSecurityEventLimiter();
+    const quarantined = {
+      disposition: "quarantined" as const,
+      boundary: "run_log" as const,
+      detectorVersion: 1,
+      matchCount: 1,
+    };
+
+    expect(shouldRecord(quarantined, "stdout")).toBe(true);
+    expect(shouldRecord({ ...quarantined, matchCount: 10 }, "stdout")).toBe(false);
+    expect(shouldRecord(quarantined, "stderr")).toBe(true);
+    expect(shouldRecord({ ...quarantined, disposition: "redacted" }, "stdout")).toBe(true);
   });
 });

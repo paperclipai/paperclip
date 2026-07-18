@@ -718,7 +718,9 @@ and stream; it never contains the matched value. Run-detail, event, and log
 responses apply the same redaction again when rendering diagnostics so legacy
 records are covered. When one persisted event has findings in both its message
 and payload, Paperclip sums the match counts and records the strictest
-disposition: `quarantined` if either finding is quarantined.
+disposition: `quarantined` if either finding is quarantined. High-frequency run
+log findings are capped at one activity event per stream and disposition for
+each run; every matching chunk is still redacted before storage.
 
 Treat a suspected false positive as a detector issue, not as permission to put
 the original value back into a transcript. Reproduce with a synthetic value,

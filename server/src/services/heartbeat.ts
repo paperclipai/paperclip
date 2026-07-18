@@ -230,6 +230,7 @@ import {
 } from "../log-redaction.js";
 import { redactSensitiveText } from "../redaction.js";
 import {
+  createTranscriptSecurityEventLimiter,
   mergeTranscriptSecurityMetadata,
   redactTranscriptDiagnosticValue,
   secureTranscriptPayload,
@@ -13215,6 +13216,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       });
 
       const currentRun = run;
+      const shouldRecordRunLogSecurityEvent = createTranscriptSecurityEventLimiter();
       await appendRunEvent(currentRun, seq++, {
         eventType: "lifecycle",
         stream: "system",
@@ -13244,7 +13246,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           "run_log",
         );
         const sanitizedChunk = compactRunLogChunk(securedChunk.value);
-        if (securedChunk.metadata) {
+        if (
+          securedChunk.metadata &&
+          shouldRecordRunLogSecurityEvent(securedChunk.metadata, stream)
+        ) {
           await recordTranscriptSecurityEvent(
             currentRun,
             securedChunk.metadata,
