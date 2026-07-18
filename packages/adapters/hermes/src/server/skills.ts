@@ -147,20 +147,28 @@ async function buildHermesSkillSnapshot(config: Record<string, unknown>): Promis
   // Paperclip-managed skills
   for (const entry of paperclipEntries) {
     const desired = desiredSet.has(entry.key);
+    const sourceMissing = entry.sourceStatus === "missing";
+    if (desired && sourceMissing) {
+      warnings.push(
+        entry.missingDetail || `Desired managed skill "${entry.key}" has no executable source path.`,
+      );
+    }
     entries.push({
       key: entry.key,
       runtimeName: entry.runtimeName,
       desired,
       managed: true,
-      state: desired ? "configured" : "available",
+      state: desired && sourceMissing ? "missing" : desired ? "configured" : "available",
       origin: "company_managed",
       originLabel: "Managed by Paperclip",
       readOnly: false,
       sourcePath: entry.source,
       targetPath: null,
-      detail: desired
-        ? "Will be available on the next run via Hermes skill loading."
-        : null,
+      detail: desired && sourceMissing
+        ? entry.missingDetail || "The managed skill source is unavailable; execution will fail closed."
+        : desired
+          ? "Will be materialized ephemerally and preloaded with Hermes --skills on the next run."
+          : null,
     });
   }
 

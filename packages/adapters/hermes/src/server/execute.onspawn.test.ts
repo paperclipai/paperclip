@@ -38,6 +38,14 @@ vi.mock("node:fs/promises", () => ({
   stat: vi.fn(async () => ({ isFile: () => true, isDirectory: () => false })),
 }));
 
+vi.mock("./managed-skills.js", () => ({
+  prepareHermesManagedSkills: vi.fn(async () => ({
+    runtimeRoot: "/tmp/hermes skills/.paperclip-runtime/test-run-1",
+    skillNames: [".paperclip-runtime/test-run-1/paperclip"],
+    cleanup: vi.fn(async () => undefined),
+  })),
+}));
+
 import { execute } from "./execute.js";
 import * as serverUtils from "@paperclipai/adapter-utils/server-utils";
 
@@ -102,6 +110,18 @@ describe("hermes-local adapter onSpawn forwarding", () => {
     const lastCall = mocked.mock.calls[mocked.mock.calls.length - 1];
     const opts = lastCall[3] as Record<string, unknown>;
     expect(opts.onSpawn).toBe(onSpawn);
+  });
+
+  it("preloads prepared managed skills through argv-safe --skills pairs", async () => {
+    const { ctx } = makeCtx();
+
+    await execute(ctx as any);
+
+    const mocked = vi.mocked(serverUtils.runChildProcess);
+    const args = mocked.mock.calls.at(-1)?.[2] as string[];
+    const skillFlag = args.indexOf("--skills");
+    expect(skillFlag).toBeGreaterThan(-1);
+    expect(args[skillFlag + 1]).toBe(".paperclip-runtime/test-run-1/paperclip");
   });
 
   it("runChildProcess opts type includes onSpawn", () => {
