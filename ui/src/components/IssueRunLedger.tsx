@@ -309,6 +309,7 @@ function livenessCopyForRun(run: LedgerRun) {
 function stopReasonLabel(run: RunForIssue) {
   const result = asRecord(run.resultJson);
   const stopReason = readString(result?.stopReason);
+  const stopReasonDetail = readString(result?.stopReasonDetail);
   const timeoutFired = result?.timeoutFired === true;
   const effectiveTimeoutSec = readNumber(result?.effectiveTimeoutSec);
   const timeoutText =
@@ -321,6 +322,7 @@ function stopReasonLabel(run: RunForIssue) {
   if (stopReason === "budget_paused") return "budget paused";
   if (stopReason === "cancelled") return "cancelled";
   if (stopReason === "paused") return "paused by board";
+  if (stopReasonDetail === "restart_induced_process_supervisor_loss") return "restart-induced supervisor loss";
   if (stopReason === "process_lost") return "process lost";
   if (stopReason === "unmanaged_background_task_stopped") return "unmanaged background task stopped";
   if (stopReason === "adapter_failed") return "adapter failed";

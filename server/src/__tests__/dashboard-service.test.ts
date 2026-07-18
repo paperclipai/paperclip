@@ -237,4 +237,70 @@ describeEmbeddedPostgres("dashboard service", () => {
     // process_lost kills that recovered must not leak into the failed breakdown.
     expect(bucket?.failedByErrorCode.process_lost).toBeUndefined();
   });
+
+  it("breaks unrecovered restart-induced process loss into a distinct safe failure bucket", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const day = utcDay(-1);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "running",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(heartbeatRuns).values([
+      {
+        id: randomUUID(),
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        status: "failed",
+        errorCode: "process_lost",
+        resultJson: {
+          stopReason: "process_lost",
+          stopReasonDetail: "restart_induced_process_supervisor_loss",
+          restartRecovery: {
+            classification: "restart_induced_process_supervisor_loss",
+            mode: "startup_orphan_reap",
+          },
+        },
+        createdAt: day,
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        status: "failed",
+        errorCode: "process_lost",
+        resultJson: { stopReason: "process_lost" },
+        createdAt: day,
+      },
+    ]);
+
+    const summary = await dashboardService(db).summary(companyId);
+    const bucket = summary.runActivity.find((b) => b.date === utcDateKey(day));
+
+    expect(bucket).toMatchObject({
+      failed: 2,
+      failedByErrorCode: {
+        restart_induced_process_supervisor_loss: 1,
+        process_lost: 1,
+      },
+    });
+  });
 });

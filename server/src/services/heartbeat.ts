@@ -5126,6 +5126,33 @@ function mergeHotRestartAdoptionResultJson(
   };
 }
 
+function mergeRestartRecoveryResultJson(
+  resultJson: Record<string, unknown> | null | undefined,
+  input: {
+    mode: "startup_orphan_reap" | "graceful_shutdown_interruption";
+    occurredAt: Date;
+    signal?: "SIGINT" | "SIGTERM";
+    processPid: number | null;
+    processGroupId: number | null;
+  },
+) {
+  const result = parseObject(resultJson);
+  const existing = parseObject(result.restartRecovery);
+  return {
+    ...result,
+    stopReasonDetail: "restart_induced_process_supervisor_loss",
+    restartRecovery: {
+      ...existing,
+      classification: "restart_induced_process_supervisor_loss",
+      mode: input.mode,
+      occurredAt: input.occurredAt.toISOString(),
+      ...(input.signal ? { signal: input.signal } : {}),
+      processPid: input.processPid,
+      processGroupId: input.processGroupId,
+    },
+  };
+}
+
 function truncateDisplayId(value: string | null | undefined, max = 128) {
   if (!value) return null;
   return value.length > max ? value.slice(0, max) : value;
@@ -9060,7 +9087,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         errorCode: "server_shutdown_interrupted",
         signal,
         resultJson: mergeRunStopMetadataForAgent(agent, "interrupted", {
-          resultJson: parseObject(run.resultJson),
+          resultJson: mergeRestartRecoveryResultJson(parseObject(run.resultJson), {
+            mode: "graceful_shutdown_interruption",
+            occurredAt: now,
+            signal,
+            processPid: run.processPid ?? null,
+            processGroupId: run.processGroupId ?? null,
+          }),
           errorCode: "server_shutdown_interrupted",
           errorMessage: message,
         }),
@@ -11456,13 +11489,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               errorMessage: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
             },
           );
+          const resultWithRestartRecovery = baseMessage === "Process lost -- server may have restarted"
+            ? mergeRestartRecoveryResultJson(result, {
+              mode: "startup_orphan_reap",
+              occurredAt: now,
+              processPid: run.processPid ?? null,
+              processGroupId: run.processGroupId ?? null,
+            })
+            : result;
           return unmanagedBackgroundTaskEvidence
             ? {
-              ...result,
+              ...resultWithRestartRecovery,
               stopReason: UNMANAGED_BACKGROUND_TASK_STOP_REASON,
               unmanagedBackgroundTask: unmanagedBackgroundTaskEvidence,
             }
-            : result;
+            : resultWithRestartRecovery;
         })(),
       });
       await setWakeupStatus(run.wakeupRequestId, "failed", {

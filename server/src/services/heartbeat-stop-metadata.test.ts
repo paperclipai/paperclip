@@ -76,6 +76,33 @@ describe("heartbeat stop metadata", () => {
     ).toBe("interrupted");
   });
 
+  it("preserves restart-induced supervisor loss detail when merging stop metadata", () => {
+    const result = mergeHeartbeatRunStopMetadata(
+      {
+        stopReasonDetail: "restart_induced_process_supervisor_loss",
+        restartRecovery: {
+          classification: "restart_induced_process_supervisor_loss",
+          mode: "graceful_shutdown_interruption",
+        },
+      },
+      buildHeartbeatRunStopMetadata({
+        adapterType: "codex_local",
+        adapterConfig: {},
+        outcome: "interrupted",
+        errorCode: "server_shutdown_interrupted",
+      }),
+    );
+
+    expect(result).toMatchObject({
+      stopReason: "interrupted",
+      stopReasonDetail: "restart_induced_process_supervisor_loss",
+      restartRecovery: {
+        classification: "restart_induced_process_supervisor_loss",
+        mode: "graceful_shutdown_interruption",
+      },
+    });
+  });
+
   it("normalizes max-turn exhaustion stop reasons", () => {
     expect(
       buildHeartbeatRunStopMetadata({

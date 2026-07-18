@@ -1286,6 +1286,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       timeoutConfigured: false,
       timeoutFired: false,
     });
+    expect(failedRun?.resultJson as Record<string, unknown>).not.toHaveProperty("stopReasonDetail");
     expect(["queued", "running"]).toContain(retryRun?.status);
     expect(retryRun?.retryOfRunId).toBe(runId);
     expect(retryRun?.processLossRetryCount).toBe(1);
@@ -1407,6 +1408,19 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const result = await heartbeat.reapOrphanedRuns();
 
     expect(result).toEqual({ reaped: 1, runIds: [runId] });
+    const failedRun = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    expect(failedRun?.resultJson).toMatchObject({
+      stopReason: "process_lost",
+      stopReasonDetail: "restart_induced_process_supervisor_loss",
+      restartRecovery: {
+        classification: "restart_induced_process_supervisor_loss",
+        mode: "startup_orphan_reap",
+      },
+    });
     const retries = await db
       .select()
       .from(heartbeatRuns)
@@ -1643,6 +1657,13 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
     expect(interruptedRun?.resultJson).toMatchObject({
       stopReason: "interrupted",
+      stopReasonDetail: "restart_induced_process_supervisor_loss",
+      restartRecovery: {
+        classification: "restart_induced_process_supervisor_loss",
+        mode: "graceful_shutdown_interruption",
+        occurredAt: "2026-03-19T00:06:00.000Z",
+        signal: "SIGTERM",
+      },
       timeoutConfigured: false,
       timeoutFired: false,
     });
