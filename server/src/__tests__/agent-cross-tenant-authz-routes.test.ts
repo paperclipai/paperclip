@@ -420,7 +420,7 @@ describe.sequential("agent cross-tenant route authorization", () => {
     expect(mockAgentService.revokeKey).not.toHaveBeenCalled();
   });
 
-  it("requires board access before clearing an agent error", async () => {
+  it("denies an agent without the clear-error grant", async () => {
     const app = await createApp({
       type: "agent",
       agentId,
@@ -433,8 +433,61 @@ describe.sequential("agent cross-tenant route authorization", () => {
     );
 
     expect(res.status).toBe(403);
-    expect(res.body.error).toContain("Board access required");
+    expect(res.body.error).toContain("Missing permission: agents:clear_error");
     expect(mockAgentService.clearError).not.toHaveBeenCalled();
+  });
+
+  it("allows only the granted agent mutation and records agent/run audit identity", async () => {
+    currentAccessCanUser = true;
+    const errorAgent = {
+      ...baseAgent,
+      status: "error",
+      pauseReason: "system",
+      pausedAt: new Date("2026-04-11T00:02:00.000Z"),
+    };
+    mockAgentService.getById.mockImplementation(async () => ({ ...errorAgent }));
+    mockAgentService.clearError.mockImplementation(async () => ({
+      ...errorAgent,
+      status: "idle",
+      pauseReason: null,
+      pausedAt: null,
+    }));
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      runId: "run-1",
+    });
+
+    const clear = await requestApp(app, (baseUrl) =>
+      request(baseUrl).post(`/api/agents/${agentId}/clear-error`).send({}),
+    );
+    const unrelatedBoardMutation = await requestApp(app, (baseUrl) =>
+      request(baseUrl).post(`/api/agents/${agentId}/pause`).send({}),
+    );
+
+    expect(clear.status).toBe(200);
+    expect(clear.body.status).toBe("idle");
+    expect(mockAccessService.decide).toHaveBeenCalledWith({
+      actor: expect.objectContaining({ type: "agent", agentId, companyId, runId: "run-1" }),
+      action: "agents:clear_error",
+      resource: { type: "agent", companyId, agentId },
+    });
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), {
+      companyId,
+      actorType: "agent",
+      actorId: agentId,
+      agentId,
+      runId: "run-1",
+      agentApiKeyId: undefined,
+      action: "agent.error_cleared",
+      entityType: "agent",
+      entityId: agentId,
+      details: { agentId, runId: "run-1" },
+    });
+    expect(unrelatedBoardMutation.status).toBe(403);
+    expect(unrelatedBoardMutation.body.error).toContain("Board access required");
+    expect(mockAgentService.pause).not.toHaveBeenCalled();
   });
 
   it("clears error agents and records a distinct audit action", async () => {

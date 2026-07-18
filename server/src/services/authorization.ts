@@ -487,23 +487,32 @@ function activeResponsibleUserCanAuthorizeIssueAction(
   );
 }
 
-function activeResponsibleUserCanAuthorizeAgentGrantedSkillChange(
+function activeResponsibleUserCanAuthorizeAgentGrantedAction(
   action: AuthorizationAction,
   membership: ResponsibleUserSnapshot["activeMembership"],
   agentDecision: AuthorizationDecision,
   actorAgentId: string | null | undefined,
 ) {
   return Boolean(
-    action === "skill_config:update" &&
     membership &&
     membership.status === "active" &&
     membership.membershipRole !== "viewer" &&
     agentDecision.allowed &&
-    (agentDecision.reason === "allow_direct_change" || agentDecision.reason === "allow_consented_change") &&
     agentDecision.grant?.principalType === "agent" &&
     agentDecision.grant.principalId === actorAgentId &&
-    (agentDecision.grant.permissionKey === "skills:create" ||
-      agentDecision.grant.permissionKey === "skills:suggest-changes"),
+    (
+      (
+        action === "skill_config:update" &&
+        (agentDecision.reason === "allow_direct_change" || agentDecision.reason === "allow_consented_change") &&
+        (agentDecision.grant.permissionKey === "skills:create" ||
+          agentDecision.grant.permissionKey === "skills:suggest-changes")
+      ) ||
+      (
+        action === "agents:clear_error" &&
+        agentDecision.reason === "allow_explicit_grant" &&
+        agentDecision.grant.permissionKey === "agents:clear_error"
+      )
+    ),
   );
 }
 
@@ -2018,14 +2027,14 @@ export function authorizationService(db: Db) {
         : "RESPONSIBLE_USER_UNAVAILABLE";
 
     if (
-      activeResponsibleUserCanAuthorizeAgentGrantedSkillChange(
+      activeResponsibleUserCanAuthorizeAgentGrantedAction(
         input.action,
         snapshot.activeMembership,
         agentDecision,
         input.actor.agentId,
       )
     ) {
-      // Skill mutations are governed by the agent's explicit skill-change
+      // Narrow agent-granted mutations are governed by the agent's explicit
       // grant. The responsible-user intersection still requires an active
       // non-viewer user, but does not require duplicating that grant on the
       // responsible user's board account for standard heartbeat JWTs.
