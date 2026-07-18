@@ -193,6 +193,56 @@ def diff_section(cur_counts: dict, gsc_blocks: list[dict], hist_dir: str, today_
         return (f"\n## Veränderungen seit Vorwoche\n\nDiff fehlgeschlagen ({e}).\n", False)
 
 
+def geo_section(sites_path, environ, today):
+    """Fail-soft GEO-Sichtbarkeit: Teil A (Claude-Marken-Prompts) + Teil B (KI-Bot-Zugriffe)."""
+    import json as _json
+    lines = ["", "## GEO-Sichtbarkeit", ""]
+    geo_data = {"prompts": [], "bots": {}}
+    # Teil A — Marken-Prompts
+    prompts_path = os.path.join(os.path.dirname(os.path.abspath(sites_path)), "geo_prompts.json")
+    try:
+        if os.path.exists(prompts_path):
+            import geo_citations
+            cfg = _json.loads(open(prompts_path).read())
+            res = geo_citations.evaluate(cfg, geo_citations.claude_runner)
+            geo_data["prompts"] = res
+            lines.append("**KI-Marken-Prompts (Claude):**")
+            for r in res:
+                if "error" in r:
+                    lines.append(f"  - ⚠️ „{r['prompt']}“ — Fehler: {r['error']}")
+                else:
+                    lines.append(f"  - {'✅ genannt' if r['mentioned'] else '❌ nicht genannt'}: „{r['prompt']}“")
+        else:
+            lines.append("**KI-Marken-Prompts:** keine `geo_prompts.json` konfiguriert.")
+    except Exception as e:  # noqa: BLE001
+        lines.append(f"**KI-Marken-Prompts:** Fehler ({e}).")
+    # Teil B — KI-Bot-Zugriffe je Site
+    try:
+        import geo_bots
+        from config import load_sites, resolve_credential
+        from wpclient import WPClient
+        wk = geo_bots.iso_week(today)
+        lines.append("")
+        lines.append(f"**KI-Bot-Zugriffe (Woche {wk}):**")
+        for site in load_sites(sites_path):
+            try:
+                client = WPClient(site.wp_rest_base, resolve_credential(site, environ))
+                hits = geo_bots.current_week_hits(client.get_ai_bot_hits(), wk)
+                geo_data["bots"][site.name] = hits
+                if hits:
+                    lines.append(f"  - {site.name}: " + ", ".join(f"{b}: {c}" for b, c in sorted(hits.items())))
+                else:
+                    lines.append(f"  - {site.name}: keine KI-Bot-Zugriffe erfasst")
+            except Exception as e:  # noqa: BLE001
+                lines.append(f"  - {site.name}: keine Bot-Daten ({e})")
+    except Exception as e:  # noqa: BLE001
+        lines.append(f"**KI-Bot-Zugriffe:** Fehler ({e}).")
+    lines.append("")
+    lines.append("_Teil A misst Marken-Präsenz in Claudes Wissen (kein Live-Web), "
+                 "nicht eine Live-Quellen-Zitierung._")
+    return "\n".join(lines), geo_data
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="audit-summary")
     ap.add_argument("--sites", default="sites.json")
@@ -215,6 +265,12 @@ def main(argv: list[str] | None = None) -> int:
     gsc_md, gsc_amp, gsc_blocks = gsc_section(args.sites, os.environ, today_date)
     diff_md, diff_alert = diff_section(counts, gsc_blocks, hist_dir, today)
     body = body + diff_md + gsc_md
+
+    geo_md, geo_data = geo_section(args.sites, os.environ, today_date)
+    body = body + geo_md
+    with open(os.path.join(hist_dir, f"{today}-geo.json"), "w") as fh:
+        json.dump(geo_data, fh, ensure_ascii=False, indent=2)
+
     if gsc_blocks:
         with open(os.path.join(hist_dir, f"{today}-gsc.json"), "w") as fh:
             json.dump(gsc_blocks, fh, ensure_ascii=False, indent=2)

@@ -1,7 +1,7 @@
 import datetime
 import json
 
-from audit_summary import _count, _dated_snapshots, _prev_snapshot, gsc_section, diff_section
+from audit_summary import _count, _dated_snapshots, _prev_snapshot, gsc_section, diff_section, geo_section
 
 
 def test_count_enthaelt_findings():
@@ -82,3 +82,14 @@ def test_diff_section_altformat_ohne_findings_aber_netto_anstieg(tmp_path):
     assert "gestiegen" in md
     assert "neues high-Finding" not in md
     assert "+ neu" not in md
+
+
+def test_geo_section_ohne_prompts_und_ohne_route_ist_failsoft(tmp_path, monkeypatch):
+    # sites.json ohne echte WP-Route; keine geo_prompts.json im cwd
+    sites = tmp_path / "sites.json"
+    sites.write_text('{"report_root":"%s","sites":[]}' % tmp_path)
+    monkeypatch.chdir(tmp_path)
+    md, data = geo_section(str(sites), {}, datetime.date(2026, 7, 18))
+    assert "GEO-Sichtbarkeit" in md
+    assert isinstance(data, dict)
+    assert data == {"prompts": [], "bots": {}}
