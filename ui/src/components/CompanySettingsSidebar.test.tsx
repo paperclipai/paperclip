@@ -190,6 +190,13 @@ describe("CompanySettingsSidebar", () => {
     );
     expect(sidebarNavItemMock).toHaveBeenCalledWith(
       expect.objectContaining({
+        to: "/company/settings/plugins",
+        label: "Plugins",
+        end: true,
+      }),
+    );
+    expect(sidebarNavItemMock).toHaveBeenCalledWith(
+      expect.objectContaining({
         to: "/company/settings/secrets",
         label: "Secrets",
         end: true,
@@ -423,6 +430,7 @@ describe("CompanySettingsSidebar", () => {
     expect(container.textContent).toContain("Members");
     expect(container.textContent).not.toContain("Invites");
     expect(container.textContent).not.toContain("Secrets");
+    expect(container.textContent).not.toContain("Plugins");
     expect(container.textContent).not.toContain("Instance settings");
     expect(sidebarNavItemMock).not.toHaveBeenCalledWith(
       expect.objectContaining({ to: "/company/settings/instance/general" }),
@@ -449,6 +457,9 @@ describe("CompanySettingsSidebar", () => {
     await flushReact();
 
     expect(container.textContent).toContain("Invites");
+    expect(sidebarNavItemMock).toHaveBeenCalledWith(
+      expect.objectContaining({ to: "/company/settings/plugins", label: "Plugins", end: true }),
+    );
     expect(container.textContent).toContain("Secrets");
     expect(container.textContent).toContain("Instance settings");
 

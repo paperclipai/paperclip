@@ -137,6 +137,9 @@ export function CompanySettingsSidebar() {
           {exposedSurfaces.has("company.invites") ? (
             <SidebarNavItem to="/company/settings/invites" label="Invites" icon={MailPlus} end />
           ) : null}
+          {exposedSurfaces.has("company.plugins") ? (
+            <SidebarNavItem to="/company/settings/plugins" label="Plugins" icon={Puzzle} end />
+          ) : null}
           {exposedSurfaces.has("company.secrets") ? (
             <SidebarNavItem to="/company/settings/secrets" label="Secrets" icon={KeyRound} end />
           ) : null}

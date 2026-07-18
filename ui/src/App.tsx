@@ -62,6 +62,7 @@ import { AppNotConnected } from "./pages/apps/AppNotConnected";
 import { GatewaysList } from "./pages/apps/gateways/GatewaysList";
 import { GatewayDetail } from "./pages/apps/gateways/GatewayDetail";
 import { CompanyInvites } from "./pages/CompanyInvites";
+import { CompanyPlugins } from "./pages/CompanyPlugins";
 import { CompanySkills } from "./pages/CompanySkills";
 import { SkillStudio } from "./pages/SkillStudio";
 import { Secrets } from "./pages/Secrets";
@@ -120,6 +121,14 @@ function boardRoutes() {
         element={
           <SurfaceGuard surface="company.invites">
             <CompanyInvites />
+          </SurfaceGuard>
+        }
+      />
+      <Route
+        path="company/settings/plugins"
+        element={
+          <SurfaceGuard surface="company.plugins">
+            <CompanyPlugins />
           </SurfaceGuard>
         }
       />

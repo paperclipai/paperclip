@@ -10,6 +10,7 @@ const items = [
   { value: "cloud-upstream", label: "Cloud upstream", href: "/company/settings/cloud-upstream" },
   { value: "members", label: "Members", href: "/company/settings/members" },
   { value: "invites", label: "Invites", href: "/company/settings/invites" },
+  { value: "plugins", label: "Plugins", href: "/company/settings/plugins" },
   { value: "secrets", label: "Secrets", href: "/company/settings/secrets" },
   { value: "instance-profile", label: "Instance profile", href: `${INSTANCE_SETTINGS_PATH_PREFIX}/profile` },
   { value: "instance-general", label: "Instance general", href: `${INSTANCE_SETTINGS_PATH_PREFIX}/general` },
@@ -72,6 +73,10 @@ export function getCompanySettingsTab(pathname: string): CompanySettingsTab {
     return "invites";
   }
 
+  if (pathname.includes("/company/settings/plugins")) {
+    return "plugins";
+  }
+
   if (pathname.includes("/company/settings/secrets")) {
     return "secrets";
   }
@@ -95,6 +100,7 @@ export function CompanySettingsNav() {
         if (item.value === "cloud-upstream") return cloudSyncEnabled;
         if (item.value === "members") return exposedSurfaces.has("company.members");
         if (item.value === "invites") return exposedSurfaces.has("company.invites");
+        if (item.value === "plugins") return exposedSurfaces.has("company.plugins");
         if (item.value === "secrets") return exposedSurfaces.has("company.secrets");
         if (item.value === "instance-profile") return true; // per-user, always visible
         return isInstanceAdmin; // all remaining instance-* tabs
