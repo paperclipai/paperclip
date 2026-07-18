@@ -20,6 +20,8 @@ import {
 } from "../services/index.js";
 import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
 import { redactEventPayload } from "../redaction.js";
+import { getTelemetryClient } from "../telemetry.js";
+import { trackGovernancePolicyApplied } from "@paperclipai/shared/telemetry";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
 function redactApprovalPayload<T extends { payload: Record<string, unknown> }>(approval: T): T {
@@ -276,35 +278,53 @@ export function approvalRoutes(
           });
         }
       }
-    }
+      }
+      // Track governance policy application for PLG expansion signals
+      try {
+        const tc = getTelemetryClient();
+        if (tc && applied) {
+          const policyType = (
+            approval.type === "budget_override_required" ? "cost" :
+            approval.type === "hire_agent" ? "security" :
+            approval.type === "approve_ceo_strategy" ? "compliance" :
+            "other"
+          ) as "cost" | "security" | "compliance" | "other";
+          trackGovernancePolicyApplied(tc, {
+            policyType,
+            policyScope: "workspace",
+          });
+        }
+      } catch (err) {
+        logger.warn({ err, approvalId: approval.id }, "failed to track governance policy application");
+      }
 
-    res.json(redactApprovalPayload(approval));
-  });
+      res.json(redactApprovalPayload(approval));
+    });
 
-  router.post("/approvals/:id/reject", validate(resolveApprovalSchema), async (req, res) => {
-    assertBoard(req);
-    const id = req.params.id as string;
-    if (!(await requireApprovalAccess(req, id))) {
-      res.status(404).json({ error: "Approval not found" });
-      return;
-    }
-    const decidedByUserId = req.actor.userId ?? "board";
-    const { approval, applied } = await svc.reject(id, decidedByUserId, req.body.decisionNote);
+    router.post("/approvals/:id/reject", validate(resolveApprovalSchema), async (req, res) => {
+      assertBoard(req);
+      const id = req.params.id as string;
+      if (!(await requireApprovalAccess(req, id))) {
+        res.status(404).json({ error: "Approval not found" });
+        return;
+      }
+      const decidedByUserId = req.actor.userId ?? "board";
+      const { approval, applied } = await svc.reject(id, decidedByUserId, req.body.decisionNote);
 
-    if (applied) {
-      await logActivity(db, {
-        companyId: approval.companyId,
-        actorType: "user",
-        actorId: req.actor.userId ?? "board",
-        action: "approval.rejected",
-        entityType: "approval",
-        entityId: approval.id,
-        details: { type: approval.type },
-      });
-    }
+      if (applied) {
+        await logActivity(db, {
+          companyId: approval.companyId,
+          actorType: "user",
+          actorId: req.actor.userId ?? "board",
+          action: "approval.rejected",
+          entityType: "approval",
+          entityId: approval.id,
+          details: { type: approval.type },
+        });
+      }
 
-    res.json(redactApprovalPayload(approval));
-  });
+      res.json(redactApprovalPayload(approval));
+    });
 
   router.post(
     "/approvals/:id/request-revision",

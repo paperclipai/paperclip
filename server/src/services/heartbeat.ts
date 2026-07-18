@@ -3,7 +3,7 @@ import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash, randomUUID } from "node:crypto";
-import { and, asc, desc, eq, getTableColumns, gt, gte, inArray, isNull, lt, lte, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, getTableColumns, gt, gte, inArray, isNull, lt, lte, ne, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
@@ -86,7 +86,7 @@ import type {
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { parseObject, asBoolean, asNumber, appendWithByteCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
 import { costService } from "./costs.js";
-import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
+import { trackAgentFirstHeartbeat, trackFirstAgentRun } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
@@ -13974,6 +13974,32 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               lastError: outcome === "succeeded" ? null : (adapterResult.errorMessage ?? "run_failed"),
             });
           }
+        }
+      }
+      // Track first successful agent run for PLG activation funnel
+      if (outcome === "succeeded") {
+        try {
+          const tc = getTelemetryClient();
+          if (tc) {
+            const prevSucceeded = await db
+              .select({ count: sql<number>`count(*)` })
+              .from(heartbeatRuns)
+              .where(and(
+                eq(heartbeatRuns.agentId, agent.id),
+                eq(heartbeatRuns.status, "succeeded"),
+                ne(heartbeatRuns.id, run.id),
+              ))
+              .then((rows) => Number(rows[0]?.count ?? 0));
+            if (prevSucceeded === 0) {
+              trackFirstAgentRun(tc, {
+                agentRole: agent.role,
+                agentId: agent.id,
+                adapterType: agent.adapterType,
+              });
+            }
+          }
+        } catch (err) {
+          logger.warn({ err, runId: run.id }, "failed to track first agent run");
         }
       }
       await finalizeAgentStatus(

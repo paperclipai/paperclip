@@ -129,6 +129,42 @@ export function trackErrorHandlerCrash(
   client.track("error.handler_crash", { error_code: dims.errorCode });
 }
 
+export function trackFirstAgentRun(
+  client: TelemetryClient,
+  dims: {
+    agentRole: RawDimension<EventDimensionsMap["agent.first_heartbeat"]["agent_role"]>;
+    agentId: string;
+    adapterType: RawDimension<EventDimensionsMap["agent.task_completed"]["adapter_type"]>;
+  },
+): void {
+  client.track(
+    // @ts-expect-error -- proposed-telemetry(https://github.com/paperclipai/paperclip/issues/PLG): measure first successful agent run for activation funnel
+    "agent.first_run",
+    {
+      agent_role: asEventDimension(dims.agentRole),
+      agent_id: dims.agentId,
+      adapter_type: asEventDimension(dims.adapterType),
+    },
+  );
+}
+
+export function trackGovernancePolicyApplied(
+  client: TelemetryClient,
+  dims: {
+    policyType: RawDimension<EventDimensionsMap["interaction.resolved"]["interaction_kind"]>;
+    policyScope: string;
+  },
+): void {
+  client.track(
+    // @ts-expect-error -- proposed-telemetry(https://github.com/paperclipai/paperclip/issues/PLG): measure governance policy application for expansion signals
+    "governance.policy_applied",
+    {
+      policy_type: asEventDimension(dims.policyType),
+      policy_scope: dims.policyScope,
+    },
+  );
+}
+
 export function trackInteractionResolved(
   client: TelemetryClient,
   dims: {
