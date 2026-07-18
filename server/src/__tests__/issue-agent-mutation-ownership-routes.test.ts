@@ -1009,10 +1009,10 @@ describe("agent issue mutation checkout ownership", () => {
     mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
       allowed: input.action === "issue:comment",
       action: input.action,
-      reason: input.action === "issue:comment" ? "allow_same_company_pm_grooming" : "deny_missing_grant",
+      reason: input.action === "issue:comment" ? "allow_same_company_pm_comment" : "deny_missing_grant",
       explanation:
         input.action === "issue:comment"
-          ? "Allowed for same-company ProjectManager delivery grooming."
+          ? "Allowed for same-company ProjectManager delivery grooming comments."
           : "Missing permission.",
     }));
 
@@ -1042,7 +1042,9 @@ describe("agent issue mutation checkout ownership", () => {
         action: input.action,
         reason:
           input.action === "issue:comment" || (input.action === "issue:mutate" && input.scope?.pmGrooming === true)
-            ? "allow_same_company_pm_grooming"
+            ? input.action === "issue:comment"
+              ? "allow_same_company_pm_comment"
+              : "allow_same_company_pm_grooming"
             : "deny_missing_grant",
         explanation:
           input.action === "issue:comment" || (input.action === "issue:mutate" && input.scope?.pmGrooming === true)
@@ -1083,8 +1085,10 @@ describe("agent issue mutation checkout ownership", () => {
     const res = await request(await createApp(peerActor()))
       .patch(`/api/issues/${issueId}`)
       .send({
-        comment: "Closing after grooming.",
-        status: "done",
+        comment: "Grooming dependency state.",
+        status: "blocked",
+        priority: "high",
+        blockedByIssueIds: ["88888888-8888-4888-8888-888888888888"],
       });
 
     expect(res.status, JSON.stringify(res.body)).toBe(409);
@@ -1094,6 +1098,66 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
       action: "issue:mutate",
       scope: expect.objectContaining({ pmGrooming: true }),
+    }));
+  });
+
+  it("does not treat status done as a ProjectManager grooming patch", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "todo", assigneeAgentId: ownerAgentId }));
+    mockAccessService.decide.mockImplementation(async (input: { action: string; scope?: Record<string, unknown> }) => ({
+      allowed: input.action === "issue:mutate" && input.scope?.pmGrooming === true,
+      action: input.action,
+      reason:
+        input.action === "issue:mutate" && input.scope?.pmGrooming === true
+          ? "allow_same_company_pm_grooming"
+          : "deny_missing_grant",
+      explanation:
+        input.action === "issue:mutate" && input.scope?.pmGrooming === true
+          ? "Allowed for same-company ProjectManager delivery grooming."
+          : "Missing permission.",
+    }));
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        comment: "Closing after grooming.",
+        status: "done",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Issue is outside this actor's authorization boundary");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
+      action: "issue:mutate",
+      scope: expect.objectContaining({ pmGrooming: false }),
+    }));
+  });
+
+  it("does not treat JSON-body issue deletes as ProjectManager grooming", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "todo", assigneeAgentId: ownerAgentId }));
+    mockAccessService.decide.mockImplementation(async (input: { action: string; scope?: Record<string, unknown> }) => ({
+      allowed: input.action === "issue:mutate" && input.scope?.pmGrooming === true,
+      action: input.action,
+      reason:
+        input.action === "issue:mutate" && input.scope?.pmGrooming === true
+          ? "allow_same_company_pm_grooming"
+          : "deny_missing_grant",
+      explanation:
+        input.action === "issue:mutate" && input.scope?.pmGrooming === true
+          ? "Allowed for same-company ProjectManager delivery grooming."
+          : "Missing permission.",
+    }));
+
+    const res = await request(await createApp(peerActor()))
+      .delete(`/api/issues/${issueId}`)
+      .set("Content-Type", "application/json")
+      .send({});
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Issue is outside this actor's authorization boundary");
+    expect(mockIssueService.remove).not.toHaveBeenCalled();
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
+      action: "issue:mutate",
+      scope: expect.objectContaining({ pmGrooming: false }),
     }));
   });
 

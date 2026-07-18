@@ -3424,10 +3424,13 @@ export function issueRoutes(
     if (!body || typeof body !== "object" || Array.isArray(body)) return false;
     const record = body as Record<string, unknown>;
     const allowedKeys = new Set(["comment", "status", "priority", "blockedByIssueIds"]);
-    if (Object.keys(record).some((key) => !allowedKeys.has(key))) return false;
+    const keys = Object.keys(record);
+    if (keys.length === 0) return false;
+    if (keys.some((key) => !allowedKeys.has(key))) return false;
     if (typeof record.status === "string" && (record.status === "in_progress" || record.status === "cancelled")) {
       return false;
     }
+    if (record.status === "done") return false;
     return true;
   }
 
@@ -3531,6 +3534,7 @@ export function issueRoutes(
       assigneeAgentId: string | null;
       assigneeUserId: string | null;
     },
+    options: { pmGrooming?: boolean } = {},
   ) {
     if (req.actor.type !== "agent") return true;
     const actorAgentId = req.actor.agentId;
@@ -3565,7 +3569,7 @@ export function issueRoutes(
       req,
       issue,
       "issue:mutate",
-      { pmGrooming: isPmGroomingIssuePatchBody(req.body) },
+      { pmGrooming: options.pmGrooming === true },
     );
     if (!boundaryDecision.allowed) {
       res.status(403).json({
@@ -7662,7 +7666,9 @@ export function issueRoutes(
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
     if (!existing) return;
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
-    if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+    if (!(await assertAgentIssueMutationAllowed(req, res, existing, {
+      pmGrooming: isPmGroomingIssuePatchBody(req.body),
+    }))) return;
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
 
     const actor = getActorInfo(req);

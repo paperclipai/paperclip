@@ -1357,7 +1357,7 @@ describeEmbeddedPostgres("authorization service", () => {
       resource,
     })).resolves.toMatchObject({
       allowed: true,
-      reason: "allow_same_company_pm_grooming",
+      reason: "allow_same_company_pm_comment",
     });
 
     for (const status of ["done", "cancelled"] as const) {

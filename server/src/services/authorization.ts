@@ -103,6 +103,7 @@ export type AuthorizationDecision = {
     | "allow_legacy_agent_creator"
     | "allow_issue_mention_grant"
     | "allow_same_company_review_comment"
+    | "allow_same_company_pm_comment"
     | "allow_same_company_pm_grooming"
     | "allow_self"
     | "allow_company_agent"
@@ -1922,8 +1923,8 @@ export function authorizationService(db: Db) {
       ) {
         return allow({
           action: input.action,
-          reason: "allow_same_company_pm_grooming",
-          explanation: "Allowed for same-company ProjectManager delivery grooming.",
+          reason: "allow_same_company_pm_comment",
+          explanation: "Allowed for same-company ProjectManager delivery grooming comments.",
         });
       }
       if (
