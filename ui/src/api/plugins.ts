@@ -473,7 +473,7 @@ export const pluginsApi = {
    * contributed) company settings route. Used by the CompanyPlugins page.
    */
   listCompanyPluginCatalog: (companyId: string) =>
-    api.get<CompanyPluginCatalogItem[]>(`/plugins/companies/${companyId}/catalog`),
+    api.get<CompanyPluginCatalogItem[]>(`/plugins/companies/${encodeURIComponent(companyId)}/catalog`),
 
   /**
    * Enable or disable a plugin for a specific company. Locked plugins
@@ -482,7 +482,7 @@ export const pluginsApi = {
    */
   setCompanyPluginEnabled: (pluginId: string, companyId: string, enabled: boolean) =>
     api.put<CompanyPluginCatalogItem>(
-      `/plugins/${pluginId}/companies/${companyId}/enablement`,
+      `/plugins/${encodeURIComponent(pluginId)}/companies/${encodeURIComponent(companyId)}/enablement`,
       { enabled },
     ),
 
