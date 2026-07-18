@@ -4480,6 +4480,10 @@ export function accessRoutes(
     });
   });
 
+  // Deliberately not gated by assertSurfaceExposed("company.members", ...): the
+  // roster stays available under plain assertCompanyAccess even when the
+  // company.members management surface is hidden, since assignee pickers and
+  // mentions depend on it. Hiding the surface gates *management*, not directory reads.
   router.get("/companies/:companyId/user-directory", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
