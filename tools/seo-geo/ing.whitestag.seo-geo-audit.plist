@@ -4,7 +4,7 @@
   <key>Label</key><string>ing.whitestag.seo-geo-audit</string>
   <key>ProgramArguments</key><array>
     <string>/bin/zsh</string><string>-lc</string>
-    <string>cd ~/.paperclip/scripts/seo-geo &amp;&amp; source ~/.whitestag.env &amp;&amp; ./venv/bin/python cli.py audit --site whitestag.ai --sites sites.json</string>
+    <string>~/.paperclip/scripts/seo-geo/audit-all.sh</string>
   </array>
   <key>StartCalendarInterval</key><dict>
     <key>Weekday</key><integer>1</integer><key>Hour</key><integer>5</integer><key>Minute</key><integer>0</integer>
