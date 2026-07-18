@@ -485,7 +485,7 @@ evidence is not a default delivery layer: a link-only work product with no
 requester-facing explanation is insufficient unless the explicit
 document-only override below applies.
 
-### Receipt contents and visibility
+### 9.1 Receipt contents and visibility
 
 A receipt must identify the delivered outcome, the output format, the durable
 evidence/work-product reference or references, and the primary inspection
@@ -512,7 +512,7 @@ The primary inspection surface depends on the output:
   identifies the asset and provides concise visual/contextual description; an
   internal generation log, filename alone, or text-only claim is not delivery.
 
-### Child-to-source projection
+### 9.2 Child-to-source projection
 
 When a child execution lane produces the output requested by its source issue,
 the source issue must receive a projected delivery receipt that links the
@@ -522,7 +522,7 @@ them discover a child lane. It does not erase the child receipt, transfer child
 ownership, or make `parentId` a dependency. A source issue still becomes
 `done` only when its own declared evidence and terminal conditions are met.
 
-### Explicit document-only override
+### 9.3 Explicit document-only override
 
 The requester or approved execution contract may explicitly select
 `document_only` delivery for a named output. The override must be durable,
@@ -532,7 +532,7 @@ does not permit a link-only completion, removal of the receipt, inaccessible
 documents, or bypassing durable evidence. Silence, file size, and an agent's
 preference are not overrides.
 
-### Idempotency and bounded repair
+### 9.4 Idempotency and bounded repair
 
 Receipt creation is idempotent for the delivery identity: source issue,
 terminal transition/output, and durable evidence references. Retrying the same
@@ -549,7 +549,7 @@ or retry indefinitely: retain the evidence and surface an explicit blocked or
 recovery action with the owner and repair required. Unchanged failed receipt
 state must reuse the same recovery fingerprint.
 
-### Reconciliation with execution invariants
+### 9.5 Reconciliation with execution invariants
 
 This contract preserves three existing invariants:
 
