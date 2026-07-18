@@ -712,7 +712,7 @@ describe("evaluateCodexCredentialReadiness", () => {
     try {
       const alphaHome = path.join(root, "agent-alpha");
       const zeroHome = path.join(root, "agent-zero");
-      await writeManagedCodexMcpConfig({
+      const alphaResult = await writeManagedCodexMcpConfig({
         codexHome: alphaHome,
         apiBaseUrl: "https://paperclip.example",
         gateways: [{
@@ -739,7 +739,9 @@ describe("evaluateCodexCredentialReadiness", () => {
       const alpha = await fs.readFile(path.join(alphaHome, "config.toml"), "utf8");
       const zero = await fs.readFile(path.join(zeroHome, "config.toml"), "utf8");
       expect(alpha).toContain('[mcp_servers."alpha"]');
-      expect(alpha).toContain('Authorization = "Bearer alpha-token"');
+      expect(alpha).toContain('bearer_token_env_var = "PAPERCLIP_MCP_GATEWAY_TOKEN_ALPHA"');
+      expect(alpha).not.toContain("alpha-token");
+      expect(alphaResult.env).toEqual({ PAPERCLIP_MCP_GATEWAY_TOKEN_ALPHA: "alpha-token" });
       expect(zero).not.toContain("mcp_servers.");
       expect(zero).not.toContain("stale-token");
       expect(alphaHome).not.toBe(zeroHome);
@@ -761,6 +763,40 @@ describe("evaluateCodexCredentialReadiness", () => {
       });
 
       expect((await fs.stat(configPath)).mode & 0o777).toBe(0o600);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps managed MCP token env vars distinct after env-name sanitization", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-mcp-config-"));
+    try {
+      const result = await writeManagedCodexMcpConfig({
+        codexHome: root,
+        apiBaseUrl: "https://paperclip.example",
+        gateways: [
+          {
+            name: "foo-bar",
+            endpointPath: "/api/tool-gateway/gateways/foo-bar/mcp",
+            bearerToken: "hyphen-token",
+          },
+          {
+            name: "foo_bar",
+            endpointPath: "/api/tool-gateway/gateways/foo_bar/mcp",
+            bearerToken: "underscore-token",
+          },
+        ],
+      });
+
+      const config = await fs.readFile(path.join(root, "config.toml"), "utf8");
+      expect(config).toContain('bearer_token_env_var = "PAPERCLIP_MCP_GATEWAY_TOKEN_FOO_BAR"');
+      expect(config).toContain('bearer_token_env_var = "PAPERCLIP_MCP_GATEWAY_TOKEN_FOO_BAR_2"');
+      expect(config).not.toContain("hyphen-token");
+      expect(config).not.toContain("underscore-token");
+      expect(result.env).toEqual({
+        PAPERCLIP_MCP_GATEWAY_TOKEN_FOO_BAR: "hyphen-token",
+        PAPERCLIP_MCP_GATEWAY_TOKEN_FOO_BAR_2: "underscore-token",
+      });
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }

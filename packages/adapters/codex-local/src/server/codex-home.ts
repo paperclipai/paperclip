@@ -16,6 +16,12 @@ export type ManagedCodexMcpGateway = {
   bearerToken: string;
 };
 
+export type ManagedCodexMcpConfig = {
+  configPath: string;
+  env: Record<string, string>;
+  warnings: string[];
+};
+
 export function mergeManagedCodexMcpGateways(
   primary: ManagedCodexMcpGateway[],
   secondary: ManagedCodexMcpGateway[],
@@ -228,6 +234,28 @@ function sanitizeMcpServerName(value: string, fallback: string): string {
     .slice(0, 80) || fallback;
 }
 
+function mcpTokenEnvVarName(value: string, fallback: string): string {
+  const tokenName = value
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9_]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 80) || fallback;
+  return `PAPERCLIP_MCP_GATEWAY_TOKEN_${tokenName}`;
+}
+
+function uniqueMcpTokenEnvVarName(value: string, fallback: string, used: Set<string>): string {
+  const base = mcpTokenEnvVarName(value, fallback);
+  let candidate = base;
+  let suffix = 2;
+  while (used.has(candidate)) {
+    candidate = `${base}_${suffix}`;
+    suffix += 1;
+  }
+  used.add(candidate);
+  return candidate;
+}
+
 function stripManagedMcpBlock(config: string): string {
   const start = config.indexOf(MANAGED_MCP_BLOCK_START);
   if (start < 0) return config.trimEnd();
@@ -249,9 +277,11 @@ function buildManagedMcpBlock(input: {
   gateways: ManagedCodexMcpGateway[];
   apiBaseUrl: string;
   existingNames: Set<string>;
-}): { block: string; warnings: string[] } {
+}): { block: string; env: Record<string, string>; warnings: string[] } {
+  const env: Record<string, string> = {};
   const warnings: string[] = [];
   const usedNames = new Set<string>();
+  const usedEnvVars = new Set<string>();
   const lines = [
     MANAGED_MCP_BLOCK_START,
     "# Written by Paperclip for governed MCP gateway access. Do not edit this block by hand.",
@@ -272,22 +302,24 @@ function buildManagedMcpBlock(input: {
       );
     }
     const url = new URL(gateway.endpointPath, input.apiBaseUrl).toString();
+    const tokenEnvVar = uniqueMcpTokenEnvVarName(managedName, `GATEWAY_${index + 1}`, usedEnvVars);
+    env[tokenEnvVar] = gateway.bearerToken;
     lines.push(
       "",
       `[mcp_servers.${tomlString(managedName)}]`,
       `url = ${tomlString(url)}`,
-      `headers = { Authorization = ${tomlString(`Bearer ${gateway.bearerToken}`)} }`,
+      `bearer_token_env_var = ${tomlString(tokenEnvVar)}`,
     );
   });
   lines.push(MANAGED_MCP_BLOCK_END);
-  return { block: lines.join("\n"), warnings };
+  return { block: lines.join("\n"), env, warnings };
 }
 
 export async function writeManagedCodexMcpConfig(input: {
   codexHome: string;
   apiBaseUrl: string;
   gateways: ManagedCodexMcpGateway[];
-}): Promise<{ configPath: string; warnings: string[] }> {
+}): Promise<ManagedCodexMcpConfig> {
   const configPath = path.join(input.codexHome, "config.toml");
   await fs.mkdir(input.codexHome, { recursive: true });
   const existing = await fs.readFile(configPath, "utf8").catch((error) => {
@@ -295,7 +327,7 @@ export async function writeManagedCodexMcpConfig(input: {
     throw error;
   });
   const unmanagedConfig = stripManagedMcpBlock(existing);
-  const { block, warnings } = buildManagedMcpBlock({
+  const { block, env, warnings } = buildManagedMcpBlock({
     gateways: input.gateways,
     apiBaseUrl: input.apiBaseUrl,
     existingNames: readCodexMcpServerNames(unmanagedConfig),
@@ -305,7 +337,7 @@ export async function writeManagedCodexMcpConfig(input: {
     : `${unmanagedConfig}${unmanagedConfig ? "\n" : ""}`;
   await fs.writeFile(configPath, next, { mode: 0o600 });
   await fs.chmod(configPath, 0o600);
-  return { configPath, warnings };
+  return { configPath, env, warnings };
 }
 
 /**
