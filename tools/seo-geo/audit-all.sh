@@ -12,7 +12,9 @@ cd "$HERE"
 
 # Credentials fuer den WP-Crawl
 # shellcheck disable=SC1090
+set -a
 source "$HOME/.whitestag.env" 2>/dev/null || true
+set +a
 
 PY="$HERE/venv/bin/python"
 SITES="$HERE/sites.json"
