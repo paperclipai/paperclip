@@ -95,6 +95,10 @@ If `currentParticipant` does not match you, do not try to advance the stage — 
 - If your heartbeat creates a pending board/user interaction or approval before more work can proceed, leave the source issue in an explicit waiting posture before you exit. Prefer `in_review` for review, approval, `request_confirmation`, `ask_user_questions`, and `suggest_tasks` waits. Use `blocked` with `blockedByIssueIds` when another issue is the blocker.
 - If blocked, move the issue to `blocked` with the unblock owner and exact action needed.
 - Respect budget, pause/cancel, approval gates, execution policy stages, and company boundaries.
+- **Mandatory terminal-delivery step:** before moving an interactive issue to
+  `done`, complete the **Terminal Delivery Receipts** procedure below. Do not
+  treat durable evidence, a work product, a successful run, or a completion
+  comment as a substitute for the requester-visible receipt.
 
 ### Generated Artifacts and Work Products
 
@@ -106,7 +110,7 @@ If an important file intentionally remains in the project or execution workspace
 
 For technical upload instructions, read `references/artifacts.md`.
 
-### Terminal Delivery Receipts
+### Mandatory Terminal Delivery Receipts
 
 Before moving an interactive issue to `done`, create a requester-visible
 delivery receipt in addition to registering the durable completion evidence.
