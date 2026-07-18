@@ -60,7 +60,16 @@ describe("agent hire reconciliation", () => {
   });
 
   it("stops reconciliation when the caller aborts", async () => {
-    fetchMock.mockResolvedValue(jsonResponse(pendingResponse));
+    fetchMock.mockImplementation(
+      (_input: RequestInfo | URL, init?: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener(
+            "abort",
+            () => reject(new DOMException("The operation was aborted.", "AbortError")),
+            { once: true },
+          );
+        }),
+    );
     const controller = new AbortController();
 
     const resultPromise = agentsApi.hire(
@@ -93,5 +102,35 @@ describe("agent hire reconciliation", () => {
 
     await rejection;
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("aborts an in-flight request at its finite deadline", async () => {
+    vi.useFakeTimers();
+    fetchMock.mockImplementation(
+      (_input: RequestInfo | URL, init?: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener(
+            "abort",
+            () => reject(new DOMException("The operation was aborted.", "AbortError")),
+            { once: true },
+          );
+        }),
+    );
+
+    const resultPromise = agentsApi.hire(
+      "company-123",
+      { name: "Builder" },
+      { idempotencyKey: "stalled-request-key", timeoutMs: 500 },
+    );
+    const rejection = expect(resultPromise).rejects.toMatchObject({
+      name: "AgentHireTimeoutError",
+      idempotencyKey: "stalled-request-key",
+      timeoutMs: 500,
+    } satisfies Partial<AgentHireTimeoutError>);
+    await vi.advanceTimersByTimeAsync(500);
+
+    await rejection;
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect((fetchMock.mock.calls[0]![1] as RequestInit).signal?.aborted).toBe(true);
   });
 });

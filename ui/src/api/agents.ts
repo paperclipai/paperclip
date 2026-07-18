@@ -212,20 +212,40 @@ export const agentsApi = {
     const timeoutMs = Math.max(0, options.timeoutMs ?? DEFAULT_AGENT_HIRE_TIMEOUT_MS);
     const deadline = Date.now() + timeoutMs;
     const path = `/companies/${companyId}/agent-hires`;
-    while (true) {
+    const requestController = new AbortController();
+    let deadlineExpired = false;
+    const onCallerAbort = () => requestController.abort();
+    options.signal?.addEventListener("abort", onCallerAbort, { once: true });
+    const deadlineTimer = setTimeout(() => {
+      deadlineExpired = true;
+      requestController.abort();
+    }, timeoutMs);
+
+    try {
+      while (true) {
+        if (options.signal?.aborted) throw abortError();
+        if (deadlineExpired || Date.now() >= deadline) {
+          throw new AgentHireTimeoutError(options.idempotencyKey, timeoutMs);
+        }
+        const response = await api.post<AgentHireResponse | AgentHirePendingResponse>(path, data, {
+          headers: { "Idempotency-Key": options.idempotencyKey },
+          signal: requestController.signal,
+        });
+        if ("agent" in response) return response;
+        await waitForAgentHirePoll(
+          Math.min(AGENT_HIRE_POLL_INTERVAL_MS, Math.max(0, deadline - Date.now())),
+          requestController.signal,
+        );
+      }
+    } catch (error) {
       if (options.signal?.aborted) throw abortError();
-      if (Date.now() >= deadline) {
+      if (deadlineExpired || Date.now() >= deadline) {
         throw new AgentHireTimeoutError(options.idempotencyKey, timeoutMs);
       }
-      const response = await api.post<AgentHireResponse | AgentHirePendingResponse>(path, data, {
-        headers: { "Idempotency-Key": options.idempotencyKey },
-        signal: options.signal,
-      });
-      if ("agent" in response) return response;
-      await waitForAgentHirePoll(
-        Math.min(AGENT_HIRE_POLL_INTERVAL_MS, Math.max(0, deadline - Date.now())),
-        options.signal,
-      );
+      throw error;
+    } finally {
+      clearTimeout(deadlineTimer);
+      options.signal?.removeEventListener("abort", onCallerAbort);
     }
   },
   update: (id: string, data: Record<string, unknown>, companyId?: string) =>
