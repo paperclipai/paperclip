@@ -7061,7 +7061,7 @@ export function issueRoutes(
       projectId: createBody.projectId ?? null,
       executionPolicy,
     }, actor);
-    let deduplicationReason: "idempotency_key" | "recent_open_title" | null = null;
+    let deduplicationReason: "idempotency_key" | "recent_open_title" | "source_note" | null = null;
     const issue = await svc.create(companyId, {
       ...createBody,
       ...(taskBridgeOriginForActor(req) ?? {}),
@@ -7080,6 +7080,18 @@ export function issueRoutes(
       },
     });
     if (deduplicationReason) {
+      if (deduplicationReason === "source_note") {
+        await svc.addComment(issue.id, [
+          "Deduplicated source-note issue create.",
+          "",
+          `Suppressed source key: ${createBody.originKind}:${createBody.originId}`,
+          `Canonical issue: ${issue.identifier ?? issue.id}`,
+        ].join("\n"), {
+          agentId: actor.agentId ?? undefined,
+          userId: actor.actorType === "user" ? actor.actorId : undefined,
+          runId: actor.runId,
+        });
+      }
       const referenceSummary = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
       res.status(200).json({
         ...issue,

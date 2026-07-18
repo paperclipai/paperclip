@@ -138,6 +138,7 @@ const ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_PARALLEL_READS = 8;
 export const ISSUE_CREATE_IDEMPOTENCY_KEY_RETENTION_DAYS = 7;
 const ISSUE_CREATE_IDEMPOTENCY_KEY_RETENTION_MS = ISSUE_CREATE_IDEMPOTENCY_KEY_RETENTION_DAYS * 24 * 60 * 60 * 1000;
 const ISSUE_CREATE_IDEMPOTENCY_KEY_CLEANUP_BATCH_SIZE = 500;
+const SOURCE_NOTE_ORIGIN_KIND = "source_note";
 const DELETED_ISSUE_COMMENT_BODY = "";
 const ISSUE_WAKE_DIAGNOSTICS_ACTIVITY_ACTIONS = ["issue.tree_hold_wakeup_deferred"] as const;
 
@@ -586,7 +587,7 @@ type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
   trustExplicitResponsibleUserId?: boolean;
   idempotencyKey?: string | null;
   allowDuplicate?: boolean;
-  onDeduplicated?: (reason: "idempotency_key" | "recent_open_title") => void;
+  onDeduplicated?: (reason: "idempotency_key" | "recent_open_title" | "source_note") => void;
 };
 type IssueChildCreateInput = IssueCreateInput & {
   acceptanceCriteria?: string[];
@@ -6154,7 +6155,7 @@ export function issueService(db: Db) {
         }
 
         let existingIssue: typeof issues.$inferSelect | undefined;
-        let deduplicationReason: "idempotency_key" | "recent_open_title" | null = null;
+        let deduplicationReason: "idempotency_key" | "recent_open_title" | "source_note" | null = null;
         if (idempotencyKey) {
           const idempotencyKeyRetentionCutoff = new Date(Date.now() - ISSUE_CREATE_IDEMPOTENCY_KEY_RETENTION_MS);
           await tx.execute(sql`
@@ -6180,6 +6181,25 @@ export function issueService(db: Db) {
             .limit(1)
             .then((rows) => rows.map((row) => row.issues));
           if (existingIssue) deduplicationReason = "idempotency_key";
+        }
+        const sourceNoteOriginId = issueData.originKind === SOURCE_NOTE_ORIGIN_KIND
+          ? issueData.originId?.trim() || null
+          : null;
+        if (!existingIssue && sourceNoteOriginId) {
+          const sourceNoteGuardKey = `issue-create:source-note:${companyId}:${sourceNoteOriginId}`;
+          await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${sourceNoteGuardKey}, 0))`);
+          [existingIssue] = await tx
+            .select()
+            .from(issues)
+            .where(and(
+              eq(issues.companyId, companyId),
+              eq(issues.originKind, SOURCE_NOTE_ORIGIN_KIND),
+              eq(issues.originId, sourceNoteOriginId),
+              isNull(issues.hiddenAt),
+            ))
+            .orderBy(asc(issues.createdAt), asc(issues.id))
+            .limit(1);
+          if (existingIssue) deduplicationReason = "source_note";
         }
         if (!existingIssue && allowDuplicate === false) {
           [existingIssue] = await tx

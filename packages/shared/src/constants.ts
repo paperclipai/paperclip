@@ -285,6 +285,7 @@ export const TASK_WATCHDOG_PRODUCT_BUG_ORIGIN_KIND = "task_watchdog_product_bug"
 
 export const ISSUE_ORIGIN_KINDS = [
   "manual",
+  "source_note",
   "routine_execution",
   "stale_active_run_evaluation",
   "harness_liveness_escalation",
