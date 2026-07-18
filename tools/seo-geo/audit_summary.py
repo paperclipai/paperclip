@@ -123,6 +123,26 @@ def render(counts: dict, report_root: str, today: str) -> str:
     return "\n".join(lines) + "\n"
 
 
+def gsc_section(sites_path: str, environ: dict, today: datetime.date) -> tuple[str, str, list[dict]]:
+    """Fail-soft: fehlt der SA-Key oder scheitert alles, wird die Onpage-Mail nie gekippt.
+    Rueckgabe: (markdown, overall_ampel, blocks)."""
+    from config import load_sites
+    key_file = environ.get("GSC_SA_KEY_FILE")
+    if not key_file or not os.path.exists(os.path.expanduser(key_file)):
+        return ("\n## Google Search Console\n\nGSC nicht konfiguriert "
+                "(GSC_SA_KEY_FILE fehlt) — Onpage-Audit unberührt.\n", "\U0001F7E2", [])
+    try:
+        import gsc
+        import gsc_report
+        session = gsc.build_authorized_session(os.path.expanduser(key_file))
+        client = gsc.GSCClient(session)
+        windows = gsc.report_windows(today)
+        blocks = [gsc_report.build_site_block(s, client, windows) for s in load_sites(sites_path)]
+        return gsc_report.render_markdown(blocks), gsc_report.overall_ampel(blocks), blocks
+    except Exception as e:  # noqa: BLE001 — niemals die Mail kippen
+        return (f"\n## Google Search Console\n\nGSC-Abruf global fehlgeschlagen ({e}).\n", "\U0001F7E2", [])
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="audit-summary")
     ap.add_argument("--sites", default="sites.json")
@@ -130,7 +150,8 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     report_root, _ = _load_sites(args.sites)
-    today = datetime.date.today().isoformat()
+    today_date = datetime.date.today()
+    today = today_date.isoformat()
     counts = collect(args.sites)
 
     # History-Snapshot (datiert) schreiben — leichtgewichtiges Monitoring
@@ -140,6 +161,13 @@ def main(argv: list[str] | None = None) -> int:
         json.dump(counts, fh, ensure_ascii=False, indent=2)
 
     body = render(counts, report_root, today)
+
+    gsc_md, gsc_amp, gsc_blocks = gsc_section(args.sites, os.environ, today_date)
+    body = body + gsc_md
+    if gsc_blocks:
+        with open(os.path.join(hist_dir, f"{today}-gsc.json"), "w") as fh:
+            json.dump(gsc_blocks, fh, ensure_ascii=False, indent=2)
+
     with open(os.path.join(hist_dir, f"{today}.md"), "w") as fh:
         fh.write(body)
 
