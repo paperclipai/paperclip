@@ -1,10 +1,11 @@
-import { and, desc, eq, inArray, isNull } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
   executionWorkspaces,
   fleetPatrolAudit,
   heartbeatRuns,
+  issueRelations,
   issueRecoveryActions,
   issues,
 } from "@paperclipai/db";
@@ -40,10 +41,23 @@ export interface FleetPatrolResult {
 }
 
 const TERMINAL_RUN_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out"]);
-const ACTIVE_RUN_STATUSES = new Set(["queued", "running"]);
+const ACTIVE_RUN_STATUSES = new Set(["queued", "running", "scheduled_retry"]);
 
 function targetType(operation: string) {
   return operation === "clear_agent_error" ? "agent" : "issue";
+}
+
+function issueRunScope(issueId: string) {
+  return sql`coalesce(
+    ${heartbeatRuns.contextSnapshot} ->> 'issueId',
+    ${heartbeatRuns.contextSnapshot} ->> 'taskId'
+  ) = ${issueId}`;
+}
+
+function isCSuiteCoordinationAgent(agent: typeof agents.$inferSelect | null) {
+  if (!agent) return false;
+  if (agent.role === "ceo") return true;
+  return Boolean(agent.title?.startsWith("Chief ") && agent.title.endsWith(" Officer"));
 }
 
 function auditValues(
@@ -295,6 +309,174 @@ export function fleetPatrolRemediationService(db: Db) {
               executionAgentNameKey: null,
               executionLockedAt: null,
             },
+          });
+        }
+
+        const [latestIssueRun, liveIssueRun, assignee, activeRecovery, blockingRelation] = await Promise.all([
+          tx
+            .select({
+              id: heartbeatRuns.id,
+              status: heartbeatRuns.status,
+              errorCode: heartbeatRuns.errorCode,
+            })
+            .from(heartbeatRuns)
+            .where(and(
+              eq(heartbeatRuns.companyId, actor.companyId),
+              issueRunScope(issue.id),
+            ))
+            .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
+            .limit(1)
+            .then((rows) => rows[0] ?? null),
+          tx
+            .select({ id: heartbeatRuns.id })
+            .from(heartbeatRuns)
+            .where(and(
+              eq(heartbeatRuns.companyId, actor.companyId),
+              inArray(heartbeatRuns.status, [...ACTIVE_RUN_STATUSES]),
+              issueRunScope(issue.id),
+            ))
+            .limit(1)
+            .then((rows) => rows[0] ?? null),
+          issue.assigneeAgentId
+            ? tx
+              .select()
+              .from(agents)
+              .where(and(
+                eq(agents.id, issue.assigneeAgentId),
+                eq(agents.companyId, actor.companyId),
+              ))
+              .then((rows) => rows[0] ?? null)
+            : Promise.resolve(null),
+          tx
+            .select()
+            .from(issueRecoveryActions)
+            .where(and(
+              eq(issueRecoveryActions.companyId, actor.companyId),
+              eq(issueRecoveryActions.sourceIssueId, issue.id),
+              inArray(issueRecoveryActions.status, ["active", "escalated"]),
+            ))
+            .limit(1)
+            .then((rows) => rows[0] ?? null),
+          tx
+            .select({ id: issueRelations.id })
+            .from(issueRelations)
+            .where(and(
+              eq(issueRelations.companyId, actor.companyId),
+              eq(issueRelations.relatedIssueId, issue.id),
+              eq(issueRelations.type, "blocks"),
+            ))
+            .limit(1)
+            .then((rows) => rows[0] ?? null),
+        ]);
+        if (liveIssueRun) {
+          return finish({ allowed: false, reasonCode: "issue_run_active", status: 409 });
+        }
+
+        const recoveryEvidence = activeRecovery?.evidence ?? {};
+        const isEscalatedCSuiteWorkspaceFailure =
+          issue.status === "blocked"
+          && issue.projectId !== null
+          && isCSuiteCoordinationAgent(assignee)
+          && !blockingRelation
+          && activeRecovery?.cause === "stranded_assigned_issue"
+          && latestIssueRun?.status === "failed"
+          && latestIssueRun.errorCode === "adapter_failed"
+          && recoveryEvidence.latestRunId === latestIssueRun.id
+          && recoveryEvidence.latestRunErrorCode === "adapter_failed";
+
+        if (isEscalatedCSuiteWorkspaceFailure) {
+          const before = {
+            status: issue.status,
+            projectWorkspaceId: issue.projectWorkspaceId,
+            executionWorkspacePreference: issue.executionWorkspacePreference,
+            executionWorkspaceId: issue.executionWorkspaceId,
+          };
+          const updated = await tx
+            .update(issues)
+            .set({
+              status: "todo",
+              projectWorkspaceId: null,
+              executionWorkspacePreference: "agent_default",
+              executionWorkspaceId: null,
+              updatedAt: now,
+            })
+            .where(and(
+              eq(issues.id, issue.id),
+              eq(issues.companyId, actor.companyId),
+              eq(issues.status, "blocked"),
+              issue.projectWorkspaceId
+                ? eq(issues.projectWorkspaceId, issue.projectWorkspaceId)
+                : isNull(issues.projectWorkspaceId),
+              issue.executionWorkspaceId
+                ? eq(issues.executionWorkspaceId, issue.executionWorkspaceId)
+                : isNull(issues.executionWorkspaceId),
+              sql`not exists (
+                select 1 from ${heartbeatRuns}
+                where ${heartbeatRuns.companyId} = ${actor.companyId}
+                  and ${heartbeatRuns.status} in ('queued', 'running', 'scheduled_retry')
+                  and coalesce(
+                    ${heartbeatRuns.contextSnapshot} ->> 'issueId',
+                    ${heartbeatRuns.contextSnapshot} ->> 'taskId'
+                  ) = ${issue.id}
+              )`,
+              sql`${latestIssueRun!.id} = (
+                select ${heartbeatRuns.id} from ${heartbeatRuns}
+                where ${heartbeatRuns.companyId} = ${actor.companyId}
+                  and coalesce(
+                    ${heartbeatRuns.contextSnapshot} ->> 'issueId',
+                    ${heartbeatRuns.contextSnapshot} ->> 'taskId'
+                  ) = ${issue.id}
+                order by ${heartbeatRuns.createdAt} desc, ${heartbeatRuns.id} desc
+                limit 1
+              )`,
+              sql`not exists (
+                select 1 from ${issueRelations}
+                where ${issueRelations.companyId} = ${actor.companyId}
+                  and ${issueRelations.relatedIssueId} = ${issue.id}
+                  and ${issueRelations.type} = 'blocks'
+              )`,
+            ))
+            .returning({
+              status: issues.status,
+              projectWorkspaceId: issues.projectWorkspaceId,
+              executionWorkspacePreference: issues.executionWorkspacePreference,
+              executionWorkspaceId: issues.executionWorkspaceId,
+            })
+            .then((rows) => rows[0] ?? null);
+          if (!updated) {
+            return finish({ allowed: false, reasonCode: "concurrent_change", status: 409, before });
+          }
+
+          const resolvedRecovery = await tx
+            .update(issueRecoveryActions)
+            .set({
+              status: "resolved",
+              outcome: "fleet_workspace_repaired",
+              resolutionNote: "Escalated C-suite workspace-failure chain repaired by bounded fleet patrol.",
+              resolvedAt: now,
+              updatedAt: now,
+            })
+            .where(and(
+              eq(issueRecoveryActions.id, activeRecovery!.id),
+              eq(issueRecoveryActions.companyId, actor.companyId),
+              eq(issueRecoveryActions.sourceIssueId, issue.id),
+              inArray(issueRecoveryActions.status, ["active", "escalated"]),
+              eq(issueRecoveryActions.cause, "stranded_assigned_issue"),
+              sql`${issueRecoveryActions.evidence} ->> 'latestRunId' = ${latestIssueRun!.id}`,
+              sql`${issueRecoveryActions.evidence} ->> 'latestRunErrorCode' = 'adapter_failed'`,
+            ))
+            .returning({ id: issueRecoveryActions.id })
+            .then((rows) => rows[0] ?? null);
+          if (!resolvedRecovery) {
+            throw new Error("Fleet workspace repair lost its recovery-action CAS");
+          }
+
+          return finish({
+            allowed: true,
+            reasonCode: "escalated_c_suite_workspace_failure_repaired",
+            status: 200,
+            before,
+            after: updated,
           });
         }
 

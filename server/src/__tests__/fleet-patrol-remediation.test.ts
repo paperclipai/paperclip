@@ -10,8 +10,10 @@ import {
   executionWorkspaces,
   fleetPatrolAudit,
   heartbeatRuns,
+  issueRelations,
   issueRecoveryActions,
   issues,
+  projectWorkspaces,
   projects,
 } from "@paperclipai/db";
 import {
@@ -128,6 +130,119 @@ describeEmbeddedPostgres("fleet patrol remediation authorization", () => {
       executionLockedAt: new Date(Date.now() - 60 * 60 * 1000),
     });
     return { issueId, ownerRunId };
+  }
+
+  async function seedEscalatedExecutiveWorkspaceFailure(options: {
+    issueStatus?: string;
+    recoveryErrorCode?: string;
+    recoveryRunMatches?: boolean;
+    withBlocker?: boolean;
+    withLiveRun?: boolean;
+    executiveAssignee?: boolean;
+  } = {}) {
+    const executiveAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: executiveAgentId,
+      companyId,
+      name: options.executiveAssignee === false ? "Program Manager" : "CEO",
+      title: options.executiveAssignee === false ? "Program Manager" : "Chief Executive Officer",
+      role: options.executiveAssignee === false ? "pm" : "ceo",
+      status: "active",
+      adapterType: "cursor",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const projectId = randomUUID();
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Executive coordination",
+      status: "in_progress",
+    });
+    const projectWorkspaceId = randomUUID();
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Invalid executive workspace",
+      isPrimary: true,
+    });
+    const executionWorkspaceId = randomUUID();
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      mode: "adapter_managed",
+      strategyType: "project_primary",
+      name: "Missing executive checkout",
+      status: "closed",
+      closedAt: new Date(),
+    });
+    const issueId = randomUUID();
+    const failedRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: failedRunId,
+      companyId,
+      agentId: executiveAgentId,
+      status: "failed",
+      errorCode: "adapter_failed",
+      invocationSource: "manual",
+      finishedAt: new Date(),
+      contextSnapshot: { issueId },
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      title: "Executive coordination issue",
+      status: options.issueStatus ?? "blocked",
+      assigneeAgentId: executiveAgentId,
+      executionRunId: failedRunId,
+      executionWorkspacePreference: "reuse_existing",
+      executionWorkspaceId,
+    });
+    await db.insert(issueRecoveryActions).values({
+      companyId,
+      sourceIssueId: issueId,
+      kind: "stranded_assigned_issue",
+      cause: "stranded_assigned_issue",
+      fingerprint: `test:${issueId}`,
+      nextAction: "Repair the escalated workspace failure.",
+      evidence: {
+        latestRunId: options.recoveryRunMatches === false ? randomUUID() : failedRunId,
+        latestRunErrorCode: options.recoveryErrorCode ?? "adapter_failed",
+      },
+    });
+    if (options.withBlocker) {
+      const blockerIssueId = randomUUID();
+      await db.insert(issues).values({
+        id: blockerIssueId,
+        companyId,
+        title: "Unresolved dependency",
+        status: "in_progress",
+      });
+      await db.insert(issueRelations).values({
+        companyId,
+        issueId: blockerIssueId,
+        relatedIssueId: issueId,
+        type: "blocks",
+      });
+    }
+    if (options.withLiveRun) {
+      await db.insert(heartbeatRuns).values({
+        companyId,
+        agentId: executiveAgentId,
+        status: "running",
+        invocationSource: "manual",
+        startedAt: new Date(),
+        createdAt: new Date(Date.now() + 1_000),
+        contextSnapshot: { issueId },
+      });
+    }
+    return { issueId, projectWorkspaceId, executionWorkspaceId };
   }
 
   it("audits schema-invalid requests before returning 422 without raw bodies or errors", async () => {
@@ -298,6 +413,73 @@ describeEmbeddedPostgres("fleet patrol remediation authorization", () => {
       executionWorkspacePreference: "agent_default",
       executionWorkspaceId: null,
     });
+  });
+
+  it("repairs only matching escalated C-suite workspace failures and resolves recovery", async () => {
+    const { issueId } = await seedEscalatedExecutiveWorkspaceFailure();
+
+    const response = await request(createApp())
+      .post("/api/fleet-patrol/remediation")
+      .send({ operation: "reset_workspace_pin", targetId: issueId });
+    expect(response.status).toBe(200);
+    expect(response.body.reasonCode).toBe("escalated_c_suite_workspace_failure_repaired");
+
+    const repaired = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]);
+    expect(repaired).toMatchObject({
+      status: "todo",
+      projectWorkspaceId: null,
+      executionWorkspacePreference: "agent_default",
+      executionWorkspaceId: null,
+    });
+    const recovery = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, issueId))
+      .then((rows) => rows[0]);
+    expect(recovery).toMatchObject({
+      status: "resolved",
+      outcome: "fleet_workspace_repaired",
+    });
+
+    const repeated = await request(createApp())
+      .post("/api/fleet-patrol/remediation")
+      .send({ operation: "reset_workspace_pin", targetId: issueId });
+    expect(repeated.status).toBe(409);
+    const unchanged = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]);
+    expect(unchanged).toMatchObject({
+      status: "todo",
+      projectWorkspaceId: null,
+      executionWorkspacePreference: "agent_default",
+      executionWorkspaceId: null,
+    });
+  });
+
+  it("preserves dependency, cancellation, stale-evidence, unrelated, and live-run cases", async () => {
+    const cases = [
+      await seedEscalatedExecutiveWorkspaceFailure({ withBlocker: true }),
+      await seedEscalatedExecutiveWorkspaceFailure({ issueStatus: "cancelled" }),
+      await seedEscalatedExecutiveWorkspaceFailure({ recoveryRunMatches: false }),
+      await seedEscalatedExecutiveWorkspaceFailure({ recoveryErrorCode: "process_lost" }),
+      await seedEscalatedExecutiveWorkspaceFailure({ executiveAssignee: false }),
+      await seedEscalatedExecutiveWorkspaceFailure({ withLiveRun: true }),
+    ];
+
+    for (const candidate of cases) {
+      const response = await request(createApp())
+        .post("/api/fleet-patrol/remediation")
+        .send({ operation: "reset_workspace_pin", targetId: candidate.issueId });
+      expect(response.status).toBe(409);
+      const untouched = await db
+        .select()
+        .from(issues)
+        .where(eq(issues.id, candidate.issueId))
+        .then((rows) => rows[0]);
+      expect(untouched).toMatchObject({
+        projectWorkspaceId: candidate.projectWorkspaceId,
+        executionWorkspacePreference: "reuse_existing",
+        executionWorkspaceId: candidate.executionWorkspaceId,
+      });
+    }
   });
 
   it("does not expand authorization on unrelated agent endpoints", async () => {
