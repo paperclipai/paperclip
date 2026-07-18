@@ -90,6 +90,7 @@ import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
+import { companyStandingService } from "./company-standing.js";
 import { secretService, type MissingRuntimeBinding } from "./secrets.js";
 import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
 import {
@@ -5478,6 +5479,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     cancelWorkForScope: cancelBudgetScopeWork,
   };
   const budgets = budgetService(db, budgetHooks);
+  const companyStandings = companyStandingService(db);
   const recovery = recoveryService(db, { enqueueWakeup });
 
   function isPlanApprovalConfirmationPayload(payload: unknown) {
@@ -15334,6 +15336,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       throw conflict(budgetBlock.reason, {
         scopeType: budgetBlock.scopeType,
         scopeId: budgetBlock.scopeId,
+      });
+    }
+
+    // Company-standing gate (spec §5.3): one check beside the budget
+    // hard-stop. Only an explicit persisted `blocked` row refuses new work;
+    // `grace` never blocks and unknown/unwritten standing means active.
+    const standing = await companyStandings.getEffectiveStanding(agent.companyId);
+    if (standing.status === "blocked") {
+      await writeSkippedRequest("company.standing_blocked");
+      throw conflict(standing.message ?? "This company is blocked from starting new work.", {
+        code: "company_blocked",
+        reason: standing.reason ?? null,
+        actionUrl: standing.actionUrl ?? null,
       });
     }
 
