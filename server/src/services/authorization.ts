@@ -176,6 +176,10 @@ function isProjectManagerRole(role: string | null | undefined) {
   return normalized === "pm" || normalized === "projectmanager";
 }
 
+function isTerminalIssueStatus(status: string | null | undefined) {
+  return status === "done" || status === "cancelled";
+}
+
 function scopeValueList(value: unknown): string[] {
   if (typeof value === "string" && value.trim()) return [value.trim()];
   if (!Array.isArray(value)) return [];
@@ -1909,6 +1913,17 @@ export function authorizationService(db: Db) {
           action: input.action,
           reason: "allow_same_company_review_comment",
           explanation: "Allowed for same-company QA review evidence comments.",
+        });
+      }
+      if (
+        input.action === "issue:comment" &&
+        isProjectManagerRole(actorAgent.role) &&
+        !isTerminalIssueStatus(resource.status)
+      ) {
+        return allow({
+          action: input.action,
+          reason: "allow_same_company_pm_grooming",
+          explanation: "Allowed for same-company ProjectManager delivery grooming.",
         });
       }
       if (
