@@ -34,8 +34,13 @@ def evaluate(config, runner):
 
 
 def claude_runner(prompt, model, timeout=120):
-    """Production: single claude CLI call. Not unit-tested."""
-    r = subprocess.run(["claude", "-p", prompt, "--model", model],
+    """Production: single claude CLI call. Not unit-tested.
+
+    `--tools ""` + `--strict-mcp-config` schalten alle Tools und MCP-Connectors ab:
+    wir wollen die reine Modell-Wissensantwort (Marken-Präsenz), und ohne diese
+    Flags hängt `claude -p` headless am MCP/Connector-Start (120s-Timeout)."""
+    r = subprocess.run(["claude", "-p", prompt, "--model", model,
+                        "--tools", "", "--strict-mcp-config"],
                        capture_output=True, text=True, timeout=timeout)
     if r.returncode != 0:
         raise RuntimeError(f"claude exit {r.returncode}: {r.stderr.strip()[:200]}")
