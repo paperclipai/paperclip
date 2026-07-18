@@ -473,8 +473,7 @@ describe.sequential("scoped plugin API routes", () => {
         body: { ok: true },
       }),
     };
-    mockRegistry.getById.mockResolvedValue(null);
-    mockRegistry.getByKey.mockResolvedValue({
+    const scopedApiPluginRecord = {
       id: pluginId,
       pluginKey: "paperclip.example",
       version: "1.0.0",
@@ -493,7 +492,12 @@ describe.sequential("scoped plugin API routes", () => {
           },
         ],
       },
-    });
+    };
+    // resolvePlugin() looks the non-UUID pluginId up via getByKey; the
+    // enablement gate separately re-fetches by the resolved record's uuid
+    // (`plugin.id`), so both lookups need to resolve for this test's plugin.
+    mockRegistry.getById.mockResolvedValue(scopedApiPluginRecord);
+    mockRegistry.getByKey.mockResolvedValue(scopedApiPluginRecord);
 
     const { app } = await createApp(
       {
@@ -1369,5 +1373,125 @@ describe.sequential("company plugin catalog and enablement authz", () => {
 
     expect(res.status).toBe(400);
     expect(mockRegistry.upsertCompanySettings).not.toHaveBeenCalled();
+  });
+});
+
+describe.sequential("per-company plugin enablement on bridge routes", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns the typed 403 for bridge/data when the plugin is disabled for the company", async () => {
+    readyPlugin();
+    mockRegistry.getCompanySettings.mockResolvedValueOnce({ enabled: false });
+    const call = vi.fn();
+    const { app } = await createApp(boardActor(), {}, {
+      bridgeDeps: { workerManager: { call } },
+    });
+
+    const res = await request(app)
+      .post(`/api/plugins/${pluginId}/bridge/data`)
+      .send({ companyId: companyA, key: "health", params: {} });
+
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe("plugin_not_enabled_for_company");
+    expect(call).not.toHaveBeenCalled();
+  });
+
+  it("allows bridge/data when no company settings row exists", async () => {
+    readyPlugin();
+    mockRegistry.getCompanySettings.mockResolvedValueOnce(null);
+    const call = vi.fn().mockResolvedValue({ ok: true });
+    const { app } = await createApp(boardActor(), {}, {
+      bridgeDeps: { workerManager: { call } },
+    });
+
+    const res = await request(app)
+      .post(`/api/plugins/${pluginId}/bridge/data`)
+      .send({ companyId: companyA, key: "health", params: {} });
+
+    expect(res.status).not.toBe(403);
+    expect(call).toHaveBeenCalled();
+  });
+
+  it("does not gate instance-scoped bridge/data calls (no companyId)", async () => {
+    readyPlugin();
+    const call = vi.fn().mockResolvedValue({ ok: true });
+    const { app } = await createApp(
+      boardActor({ userId: "admin-1", isInstanceAdmin: true, companyIds: [] }),
+      {},
+      { bridgeDeps: { workerManager: { call } } },
+    );
+
+    const res = await request(app)
+      .post(`/api/plugins/${pluginId}/bridge/data`)
+      .send({ key: "health", params: {} });
+
+    expect(mockRegistry.getCompanySettings).not.toHaveBeenCalled();
+    expect(res.status).not.toBe(403);
+  });
+
+  it("returns 403 for bridge/action when the plugin is disabled for the company", async () => {
+    readyPlugin();
+    mockRegistry.getCompanySettings.mockResolvedValueOnce({ enabled: false });
+    const call = vi.fn();
+    const { app } = await createApp(boardActor(), {}, {
+      bridgeDeps: { workerManager: { call } },
+    });
+
+    const res = await request(app)
+      .post(`/api/plugins/${pluginId}/bridge/action`)
+      .send({ companyId: companyA, key: "sync", params: {} });
+
+    expect(res.status).toBe(403);
+    expect(call).not.toHaveBeenCalled();
+  });
+
+  it("returns 403 for data/:key when the plugin is disabled for the company", async () => {
+    readyPlugin();
+    mockRegistry.getCompanySettings.mockResolvedValueOnce({ enabled: false });
+    const call = vi.fn();
+    const { app } = await createApp(boardActor(), {}, {
+      bridgeDeps: { workerManager: { call } },
+    });
+
+    const res = await request(app)
+      .post(`/api/plugins/${pluginId}/data/health`)
+      .send({ companyId: companyA, params: {} });
+
+    expect(res.status).toBe(403);
+    expect(call).not.toHaveBeenCalled();
+  });
+
+  it("returns 403 for actions/:key when the plugin is disabled for the company", async () => {
+    readyPlugin();
+    mockRegistry.getCompanySettings.mockResolvedValueOnce({ enabled: false });
+    const call = vi.fn();
+    const { app } = await createApp(boardActor(), {}, {
+      bridgeDeps: { workerManager: { call } },
+    });
+
+    const res = await request(app)
+      .post(`/api/plugins/${pluginId}/actions/sync`)
+      .send({ companyId: companyA, params: {} });
+
+    expect(res.status).toBe(403);
+    expect(call).not.toHaveBeenCalled();
+  });
+
+  it("returns 403 for the bridge SSE stream when the plugin is disabled for the company", async () => {
+    readyPlugin();
+    mockRegistry.getCompanySettings.mockResolvedValueOnce({ enabled: false });
+    const subscribe = vi.fn();
+    const { app } = await createApp(boardActor(), {}, {
+      bridgeDeps: { streamBus: { subscribe } },
+    });
+
+    const res = await request(app)
+      .get(`/api/plugins/${pluginId}/bridge/stream/updates`)
+      .query({ companyId: companyA });
+
+    expect(res.status).toBe(403);
+    expect(subscribe).not.toHaveBeenCalled();
   });
 });

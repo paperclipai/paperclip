@@ -50,6 +50,7 @@ import { pluginRegistryService } from "../services/plugin-registry.js";
 import { accessService } from "../services/access.js";
 import {
   evaluateCompanyEnablement,
+  pluginCompanyEnablementService,
 } from "../services/plugin-company-enablement.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { pluginLifecycleManager } from "../services/plugin-lifecycle.js";
@@ -550,6 +551,7 @@ export function pluginRoutes(
 ) {
   const router = Router();
   const registry = pluginRegistryService(db);
+  const enablement = pluginCompanyEnablementService(registry);
   const lifecycle = pluginLifecycleManager(db, {
     loader,
     workerManager: bridgeDeps?.workerManager ?? webhookDeps?.workerManager,
@@ -753,6 +755,24 @@ export function pluginRoutes(
     }
     assertCompanyAccess(req, companyId);
     return companyId;
+  }
+
+  /**
+   * Company-scoped bridge invocations additionally require the plugin to
+   * be enabled for that company (manifest companyEnablement default +
+   * plugin_company_settings). Instance-scoped invocations (no companyId,
+   * instance-admin-only per assertPluginBridgeScope) are unaffected.
+   */
+  async function assertPluginBridgeScopeWithEnablement(
+    req: Request,
+    pluginRecordId: string,
+    companyId: unknown,
+  ): Promise<string | undefined> {
+    const scopedCompanyId = assertPluginBridgeScope(req, companyId);
+    if (scopedCompanyId !== undefined) {
+      await enablement.ensurePluginEnabledForCompany(pluginRecordId, scopedCompanyId);
+    }
+    return scopedCompanyId;
   }
 
   /** Board actor that is an instance admin (mirrors authz.assertInstanceAdmin). */
@@ -1471,7 +1491,7 @@ export function pluginRoutes(
       return;
     }
 
-    const companyId = assertPluginBridgeScope(req, body.companyId);
+    const companyId = await assertPluginBridgeScopeWithEnablement(req, plugin.id, body.companyId);
 
     try {
       const result = await bridgeDeps.workerManager.call(
@@ -1564,7 +1584,7 @@ export function pluginRoutes(
       return;
     }
 
-    const companyId = assertPluginBridgeScope(req, body.companyId);
+    const companyId = await assertPluginBridgeScopeWithEnablement(req, plugin.id, body.companyId);
 
     try {
       const result = await bridgeDeps.workerManager.call(
@@ -1658,7 +1678,7 @@ export function pluginRoutes(
       renderEnvironment?: PluginLauncherRenderContextSnapshot | null;
     } | undefined;
 
-    const companyId = assertPluginBridgeScope(req, body?.companyId);
+    const companyId = await assertPluginBridgeScopeWithEnablement(req, plugin.id, body?.companyId);
 
     try {
       const result = await bridgeDeps.workerManager.call(
@@ -1748,7 +1768,7 @@ export function pluginRoutes(
       renderEnvironment?: PluginLauncherRenderContextSnapshot | null;
     } | undefined;
 
-    const companyId = assertPluginBridgeScope(req, body?.companyId);
+    const companyId = await assertPluginBridgeScopeWithEnablement(req, plugin.id, body?.companyId);
 
     try {
       const result = await bridgeDeps.workerManager.call(
@@ -1824,6 +1844,7 @@ export function pluginRoutes(
     }
 
     assertCompanyAccess(req, companyId);
+    await enablement.ensurePluginEnabledForCompany(plugin.id, companyId);
 
     // Set SSE headers
     res.writeHead(200, {
@@ -1913,6 +1934,7 @@ export function pluginRoutes(
         return;
       }
       assertCompanyAccess(req, companyId);
+      await enablement.ensurePluginEnabledForCompany(plugin.id, companyId);
       await enforceScopedApiCheckout(req, match.route, match.params, companyId);
       if (req.method !== "GET" && req.headers["content-type"] && !req.is("application/json")) {
         res.status(415).json({ error: "Plugin API routes accept JSON requests only" });
