@@ -4739,6 +4739,34 @@ export function issueService(db: Db) {
             AND ${issueComments.body} ILIKE ${containsPattern} ESCAPE '\\'
         )
       `;
+      // Search matching is expressed as a UNION of per-column id sets rather than a flat
+      // OR of the predicates above. Semantically identical, but the OR form is not
+      // index-usable: one branch is a subquery over issue_comments, so Postgres cannot
+      // build a BitmapOr and falls back to scanning every issue in the company and
+      // evaluating all four predicates per row. Splitting into a UNION lets each branch
+      // use its own gin_trgm_ops index (migration 0051). Measured on prod at ~22k issues,
+      // q=dockerfile: predicate alone 1117ms -> 216ms, full list shape including the
+      // searchOrder ranking ladder 1849ms -> 53ms. Result sets verified identical.
+      const searchIdMatch = sql<boolean>`
+        ${issues.id} IN (
+            SELECT ${issues.id} FROM ${issues}
+            WHERE ${issues.companyId} = ${companyId}
+              AND ${issues.title} ILIKE ${containsPattern} ESCAPE '\\'
+          UNION
+            SELECT ${issues.id} FROM ${issues}
+            WHERE ${issues.companyId} = ${companyId}
+              AND ${issues.identifier} ILIKE ${containsPattern} ESCAPE '\\'
+          UNION
+            SELECT ${issues.id} FROM ${issues}
+            WHERE ${issues.companyId} = ${companyId}
+              AND ${issues.description} ILIKE ${containsPattern} ESCAPE '\\'
+          UNION
+            SELECT ${issueComments.issueId} FROM ${issueComments}
+            WHERE ${issueComments.companyId} = ${companyId}
+              AND ${issueComments.deletedAt} IS NULL
+              AND ${issueComments.body} ILIKE ${containsPattern} ESCAPE '\\'
+        )
+      `;
       if (filters?.descendantOf) {
         conditions.push(sql<boolean>`
           ${issues.id} IN (
@@ -4814,14 +4842,7 @@ export function issueService(db: Db) {
         conditions.push(inArray(issues.id, labeledIssueIds.map((row) => row.issueId)));
       }
       if (hasSearch) {
-        conditions.push(
-          or(
-            titleContainsMatch,
-            identifierContainsMatch,
-            descriptionContainsMatch,
-            commentContainsMatch,
-          )!,
-        );
+        conditions.push(searchIdMatch);
       }
       if (filters?.excludeRoutineExecutions && !filters?.originKind && !filters?.originId) {
         conditions.push(ne(issues.originKind, "routine_execution"));
