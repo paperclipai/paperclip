@@ -4121,6 +4121,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         companyId: issues.companyId,
         identifier: issues.identifier,
         title: issues.title,
+        description: issues.description,
         status: issues.status,
         projectId: issues.projectId,
         goalId: issues.goalId,

@@ -16,6 +16,7 @@ export interface IssueLivenessIssueInput {
   companyId: string;
   identifier: string | null;
   title: string;
+  description?: string | null;
   status: string;
   projectId?: string | null;
   goalId?: string | null;
@@ -109,6 +110,12 @@ export interface IssueGraphLivenessInput {
 
 function issueLabel(issue: IssueLivenessIssueInput) {
   return issue.identifier ?? issue.id;
+}
+
+function hasExternalWaitDescription(description: string | null | undefined) {
+  if (!description) return false;
+  return /^\s*external owner\s*:\s*\S.+$/im.test(description) &&
+    /^\s*external action\s*:\s*\S.+$/im.test(description);
 }
 
 function pathEntry(issue: IssueLivenessIssueInput): IssueLivenessDependencyPathEntry {
@@ -405,7 +412,8 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
       hasActiveExecutionPath(issue.companyId, issue.id, activeRuns, queuedWakeRequests) ||
       hasWaitingPath(issue.companyId, issue.id, pendingInteractions) ||
       hasWaitingPath(issue.companyId, issue.id, pendingApprovals) ||
-      hasWaitingPath(issue.companyId, issue.id, openRecoveryIssues);
+      hasWaitingPath(issue.companyId, issue.id, openRecoveryIssues) ||
+      hasExternalWaitDescription(issue.description);
   }
 
   function reviewFinding(

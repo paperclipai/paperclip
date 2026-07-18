@@ -1694,6 +1694,7 @@ type IssueBlockerAttentionNode = {
   parentId: string | null;
   identifier: string | null;
   title: string;
+  description: string | null;
   status: string;
   executionRunId?: string | null;
   assigneeAgentId: string | null;
@@ -1702,7 +1703,7 @@ type IssueBlockerAttentionNode = {
 type IssueBlockerAttentionInputNode =
   Pick<
     IssueBlockerAttentionNode,
-    "id" | "companyId" | "parentId" | "identifier" | "title" | "status" | "assigneeAgentId" | "assigneeUserId"
+    "id" | "companyId" | "parentId" | "identifier" | "title" | "description" | "status" | "assigneeAgentId" | "assigneeUserId"
   >
   & { executionRunId?: string | null };
 
@@ -2119,6 +2120,7 @@ async function listIssueBlockerAttentionMap(
           parentId: issues.parentId,
           identifier: issues.identifier,
           title: issues.title,
+          description: issues.description,
           status: issues.status,
           executionRunId: issues.executionRunId,
           assigneeAgentId: issues.assigneeAgentId,
@@ -2179,6 +2181,7 @@ async function listIssueBlockerAttentionMap(
           parentId: row.parentId,
           identifier: row.identifier,
           title: row.title,
+          description: row.description,
           status: row.status,
           executionRunId: row.executionRunId,
           assigneeAgentId: row.assigneeAgentId,
@@ -3219,6 +3222,7 @@ async function listIssueBlockedInboxAttentionMap(
       companyId: issue.companyId,
       identifier: issue.identifier,
       title: issue.title,
+      description: issue.description,
       status: issue.status,
       projectId: issue.projectId,
       goalId: issue.goalId,
