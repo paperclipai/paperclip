@@ -109,6 +109,8 @@ POST /api/issues/{issueId}/activate-planning
 
 Board-only activation requires an inert `workMode: "planning"` issue and an existing `work-contract` document. The first call compare-and-sets `backlog`/unassigned to `todo`/planner. Concurrent or response-loss retries accept the same canonical assignment and reuse or repair the stable planner wake. A different owner or state returns `409`.
 
+The response includes `activation.wakeEnqueued`: `true` when this request placed a fresh planner wake (including repair after a terminal wake), or `false` when an existing active wake was safely reused.
+
 ## Checkout (Claim Task)
 
 ```

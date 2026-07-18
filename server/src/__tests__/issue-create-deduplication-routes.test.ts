@@ -49,7 +49,6 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
     await db.delete(activityLog);
     await db.delete(agentWakeupRequests);
     await db.delete(issueCreateIdempotencyKeys);
-    await db.delete(activityLog);
     await db.delete(issues);
     await db.delete(heartbeatRuns);
     await db.delete(agents);
@@ -389,21 +388,24 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
     expect(responses.map((response) => response.status)).toEqual([200, 200]);
     expect(responses.every((response) => response.body.status === "todo")).toBe(true);
     expect(responses.every((response) => response.body.assigneeAgentId === agent.id)).toBe(true);
+    expect(responses.map((response) => response.body.activation.wakeEnqueued).sort()).toEqual([false, true]);
     expect(enqueueWakeup).toHaveBeenCalledTimes(1);
     expect(await db.select().from(agentWakeupRequests)).toHaveLength(1);
 
-    await request(app)
+    const replay = await request(app)
       .post(`/api/issues/${created.body.id}/activate-planning`)
       .send({ agentId: agent.id, activationKey: "a-different-client-retry-key" })
       .expect(200);
+    expect(replay.body.activation.wakeEnqueued).toBe(false);
     expect(enqueueWakeup).toHaveBeenCalledTimes(1);
 
     const [firstWake] = await db.select().from(agentWakeupRequests);
     await db.update(agentWakeupRequests).set({ status: "failed" }).where(eq(agentWakeupRequests.id, firstWake.id));
-    await request(app)
+    const repaired = await request(app)
       .post(`/api/issues/${created.body.id}/activate-planning`)
       .send({ agentId: agent.id, activationKey: "repair-after-failed-wake" })
       .expect(200);
+    expect(repaired.body.activation.wakeEnqueued).toBe(true);
     expect(enqueueWakeup).toHaveBeenCalledTimes(2);
     const activities = await db.select().from(activityLog).where(eq(activityLog.entityId, created.body.id));
     expect(activities.filter((row) => row.action === "issue.created")).toHaveLength(1);

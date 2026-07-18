@@ -9030,6 +9030,7 @@ export function issueRoutes(
     }
 
     const wakeIdempotencyKey = `planning-activation:${issue.id}:v1`;
+    const activationActor = getActorInfo(req);
     const wakeResult = await db.transaction(async (tx) => {
       await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${wakeIdempotencyKey}, 0))`);
       const existingWake = await tx
@@ -9042,25 +9043,24 @@ export function issueRoutes(
         ))
         .limit(1)
         .then((rows) => rows[0] ?? null);
-      if (existingWake) return { repaired: false, wakeupRequestId: existingWake.id };
+      if (existingWake) return { enqueued: false, wakeupRequestId: existingWake.id };
       const queued = await activationEnqueueWakeup(req.body.agentId, {
         source: "assignment",
         triggerDetail: "system",
         reason: "planning_contract_activated",
         payload: { issueId: issue.id, mutation: "activate_planning" },
         idempotencyKey: wakeIdempotencyKey,
-        requestedByActorType: "user",
-        requestedByActorId: getActorInfo(req).actorId,
+        requestedByActorType: activationActor.actorType,
+        requestedByActorId: activationActor.actorId,
         contextSnapshot: { issueId: issue.id, source: "issue.activate_planning" },
       });
-      return queued ? { repaired: true, wakeupRequestId: null } : null;
+      return queued ? { enqueued: true, wakeupRequestId: null } : null;
     });
     if (!wakeResult) {
       res.status(503).json({ error: "Planning activation was stored but the planner wake was not queued; retry safely" });
       return;
     }
 
-    const activationActor = getActorInfo(req);
     await ensureUniqueIssueActivity({
       companyId: issue.companyId,
       actorType: activationActor.actorType,
@@ -9085,7 +9085,7 @@ export function issueRoutes(
         activationKey: req.body.activationKey,
         wakeIdempotencyKey,
         activated,
-        wakeRepaired: wakeResult.repaired,
+        wakeEnqueued: wakeResult.enqueued,
       },
     });
   });
