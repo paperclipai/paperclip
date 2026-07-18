@@ -74,3 +74,10 @@ def test_find_id_by_slug_miss():
     with requests_mock.Mocker() as m:
         m.get(f"{BASE}/wp/v2/posts", json=[])
         assert _client().find_id_by_slug("posts", "gibtsnicht") is None
+
+
+def test_get_ai_bot_hits():
+    with requests_mock.Mocker() as m:
+        m.get(f"{BASE}/whitestag-seo-geo/v1/aibots",
+              json={"2026-W29": {"GPTBot": 4}})
+        assert _client().get_ai_bot_hits() == {"2026-W29": {"GPTBot": 4}}

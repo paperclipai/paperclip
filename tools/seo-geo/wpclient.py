@@ -69,3 +69,14 @@ class WPClient:
         r.raise_for_status()
         rows = r.json()
         return rows[0]["id"] if isinstance(rows, list) and rows else None
+
+    def get_ai_bot_hits(self):
+        """Ruft die KI-Bot-Zugriffszahlen vom mu-Plugin ab.
+
+        Returns:
+            Dict mit ISO-Wochen-Keys und Bot-Count-Values
+        """
+        r = self.http.get(f"{self.base}/whitestag-seo-geo/v1/aibots",
+                          auth=self.auth, timeout=30)
+        r.raise_for_status()
+        return r.json()
