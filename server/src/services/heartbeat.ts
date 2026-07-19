@@ -3903,7 +3903,7 @@ export function resolveExecutionWorkspaceConfigFreshness(input: {
     return {
       action: "replace",
       shouldReuseExisting: false,
-      shouldRefreshConfigSnapshot: false,
+      shouldRefreshConfigSnapshot: true,
       reasons: ["execution workspace configuration fingerprint metadata is missing"],
       changedCategories: [...input.nextMetadata.categories],
       storedFingerprint: null,
@@ -3917,7 +3917,7 @@ export function resolveExecutionWorkspaceConfigFreshness(input: {
     return {
       action: "replace",
       shouldReuseExisting: false,
-      shouldRefreshConfigSnapshot: false,
+      shouldRefreshConfigSnapshot: true,
       reasons: [
         `execution workspace configuration fingerprint version changed from ${previous.version} to ${input.nextMetadata.version}`,
       ],
@@ -3954,7 +3954,7 @@ export function resolveExecutionWorkspaceConfigFreshness(input: {
   return {
     action,
     shouldReuseExisting: action !== "replace",
-    shouldRefreshConfigSnapshot: action === "refresh",
+    shouldRefreshConfigSnapshot: action === "refresh" || action === "replace",
     reasons: [
       `execution workspace configuration changed: ${describeEffectiveRunWorkspaceConfigCategories(changedCategories)}`,
     ],
