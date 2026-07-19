@@ -4,30 +4,34 @@ const CHARS = [" ", ".", "·", "▪", "▫", "○"] as const;
 const TARGET_FPS = 24;
 const FRAME_INTERVAL_MS = 1000 / TARGET_FPS;
 
-const PAPERCLIP_SPRITES = [
+// NEO-443/W6 (Bucket H): CORTEX login sprites (formerly the CORTEX_SPRITES pair). Board
+// resolved the interaction as "eng_placeholder" — eng-authored placeholder glyphs derived
+// from the master logomark (segmented hexagon + centre dot); revisable at the W7 visual
+// check. Two frames animate like the old pair.
+const CORTEX_SPRITES = [
   [
-    "  ╭────╮ ",
-    " ╭╯╭──╮│ ",
-    " │ │  ││ ",
-    " │ │  ││ ",
-    " │ │  ││ ",
-    " │ │  ││ ",
-    " │ ╰──╯│ ",
-    " ╰─────╯ ",
+    "  ╭───╮  ",
+    " ╱     ╲ ",
+    "╱       ╲",
+    "│   ●   │",
+    "│       │",
+    "╲       ╱",
+    " ╲     ╱ ",
+    "  ╰───╯  ",
   ],
   [
-    " ╭─────╮ ",
-    " │╭──╮╰╮ ",
-    " ││  │ │ ",
-    " ││  │ │ ",
-    " ││  │ │ ",
-    " ││  │ │ ",
-    " │╰──╯ │ ",
-    " ╰────╯  ",
+    "  ╭───╮  ",
+    " ╱     ╲ ",
+    "╱  ┌─┐  ╲",
+    "│  │◆│  │",
+    "│  └─┘  │",
+    "╲       ╱",
+    " ╲     ╱ ",
+    "  ╰───╯  ",
   ],
 ] as const;
 
-type PaperclipSprite = (typeof PAPERCLIP_SPRITES)[number];
+type CortexSprite = (typeof CORTEX_SPRITES)[number];
 
 interface Clip {
   x: number;
@@ -37,7 +41,7 @@ interface Clip {
   life: number;
   maxLife: number;
   drift: number;
-  sprite: PaperclipSprite;
+  sprite: CortexSprite;
   width: number;
   height: number;
 }
@@ -53,7 +57,7 @@ function measureChar(container: HTMLElement): { w: number; h: number } {
   return { w: rect.width, h: rect.height };
 }
 
-function spriteSize(sprite: PaperclipSprite): { width: number; height: number } {
+function spriteSize(sprite: CortexSprite): { width: number; height: number } {
   let width = 0;
   for (const row of sprite) width = Math.max(width, row.length);
   return { width, height: sprite.length };
@@ -130,7 +134,7 @@ export function AsciiArtAnimation() {
       for (let baseRow = 1; baseRow < rows - 9; baseRow += gapY) {
         const startX = Math.floor(baseRow / gapY) % 2 === 0 ? 2 : 10;
         for (let baseCol = startX; baseCol < cols - 10; baseCol += gapX) {
-          const sprite = PAPERCLIP_SPRITES[(baseCol + baseRow) % PAPERCLIP_SPRITES.length]!;
+          const sprite = CORTEX_SPRITES[(baseCol + baseRow) % CORTEX_SPRITES.length]!;
           for (let sr = 0; sr < sprite.length; sr++) {
             const line = sprite[sr]!;
             for (let sc = 0; sc < line.length; sc++) {
@@ -151,7 +155,7 @@ export function AsciiArtAnimation() {
     }
 
     function spawnClip() {
-      const sprite = PAPERCLIP_SPRITES[Math.floor(Math.random() * PAPERCLIP_SPRITES.length)]!;
+      const sprite = CORTEX_SPRITES[Math.floor(Math.random() * CORTEX_SPRITES.length)]!;
       const size = spriteSize(sprite);
       const edge = Math.random();
       let x = 0;

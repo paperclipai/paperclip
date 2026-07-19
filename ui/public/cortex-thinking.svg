@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="-1.00 -1.00 26.00 26.00"
+     style="transform:rotate(0deg);transform-origin:50% 50%;">
+  <style>
+    @keyframes draw {
+      0%       { stroke-dasharray:0.000 66.000; stroke-dashoffset:-66.000; opacity:1; animation-timing-function:cubic-bezier(0.455,0.03,0.515,0.955); }
+      39.0625% { stroke-dasharray:66.000 66.000; stroke-dashoffset:0.000; opacity:1; animation-timing-function:cubic-bezier(0.55,0.055,0.675,0.19); }
+      78.1250% { stroke-dasharray:0.000 66.000; stroke-dashoffset:0.000; opacity:1; }
+      78.2250% { opacity:0; }
+      100%     { stroke-dasharray:0.000 66.000; stroke-dashoffset:0.000; opacity:0; }
+    }
+    .p { animation: draw 1s linear infinite; }
+  </style>
+  <path class="p" d="M12.000 1.000 L 2.474 6.500 L 2.474 17.500 L 12.000 23.000 L 21.526 17.500 L 21.526 6.500 Z" fill="none" stroke="#ffffff" stroke-width="2"
+        stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

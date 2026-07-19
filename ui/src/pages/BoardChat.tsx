@@ -905,7 +905,7 @@ export function BoardChat() {
               {/* Status bar — always visible while sending, independent from the chat bubble */}
               {sending && (
                 <div className="flex items-center gap-2 pl-1 text-xs text-muted-foreground">
-                  <img src="/paperclip-thinking.svg" alt="" className="inline-block shrink-0" style={{ width: 14, height: 14 }} />
+                  <img src="/cortex-thinking.svg" alt="" className="inline-block shrink-0" style={{ width: 14, height: 14 }} />
                   <span>{statusText || "Thinking..."}</span>
                   {elapsedSec > 0 && (
                     <span className="opacity-50">{elapsedSec.toFixed(1)}s</span>
