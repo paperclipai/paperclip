@@ -15410,6 +15410,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             executionWorkspacePreference: issues.executionWorkspacePreference,
             executionWorkspaceSettings: issues.executionWorkspaceSettings,
             assigneeAgentId: issues.assigneeAgentId,
+            executionPolicy: issues.executionPolicy,
             executionRunId: issues.executionRunId,
             executionAgentNameKey: issues.executionAgentNameKey,
             createdAt: issues.createdAt,
@@ -15433,6 +15434,70 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             finishedAt: new Date(),
           });
           return { kind: "skipped" as const };
+        }
+
+        const oneShotPolicy = parseObject(parseObject(issue.executionPolicy).oneShot);
+        if (oneShotPolicy.enabled === true) {
+          const initialAssignmentWake = source === "assignment" && reason === "issue_assigned";
+          const priorInitialAssignmentWake = await tx
+            .select({ id: agentWakeupRequests.id })
+            .from(agentWakeupRequests)
+            .where(
+              and(
+                eq(agentWakeupRequests.companyId, agent.companyId),
+                eq(agentWakeupRequests.source, "assignment"),
+                eq(agentWakeupRequests.reason, "issue_assigned"),
+                sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issue.id}`,
+              ),
+            )
+            .limit(1)
+            .then((rows) => rows[0] ?? null);
+
+          if (!initialAssignmentWake || priorInitialAssignmentWake) {
+            const suppressionReason = !initialAssignmentWake
+              ? "only the initial issue_assigned wake is allowed"
+              : "the initial issue_assigned wake is already reserved";
+            await tx.insert(agentWakeupRequests).values({
+              companyId: agent.companyId,
+              agentId,
+              source,
+              triggerDetail,
+              reason: "issue.one_shot_suppressed",
+              payload: {
+                ...(payload ?? {}),
+                issueId: issue.id,
+                heartbeatSkip: {
+                  reason: suppressionReason,
+                  requestedReason: reason,
+                  source,
+                  priorInitialAssignmentWakeId: priorInitialAssignmentWake?.id ?? null,
+                },
+              },
+              status: "skipped",
+              requestedByActorType: opts.requestedByActorType ?? null,
+              requestedByActorId: opts.requestedByActorId ?? null,
+              idempotencyKey: opts.idempotencyKey ?? null,
+              finishedAt: new Date(),
+            });
+            await logActivity(tx as unknown as Db, {
+              companyId: issue.companyId,
+              actorType: "system",
+              actorId: "system",
+              agentId,
+              runId: null,
+              action: "issue.one_shot_wakeup_suppressed",
+              entityType: "issue",
+              entityId: issue.id,
+              details: {
+                requestedReason: reason,
+                source,
+                triggerDetail,
+                suppressionReason,
+                priorInitialAssignmentWakeId: priorInitialAssignmentWake?.id ?? null,
+              },
+            });
+            return { kind: "skipped" as const };
+          }
         }
 
         if (worktreeExecutionCutoff && issue.createdAt < worktreeExecutionCutoff) {

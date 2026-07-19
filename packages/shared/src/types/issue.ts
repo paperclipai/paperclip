@@ -615,6 +615,10 @@ export interface IssueExecutionMonitorPolicy {
   recoveryPolicy?: IssueExecutionMonitorRecoveryPolicy | null;
 }
 
+export interface IssueExecutionOneShotPolicy {
+  enabled: boolean;
+}
+
 export interface IssueExecutionPolicy {
   mode: IssueExecutionPolicyMode;
   commentRequired: boolean;
@@ -622,6 +626,7 @@ export interface IssueExecutionPolicy {
   monitor?: IssueExecutionMonitorPolicy | null;
   reviewPreset?: LowTrustReviewPresetPolicy;
   authorizationPolicy?: TrustAuthorizationPolicy;
+  oneShot?: IssueExecutionOneShotPolicy;
 }
 
 export interface IssueExecutionMonitorState {

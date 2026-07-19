@@ -314,11 +314,21 @@ function nextAssigneeIds(input: {
 export function stripMonitorFromExecutionPolicy(policy: IssueExecutionPolicy | null): IssueExecutionPolicy | null {
   if (!policy) return null;
   if (!policy.monitor) return policy;
-  if (policy.stages.length === 0) return null;
+  if (policy.stages.length === 0) {
+    return policy.oneShot
+      ? {
+        mode: policy.mode,
+        commentRequired: policy.commentRequired,
+        stages: [],
+        oneShot: policy.oneShot,
+      }
+      : null;
+  }
   return {
     mode: policy.mode,
     commentRequired: policy.commentRequired,
     stages: policy.stages,
+    ...(policy.oneShot ? { oneShot: policy.oneShot } : {}),
   };
 }
 
@@ -389,8 +399,9 @@ export function normalizeIssueExecutionPolicy(input: unknown): IssueExecutionPol
 
   const reviewPreset = parsed.data.reviewPreset;
   const authorizationPolicy = parsed.data.authorizationPolicy;
+  const oneShot = parsed.data.oneShot?.enabled ? { enabled: true } : undefined;
 
-  if (stages.length === 0 && !monitor && !reviewPreset && !authorizationPolicy) return null;
+  if (stages.length === 0 && !monitor && !reviewPreset && !authorizationPolicy && !oneShot) return null;
 
   return {
     mode: parsed.data.mode ?? "normal",
@@ -399,6 +410,7 @@ export function normalizeIssueExecutionPolicy(input: unknown): IssueExecutionPol
     ...(monitor ? { monitor } : {}),
     ...(reviewPreset ? { reviewPreset } : {}),
     ...(authorizationPolicy ? { authorizationPolicy } : {}),
+    ...(oneShot ? { oneShot } : {}),
   };
 }
 
