@@ -9,14 +9,17 @@
  * or still-loading query), handing derived useMemo/useEffect chains a new
  * array identity each render. On a default-config install (isolated
  * workspaces off), executionWorkspaces is permanently *disabled*, and
- * remoteIssueSearchResults is disabled until a search query is typed, so
- * both permanently return this unstable default — churning
+ * remoteIssueSearchResults/searchedIssues are disabled until a search query
+ * is typed, so these permanently return this unstable default — churning
  * filtered/groupedSections/flatNavItems and re-firing the row-limit /
- * selection effects that depend on them every render.
+ * selection effects that depend on them every render. joinRequests is
+ * always enabled and eventually settles, but churns the same chain during
+ * the initial-load window before it does.
  *
  * The fix is a stable module-level empty-array constant per file
- * (EMPTY_EXECUTION_WORKSPACES / EMPTY_ISSUES) used as the useQuery
- * default instead of an inline `[]` literal.
+ * (EMPTY_EXECUTION_WORKSPACES / EMPTY_ISSUES / EMPTY_SEARCHED_ISSUES /
+ * EMPTY_JOIN_REQUESTS) used as the useQuery default instead of an inline
+ * `[]` literal.
  *
  * The runtime consequence (the render-loop crash itself) needs multiple
  * queries settling in the same synchronous update batch — a timing
@@ -29,7 +32,7 @@
  * `act()` flush rather than racing like real network/WebSocket
  * responses). So this guard checks the fix at the source level instead:
  * it fails if either file reintroduces a raw `= []` default for one of
- * the five known query results that feed this crash, and it fails if the
+ * the seven known query results that feed this crash, and it fails if the
  * stable replacement constants are removed or stop being used.
  */
 import { readFileSync } from "node:fs";
@@ -44,32 +47,40 @@ function readSource(relativePath: string): string {
 }
 
 describe("stable useQuery defaults (regression guard for React error #185)", () => {
-  it("IssuesList.tsx does not default executionWorkspaces to a raw [] literal", () => {
+  it("IssuesList.tsx does not default executionWorkspaces/searchedIssues to raw [] literals", () => {
     const source = readSource("../components/IssuesList.tsx");
 
     expect(source).not.toMatch(/data:\s*executionWorkspaces\s*=\s*\[\]/);
+    expect(source).not.toMatch(/data:\s*searchedIssues\s*=\s*\[\]/);
+
     expect(source).toMatch(
       /const EMPTY_EXECUTION_WORKSPACES:\s*ExecutionWorkspaceSummary\[\]\s*=\s*\[\];/,
     );
+    expect(source).toMatch(/const EMPTY_SEARCHED_ISSUES:\s*Issue\[\]\s*=\s*\[\];/);
+
     expect(source).toMatch(/data:\s*executionWorkspaces\s*=\s*EMPTY_EXECUTION_WORKSPACES/);
+    expect(source).toMatch(/data:\s*searchedIssues\s*=\s*EMPTY_SEARCHED_ISSUES/);
   });
 
-  it("Inbox.tsx does not default executionWorkspaces/mineIssuesRaw/touchedIssuesRaw/remoteIssueSearchResults to raw [] literals", () => {
+  it("Inbox.tsx does not default executionWorkspaces/mineIssuesRaw/touchedIssuesRaw/remoteIssueSearchResults/joinRequests to raw [] literals", () => {
     const source = readSource("./Inbox.tsx");
 
     expect(source).not.toMatch(/data:\s*executionWorkspaces\s*=\s*\[\]/);
     expect(source).not.toMatch(/data:\s*mineIssuesRaw\s*=\s*\[\]/);
     expect(source).not.toMatch(/data:\s*touchedIssuesRaw\s*=\s*\[\]/);
     expect(source).not.toMatch(/data:\s*remoteIssueSearchResults\s*=\s*\[\]/);
+    expect(source).not.toMatch(/data:\s*joinRequests\s*=\s*\[\]/);
 
     expect(source).toMatch(
       /const EMPTY_EXECUTION_WORKSPACES:\s*ExecutionWorkspaceSummary\[\]\s*=\s*\[\];/,
     );
     expect(source).toMatch(/const EMPTY_ISSUES:\s*Issue\[\]\s*=\s*\[\];/);
+    expect(source).toMatch(/const EMPTY_JOIN_REQUESTS:\s*CompanyJoinRequest\[\]\s*=\s*\[\];/);
 
     expect(source).toMatch(/data:\s*executionWorkspaces\s*=\s*EMPTY_EXECUTION_WORKSPACES/);
     expect(source).toMatch(/data:\s*mineIssuesRaw\s*=\s*EMPTY_ISSUES/);
     expect(source).toMatch(/data:\s*touchedIssuesRaw\s*=\s*EMPTY_ISSUES/);
     expect(source).toMatch(/data:\s*remoteIssueSearchResults\s*=\s*EMPTY_ISSUES/);
+    expect(source).toMatch(/data:\s*joinRequests\s*=\s*EMPTY_JOIN_REQUESTS/);
   });
 });
