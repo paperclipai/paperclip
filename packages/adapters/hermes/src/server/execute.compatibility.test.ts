@@ -110,6 +110,203 @@ describe("hermes-local compatibility invocation", () => {
   });
 });
 
+describe("Hermes quiet-output parsing", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  function mockHermesOutput(
+    stdout: string,
+    options: { stderr?: string; exitCode?: number } = {},
+  ) {
+    vi.mocked(runChildProcess).mockResolvedValue({
+      exitCode: options.exitCode ?? 0,
+      signal: null,
+      timedOut: false,
+      pid: 123,
+      startedAt: "2026-07-18T00:00:00.000Z",
+      stdout,
+      stderr: options.stderr ?? "",
+    });
+  }
+
+  it("preserves a response emitted after the session metadata", async () => {
+    mockHermesOutput(
+      "\nsession_id: 20260718_200327_457d83\nROUTE_OK\n",
+    );
+
+    const result = await execute(makeCtx());
+
+    expect(result.resultJson?.session_id).toBe("20260718_200327_457d83");
+    expect(result.resultJson?.result).toBe("ROUTE_OK");
+    expect(result.summary).toBe("ROUTE_OK");
+  });
+
+  it("preserves the existing response-before-session format", async () => {
+    mockHermesOutput("ROUTE_OK\n\nsession_id: response-first-1\n");
+
+    const result = await execute(makeCtx());
+
+    expect(result.resultJson?.session_id).toBe("response-first-1");
+    expect(result.resultJson?.result).toBe("ROUTE_OK");
+  });
+
+  it("normalizes CRLF while preserving response paragraphs", async () => {
+    mockHermesOutput(
+      "\r\nsession_id: crlf-1\r\nFirst paragraph\r\n\r\nSecond paragraph\r\n",
+    );
+
+    const result = await execute(makeCtx());
+
+    expect(result.resultJson?.session_id).toBe("crlf-1");
+    expect(result.resultJson?.result).toBe(
+      "First paragraph\n\nSecond paragraph",
+    );
+  });
+
+  it("keeps benign session-like response text", async () => {
+    mockHermesOutput(
+      [
+        "The phrase session_id: example is part of this response.",
+        "session_id: this is response text, not metadata",
+        "session_id: actual-session-1",
+        "Tail text",
+      ].join("\n"),
+    );
+
+    const result = await execute(makeCtx());
+
+    expect(result.resultJson?.session_id).toBe("actual-session-1");
+    expect(result.resultJson?.result).toBe(
+      [
+        "The phrase session_id: example is part of this response.",
+        "session_id: this is response text, not metadata",
+        "Tail text",
+      ].join("\n"),
+    );
+  });
+
+  it("does not invent a session id from benign response prose", async () => {
+    mockHermesOutput(
+      [
+        "The phrase session_id: example is part of this response.",
+        "A saved session id: historic is also prose.",
+      ].join("\n"),
+    );
+
+    const result = await execute(makeCtx());
+
+    expect(result.resultJson?.session_id).toBeNull();
+    expect(result.resultJson?.result).toBe(
+      [
+        "The phrase session_id: example is part of this response.",
+        "A saved session id: historic is also prose.",
+      ].join("\n"),
+    );
+  });
+
+  it("preserves response text on both sides of session metadata", async () => {
+    mockHermesOutput(
+      "Before metadata\nsession_id: middle-1\nAfter metadata\n",
+    );
+
+    const result = await execute(makeCtx());
+
+    expect(result.resultJson?.session_id).toBe("middle-1");
+    expect(result.resultJson?.result).toBe(
+      "Before metadata\nAfter metadata",
+    );
+  });
+
+  it.each([
+    ["leading newline", "\nsession_id: empty-1\n", "empty-1"],
+    ["CRLF without leading newline", "session_id: empty-2\r\n", "empty-2"],
+  ])("handles a no-response case with %s", async (_label, stdout, sessionId) => {
+    mockHermesOutput(stdout);
+
+    const result = await execute(makeCtx());
+
+    expect(result.resultJson?.session_id).toBe(sessionId);
+    expect(result.resultJson?.result).toBe("");
+    expect(result.summary).toBeUndefined();
+  });
+
+  it("extracts the first session id and removes every metadata line", async () => {
+    mockHermesOutput(
+      "session_id: first-session\nResponse\nsession_id: second-session\n",
+    );
+
+    const result = await execute(makeCtx());
+
+    expect(result.resultJson?.session_id).toBe("first-session");
+    expect(result.resultJson?.result).toBe("Response");
+  });
+
+  it("retains stderr error classification when metadata precedes output", async () => {
+    mockHermesOutput("session_id: failed-session\nPartial response\n", {
+      stderr: "Error: upstream route failed\n",
+      exitCode: 1,
+    });
+
+    const result = await execute(makeCtx());
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorMessage).toBe("Error: upstream route failed");
+    expect(result.resultJson?.session_id).toBe("failed-session");
+    expect(result.resultJson?.result).toBe("Partial response");
+  });
+
+  it("extracts exact session metadata from stderr without inventing an error", async () => {
+    mockHermesOutput("", {
+      stderr: "session_id: 20260718_201011_81a6f8\n",
+      exitCode: 130,
+    });
+
+    const result = await execute(makeCtx());
+
+    expect(result.exitCode).toBe(130);
+    expect(result.errorMessage).toBeUndefined();
+    expect(result.resultJson?.session_id).toBe("20260718_201011_81a6f8");
+    expect(result.resultJson?.result).toBe("");
+  });
+
+  it("does not classify an error-looking session id as stderr failure", async () => {
+    mockHermesOutput("", {
+      stderr: "session_id: failed-session-1\n",
+      exitCode: 130,
+    });
+
+    const result = await execute(makeCtx());
+
+    expect(result.resultJson?.session_id).toBe("failed-session-1");
+    expect(result.errorMessage).toBeUndefined();
+  });
+
+  it("keeps real stderr errors while extracting exact session metadata", async () => {
+    mockHermesOutput("Partial response", {
+      stderr:
+        "session_id: stderr-session-1\r\nError: run cancelled by operator\r\n",
+      exitCode: 1,
+    });
+
+    const result = await execute(makeCtx());
+
+    expect(result.resultJson?.session_id).toBe("stderr-session-1");
+    expect(result.resultJson?.result).toBe("Partial response");
+    expect(result.errorMessage).toBe("Error: run cancelled by operator\r");
+  });
+
+  it("does not extract a legacy session phrase from stderr", async () => {
+    mockHermesOutput("", {
+      stderr: "session saved: not-metadata\nError: actual failure\n",
+      exitCode: 1,
+    });
+
+    const result = await execute(makeCtx());
+
+    expect(result.resultJson?.session_id).toBeNull();
+    expect(result.errorMessage).toBe("Error: actual failure");
+  });
+});
+
 describe("legacy provider-exhaustion false-green defense", () => {
   beforeEach(() => vi.clearAllMocks());
 
