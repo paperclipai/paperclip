@@ -484,6 +484,15 @@ function isSpawnLikeFailureMessage(value: unknown) {
   return /failed to start command|spawn\b|\bENOENT\b/i.test(value);
 }
 
+// A permanent authentication failure: the agent has no valid provider credential
+// (e.g. an agent activated without connecting a model key), so every heartbeat
+// run completes with `outcome:"failed"` + this errorCode and will keep failing
+// until a human wires up a credential. Pause the agent instead of looping.
+const PERMANENT_AUTH_FAILURE_CODES = new Set(["claude_auth_required", "inference_auth_invalid"]);
+function isPermanentAuthFailureRun(run: { errorCode: string | null }): boolean {
+  return run.errorCode != null && PERMANENT_AUTH_FAILURE_CODES.has(run.errorCode);
+}
+
 function isRetryableInteractionContinuationInfrastructureFailure(
   run: Pick<typeof heartbeatRuns.$inferSelect, "error" | "errorCode" | "resultJson">,
 ) {
@@ -13905,6 +13914,32 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
         } else if (outcome === "failed" && readTransientRecoveryContractFromRun(livenessRun)) {
           await scheduleBoundedRetryForRun(livenessRun, agent);
+        } else if (
+          outcome === "failed" &&
+          isPermanentAuthFailureRun(livenessRun) &&
+          agent.status !== "paused" &&
+          agent.status !== "terminated"
+        ) {
+          // No valid provider credential: pause the agent so its heartbeat stops
+          // re-running (and failing auth) every interval, and surface the reason so
+          // a human connects a model key and resumes.
+          await db
+            .update(agents)
+            .set({
+              status: "paused",
+              pauseReason: truncateAgentErrorReason(
+                "Connect a model key to run this agent. Paused after an authentication failure. Add a provider credential in the agent's adapter config, then resume.",
+              ),
+              pausedAt: new Date(),
+              updatedAt: new Date(),
+            })
+            .where(eq(agents.id, agent.id))
+            .catch((pauseErr) => {
+              logger.warn(
+                { err: pauseErr, agentId: agent.id, runId: livenessRun.id },
+                "failed to pause agent after permanent auth failure",
+              );
+            });
         }
         const issueCommentPolicyResult = await finalizeIssueCommentPolicy(livenessRun, agent);
         await releaseIssueExecutionAndPromote(livenessRun);

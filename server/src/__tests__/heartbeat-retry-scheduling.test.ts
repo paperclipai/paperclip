@@ -35,6 +35,7 @@ import {
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 const PROVIDER_QUOTA_TEST_ADAPTER = "provider_quota_test";
+const AUTH_FAILURE_TEST_ADAPTER = "auth_failure_test";
 
 if (!embeddedPostgresSupport.supported) {
   console.warn(
@@ -88,6 +89,23 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
         testedAt: new Date().toISOString(),
       }),
     });
+    registerServerAdapter({
+      type: AUTH_FAILURE_TEST_ADAPTER,
+      execute: async () => ({
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        errorMessage: "Claude authentication required. Connect a provider credential.",
+        errorCode: "claude_auth_required",
+        resultJson: {},
+      }),
+      testEnvironment: async () => ({
+        adapterType: AUTH_FAILURE_TEST_ADAPTER,
+        status: "pass",
+        checks: [],
+        testedAt: new Date().toISOString(),
+      }),
+    });
   }, 20_000);
 
   afterEach(async () => {
@@ -96,6 +114,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
 
   afterAll(async () => {
     unregisterServerAdapter(PROVIDER_QUOTA_TEST_ADAPTER);
+    unregisterServerAdapter(AUTH_FAILURE_TEST_ADAPTER);
     await tempDb?.cleanup();
   });
 
@@ -265,6 +284,70 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
         { timeout: 5_000, interval: 50 },
       )
       .toEqual({ status: "idle", errorReason: null });
+  });
+
+  it("pauses an agent whose run fails with a permanent auth error instead of re-running it", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Keyless Agent",
+      role: "engineer",
+      status: "idle",
+      adapterType: AUTH_FAILURE_TEST_ADAPTER,
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+      },
+      permissions: {},
+    });
+
+    const run = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
+    expect(run).not.toBeNull();
+
+    const failedRun = await waitForRunToFinish(heartbeat, run!.id);
+    expect(failedRun?.status).toBe("failed");
+    expect(failedRun?.errorCode).toBe("claude_auth_required");
+
+    await expect
+      .poll(
+        () =>
+          db
+            .select({ status: agents.status })
+            .from(agents)
+            .where(eq(agents.id, agentId))
+            .then((rows) => rows[0]?.status ?? null),
+        { timeout: 5_000, interval: 50 },
+      )
+      .toBe("paused");
+
+    // No retry run is scheduled for a permanent auth failure.
+    const retryCount = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.retryOfRunId, run!.id))
+      .then((rows) => rows.length);
+    expect(retryCount).toBe(0);
+
+    const pausedAgent = await db
+      .select({ pauseReason: agents.pauseReason })
+      .from(agents)
+      .where(eq(agents.id, agentId))
+      .then((rows) => rows[0] ?? null);
+    expect(pausedAgent?.pauseReason).toContain("Connect a model key");
   });
 
   async function seedMaxTurnFixture(input?: {
