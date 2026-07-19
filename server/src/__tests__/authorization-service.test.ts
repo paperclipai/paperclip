@@ -794,6 +794,9 @@ describeEmbeddedPostgres("authorization service", () => {
       },
     });
 
+    await grantAgentPermission(db, company.id, actorAgent.id, "execution_workspaces:adopt", {
+      projectIds: [project.id],
+    });
     const authorization = authorizationService(db);
     const actor = { type: "agent" as const, agentId: actorAgent.id, companyId: company.id, source: "agent_key" as const };
 
@@ -821,6 +824,12 @@ describeEmbeddedPostgres("authorization service", () => {
       actor,
       action: "company_scope:read",
       resource: { type: "company", companyId: company.id },
+    })).resolves.toMatchObject({ allowed: false, reason: "deny_low_trust_boundary" });
+    await expect(authorization.decide({
+      actor,
+      action: "execution_workspaces:adopt",
+      resource: { type: "project", companyId: company.id, projectId: project.id },
+      scope: { projectId: project.id },
     })).resolves.toMatchObject({ allowed: false, reason: "deny_low_trust_boundary" });
     await expect(authorization.decide({
       actor,
@@ -1589,6 +1598,57 @@ describeEmbeddedPostgres("authorization service", () => {
       reason: "deny_scope",
     });
     expect(denied.explanation).toContain("does not cover the requested scope");
+  });
+
+  it("allows non-viewer board members and requires explicit project-scoped agent grants for exact worktree adoption", async () => {
+    const company = await createCompany(db, "WorkspaceAdoptScope");
+    const project = await createProject(db, company.id, "Allowed");
+    const otherProject = await createProject(db, company.id, "Denied");
+    const userId = await createUser(db);
+    const actorAgent = await createAgent(db, company.id);
+
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: userId,
+      status: "active",
+      membershipRole: "operator",
+    });
+    await grantAgentPermission(db, company.id, actorAgent.id, "execution_workspaces:adopt", {
+      projectIds: [project.id],
+    });
+
+    const boardAllowed = await authorizationService(db).decide({
+      actor: { type: "board", userId, companyIds: [company.id], source: "session" },
+      action: "execution_workspaces:adopt",
+      resource: { type: "project", companyId: company.id, projectId: project.id },
+      scope: { projectId: project.id },
+    });
+    const agentAllowed = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: actorAgent.id, companyId: company.id, source: "agent_key" },
+      action: "execution_workspaces:adopt",
+      resource: { type: "project", companyId: company.id, projectId: project.id },
+      scope: { projectId: project.id },
+    });
+    const agentDenied = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: actorAgent.id, companyId: company.id, source: "agent_key" },
+      action: "execution_workspaces:adopt",
+      resource: { type: "project", companyId: company.id, projectId: otherProject.id },
+      scope: { projectId: otherProject.id },
+    });
+
+    expect(boardAllowed).toMatchObject({
+      allowed: true,
+      reason: "allow_simple_company_member",
+    });
+    expect(agentAllowed).toMatchObject({
+      allowed: true,
+      grant: { permissionKey: "execution_workspaces:adopt" },
+    });
+    expect(agentDenied).toMatchObject({
+      allowed: false,
+      reason: "deny_scope",
+    });
   });
 
   it("treats unknown grant scope metadata as unconstrained", async () => {

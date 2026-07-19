@@ -727,6 +727,7 @@ export type {
   ExecutionWorkspaceCloseLinkedIssue,
   ExecutionWorkspaceCloseReadiness,
   ExecutionWorkspaceCloseReadinessState,
+  WorkspaceLinkedIssueSummary,
   WorkspaceOverviewItem,
   WorkspaceOverviewLinkedIssue,
   WorkspaceOverviewPrimaryService,
@@ -1326,7 +1327,13 @@ export {
   type ResourceMembershipUpdateResult,
 } from "./types/resource-memberships.js";
 
-export { workspaceRuntimeControlTargetSchema } from "./validators/execution-workspace.js";
+export {
+  adoptGitWorktreeExecutionWorkspaceSchema,
+  rollbackAdoptedExecutionWorkspaceSchema,
+  workspaceRuntimeControlTargetSchema,
+  type AdoptGitWorktreeExecutionWorkspace,
+  type RollbackAdoptedExecutionWorkspace,
+} from "./validators/execution-workspace.js";
 export {
   findWorkspaceCommandDefinition,
   listWorkspaceCommandDefinitions,

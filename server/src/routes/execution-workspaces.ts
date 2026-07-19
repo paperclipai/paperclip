@@ -3,9 +3,11 @@ import { Router, type Request, type Response } from "express";
 import type { Db } from "@paperclipai/db";
 import { issues, projects, projectWorkspaces } from "@paperclipai/db";
 import {
+  adoptGitWorktreeExecutionWorkspaceSchema,
   findWorkspaceCommandDefinition,
   matchWorkspaceRuntimeServiceToCommand,
   reconcileExecutionWorkspaceBranchSchema,
+  rollbackAdoptedExecutionWorkspaceSchema,
   updateExecutionWorkspaceSchema,
   workspaceOverviewQuerySchema,
   workspaceRuntimeControlTargetSchema,
@@ -35,6 +37,7 @@ import { assertCanManageExecutionWorkspaceRuntimeServices } from "./workspace-ru
 import { appendWithCap } from "../adapters/utils.js";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
+import { ExecutionWorkspaceAdoptionError } from "../services/execution-workspaces.js";
 
 const WORKSPACE_CONTROL_OUTPUT_MAX_CHARS = 256 * 1024;
 
@@ -72,6 +75,40 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
     return false;
   }
 
+  async function assertAdoptionAllowed(req: Request, res: Response, companyId: string, projectId: string) {
+    const decision = await access.decide({
+      actor: req.actor,
+      action: "execution_workspaces:adopt",
+      resource: { type: "project", companyId, projectId },
+      scope: { projectId },
+    });
+    if (decision.allowed) return true;
+    res.status(req.actor.type === "agent" ? 404 : 403).json({
+      error: req.actor.type === "agent" ? "Execution workspace adoption target not found" : "Execution workspace adoption is not authorized",
+      reasonCode: req.actor.type === "agent" ? "cross_scope_not_found" : "unauthorized",
+    });
+    return false;
+  }
+
+  async function logAdoptionRejected(req: Request, companyId: string, reasonCode: string) {
+    try {
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "execution_workspace.adoption_rejected",
+        entityType: "company",
+        entityId: companyId,
+        details: { reasonCode },
+      });
+    } catch {
+      // Rejection logging must not convert a safe denial into an unexpected failure.
+    }
+  }
+
   router.get("/companies/:companyId/execution-workspaces", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
@@ -105,6 +142,96 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
 
     const overview = await svc.listOverview(companyId, parsed.data);
     res.json(overview);
+  });
+
+  router.post("/companies/:companyId/execution-workspaces/adopt-git-worktree", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const parsed = adoptGitWorktreeExecutionWorkspaceSchema.safeParse(req.body);
+    if (!parsed.success) {
+      await logAdoptionRejected(req, companyId, "unsafe_input");
+      res.status(422).json({ error: "Invalid execution workspace adoption request", reasonCode: "unsafe_input" });
+      return;
+    }
+    if (!(await assertAdoptionAllowed(req, res, companyId, parsed.data.projectId))) {
+      await logAdoptionRejected(req, companyId, "unauthorized");
+      return;
+    }
+    if (parsed.data.bindIssueId) {
+      const [bindIssue] = await db
+        .select({
+          id: issues.id,
+          companyId: issues.companyId,
+          projectId: issues.projectId,
+          parentId: issues.parentId,
+          assigneeAgentId: issues.assigneeAgentId,
+          assigneeUserId: issues.assigneeUserId,
+          status: issues.status,
+          originKind: issues.originKind,
+          originId: issues.originId,
+        })
+        .from(issues)
+        .where(and(
+          eq(issues.id, parsed.data.bindIssueId),
+          eq(issues.companyId, companyId),
+          eq(issues.projectId, parsed.data.projectId),
+        ))
+        .limit(1);
+      if (!bindIssue) {
+        await logAdoptionRejected(req, companyId, "cross_scope_not_found");
+        res.status(404).json({
+          error: "Execution workspace adoption target not found",
+          reasonCode: "cross_scope_not_found",
+        });
+        return;
+      }
+      const bindDecision = await access.decide({
+        actor: req.actor,
+        action: "issue:mutate",
+        resource: {
+          type: "issue",
+          companyId,
+          issueId: parsed.data.bindIssueId,
+          projectId: parsed.data.projectId,
+          parentIssueId: bindIssue.parentId,
+          assigneeAgentId: bindIssue.assigneeAgentId,
+          assigneeUserId: bindIssue.assigneeUserId,
+          status: bindIssue.status,
+          originKind: bindIssue.originKind,
+          originId: bindIssue.originId,
+        },
+      });
+      if (!bindDecision.allowed) {
+        await logAdoptionRejected(req, companyId, "unauthorized");
+        res.status(req.actor.type === "agent" ? 404 : 403).json({
+          error: req.actor.type === "agent" ? "Execution workspace adoption target not found" : "Issue binding is not authorized",
+          reasonCode: req.actor.type === "agent" ? "cross_scope_not_found" : "unauthorized",
+        });
+        return;
+      }
+    }
+    const actor = getActorInfo(req);
+    try {
+      const result = await svc.adoptGitWorktree(companyId, parsed.data, {
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+      });
+      res.status(result.operation ? 201 : 200).json(result);
+    } catch (error) {
+      if (error instanceof ExecutionWorkspaceAdoptionError) {
+        await logAdoptionRejected(req, companyId, error.reasonCode);
+        res.status(error.status).json({
+          error: "Execution workspace adoption rejected",
+          reasonCode: error.reasonCode,
+        });
+        return;
+      }
+      await logAdoptionRejected(req, companyId, "unexpected_failure");
+      logger.warn({ err: error, companyId }, "execution workspace adoption failed unexpectedly");
+      res.status(500).json({ error: "Execution workspace adoption failed", reasonCode: "unexpected_failure" });
+    }
   });
 
   router.get("/execution-workspaces/:id", async (req, res) => {
@@ -568,6 +695,21 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
     }
 
     res.json(result);
+  });
+
+  router.post("/execution-workspaces/:id/rollback-adoption", validate(rollbackAdoptedExecutionWorkspaceSchema), async (req, res) => {
+    const id = req.params.id as string;
+    const existing = await getAccessibleResource(req, res, svc.getById(id), "Execution workspace not found");
+    if (!existing) return;
+    if (!(await assertAdoptionAllowed(req, res, existing.companyId, existing.projectId))) return;
+    const actor = getActorInfo(req);
+    const workspace = await svc.rollbackAdoption(id, {
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+    }, req.body.reason ?? null);
+    res.json({ workspace });
   });
 
   router.patch("/execution-workspaces/:id", validate(updateExecutionWorkspaceSchema), async (req, res) => {

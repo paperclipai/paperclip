@@ -324,6 +324,7 @@ export type {
   ExecutionWorkspaceCloseReadinessState,
   WorkspaceOverviewItem,
   WorkspaceOverviewLinkedIssue,
+  WorkspaceLinkedIssueSummary,
   WorkspaceOverviewPrimaryService,
   WorkspaceOverviewResponse,
   ProjectWorkspaceRuntimeConfig,

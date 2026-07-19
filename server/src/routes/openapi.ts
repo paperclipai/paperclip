@@ -83,7 +83,9 @@ import {
   // Sidebar
   upsertSidebarOrderPreferenceSchema,
   // Execution workspaces
+  adoptGitWorktreeExecutionWorkspaceSchema,
   reconcileExecutionWorkspaceBranchSchema,
+  rollbackAdoptedExecutionWorkspaceSchema,
   updateExecutionWorkspaceSchema,
   workspaceOverviewQuerySchema,
   workspaceRuntimeControlTargetSchema,
@@ -4243,6 +4245,18 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/execution-workspaces/adopt-git-worktree",
+  tags: ["execution-workspaces"],
+  summary: "Adopt an existing exact git worktree as an execution workspace",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(adoptGitWorktreeExecutionWorkspaceSchema),
+  },
+  responses: { 200: r.ok(), 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict, 422: r.unprocessable },
+});
+
+registry.registerPath({
   method: "get",
   path: "/api/companies/{companyId}/workspace-overview",
   tags: ["execution-workspaces"],
@@ -4301,6 +4315,18 @@ registry.registerPath({
   request: {
     params: z.object({ id: z.string() }),
     body: jsonBody(reconcileExecutionWorkspaceBranchSchema),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/execution-workspaces/{id}/rollback-adoption",
+  tags: ["execution-workspaces"],
+  summary: "Rollback an adopted execution workspace record without filesystem cleanup",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(rollbackAdoptedExecutionWorkspaceSchema),
   },
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 422: r.unprocessable },
 });

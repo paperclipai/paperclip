@@ -678,7 +678,9 @@ export function authorizationService(db: Db) {
 
     if (
       !(await scopeAllows(db, input.companyId, grant.scope, input.scope, {
-        requireStructuredScope: input.permissionKey === "tasks:assign_scope",
+        requireStructuredScope:
+          input.permissionKey === "tasks:assign_scope" ||
+          input.permissionKey === "execution_workspaces:adopt",
       }))
     ) {
       return deny({
@@ -929,6 +931,7 @@ export function authorizationService(db: Db) {
       input.action === "agent_config:update" ||
       input.action === "skill_config:update" ||
       input.action === "inbox:manage" ||
+      input.action === "execution_workspaces:adopt" ||
       input.action === "runtime:manage" ||
       input.action === "secrets:read"
     ) {
@@ -1572,6 +1575,23 @@ export function authorizationService(db: Db) {
           suggest: "skills:suggest-changes",
         });
       }
+      if (input.action === "execution_workspaces:adopt") {
+        const membership = await getActiveMembership(companyId, "user", input.actor.userId);
+        if (membership && membership.membershipRole !== "viewer") {
+          return allow({
+            action: input.action,
+            reason: "allow_simple_company_member",
+            explanation: "Allowed by active non-viewer board membership.",
+          });
+        }
+        return deny({
+          action: input.action,
+          reason: membership ? "deny_missing_grant" : "deny_missing_membership",
+          explanation: membership
+            ? "Viewer membership cannot adopt host execution workspaces."
+            : `user principal ${input.actor.userId} is not an active member of company ${companyId}.`,
+        });
+      }
       if (!permissionKey) {
         if (
           input.action === "agent:read" ||
@@ -1703,6 +1723,7 @@ export function authorizationService(db: Db) {
         input.action === "issue:read" ||
         input.action === "project:read" ||
         input.action === "runtime:manage" ||
+        input.action === "execution_workspaces:adopt" ||
         input.action === "secrets:read"
       ) {
         return lowTrustDecision;
@@ -1951,6 +1972,7 @@ export function authorizationService(db: Db) {
         scope: input.scope,
       });
       if (grantDecision.allowed) return grantDecision;
+      if (input.action === "execution_workspaces:adopt") return grantDecision;
     }
 
     if (

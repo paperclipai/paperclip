@@ -10,6 +10,8 @@ const mockExecutionWorkspaceService = vi.hoisted(() => ({
   listSummaries: vi.fn(),
   getById: vi.fn(),
   getCloseReadiness: vi.fn(),
+  adoptGitWorktree: vi.fn(),
+  rollbackAdoption: vi.fn(),
   reconcileExecutionWorkspaceBranch: vi.fn(),
   update: vi.fn(),
 }));
@@ -42,14 +44,14 @@ function createApp(actor: Record<string, unknown> = {
   companyIds: ["company-1"],
   source: "session",
   isInstanceAdmin: false,
-}) {
+}, db: unknown = {}) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
     (req as any).actor = actor;
     next();
   });
-  app.use("/api", executionWorkspaceRoutes({} as any));
+  app.use("/api", executionWorkspaceRoutes(db as any));
   app.use(errorHandler);
   return app;
 }
@@ -81,6 +83,18 @@ describe.sequential("execution workspace routes", () => {
       },
     ]);
     mockExecutionWorkspaceService.getById.mockResolvedValue(null);
+    mockExecutionWorkspaceService.adoptGitWorktree.mockResolvedValue({
+      workspace: { id: "workspace-1", companyId: "company-1", projectId: "11111111-1111-4111-8111-111111111111" },
+      issue: null,
+      inspection: { status: "accepted", reasonCode: null },
+      operation: { id: "operation-1" },
+    });
+    mockExecutionWorkspaceService.rollbackAdoption.mockResolvedValue({
+      id: "workspace-1",
+      companyId: "company-1",
+      projectId: "11111111-1111-4111-8111-111111111111",
+      status: "archived",
+    });
     mockExecutionWorkspaceService.reconcileExecutionWorkspaceBranch.mockResolvedValue(null);
     mockHeartbeatService.wakeup.mockResolvedValue(null);
   });
@@ -134,6 +148,166 @@ describe.sequential("execution workspace routes", () => {
 
     expect(res.status).toBe(422);
     expect(mockExecutionWorkspaceService.listOverview).not.toHaveBeenCalled();
+  });
+
+  it("rejects adoption validation failures with redacted activity when company scope is established", async () => {
+    const res = await request(createApp())
+      .post("/api/companies/company-1/execution-workspaces/adopt-git-worktree")
+      .send({
+        projectId: "11111111-1111-4111-8111-111111111111",
+        projectWorkspaceId: "22222222-2222-4222-8222-222222222222",
+        sourceIssueId: "33333333-3333-4333-8333-333333333333",
+        cwd: "/tmp/worktree; rm -rf /",
+        expectedBranch: "refs/heads/feature/adopt",
+        expectedHeadSha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        expectedUpstream: "origin/feature/adopt",
+        name: "feature/adopt",
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body).toMatchObject({ reasonCode: "unsafe_input" });
+    expect(mockExecutionWorkspaceService.adoptGitWorktree).not.toHaveBeenCalled();
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "execution_workspace.adoption_rejected",
+      entityType: "company",
+      entityId: "company-1",
+      details: { reasonCode: "unsafe_input" },
+    }));
+  });
+
+  it("allows board adoption and delegates exact validated input", async () => {
+    const body = {
+      projectId: "11111111-1111-4111-8111-111111111111",
+      projectWorkspaceId: "22222222-2222-4222-8222-222222222222",
+      sourceIssueId: "33333333-3333-4333-8333-333333333333",
+      cwd: "/tmp/worktree",
+      expectedBranch: "refs/heads/feature/adopt",
+      expectedHeadSha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      expectedUpstream: "origin/feature/adopt",
+      expectedRepoUrl: "git@example.com:paperclip/repo.git",
+      name: "feature/adopt",
+    };
+
+    const res = await request(createApp())
+      .post("/api/companies/company-1/execution-workspaces/adopt-git-worktree")
+      .send(body);
+
+    expect(res.status).toBe(201);
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
+      action: "execution_workspaces:adopt",
+      resource: { type: "project", companyId: "company-1", projectId: body.projectId },
+      scope: { projectId: body.projectId },
+    }));
+    expect(mockExecutionWorkspaceService.adoptGitWorktree).toHaveBeenCalledWith("company-1", body, {
+      actorType: "user",
+      actorId: "local-board",
+      agentId: null,
+      runId: null,
+    });
+  });
+
+  it("requires independent issue mutation authorization when binding an adopted workspace", async () => {
+    const bindIssueId = "44444444-4444-4444-8444-444444444444";
+    const projectId = "11111111-1111-4111-8111-111111111111";
+    const db = {
+      select: vi.fn(() => ({
+        from: () => ({
+          where: () => ({
+            limit: async () => [{
+              id: bindIssueId,
+              companyId: "company-1",
+              projectId,
+              parentId: null,
+              assigneeAgentId: "other-agent",
+              assigneeUserId: null,
+              status: "todo",
+              originKind: "manual",
+              originId: null,
+            }],
+          }),
+        }),
+      })),
+    };
+
+    const body = {
+      projectId,
+      projectWorkspaceId: "22222222-2222-4222-8222-222222222222",
+      sourceIssueId: "33333333-3333-4333-8333-333333333333",
+      bindIssueId,
+      cwd: "/tmp/worktree",
+      expectedBranch: "refs/heads/feature/adopt",
+      expectedHeadSha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      expectedUpstream: "origin/feature/adopt",
+      name: "feature/adopt",
+    };
+
+    const res = await request(createApp(undefined, db))
+      .post("/api/companies/company-1/execution-workspaces/adopt-git-worktree")
+      .send(body);
+
+    expect(res.status).toBe(201);
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
+      action: "issue:mutate",
+      resource: expect.objectContaining({
+        issueId: bindIssueId,
+        assigneeAgentId: "other-agent",
+        status: "todo",
+      }),
+    }));
+  });
+
+  it("denies agent adoption before service inspection when no project grant is available", async () => {
+    mockAccessService.decide.mockResolvedValueOnce({
+      allowed: false,
+      action: "execution_workspaces:adopt",
+      reason: "deny_missing_grant",
+      explanation: "Missing permission.",
+    });
+
+    const res = await request(createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      source: "agent_jwt",
+      runId: "run-1",
+    }))
+      .post("/api/companies/company-1/execution-workspaces/adopt-git-worktree")
+      .send({
+        projectId: "11111111-1111-4111-8111-111111111111",
+        projectWorkspaceId: "22222222-2222-4222-8222-222222222222",
+        sourceIssueId: "33333333-3333-4333-8333-333333333333",
+        cwd: "/tmp/worktree",
+        expectedBranch: "refs/heads/feature/adopt",
+        expectedHeadSha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        expectedUpstream: "origin/feature/adopt",
+        name: "feature/adopt",
+      });
+
+    expect(res.status).toBe(404);
+    expect(res.body).toMatchObject({ reasonCode: "cross_scope_not_found" });
+    expect(mockExecutionWorkspaceService.adoptGitWorktree).not.toHaveBeenCalled();
+  });
+
+  it("rolls back adopted records through the record-only rollback service", async () => {
+    mockExecutionWorkspaceService.getById.mockResolvedValue({
+      id: "workspace-1",
+      companyId: "company-1",
+      projectId: "11111111-1111-4111-8111-111111111111",
+      sourceIssueId: "issue-1",
+    });
+
+    const res = await request(createApp())
+      .post("/api/execution-workspaces/workspace-1/rollback-adoption")
+      .send({ reason: "operator rollback" });
+
+    expect(res.status).toBe(200);
+    expect(mockExecutionWorkspaceService.rollbackAdoption).toHaveBeenCalledWith("workspace-1", {
+      actorType: "user",
+      actorId: "local-board",
+      agentId: null,
+      runId: null,
+    }, "operator rollback");
+    expect(mockExecutionWorkspaceService.update).not.toHaveBeenCalled();
   });
 
   it.each([
