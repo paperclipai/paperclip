@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { REDACTED_EVENT_VALUE, redactEventPayload, redactSensitiveText, sanitizeRecord } from "../redaction.js";
+import {
+  REDACTED_EVENT_VALUE,
+  redactAgentAdapterConfig,
+  redactEventPayload,
+  redactSensitiveText,
+  sanitizeRecord,
+} from "../redaction.js";
 
 describe("redaction", () => {
   it("redacts sensitive keys and nested secret values", () => {
@@ -134,5 +140,44 @@ describe("redaction", () => {
 
     expect(result?.args).toEqual(["--api-key", "not-a-command-secret"]);
     expect(result?.argv).toEqual(["--api-key", REDACTED_EVENT_VALUE]);
+  });
+
+  it("redacts every plaintext agent env binding while preserving secret references", () => {
+    const plaintextValue = "adapter-env-value-must-not-leak";
+
+    const result = redactAgentAdapterConfig({
+      command: "pnpm agent:run",
+      env: {
+        EXISTING_VALUE: plaintextValue,
+        NEW_VALUE: { type: "plain", value: plaintextValue },
+        SECRET_REFERENCE: {
+          type: "secret_ref",
+          secretId: "55555555-5555-4555-8555-555555555555",
+          version: "latest",
+        },
+        USER_SECRET_REFERENCE: {
+          type: "user_secret_ref",
+          key: "GITHUB_TOKEN",
+        },
+      },
+    });
+
+    expect(result).toEqual({
+      command: "pnpm agent:run",
+      env: {
+        EXISTING_VALUE: { type: "plain", value: REDACTED_EVENT_VALUE },
+        NEW_VALUE: { type: "plain", value: REDACTED_EVENT_VALUE },
+        SECRET_REFERENCE: {
+          type: "secret_ref",
+          secretId: "55555555-5555-4555-8555-555555555555",
+          version: "latest",
+        },
+        USER_SECRET_REFERENCE: {
+          type: "user_secret_ref",
+          key: "GITHUB_TOKEN",
+        },
+      },
+    });
+    expect(JSON.stringify(result)).not.toContain(plaintextValue);
   });
 });

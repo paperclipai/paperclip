@@ -133,6 +133,31 @@ export function redactEventPayload(payload: Record<string, unknown> | null): Rec
   return sanitizeRecord(payload);
 }
 
+function redactAgentEnvBinding(value: unknown): unknown {
+  if (isSecretRefBinding(value) || isUserSecretRefBinding(value)) {
+    return sanitizeValue(value);
+  }
+  if (typeof value === "string" || isPlainBinding(value)) {
+    return { type: "plain", value: REDACTED_EVENT_VALUE };
+  }
+  if (value === null || value === undefined) return value;
+  return REDACTED_EVENT_VALUE;
+}
+
+export function redactAgentAdapterConfig(
+  adapterConfig: Record<string, unknown>,
+): Record<string, unknown> {
+  if (!isPlainObject(adapterConfig)) return adapterConfig;
+
+  const env = isPlainObject(adapterConfig.env)
+    ? Object.fromEntries(
+        Object.entries(adapterConfig.env).map(([key, value]) => [key, redactAgentEnvBinding(value)]),
+      )
+    : adapterConfig.env;
+
+  return redactEventPayload({ ...adapterConfig, env }) ?? {};
+}
+
 export function redactSensitiveText(input: string): string {
   if (!maybeContainsSecretText(input)) return input;
   return redactCommandText(

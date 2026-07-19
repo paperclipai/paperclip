@@ -435,7 +435,8 @@ describe.sequential("agent permission routes", () => {
     expect(res.body.runtimeConfig).toEqual({});
   }, 20_000);
 
-  it("keeps board agent detail unredacted for low-trust agents", async () => {
+  it("redacts env values in board agent detail responses", async () => {
+    const plaintextValue = "plain-value-must-not-leak";
     mockAgentService.getById.mockResolvedValue({
       ...baseAgent,
       permissions: {
@@ -444,7 +445,15 @@ describe.sequential("agent permission routes", () => {
       },
       adapterConfig: {
         command: "pnpm agent:run",
-        env: { PAPERCLIP_API_KEY: "secret-test-key" },
+        env: {
+          LEGACY_VALUE: plaintextValue,
+          PLAIN_VALUE: { type: "plain", value: plaintextValue },
+          SECRET_REFERENCE: {
+            type: "secret_ref",
+            secretId: "33333333-3333-4333-8333-333333333333",
+            version: "latest",
+          },
+        },
       },
       runtimeConfig: {
         modelProfiles: {
@@ -466,14 +475,107 @@ describe.sequential("agent permission routes", () => {
     expect(res.status).toBe(200);
     expect(res.body.adapterConfig).toMatchObject({
       command: "pnpm agent:run",
-      env: { PAPERCLIP_API_KEY: "secret-test-key" },
+      env: {
+        LEGACY_VALUE: { type: "plain", value: "***REDACTED***" },
+        PLAIN_VALUE: { type: "plain", value: "***REDACTED***" },
+        SECRET_REFERENCE: {
+          type: "secret_ref",
+          secretId: "33333333-3333-4333-8333-333333333333",
+          version: "latest",
+        },
+      },
     });
+    expect(JSON.stringify(res.body)).not.toContain(plaintextValue);
     expect(res.body.runtimeConfig).toMatchObject({
       modelProfiles: {
         default: { enabled: true, adapterConfig: { model: "openai/gpt-5.4-mini" } },
       },
     });
     expect(res.body.permissions).toMatchObject({ trustPreset: LOW_TRUST_REVIEW_PRESET });
+  }, 20_000);
+
+  it("redacts env values in GET /api/agents/me responses", async () => {
+    const plaintextValue = "self-value-must-not-leak";
+    mockAgentService.getById.mockResolvedValue({
+      ...baseAgent,
+      adapterConfig: {
+        env: {
+          EXISTING_VALUE: plaintextValue,
+          NEW_VALUE: { type: "plain", value: plaintextValue },
+          SECRET_REFERENCE: {
+            type: "secret_ref",
+            secretId: "44444444-4444-4444-8444-444444444444",
+            version: 2,
+          },
+        },
+      },
+    });
+
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      runId: null,
+      source: "agent_key",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl).get("/api/agents/me"));
+
+    expect(res.status).toBe(200);
+    expect(res.body.adapterConfig.env).toEqual({
+      EXISTING_VALUE: { type: "plain", value: "***REDACTED***" },
+      NEW_VALUE: { type: "plain", value: "***REDACTED***" },
+      SECRET_REFERENCE: {
+        type: "secret_ref",
+        secretId: "44444444-4444-4444-8444-444444444444",
+        version: 2,
+      },
+    });
+    expect(JSON.stringify(res.body)).not.toContain(plaintextValue);
+  }, 20_000);
+
+  it("preserves stored env values when a redacted detail response is submitted unchanged", async () => {
+    const plaintextValue = "stored-value-must-be-preserved";
+    mockAgentService.getById.mockResolvedValue({
+      ...baseAgent,
+      adapterConfig: {
+        env: {
+          EXISTING_VALUE: { type: "plain", value: plaintextValue },
+        },
+      },
+    });
+    mockAgentService.update.mockResolvedValue(baseAgent);
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const redactedResponse = await requestApp(app, (baseUrl) =>
+      request(baseUrl).get(`/api/agents/${agentId}`),
+    );
+    expect(redactedResponse.status).toBe(200);
+    const redactedEnv = redactedResponse.body.adapterConfig.env as Record<string, unknown>;
+    expect(redactedEnv.EXISTING_VALUE).toEqual({ type: "plain", value: "***REDACTED***" });
+
+    const patchRes = await requestApp(app, (baseUrl) =>
+      request(baseUrl).patch(`/api/agents/${agentId}`).send({
+        title: "Renamed while redacted env round-trips",
+        adapterConfig: redactedResponse.body.adapterConfig,
+      }),
+    );
+
+    expect(patchRes.status).toBe(200);
+    const updateCallArgs = mockAgentService.update.mock.calls[0]?.[1] as
+      | { adapterConfig?: Record<string, unknown> }
+      | undefined;
+    expect(updateCallArgs?.adapterConfig?.env).toEqual({
+      EXISTING_VALUE: { type: "plain", value: plaintextValue },
+    });
+    expect(JSON.stringify(updateCallArgs?.adapterConfig ?? {})).not.toContain("***REDACTED***");
   }, 20_000);
 
   it("redacts company agent list for authenticated company members without agent admin permission", async () => {
