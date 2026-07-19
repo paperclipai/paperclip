@@ -688,6 +688,33 @@ DB backups are not full instance filesystem backups. For full local disaster
 recovery, also back up local storage files and the local encrypted secrets key if
 those providers are enabled.
 
+## Runtime Execution Workspace GC
+
+Each remote-managed run stages a throwaway copy of the workspace at
+`<baseCwd>/.paperclip-runtime/runs/<runId>/workspace`. Changes are merged back to the
+canonical workspace when the run ends (`restoreWorkspace()`), so the per-run copy is pure
+scratch. Paperclip garbage-collects these so `.paperclip-runtime/runs` stays bounded and the
+host does not fill up (previously they leaked without limit → recurring `ENOSPC`):
+
+- **Delete on completion** — after a terminal run merges its changes back, its
+  `runs/<runId>` directory is removed.
+- **Opportunistic sweep** — before staging a new run, sibling run dirs that have no live
+  process and are past the retention TTL (or beyond the count cap) are reclaimed. This is the
+  backstop for crashed/timed-out runs whose delete-on-completion never ran. A run with a live
+  process is always spared (process-registry signal, not mtime, since a manual purge can bump
+  mtimes). Sweep failures are best-effort and never abort the run they guard.
+
+Defaults: sweep enabled, keep-on-completion off, 24h retention, no count cap.
+
+Environment overrides:
+
+- `PAPERCLIP_KEEP_RUN_WORKSPACE=1` keeps completed run workspaces (debugging opt-out)
+- `PAPERCLIP_RUN_WORKSPACE_GC_DISABLED=1` disables the periodic/opportunistic sweep
+- `PAPERCLIP_RUN_WORKSPACE_RETENTION_HOURS=<hours>` TTL for stale terminal run dirs
+  (default `24`; `0` disables the TTL rule)
+- `PAPERCLIP_RUN_WORKSPACE_MAX_COUNT=<n>` optional cap on retained terminal run dirs
+  (keeps the newest `n`, trims the rest)
+
 ## Secrets in Dev
 
 Agent env vars now support secret references. By default, secret values are stored with local encryption and only secret refs are persisted in agent config.
