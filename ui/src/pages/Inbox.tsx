@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { deriveOriginatingActor, INBOX_MINE_ISSUE_STATUS_FILTER } from "@paperclipai/shared";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "@/hooks/useSharedPolling";
 import { approvalsApi } from "../api/approvals";
-import { accessApi } from "../api/access";
+import { accessApi, type CompanyJoinRequest } from "../api/access";
 import { authApi } from "../api/auth";
 import { ApiError } from "../api/client";
 import { dashboardApi } from "../api/dashboard";
@@ -177,6 +177,11 @@ import { useDismissedInboxAlerts, useInboxDismissals, useReadInboxItems } from "
 // memo chain settles.
 const EMPTY_EXECUTION_WORKSPACES: ExecutionWorkspaceSummary[] = [];
 const EMPTY_ISSUES: Issue[] = [];
+// joinRequests feeds the same groupedSections -> flatNavItems chain via
+// joinRequestsForTab -> workItemsToRender. The query is always enabled, so
+// this instability is transient (it settles once the first response lands),
+// but it churns the same way during that initial-load window.
+const EMPTY_JOIN_REQUESTS: CompanyJoinRequest[] = [];
 
 const INBOX_HEARTBEAT_RUN_LIMIT = 200;
 const INBOX_ISSUE_LIST_LIMIT = 500;
@@ -813,7 +818,7 @@ export function Inbox() {
   });
 
   const {
-    data: joinRequests = [],
+    data: joinRequests = EMPTY_JOIN_REQUESTS,
     isLoading: isJoinRequestsLoading,
   } = useQuery({
     queryKey: queryKeys.access.joinRequests(selectedCompanyId!),
