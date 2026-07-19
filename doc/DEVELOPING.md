@@ -45,6 +45,13 @@ This starts:
 
 Issue execution may also use project execution workspace policies and workspace runtime services for per-project worktrees, preview servers, and managed dev commands. Configure those through the project workspace/runtime surfaces rather than starting long-running unmanaged processes when a task needs a reusable service.
 
+### Productivity review reconciliation
+
+Automatic productivity-review reconciliation is enabled by default. Set
+`PRODUCTIVITY_REVIEW_ENABLED=false` to skip both the startup and periodic
+productivity-review passes while keeping the general heartbeat scheduler,
+routines, recovery, and watchdog work enabled.
+
 ## Storybook
 
 The board UI Storybook keeps stories and Storybook config under `ui/storybook/` so component review files stay out of the app source routes.
