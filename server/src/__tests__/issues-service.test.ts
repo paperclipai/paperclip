@@ -31,6 +31,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { instanceSettingsService } from "../services/instance-settings.ts";
 import {
+  buildIssueReleasePatch,
   clampIssueListLimit,
   deriveIssueCommentRunLogAttribution,
   ISSUE_LIST_MAX_LIMIT,
@@ -61,6 +62,38 @@ describe("issue list limit helpers", () => {
     expect(clampIssueListLimit(0)).toBe(1);
     expect(clampIssueListLimit(25.9)).toBe(25);
     expect(clampIssueListLimit(ISSUE_LIST_MAX_LIMIT + 10)).toBe(ISSUE_LIST_MAX_LIMIT);
+  });
+});
+
+describe("buildIssueReleasePatch", () => {
+  it("demotes only active in-progress checkouts to todo", () => {
+    const now = new Date("2026-07-19T07:40:00.000Z");
+
+    expect(buildIssueReleasePatch({ status: "in_progress" }, now)).toMatchObject({
+      status: "todo",
+      assigneeAgentId: null,
+      checkoutRunId: null,
+      executionRunId: null,
+      executionAgentNameKey: null,
+      executionLockedAt: null,
+      updatedAt: now,
+    });
+  });
+
+  it("preserves terminal status when a late release follows completion", () => {
+    const now = new Date("2026-07-19T07:41:00.000Z");
+    const patch = buildIssueReleasePatch({ status: "done" }, now);
+
+    expect(patch).toMatchObject({
+      checkoutRunId: null,
+      executionRunId: null,
+      executionAgentNameKey: null,
+      executionLockedAt: null,
+      updatedAt: now,
+    });
+    expect(patch).not.toHaveProperty("status");
+    expect(patch).not.toHaveProperty("assigneeAgentId");
+    expect(patch).not.toHaveProperty("completedAt");
   });
 });
 
@@ -5042,6 +5075,85 @@ describeEmbeddedPostgres("issueService.clearExecutionRunIfTerminal", () => {
       assigneeAgentId: agentId,
       checkoutRunId: null,
     });
+  });
+
+  it("release after a terminal status update does not revert the issue to todo", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "manual",
+      startedAt: new Date("2026-07-19T07:20:00.000Z"),
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Late release after done",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: runId,
+      executionRunId: runId,
+      executionAgentNameKey: "codexcoder",
+      executionLockedAt: new Date("2026-07-19T07:20:00.000Z"),
+    });
+
+    const completed = await svc.update(issueId, { status: "done" });
+    expect(completed).toMatchObject({
+      status: "done",
+      assigneeAgentId: agentId,
+      checkoutRunId: null,
+      executionRunId: null,
+    });
+    expect(completed?.completedAt).toBeInstanceOf(Date);
+
+    const released = await svc.release(issueId, agentId, runId);
+    expect(released).toMatchObject({
+      status: "done",
+      assigneeAgentId: agentId,
+      checkoutRunId: null,
+      executionRunId: null,
+    });
+
+    const row = await db
+      .select({
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+        completedAt: issues.completedAt,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(row.status).toBe("done");
+    expect(row.assigneeAgentId).toBe(agentId);
+    expect(row.checkoutRunId).toBeNull();
+    expect(row.executionRunId).toBeNull();
+    expect(row.completedAt).toBeInstanceOf(Date);
   });
 
   it("checkout adoption of a stale checkoutRunId preserves the issue's assigneeUserId", async () => {

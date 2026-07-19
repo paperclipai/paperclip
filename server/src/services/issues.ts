@@ -693,6 +693,24 @@ function sameRunLock(checkoutRunId: string | null, actorRunId: string | null) {
   return checkoutRunId == null;
 }
 
+export function buildIssueReleasePatch(
+  existing: Pick<typeof issues.$inferSelect, "status">,
+  now: Date = new Date(),
+): Partial<typeof issues.$inferInsert> {
+  const patch: Partial<typeof issues.$inferInsert> = {
+    checkoutRunId: null,
+    executionRunId: null,
+    executionAgentNameKey: null,
+    executionLockedAt: null,
+    updatedAt: now,
+  };
+  if (existing.status === "in_progress") {
+    patch.status = "todo";
+    patch.assigneeAgentId = null;
+  }
+  return patch;
+}
+
 export const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set(["succeeded", "interrupted", "failed", "cancelled", "timed_out"]);
 const ISSUE_LIST_DESCRIPTION_MAX_CHARS = 1200;
 const ISSUE_LIST_DESCRIPTION_MAX_BYTES = ISSUE_LIST_DESCRIPTION_MAX_CHARS * 4;
@@ -7128,17 +7146,11 @@ export function issueService(db: Db) {
           }
         }
 
+        const patch = buildIssueReleasePatch(existing);
+
         const updated = await tx
           .update(issues)
-          .set({
-            status: "todo",
-            assigneeAgentId: null,
-            checkoutRunId: null,
-            executionRunId: null,
-            executionAgentNameKey: null,
-            executionLockedAt: null,
-            updatedAt: new Date(),
-          })
+          .set(patch)
           .where(eq(issues.id, id))
           .returning()
           .then((rows) => rows[0] ?? null);
