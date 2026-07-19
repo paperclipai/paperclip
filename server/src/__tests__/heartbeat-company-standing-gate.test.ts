@@ -59,8 +59,20 @@ describeEmbeddedPostgres("heartbeat company-standing run-start gate", () => {
     await db.delete(plugins);
     await db.delete(agentRuntimeState);
     await db.delete(agents);
-    await db.delete(companySkills);
-    await db.delete(companies);
+    // A just-finished run can flush an async skill-sync write after the last
+    // assertion resolves; if it lands between the next two deletes, deleting
+    // companies trips the company_skills FK. Sweep dependents and retry briefly
+    // instead of failing the whole suite on that narrow race.
+    for (let attempt = 1; ; attempt++) {
+      try {
+        await db.delete(companySkills);
+        await db.delete(companies);
+        break;
+      } catch (err) {
+        if (attempt >= 3) throw err;
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+    }
   }, 20_000);
 
   afterAll(async () => {
