@@ -1,0 +1,121 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="800" viewBox="0 0 1280 800"
+     font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5">
+  <!-- 03 · Properties pane — Monitor row redesign (component sheet). Desktop 1280×800 -->
+  <rect x="0" y="0" width="1280" height="800" />
+
+  <text x="48" y="56" font-size="20" font-weight="600" stroke="none" fill="#000">Properties pane — Monitor row redesign</text>
+  <text x="48" y="80" font-size="12" stroke="none" fill="#666">Side pane fragment, 352px wide. The same row is reused in the mobile properties sheet.</text>
+
+  <!-- ===== Panel A · current ===== -->
+  <text x="48" y="128" font-size="14" font-weight="600" stroke="none" fill="#000">A · Current — cramped, truncated</text>
+  <g transform="translate(48,144)">
+    <rect width="352" height="176" rx="8" />
+    <text x="16" y="44" font-size="12" stroke="none" fill="#666">Approvers</text>
+    <text x="144" y="44" font-size="14" stroke="none" fill="#666">None</text>
+
+    <text x="16" y="84" font-size="12" stroke="none" fill="#666">Monitor</text>
+    <circle cx="152" cy="80" r="7" />
+    <line x1="152" y1="80" x2="152" y2="75" />
+    <line x1="152" y1="80" x2="156" y2="80" />
+    <text x="168" y="84" font-size="14" stroke="none" fill="#000">Ne…</text>
+    <text x="208" y="84" font-size="12" stroke="none" fill="#666">Jul 17, 2026</text>
+    <text x="288" y="76" font-size="12" stroke="none" fill="#666">Attempt</text>
+    <text x="288" y="92" font-size="12" stroke="none" fill="#666">1</text>
+
+    <text x="16" y="124" font-size="12" stroke="none" fill="#666">Watchdog</text>
+    <text x="144" y="124" font-size="14" stroke="none" fill="#666">None</text>
+  </g>
+  <text x="48" y="352" font-size="12" stroke="none" fill="#666">Label truncates to “Ne…”, date is ambiguous (which year matters,</text>
+  <text x="48" y="368" font-size="12" stroke="none" fill="#666">not the time?), attempt badge wraps into two lines.</text>
+
+  <!-- ===== Panel B · proposed collapsed row ===== -->
+  <text x="464" y="128" font-size="14" font-weight="600" stroke="none" fill="#000">B · Proposed — two-line row</text>
+  <g transform="translate(464,144)">
+    <rect width="352" height="176" rx="8" />
+    <text x="16" y="44" font-size="12" stroke="none" fill="#666">Approvers</text>
+    <text x="144" y="44" font-size="14" stroke="none" fill="#666">None</text>
+
+    <text x="16" y="84" font-size="12" stroke="none" fill="#666">Monitor</text>
+    <circle cx="152" cy="80" r="7" />
+    <line x1="152" y1="80" x2="152" y2="75" />
+    <line x1="152" y1="80" x2="156" y2="80" />
+    <text x="168" y="84" font-size="14" font-weight="600" stroke="none" fill="#000">In 2h 12m</text>
+    <text x="168" y="104" font-size="12" stroke="none" fill="#666">Jul 17, 4:08 PM · Attempt 1</text>
+
+    <text x="16" y="144" font-size="12" stroke="none" fill="#666">Watchdog</text>
+    <text x="144" y="144" font-size="14" stroke="none" fill="#666">None</text>
+  </g>
+  <text x="464" y="352" font-size="12" stroke="none" fill="#666">Relative time leads and is bold; absolute time + attempt get their</text>
+  <text x="464" y="368" font-size="12" stroke="none" fill="#666">own muted line. Nothing truncates at 352px. Row grows to 2 lines.</text>
+
+  <!-- ===== Panel C · hover tooltip ===== -->
+  <text x="880" y="128" font-size="14" font-weight="600" stroke="none" fill="#000">C · Hover / tap — full details</text>
+  <g transform="translate(880,144)">
+    <!-- pane fragment with the row -->
+    <rect width="352" height="80" rx="8" />
+    <text x="16" y="44" font-size="12" stroke="none" fill="#666">Monitor</text>
+    <circle cx="152" cy="40" r="7" />
+    <line x1="152" y1="40" x2="152" y2="35" />
+    <line x1="152" y1="40" x2="156" y2="40" />
+    <text x="168" y="44" font-size="14" font-weight="600" stroke="none" fill="#000">In 2h 12m</text>
+    <text x="168" y="64" font-size="12" stroke="none" fill="#666">Jul 17, 4:08 PM · Attempt 1</text>
+
+    <!-- tooltip card -->
+    <polygon points="180,96 188,88 196,96" fill="#fff" />
+    <g transform="translate(16,96)">
+      <rect width="320" height="368" rx="8" />
+      <text x="16" y="32" font-size="14" font-weight="600" stroke="none" fill="#000">Monitor</text>
+      <text x="304" y="32" font-size="12" text-anchor="end" stroke="none" fill="#666">Attempt 1</text>
+      <line x1="0" y1="48" x2="320" y2="48" />
+
+      <text x="16" y="76" font-size="12" stroke="none" fill="#666">Next check</text>
+      <text x="16" y="96" font-size="14" stroke="none" fill="#000">Thu, Jul 17, 2026 · 4:08 PM PDT</text>
+      <text x="16" y="114" font-size="12" stroke="none" fill="#666">in 2h 12m</text>
+
+      <text x="16" y="144" font-size="12" stroke="none" fill="#666">Watching</text>
+      <text x="16" y="164" font-size="14" stroke="none" fill="#000">vercel-deploy</text>
+
+      <text x="16" y="192" font-size="12" stroke="none" fill="#666">Notes</text>
+      <text x="16" y="212" font-size="14" stroke="none" fill="#000">Verify completion, commit ledger /</text>
+      <text x="16" y="230" font-size="14" stroke="none" fill="#000">scores, extend comparison site.</text>
+
+      <text x="16" y="260" font-size="12" stroke="none" fill="#666">Last triggered</text>
+      <text x="16" y="280" font-size="14" stroke="none" fill="#000">— not yet triggered</text>
+
+      <line x1="0" y1="300" x2="320" y2="300" />
+      <g transform="translate(16,316)">
+        <rect width="96" height="32" rx="4" />
+        <text x="48" y="21" font-size="12" text-anchor="middle" stroke="none" fill="#000">Check now</text>
+      </g>
+      <g transform="translate(120,316)">
+        <rect width="56" height="32" rx="4" />
+        <text x="28" y="21" font-size="12" text-anchor="middle" stroke="none" fill="#000">Edit</text>
+      </g>
+      <g transform="translate(184,316)">
+        <rect width="64" height="32" rx="4" />
+        <text x="32" y="21" font-size="12" text-anchor="middle" stroke="none" fill="#000">Clear</text>
+      </g>
+    </g>
+  </g>
+  <text x="880" y="656" font-size="12" stroke="none" fill="#666">Hover on desktop, tap on mobile. Exact timestamp with timezone,</text>
+  <text x="880" y="672" font-size="12" stroke="none" fill="#666">service, notes and quick actions — no digging into the edit popover.</text>
+
+  <!-- annotations -->
+  <g data-region="annotations">
+    <rect x="200" y="204" width="152" height="36" fill="none" stroke="#d33" stroke-dasharray="6 3" />
+    <g transform="translate(192,200)">
+      <circle cx="0" cy="0" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2" />
+      <text x="0" y="4" font-size="12" font-weight="700" text-anchor="middle" stroke="none" fill="#d33">1</text>
+    </g>
+    <rect x="608" y="208" width="216" height="52" fill="none" stroke="#d33" stroke-dasharray="6 3" />
+    <g transform="translate(600,204)">
+      <circle cx="0" cy="0" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2" />
+      <text x="0" y="4" font-size="12" font-weight="700" text-anchor="middle" stroke="none" fill="#d33">2</text>
+    </g>
+    <rect x="888" y="232" width="344" height="384" fill="none" stroke="#d33" stroke-dasharray="6 3" />
+    <g transform="translate(880,228)">
+      <circle cx="0" cy="0" r="12" fill="#fff" stroke="#d33" stroke-dasharray="4 2" />
+      <text x="0" y="4" font-size="12" font-weight="700" text-anchor="middle" stroke="none" fill="#d33">3</text>
+    </g>
+  </g>
+</svg>
