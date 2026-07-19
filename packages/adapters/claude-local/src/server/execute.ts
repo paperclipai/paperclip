@@ -65,6 +65,7 @@ import {
   isClaudeUnknownSessionError,
   isClaudePoisonedPreviousMessageIdError,
   isClaudeImageProcessingError,
+  isClaudeInvalidCredentialError,
   isClaudeModelNotFoundError,
 } from "./parse.js";
 import {
@@ -88,6 +89,9 @@ import {
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const executeClaudeAcp = createClaudeAcpExecutor();
+
+const CLAUDE_INVALID_CREDENTIAL_MESSAGE =
+  "Claude rejected the connected credential. Reconnect a valid Claude credential, then resume.";
 
 interface ClaudeExecutionInput {
   runId: string;
@@ -957,8 +961,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     if (!parsed) {
       const fallbackErrorMessage = parseFallbackErrorMessage(proc);
+      const invalidCredential =
+        !loginMeta.requiresLogin &&
+        (proc.exitCode ?? 0) !== 0 &&
+        isClaudeInvalidCredentialError({
+          parsed: null,
+          stdout: proc.stdout,
+          stderr: proc.stderr,
+          errorMessage: fallbackErrorMessage,
+        });
       const providerQuota =
         !loginMeta.requiresLogin &&
+        !invalidCredential &&
         (proc.exitCode ?? 0) !== 0 &&
         isClaudeProviderQuotaError({
           parsed: null,
@@ -968,6 +982,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         });
       const transientUpstream =
         !loginMeta.requiresLogin &&
+        !invalidCredential &&
         !providerQuota &&
         (proc.exitCode ?? 0) !== 0 &&
         isClaudeTransientUpstreamError({
@@ -984,7 +999,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             errorMessage: fallbackErrorMessage,
           })
         : null;
-      const errorCode = loginMeta.requiresLogin
+      const errorCode = loginMeta.requiresLogin || invalidCredential
         ? "claude_auth_required"
         : isClaudeModelNotFoundError({
           parsed: null,
@@ -1003,7 +1018,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         exitCode: proc.exitCode,
         signal: proc.signal,
         timedOut: false,
-        errorMessage: fallbackErrorMessage,
+        errorMessage: invalidCredential ? CLAUDE_INVALID_CREDENTIAL_MESSAGE : fallbackErrorMessage,
         errorCode,
         errorFamily,
         retryNotBefore: transientRetryNotBefore ? transientRetryNotBefore.toISOString() : null,
@@ -1083,23 +1098,39 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         ...(workspaceRepoRef ? { repoRef: workspaceRepoRef } : {}),
       } as Record<string, unknown>)
       : null;
-    const errorMessage = failed
+    const rawErrorMessage = failed
       ? describeClaudeFailure(parsed) ?? `Claude exited with code ${proc.exitCode ?? -1}`
       : null;
+    const invalidCredential =
+      failed &&
+      !loginMeta.requiresLogin &&
+      !clearSessionForMaxTurns &&
+      !poisonedPreviousMessageId &&
+      isClaudeInvalidCredentialError({
+        parsed,
+        stdout: proc.stdout,
+        stderr: proc.stderr,
+        errorMessage: rawErrorMessage,
+      });
+    // The raw CLI text stays in resultJson; the surfaced message must tell the
+    // user what to do, not echo the provider's 401.
+    const errorMessage = invalidCredential ? CLAUDE_INVALID_CREDENTIAL_MESSAGE : rawErrorMessage;
     const providerQuota =
       failed &&
       !loginMeta.requiresLogin &&
+      !invalidCredential &&
       !clearSessionForMaxTurns &&
       !poisonedPreviousMessageId &&
       isClaudeProviderQuotaError({
         parsed,
         stdout: proc.stdout,
         stderr: proc.stderr,
-        errorMessage,
+        errorMessage: rawErrorMessage,
       });
     const transientUpstream =
       failed &&
       !loginMeta.requiresLogin &&
+      !invalidCredential &&
       !clearSessionForMaxTurns &&
       !poisonedPreviousMessageId &&
       !providerQuota &&
@@ -1107,23 +1138,23 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         parsed,
         stdout: proc.stdout,
         stderr: proc.stderr,
-        errorMessage,
+        errorMessage: rawErrorMessage,
       });
     const transientRetryNotBefore = providerQuota || transientUpstream
       ? extractClaudeRetryNotBefore({
           parsed,
           stdout: proc.stdout,
           stderr: proc.stderr,
-          errorMessage,
+          errorMessage: rawErrorMessage,
         })
       : null;
-    const resolvedErrorCode = loginMeta.requiresLogin
+    const resolvedErrorCode = loginMeta.requiresLogin || invalidCredential
       ? "claude_auth_required"
       : failed && isClaudeModelNotFoundError({
         parsed,
         stdout: proc.stdout,
         stderr: proc.stderr,
-        errorMessage,
+        errorMessage: rawErrorMessage,
       })
       ? "model_not_found"
       : failed && clearSessionForMaxTurns

@@ -11,6 +11,7 @@ import {
   isClaudeUnknownSessionError,
   isClaudeImageProcessingError,
   isClaudeModelNotFoundError,
+  isClaudeInvalidCredentialError,
 } from "./parse.js";
 
 describe("detectClaudeLoginRequired", () => {
@@ -50,6 +51,55 @@ describe("isClaudeModelNotFoundError", () => {
   it("does not classify unrelated provider failures as model resolution errors", () => {
     expect(isClaudeModelNotFoundError({
       errorMessage: "API Error: 503 service unavailable",
+    })).toBe(false);
+  });
+});
+
+describe("isClaudeInvalidCredentialError", () => {
+  it("detects the 401 invalid bearer token failure from the CLI result", () => {
+    expect(isClaudeInvalidCredentialError({
+      parsed: {
+        subtype: "success",
+        is_error: true,
+        result: "Failed to authenticate. API Error: 401 Invalid bearer token",
+      },
+    })).toBe(true);
+  });
+
+  it("detects the 401 invalid OAuth access token failure", () => {
+    expect(isClaudeInvalidCredentialError({
+      parsed: {
+        subtype: "success",
+        is_error: true,
+        result: "Failed to authenticate. API Error: 401 OAuth access token is invalid.",
+      },
+    })).toBe(true);
+  });
+
+  it("detects invalid x-api-key and authentication_error payloads from fallback output", () => {
+    expect(isClaudeInvalidCredentialError({
+      stderr: "API Error: 401 {\"type\":\"error\",\"error\":{\"type\":\"authentication_error\",\"message\":\"invalid x-api-key\"}}",
+    })).toBe(true);
+    expect(isClaudeInvalidCredentialError({
+      errorMessage: "Claude exited with code 1: authentication_error",
+    })).toBe(true);
+  });
+
+  it("requires a 401 alongside a bare 'failed to authenticate' message", () => {
+    expect(isClaudeInvalidCredentialError({
+      errorMessage: "Failed to authenticate. API Error: 401",
+    })).toBe(true);
+    expect(isClaudeInvalidCredentialError({
+      errorMessage: "Failed to authenticate because the network dropped",
+    })).toBe(false);
+  });
+
+  it("does not classify unrelated failures or quota errors as invalid credentials", () => {
+    expect(isClaudeInvalidCredentialError({
+      errorMessage: "API Error: 503 service unavailable",
+    })).toBe(false);
+    expect(isClaudeInvalidCredentialError({
+      errorMessage: "You've hit your session limit - resets at 4pm",
     })).toBe(false);
   });
 });
