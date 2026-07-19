@@ -17,7 +17,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { errorHandler } from "../middleware/index.js";
 import { agentRoutes } from "../routes/agents.js";
-import { runningProcesses } from "../adapters/index.ts";
+import { runningProcesses } from "../adapters/index.js";
 
 const mockAdapterExecute = vi.hoisted(() =>
   vi.fn(async () => ({
@@ -31,8 +31,8 @@ const mockAdapterExecute = vi.hoisted(() =>
   })),
 );
 
-vi.mock("../adapters/index.ts", async () => {
-  const actual = await vi.importActual<typeof import("../adapters/index.ts")>("../adapters/index.ts");
+vi.mock("../adapters/index.js", async () => {
+  const actual = await vi.importActual<typeof import("../adapters/index.js")>("../adapters/index.js");
   return {
     ...actual,
     getServerAdapter: vi.fn(() => ({
