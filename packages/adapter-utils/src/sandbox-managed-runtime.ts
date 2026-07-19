@@ -54,11 +54,61 @@ export interface SandboxRemoteExecutionSpec {
   apiKey: string | null;
 }
 
+/**
+ * Remote paths handed to an asset's `provision.extractCommand`. All are POSIX
+ * paths inside the sandbox: `assetTarPath` is the uploaded asset tarball,
+ * `assetDir` is where the asset should be materialized, and `runtimeRootDir`
+ * is the directory any `stageFiles` were written into.
+ */
+export interface SandboxManagedRuntimeAssetProvisionContext {
+  assetTarPath: string;
+  assetDir: string;
+  runtimeRootDir: string;
+}
+
+/**
+ * Per-asset inbound provisioning contribution. The core is adapter-agnostic:
+ * an asset that supplies neither `stageFiles` nor `extractCommand` is extracted
+ * with a plain `tar -xf`. An adapter that needs custom provisioning (e.g. a
+ * credential merge) supplies helper files via `stageFiles` and the shell
+ * command that consumes them via `extractCommand`.
+ */
+export interface SandboxManagedRuntimeAssetProvision {
+  /**
+   * Extra files written into `runtimeRootDir` (alongside the asset tar) before
+   * the extract command runs — typically helper scripts the extract command
+   * invokes. Contents may be raw bytes or a UTF-8 string.
+   */
+  stageFiles?: { name: string; contents: Buffer | string }[];
+  /**
+   * Builds the shell command that materializes the uploaded asset tar into
+   * `assetDir`. Defaults to a plain `tar -xf` extraction when omitted.
+   */
+  extractCommand?: (ctx: SandboxManagedRuntimeAssetProvisionContext) => string;
+}
+
+/**
+ * Context passed to an asset's `restore` contribution during teardown.
+ * `assetDir` is the asset's directory inside the sandbox and `readFile` reads
+ * a file back from the sandbox as raw bytes.
+ */
+export interface SandboxManagedRuntimeAssetRestoreContext {
+  assetDir: string;
+  readFile: (remotePath: string) => Promise<Buffer>;
+}
+
 export interface SandboxManagedRuntimeAsset {
   key: string;
   localDir: string;
   followSymlinks?: boolean;
   exclude?: string[];
+  /** Optional inbound provisioning contribution (staged files + extract command). */
+  provision?: SandboxManagedRuntimeAssetProvision;
+  /**
+   * Optional teardown/outbound contribution, invoked once per asset during
+   * `restoreWorkspace`. Defaults to a no-op when omitted.
+   */
+  restore?: (ctx: SandboxManagedRuntimeAssetRestoreContext) => Promise<void>;
 }
 
 /**
@@ -108,6 +158,16 @@ function asNumber(value: unknown): number {
 
 function shellQuote(value: string) {
   return `'${value.replace(/'/g, `'\"'\"'`)}'`;
+}
+
+function buildDefaultExtractRuntimeAssetCommand(input: {
+  remoteAssetDir: string;
+  remoteAssetTar: string;
+}): string {
+  return `rm -rf ${shellQuote(input.remoteAssetDir)} && ` +
+    `mkdir -p ${shellQuote(input.remoteAssetDir)} && ` +
+    `tar -xf ${shellQuote(input.remoteAssetTar)} -C ${shellQuote(input.remoteAssetDir)} && ` +
+    `rm -f ${shellQuote(input.remoteAssetTar)}`;
 }
 
 export function parseSandboxRemoteExecutionSpec(value: unknown): SandboxRemoteExecutionSpec | null {
@@ -573,13 +633,26 @@ export async function prepareSandboxManagedRuntime(input: {
       );
       await input.client.writeFile(remoteAssetTar, toArrayBuffer(assetTarBytes), assetUpload.options);
       await assetUpload.finish(assetTarBytes.byteLength, assetTarBytes.byteLength);
+      for (const stageFile of asset.provision?.stageFiles ?? []) {
+        const stageBytes = typeof stageFile.contents === "string"
+          ? Buffer.from(stageFile.contents)
+          : stageFile.contents;
+        const safeName = stageFile.name;
+        if (/[\\/]|\.\.(\.|$)/.test(safeName) || safeName === "..") {
+          throw new Error(`provision stageFile.name must be a simple basename, got: ${safeName}`);
+        }
+        await input.client.writeFile(
+          path.posix.join(runtimeRootDir, safeName),
+          toArrayBuffer(stageBytes),
+        );
+      }
+      const extractCommand = asset.provision?.extractCommand?.({
+        assetTarPath: remoteAssetTar,
+        assetDir: remoteAssetDir,
+        runtimeRootDir,
+      }) ?? buildDefaultExtractRuntimeAssetCommand({ remoteAssetDir, remoteAssetTar });
       await input.client.run(
-        `sh -c ${shellQuote(
-          `rm -rf ${shellQuote(remoteAssetDir)} && ` +
-            `mkdir -p ${shellQuote(remoteAssetDir)} && ` +
-            `tar -xf ${shellQuote(remoteAssetTar)} -C ${shellQuote(remoteAssetDir)} && ` +
-            `rm -f ${shellQuote(remoteAssetTar)}`,
-        )}`,
+        `sh -c ${shellQuote(extractCommand)}`,
         { timeoutMs: input.spec.timeoutMs },
       );
     }
@@ -695,6 +768,17 @@ export async function prepareSandboxManagedRuntime(input: {
                 }
               : undefined,
           });
+
+          // Per-asset teardown/outbound contributions. Generic: an asset with
+          // no `restore` is a no-op. The contribution reads back from the
+          // sandbox (e.g. a refreshed credential) via the provided `readFile`.
+          for (const asset of input.assets ?? []) {
+            if (!asset.restore) continue;
+            await asset.restore({
+              assetDir: path.posix.join(runtimeRootDir, asset.key),
+              readFile: async (remotePath) => toBuffer(await input.client.readFile(remotePath)),
+            });
+          }
         } finally {
           await emitRuntimeStatus(input.onRuntimeProgress, "finalize", "Finalizing sandbox workspace");
           if (importedRef) {

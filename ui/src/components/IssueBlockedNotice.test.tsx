@@ -127,6 +127,7 @@ describe("IssueBlockedNotice", () => {
         successfulRunHandoff={{
           state: "required",
           required: true,
+          hasLiveContinuation: false,
           sourceRunId: "12345678-aaaa-bbbb-cccc-123456789abc",
           correctiveRunId: null,
           assigneeAgentId: "agent-1",
@@ -156,6 +157,7 @@ describe("IssueBlockedNotice", () => {
         successfulRunHandoff={{
           state: "required",
           required: true,
+          hasLiveContinuation: false,
           sourceRunId: "12345678-aaaa-bbbb-cccc-123456789abc",
           correctiveRunId: null,
           assigneeAgentId: "agent-1",
@@ -190,6 +192,7 @@ describe("IssueBlockedNotice", () => {
         successfulRunHandoff={{
           state: "required",
           required: true,
+          hasLiveContinuation: false,
           sourceRunId: "12345678-aaaa-bbbb-cccc-123456789abc",
           correctiveRunId: null,
           assigneeAgentId: "agent-1",
@@ -264,7 +267,9 @@ describe("IssueBlockedNotice", () => {
     );
 
     expect(node.querySelector('[data-testid="issue-blocked-notice-live"]')).toBeNull();
-    expect(node.textContent).toContain("Work on this task is blocked by the linked task");
+    // Rule C: a `blocked` issue with an unresolved blocker explains that a
+    // human message will not reopen it yet.
+    expect(node.textContent).toContain("A message won’t move this back to todo yet");
     expect(node.querySelector('[data-blocker-attention-state="covered"]')).not.toBeNull();
   });
 
@@ -338,6 +343,111 @@ describe("IssueBlockedNotice", () => {
     if (!runningStep) throw new Error("Expected a running live-work step.");
     expect(runningStep.querySelector('svg[aria-label="In Progress status"]')).not.toBeNull();
     expect(node.querySelector('[data-testid="issue-blocked-notice-now-running"]')).toBeNull();
+  });
+
+  it("explains a human message won't reopen a blocked issue and names the unresolved leaf (Rule C)", () => {
+    const node = render(
+      <IssueBlockedNotice
+        issueStatus="blocked"
+        agentName="CodexCoder"
+        blockers={[
+          {
+            id: "blocker-1",
+            identifier: "PAP-500",
+            title: "Server work in flight",
+            status: "in_progress",
+            priority: "medium",
+            assigneeAgentId: "agent-1",
+            assigneeUserId: null,
+          },
+        ]}
+      />,
+    );
+
+    expect(node.textContent).toContain("A message won’t move this back to todo yet");
+    expect(node.textContent).toContain("Comments still wake CodexCoder");
+    const suppressed = node.querySelector('[data-testid="issue-blocked-notice-reopen-suppressed"]');
+    expect(suppressed).not.toBeNull();
+    expect(suppressed!.textContent).toContain("Still blocked by");
+    expect(suppressed!.textContent).toContain("PAP-500");
+    expect(suppressed!.textContent).toContain("(in progress)");
+    expect(suppressed!.textContent).not.toContain("other task");
+  });
+
+  it("names the deepest unresolved terminal leaf, not the direct blocker (Rule C)", () => {
+    const node = render(
+      <IssueBlockedNotice
+        issueStatus="blocked"
+        blockers={[
+          {
+            id: "blocker-1",
+            identifier: "PAP-600",
+            title: "Waiting in review",
+            status: "in_review",
+            priority: "medium",
+            assigneeAgentId: "agent-1",
+            assigneeUserId: null,
+            terminalBlockers: [
+              {
+                id: "terminal-1",
+                identifier: "PAP-777",
+                title: "Actual work",
+                status: "in_progress",
+                priority: "medium",
+                assigneeAgentId: "agent-2",
+                assigneeUserId: null,
+              },
+            ],
+          },
+        ]}
+      />,
+    );
+
+    const suppressed = node.querySelector('[data-testid="issue-blocked-notice-reopen-suppressed"]');
+    expect(suppressed).not.toBeNull();
+    expect(suppressed!.textContent).toContain("PAP-777");
+    expect(suppressed!.textContent).toContain("(in progress)");
+    expect(suppressed!.textContent).not.toContain("PAP-600");
+  });
+
+  it("summarizes the count when several blockers keep a comment from reopening (Rule C)", () => {
+    const node = render(
+      <IssueBlockedNotice
+        issueStatus="blocked"
+        blockers={[
+          {
+            id: "blocker-1",
+            identifier: "PAP-501",
+            title: "First",
+            status: "in_progress",
+            priority: "medium",
+            assigneeAgentId: "agent-1",
+            assigneeUserId: null,
+          },
+          {
+            id: "blocker-2",
+            identifier: "PAP-502",
+            title: "Second",
+            status: "todo",
+            priority: "medium",
+            assigneeAgentId: "agent-1",
+            assigneeUserId: null,
+          },
+        ]}
+      />,
+    );
+
+    const suppressed = node.querySelector('[data-testid="issue-blocked-notice-reopen-suppressed"]');
+    expect(suppressed).not.toBeNull();
+    expect(suppressed!.textContent).toContain("and 1 other task");
+  });
+
+  it("does not claim a message won't reopen when a blocked issue has no unresolved blockers (Rule B path)", () => {
+    const node = render(<IssueBlockedNotice issueStatus="blocked" blockers={[]} />);
+
+    expect(node.textContent).toContain("Work on this task is blocked until it is moved back to todo");
+    expect(node.textContent).not.toContain("A message won’t move this back to todo yet");
+    expect(node.querySelector('[data-testid="issue-blocked-notice-reopen-suppressed"]')).toBeNull();
   });
 
   it("shows external now-running blockers beneath the label on a separate line", () => {

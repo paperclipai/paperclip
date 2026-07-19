@@ -35,6 +35,7 @@ import { useAdapterCapabilities } from "@/adapters/use-adapter-capabilities";
 import { redactCommandText as redactCommandSecretText } from "@paperclipai/adapter-utils";
 import { MarkdownEditor } from "../components/MarkdownEditor";
 import { assetsApi } from "../api/assets";
+import { toolsApi } from "../api/tools";
 import { getUIAdapter, buildTranscript, onAdapterChange } from "../adapters";
 import { StatusBadge } from "../components/StatusBadge";
 import { MarkdownBody } from "../components/MarkdownBody";
@@ -46,7 +47,6 @@ import { Identity } from "../components/Identity";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { AgentActionButtons } from "../components/AgentActionButtons";
 import { InlineBanner } from "../components/InlineBanner";
-import { BuiltInAgentBadge } from "../components/BuiltInAgentBadges";
 import { BuiltInBundlePanel } from "../components/BuiltInBundlePanel";
 import { ConfigureBuiltInAgentModal } from "../components/ConfigureBuiltInAgentModal";
 import { BudgetPolicyCard } from "../components/BudgetPolicyCard";
@@ -89,6 +89,13 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { Input } from "@/components/ui/input";
 import { AgentIcon, AgentIconPicker } from "../components/AgentIconPicker";
 import { RunTranscriptView, type TranscriptMode } from "../components/transcript/RunTranscriptView";
+import { AgentToolsTab } from "./AgentToolsTab";
+import {
+  appendCapped,
+  LIVE_TRANSCRIPT_RENDER_LIMIT,
+  MAX_LIVE_EVENTS,
+  MAX_LIVE_LOG_LINES,
+} from "../lib/live-log-buffer";
 import {
   isUuidLike,
   type Agent,
@@ -272,6 +279,7 @@ type AgentDetailView =
   | "configuration"
   | "skills"
   | "mcp"
+  | "tools"
   | "runs"
   | "budget";
 
@@ -280,6 +288,7 @@ function parseAgentDetailView(value: string | null): AgentDetailView {
   if (value === "configure" || value === "configuration") return "configuration";
   if (value === "skills") return "skills";
   if (value === "mcp") return "mcp";
+  if (value === "tools") return "tools";
   if (value === "budget") return "budget";
   if (value === "runs") return value;
   return "dashboard";
@@ -902,15 +911,17 @@ export function AgentDetail() {
         ? "instructions"
         : activeView === "configuration"
           ? "configuration"
-        : activeView === "skills"
-          ? "skills"
-          : activeView === "mcp"
-            ? "mcp"
-            : activeView === "runs"
-              ? "runs"
-              : activeView === "budget"
-                ? "budget"
-              : "dashboard";
+          : activeView === "skills"
+            ? "skills"
+            : activeView === "mcp"
+              ? "mcp"
+              : activeView === "tools"
+                ? "tools"
+                : activeView === "runs"
+                  ? "runs"
+                  : activeView === "budget"
+                    ? "budget"
+                    : "dashboard";
     if (routeAgentRef !== canonicalAgentRef || urlTab !== canonicalTab) {
       navigate(`/agents/${canonicalAgentRef}/${canonicalTab}`, { replace: true });
       return;
@@ -1015,6 +1026,8 @@ export function AgentDetail() {
         crumbs.push({ label: "Skills" });
       } else if (activeView === "mcp") {
         crumbs.push({ label: "MCP Servers" });
+      } else if (activeView === "tools") {
+        crumbs.push({ label: "Tools" });
       } else if (activeView === "runs") {
         crumbs.push({ label: "Runs" });
       } else if (activeView === "budget") {
@@ -1138,7 +1151,6 @@ export function AgentDetail() {
           <div className="min-w-0">
             <div className="flex items-center gap-2">
               <h2 className="text-2xl font-bold truncate">{agent.name}</h2>
-              {builtInState && <BuiltInAgentBadge />}
             </div>
             <p className="text-sm text-muted-foreground truncate">
               {roleLabels[agent.role] ?? agent.role}
@@ -1260,6 +1272,7 @@ export function AgentDetail() {
               { value: "skills", label: "Skills" },
               ...(mcpClientEnabled ? [{ value: "mcp", label: "MCP Servers" }] : []),
               { value: "configuration", label: "Configuration" },
+              { value: "tools", label: "Tools" },
               { value: "runs", label: "Runs" },
               { value: "budget", label: "Budget" },
             ]}
@@ -1383,6 +1396,9 @@ export function AgentDetail() {
           agentId={agent.id}
         />
       ) : null}
+      {activeView === "tools" && resolvedCompanyId && (
+        <AgentToolsTab agent={agent} companyId={resolvedCompanyId} />
+      )}
 
       {activeView === "runs" && (
         <RunsTab
@@ -3522,7 +3538,11 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
     }
 
     if (parsed.length > 0) {
-      setLogLines((prev) => [...prev, ...parsed]);
+      // Live runs stream forever, so cap the retained tail. Terminated runs are
+      // paginated by the user via "Load more log" and keep their full history.
+      setLogLines((prev) =>
+        isLive ? appendCapped(prev, parsed, MAX_LIVE_LOG_LINES) : [...prev, ...parsed],
+      );
     }
   }
 
@@ -3691,7 +3711,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
       try {
         const newEvents = await heartbeatsApi.events(run.id, maxSeq, 100);
         if (newEvents.length > 0) {
-          setEvents((prev) => [...prev, ...newEvents]);
+          setEvents((prev) => appendCapped(prev, newEvents, MAX_LIVE_EVENTS));
         }
       } catch {
         // ignore polling errors
@@ -3768,7 +3788,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
           const streamRaw = asNonEmptyString(payload.stream);
           const stream = streamRaw === "stderr" || streamRaw === "system" ? streamRaw : "stdout";
           const ts = asNonEmptyString((payload as Record<string, unknown>).ts) ?? event.createdAt;
-          setLogLines((prev) => [...prev, { ts, stream, chunk }]);
+          setLogLines((prev) => appendCapped(prev, [{ ts, stream, chunk }], MAX_LIVE_LOG_LINES));
           return;
         }
 
@@ -3778,7 +3798,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
           const key = heartbeatProgressLogLineKey(line);
           if (seenProgressLogLineKeysRef.current.has(key)) return;
           seenProgressLogLineKeysRef.current.add(key);
-          setLogLines((prev) => [...prev, line]);
+          setLogLines((prev) => appendCapped(prev, [line], MAX_LIVE_LOG_LINES));
           return;
         }
 
@@ -3815,7 +3835,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
 
         setEvents((prev) => {
           if (prev.some((existing) => existing.seq === seq)) return prev;
-          return [...prev, liveEvent];
+          return appendCapped(prev, [liveEvent], MAX_LIVE_EVENTS);
         });
       };
 
@@ -3870,6 +3890,13 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
     () => buildTranscript(logLines, adapter, { censorUsernameInLogs }),
     [adapter, censorUsernameInLogs, logLines, parserTick],
   );
+  const toolDecisionLookup = useQuery({
+    queryKey: queryKeys.tools.runDecisions(run.companyId, run.id),
+    queryFn: () => toolsApi.getRunDecisionLookup(run.companyId, run.id),
+    enabled: Boolean(run.companyId && run.id),
+    refetchInterval: isLive ? 3000 : false,
+    staleTime: isLive ? 1000 : 30_000,
+  });
 
   useEffect(() => {
     setTranscriptMode("nice");
@@ -3956,8 +3983,10 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
       <div className="max-h-(--sz-38rem) overflow-y-auto rounded-2xl border border-border/70 bg-background/40 p-3 sm:p-4">
         <RunTranscriptView
           entries={transcript}
+          toolDecisions={toolDecisionLookup.data?.decisions ?? []}
           mode={transcriptMode}
           streaming={isLive}
+          limit={isLive ? LIVE_TRANSCRIPT_RENDER_LIMIT : undefined}
           emptyMessage={run.logRef ? "Waiting for transcript..." : "No persisted transcript for this run."}
         />
         {hasMoreLog && (

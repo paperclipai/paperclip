@@ -87,10 +87,16 @@ and let the receiving layer canonicalize it.
 ## Adding Or Changing Telemetry
 
 Client code is responsible for emitting approved telemetry events at the right
-place in the product. It is not responsible for deciding which new events should
-exist. Do not introduce ad hoc event names, dimensions, or enum domains in client
-code; they must exist in the generated telemetry contract before emitters use
-them.
+place in the product. Stable event names, dimensions, and enum domains must come
+from the generated telemetry contract before normal emitters use them.
+
+For product work that needs to propose a new first-party event before schema
+registration, use the proposal marker workflow in `doc/TELEMETRY_WORKFLOW.md`.
+Those proposed calls stay on `client.track()`, carry an `@ts-expect-error`
+marker on the event-name argument, and are swallowed at runtime until the
+generated schema registers the event name.
+
+For stable event work:
 
 1. Start from `generated/paperclip-telemetry.ts`. The generated types are what
    reviewers use to verify event names, dimensions, optionality, value types,
@@ -115,6 +121,10 @@ them.
 Before opening a pull request, verify that the emitted code, typed helpers, and
 generated telemetry contract agree. If they disagree, fix the contract or code
 rather than documenting around the mismatch in this README.
+
+For new first-party events that are not in the generated contract yet, follow
+the public proposal and promotion workflow in
+[`doc/TELEMETRY_WORKFLOW.md`](../../../../doc/TELEMETRY_WORKFLOW.md).
 
 ## Retention
 

@@ -1,8 +1,11 @@
 export { companyService } from "./companies.js";
 export { companyArtifactsService } from "./company-artifacts.js";
 export { companySearchService } from "./company-search.js";
+export { companySearchExtractService } from "./company-search-extract.js";
 export { feedbackService } from "./feedback.js";
 export { companySkillService } from "./company-skills.js";
+export { companySkillPolicyService, normalizeSkillPolicySourceType } from "./company-skill-policy.js";
+export { folderService } from "./folders.js";
 export { agentService, deduplicateAgentName } from "./agents.js";
 export {
   builtInAgentService,
@@ -74,6 +77,7 @@ export { goalService } from "./goals.js";
 export { activityService, type ActivityFilters } from "./activity.js";
 export { workTimelineService, normalizeTimelineWindow } from "./work-timeline.js";
 export { attentionService } from "./attention.js";
+export { captureDecisionSnapshot, decisionTrainingService } from "./decision-training.js";
 export type {
   WorkTimelineActor,
   WorkTimelineEdge,
@@ -107,6 +111,10 @@ export {
   type RunOriginSnapshot,
 } from "./delegation-origin.js";
 export { agentToolCatalogService, buildCompactMcpRunContext, mcpQualifiedToolName, parseMcpQualifiedToolName } from "./agent-tools.js";
+export { googleSheetsRobotEmailFromEnv, toolAccessService } from "./tool-access.js";
+export { smokeLabService } from "./smoke-lab.js";
+export { backfillLegacyToolOAuthTokens } from "./tool-oauth-legacy-backfill.js";
+export { toolAccessPolicyService } from "./tool-access-policy.js";
 export { routineService } from "./routines.js";
 export { costService } from "./costs.js";
 export { financeService } from "./finance.js";
@@ -129,6 +137,7 @@ export {
   type PrincipalAccessCompatibilityBackfillStats,
 } from "./principal-access-compatibility.js";
 export { authorizationService } from "./authorization.js";
+export { inboxAgentPolicyService } from "./inbox-agent-policy.js";
 export type {
   AuthorizationAction,
   AuthorizationActor,
@@ -165,6 +174,7 @@ export { workspaceOperationService } from "./workspace-operations.js";
 export { workspaceFileResourceService } from "./workspace-file-resources.js";
 export { workProductService } from "./work-products.js";
 export { logActivity, type LogActivityInput } from "./activity-log.js";
+export { summarySlotService, SUMMARIZER_BUILT_IN_KEY } from "./summary-slots.js";
 export { notifyHireApproved, type NotifyHireApprovedInput } from "./hire-hook.js";
 export { publishLiveEvent, subscribeCompanyLiveEvents } from "./live-events.js";
 export {

@@ -346,6 +346,47 @@ describeEmbeddedPostgres("secretService", () => {
     expect(resolved.manifest[0]?.bindingId).toBe(binding!.id);
   });
 
+  it("fails closed at runtime for class-3 env lease rows outside the allowlist", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, {
+      name: `runtime-class3-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "runtime-secret",
+    });
+    const env = {
+      GITHUB_TOKEN: {
+        type: "secret_ref" as const,
+        secretId: secret.id,
+        version: "latest" as const,
+        projectionClass: "class_3_static_lease" as const,
+        projectionAllowlistKey: "github.token",
+      },
+    };
+
+    await db.insert(companySecretBindings).values({
+      companyId,
+      secretId: secret.id,
+      targetType: "agent",
+      targetId: "agent-1",
+      configPath: "env.GITHUB_TOKEN",
+      projectionClass: "class_3_static_lease",
+      projectionAllowlistKey: "github.token",
+    });
+
+    await expect(
+      svc.resolveEnvBindings(companyId, env, {
+        consumerType: "agent",
+        consumerId: "agent-1",
+        actorType: "agent",
+        actorId: "agent-1",
+      }),
+    ).rejects.toMatchObject({
+      status: 422,
+      details: { code: "class_3_static_lease_not_allowed" },
+    });
+  });
+
   it("denies user secret resolution outside the low-trust declaration allowlist", async () => {
     const companyId = await seedCompany();
     await seedCompanyMember(companyId, "user-1", "owner");

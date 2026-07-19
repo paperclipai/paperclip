@@ -48,6 +48,7 @@ import {
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
 import { useOptionalToastActions } from "../context/ToastContext";
+import { classifySkillDenial } from "@/lib/skill-policy-denial";
 import { agentsApi } from "@/api/agents";
 import { companySkillsApi } from "@/api/companySkills";
 import { issuesApi } from "@/api/issues";
@@ -187,6 +188,16 @@ function useMutationErrorToast() {
   const toast = useOptionalToastActions();
   return useCallback(
     (title: string) => (error: unknown) => {
+      // Under the open default there is no permission chrome. When an action is
+      // actually denied — by an explicit company policy (State B) or a platform
+      // safety invariant (State C) — show the actionable denial title/remediation
+      // instead of a generic "try again" error (§9.10, PAP-13865). Transient
+      // failures keep the plain error toast.
+      const denial = classifySkillDenial(error);
+      if (denial) {
+        toast?.pushToast({ tone: "warn", title: denial.title, body: denial.remediation });
+        return;
+      }
       const body =
         error instanceof Error && error.message ? error.message : "Please try again.";
       toast?.pushToast({ tone: "error", title, body });
@@ -266,6 +277,10 @@ export function SkillStudio() {
   const companyId = selectedCompanyId ?? "";
   const isCreateMode = location.pathname.replace(/\/+$/, "").endsWith("/skills/studio/new");
   const forkFromSkillId = isCreateMode ? searchParams.get("forkFrom")?.trim() || null : null;
+  // New skills created from a folder context (e.g. My Skills) carry their
+  // destination folder through this query param; without it the created skill
+  // silently lands in Unfiled (PAP-14086).
+  const newSkillFolderId = isCreateMode ? searchParams.get("folderId")?.trim() || null : null;
 
   const skillsQuery = useQuery({
     queryKey: queryKeys.companySkills.list(companyId),
@@ -322,6 +337,7 @@ export function SkillStudio() {
         skills={skillsQuery.data ?? []}
         skillsLoading={skillsQuery.isLoading}
         forkFromSkillId={forkFromSkillId}
+        folderId={newSkillFolderId}
         forkSkill={forkDetailQuery.data ?? null}
         forkLoading={forkDetailQuery.isLoading}
         forkError={forkDetailQuery.isError}
@@ -362,6 +378,7 @@ function StudioCreateMode({
   skills,
   skillsLoading,
   forkFromSkillId,
+  folderId,
   forkSkill,
   forkLoading,
   forkError,
@@ -371,6 +388,7 @@ function StudioCreateMode({
   skills: CompanySkillListItem[];
   skillsLoading: boolean;
   forkFromSkillId: string | null;
+  folderId: string | null;
   forkSkill: CompanySkillDetail | null;
   forkLoading: boolean;
   forkError: boolean;
@@ -392,6 +410,7 @@ function StudioCreateMode({
           <StudioNewSkillPanel
             companyId={companyId}
             forkFromSkillId={forkFromSkillId}
+            folderId={folderId}
             forkSkill={forkSkill}
             forkLoading={forkLoading}
             forkError={forkError}
@@ -405,12 +424,14 @@ function StudioCreateMode({
 function StudioNewSkillPanel({
   companyId,
   forkFromSkillId,
+  folderId,
   forkSkill,
   forkLoading,
   forkError,
 }: {
   companyId: string;
   forkFromSkillId: string | null;
+  folderId: string | null;
   forkSkill: CompanySkillDetail | null;
   forkLoading: boolean;
   forkError: boolean;
@@ -418,10 +439,12 @@ function StudioNewSkillPanel({
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const toast = useOptionalToastActions();
-  const initialDraft = useMemo(
-    () => (forkSkill ? buildForkSkillDraft(forkSkill) : buildBlankSkillDraft()),
-    [forkSkill],
-  );
+  const initialDraft = useMemo(() => {
+    const base = forkSkill ? buildForkSkillDraft(forkSkill) : buildBlankSkillDraft();
+    // An explicit folder context from the URL wins over a fork source's folder
+    // so the new skill is filed where the user launched creation (PAP-14086).
+    return folderId ? { ...base, folderId } : base;
+  }, [forkSkill, folderId]);
   const [draft, setDraft] = useState<SkillCreateDraft>(initialDraft);
   const [slugDirty, setSlugDirty] = useState(initialDraft.slug.trim().length > 0);
   const [categoryDraft, setCategoryDraft] = useState(initialDraft.categories.join(", "));

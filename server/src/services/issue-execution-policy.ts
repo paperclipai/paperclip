@@ -1128,3 +1128,7 @@ export function reconcileOrphanedPendingStage(input: {
     participant,
   };
 }
+
+export function applyIssueMonitorPolicyTransition(input: TransitionInput): TransitionResult {
+  return { patch: applyMonitorTransition(input, {}) };
+}

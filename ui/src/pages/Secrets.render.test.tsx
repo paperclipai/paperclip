@@ -52,11 +52,21 @@ const mockSecretsApi = vi.hoisted(() => ({
   removeMyUserSecret: vi.fn(),
 }));
 
+const mockAgentsApi = vi.hoisted(() => ({
+  list: vi.fn(),
+  get: vi.fn(),
+  update: vi.fn(),
+}));
+
 const mockSetBreadcrumbs = vi.hoisted(() => vi.fn());
 const mockPushToast = vi.hoisted(() => vi.fn());
 
 vi.mock("../api/secrets", () => ({
   secretsApi: mockSecretsApi,
+}));
+
+vi.mock("../api/agents", () => ({
+  agentsApi: mockAgentsApi,
 }));
 
 vi.mock("../context/CompanyContext", () => ({
@@ -295,6 +305,12 @@ function setTextareaValue(textarea: HTMLTextAreaElement, value: string) {
   textarea.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
+function setSelectValue(select: HTMLSelectElement, value: string) {
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, "value")?.set;
+  setter?.call(select, value);
+  select.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
 async function openAwsVaultDialog() {
   const vaultTabButton = [...document.querySelectorAll("button")].find(
     (button) => button.textContent?.includes("Provider vaults"),
@@ -340,6 +356,7 @@ describe("Secrets page layout", () => {
     mockSecretsApi.listUserSecretDefinitions.mockResolvedValue([]);
     mockSecretsApi.userSecretDefinitionCoverage.mockResolvedValue(userSecretCoverage);
     mockSecretsApi.listMyUserSecrets.mockResolvedValue([]);
+    mockAgentsApi.list.mockResolvedValue([]);
   });
 
   afterEach(() => {
@@ -667,6 +684,18 @@ describe("Secrets page layout", () => {
     });
     await flushReact();
 
+    const companyKeyInput = document.getElementById("new-secret-key") as HTMLInputElement;
+    expect(companyKeyInput.readOnly).toBe(true);
+
+    const editKeyButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Edit",
+    ) as HTMLButtonElement | undefined;
+    await act(async () => {
+      editKeyButton?.click();
+    });
+    await flushReact();
+    expect(companyKeyInput.readOnly).toBe(false);
+
     const eachUserButton = Array.from(document.body.querySelectorAll("button")).find(
       (button) => button.textContent?.trim() === "Each user",
     ) as HTMLButtonElement | undefined;
@@ -680,6 +709,12 @@ describe("Secrets page layout", () => {
     const nameInput = document.getElementById("new-secret-name") as HTMLInputElement;
     const keyInput = document.getElementById("new-secret-key") as HTMLInputElement;
     const usageGuidance = document.getElementById("new-secret-usage-guidance") as HTMLTextAreaElement;
+    expect(keyInput.readOnly).toBe(true);
+    expect(
+      Array.from(document.body.querySelectorAll("button")).some(
+        (button) => button.textContent?.trim() === "Edit",
+      ),
+    ).toBe(true);
     expect(document.getElementById("new-secret-provider")).toBeNull();
     expect(document.getElementById("new-secret-vault")).toBeNull();
     expect(document.getElementById("new-secret-value")).toBeNull();
@@ -845,6 +880,131 @@ describe("Secrets page layout", () => {
     expect(secretValueTextarea?.className).toContain("min-w-0");
     expect(secretValueTextarea?.className).toContain("overflow-x-hidden");
     expect(secretValueTextarea?.className).toContain("break-all");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("explains AWS managed secret creation failures with actionable safe details", async () => {
+    const rawProviderMessage =
+      "AccessDeniedException: arn:aws:sts::123456789012:assumed-role/prod/Paperclip is not authorized";
+    mockSecretsApi.create.mockRejectedValueOnce(
+      new ApiError("AWS Secrets Manager denied the request. Check IAM permissions for this provider vault.", 403, {
+        details: {
+          code: "access_denied",
+          provider: "aws_secrets_manager",
+          operation: "secret.create",
+          providerConfigId: "vault-aws",
+          region: "us-east-1",
+          credentialPath: "Paperclip server runtime/provider credential path",
+          requiredCapability: "secretsmanager:CreateSecret",
+          actionableMessage:
+            "AWS managed secret creation needs secretsmanager:CreateSecret in the selected region for this provider vault.",
+          safeAlternative:
+            "If the secret already exists in AWS, link it as an external reference instead of creating a Paperclip-managed value.",
+        },
+      }),
+    );
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <QueryClientProvider client={queryClient}>
+            <Secrets />
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const newSecretButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("New secret"),
+    ) as HTMLButtonElement | undefined;
+    await act(async () => {
+      newSecretButton?.click();
+    });
+    await flushReact();
+
+    await act(async () => {
+      setInputValue(document.getElementById("new-secret-name") as HTMLInputElement, "AWS test token");
+      setSelectValue(document.getElementById("new-secret-provider") as HTMLSelectElement, "aws_secrets_manager");
+      setTextareaValue(document.getElementById("new-secret-value") as HTMLTextAreaElement, "secret-value");
+    });
+    await flushReact();
+
+    const createButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Create secret",
+    ) as HTMLButtonElement | undefined;
+    await act(async () => {
+      createButton?.click();
+    });
+    await flushReact();
+    await flushReact();
+
+    const errorBanner = document.querySelector('[data-testid="secret-create-error"]');
+    expect(errorBanner?.textContent).toContain("AWS secret creation needs CreateSecret permission");
+    expect(errorBanner?.textContent).toContain("secretsmanager:CreateSecret");
+    expect(errorBanner?.textContent).toContain("us-east-1");
+    expect(errorBanner?.textContent).toContain("link it as an external reference");
+    expect(errorBanner?.textContent).toContain("vault-aws");
+    expect(errorBanner?.textContent).not.toContain(rawProviderMessage);
+    expect(errorBanner?.textContent).not.toContain("123456789012");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("renders generic secret creation failures with a stable selector", async () => {
+    mockSecretsApi.create.mockRejectedValueOnce(new ApiError("Secret creation failed", 500, null));
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <QueryClientProvider client={queryClient}>
+            <Secrets />
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const newSecretButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("New secret"),
+    ) as HTMLButtonElement | undefined;
+    await act(async () => {
+      newSecretButton?.click();
+    });
+    await flushReact();
+
+    await act(async () => {
+      setInputValue(document.getElementById("new-secret-name") as HTMLInputElement, "Failed token");
+      setTextareaValue(document.getElementById("new-secret-value") as HTMLTextAreaElement, "secret-value");
+    });
+    await flushReact();
+
+    const createButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Create secret",
+    ) as HTMLButtonElement | undefined;
+    await act(async () => {
+      createButton?.click();
+    });
+    await flushReact();
+    await flushReact();
+
+    const errorBanner = document.querySelector('[data-testid="secret-create-error"]');
+    expect(errorBanner?.textContent).toBe("Secret creation failed");
 
     await act(async () => {
       root.unmount();
@@ -1054,6 +1214,185 @@ describe("Secrets page layout", () => {
     expect(errorBanner?.textContent).toContain("AWS discovery request failed before IAM evaluation.");
     expect(errorBanner?.textContent).toContain("proxy_forbidden");
     expect(errorBanner?.textContent).not.toContain("AWS discovery needs ListSecrets permission");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("auto-generates the key from the name and keeps it read-only until Edit", async () => {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <QueryClientProvider client={queryClient}>
+            <Secrets />
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const newSecretButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("New secret"),
+    ) as HTMLButtonElement | undefined;
+    await act(async () => {
+      newSecretButton?.click();
+    });
+    await flushReact();
+
+    const nameInput = document.getElementById("new-secret-name") as HTMLInputElement;
+    const keyInput = document.getElementById("new-secret-key") as HTMLInputElement;
+    const valueTextarea = document.getElementById("new-secret-value") as HTMLTextAreaElement;
+
+    // Path-style placeholder and value directly after name for natural tab order.
+    expect(nameInput.placeholder).toBe("/dev/foo/bar");
+    expect(
+      nameInput.compareDocumentPosition(valueTextarea) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      valueTextarea.compareDocumentPosition(keyInput) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+
+    expect(keyInput.readOnly).toBe(true);
+    await act(async () => {
+      setInputValue(nameInput, "OpenAI API Key");
+    });
+    await flushReact();
+    expect(keyInput.value).toBe("openai-api-key");
+
+    const editKeyButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Edit",
+    ) as HTMLButtonElement | undefined;
+    expect(editKeyButton).toBeDefined();
+    await act(async () => {
+      editKeyButton?.click();
+    });
+    await flushReact();
+
+    expect((document.getElementById("new-secret-key") as HTMLInputElement).readOnly).toBe(false);
+
+    await act(async () => {
+      setInputValue(document.getElementById("new-secret-key") as HTMLInputElement, "custom-key");
+      setInputValue(nameInput, "OpenAI API Key v2");
+    });
+    await flushReact();
+
+    // Once edited, the key stops following the name.
+    expect((document.getElementById("new-secret-key") as HTMLInputElement).value).toBe("custom-key");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("grants and revokes agent access from the secret detail sheet", async () => {
+    mockSecretsApi.list.mockResolvedValue([makeCompanySecret()]);
+    mockSecretsApi.usage.mockResolvedValue({ secretId: "secret-openai", bindings: [] });
+    mockSecretsApi.accessEvents.mockResolvedValue([]);
+    const coder = {
+      id: "agent-coder",
+      name: "CodexCoder",
+      status: "active",
+      adapterConfig: {},
+    };
+    const reviewer = {
+      id: "agent-reviewer",
+      name: "Reviewer",
+      status: "active",
+      adapterConfig: {
+        env: { OPENAI_API_KEY: { type: "secret_ref", secretId: "secret-openai" } },
+      },
+    };
+    mockAgentsApi.list.mockResolvedValue([coder, reviewer]);
+    mockAgentsApi.get.mockImplementation(async (id: string) =>
+      id === "agent-coder" ? coder : reviewer,
+    );
+    mockAgentsApi.update.mockImplementation(async (id: string) =>
+      id === "agent-coder" ? coder : reviewer,
+    );
+
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <QueryClientProvider client={queryClient}>
+            <Secrets />
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const companyRow = Array.from(container.querySelectorAll("[role='row']")).find(
+      (row) => row.textContent?.includes("OPENAI_API_KEY"),
+    ) as HTMLElement | undefined;
+    await act(async () => {
+      companyRow?.click();
+    });
+    await flushReact();
+    await flushReact();
+
+    // Existing access is listed right in the Details tab.
+    expect(document.body.textContent).toContain("Agent access");
+    expect(document.body.textContent).toContain("Reviewer");
+
+    const agentSelect = document.getElementById("agent-access-agent") as HTMLSelectElement;
+    const envKeyInput = document.getElementById("agent-access-env-key") as HTMLInputElement;
+    expect(envKeyInput.value).toBe("OPENAI_API_KEY");
+    // Agents that already have access are not offered again.
+    expect(Array.from(agentSelect.options).map((option) => option.textContent)).not.toContain("Reviewer");
+
+    await act(async () => {
+      setSelectValue(agentSelect, "agent-coder");
+    });
+    await flushReact();
+
+    const addButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Add",
+    ) as HTMLButtonElement | undefined;
+    await act(async () => {
+      addButton?.click();
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(mockAgentsApi.update).toHaveBeenCalledWith(
+      "agent-coder",
+      {
+        adapterConfig: {
+          env: { OPENAI_API_KEY: { type: "secret_ref", secretId: "secret-openai" } },
+        },
+        replaceAdapterConfig: true,
+      },
+      "company-1",
+    );
+
+    const revokeButton = document.body.querySelector(
+      'button[aria-label="Remove access for Reviewer"]',
+    ) as HTMLButtonElement | null;
+    expect(revokeButton).not.toBeNull();
+    await act(async () => {
+      revokeButton?.click();
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(mockAgentsApi.update).toHaveBeenCalledWith(
+      "agent-reviewer",
+      { adapterConfig: { env: {} }, replaceAdapterConfig: true },
+      "company-1",
+    );
 
     await act(async () => {
       root.unmount();

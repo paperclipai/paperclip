@@ -1085,3 +1085,207 @@ describe("LiveUpdatesProvider run lifecycle toasts", () => {
     });
   });
 });
+
+describe("applyRunLifecycleToCompanyLiveRuns", () => {
+  function makeClient(initial: Array<{ id: string; status: string }>) {
+    const cache = new Map<string, unknown>([
+      [JSON.stringify(queryKeys.liveRuns("company-1")), initial],
+    ]);
+    const client = {
+      getQueryData: (key: unknown) => cache.get(JSON.stringify(key)),
+      setQueryData: (key: unknown, updater: unknown) => {
+        const cacheKey = JSON.stringify(key);
+        const current = cache.get(cacheKey);
+        cache.set(cacheKey, typeof updater === "function" ? updater(current) : updater);
+      },
+    };
+    const read = () => cache.get(JSON.stringify(queryKeys.liveRuns("company-1")));
+    return { client, read };
+  }
+
+  it("removes a run on a terminal status (patched, no refetch needed)", () => {
+    const { client, read } = makeClient([{ id: "run-1", status: "running" }, { id: "run-2", status: "running" }]);
+    const patched = __liveUpdatesTestUtils.applyRunLifecycleToCompanyLiveRuns(
+      client as never,
+      "company-1",
+      { runId: "run-1", status: "succeeded" },
+    );
+    expect(patched).toBe(true);
+    expect(read()).toEqual([{ id: "run-2", status: "running" }]);
+  });
+
+  it("patches status in place for a run already in the list", () => {
+    const { client, read } = makeClient([{ id: "run-1", status: "queued" }]);
+    const patched = __liveUpdatesTestUtils.applyRunLifecycleToCompanyLiveRuns(
+      client as never,
+      "company-1",
+      { runId: "run-1", status: "running" },
+    );
+    expect(patched).toBe(true);
+    expect(read()).toEqual([{ id: "run-1", status: "running" }]);
+  });
+
+  it("reports not-patched for a genuinely new run so the caller refetches", () => {
+    const { client, read } = makeClient([{ id: "run-1", status: "running" }]);
+    const patched = __liveUpdatesTestUtils.applyRunLifecycleToCompanyLiveRuns(
+      client as never,
+      "company-1",
+      { runId: "run-new", status: "running" },
+    );
+    expect(patched).toBe(false);
+    expect(read()).toEqual([{ id: "run-1", status: "running" }]); // unchanged
+  });
+});
+
+describe("LiveUpdatesProvider summary slot invalidation", () => {
+  it("invalidates the slot and revisions queries on summary_slot.write", () => {
+    const invalidations: unknown[] = [];
+    const queryClient = {
+      invalidateQueries: (input: unknown) => {
+        invalidations.push(input);
+      },
+      getQueryData: () => undefined,
+    };
+
+    __liveUpdatesTestUtils.invalidateActivityQueries(
+      queryClient as never,
+      "company-1",
+      {
+        entityType: "summary_slot",
+        entityId: "slot-1",
+        action: "summary_slot.write",
+        details: {
+          scopeKind: "project",
+          scopeId: "project-1",
+          slotKey: "header",
+          revisionId: "rev-2",
+        },
+      },
+      { userId: null, agentId: null },
+    );
+
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.summarySlots.detail("company-1", "project", "header", "project-1"),
+    });
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.summarySlots.revisions("company-1", "project", "header", "project-1"),
+    });
+  });
+
+  it("maps a null scopeId to a company-scoped slot key", () => {
+    const invalidations: unknown[] = [];
+    const queryClient = {
+      invalidateQueries: (input: unknown) => {
+        invalidations.push(input);
+      },
+      getQueryData: () => undefined,
+    };
+
+    __liveUpdatesTestUtils.invalidateActivityQueries(
+      queryClient as never,
+      "company-1",
+      {
+        entityType: "summary_slot",
+        entityId: "slot-1",
+        action: "summary_slot.write",
+        details: { scopeKind: "company", scopeId: null, slotKey: "header" },
+      },
+      { userId: null, agentId: null },
+    );
+
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.summarySlots.detail("company-1", "company", "header", null),
+    });
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.summarySlots.revisions("company-1", "company", "header", null),
+    });
+  });
+
+  it("skips slot invalidation when scope details are missing", () => {
+    const invalidations: unknown[] = [];
+    const queryClient = {
+      invalidateQueries: (input: unknown) => {
+        invalidations.push(input);
+      },
+      getQueryData: () => undefined,
+    };
+
+    __liveUpdatesTestUtils.invalidateActivityQueries(
+      queryClient as never,
+      "company-1",
+      {
+        entityType: "summary_slot",
+        entityId: "slot-1",
+        action: "summary_slot.write",
+        details: null,
+      },
+      { userId: null, agentId: null },
+    );
+
+    expect(
+      invalidations.some(
+        (entry) =>
+          Array.isArray((entry as { queryKey?: unknown[] }).queryKey) &&
+          (entry as { queryKey: unknown[] }).queryKey[0] === "summary-slots",
+      ),
+    ).toBe(false);
+  });
+});
+
+describe("dispatchLiveEventToSubscribers", () => {
+  const baseEvent = {
+    id: 1,
+    companyId: "company-1",
+    type: "heartbeat.run.progress" as const,
+    createdAt: "2026-07-15T00:00:00.000Z",
+    payload: { issueId: "issue-1" },
+  };
+
+  it("delivers events for the active company to every subscriber", () => {
+    const received: unknown[] = [];
+    const subscribers = new Set<(event: never) => void>([
+      (event) => received.push(["a", event]),
+      (event) => received.push(["b", event]),
+    ]);
+
+    __liveUpdatesTestUtils.dispatchLiveEventToSubscribers(
+      subscribers as never,
+      "company-1",
+      baseEvent as never,
+    );
+
+    expect(received).toHaveLength(2);
+  });
+
+  it("drops events for other companies", () => {
+    const received: unknown[] = [];
+    const subscribers = new Set<(event: never) => void>([() => received.push("hit")]);
+
+    __liveUpdatesTestUtils.dispatchLiveEventToSubscribers(
+      subscribers as never,
+      "company-2",
+      baseEvent as never,
+    );
+
+    expect(received).toHaveLength(0);
+  });
+
+  it("isolates a throwing subscriber from the rest", () => {
+    const received: string[] = [];
+    const subscribers = new Set<(event: never) => void>([
+      () => {
+        throw new Error("boom");
+      },
+      () => received.push("still-called"),
+    ]);
+
+    expect(() =>
+      __liveUpdatesTestUtils.dispatchLiveEventToSubscribers(
+        subscribers as never,
+        "company-1",
+        baseEvent as never,
+      ),
+    ).not.toThrow();
+    expect(received).toEqual(["still-called"]);
+  });
+});

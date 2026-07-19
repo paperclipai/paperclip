@@ -20,6 +20,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Pin,
+  AppWindow,
   MessagesSquare,
   GanttChartSquare,
 } from "lucide-react";
@@ -76,7 +77,10 @@ export function Sidebar() {
     resourceKey: "live-runs",
     queryKey: liveRunsQueryKey,
     enabled: !!selectedCompanyId,
-    refetchInterval: 10_000,
+    // Event-sourced via LiveUpdatesProvider (#9627) + reconnect reconcile — no
+    // interval poll needed. Polling here also re-armed React Query's timer on
+    // every live-event cache write, a major source of steady-state churn.
+    refetchInterval: false,
     leaderOnly: true,
   });
   const { data: liveRuns, dataUpdatedAt: liveRunsUpdatedAt } = useQuery({
@@ -88,6 +92,7 @@ export function Sidebar() {
   usePublishSharedQueryData(sharedLiveRuns, liveRuns, liveRunsUpdatedAt);
   const liveRunCount = liveRuns?.length ?? 0;
   const showWorkspacesLink = experimentalSettings?.enableIsolatedWorkspaces === true;
+  const showApps = experimentalSettings?.enableApps === true;
   const showPipelines = experimentalSettings?.enablePipelines === true;
   const goalsLinkPending = experimentalSettings === undefined;
   const showGoalsLink = experimentalSettings?.enableGoalsSidebarLink === true;
@@ -282,6 +287,7 @@ export function Sidebar() {
           {mcpClientEnabled ? (
             <SidebarNavItem to="/company/settings/mcp-servers" label="MCP Servers" icon={Server} />
           ) : null}
+          {showApps ? <SidebarNavItem to="/apps" label="Apps" icon={AppWindow} /> : null}
           <SidebarNavItem to="/timeline" label="Timeline" icon={GanttChartSquare} />
           <SidebarNavItem to="/costs" label="Costs" icon={DollarSign} />
           <SidebarNavItem to="/activity" label="Activity" icon={History} />

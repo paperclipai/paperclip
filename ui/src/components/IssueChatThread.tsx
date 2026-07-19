@@ -45,6 +45,7 @@ import type {
 } from "@paperclipai/shared";
 import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
 import { useLiveRunTranscripts } from "./transcript/useLiveRunTranscripts";
+import { useSecondTick } from "../hooks/useSecondTick";
 import { usePaperclipIssueRuntime, type PaperclipIssueRuntimeReassignment } from "../hooks/usePaperclipIssueRuntime";
 import { useOptionalToastActions } from "../context/ToastContext";
 import { copyTextToClipboard } from "../lib/clipboard";
@@ -305,12 +306,10 @@ function findCoTSegmentIndex(
 }
 
 function useLiveElapsed(startMs: number | null | undefined, active: boolean): string | null {
-  const [, rerender] = useState(0);
-  useEffect(() => {
-    if (!active || !startMs) return;
-    const interval = setInterval(() => rerender((n) => n + 1), 1000);
-    return () => clearInterval(interval);
-  }, [active, startMs]);
+  // Drive the 1s refresh from the shared page-wide ticker instead of a
+  // per-instance setInterval, so a thread with many live elements uses one
+  // timer rather than one per element.
+  useSecondTick(Boolean(active && startMs));
   if (!active || !startMs) return null;
   return formatDurationWords(Date.now() - startMs);
 }
@@ -528,6 +527,8 @@ interface IssueChatThreadProps {
     verdicts: { id: string; verdict: RequestItemVerdictValue; reason?: string }[],
   ) => Promise<void> | void;
   composerRef?: Ref<IssueChatComposerHandle>;
+  /** Optional node rendered inline directly above the sticky composer dock (e.g. the monitor strip). */
+  composerAccessory?: ReactNode;
   issueWorkMode?: IssueWorkMode;
   /**
    * Hook for the parent to refetch comments when the user explicitly asks
@@ -4250,6 +4251,7 @@ export function IssueChatThread({
   onCancelInteraction,
   onSubmitInteractionVerdicts,
   composerRef,
+  composerAccessory,
   issueWorkMode,
   onWorkModeChange,
   onRefreshLatestComments,
@@ -5003,6 +5005,12 @@ export function IssueChatThread({
             </div>
           </div>
         </IssueChatErrorBoundary>
+
+        {showComposer && composerAccessory ? (
+          <div data-testid="issue-chat-composer-accessory" className="mb-2">
+            {composerAccessory}
+          </div>
+        ) : null}
 
         {showComposer ? (
           <div

@@ -51,6 +51,8 @@ export interface BuiltInAgentDefinition {
   defaultInstructions: string;
   defaultRole: string;
   allowedAdapterTypes?: string[];
+  defaultAdapterType?: string;
+  defaultAdapterConfig?: Record<string, unknown>;
   defaultBudgetMonthlyCents?: number;
   bundle?: BuiltInAgentBundleMeta;
 }

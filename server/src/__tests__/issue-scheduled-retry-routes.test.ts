@@ -348,14 +348,14 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
     expect(res.status).toBe(403);
   });
 
-  it("enforces company scoping for retry-now", async () => {
+  it("enforces company scoping for retry-now with a uniform 404", async () => {
     const { issueId } = await seedIssueWithRetry();
 
     const res = await request(createApp(boardActor(randomUUID())))
       .post(`/api/issues/${issueId}/scheduled-retry/retry-now`)
       .send({});
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
   });
 
   it("suppresses retry-now when the issue is under a budget hard-stop", async () => {

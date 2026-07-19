@@ -14,7 +14,11 @@ import { applyTrustProxy, parseTrustProxyEnv } from "./middleware/trust-proxy.js
 import { healthRoutes } from "./routes/health.js";
 import { companyRoutes } from "./routes/companies.js";
 import { companySkillRoutes } from "./routes/company-skills.js";
+import { companySkillPolicyRoutes } from "./routes/company-skill-policy.js";
+import { inboxAgentPolicyRoutes } from "./routes/inbox-agent-policy.js";
 import { builtInAgentRoutes } from "./routes/built-in-agents.js";
+import { folderRoutes } from "./routes/folders.js";
+import { summarySlotRoutes } from "./routes/summary-slots.js";
 import { teamsCatalogRoutes } from "./routes/teams-catalog.js";
 import { agentRoutes } from "./routes/agents.js";
 import { projectRoutes } from "./routes/projects.js";
@@ -33,10 +37,13 @@ import { secretRoutes } from "./routes/secrets.js";
 import { mcpServerRoutes } from "./routes/mcp-servers.js";
 import { agentToolRoutes } from "./routes/agent-tools.js";
 import { isMcpClientEnabled } from "./mcp-client-flag.js";
+import { toolAccessRoutes } from "./routes/tool-access.js";
+import { smokeLabRoutes } from "./routes/smoke-lab.js";
 import { costRoutes } from "./routes/costs.js";
 import { activityRoutes } from "./routes/activity.js";
 import { dashboardRoutes } from "./routes/dashboard.js";
 import { attentionRoutes } from "./routes/attention.js";
+import { decisionTrainingRoutes } from "./routes/decision-training.js";
 import { userProfileRoutes } from "./routes/user-profiles.js";
 import { sidebarBadgeRoutes } from "./routes/sidebar-badges.js";
 import { sidebarPreferenceRoutes } from "./routes/sidebar-preferences.js";
@@ -54,6 +61,7 @@ import { assetRoutes } from "./routes/assets.js";
 import { brandKitRoutes } from "./routes/brand-kits.js";
 import { accessRoutes } from "./routes/access.js";
 import { pluginRoutes } from "./routes/plugins.js";
+import { mcpGatewayProtocolRoutes, toolGatewayRoutes } from "./routes/tool-gateway.js";
 import { adapterRoutes } from "./routes/adapters.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
 import { readBrandedStaticIndexHtml } from "./static-index-html.js";
@@ -64,6 +72,7 @@ import { createPluginWorkerManager, type PluginWorkerManager } from "./services/
 import { createPluginJobScheduler } from "./services/plugin-job-scheduler.js";
 import { pluginJobStore } from "./services/plugin-job-store.js";
 import { createPluginToolDispatcher } from "./services/plugin-tool-dispatcher.js";
+import { createToolGatewayService } from "./services/tool-gateway.js";
 import { pluginLifecycleManager } from "./services/plugin-lifecycle.js";
 import { createPluginJobCoordinator } from "./services/plugin-job-coordinator.js";
 import { buildHostServices, flushPluginLogBuffer } from "./services/plugin-host-services.js";
@@ -238,17 +247,17 @@ export async function createApp(
   api.use(openApiRoutes());
   api.use("/companies", companyRoutes(db, opts.storageService));
   api.use(llmRoutes(db));
+  api.use(folderRoutes(db));
   api.use(companySkillRoutes(db));
+  api.use(companySkillPolicyRoutes(db));
+  api.use(inboxAgentPolicyRoutes(db));
   api.use(builtInAgentRoutes(db));
+  api.use(summarySlotRoutes(db));
   api.use(teamsCatalogRoutes(db));
   api.use(agentRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(assetRoutes(db, opts.storageService));
   api.use(brandKitRoutes(db, opts.storageService));
   api.use(projectRoutes(db));
-  api.use(issueRoutes(db, opts.storageService, {
-    feedbackExportService: opts.feedbackExportService,
-    pluginWorkerManager: workerManager,
-  }));
   api.use(caseRoutes(db, opts.storageService));
   api.use(issueTreeControlRoutes(db));
   api.use(fileResourceRoutes(db));
@@ -263,10 +272,15 @@ export async function createApp(
   if (isMcpClientEnabled()) {
     api.use(mcpServerRoutes(db));
   }
+  const trustedLocalStdioRuntimeHost =
+    process.env.PAPERCLIP_TRUSTED_MCP_RUNTIME_HOST
+    ?? process.env.PAPERCLIP_TOOL_RUNTIME_TRUSTED_HOST
+    ?? null;
   api.use(costRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(activityRoutes(db));
   api.use(dashboardRoutes(db));
   api.use(attentionRoutes(db));
+  api.use(decisionTrainingRoutes(db));
   api.use(userProfileRoutes(db));
   api.use(sidebarBadgeRoutes(db));
   api.use(sidebarPreferenceRoutes(db));
@@ -291,6 +305,31 @@ export async function createApp(
     lifecycleManager: lifecycle,
     db,
   });
+  const toolGateway = createToolGatewayService(db, {
+    pluginToolDispatcher: toolDispatcher,
+    deploymentMode: opts.deploymentMode,
+    deploymentExposure: opts.deploymentExposure,
+    trustedLocalStdioRuntimeHost,
+  });
+  // Issue routes are intentionally mounted after the gateway is constructed because
+  // issue approval endpoints delegate to it. The intervening routers use distinct
+  // route prefixes, so this dependency does not change issue-route precedence.
+  api.use(issueRoutes(db, opts.storageService, {
+    feedbackExportService: opts.feedbackExportService,
+    pluginWorkerManager: workerManager,
+    approveToolActionRequest: (input) => toolGateway.approveActionRequest(input),
+  }));
+  app.use(mcpGatewayProtocolRoutes(toolGateway));
+  api.use(toolAccessRoutes(db, {
+    deploymentMode: opts.deploymentMode,
+    deploymentExposure: opts.deploymentExposure,
+    trustedLocalStdioRuntimeHost,
+    toolGateway,
+  }));
+  api.use(smokeLabRoutes(db, {
+    deploymentMode: opts.deploymentMode,
+    deploymentExposure: opts.deploymentExposure,
+  }));
   const jobCoordinator = createPluginJobCoordinator({
     db,
     lifecycle,
@@ -343,6 +382,9 @@ export async function createApp(
     },
   );
   api.use(
+    toolGatewayRoutes(db, toolGateway),
+  );
+  api.use(
     pluginRoutes(
       db,
       loader,
@@ -351,6 +393,7 @@ export async function createApp(
       { toolDispatcher },
       { workerManager },
       { localDeployToken: opts.localDeployToken },
+      { toolGateway },
     ),
   );
   if (isMcpClientEnabled()) {

@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { createServer } from "node:net";
 import { eq } from "drizzle-orm";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -28,6 +29,7 @@ import {
   resolveWorktreeReseedTargetPaths,
   resolveGitWorktreeAddArgs,
   resolvePnpmInstallInvocation,
+  resolveWorktreeSeedBackupEngine,
   resolveWorktreeMakeTargetPath,
   worktreeRepairCommand,
   worktreeInitCommand,
@@ -60,6 +62,35 @@ if (!embeddedPostgresSupport.supported) {
   console.warn(
     `Skipping embedded Postgres worktree CLI tests on this host: ${embeddedPostgresSupport.reason ?? "unsupported environment"}`,
   );
+}
+
+async function reserveTestPort(): Promise<{ port: number; release: () => Promise<void> }> {
+  const server = createServer();
+  server.unref();
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      server.off("error", reject);
+      resolve();
+    });
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    server.close();
+    throw new Error("Failed to reserve test port");
+  }
+  let released = false;
+  return {
+    port: address.port,
+    release: () => new Promise<void>((resolve, reject) => {
+      if (released) {
+        resolve();
+        return;
+      }
+      released = true;
+      server.close((error) => (error ? reject(error) : resolve()));
+    }),
+  };
 }
 
 afterEach(() => {
@@ -875,6 +906,11 @@ describe("worktree helpers", () => {
     }
   });
 
+  it("uses streaming backup selection for full seeds and transformed backup selection for minimal seeds", () => {
+    expect(resolveWorktreeSeedBackupEngine(resolveWorktreeSeedPlan("full"))).toBe("auto");
+    expect(resolveWorktreeSeedBackupEngine(resolveWorktreeSeedPlan("minimal"))).toBe("javascript");
+  });
+
   itEmbeddedPostgres("reseed preserves the current worktree ports, instance id, and branding", async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-reseed-"));
     const repoRoot = path.join(tempRoot, "repo");
@@ -893,6 +929,10 @@ describe("worktree helpers", () => {
     });
     const originalCwd = process.cwd();
     const originalPaperclipConfig = process.env.PAPERCLIP_CONFIG;
+    const currentDatabaseReservation = await reserveTestPort();
+    const sourceDatabaseReservation = await reserveTestPort();
+    const currentDatabasePort = currentDatabaseReservation.port;
+    const sourceDatabasePort = sourceDatabaseReservation.port;
 
     try {
       fs.mkdirSync(path.dirname(currentPaths.configPath), { recursive: true });
@@ -905,13 +945,13 @@ describe("worktree helpers", () => {
         sourceConfig: buildSourceConfig(),
         paths: currentPaths,
         serverPort: 3114,
-        databasePort: 54341,
+        databasePort: currentDatabasePort,
       });
       const sourceConfig = buildWorktreeConfig({
         sourceConfig: buildSourceConfig(),
         paths: sourcePaths,
         serverPort: 3200,
-        databasePort: 54400,
+        databasePort: sourceDatabasePort,
       });
       fs.writeFileSync(currentPaths.configPath, JSON.stringify(currentConfig, null, 2), "utf8");
       fs.writeFileSync(sourcePaths.configPath, JSON.stringify(sourceConfig, null, 2), "utf8");
@@ -930,6 +970,9 @@ describe("worktree helpers", () => {
       delete process.env.PAPERCLIP_CONFIG;
       process.chdir(repoRoot);
 
+      await currentDatabaseReservation.release();
+      await sourceDatabaseReservation.release();
+
       await worktreeReseedCommand({
         fromConfig: sourcePaths.configPath,
         yes: true,
@@ -939,12 +982,14 @@ describe("worktree helpers", () => {
       const rewrittenEnv = fs.readFileSync(currentPaths.envPath, "utf8");
 
       expect(rewrittenConfig.server.port).toBe(3114);
-      expect(rewrittenConfig.database.embeddedPostgresPort).toBe(54341);
+      expect(rewrittenConfig.database.embeddedPostgresPort).toBe(currentDatabasePort);
       expect(rewrittenConfig.database.embeddedPostgresDataDir).toBe(currentPaths.embeddedPostgresDataDir);
       expect(rewrittenEnv).toContain(`PAPERCLIP_INSTANCE_ID=${currentInstanceId}`);
       expect(rewrittenEnv).toContain("PAPERCLIP_WORKTREE_NAME=existing-name");
       expect(rewrittenEnv).toContain("PAPERCLIP_WORKTREE_COLOR=\"#112233\"");
     } finally {
+      await currentDatabaseReservation.release();
+      await sourceDatabaseReservation.release();
       process.chdir(originalCwd);
       if (originalPaperclipConfig === undefined) {
         delete process.env.PAPERCLIP_CONFIG;

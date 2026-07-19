@@ -9,6 +9,7 @@ import {
   buildSuccessfulRunHandoffRequiredNotice,
   decideSuccessfulRunHandoff,
   isIdempotentFinishSuccessfulRunHandoffWakeStatus,
+  isSuccessfulRunHandoffValidPathSkip,
   isSuccessfulRunHandoffRequiredNoticeBody,
   noticeMetadataReferencesRecoveryAction,
 } from "./successful-run-handoff.js";
@@ -62,11 +63,12 @@ function decide(overrides: Partial<Parameters<typeof decideSuccessfulRunHandoff>
 }
 
 describe("successful run handoff decision", () => {
-  it("queues one corrective handoff wake for a successful progress run without a visible next action", () => {
+  it("queues one status-only corrective wake to the original agent when a successful run has no disposition", () => {
     const decision = decide();
 
     expect(decision.kind).toBe("enqueue");
     if (decision.kind !== "enqueue") return;
+    expect(decision.targetAgentId).toBe(run.agentId);
     expect(decision.idempotencyKey).toBe("finish_successful_run_handoff:issue-1:run-1:1");
     expect(decision.payload).toMatchObject({
       issueId: "issue-1",
@@ -91,6 +93,9 @@ describe("successful run handoff decision", () => {
       allowDocumentUpdates: false,
       resumeRequiresNormalModel: true,
     });
+    expect(decision.instruction).toContain(
+      "This is a status-only retry to the original agent. Record a disposition; do not start new work.",
+    );
     expect(decision.instruction).toContain("Resolve the missing disposition before creating or revising any new artifacts");
     expect(decision.instruction).toContain("Choose **exactly one** outcome");
     expect(decision.instruction).toContain("record an explicit continuation path");
@@ -124,6 +129,12 @@ describe("successful run handoff decision", () => {
       kind: "skip",
       reason: "issue already has an active execution path",
     });
+  });
+
+  it("identifies valid-path skips that can durably resolve a stale required event", () => {
+    expect(isSuccessfulRunHandoffValidPathSkip(decide({ hasActiveExecutionPath: true }))).toBe(true);
+    expect(isSuccessfulRunHandoffValidPathSkip(decide({ hasQueuedWake: true }))).toBe(true);
+    expect(isSuccessfulRunHandoffValidPathSkip(decide({ budgetBlocked: true }))).toBe(false);
   });
 
   it("does not treat killed background-task evidence as a missing live path when a durable monitor owns the wait", () => {

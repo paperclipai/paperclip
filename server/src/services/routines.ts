@@ -12,6 +12,7 @@ import {
   documentRevisions,
   documents,
   executionWorkspaces,
+  folders,
   goals,
   heartbeatRuns,
   issueInboxArchives,
@@ -237,6 +238,22 @@ export function nextCronTickInTimeZone(expression: string, timeZone: string, aft
     cursor.setUTCMinutes(cursor.getUTCMinutes() + 1);
   }
   return null;
+}
+
+function isSubHourlyCronExpression(expression: string, timeZone: string, after: Date) {
+  const firstTick = nextCronTickInTimeZone(expression, timeZone, after);
+  if (!firstTick) return false;
+
+  const windowEnd = firstTick.getTime() + 24 * 60 * 60 * 1000;
+  let occurrenceCount = 1;
+  let cursor = firstTick;
+  while (occurrenceCount <= 24) {
+    const nextTick = nextCronTickInTimeZone(expression, timeZone, cursor);
+    if (!nextTick || nextTick.getTime() >= windowEnd) return false;
+    occurrenceCount += 1;
+    cursor = nextTick;
+  }
+  return true;
 }
 
 function nextResultText(status: string, issueId?: string | null) {
@@ -958,6 +975,17 @@ export function routineService(
     if (parentIssue.companyId !== companyId) throw unprocessable("Parent issue must belong to same company");
   }
 
+  async function assertRoutineFolder(companyId: string, folderId: string | null | undefined) {
+    if (!folderId) return;
+    const folder = await db
+      .select({ id: folders.id, kind: folders.kind })
+      .from(folders)
+      .where(and(eq(folders.companyId, companyId), eq(folders.id, folderId)))
+      .then((rows) => rows[0] ?? null);
+    if (!folder) throw notFound("Folder not found");
+    if (folder.kind !== "routine") throw unprocessable("Folder kind must match routine");
+  }
+
   async function listTriggersForRoutineIds(companyId: string, routineIds: string[]) {
     if (routineIds.length === 0) return new Map<string, RoutineTrigger[]>();
     const rows = await db
@@ -1594,6 +1622,7 @@ export function routineService(
     executionWorkspacePreference?: string | null;
     executionWorkspaceSettings?: Record<string, unknown> | null;
     descriptionAppendix?: string | null;
+    nextRunAtOverride?: Date | null;
     actor?: Actor;
   }) {
     const projectId = input.projectId ?? input.routine.projectId ?? null;
@@ -1718,9 +1747,11 @@ export function routineService(
         })
         .returning();
 
-      const nextRunAt = input.trigger?.kind === "schedule" && input.trigger.cronExpression && input.trigger.timezone
-        ? nextCronTickInTimeZone(input.trigger.cronExpression, input.trigger.timezone, triggeredAt)
-        : undefined;
+      const nextRunAt = input.nextRunAtOverride !== undefined
+        ? input.nextRunAtOverride
+        : input.trigger?.kind === "schedule" && input.trigger.cronExpression && input.trigger.timezone
+          ? nextCronTickInTimeZone(input.trigger.cronExpression, input.trigger.timezone, triggeredAt)
+          : undefined;
 
       let createdIssue: Awaited<ReturnType<typeof issueSvc.create>> | null = null;
       try {
@@ -2047,6 +2078,7 @@ export function routineService(
 
     create: async (companyId: string, input: CreateRoutine, actor: Actor): Promise<Routine> => {
       await assertProject(companyId, input.projectId ?? null);
+      await assertRoutineFolder(companyId, input.folderId ?? null);
       await assertAssignableAgent(db, companyId, input.assigneeAgentId ?? null, { kind: "routine" });
       if (input.goalId) await assertGoal(companyId, input.goalId);
       if (input.parentIssueId) await assertParentIssue(companyId, input.parentIssueId);
@@ -2073,6 +2105,7 @@ export function routineService(
           .values({
             companyId,
             projectId: input.projectId ?? null,
+            folderId: input.folderId ?? null,
             goalId: input.goalId ?? null,
             parentIssueId: input.parentIssueId ?? null,
             title: input.title,
@@ -2111,6 +2144,7 @@ export function routineService(
       const existing = await getRoutineById(id);
       if (!existing) return null;
       const nextProjectId = patch.projectId === undefined ? existing.projectId : patch.projectId;
+      const nextFolderId = patch.folderId === undefined ? existing.folderId : patch.folderId;
       const nextAssigneeAgentId = patch.assigneeAgentId === undefined ? existing.assigneeAgentId : patch.assigneeAgentId;
       const nextTitle = patch.title ?? existing.title;
       const nextDescription = patch.description === undefined ? existing.description : patch.description;
@@ -2134,6 +2168,7 @@ export function routineService(
         patch.variables === undefined ? existing.variables : sanitizeRoutineVariableInputs(patch.variables),
       );
       if (patch.projectId !== undefined) await assertProject(existing.companyId, nextProjectId);
+      if (patch.folderId !== undefined) await assertRoutineFolder(existing.companyId, nextFolderId);
       if (patch.assigneeAgentId !== undefined || patch.status === "active") {
         await assertAssignableAgent(db, existing.companyId, nextAssigneeAgentId, { kind: "routine" });
       }
@@ -2183,6 +2218,7 @@ export function routineService(
         const candidate: RoutineRow = {
           ...locked,
           projectId: nextProjectId,
+          folderId: nextFolderId,
           goalId: patch.goalId === undefined ? locked.goalId : patch.goalId,
           parentIssueId: patch.parentIssueId === undefined ? locked.parentIssueId : patch.parentIssueId,
           title: nextTitle,
@@ -2199,8 +2235,20 @@ export function routineService(
           updatedByUserId: actor.userId ?? null,
         };
 
+        const folderChanged = patch.folderId !== undefined && locked.folderId !== candidate.folderId;
         if (locked.latestRevisionId && routineCurrentFieldsMatch(locked, candidate)) {
-          return locked;
+          if (!folderChanged) return locked;
+          const [updated] = await txDb
+            .update(routines)
+            .set({
+              folderId: candidate.folderId,
+              updatedByAgentId: actor.agentId ?? null,
+              updatedByUserId: actor.userId ?? null,
+              updatedAt: new Date(),
+            })
+            .where(eq(routines.id, id))
+            .returning();
+          return updated ?? locked;
         }
 
         const nextSnapshot = await buildRoutineRevisionSnapshot(txDb, candidate);
@@ -2233,6 +2281,7 @@ export function routineService(
           .update(routines)
           .set({
             projectId: candidate.projectId,
+            folderId: candidate.folderId,
             goalId: candidate.goalId,
             parentIssueId: candidate.parentIssueId,
             title: candidate.title,
@@ -2936,12 +2985,16 @@ export function routineService(
         let claimedNextRunAt = nextCronTickInTimeZone(row.trigger.cronExpression, row.trigger.timezone, now);
 
         if (!projectPaused && !worktreeSuppressed && row.routine.catchUpPolicy === "enqueue_missed_with_cap") {
-          let cursor: Date | null = row.trigger.nextRunAt;
-          runCount = 0;
-          while (cursor && cursor <= now && runCount < MAX_CATCH_UP_RUNS) {
-            runCount += 1;
-            claimedNextRunAt = nextCronTickInTimeZone(row.trigger.cronExpression, row.trigger.timezone, cursor);
-            cursor = claimedNextRunAt;
+          if (isSubHourlyCronExpression(row.trigger.cronExpression, row.trigger.timezone, now)) {
+            claimedNextRunAt = nextCronTickInTimeZone(row.trigger.cronExpression, row.trigger.timezone, now);
+          } else {
+            let cursor: Date | null = row.trigger.nextRunAt;
+            runCount = 0;
+            while (cursor && cursor <= now && runCount < MAX_CATCH_UP_RUNS) {
+              runCount += 1;
+              claimedNextRunAt = nextCronTickInTimeZone(row.trigger.cronExpression, row.trigger.timezone, cursor);
+              cursor = claimedNextRunAt;
+            }
           }
         }
 
@@ -2999,6 +3052,7 @@ export function routineService(
             routine: row.routine,
             trigger: row.trigger,
             source: "schedule",
+            nextRunAtOverride: claimedNextRunAt,
           });
           triggered += 1;
         }

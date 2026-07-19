@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
-import { and, asc, eq, inArray, isNotNull } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -1572,10 +1572,13 @@ export function issueThreadInteractionService(db: Db) {
 
     expireRequestConfirmationsSupersededByComment: async (
       issue: { id: string; companyId: string },
-      comment: { id: string; createdAt: Date | string; authorUserId?: string | null },
+      comment: { id: string; createdAt: Date | string; authorUserId?: string | null; createdByRunId?: string | null },
       actor: InteractionActor,
     ) => {
       if (!comment.authorUserId) return [];
+      // Local-CLI adapters post under user auth, so authorUserId can't tell a human from a
+      // machine; createdByRunId can. Only genuine human comments (no run context) supersede.
+      if (comment.createdByRunId) return [];
 
       const rows = await db
         .select()
@@ -1649,6 +1652,8 @@ export function issueThreadInteractionService(db: Db) {
             eq(issueComments.companyId, issue.companyId),
             eq(issueComments.issueId, issue.id),
             isNotNull(issueComments.authorUserId),
+            // Only genuine human comments supersede; machine-originated ones carry createdByRunId.
+            isNull(issueComments.createdByRunId),
           ))
           .orderBy(asc(issueComments.createdAt)),
       ]);

@@ -6,7 +6,7 @@ import type { StorageService } from "../storage/types.js";
 import { assetService, logActivity } from "../services/index.js";
 import { isAllowedContentType, MAX_ATTACHMENT_BYTES } from "../attachment-types.js";
 import { sanitizeSvgBuffer } from "../lib/svg-sanitize.js";
-import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
 const SVG_CONTENT_TYPE = "image/svg+xml";
 const ALLOWED_COMPANY_LOGO_CONTENT_TYPES = new Set([
   "image/png",
@@ -118,6 +118,7 @@ export function assetRoutes(db: Db, storage: StorageService) {
       actorId: actor.actorId,
       agentId: actor.agentId,
       runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
       action: "asset.created",
       entityType: "asset",
       entityId: asset.id,
@@ -216,6 +217,7 @@ export function assetRoutes(db: Db, storage: StorageService) {
       actorId: actor.actorId,
       agentId: actor.agentId,
       runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
       action: "asset.created",
       entityType: "asset",
       entityId: asset.id,
@@ -246,12 +248,8 @@ export function assetRoutes(db: Db, storage: StorageService) {
 
   router.get("/assets/:assetId/content", async (req, res, next) => {
     const assetId = req.params.assetId as string;
-    const asset = await svc.getById(assetId);
-    if (!asset) {
-      res.status(404).json({ error: "Asset not found" });
-      return;
-    }
-    assertCompanyAccess(req, asset.companyId);
+    const asset = await getAccessibleResource(req, res, svc.getById(assetId), "Asset not found");
+    if (!asset) return;
 
     const object = await storage.getObject(asset.companyId, asset.objectKey);
     const responseContentType = asset.contentType || object.contentType || "application/octet-stream";
