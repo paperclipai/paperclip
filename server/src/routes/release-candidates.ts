@@ -99,6 +99,12 @@ function readDeployTokenHeader(req: Request) {
   return token;
 }
 
+function assertNoDeployTokenQuery(req: Request) {
+  if (Object.prototype.hasOwnProperty.call(req.query, "token")) {
+    throw badRequest("Deploy authorization tokens are not accepted in query strings");
+  }
+}
+
 function assertDeployReceiptApiKey(req: Request) {
   if (req.actor.type !== "agent" || req.actor.source !== "agent_key") {
     throw forbidden("Deploy record receipts require an agent API key");
@@ -207,6 +213,7 @@ export function releaseCandidateRoutes(db: Db, storage: StorageService) {
     "/release-candidates/deploy-records",
     validate(deployRecordSchema),
     async (req, res) => {
+      assertNoDeployTokenQuery(req);
       const token = readDeployTokenHeader(req);
       const { candidate } = await candidates.getApprovedLease(req.body.authorizationId, token);
       if (!hasCompanyAccess(req, candidate.companyId)) throw notFound("Release deploy authorization not found");
@@ -313,6 +320,7 @@ export function releaseCandidateRoutes(db: Db, storage: StorageService) {
     "/release-deploy-authorizations/:authorizationId/stage-relay-artifact",
     validate(stageRelayArtifactSchema),
     async (req, res) => {
+      assertNoDeployTokenQuery(req);
       const body = req.body as z.infer<typeof stageRelayArtifactSchema>;
       const token = readDeployTokenHeader(req);
       const expectedTarballSha = normalizeSha256(body.tarballSha256);

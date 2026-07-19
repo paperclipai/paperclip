@@ -219,6 +219,20 @@ describe("release candidate routes", () => {
     expect(JSON.stringify(requestTargets)).not.toContain("pcdeploy_header-token");
   });
 
+  it("rejects query-string deploy tokens for deploy records before service access", async () => {
+    const authorizationId = "99999999-9999-4999-8999-999999999999";
+
+    const res = await request(createApp())
+      .post("/api/release-candidates/deploy-records?token=pcdeploy_query-token")
+      .set("X-Paperclip-Deploy-Token", "pcdeploy_header-token")
+      .send({ authorizationId, status: "started" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Deploy authorization tokens are not accepted in query strings");
+    expect(mockReleaseCandidateService.getApprovedLease).not.toHaveBeenCalled();
+    expect(mockReleaseCandidateService.recordDeployEvent).not.toHaveBeenCalled();
+  });
+
   it("rejects cross-company deploy records before writing audit events", async () => {
     const authorizationId = "99999999-9999-4999-8999-999999999999";
     mockReleaseCandidateService.getApprovedLease.mockResolvedValue({
@@ -447,6 +461,32 @@ describe("release candidate routes", () => {
       artifactPath: `/api/release-deploy-authorizations/${authorizationId}/staged-artifact`,
       signatureBundlePath: `/api/release-deploy-authorizations/${authorizationId}/staged-signature-bundle`,
     });
+  });
+
+  it("rejects query-string deploy tokens for relay staging before service or storage access", async () => {
+    const authorizationId = "99999999-9999-4999-8999-999999999999";
+    const tarball = Buffer.from("scanner relay artifact");
+    const signatureBundle = Buffer.from("{\"mediaType\":\"application/vnd.dev.sigstore.bundle+json\"}");
+
+    const res = await request(createApp())
+      .post(`/api/release-deploy-authorizations/${authorizationId}/stage-relay-artifact?token=pcdeploy_query-token`)
+      .set("X-Paperclip-Deploy-Token", "pcdeploy_header-token")
+      .send({
+        imageDigest: "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        sbomHash: "2222222222222222222222222222222222222222222222222222222222222222",
+        signatureVerified: true,
+        sbomVerified: true,
+        tarballSha256: createHash("sha256").update(tarball).digest("hex"),
+        tarballBase64: tarball.toString("base64"),
+        signatureBundleSha256: createHash("sha256").update(signatureBundle).digest("hex"),
+        signatureBundleBase64: signatureBundle.toString("base64"),
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Deploy authorization tokens are not accepted in query strings");
+    expect(mockReleaseCandidateService.verifyRelayAuthorization).not.toHaveBeenCalled();
+    expect(mockReleaseCandidateService.stageRelayArtifact).not.toHaveBeenCalled();
+    expect(mockAssetService.create).not.toHaveBeenCalled();
   });
 
   it("cleans up uploaded assets when a concurrent staging request loses the token race", async () => {
