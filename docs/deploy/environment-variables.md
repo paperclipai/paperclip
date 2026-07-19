@@ -52,3 +52,10 @@ These are set automatically by the server when invoking agents:
 |----------|-------------|
 | `ANTHROPIC_API_KEY` | Anthropic API key (for Claude Code adapter) |
 | `OPENAI_API_KEY` | OpenAI API key (for Codex adapter) |
+
+
+## GitHub Integration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `GITHUB_TOKEN` | (unset) | GitHub personal access token or fine-grained token. When set, all GitHub API requests from the server will include it as an `Authorization: token` header, raising the rate limit from 60 to 5,000 requests/hour and enabling access to private repositories. |
