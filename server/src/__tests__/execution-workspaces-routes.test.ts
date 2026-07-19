@@ -695,6 +695,45 @@ describe.sequential("execution workspace routes", () => {
     expect(mockLogActivity).toHaveBeenCalledTimes(1);
   });
 
+  it.each([
+    ["adoption", { version: 1, immutableFingerprint: "execution_workspace_adoption:v1:sha256:forged" }],
+    ["adoptionRollback", { version: 1, reason: "forged" }],
+    ["fullBranchRef", "refs/heads/feature/forged"],
+    ["ownsGitArtifacts", true],
+    ["createdByRuntime", false],
+  ])("rejects forged server-owned %s metadata on a normal workspace before side effects", async (key, value) => {
+    const existing = {
+      id: "workspace-1",
+      companyId: "company-1",
+      status: "active",
+      metadata: { runtimeNote: "ordinary" },
+    };
+    mockExecutionWorkspaceService.getById.mockResolvedValue(existing);
+
+    const res = await request(createApp())
+      .patch(`/api/execution-workspaces/${existing.id}`)
+      .send({
+        name: "Attempted forged adoption",
+        metadata: {
+          ...existing.metadata,
+          runtimeNote: "still ordinary",
+          [key]: value,
+        },
+      });
+
+    expect(res.status).toBe(409);
+    expect(res.body).toEqual({
+      error: "Execution workspace server-owned metadata is immutable",
+      reasonCode: "execution_workspace_server_owned_metadata_immutable",
+      protectedKeys: [key],
+    });
+    expect(mockExecutionWorkspaceService.update).not.toHaveBeenCalled();
+    expect(mockDestroyReusableSandboxLeases).not.toHaveBeenCalled();
+    expect(mockStopRuntimeServicesForExecutionWorkspace).not.toHaveBeenCalled();
+    expect(mockCleanupExecutionWorkspaceArtifacts).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
   it("keeps ordinary runtime-owned workspace updates valid", async () => {
     const existing = {
       id: "workspace-1",

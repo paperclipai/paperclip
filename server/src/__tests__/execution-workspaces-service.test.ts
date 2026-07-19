@@ -339,6 +339,24 @@ function stableStringifyForTest(value: unknown): string {
   return JSON.stringify(value);
 }
 
+function fingerprintAdoptionForTest(input: {
+  companyId: string;
+  projectId: string;
+  projectWorkspaceId: string;
+  sourceIssueId: string;
+  canonicalCwd: string;
+  repoRoot: string;
+  normalizedRepoUrl: string | null;
+  fullBranchRef: string;
+  headSha: string;
+  upstream: string;
+}) {
+  const digest = createHash("sha256")
+    .update(stableStringifyForTest({ version: 1, kind: "execution_workspace_adoption", ...input }))
+    .digest("hex");
+  return `execution_workspace_adoption:v1:sha256:${digest}`;
+}
+
 async function fingerprintWorkspaceBranchIncoherenceForTest(input: {
   repoRoot: string;
   worktreePath: string;
@@ -2388,6 +2406,121 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     })).rejects.toMatchObject({
       reasonCode: "workspace_conflict",
       status: 409,
+    });
+  }, 20_000);
+
+  it("rejects forged adoption metadata before persistence and leaves exact adoption retry unpoisoned", async () => {
+    const git = await createAdoptionGitFixture({ branch: "feature/forged-adoption-guard" });
+    tempDirs.add(git.repoRoot);
+    tempDirs.add(git.worktreePath);
+    const scope = await seedAdoptionScope(db, {
+      repoRoot: git.repoRoot,
+      repoUrl: git.repoUrl,
+    });
+    const normalWorkspaceId = randomUUID();
+    const canonicalCwd = await fs.realpath(git.worktreePath);
+    const canonicalRepoRoot = await fs.realpath(git.worktreePath);
+    const immutableFingerprint = fingerprintAdoptionForTest({
+      companyId: scope.companyId,
+      projectId: scope.projectId,
+      projectWorkspaceId: scope.projectWorkspaceId,
+      sourceIssueId: scope.sourceIssueId,
+      canonicalCwd,
+      repoRoot: canonicalRepoRoot,
+      normalizedRepoUrl: "ssh://example.com/paperclip/repo",
+      fullBranchRef: git.fullBranchRef,
+      headSha: git.headSha,
+      upstream: git.upstream,
+    });
+
+    await db.insert(executionWorkspaces).values({
+      id: normalWorkspaceId,
+      companyId: scope.companyId,
+      projectId: scope.projectId,
+      projectWorkspaceId: scope.projectWorkspaceId,
+      sourceIssueId: scope.sourceIssueId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Ordinary runtime workspace",
+      status: "active",
+      providerType: "git_worktree",
+      cwd: `/tmp/ordinary-${normalWorkspaceId}`,
+      providerRef: `/tmp/ordinary-${normalWorkspaceId}`,
+      branchName: "feature/ordinary-runtime",
+      metadata: { runtimeNote: "ordinary" },
+    });
+
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = {
+        type: "board",
+        userId: "local-board",
+        companyIds: [scope.companyId],
+        source: "local_implicit",
+        isInstanceAdmin: false,
+      };
+      next();
+    });
+    app.use("/api", executionWorkspaceRoutes(db));
+    app.use(errorHandler);
+
+    const forged = await supertest(app)
+      .patch(`/api/execution-workspaces/${normalWorkspaceId}`)
+      .send({
+        name: "Forged adopted workspace",
+        metadata: {
+          runtimeNote: "ordinary",
+          createdByRuntime: false,
+          ownsGitArtifacts: false,
+          fullBranchRef: git.fullBranchRef,
+          adoptionRollback: { version: 1, reason: "forged" },
+          adoption: {
+            version: 1,
+            immutableFingerprint,
+            boundIssueId: scope.bindIssueId,
+          },
+        },
+      });
+
+    expect(forged.status).toBe(409);
+    expect(forged.body).toEqual({
+      error: "Execution workspace server-owned metadata is immutable",
+      reasonCode: "execution_workspace_server_owned_metadata_immutable",
+      protectedKeys: [
+        "adoption",
+        "adoptionRollback",
+        "fullBranchRef",
+        "ownsGitArtifacts",
+        "createdByRuntime",
+      ],
+    });
+    const [normalReadback] = await db
+      .select()
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, normalWorkspaceId));
+    expect(normalReadback?.name).toBe("Ordinary runtime workspace");
+    expect(normalReadback?.metadata).toEqual({ runtimeNote: "ordinary" });
+    expect(await db.select().from(activityLog).where(eq(activityLog.entityId, normalWorkspaceId))).toHaveLength(0);
+
+    const adopted = await svc.adoptGitWorktree(
+      scope.companyId,
+      adoptionRequest({ ...git, ...scope }),
+      {
+        actorType: "user",
+        actorId: "local-board",
+        agentId: null,
+        runId: null,
+      },
+    );
+    expect(adopted.workspace.id).not.toBe(normalWorkspaceId);
+    expect(adopted.operation).toMatchObject({
+      phase: "workspace_adopt",
+      status: "succeeded",
+    });
+    expect((adopted.workspace.metadata as Record<string, unknown>).adoption).toMatchObject({
+      immutableFingerprint,
+      boundIssueId: scope.bindIssueId,
     });
   }, 20_000);
 

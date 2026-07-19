@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { and, eq } from "drizzle-orm";
 import { Router, type Request, type Response } from "express";
 import type { Db } from "@paperclipai/db";
@@ -62,6 +63,26 @@ const ADOPTED_WORKSPACE_MUTABLE_PATCH_KEYS = new Set([
   "cleanupEligibleAt",
   "cleanupReason",
 ]);
+
+const SERVER_OWNED_EXECUTION_WORKSPACE_METADATA_KEYS = [
+  "adoption",
+  "adoptionRollback",
+  "fullBranchRef",
+  "ownsGitArtifacts",
+  "createdByRuntime",
+] as const;
+
+function changedServerOwnedMetadataKeys(
+  existing: Record<string, unknown> | null | undefined,
+  requested: Record<string, unknown> | null,
+) {
+  const existingMetadata = existing ?? {};
+  const requestedMetadata = requested ?? {};
+  return SERVER_OWNED_EXECUTION_WORKSPACE_METADATA_KEYS.filter((key) =>
+    Object.hasOwn(existingMetadata, key) !== Object.hasOwn(requestedMetadata, key)
+    || !isDeepStrictEqual(existingMetadata[key], requestedMetadata[key]),
+  );
+}
 
 function isAdoptedWorkspace(workspace: {
   metadata?: Record<string, unknown> | null;
@@ -816,6 +837,20 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
       res.status(409).json({
         error: "Adopted execution workspace identity is immutable",
         reasonCode: "adopted_workspace_identity_immutable",
+      });
+      return;
+    }
+    const changedServerOwnedKeys = req.body.metadata === undefined
+      ? []
+      : changedServerOwnedMetadataKeys(
+          existing.metadata as Record<string, unknown> | null,
+          req.body.metadata as Record<string, unknown> | null,
+        );
+    if (changedServerOwnedKeys.length > 0) {
+      res.status(409).json({
+        error: "Execution workspace server-owned metadata is immutable",
+        reasonCode: "execution_workspace_server_owned_metadata_immutable",
+        protectedKeys: changedServerOwnedKeys,
       });
       return;
     }
