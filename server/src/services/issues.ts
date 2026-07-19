@@ -85,6 +85,7 @@ import {
 } from "./execution-workspace-policy.js";
 import { mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { buildInitialIssueMonitorFields, normalizeIssueExecutionPolicy } from "./issue-execution-policy.js";
+import { localChildRunProcessIsDead } from "./run-process-liveness.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { redactSensitiveText } from "../redaction.js";
@@ -4425,14 +4426,33 @@ export function issueService(db: Db) {
     );
   }
 
-  async function isTerminalOrMissingHeartbeatRun(runId: string, dbOrTx: DbReader = db) {
+  // A run holds no real claim on an issue's checkout/execution lock when it is
+  // missing, in a terminal status, or — for local-child-process adapters — when
+  // its process has died even though the DB status still says "running". The
+  // last case closes the ~5-minute window before the periodic reaper transitions
+  // a process_lost run to a terminal status, during which a fresh wake run of the
+  // same assignee otherwise 409s on every mutation (NEO-574).
+  async function heartbeatRunHoldsNoClaim(runId: string | null, dbOrTx: DbReader = db) {
+    if (!runId) return true;
     const run = await dbOrTx
-      .select({ status: heartbeatRuns.status })
+      .select({
+        status: heartbeatRuns.status,
+        adapterType: agents.adapterType,
+        processPid: heartbeatRuns.processPid,
+        processGroupId: heartbeatRuns.processGroupId,
+        resultJson: heartbeatRuns.resultJson,
+      })
       .from(heartbeatRuns)
+      .leftJoin(agents, eq(heartbeatRuns.agentId, agents.id))
       .where(eq(heartbeatRuns.id, runId))
       .then((rows) => rows[0] ?? null);
     if (!run) return true;
-    return TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status);
+    if (TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)) return true;
+    return localChildRunProcessIsDead(run);
+  }
+
+  async function isTerminalOrMissingHeartbeatRun(runId: string, dbOrTx: DbReader = db) {
+    return heartbeatRunHoldsNoClaim(runId, dbOrTx);
   }
 
   async function adoptStaleCheckoutRun(input: {
@@ -4476,8 +4496,15 @@ export function issueService(db: Db) {
       ]);
       const [existingRun, actorRun] = await Promise.all([
         tx
-          .select({ status: heartbeatRuns.status })
+          .select({
+            status: heartbeatRuns.status,
+            adapterType: agents.adapterType,
+            processPid: heartbeatRuns.processPid,
+            processGroupId: heartbeatRuns.processGroupId,
+            resultJson: heartbeatRuns.resultJson,
+          })
           .from(heartbeatRuns)
+          .leftJoin(agents, eq(heartbeatRuns.agentId, agents.id))
           .where(eq(heartbeatRuns.id, input.expectedCheckoutRunId))
           .then((rows) => rows[0] ?? null),
         tx
@@ -4486,7 +4513,9 @@ export function issueService(db: Db) {
           .where(eq(heartbeatRuns.id, input.actorRunId))
           .then((rows) => rows[0] ?? null),
       ]);
-      const stale = !existingRun || TERMINAL_HEARTBEAT_RUN_STATUSES.has(existingRun.status);
+      const stale = !existingRun
+        || TERMINAL_HEARTBEAT_RUN_STATUSES.has(existingRun.status)
+        || localChildRunProcessIsDead(existingRun);
       const actorLive = actorRun && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(actorRun.status);
       if (!stale || !actorLive) {
         return { adopted: null, latest: lockedIssue };
@@ -4599,11 +4628,18 @@ export function issueService(db: Db) {
         sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${issue.executionRunId} for update`,
       );
       const run = await tx
-        .select({ status: heartbeatRuns.status })
+        .select({
+          status: heartbeatRuns.status,
+          adapterType: agents.adapterType,
+          processPid: heartbeatRuns.processPid,
+          processGroupId: heartbeatRuns.processGroupId,
+          resultJson: heartbeatRuns.resultJson,
+        })
         .from(heartbeatRuns)
+        .leftJoin(agents, eq(heartbeatRuns.agentId, agents.id))
         .where(eq(heartbeatRuns.id, issue.executionRunId))
         .then((rows) => rows[0] ?? null);
-      if (run && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)) return false;
+      if (run && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status) && !localChildRunProcessIsDead(run)) return false;
 
       const updated = await tx
         .update(issues)
@@ -4647,22 +4683,36 @@ export function issueService(db: Db) {
         sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${issue.checkoutRunId} for update`,
       );
       const run = await tx
-        .select({ status: heartbeatRuns.status })
+        .select({
+          status: heartbeatRuns.status,
+          adapterType: agents.adapterType,
+          processPid: heartbeatRuns.processPid,
+          processGroupId: heartbeatRuns.processGroupId,
+          resultJson: heartbeatRuns.resultJson,
+        })
         .from(heartbeatRuns)
+        .leftJoin(agents, eq(heartbeatRuns.agentId, agents.id))
         .where(eq(heartbeatRuns.id, issue.checkoutRunId))
         .then((rows) => rows[0] ?? null);
-      if (run && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)) return false;
+      if (run && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status) && !localChildRunProcessIsDead(run)) return false;
 
       if (issue.executionRunId && issue.executionRunId !== issue.checkoutRunId) {
         await tx.execute(
           sql`select ${heartbeatRuns.id} from ${heartbeatRuns} where ${heartbeatRuns.id} = ${issue.executionRunId} for update`,
         );
         const executionRun = await tx
-          .select({ status: heartbeatRuns.status })
+          .select({
+            status: heartbeatRuns.status,
+            adapterType: agents.adapterType,
+            processPid: heartbeatRuns.processPid,
+            processGroupId: heartbeatRuns.processGroupId,
+            resultJson: heartbeatRuns.resultJson,
+          })
           .from(heartbeatRuns)
+          .leftJoin(agents, eq(heartbeatRuns.agentId, agents.id))
           .where(eq(heartbeatRuns.id, issue.executionRunId))
           .then((rows) => rows[0] ?? null);
-        if (executionRun && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(executionRun.status)) return false;
+        if (executionRun && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(executionRun.status) && !localChildRunProcessIsDead(executionRun)) return false;
       }
 
       const updated = await tx
