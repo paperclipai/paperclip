@@ -4,9 +4,13 @@ Canonical record for the **weekly upstream integration review** (NEO-421, establ
 Each weekly run appends an entry: what upstream range was integrated, and the state of our NEO
 fork customizations (still fork-only / upstream-able / obsoleted by upstream).
 
-Process: `git fetch upstream` → diff `upstream/master` vs merge-base → triage → merge (not rebase)
-onto `sync/upstream-YYYYMMDD` → resolve schema→types→server→ui → NEW fork migrations in the
-reserved **10000+** range → drop `pnpm-lock.yaml` for CI → `tsc -b` + targeted tests + fresh-DB apply.
+Process: `git fetch upstream` → compute the delta from **this ledger's last "Upstream tip integrated"**
+via `node scripts/upstream-delta-base.mjs --range` (⚠️ **NOT `git merge-base`** — our PRs squash-merge, so
+merge-base is stale; see NEO-565) → `git log <that range>` → triage → merge (not rebase) onto
+`sync/upstream-YYYYMMDD` → resolve schema→types→server→ui → NEW fork migrations in the reserved **10000+**
+range → drop `pnpm-lock.yaml` for CI → `tsc -b` + targeted tests + fresh-DB apply → **append a new row here
+with the upstream tip you merged** (that row is what keeps the *next* run squash-safe). Full rationale +
+the NEO-522 deploy-train assessment: `doc/UPSTREAM_MERGE_SOP.md` § "Computing the delta (squash-resilient)".
 
 ## Testing discipline (standing rule for this routine)
 
@@ -33,7 +37,17 @@ Every run must leave the tree green, and any *new behavior we author* must ship 
 | 2026-07-13 | `b49d178c4` | `63d31f41e` | 10 | First weekly cadence run (NEO-421). All fixes/perf + one small routines feature; no schema-rewrite/auth/editor. Only conflict: drizzle `_journal.json` (upstream `0146` ordered after `0145`, before fork `10000+`). Verified: `tsc -b` clean, throttle-logic tests green, fresh-DB apply 150/150. |
 | 2026-07-18 | `f12bb27bc` | **`869183e77`** (master, PR #42 squash-merged, **integrated** 2026-07-19) | 96 | **NEO-561→NEO-562. NOT a small weekly batch** — 96 commits, 839 files, 35 new upstream migrations (`0147`–`0181`). Merge = 11 real conflicts (`_journal.json`, `shared/index.ts`, `pnpm-lock`, `heartbeat-rewake` test, `app.ts`, `routes/{agents,index}`, `services/index`, `issue-execution-policy`, `Sidebar.tsx`, `AgentDetail.tsx`) — our NEO-411 `MarkdownEditor.tsx` + `better-auth.ts` auto-merged clean. **Dominant driver = a whole new upstream MCP tool-access/gateway governance subsystem** (`feat(mcp) [split 1/8..8/8]` + `tool-access.ts`/`tool-gateway.ts`/`tool-access-policy.ts` ≈30k LOC, migrations `0148`–`0169`). **Board direction `adopt_upstream_canonical`** (interaction `1ef5d8dd`): upstream tool-access/gateway is now the go-forward MCP system. **MCP is dual-system as of this land** — fork stack (`10000`–`10004`) coexists with upstream tool-access; fork-stack retirement tracked in **NEO-563** (blocked by this merge → now unblocked). CTO review (Werner): conflicts resolved schema→types→server→ui; migration chain `0147`–`0181` + fork `10000`–`10006` (no collision); `tsc -b` clean; Build/Typecheck+Release-Registry/general-server-tests/e2e/branding-guard/Canary all green. Fixed one PR-introduced regression: hand-committed `pnpm-lock.yaml` tripped the `policy` gate → restored to base so CI regenerates. Remaining CI red = **pre-existing NEO-552 only** (NEO-553 `agentMcpToolService` vi.mock, NEO-554/555 rebrand strings), not merge-induced. |
 
-> ⚠️ **Next-run guard (added by NEO-561 close-out, 2026-07-19).** The 2026-07-18 batch was **squash-merged** (PR #42, single-parent `869183e77`), so `upstream/master`'s history is **not** an ancestor of master — `git merge-base <fork-line> upstream/master` still resolves to the *previous* tip `b49d178c4`, **not** `f12bb27bc`. If the next weekly run computes the delta from `git merge-base` it will re-surface all 96 already-integrated commits as phantom conflicts. **Next run: compute the delta from the last row's recorded "Upstream tip integrated" (`f12bb27bc`), i.e. `git log f12bb27bc..upstream/master`, NOT from `git merge-base`.** Permanent fix (record ancestry and/or make the routine ledger-tip-driven, and switch integration PRs to `--no-ff` true merges) tracked in **NEO-565**.
+> ✅ **Squash-safe delta (permanent fix, NEO-565 — supersedes the 2026-07-19 temporary next-run guard).**
+> Integration PRs are **squash-merged** (e.g. PR #42 → single-parent `869183e77`), so `upstream/master` is
+> **not** an ancestor of master and `git merge-base <fork-line> upstream/master` resolves to a *stale* tip
+> (`b49d178c4`, not `f12bb27bc`). Computing the delta from merge-base would re-surface every already-integrated
+> commit as a phantom conflict. **The delta is now driven from this ledger's last "Upstream tip integrated",
+> not from git ancestry** — run `node scripts/upstream-delta-base.mjs --range` (→ `f12bb27bc..upstream/master`)
+> and `--check` (shouts `SQUASH DRIFT DETECTED` when merge-base is stale, which is the normal/expected case).
+> Locked by `scripts/upstream-delta-base.test.mjs` in the `test:release-registry` suite so a squash can never
+> silently break tracking again. We deliberately **keep squash merges** (not `--no-ff` true merges) because
+> injecting upstream ancestry into master would inflate the NEO-522 deploy train's `git rev-list/log <LKG>..<candidate>`
+> cut enumeration — see `doc/UPSTREAM_MERGE_SOP.md` § "Computing the delta (squash-resilient)".
 
 ## Fork-only NEO customizations (still diverge from upstream)
 
