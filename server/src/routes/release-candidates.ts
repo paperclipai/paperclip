@@ -452,6 +452,7 @@ export function releaseCandidateRoutes(db: Db, storage: StorageService) {
   );
 
   router.get("/release-deploy-authorizations/:authorizationId/staged-artifact", async (req, res) => {
+    assertNoDeployTokenQuery(req);
     const token = readDeployTokenHeader(req);
     const { authorization, candidate } = await candidates.getApprovedLease(req.params.authorizationId as string, token);
     if (!hasCompanyAccess(req, candidate.companyId)) throw notFound("Release deploy authorization not found");
@@ -466,6 +467,7 @@ export function releaseCandidateRoutes(db: Db, storage: StorageService) {
   });
 
   router.get("/release-deploy-authorizations/:authorizationId/staged-signature-bundle", async (req, res) => {
+    assertNoDeployTokenQuery(req);
     const token = readDeployTokenHeader(req);
     const { authorization, candidate } = await candidates.getApprovedLease(req.params.authorizationId as string, token);
     if (!hasCompanyAccess(req, candidate.companyId)) throw notFound("Release deploy authorization not found");

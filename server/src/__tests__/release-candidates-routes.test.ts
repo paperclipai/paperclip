@@ -652,6 +652,21 @@ describe("release candidate routes", () => {
     expect(mockReleaseCandidateService.verifyRelayAuthorization).not.toHaveBeenCalled();
   });
 
+  it.each([
+    "staged-artifact",
+    "staged-signature-bundle",
+  ])("rejects query-string deploy tokens for %s downloads before service access", async (path) => {
+    const authorizationId = "99999999-9999-4999-8999-999999999999";
+
+    const res = await request(createApp())
+      .get(`/api/release-deploy-authorizations/${authorizationId}/${path}?token=pcdeploy_query-token`)
+      .set("X-Paperclip-Deploy-Token", "pcdeploy_header-token");
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Deploy authorization tokens are not accepted in query strings");
+    expect(mockReleaseCandidateService.getApprovedLease).not.toHaveBeenCalled();
+  });
+
   it("serves staged signature bundles only through the deploy token route", async () => {
     const authorizationId = "99999999-9999-4999-8999-999999999999";
     const bundle = Buffer.from("{\"bundle\":\"ok\"}");
