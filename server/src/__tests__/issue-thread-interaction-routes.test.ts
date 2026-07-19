@@ -11,6 +11,7 @@ const mockIssueService = vi.hoisted(() => ({
 
 const mockInteractionService = vi.hoisted(() => ({
   listForIssue: vi.fn(),
+  getById: vi.fn(),
   create: vi.fn(),
   acceptInteraction: vi.fn(),
   acceptSuggestedTasks: vi.fn(),
@@ -185,6 +186,7 @@ describe.sequential("issue thread interaction routes", () => {
     vi.clearAllMocks();
     mockIssueService.getById.mockResolvedValue(createIssue());
     mockInteractionService.listForIssue.mockResolvedValue([]);
+    mockInteractionService.getById.mockResolvedValue(null);
     mockInteractionService.expireRequestConfirmationsSupersededByHistoricalComments.mockResolvedValue([]);
     mockInteractionService.create.mockResolvedValue({
       id: "interaction-1",
@@ -434,6 +436,90 @@ describe.sequential("issue thread interaction routes", () => {
         }),
       }),
     );
+  });
+
+  it("gets a single interaction by id with hydrated result", async () => {
+    mockInteractionService.getById.mockResolvedValue({
+      id: "interaction-1",
+      companyId: "company-1",
+      issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      kind: "suggest_tasks",
+      status: "accepted",
+      continuationPolicy: "wake_assignee",
+      idempotencyKey: null,
+      sourceCommentId: "comment-1",
+      sourceRunId: "run-1",
+      payload: {
+        version: 1,
+        tasks: [{ clientKey: "task-1", title: "One" }],
+      },
+      result: {
+        version: 1,
+        createdTasks: [{ clientKey: "task-1", issueId: "child-1" }],
+        skippedClientKeys: [],
+      },
+      createdAt: "2026-04-20T12:00:00.000Z",
+      updatedAt: "2026-04-20T12:05:00.000Z",
+    });
+    const app = await createApp();
+
+    const res = await request(app).get(
+      "/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-1",
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual(
+      expect.objectContaining({
+        id: "interaction-1",
+        kind: "suggest_tasks",
+        status: "accepted",
+        result: expect.objectContaining({
+          createdTasks: [{ clientKey: "task-1", issueId: "child-1" }],
+        }),
+      }),
+    );
+    expect(mockInteractionService.getById).toHaveBeenCalledWith("interaction-1");
+  });
+
+  it("404s getting an interaction that belongs to a different issue", async () => {
+    mockInteractionService.getById.mockResolvedValue({
+      id: "interaction-1",
+      issueId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      kind: "suggest_tasks",
+      status: "pending",
+    });
+    const app = await createApp();
+
+    const res = await request(app).get(
+      "/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-1",
+    );
+
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: "Interaction not found" });
+  });
+
+  it("404s getting an unknown interaction id", async () => {
+    mockInteractionService.getById.mockResolvedValue(null);
+    const app = await createApp();
+
+    const res = await request(app).get(
+      "/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/does-not-exist",
+    );
+
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: "Interaction not found" });
+  });
+
+  it("404s getting an interaction on an inaccessible issue", async () => {
+    mockIssueService.getById.mockResolvedValueOnce(null);
+    const app = await createApp();
+
+    const res = await request(app).get(
+      "/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-1",
+    );
+
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: "Issue not found" });
   });
 
   it("accepts suggested tasks and wakes created assignees plus the current assignee", async () => {
