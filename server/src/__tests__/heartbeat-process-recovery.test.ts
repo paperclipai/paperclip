@@ -1652,6 +1652,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   it("interrupts running runs on graceful shutdown and queues restart recovery without recording a failure", async () => {
     const { agentId, runId, issueId, wakeupRequestId } = await seedRunFixture({
       agentStatus: "running",
+      processPid: 999_999_999,
       contextSnapshot: {
         modelProfile: "cheap",
         allowDeliverableWork: false,
@@ -1719,6 +1720,49 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .then((rows) => rows[0] ?? null);
     expect(issue?.checkoutRunId).toBeNull();
     expect(issue?.executionRunId).toBe(retryRun?.id);
+  });
+
+  it("does not stamp restart-recovery detail on graceful shutdown for runs without a local process", async () => {
+    const { agentId, runId } = await seedRunFixture({
+      agentStatus: "running",
+      processPid: null,
+      processGroupId: null,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.drainRunningRunsForShutdown(
+      "SIGTERM",
+      new Date("2026-03-19T00:06:00.000Z"),
+    );
+    expect(result.interruptedRunIds).toEqual([runId]);
+
+    const interruptedRun = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    expect(interruptedRun).toMatchObject({
+      status: "interrupted",
+      errorCode: "server_shutdown_interrupted",
+      signal: "SIGTERM",
+    });
+    expect(interruptedRun?.resultJson).toMatchObject({
+      stopReason: "interrupted",
+      timeoutConfigured: false,
+      timeoutFired: false,
+    });
+    expect(interruptedRun?.resultJson as Record<string, unknown>).not.toHaveProperty("stopReasonDetail");
+    expect(interruptedRun?.resultJson as Record<string, unknown>).not.toHaveProperty("restartRecovery");
+
+    const retryRun = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.retryOfRunId, runId)))
+      .then((rows) => rows[0] ?? null);
+    expect(retryRun).toMatchObject({
+      status: "queued",
+      processLossRetryCount: 1,
+    });
   });
 
   it("does not overwrite a run that is no longer running during graceful shutdown drain", async () => {

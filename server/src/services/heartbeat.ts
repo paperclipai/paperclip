@@ -9099,19 +9099,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
 
       const message = `Interrupted by graceful server shutdown (${signal}); retry queued for restart recovery`;
+      const hasLocalProcessHandle = Boolean(running || run.processPid || run.processGroupId);
+      const existingResultJson = parseObject(run.resultJson);
+      const shutdownResultJson = hasLocalProcessHandle
+        ? mergeRestartRecoveryResultJson(existingResultJson, {
+            mode: "graceful_shutdown_interruption",
+            occurredAt: now,
+            signal,
+            processPid: run.processPid ?? null,
+            processGroupId: run.processGroupId ?? null,
+          })
+        : existingResultJson;
       const interruptedStatus = await setRunStatusIfRunning(run.id, "interrupted", {
         finishedAt: now,
         error: message,
         errorCode: "server_shutdown_interrupted",
         signal,
         resultJson: mergeRunStopMetadataForAgent(agent, "interrupted", {
-          resultJson: mergeRestartRecoveryResultJson(parseObject(run.resultJson), {
-            mode: "graceful_shutdown_interruption",
-            occurredAt: now,
-            signal,
-            processPid: run.processPid ?? null,
-            processGroupId: run.processGroupId ?? null,
-          }),
+          resultJson: shutdownResultJson,
           errorCode: "server_shutdown_interrupted",
           errorMessage: message,
         }),
