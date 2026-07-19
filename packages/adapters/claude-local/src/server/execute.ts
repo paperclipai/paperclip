@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
@@ -322,7 +323,7 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   const resolvedCommand = await resolveAdapterExecutionTargetCommandForLogs(command, executionTarget, cwd, runtimeEnv);
   const loggedEnv = buildInvocationEnvForLogs(env, {
     runtimeEnv,
-    includeRuntimeKeys: ["HOME", "CLAUDE_CONFIG_DIR"],
+    includeRuntimeKeys: ["HOME", "USER", "LOGNAME", "CLAUDE_CONFIG_DIR"],
     resolvedCommand,
   });
 
@@ -473,6 +474,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       (entry): entry is [string, string] => typeof entry[1] === "string",
     ),
   );
+  // Claude CLI keychain auth on macOS fails when USER is absent from the child
+  // environment (reproducible with `env -i HOME=...`). Ensure it survives even
+  // when an adapter/runtime sanitizes process.env.
+  if (!effectiveEnv.USER?.trim()) {
+    try {
+      effectiveEnv.USER = os.userInfo().username;
+    } catch {
+      const fallback = effectiveEnv.LOGNAME?.trim() || process.env.LOGNAME?.trim();
+      if (fallback) effectiveEnv.USER = fallback;
+    }
+  }
   const billingType = resolveClaudeBillingType(effectiveEnv);
   const claudeSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
   const desiredSkillNames = new Set(resolveClaudeDesiredSkillNames(config, claudeSkillEntries));
@@ -681,7 +693,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
       loggedEnv = buildInvocationEnvForLogs(env, {
         runtimeEnv,
-        includeRuntimeKeys: ["HOME", "CLAUDE_CONFIG_DIR"],
+        includeRuntimeKeys: ["HOME", "USER", "LOGNAME", "CLAUDE_CONFIG_DIR"],
         resolvedCommand,
       });
       if (remoteClaudeConfigDir) {
@@ -936,6 +948,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       stdout: proc.stdout,
       stderr: proc.stderr,
     });
+    if (loginMeta.requiresLogin) {
+      void onLog(
+        "stderr",
+        `[paperclip] Claude auth diagnostic (login_required): ` +
+          `USER=${effectiveEnv.USER ?? "<unset>"} ` +
+          `LOGNAME=${effectiveEnv.LOGNAME ?? "<unset>"} ` +
+          `HOME=${effectiveEnv.HOME ?? "<unset>"} ` +
+          `CLAUDE_CONFIG_DIR=${effectiveEnv.CLAUDE_CONFIG_DIR ?? "<unset>"}\n`,
+      );
+    }
     const errorMeta =
       loginMeta.loginUrl != null
         ? {

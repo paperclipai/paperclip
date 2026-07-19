@@ -65,6 +65,8 @@ import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
 import { initTelemetry, getTelemetryClient } from "./telemetry.js";
 import { conflict } from "./errors.js";
 import { coordinateHeartbeatSchedulerShutdown } from "./shutdown.js";
+import { acquireControlPlaneLock } from "./instance-control-plane-lock.js";
+import { resolvePaperclipInstanceRoot } from "./home-paths.js";
 import type {
   InstanceDatabaseBackupRunResult,
   InstanceDatabaseBackupTrigger,
@@ -121,6 +123,27 @@ export async function startServer(): Promise<StartedServer> {
   }
   if (process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE === undefined) {
     process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = config.secretsMasterKeyFilePath;
+  }
+
+  // Refuse a second control plane against the same instance directory. Reusing
+  // an already-running embedded Postgres without this guard starts duplicate
+  // schedulers/sweepers and can strand agent runs.
+  const controlPlaneLock = acquireControlPlaneLock({
+    instanceRoot: resolvePaperclipInstanceRoot(),
+  });
+  if (controlPlaneLock) {
+    logger.info(
+      {
+        lockPath: controlPlaneLock.lockPath,
+        pid: controlPlaneLock.payload.pid,
+        instanceRoot: controlPlaneLock.payload.instanceRoot,
+      },
+      "Acquired Paperclip control-plane instance lock",
+    );
+  } else if (/^(1|true|yes)$/i.test(process.env.PAPERCLIP_ALLOW_SHARED_INSTANCE?.trim() ?? "")) {
+    logger.warn(
+      "PAPERCLIP_ALLOW_SHARED_INSTANCE is set — skipping control-plane lock (duplicate schedulers possible)",
+    );
   }
   
   type MigrationSummary =
@@ -408,6 +431,14 @@ export async function startServer(): Promise<StartedServer> {
   
     const runningPid = getRunningPid();
     if (runningPid) {
+      // Reusing postgres is fine only when THIS process holds the control-plane
+      // lock (or shared mode is explicitly allowed). Without that, a second
+      // server would attach schedulers to another instance's database.
+      if (!controlPlaneLock && !/^(1|true|yes)$/i.test(process.env.PAPERCLIP_ALLOW_SHARED_INSTANCE?.trim() ?? "")) {
+        throw new Error(
+          `Embedded PostgreSQL is already running (pid=${runningPid}, port=${port}) but this process could not claim the instance control-plane lock. Another Paperclip server is likely already serving this instance. Stop the other process or set PAPERCLIP_ALLOW_SHARED_INSTANCE=1.`,
+        );
+      }
       logger.warn(`Embedded PostgreSQL already running; reusing existing process (pid=${runningPid}, port=${port})`);
     } else {
       const configuredAdminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${configuredPort}/postgres`;
@@ -1248,6 +1279,12 @@ export async function startServer(): Promise<StartedServer> {
         } catch (err) {
           logger.error({ err }, "Failed to stop embedded PostgreSQL cleanly");
         }
+      }
+
+      try {
+        controlPlaneLock?.release();
+      } catch (err) {
+        logger.error({ err }, "Failed to release control-plane lock cleanly");
       }
 
       // Flush buffered OTel spans before the process goes away; without this
