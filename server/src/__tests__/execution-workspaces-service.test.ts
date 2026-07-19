@@ -2977,6 +2977,46 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     });
   }, 20_000);
 
+  it("re-inspects git state after transaction locks before returning an idempotent retry", async () => {
+    const git = await createAdoptionGitFixture();
+    tempDirs.add(git.repoRoot);
+    tempDirs.add(git.worktreePath);
+    const scope = await seedAdoptionScope(db, {
+      repoRoot: git.repoRoot,
+      repoUrl: git.repoUrl,
+    });
+    const request = adoptionRequest({ ...git, ...scope });
+    const actor = {
+      actorType: "user" as const,
+      actorId: "local-board",
+      agentId: null,
+      runId: null,
+    };
+    const adopted = await svc.adoptGitWorktree(scope.companyId, request, actor);
+    const sideEffectsBeforeRetry = await countAdoptionSideEffects(db);
+    const retrySvc = executionWorkspaceService(db, {
+      afterAdoptionInitialInspection: async () => {
+        await fs.appendFile(path.join(git.worktreePath, "README.md"), "changed during idempotent retry\n", "utf8");
+      },
+    });
+
+    await expect(retrySvc.adoptGitWorktree(scope.companyId, request, actor)).rejects.toMatchObject({
+      reasonCode: "dirty_worktree",
+      status: 422,
+    });
+    await expect(countAdoptionSideEffects(db)).resolves.toEqual(sideEffectsBeforeRetry);
+    expect(sideEffectsBeforeRetry).toEqual({
+      workspaces: 1,
+      operations: 1,
+      activity: 2,
+    });
+    const [workspace] = await db
+      .select()
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, adopted.workspace.id));
+    expect(workspace?.status).toBe("active");
+  }, 20_000);
+
   it("rejects adoption binding when issue authorization fields change before the transaction lock", async () => {
     const git = await createAdoptionGitFixture();
     tempDirs.add(git.repoRoot);

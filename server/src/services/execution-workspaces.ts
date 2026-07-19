@@ -1952,7 +1952,7 @@ export function executionWorkspaceService(db: Db, options: ExecutionWorkspaceSer
         : null;
       if (input.bindIssueId && !bindIssue) adoptionError("cross_scope_not_found", 404);
 
-      const inspection = await inspectGitWorktreeForAdoption({
+      const initialInspection = await inspectGitWorktreeForAdoption({
         companyId,
         projectId: input.projectId,
         projectWorkspaceId: input.projectWorkspaceId,
@@ -1967,58 +1967,10 @@ export function executionWorkspaceService(db: Db, options: ExecutionWorkspaceSer
       });
       await options.afterAdoptionInitialInspection?.();
 
-      const now = new Date();
-      const metadata = {
-        createdByRuntime: false,
-        ownsGitArtifacts: false,
-        fullBranchRef: inspection.fullBranchRef,
-        adoption: {
-          version: 1,
-          immutableFingerprint: inspection.worktreeFingerprint,
-          expected: {
-            branch: input.expectedBranch,
-            headSha: input.expectedHeadSha,
-            upstream: input.expectedUpstream,
-            repoUrl: normalizeRepoUrl(input.expectedRepoUrl) ?? normalizeRepoUrl(scope.projectWorkspaceRepoUrl),
-          },
-          observed: {
-            branch: inspection.fullBranchRef,
-            headSha: inspection.headSha,
-            upstream: inspection.upstream,
-            repoUrl: inspection.normalizedRepoUrl,
-          },
-          canonicalRepoRoot: inspection.repoRoot,
-          canonicalCwd: inspection.canonicalCwd,
-          cleanliness: {
-            dirtyTrackedCount: inspection.dirtyTrackedCount,
-            untrackedCount: inspection.untrackedCount,
-          },
-          projectId: input.projectId,
-          projectWorkspaceId: input.projectWorkspaceId,
-          sourceIssueId: input.sourceIssueId,
-          boundIssueId: input.bindIssueId ?? null,
-          actor: {
-            type: actor.actorType,
-            id: actor.actorId,
-            agentId: actor.agentId,
-          },
-          runId: actor.runId,
-          adoptedAt: now.toISOString(),
-          previousIssueBinding: bindIssue
-            ? {
-                issueId: bindIssue.id,
-                executionWorkspaceId: bindIssue.previousExecutionWorkspaceId ?? null,
-                executionWorkspacePreference: bindIssue.previousExecutionWorkspacePreference ?? null,
-                executionWorkspaceSettings: bindIssue.previousExecutionWorkspaceSettings ?? null,
-              }
-            : null,
-        },
-      };
-
-      const fingerprintMatches = (row: ExecutionWorkspaceRow) =>
+      const fingerprintMatches = (row: ExecutionWorkspaceRow, fingerprint: string) =>
         (row.metadata as Record<string, unknown> | null | undefined)?.adoption &&
         isRecord((row.metadata as Record<string, unknown>).adoption) &&
-        (row.metadata as { adoption: Record<string, unknown> }).adoption.immutableFingerprint === inspection.worktreeFingerprint;
+        (row.metadata as { adoption: Record<string, unknown> }).adoption.immutableFingerprint === fingerprint;
       const adoptionBoundIssueId = (row: ExecutionWorkspaceRow) => {
         const adoption = (row.metadata as Record<string, unknown> | null)?.adoption;
         return isRecord(adoption) ? readNullableString(adoption.boundIssueId) : null;
@@ -2088,44 +2040,6 @@ export function executionWorkspaceService(db: Db, options: ExecutionWorkspaceSer
           adoptionError("workspace_conflict", 409);
         }
 
-        const duplicate = await tx
-          .select()
-          .from(executionWorkspaces)
-          .where(and(
-            eq(executionWorkspaces.companyId, companyId),
-            ne(executionWorkspaces.status, "archived"),
-            isNull(executionWorkspaces.closedAt),
-            or(
-              eq(executionWorkspaces.cwd, inspection.canonicalCwd),
-              eq(executionWorkspaces.providerRef, inspection.canonicalCwd),
-              eq(executionWorkspaces.branchName, inspection.branchName),
-              sql`${executionWorkspaces.metadata}->>'fullBranchRef' = ${inspection.fullBranchRef}`,
-            ),
-          ))
-          .for("update")
-          .limit(1)
-          .then((rows) => rows[0] ?? null);
-        if (duplicate) {
-          if (
-            !fingerprintMatches(duplicate)
-            || (input.bindIssueId ?? null) !== adoptionBoundIssueId(duplicate)
-          ) {
-            adoptionError("workspace_conflict", 409);
-          }
-          const existingWorkspace = await executionWorkspaceService(txDb).getById(duplicate.id);
-          return {
-            workspace: existingWorkspace ?? toExecutionWorkspace(duplicate),
-            issue: bindIssue ? {
-              id: bindIssue.id,
-              identifier: bindIssue.identifier,
-              title: bindIssue.title,
-              status: bindIssue.status,
-            } : null,
-            inspection,
-            operation: null,
-          };
-        }
-
         const writeInspection = await inspectGitWorktreeForAdoption({
           companyId,
           projectId: input.projectId,
@@ -2139,14 +2053,85 @@ export function executionWorkspaceService(db: Db, options: ExecutionWorkspaceSer
           projectWorkspaceCwd: lockedProjectWorkspace.cwd ?? null,
           projectWorkspaceRepoUrl: lockedProjectWorkspace.repoUrl ?? null,
         });
-        if (writeInspection.worktreeFingerprint !== inspection.worktreeFingerprint) {
+        if (writeInspection.worktreeFingerprint !== initialInspection.worktreeFingerprint) {
           adoptionError("workspace_conflict", 409);
         }
 
+        const duplicate = await tx
+          .select()
+          .from(executionWorkspaces)
+          .where(and(
+            eq(executionWorkspaces.companyId, companyId),
+            ne(executionWorkspaces.status, "archived"),
+            isNull(executionWorkspaces.closedAt),
+            or(
+              eq(executionWorkspaces.cwd, writeInspection.canonicalCwd),
+              eq(executionWorkspaces.providerRef, writeInspection.canonicalCwd),
+              eq(executionWorkspaces.branchName, writeInspection.branchName),
+              sql`${executionWorkspaces.metadata}->>'fullBranchRef' = ${writeInspection.fullBranchRef}`,
+            ),
+          ))
+          .for("update")
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+        if (duplicate) {
+          if (
+            !fingerprintMatches(duplicate, writeInspection.worktreeFingerprint)
+            || (input.bindIssueId ?? null) !== adoptionBoundIssueId(duplicate)
+          ) {
+            adoptionError("workspace_conflict", 409);
+          }
+          const existingWorkspace = await executionWorkspaceService(txDb).getById(duplicate.id);
+          return {
+            workspace: existingWorkspace ?? toExecutionWorkspace(duplicate),
+            issue: bindIssue ? {
+              id: bindIssue.id,
+              identifier: bindIssue.identifier,
+              title: bindIssue.title,
+              status: bindIssue.status,
+            } : null,
+            inspection: writeInspection,
+            operation: null,
+          };
+        }
+
+        const now = new Date();
         const transactionalMetadata = {
-          ...metadata,
+          createdByRuntime: false,
+          ownsGitArtifacts: false,
+          fullBranchRef: writeInspection.fullBranchRef,
           adoption: {
-            ...metadata.adoption,
+            version: 1,
+            immutableFingerprint: writeInspection.worktreeFingerprint,
+            expected: {
+              branch: input.expectedBranch,
+              headSha: input.expectedHeadSha,
+              upstream: input.expectedUpstream,
+              repoUrl: normalizeRepoUrl(input.expectedRepoUrl) ?? normalizeRepoUrl(lockedProjectWorkspace.repoUrl),
+            },
+            observed: {
+              branch: writeInspection.fullBranchRef,
+              headSha: writeInspection.headSha,
+              upstream: writeInspection.upstream,
+              repoUrl: writeInspection.normalizedRepoUrl,
+            },
+            canonicalRepoRoot: writeInspection.repoRoot,
+            canonicalCwd: writeInspection.canonicalCwd,
+            cleanliness: {
+              dirtyTrackedCount: writeInspection.dirtyTrackedCount,
+              untrackedCount: writeInspection.untrackedCount,
+            },
+            projectId: input.projectId,
+            projectWorkspaceId: input.projectWorkspaceId,
+            sourceIssueId: input.sourceIssueId,
+            boundIssueId: input.bindIssueId ?? null,
+            actor: {
+              type: actor.actorType,
+              id: actor.actorId,
+              agentId: actor.agentId,
+            },
+            runId: actor.runId,
+            adoptedAt: now.toISOString(),
             previousIssueBinding: lockedBindIssue
               ? {
                   issueId: lockedBindIssue.id,
@@ -2169,12 +2154,12 @@ export function executionWorkspaceService(db: Db, options: ExecutionWorkspaceSer
             strategyType: "git_worktree",
             name: input.name,
             status: "active",
-            cwd: inspection.canonicalCwd,
-            repoUrl: inspection.normalizedRepoUrl,
+            cwd: writeInspection.canonicalCwd,
+            repoUrl: writeInspection.normalizedRepoUrl,
             baseRef: input.expectedUpstream,
-            branchName: inspection.branchName,
+            branchName: writeInspection.branchName,
             providerType: "git_worktree",
-            providerRef: inspection.canonicalCwd,
+            providerRef: writeInspection.canonicalCwd,
             lastUsedAt: now,
             openedAt: now,
             metadata: transactionalMetadata,
@@ -2194,11 +2179,11 @@ export function executionWorkspaceService(db: Db, options: ExecutionWorkspaceSer
             issueId: input.bindIssueId ?? input.sourceIssueId,
             phase: "workspace_adopt",
             command: null,
-            cwd: inspection.canonicalCwd,
+            cwd: writeInspection.canonicalCwd,
             status: "succeeded",
             metadata: {
               reasonCode: null,
-              fingerprint: inspection.worktreeFingerprint,
+              fingerprint: writeInspection.worktreeFingerprint,
               projectId: input.projectId,
               projectWorkspaceId: input.projectWorkspaceId,
               sourceIssueId: input.sourceIssueId,
@@ -2240,7 +2225,7 @@ export function executionWorkspaceService(db: Db, options: ExecutionWorkspaceSer
           entityId: workspaceRow.id,
           details: {
             reasonCode: null,
-            fingerprint: inspection.worktreeFingerprint,
+            fingerprint: writeInspection.worktreeFingerprint,
             projectId: input.projectId,
             projectWorkspaceId: input.projectWorkspaceId,
             sourceIssueId: input.sourceIssueId,
@@ -2284,7 +2269,7 @@ export function executionWorkspaceService(db: Db, options: ExecutionWorkspaceSer
                 status: bindIssue?.status ?? "",
               }
             : null,
-          inspection,
+          inspection: writeInspection,
           operation: operationRow ? {
             id: operationRow.id,
             companyId: operationRow.companyId,
