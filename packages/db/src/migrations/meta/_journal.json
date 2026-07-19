@@ -1310,6 +1310,13 @@
       "when": 1783666800000,
       "tag": "10006_brand_kits",
       "breakpoints": true
+    },
+    {
+      "idx": 10007,
+      "version": "7",
+      "when": 1783670400000,
+      "tag": "10007_mcp_data_port_to_tool_access",
+      "breakpoints": true
     }
   ]
 }
