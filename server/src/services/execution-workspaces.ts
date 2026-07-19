@@ -889,6 +889,10 @@ async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<
   };
 }
 
+export function executionWorkspaceOwnsGitArtifacts(metadata: Record<string, unknown> | null | undefined): boolean {
+  return metadata?.ownsGitArtifacts !== false;
+}
+
 export function readExecutionWorkspaceConfig(metadata: Record<string, unknown> | null | undefined): ExecutionWorkspaceConfig | null {
   const raw = isRecord(metadata?.config) ? metadata.config : null;
   if (!raw) return null;
@@ -1688,7 +1692,9 @@ export function executionWorkspaceService(db: Db, options: ExecutionWorkspaceSer
         : null;
 
       const executionWorkspace = toExecutionWorkspace(workspace, runtimeServices);
-      const config = readExecutionWorkspaceConfig((workspace.metadata as Record<string, unknown> | null) ?? null);
+      const workspaceMetadata = (workspace.metadata as Record<string, unknown> | null) ?? null;
+      const config = readExecutionWorkspaceConfig(workspaceMetadata);
+      const ownsGitArtifacts = executionWorkspaceOwnsGitArtifacts(workspaceMetadata);
       const { git, warnings: gitWarnings } = await inspectGitCloseReadiness(executionWorkspace);
       const warnings = [...gitWarnings];
       const blockingReasons: string[] = [];
@@ -1783,36 +1789,38 @@ export function executionWorkspaceService(db: Db, options: ExecutionWorkspaceSer
         });
       }
 
-      const configuredCleanupCommands = [
-        {
-          kind: "cleanup_command" as const,
-          label: "Run workspace cleanup command",
-          description: "Workspace-specific cleanup runs before teardown.",
-          command: config?.cleanupCommand ?? null,
-        },
-        {
-          kind: "cleanup_command" as const,
-          label: "Run project workspace cleanup command",
-          description: "Project workspace cleanup runs before execution workspace teardown.",
-          command: projectWorkspace?.cleanupCommand ?? null,
-        },
-      ];
-      for (const action of configuredCleanupCommands) {
-        if (!action.command) continue;
-        plannedActions.push(action);
+      if (ownsGitArtifacts) {
+        const configuredCleanupCommands = [
+          {
+            kind: "cleanup_command" as const,
+            label: "Run workspace cleanup command",
+            description: "Workspace-specific cleanup runs before teardown.",
+            command: config?.cleanupCommand ?? null,
+          },
+          {
+            kind: "cleanup_command" as const,
+            label: "Run project workspace cleanup command",
+            description: "Project workspace cleanup runs before execution workspace teardown.",
+            command: projectWorkspace?.cleanupCommand ?? null,
+          },
+        ];
+        for (const action of configuredCleanupCommands) {
+          if (!action.command) continue;
+          plannedActions.push(action);
+        }
+
+        const teardownCommand = config?.teardownCommand ?? projectPolicy?.workspaceStrategy?.teardownCommand ?? null;
+        if (teardownCommand) {
+          plannedActions.push({
+            kind: "teardown_command",
+            label: "Run teardown command",
+            description: "Teardown runs after cleanup commands during workspace close.",
+            command: teardownCommand,
+          });
+        }
       }
 
-      const teardownCommand = config?.teardownCommand ?? projectPolicy?.workspaceStrategy?.teardownCommand ?? null;
-      if (teardownCommand) {
-        plannedActions.push({
-          kind: "teardown_command",
-          label: "Run teardown command",
-          description: "Teardown runs after cleanup commands during workspace close.",
-          command: teardownCommand,
-        });
-      }
-
-      if (executionWorkspace.providerType === "git_worktree" && workspacePath) {
+      if (ownsGitArtifacts && executionWorkspace.providerType === "git_worktree" && workspacePath) {
         plannedActions.push({
           kind: "git_worktree_remove",
           label: "Remove git worktree",
@@ -1821,7 +1829,7 @@ export function executionWorkspaceService(db: Db, options: ExecutionWorkspaceSer
         });
       }
 
-      if (git?.createdByRuntime && executionWorkspace.branchName) {
+      if (ownsGitArtifacts && git?.createdByRuntime && executionWorkspace.branchName) {
         plannedActions.push({
           kind: "git_branch_delete",
           label: "Delete runtime-created branch",
@@ -1830,7 +1838,7 @@ export function executionWorkspaceService(db: Db, options: ExecutionWorkspaceSer
         });
       }
 
-      if (executionWorkspace.providerType === "local_fs" && git?.createdByRuntime && workspacePath) {
+      if (ownsGitArtifacts && executionWorkspace.providerType === "local_fs" && git?.createdByRuntime && workspacePath) {
         const resolvedWorkspacePath = path.resolve(workspacePath);
         const resolvedProjectWorkspacePath = projectWorkspace?.cwd ? path.resolve(projectWorkspace.cwd) : null;
         const containsProjectWorkspace = resolvedProjectWorkspacePath

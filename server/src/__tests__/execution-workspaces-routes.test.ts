@@ -30,6 +30,9 @@ const mockAccessService = vi.hoisted(() => ({
   decide: vi.fn(),
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
+const mockCleanupExecutionWorkspaceArtifacts = vi.hoisted(() => vi.fn());
+const mockStopRuntimeServicesForExecutionWorkspace = vi.hoisted(() => vi.fn(async () => undefined));
+const mockDestroyReusableSandboxLeases = vi.hoisted(() => vi.fn(async () => []));
 
 vi.mock("../services/index.js", () => ({
   accessService: () => mockAccessService,
@@ -37,6 +40,22 @@ vi.mock("../services/index.js", () => ({
   heartbeatService: () => mockHeartbeatService,
   logActivity: mockLogActivity,
   workspaceOperationService: () => mockWorkspaceOperationService,
+}));
+
+vi.mock("../services/workspace-runtime.js", () => ({
+  buildWorkspaceRuntimeDesiredStatePatch: vi.fn(),
+  cleanupExecutionWorkspaceArtifacts: mockCleanupExecutionWorkspaceArtifacts,
+  ensurePersistedExecutionWorkspaceAvailable: vi.fn(),
+  listConfiguredRuntimeServiceEntries: vi.fn(),
+  runWorkspaceJobForControl: vi.fn(),
+  startRuntimeServicesForWorkspaceControl: vi.fn(),
+  stopRuntimeServicesForExecutionWorkspace: mockStopRuntimeServicesForExecutionWorkspace,
+}));
+
+vi.mock("../services/environment-runtime.js", () => ({
+  environmentRuntimeService: () => ({
+    destroyReusableSandboxLeases: mockDestroyReusableSandboxLeases,
+  }),
 }));
 
 function createApp(actor: Record<string, unknown> = {
@@ -98,6 +117,11 @@ describe.sequential("execution workspace routes", () => {
     });
     mockExecutionWorkspaceService.reconcileExecutionWorkspaceBranch.mockResolvedValue(null);
     mockHeartbeatService.wakeup.mockResolvedValue(null);
+    mockCleanupExecutionWorkspaceArtifacts.mockResolvedValue({
+      cleanedPath: "/tmp/worktree",
+      cleaned: true,
+      warnings: [],
+    });
   });
 
   it("uses summary mode for lightweight workspace lookups", async () => {
@@ -444,6 +468,74 @@ describe.sequential("execution workspace routes", () => {
       error: "Execution workspace adoption rollback rejected",
       reasonCode: "workspace_conflict",
     });
+  });
+
+  it("archives an adopted workspace record without scheduling artifact cleanup", async () => {
+    const existing = {
+      id: "workspace-1",
+      companyId: "company-1",
+      projectId: "11111111-1111-4111-8111-111111111111",
+      projectWorkspaceId: "22222222-2222-4222-8222-222222222222",
+      sourceIssueId: "33333333-3333-4333-8333-333333333333",
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Adopted workspace",
+      status: "active",
+      cwd: "/tmp/worktree",
+      repoUrl: "git@example.com:paperclip/repo.git",
+      baseRef: "main",
+      branchName: "feature/adopted",
+      providerType: "git_worktree",
+      providerRef: "/tmp/worktree",
+      metadata: {
+        createdByRuntime: false,
+        ownsGitArtifacts: false,
+        config: {
+          cleanupCommand: "node ./scripts/cleanup.js",
+          teardownCommand: "node ./scripts/teardown.js",
+        },
+      },
+    };
+    const archived = {
+      ...existing,
+      status: "archived",
+      closedAt: new Date(),
+    };
+    mockExecutionWorkspaceService.getById.mockResolvedValue(existing);
+    mockExecutionWorkspaceService.getCloseReadiness.mockResolvedValue({
+      workspaceId: existing.id,
+      state: "ready",
+      blockingReasons: [],
+      warnings: [],
+      plannedActions: [{
+        kind: "archive_record",
+        label: "Archive workspace record",
+        description: "Record only",
+        command: null,
+      }],
+    });
+    mockExecutionWorkspaceService.update.mockResolvedValue(archived);
+
+    const res = await request(createApp())
+      .patch(`/api/execution-workspaces/${existing.id}`)
+      .send({ status: "archived" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("archived");
+    expect(mockExecutionWorkspaceService.update).toHaveBeenCalledWith(existing.id, expect.objectContaining({
+      status: "archived",
+      cleanupReason: null,
+    }));
+    expect(mockDestroyReusableSandboxLeases).toHaveBeenCalledWith({
+      companyId: existing.companyId,
+      executionWorkspaceId: existing.id,
+      failureReason: "execution_workspace_closed",
+    });
+    expect(mockStopRuntimeServicesForExecutionWorkspace).toHaveBeenCalledWith(expect.objectContaining({
+      executionWorkspaceId: existing.id,
+      workspaceCwd: existing.cwd,
+    }));
+    expect(mockCleanupExecutionWorkspaceArtifacts).not.toHaveBeenCalled();
   });
 
   it.each([

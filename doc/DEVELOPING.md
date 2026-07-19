@@ -606,6 +606,8 @@ Rollback restores the prior issue execution workspace binding, or `null` when th
 
 Rollback is single-use. Repeating the request after the adopted workspace is archived returns `409 workspace_conflict` without changing the first rollback's metadata, restored issue binding, or activity history. The same stable repeat behavior applies when the adopted workspace had no bound issue.
 
+Generic close/archive honors the same ownership boundary. For an adopted workspace with `metadata.ownsGitArtifacts: false`, close readiness advertises record archive only (plus runtime-service stop when applicable), and `PATCH /api/execution-workspaces/:id` with `status: "archived"` does not run workspace/project cleanup commands, teardown commands, `git worktree remove`, branch deletion, or local-directory removal. The Paperclip record archives while the operator-owned checkout remains unchanged; use the explicit single-use rollback control when issue-binding restoration is required.
+
 Operational owner: the project owner or board operator who controls the project workspace. Review adopted workspaces weekly, and immediately when an issue is reassigned, a branch is merged, or a workspace conflict appears. Treat repeated `dirty_worktree`, `branch_attached_elsewhere`, or `workspace_conflict` failures on the same project as an escalation threshold: stop adoption attempts, inspect local git state manually, then retry only with fresh exact inputs.
 
 ## App-Shipped Skills Catalog

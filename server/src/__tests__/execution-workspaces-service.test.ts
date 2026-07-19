@@ -3758,4 +3758,53 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       "git_branch_delete",
     ]));
   }, 20_000);
+
+  it("reports record-only close readiness for adopted operator-owned worktrees", async () => {
+    const fixture = await createAdoptionGitFixture({ branch: "feature/operator-owned-close" });
+    tempDirs.add(fixture.repoRoot);
+    tempDirs.add(fixture.worktreePath);
+    const scope = await seedAdoptionScope(db, fixture);
+    await db
+      .update(projects)
+      .set({
+        executionWorkspacePolicy: {
+          enabled: true,
+          workspaceStrategy: {
+            type: "git_worktree",
+            teardownCommand: "node ./scripts/project-teardown.js",
+          },
+        },
+      })
+      .where(eq(projects.id, scope.projectId));
+    await db
+      .update(projectWorkspaces)
+      .set({ cleanupCommand: "node ./scripts/project-cleanup.js" })
+      .where(eq(projectWorkspaces.id, scope.projectWorkspaceId));
+
+    const adopted = await svc.adoptGitWorktree(
+      scope.companyId,
+      adoptionRequest({ ...fixture, ...scope }, { bindIssueId: null }),
+      {
+        actorType: "user",
+        actorId: "board-user",
+        agentId: null,
+        runId: null,
+      },
+      null,
+    );
+
+    const readiness = await svc.getCloseReadiness(adopted.workspace.id);
+
+    expect(adopted.workspace.metadata).toMatchObject({ ownsGitArtifacts: false });
+    expect(readiness?.plannedActions).toEqual([
+      expect.objectContaining({ kind: "archive_record", command: null }),
+    ]);
+    expect(readiness?.plannedActions.map((action) => action.kind)).not.toEqual(expect.arrayContaining([
+      "cleanup_command",
+      "teardown_command",
+      "git_worktree_remove",
+      "git_branch_delete",
+      "remove_local_directory",
+    ]));
+  }, 20_000);
 });

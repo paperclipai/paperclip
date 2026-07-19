@@ -33,7 +33,11 @@ import {
   writeLocalServiceRegistryRecord,
 } from "./local-service-supervisor.js";
 import type { WorkspaceOperationRecorder } from "./workspace-operations.js";
-import { executionWorkspaceService, readExecutionWorkspaceConfig } from "./execution-workspaces.js";
+import {
+  executionWorkspaceOwnsGitArtifacts,
+  executionWorkspaceService,
+  readExecutionWorkspaceConfig,
+} from "./execution-workspaces.js";
 import { logActivity } from "./activity-log.js";
 import { readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
 
@@ -3156,6 +3160,14 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
   teardownCommand?: string | null;
   recorder?: WorkspaceOperationRecorder | null;
 }) {
+  if (!executionWorkspaceOwnsGitArtifacts(input.workspace.metadata)) {
+    return {
+      cleanedPath: null,
+      cleaned: true,
+      warnings: [],
+    };
+  }
+
   const warnings: string[] = [];
   const workspacePath = input.workspace.providerRef ?? input.workspace.cwd;
   const repoRoot = input.workspace.providerType === "git_worktree" && workspacePath
