@@ -2579,6 +2579,65 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     });
   }, 20_000);
 
+  it("revalidates source issue scope after transaction locks before adoption writes", async () => {
+    const git = await createAdoptionGitFixture();
+    tempDirs.add(git.repoRoot);
+    tempDirs.add(git.worktreePath);
+    const scope = await seedAdoptionScope(db, {
+      repoRoot: git.repoRoot,
+      repoUrl: git.repoUrl,
+    });
+    const otherProjectId = randomUUID();
+    await db.insert(projects).values({
+      id: otherProjectId,
+      companyId: scope.companyId,
+      name: "Other same-company project",
+      status: "in_progress",
+    });
+    const [bindingBefore] = await db
+      .select({
+        executionWorkspaceId: issues.executionWorkspaceId,
+        executionWorkspacePreference: issues.executionWorkspacePreference,
+        executionWorkspaceSettings: issues.executionWorkspaceSettings,
+      })
+      .from(issues)
+      .where(eq(issues.id, scope.bindIssueId!));
+    const raceSvc = executionWorkspaceService(db, {
+      afterAdoptionInitialInspection: async () => {
+        await db
+          .update(issues)
+          .set({ projectId: otherProjectId })
+          .where(eq(issues.id, scope.sourceIssueId));
+      },
+    });
+
+    await expect(raceSvc.adoptGitWorktree(scope.companyId, adoptionRequest({ ...git, ...scope }), {
+      actorType: "user",
+      actorId: "local-board",
+      agentId: null,
+      runId: null,
+    })).rejects.toMatchObject({ reasonCode: "cross_scope_not_found", status: 404 });
+    await expect(countAdoptionSideEffects(db)).resolves.toEqual({
+      workspaces: 0,
+      operations: 0,
+      activity: 0,
+    });
+    const [sourceIssue] = await db
+      .select({ projectId: issues.projectId })
+      .from(issues)
+      .where(eq(issues.id, scope.sourceIssueId));
+    expect(sourceIssue?.projectId).toBe(otherProjectId);
+    const [bindingAfter] = await db
+      .select({
+        executionWorkspaceId: issues.executionWorkspaceId,
+        executionWorkspacePreference: issues.executionWorkspacePreference,
+        executionWorkspaceSettings: issues.executionWorkspaceSettings,
+      })
+      .from(issues)
+      .where(eq(issues.id, scope.bindIssueId!));
+    expect(bindingAfter).toEqual(bindingBefore);
+  }, 20_000);
+
   it("re-inspects git state after transaction locks and rejects mutation before insert", async () => {
     const git = await createAdoptionGitFixture();
     tempDirs.add(git.repoRoot);

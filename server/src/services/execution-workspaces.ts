@@ -2073,7 +2073,16 @@ export function executionWorkspaceService(db: Db, options: ExecutionWorkspaceSer
           ))
           .for("update");
         if (!lockedProjectWorkspace) adoptionError("cross_scope_not_found", 404);
-        await tx.select({ id: issues.id }).from(issues).where(eq(issues.id, input.sourceIssueId)).for("update");
+        const [lockedSourceIssue] = await tx
+          .select({ id: issues.id })
+          .from(issues)
+          .where(and(
+            eq(issues.id, input.sourceIssueId),
+            eq(issues.companyId, companyId),
+            eq(issues.projectId, input.projectId),
+          ))
+          .for("update");
+        if (!lockedSourceIssue) adoptionError("cross_scope_not_found", 404);
         const lockedBindIssue = input.bindIssueId
           ? await tx
               .select({
