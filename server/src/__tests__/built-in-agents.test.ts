@@ -161,9 +161,9 @@ describeEmbeddedPostgres("built-in agents", () => {
     const summarizer = definitions.find((definition) => definition.key === "summarizer");
     expect(summarizer).toMatchObject({
       defaultAdapterType: "claude_local",
-      defaultAdapterConfig: { model: "claude-haiku-4-5" },
+      defaultAdapterConfig: { model: "claude-haiku-4-5", engine: "cli" },
+      defaultRuntimeConfig: { heartbeat: { maxConcurrentRuns: 1 } },
     });
-    expect(summarizer?.defaultRuntimeConfig).toBeUndefined();
     expect(() => validateBuiltInAgentDefinitions([
       {
         key: "briefs",
