@@ -261,6 +261,45 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     await expect(db.select().from(companies).where(eq(companies.id, otherCompanyId))).resolves.toHaveLength(1);
   });
 
+  it("removes heartbeat run events by run id before deleting agent-owned runs (even when event agentId differs)", async () => {
+    const { agentId, companyId, runId } = await seedFixture();
+    const otherAgentId = randomUUID();
+
+    await db.insert(agents).values({
+      id: otherAgentId,
+      companyId,
+      name: "BystanderAgent",
+      role: "reviewer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    // Event tied (via runId) to a run owned by the agent being deleted, but stamped
+    // with a different agent's id (e.g. a reassigned run or a race with a live
+    // heartbeat process). Deleting heartbeat_run_events by agentId alone leaves this
+    // row behind and the subsequent heartbeat_runs delete then violates the
+    // heartbeat_run_events_run_id_heartbeat_runs_id_fk foreign key.
+    await db.insert(heartbeatRunEvents).values({
+      companyId,
+      runId,
+      agentId: otherAgentId,
+      seq: 1,
+      eventType: "output",
+      message: "event with mismatched agent scope",
+    });
+
+    const removed = await agentService(db).remove(agentId);
+
+    expect(removed?.id).toBe(agentId);
+    await expect(db.select().from(agents).where(eq(agents.id, agentId))).resolves.toHaveLength(0);
+    await expect(db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId))).resolves.toHaveLength(0);
+    await expect(db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, runId))).resolves.toHaveLength(0);
+    await expect(db.select().from(agents).where(eq(agents.id, otherAgentId))).resolves.toHaveLength(1);
+  });
+
   it("removes routines before deleting company agents", async () => {
     const { agentId, companyId } = await seedFixture();
     const routineId = randomUUID();
