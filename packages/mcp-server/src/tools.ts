@@ -57,6 +57,7 @@ const issueIdSchema = z.string().min(1);
 const projectIdSchema = z.string().min(1);
 const goalIdSchema = z.string().uuid();
 const approvalIdSchema = z.string().uuid();
+const interactionIdSchema = z.string().uuid();
 const documentKeySchema = z.string().trim().min(1).max(64);
 
 const listIssuesSchema = z.object({
@@ -540,6 +541,23 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
             ...body,
           },
         }),
+    ),
+    makeTool(
+      "paperclipListIssueInteractions",
+      "List issue-thread interactions on an issue",
+      z.object({ issueId: issueIdSchema }),
+      async ({ issueId }) =>
+        client.requestJson("GET", `/issues/${encodeURIComponent(issueId)}/interactions`),
+    ),
+    makeTool(
+      "paperclipGetInteraction",
+      "Get a single issue-thread interaction by id, including its hydrated result/answers",
+      z.object({ issueId: issueIdSchema, interactionId: interactionIdSchema }),
+      async ({ issueId, interactionId }) =>
+        client.requestJson(
+          "GET",
+          `/issues/${encodeURIComponent(issueId)}/interactions/${encodeURIComponent(interactionId)}`,
+        ),
     ),
     makeTool(
       "paperclipUpsertIssueDocument",

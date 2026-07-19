@@ -348,6 +348,60 @@ describe("paperclip MCP tools", () => {
     });
   });
 
+  it("lists issue-thread interactions for an issue", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      mockJsonResponse([{ id: "interaction-1", kind: "suggest_tasks", status: "pending" }]),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipListIssueInteractions");
+    const response = await tool.execute({ issueId: "PAP-1135" });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(String(url)).toBe("http://localhost:3100/api/issues/PAP-1135/interactions");
+    expect(init.method).toBe("GET");
+    expect(response.content[0]?.text).toContain("interaction-1");
+  });
+
+  it("gets a single issue-thread interaction by id", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      mockJsonResponse({
+        id: "33333333-3333-4333-8333-333333333333",
+        kind: "suggest_tasks",
+        status: "accepted",
+        result: { version: 1, createdTasks: [] },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipGetInteraction");
+    const response = await tool.execute({
+      issueId: "PAP-1135",
+      interactionId: "33333333-3333-4333-8333-333333333333",
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(String(url)).toBe(
+      "http://localhost:3100/api/issues/PAP-1135/interactions/33333333-3333-4333-8333-333333333333",
+    );
+    expect(init.method).toBe("GET");
+    expect(response.content[0]?.text).toContain("createdTasks");
+  });
+
+  it("rejects a non-uuid interactionId for paperclipGetInteraction", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+
+    const tool = getTool("paperclipGetInteraction");
+    const response = await tool.execute({
+      issueId: "PAP-1135",
+      interactionId: "not-a-uuid",
+    });
+
+    expect(response.content[0]?.text).toContain("uuid");
+  });
+
   it("creates approvals with the expected company-scoped payload", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       mockJsonResponse({ id: "approval-1" }),
