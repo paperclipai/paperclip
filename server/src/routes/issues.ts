@@ -7646,6 +7646,18 @@ export function issueRoutes(
     if (commentBody) {
       const commentAccessDecision = await assertAgentIssueCommentAllowed(req, res, existing);
       if (!commentAccessDecision) return;
+      const isClosedForCommentAuth = isClosedIssueStatus(existing.status);
+      if (
+        isClosedForCommentAuth &&
+        req.actor.type === "agent" &&
+        existing.assigneeAgentId !== null &&
+        existing.assigneeAgentId !== req.actor.agentId &&
+        !isIssueMentionGrantDecision(commentAccessDecision)
+      ) {
+        if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+      }
+      // Unlike POST comments, PATCH keeps mixed comment+lifecycle payloads
+      // fail-closed by requiring mutation authority instead of clamping fields.
       if (issueMutationRequested && !(await assertAgentIssueMutationAllowed(req, res, existing))) return;
     } else if (!(await assertAgentIssueMutationAllowed(req, res, existing))) {
       return;

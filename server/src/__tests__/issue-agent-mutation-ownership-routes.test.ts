@@ -792,14 +792,11 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
-  it.each([
-    ["manager", "allow_manager_comment"],
-    ["legacy creator", "allow_legacy_creator_comment"],
-  ])("allows authorized %s agents to add PATCH comments without checkout ownership", async (_label, reason) => {
+  it("allows authorized manager agents to add PATCH comments without checkout ownership", async () => {
     mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
       allowed: input.action === "issue:comment",
       action: input.action,
-      reason: input.action === "issue:comment" ? reason : "deny_missing_grant",
+      reason: input.action === "issue:comment" ? "allow_manager_comment" : "deny_missing_grant",
       explanation:
         input.action === "issue:comment"
           ? "Allowed by comment-only route policy."
@@ -817,6 +814,38 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.addComment).toHaveBeenCalledWith(
       issueId,
       "Comment-only PATCH should match POST comment auth.",
+      expect.any(Object),
+      expect.any(Object),
+    );
+  });
+
+  it("allows authorized legacy creator agents to add PATCH comments without checkout ownership", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      assigneeAgentId: ownerAgentId,
+      createdByAgentId: peerAgentId,
+      createdByUserId: null,
+    }));
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: input.action === "issue:comment",
+      action: input.action,
+      reason: input.action === "issue:comment" ? "allow_legacy_creator_comment" : "deny_missing_grant",
+      explanation:
+        input.action === "issue:comment"
+          ? "Allowed by legacy creator comment policy."
+          : "Missing permission.",
+    }));
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ comment: "Legacy creator PATCH comment should match POST comment auth." });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({ action: "issue:comment" }));
+    expect(mockAccessService.decide).not.toHaveBeenCalledWith(expect.objectContaining({ action: "issue:mutate" }));
+    expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      issueId,
+      "Legacy creator PATCH comment should match POST comment auth.",
       expect.any(Object),
       expect.any(Object),
     );
