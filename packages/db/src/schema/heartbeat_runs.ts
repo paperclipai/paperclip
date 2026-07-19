@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import { type AnyPgColumn, pgTable, uuid, text, timestamp, jsonb, index, integer, bigint, boolean } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { agents } from "./agents.js";
@@ -78,6 +79,14 @@ export const heartbeatRuns = pgTable(
       table.companyId,
       table.status,
       table.lastOutputAt,
+    ),
+    // Serves getLatestIssueRun(ForAgent): latest run whose context_snapshot issueId
+    // matches, without detoasting every row (see migration 0131).
+    companyIssueCreatedIdx: index("heartbeat_runs_company_issue_created_idx").on(
+      table.companyId,
+      sql`(${table.contextSnapshot}->>'issueId')`,
+      sql`${table.createdAt} DESC`,
+      sql`${table.id} DESC`,
     ),
     companyStatusProcessStartedIdx: index("heartbeat_runs_company_status_process_started_idx").on(
       table.companyId,
