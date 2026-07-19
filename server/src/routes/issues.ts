@@ -109,6 +109,7 @@ import {
   inboxAgentPolicyService,
   ISSUE_LIST_DEFAULT_LIMIT,
   ISSUE_LIST_MAX_LIMIT,
+  parseIssueSubtreeRoots,
   issueReferenceService,
   issueService,
   type IssueFilters,
@@ -4675,6 +4676,9 @@ export function issueRoutes(
     const compactView = view === "compact";
     const hasPlanDocument = parseOptionalBooleanQuery(req.query.hasPlanDocument);
     const includeLiveDescendantSummary = parseOptionalBooleanQuery(req.query.includeLiveDescendantSummary);
+    const subtreeOf = req.query.subtreeOf === undefined
+      ? []
+      : parseIssueSubtreeRoots(req.query.subtreeOf);
     const assigneeAgentFilterRaw = req.query.assigneeAgentId;
     let assigneeAgentId: string | null | undefined;
 
@@ -4744,6 +4748,15 @@ export function issueRoutes(
       }
     }
     const offset = parsedOffset ?? 0;
+    const subtreeCompanyScopeAccess = subtreeOf.length > 0
+      ? await actorCanReadCompanyScope(req, companyId)
+      : null;
+    if (subtreeCompanyScopeAccess === false) {
+      res.status(403).json({
+        error: "subtreeOf requires company-scoped issue read access so pagination cannot hide readable work",
+      });
+      return;
+    }
 
     const listFilters: IssueFilters = {
       attention: attention === "blocked" ? "blocked" : undefined,
@@ -4759,6 +4772,7 @@ export function issueRoutes(
       executionWorkspaceId: req.query.executionWorkspaceId as string | undefined,
       parentId: req.query.parentId as string | undefined,
       descendantOf: req.query.descendantOf as string | undefined,
+      subtreeOf: subtreeOf.length > 0 ? subtreeOf : undefined,
       labelId: req.query.labelId as string | undefined,
       originKind: req.query.originKind as string | undefined,
       originKindPrefix: req.query.originKindPrefix as string | undefined,
@@ -4796,7 +4810,9 @@ export function issueRoutes(
       diagnostics: opts.issueListDiagnostics,
       compute: async () => {
         const rawResult = await svc.list(companyId, listFilters);
-        const result = await actorCanReadCompanyScope(req, companyId)
+        const canReadCompanyScope = subtreeCompanyScopeAccess
+          ?? await actorCanReadCompanyScope(req, companyId);
+        const result = canReadCompanyScope
           ? rawResult
           : await filterIssuesForActor(req, rawResult);
         const issueIds = result.map((issue) => issue.id);

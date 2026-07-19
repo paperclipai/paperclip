@@ -310,7 +310,17 @@ function zodToOpenApiSchema(schema: z.ZodTypeAny): JsonSchema {
   }
 
   if (typeName === "ZodArray") {
-    return { type: "array", items: zodToOpenApiSchema(unwrapped._def.type) };
+    const jsonSchema: JsonSchema = {
+      type: "array",
+      items: zodToOpenApiSchema(unwrapped._def.type),
+    };
+    if (unwrapped._def.minLength?.value !== undefined) {
+      jsonSchema.minItems = unwrapped._def.minLength.value;
+    }
+    if (unwrapped._def.maxLength?.value !== undefined) {
+      jsonSchema.maxItems = unwrapped._def.maxLength.value;
+    }
+    return jsonSchema;
   }
 
   if (typeName === "ZodRecord") {
@@ -406,12 +416,21 @@ function parametersFromSchema(schema: z.ZodTypeAny, location: "path" | "query") 
   const objectSchema = unwrapSchema(schema);
   if (zodTypeName(objectSchema) !== "ZodObject") return [];
   const shape = objectSchema._def.shape();
-  return Object.entries(shape).map(([name, value]) => ({
-    name,
-    in: location,
-    required: location === "path" ? true : !isOptionalSchema(value as z.ZodTypeAny),
-    schema: zodToOpenApiSchema(value as z.ZodTypeAny),
-  }));
+  return Object.entries(shape).map(([name, value]) => {
+    const valueSchema = value as z.ZodTypeAny;
+    const unwrapped = unwrapSchema(valueSchema);
+    const isArrayQuery = location === "query" && zodTypeName(unwrapped) === "ZodArray";
+    return {
+      name,
+      in: location,
+      required: location === "path" ? true : !isOptionalSchema(valueSchema),
+      ...(valueSchema.description || unwrapped.description
+        ? { description: valueSchema.description ?? unwrapped.description }
+        : {}),
+      ...(isArrayQuery ? { style: "form", explode: true } : {}),
+      schema: zodToOpenApiSchema(valueSchema),
+    };
+  });
 }
 
 class OpenAPIRegistry {
@@ -1843,9 +1862,20 @@ registry.registerPath({
   description: "Use `view=compact` for the board issue-list row contract. The default response remains the broad compatibility contract.",
   request: {
     params: z.object({ companyId: z.string() }),
-    query: z.object({ view: z.enum(["compact"]).optional() }).passthrough(),
+    query: z.object({
+      view: z.enum(["compact"]).optional(),
+      subtreeOf: z.array(z.string().uuid()).min(1).max(25).optional().describe(
+        "Repeated issue UUID roots, including each visible root and all visible descendants; maximum 25 unique roots. Comma-separated UUIDs are accepted for compatibility.",
+      ),
+    }).passthrough(),
   },
-  responses: { 200: r.ok(), 304: { description: "Not Modified" }, 401: r.unauthorized },
+  responses: {
+    200: r.ok(),
+    304: { description: "Not Modified" },
+    401: r.unauthorized,
+    403: r.forbidden,
+    422: { description: "Invalid or excessive subtree roots" },
+  },
 });
 
 registry.registerPath({

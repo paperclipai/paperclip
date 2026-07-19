@@ -55,6 +55,7 @@ export type IssueListFilters = {
   originKindPrefix?: string;
   originId?: string;
   descendantOf?: string;
+  subtreeOf?: readonly [string, ...string[]];
   includeRoutineExecutions?: boolean;
   includeBlockedBy?: boolean;
   includeBlockedInboxAttention?: boolean;
@@ -86,6 +87,10 @@ function issueListSearchParams(filters?: IssueListFilters) {
   if (filters?.originKindPrefix) params.set("originKindPrefix", filters.originKindPrefix);
   if (filters?.originId) params.set("originId", filters.originId);
   if (filters?.descendantOf) params.set("descendantOf", filters.descendantOf);
+  if (filters?.subtreeOf) {
+    if (filters.subtreeOf.length === 0) throw new Error("subtreeOf requires at least one issue ID");
+    for (const rootId of filters.subtreeOf) params.append("subtreeOf", rootId);
+  }
   if (filters?.includeRoutineExecutions) params.set("includeRoutineExecutions", "true");
   if (filters?.includeBlockedBy) params.set("includeBlockedBy", "true");
   if (filters?.includeBlockedInboxAttention) params.set("includeBlockedInboxAttention", "true");

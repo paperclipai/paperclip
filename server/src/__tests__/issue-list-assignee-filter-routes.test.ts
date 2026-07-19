@@ -944,4 +944,106 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
       liveDescendantCount: 1,
     });
   });
+
+  it("returns only the requested roots and their visible company-scoped subtrees", async () => {
+    const companyId = randomUUID();
+    const otherCompanyId = randomUUID();
+    const rootA = randomUUID();
+    const childA = randomUUID();
+    const grandchildA = randomUUID();
+    const rootB = randomUUID();
+    const childB = randomUUID();
+    const sibling = randomUUID();
+    const hiddenChild = randomUUID();
+    const visibleBelowHidden = randomUUID();
+    const foreignRoot = randomUUID();
+
+    await db.insert(companies).values([
+      { id: companyId, name: "Paperclip", issuePrefix: uniqueIssuePrefix(), requireBoardApprovalForNewAgents: false },
+      { id: otherCompanyId, name: "Other", issuePrefix: uniqueIssuePrefix(), requireBoardApprovalForNewAgents: false },
+    ]);
+    await seedCloudTenantMember(companyId);
+    await db.insert(issues).values([
+      { id: rootA, companyId, title: "Root A", status: "todo", priority: "medium" },
+      { id: childA, companyId, parentId: rootA, title: "Child A", status: "done", priority: "medium" },
+      { id: grandchildA, companyId, parentId: childA, title: "Grandchild A", status: "todo", priority: "medium" },
+      { id: rootB, companyId, title: "Root B", status: "in_progress", priority: "medium", assigneeUserId: "cloud-user-1" },
+      { id: childB, companyId, parentId: rootB, title: "Child B", status: "done", priority: "medium" },
+      { id: sibling, companyId, title: "Unrelated sibling", status: "todo", priority: "medium" },
+      { id: hiddenChild, companyId, parentId: rootA, title: "Hidden child", status: "todo", priority: "medium", hiddenAt: new Date() },
+      { id: visibleBelowHidden, companyId, parentId: hiddenChild, title: "Visible below hidden", status: "todo", priority: "medium" },
+      { id: foreignRoot, companyId: otherCompanyId, title: "Foreign root", status: "todo", priority: "medium" },
+    ]);
+
+    const app = createApp(companyId);
+    const query = `subtreeOf=${rootA}&subtreeOf=${childA},${rootB}`;
+    const res = await request(app).get(`/api/companies/${companyId}/issues?${query}&limit=20`);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(new Set(res.body.map((issue: { id: string }) => issue.id))).toEqual(
+      new Set([rootA, childA, grandchildA, rootB, childB]),
+    );
+    expect(res.body.map((issue: { id: string }) => issue.id)).not.toContain(sibling);
+    expect(res.body.map((issue: { id: string }) => issue.id)).not.toContain(hiddenChild);
+    expect(res.body.map((issue: { id: string }) => issue.id)).not.toContain(visibleBelowHidden);
+    expect(res.body.map((issue: { id: string }) => issue.id)).not.toContain(foreignRoot);
+
+    const foreignOnly = await request(app)
+      .get(`/api/companies/${companyId}/issues?subtreeOf=${foreignRoot}&limit=20`);
+    expect(foreignOnly.status, JSON.stringify(foreignOnly.body)).toBe(200);
+    expect(foreignOnly.body).toEqual([]);
+
+    const doneOnly = await request(app)
+      .get(`/api/companies/${companyId}/issues?subtreeOf=${rootA},${rootB}&status=done&limit=20`);
+    expect(doneOnly.status, JSON.stringify(doneOnly.body)).toBe(200);
+    expect(new Set(doneOnly.body.map((issue: { id: string }) => issue.id))).toEqual(
+      new Set([childA, childB]),
+    );
+
+    const pages = await Promise.all([0, 2, 4].map((offset) =>
+      request(app).get(`/api/companies/${companyId}/issues?subtreeOf=${rootA},${rootB}&limit=2&offset=${offset}`),
+    ));
+    expect(pages.every((page) => page.status === 200)).toBe(true);
+    const pagedIds = pages.flatMap((page) => page.body.map((issue: { id: string }) => issue.id));
+    expect(pagedIds).toHaveLength(5);
+    expect(new Set(pagedIds)).toEqual(new Set([rootA, childA, grandchildA, rootB, childB]));
+  });
+
+  it("rejects malformed or oversized subtree root filters", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: uniqueIssuePrefix(),
+      requireBoardApprovalForNewAgents: false,
+    });
+    await seedCloudTenantMember(companyId);
+    const app = createApp(companyId);
+
+    const malformed = await request(app)
+      .get(`/api/companies/${companyId}/issues?subtreeOf=not-a-uuid`);
+    expect(malformed.status).toBe(422);
+    expect(malformed.body.error).toContain("UUID");
+
+    for (const emptyQuery of ["subtreeOf=", "subtreeOf=,,,"]) {
+      const empty = await request(app).get(`/api/companies/${companyId}/issues?${emptyQuery}`);
+      expect(empty.status).toBe(422);
+      expect(empty.body.error).toContain("at least one UUID");
+    }
+
+    const oversizedQuery = Array.from({ length: 26 }, () => randomUUID())
+      .map((root) => `subtreeOf=${root}`)
+      .join("&");
+    const oversized = await request(app)
+      .get(`/api/companies/${companyId}/issues?${oversizedQuery}`);
+    expect(oversized.status).toBe(422);
+    expect(oversized.body.error).toContain("at most 25");
+
+    const maximumQuery = Array.from({ length: 25 }, () => randomUUID())
+      .map((root) => `subtreeOf=${root}`)
+      .join("&");
+    const maximum = await request(app)
+      .get(`/api/companies/${companyId}/issues?${maximumQuery}`);
+    expect(maximum.status, JSON.stringify(maximum.body)).toBe(200);
+  });
 });

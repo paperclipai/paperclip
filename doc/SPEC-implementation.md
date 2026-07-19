@@ -843,6 +843,7 @@ All endpoints are under `/api` and return JSON.
 ## 10.4 Tasks (Issues)
 
 - `GET /companies/:companyId/issues`
+  - `subtreeOf` accepts up to 25 repeated or comma-separated issue UUIDs and returns each company-scoped root plus all visible descendants; other list filters and pagination still apply.
 - `POST /companies/:companyId/issues`
 - `GET /issues/:issueId`
 - `PATCH /issues/:issueId`

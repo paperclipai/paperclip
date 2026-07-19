@@ -189,6 +189,23 @@ describe("openapi routes", () => {
     expect(res.body.paths["/api/companies/{companyId}/folders/items/move"].post.summary).toBe(
       "Move an item into or out of a folder",
     );
+    const issueListSubtreeParameter = res.body.paths["/api/companies/{companyId}/issues"].get.parameters
+      .find((parameter: { name: string }) => parameter.name === "subtreeOf");
+    expect(issueListSubtreeParameter).toMatchObject({
+      name: "subtreeOf",
+      in: "query",
+      required: false,
+      style: "form",
+      explode: true,
+      schema: {
+        type: "array",
+        minItems: 1,
+        maxItems: 25,
+        items: { type: "string", format: "uuid" },
+      },
+    });
+    expect(issueListSubtreeParameter.description).toContain("Comma-separated UUIDs");
+    expect(res.body.paths["/api/companies/{companyId}/issues"].get.responses["422"]).toBeDefined();
     expect(JSON.stringify(res.body.paths["/api/tool-gateway/tools"].get)).not.toContain("sessionToken");
     expect(JSON.stringify(res.body.paths["/api/tool-gateway/tools/call"].post)).not.toContain("sessionToken");
   });

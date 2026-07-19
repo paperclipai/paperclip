@@ -35,7 +35,9 @@ export {
   clampIssueListLimit,
   ISSUE_LIST_DEFAULT_LIMIT,
   ISSUE_LIST_MAX_LIMIT,
+  ISSUE_SUBTREE_ROOT_MAX,
   issueService,
+  parseIssueSubtreeRoots,
   type IssueFilters,
 } from "./issues.js";
 export { issueThreadInteractionService } from "./issue-thread-interactions.js";

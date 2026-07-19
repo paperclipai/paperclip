@@ -35,6 +35,27 @@ describe("issuesApi.list", () => {
     );
   });
 
+  it("passes subtree roots as repeated query keys", async () => {
+    await issuesApi.list("company-1", {
+      subtreeOf: [
+        "00000000-0000-4000-8000-000000000001",
+        "00000000-0000-4000-8000-000000000002",
+      ],
+      limit: 25,
+    });
+
+    expect(mockApi.get).toHaveBeenCalledWith(
+      "/companies/company-1/issues?subtreeOf=00000000-0000-4000-8000-000000000001&subtreeOf=00000000-0000-4000-8000-000000000002&limit=25",
+    );
+  });
+
+  it("fails closed when an untyped caller supplies an empty subtree", () => {
+    expect(() => issuesApi.list("company-1", {
+      subtreeOf: [] as unknown as [string, ...string[]],
+    })).toThrow("subtreeOf requires at least one issue ID");
+    expect(mockApi.get).not.toHaveBeenCalled();
+  });
+
   it("passes generic workspaceId filters through to the company issues endpoint", async () => {
     await issuesApi.list("company-1", { workspaceId: "workspace-1", limit: 1000 });
 

@@ -1,7 +1,8 @@
+import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { describe, expect, it } from "vitest";
-import { parseStatusFilter } from "../services/issues.ts";
+import { parseIssueSubtreeRoots, parseStatusFilter } from "../services/issues.ts";
 
 /**
  * Regression test for https://github.com/paperclipai/paperclip/issues/4628
@@ -70,5 +71,15 @@ describe("issue list status query parsing", () => {
     const res = await request(buildApp()).get("/api/companies/c1/issues");
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ statuses: [] });
+  });
+});
+
+describe("issue subtree query parsing", () => {
+  it("rejects present but structurally invalid values instead of dropping the filter", () => {
+    expect(() => parseIssueSubtreeRoots([])).toThrow("at least one UUID");
+    expect(() => parseIssueSubtreeRoots({ unexpected: "value" })).toThrow("repeated UUID");
+    expect(() => parseIssueSubtreeRoots([randomUUID(), { unexpected: "value" }])).toThrow(
+      "at least one UUID",
+    );
   });
 });
