@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { REDACTED_EVENT_VALUE, redactEventPayload, redactSensitiveText, sanitizeRecord } from "../redaction.js";
+import {
+  REDACTED_EVENT_VALUE,
+  redactAgentConfig,
+  redactAgentConfigValue,
+  redactAgentEnvBinding,
+  redactAgentEnvConfig,
+  redactEventPayload,
+  redactSensitiveText,
+  sanitizeRecord,
+} from "../redaction.js";
 
 describe("redaction", () => {
   it("redacts sensitive keys and nested secret values", () => {
@@ -130,5 +139,157 @@ describe("redaction", () => {
 
     expect(result?.args).toEqual(["--api-key", "not-a-command-secret"]);
     expect(result?.argv).toEqual(["--api-key", REDACTED_EVENT_VALUE]);
+  });
+
+  it("redacts agent env bindings to type and configured state", () => {
+    expect(redactAgentEnvBinding("plaintext-secret")).toEqual({ type: "plain", configured: true });
+    expect(redactAgentEnvBinding("")).toEqual({ type: "plain", configured: false });
+    expect(redactAgentEnvBinding({ type: "plain", value: "plaintext-secret" })).toEqual({
+      type: "plain",
+      configured: true,
+    });
+    expect(redactAgentEnvBinding({ type: "plain", value: "" })).toEqual({ type: "plain", configured: false });
+    expect(redactAgentEnvBinding({ type: "secret_ref", secretId: "11111111-1111-1111-1111-111111111111" })).toEqual({
+      type: "secret_ref",
+      configured: true,
+    });
+    expect(redactAgentEnvBinding({ type: "secret_ref", secretId: "" })).toEqual({
+      type: "secret_ref",
+      configured: false,
+    });
+    expect(redactAgentEnvBinding(null)).toBeNull();
+    expect(redactAgentEnvBinding(undefined)).toBeNull();
+  });
+
+  it("redacts all values in an agent env config regardless of key name", () => {
+    const env = {
+      OPENAI_API_KEY: "sk-openai",
+      SAFE_URL: "http://localhost:3100",
+      SECRET_REF: { type: "secret_ref", secretId: "11111111-1111-1111-1111-111111111111" },
+      EMPTY: "",
+      MISSING: null,
+    };
+
+    expect(redactAgentEnvConfig(env)).toEqual({
+      OPENAI_API_KEY: { type: "plain", configured: true },
+      SAFE_URL: { type: "plain", configured: true },
+      SECRET_REF: { type: "secret_ref", configured: true },
+      EMPTY: { type: "plain", configured: false },
+      MISSING: null,
+    });
+  });
+
+  it("redacts env values nested inside adapter and runtime config", () => {
+    const input = {
+      model: "openai/gpt-5",
+      env: {
+        OPENAI_API_KEY: "sk-nested",
+      },
+      modelProfiles: {
+        cheap: {
+          enabled: true,
+          adapterConfig: {
+            model: "cheap-model",
+            env: {
+              ANTHROPIC_API_KEY: { type: "plain", value: "sk-anthropic" },
+            },
+          },
+        },
+      },
+    };
+
+    const result = redactAgentConfigValue(input);
+
+    expect(result).toEqual({
+      model: "openai/gpt-5",
+      env: {
+        OPENAI_API_KEY: { type: "plain", configured: true },
+      },
+      modelProfiles: {
+        cheap: {
+          enabled: true,
+          adapterConfig: {
+            model: "cheap-model",
+            env: {
+              ANTHROPIC_API_KEY: { type: "plain", configured: true },
+            },
+          },
+        },
+      },
+    });
+  });
+
+  it("preserves non-env adapter config fields when redacting", () => {
+    const input = {
+      command: "pnpm agent:run",
+      token: "secret-token",
+      env: {
+        API_KEY: "secret",
+      },
+    };
+
+    const result = redactAgentConfigValue(input);
+
+    expect(result).toEqual({
+      command: "pnpm agent:run",
+      token: "secret-token",
+      env: {
+        API_KEY: { type: "plain", configured: true },
+      },
+    });
+  });
+
+  it("redacts env values and other secret-named adapter config keys", () => {
+    const input = {
+      command: "pnpm agent:run",
+      token: "secret-token",
+      env: {
+        OPENAI_API_KEY: "sk-openai",
+        SAFE_URL: "http://localhost:3100",
+      },
+    };
+
+    const result = redactAgentConfig(input);
+
+    expect(result).toEqual({
+      command: "pnpm agent:run",
+      token: "secret-token",
+      env: {
+        OPENAI_API_KEY: { type: "plain", configured: true },
+        SAFE_URL: { type: "plain", configured: true },
+      },
+    });
+  });
+
+  it("redacts nested runtime config env values while preserving other fields", () => {
+    const input = {
+      modelProfiles: {
+        cheap: {
+          enabled: true,
+          adapterConfig: {
+            model: "cheap-model",
+            env: {
+              ANTHROPIC_API_KEY: { type: "plain", value: "sk-anthropic" },
+            },
+          },
+        },
+      },
+    };
+
+    const result = redactAgentConfig(input);
+
+    expect(result).toEqual({
+      modelProfiles: {
+        cheap: {
+          enabled: true,
+          adapterConfig: {
+            model: "cheap-model",
+            env: {
+              ANTHROPIC_API_KEY: { type: "plain", configured: true },
+            },
+          },
+        },
+      },
+    });
   });
 });

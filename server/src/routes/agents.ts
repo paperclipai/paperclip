@@ -73,7 +73,11 @@ import {
   refreshAdapterModels,
   requireServerAdapter,
 } from "../adapters/index.js";
-import { redactEventPayload } from "../redaction.js";
+import {
+  redactAgentConfig,
+  redactAgentEnvConfig,
+  redactEventPayload,
+} from "../redaction.js";
 import { redactCurrentUserValue } from "../log-redaction.js";
 import { renderOrgChartSvg, renderOrgChartPng, type OrgNode, type OrgChartStyle, ORG_CHART_STYLES } from "./org-chart-svg.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
@@ -518,8 +522,10 @@ export function agentRoutes(
       buildAgentAccessState(agent),
     ]);
 
+    const redactedAgent = redactAgentForResponse(agent);
+
     return {
-      ...(options?.restricted ? redactForRestrictedAgentView(agent) : agent),
+      ...(options?.restricted ? redactForRestrictedAgentView(redactedAgent) : redactedAgent),
       chainOfCommand,
       access: accessState,
     };
@@ -1279,6 +1285,16 @@ export function agentRoutes(
     };
   }
 
+  function redactAgentForResponse(
+    agent: NonNullable<Awaited<ReturnType<typeof svc.getById>>>,
+  ): NonNullable<Awaited<ReturnType<typeof svc.getById>>> {
+    return {
+      ...agent,
+      adapterConfig: (redactAgentConfig(agent.adapterConfig) ?? {}) as typeof agent.adapterConfig,
+      runtimeConfig: (redactAgentConfig(agent.runtimeConfig) ?? {}) as typeof agent.runtimeConfig,
+    };
+  }
+
   function redactAgentConfiguration(agent: Awaited<ReturnType<typeof svc.getById>>) {
     if (!agent) return null;
     return {
@@ -1290,8 +1306,8 @@ export function agentRoutes(
       status: agent.status,
       reportsTo: agent.reportsTo,
       adapterType: agent.adapterType,
-      adapterConfig: redactEventPayload(agent.adapterConfig),
-      runtimeConfig: redactEventPayload(agent.runtimeConfig),
+      adapterConfig: redactAgentConfig(agent.adapterConfig),
+      runtimeConfig: redactAgentConfig(agent.runtimeConfig),
       permissions: agent.permissions,
       updatedAt: agent.updatedAt,
     };
@@ -1302,19 +1318,19 @@ export function agentRoutes(
     const record = snapshot as Record<string, unknown>;
     return {
       ...record,
-      adapterConfig: redactEventPayload(
+      adapterConfig: redactAgentConfig(
         typeof record.adapterConfig === "object" && record.adapterConfig !== null
           ? (record.adapterConfig as Record<string, unknown>)
           : {},
       ),
-      runtimeConfig: redactEventPayload(
+      runtimeConfig: redactAgentConfig(
         typeof record.runtimeConfig === "object" && record.runtimeConfig !== null
           ? (record.runtimeConfig as Record<string, unknown>)
           : {},
       ),
       metadata:
         typeof record.metadata === "object" && record.metadata !== null
-          ? redactEventPayload(record.metadata as Record<string, unknown>)
+          ? redactAgentConfig(record.metadata as Record<string, unknown>)
           : record.metadata ?? null,
     };
   }
@@ -1614,7 +1630,7 @@ export function agentRoutes(
     const result = await svc.list(companyId);
     const canReadConfigs = await actorCanReadConfigurationsForCompany(req, companyId);
     if (canReadConfigs) {
-      res.json(result);
+      res.json(result.map((agent) => redactAgentForResponse(agent)));
       return;
     }
     res.json(result.map((agent) => redactForRestrictedAgentView(agent)));
@@ -2242,7 +2258,7 @@ export function agentRoutes(
       );
     }
 
-    res.status(201).json(agent);
+    res.status(201).json(redactAgentForResponse(agent));
   });
 
   router.patch("/agents/:id/permissions", validate(updateAgentPermissionsSchema), async (req, res) => {
@@ -2698,7 +2714,7 @@ export function agentRoutes(
       details: summarizeAgentUpdateDetails(patchData),
     });
 
-    res.json(agent);
+    res.json(redactAgentForResponse(agent));
   });
 
   router.post("/agents/:id/pause", async (req, res) => {
@@ -2724,7 +2740,7 @@ export function agentRoutes(
       entityId: agent.id,
     });
 
-    res.json(agent);
+    res.json(redactAgentForResponse(agent));
   });
 
   router.post("/agents/:id/resume", async (req, res) => {
@@ -2748,8 +2764,9 @@ export function agentRoutes(
       entityId: agent.id,
     });
 
-    res.json(agent);
+    res.json(redactAgentForResponse(agent));
   });
+
 
   router.post("/agents/:id/approve", async (req, res) => {
     assertBoard(req);
@@ -2783,7 +2800,7 @@ export function agentRoutes(
       details: { source: "agent_detail" },
     });
 
-    res.json(agent);
+    res.json(redactAgentForResponse(agent));
   });
 
   router.post("/agents/:id/terminate", async (req, res) => {
@@ -2809,7 +2826,7 @@ export function agentRoutes(
       entityId: agent.id,
     });
 
-    res.json(agent);
+    res.json(redactAgentForResponse(agent));
   });
 
   router.delete("/agents/:id", async (req, res) => {

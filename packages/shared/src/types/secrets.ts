@@ -38,6 +38,13 @@ export type EnvBinding = string | EnvPlainBinding | EnvSecretRefBinding;
 
 export type AgentEnvConfig = Record<string, EnvBinding>;
 
+export interface EnvBindingRedacted {
+  type: "plain" | "secret_ref" | "unknown";
+  configured: boolean;
+}
+
+export type AgentEnvConfigRedacted = Record<string, EnvBindingRedacted | null>;
+
 export interface CompanySecret {
   id: string;
   companyId: string;

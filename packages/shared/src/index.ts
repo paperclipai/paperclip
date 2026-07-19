@@ -542,6 +542,8 @@ export type {
   CompanyPortabilityExportRequest,
   EnvBinding,
   AgentEnvConfig,
+  EnvBindingRedacted,
+  AgentEnvConfigRedacted,
   CompanySecret,
   CompanySecretProviderConfig,
   SecretProviderConfigPayload,

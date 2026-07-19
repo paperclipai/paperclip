@@ -244,6 +244,8 @@ export type {
   EnvSecretRefBinding,
   EnvBinding,
   AgentEnvConfig,
+  EnvBindingRedacted,
+  AgentEnvConfigRedacted,
   CompanySecret,
   CompanySecretProviderConfig,
   SecretProviderConfigPayload,

@@ -1,4 +1,5 @@
 import { redactCommandText } from "@paperclipai/adapter-utils";
+import type { AgentEnvConfigRedacted, EnvBindingRedacted } from "@paperclipai/shared";
 
 const SECRET_PAYLOAD_KEY_RE =
   /(api[-_]?key|access[-_]?token|auth(?:_?token)?|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)/i;
@@ -100,4 +101,88 @@ export function redactSensitiveText(input: string): string {
       .replace(ESCAPED_JSON_SECRET_FIELD_TEXT_RE, `$1${REDACTED_EVENT_VALUE}$2`),
     REDACTED_EVENT_VALUE,
   );
+}
+
+function isEnvBindingLike(value: unknown): value is Record<string, unknown> {
+  return isPlainObject(value) && typeof (value as Record<string, unknown>).type === "string";
+}
+
+export function redactAgentEnvBinding(value: unknown): EnvBindingRedacted | null {
+  if (value === null || value === undefined) return null;
+
+  if (typeof value === "string") {
+    return { type: "plain", configured: value.length > 0 };
+  }
+
+  if (!isEnvBindingLike(value)) {
+    return { type: "unknown", configured: true };
+  }
+
+  const type = value.type;
+  if (type === "secret_ref") {
+    const secretId = typeof value.secretId === "string" ? value.secretId : "";
+    return { type: "secret_ref", configured: secretId.length > 0 };
+  }
+
+  if (type === "plain" && "value" in value) {
+    const raw = value.value;
+    const configured = typeof raw === "string" ? raw.length > 0 : Boolean(raw);
+    return { type: "plain", configured };
+  }
+
+  return { type: type as EnvBindingRedacted["type"], configured: true };
+}
+
+export function redactAgentEnvConfig(env: unknown): AgentEnvConfigRedacted | null {
+  if (!env || typeof env !== "object" || Array.isArray(env)) return null;
+
+  const record = env as Record<string, unknown>;
+  const redacted: Record<string, EnvBindingRedacted | null> = {};
+  for (const [key, value] of Object.entries(record)) {
+    redacted[key] = redactAgentEnvBinding(value);
+  }
+  return redacted;
+}
+
+export function redactAgentConfigValue(value: unknown): unknown {
+  if (value === null || value === undefined) return value;
+  if (Array.isArray(value)) return value.map(redactAgentConfigValue);
+  if (!isPlainObject(value)) return value;
+
+  const record = value as Record<string, unknown>;
+  const redacted: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(record)) {
+    if (key === "env" && isPlainObject(child)) {
+      redacted[key] = redactAgentEnvConfig(child);
+    } else {
+      redacted[key] = redactAgentConfigValue(child);
+    }
+  }
+  return redacted;
+}
+
+function restoreRedactedEnv(source: unknown, target: unknown): unknown {
+  if (!isPlainObject(source) || !isPlainObject(target)) return target;
+
+  const src = source as Record<string, unknown>;
+  const tgt = target as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(tgt)) {
+    if (key === "env" && isPlainObject(src[key])) {
+      out[key] = src[key];
+    } else if (isPlainObject(value) && isPlainObject(src[key])) {
+      out[key] = restoreRedactedEnv(src[key], value);
+    } else {
+      out[key] = value;
+    }
+  }
+  return out;
+}
+
+export function redactAgentConfig(value: unknown): unknown {
+  const withEnvRedacted = redactAgentConfigValue(value);
+  const withEventRedaction = redactEventPayload(
+    isPlainObject(withEnvRedacted) ? (withEnvRedacted as Record<string, unknown>) : null,
+  );
+  return restoreRedactedEnv(withEnvRedacted, withEventRedaction);
 }
