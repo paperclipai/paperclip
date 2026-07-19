@@ -3540,6 +3540,35 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         continue;
       }
 
+      // The candidate scan can overlap the heartbeat's final issue update. In
+      // particular, a successful run may deliberately park its issue back in
+      // `todo` after this evaluator observed it as `in_progress`. Re-read the
+      // lifecycle fields before applying recovery from that stale snapshot so
+      // the agent's explicit disposition wins.
+      const currentIssueLifecycle = await db
+        .select({
+          status: issues.status,
+          assigneeAgentId: issues.assigneeAgentId,
+          assigneeUserId: issues.assigneeUserId,
+          checkoutRunId: issues.checkoutRunId,
+          executionRunId: issues.executionRunId,
+        })
+        .from(issues)
+        .where(and(eq(issues.companyId, issue.companyId), eq(issues.id, issue.id)))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (
+        !currentIssueLifecycle ||
+        currentIssueLifecycle.status !== issue.status ||
+        currentIssueLifecycle.assigneeAgentId !== issue.assigneeAgentId ||
+        currentIssueLifecycle.assigneeUserId !== issue.assigneeUserId ||
+        currentIssueLifecycle.checkoutRunId !== issue.checkoutRunId ||
+        currentIssueLifecycle.executionRunId !== issue.executionRunId
+      ) {
+        result.skipped += 1;
+        continue;
+      }
+
       let latestRun = await getLatestIssueRun(issue.companyId, issue.id);
       if (latestRun?.status === "succeeded" && await hasPersistedDurableWaitPath(issue)) {
         result.skipped += 1;
