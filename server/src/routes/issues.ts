@@ -334,16 +334,9 @@ function noopTaskWatchdogService(): TaskWatchdogService {
       skipped: 0,
       watchdogIssueIds: [],
     }),
-    revalidateMutationScope: async () => ({
-      allowed: true,
-      classification: {
-        state: "stopped",
-        reason: "Task watchdog service unavailable in this route context.",
-        includedIssueIds: [],
-        stopFingerprint: "task_watchdog_stop:unavailable",
-        stoppedLeaves: [],
-      },
-    }),
+    executeSourceMutation: async () => {
+      throw new Error("Task watchdog service unavailable in this route context.");
+    },
   };
 }
 
@@ -3608,28 +3601,18 @@ export function issueRoutes(
   }
 
   async function assertFreshTaskWatchdogSourceMutation(
-    res: Response,
+    _res: Response,
     scope: Awaited<ReturnType<typeof resolveTaskWatchdogMutationScope>>,
     issue: { id: string },
   ) {
     if (scope.kind !== "watchdog") return true;
     if (scope.watchdogIssueId && issue.id === scope.watchdogIssueId) return true;
 
-    const revalidated = await taskWatchdogsSvc.revalidateMutationScope(scope);
-    if (revalidated.allowed) return true;
-    res.status(409).json({
-      error: revalidated.reason,
-      details: {
-        watchedIssueId: scope.watchedIssueId,
-        watchdogId: scope.watchdogId,
-        runStopFingerprint: scope.stopFingerprint,
-        currentState: revalidated.classification?.state ?? null,
-        currentStopFingerprint: revalidated.classification && "stopFingerprint" in revalidated.classification
-          ? revalidated.classification.stopFingerprint
-          : null,
-      },
-    });
-    return false;
+    // The immutable identity is validated while resolving the scope. Source
+    // freshness is intentionally mediated inside the same transaction as the
+    // write and cursor CAS; a read-only preflight here would recreate the race
+    // this boundary is designed to close.
+    return true;
   }
 
   async function rejectTaskWatchdogConfigMutation(req: Request, res: Response) {
@@ -7015,7 +6998,7 @@ export function issueRoutes(
             discovery: watchdogProductBugFollowUp.discovery,
             sourceIssue: watchdogProductBugFollowUp.sourceIssue,
             watchdogIssue: watchdogProductBugFollowUp.watchdogIssue,
-            stopFingerprint: watchdogProductBugFollowUp.scope.stopFingerprint,
+            stopFingerprint: watchdogProductBugFollowUp.scope.initialStopFingerprint,
             runId: actor.runId,
           }),
           projectId: rawCreateBody.projectId ?? watchdogProductBugFollowUp.sourceIssue.projectId,
@@ -7062,7 +7045,7 @@ export function issueRoutes(
       executionPolicy,
     }, actor);
     let deduplicationReason: "idempotency_key" | "recent_open_title" | null = null;
-    const issue = await svc.create(companyId, {
+    const issueInput = {
       ...createBody,
       ...(taskBridgeOriginForActor(req) ?? {}),
       id: issueId,
@@ -7075,10 +7058,44 @@ export function issueRoutes(
       actorResponsibleUserId: authenticatedActorResponsibleUserId(req),
       trustExplicitResponsibleUserId: actor.actorType === "user",
       watchdogActorRunId: actor.runId,
-      onDeduplicated: (reason) => {
+      onDeduplicated: (reason: "idempotency_key" | "recent_open_title") => {
         deduplicationReason = reason;
       },
-    });
+    };
+    let issue;
+    if (watchdogProductBugFollowUp) {
+      const mutation = await taskWatchdogsSvc.executeSourceMutation(
+        watchdogProductBugFollowUp.scope,
+        {
+          operationKind: "product_bug_followup_create",
+          method: req.method,
+          path: req.originalUrl,
+          targetIssueId: watchdogProductBugFollowUp.sourceIssue.id,
+          body: req.body,
+          agentApiKeyId: actor.agentApiKeyId,
+          establishesContinuationPath: true,
+        },
+        async (tx) => {
+          const created = await svc.create(companyId, issueInput, tx as unknown as Db);
+          return {
+            value: created,
+            receiptResult: { issueId: created.id, deduplicationReason },
+          };
+        },
+      );
+      if (mutation.replayed) {
+        const receiptResult = mutation.receipt.result as { issueId?: unknown } | null;
+        const replayedIssue = typeof receiptResult?.issueId === "string"
+          ? await svc.getById(receiptResult.issueId)
+          : null;
+        if (!replayedIssue) throw new Error("Task-watchdog replay receipt product bug is missing");
+        res.status(200).json(replayedIssue);
+        return;
+      }
+      issue = mutation.value;
+    } else {
+      issue = await svc.create(companyId, issueInput);
+    }
     if (deduplicationReason) {
       const referenceSummary = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
       res.status(200).json({
@@ -7119,7 +7136,7 @@ export function issueRoutes(
               sourceIssueIdentifier: watchdogProductBugFollowUp.sourceIssue.identifier,
               watchdogIssueId: watchdogProductBugFollowUp.watchdogIssue?.id ?? null,
               watchdogIssueIdentifier: watchdogProductBugFollowUp.watchdogIssue?.identifier ?? null,
-              stopFingerprint: watchdogProductBugFollowUp.scope.stopFingerprint,
+              stopFingerprint: watchdogProductBugFollowUp.scope.initialStopFingerprint,
             },
           }
           : {}),
@@ -7230,6 +7247,9 @@ export function issueRoutes(
     await assertIssueEnvironmentSelection(parent.companyId, createBody.executionWorkspaceSettings?.environmentId);
 
     const actor = getActorInfo(req);
+    const childWatchdogScope = await resolveTaskWatchdogMutationScope(db, req.actor);
+    const isWatchdogSourceChild =
+      childWatchdogScope.kind === "watchdog" && parent.id !== childWatchdogScope.watchdogIssueId;
     const serializationContext = await resolveWatchdogFollowUpSerializationContext(req, parent);
     const currentSerializedChild = serializationContext
       ? await findCurrentSerializedWatchdogChild(parent)
@@ -7246,7 +7266,7 @@ export function issueRoutes(
       projectId: createBody.projectId ?? parent.projectId ?? null,
       executionPolicy,
     }, actor);
-    const { issue, parentBlockerAdded } = await svc.createChild(parent.id, {
+    const childInput = {
       ...createBody,
       ...(taskBridgeOriginForActor(req) ?? {}),
       id: issueId,
@@ -7266,7 +7286,50 @@ export function issueRoutes(
       actorAgentId: actor.agentId,
       actorUserId: actor.actorType === "user" ? actor.actorId : null,
       watchdogActorRunId: actor.runId,
-    });
+    };
+    let childResult;
+    if (isWatchdogSourceChild) {
+      const mutation = await taskWatchdogsSvc.executeSourceMutation(
+        childWatchdogScope,
+        {
+          operationKind: "issue_child_create",
+          method: req.method,
+          path: req.originalUrl,
+          targetIssueId: parent.id,
+          body: req.body,
+          agentApiKeyId: actor.agentApiKeyId,
+          establishesContinuationPath:
+            !currentSerializedChild &&
+            (childInput.status === "todo" || childInput.status === "in_progress" || childInput.status === "in_review"),
+        },
+        async (tx) => {
+          const created = await svc.createChild(parent.id, childInput, tx as unknown as Db);
+          return {
+            value: created,
+            receiptResult: {
+              childIssueId: created.issue.id,
+              parentBlockerAdded: created.parentBlockerAdded,
+            },
+          };
+        },
+      );
+      if (mutation.replayed) {
+        const receiptResult = mutation.receipt.result as {
+          childIssueId?: unknown;
+          parentBlockerAdded?: unknown;
+        } | null;
+        const replayedIssue = typeof receiptResult?.childIssueId === "string"
+          ? await svc.getById(receiptResult.childIssueId)
+          : null;
+        if (!replayedIssue) throw new Error("Task-watchdog replay receipt child issue is missing");
+        res.status(200).json(replayedIssue);
+        return;
+      }
+      childResult = mutation.value;
+    } else {
+      childResult = await svc.createChild(parent.id, childInput);
+    }
+    const { issue, parentBlockerAdded } = childResult;
     await externalObjectsSvc.syncIssueSafely(issue.id);
 
     await logActivity(db, {
@@ -7455,13 +7518,55 @@ export function issueRoutes(
       }
     }
 
-    const result = await svc.decomposeAcceptedPlan(sourceIssue.id, {
+    const decompositionInput = {
       acceptedPlanRevisionId: req.body.acceptedPlanRevisionId,
       children: normalizedChildren,
       actorAgentId: actor.agentId,
       actorUserId: actor.actorType === "user" ? actor.actorId : null,
       actorRunId: actor.runId ?? null,
-    });
+    };
+    const decompositionWatchdogScope = await resolveTaskWatchdogMutationScope(db, req.actor);
+    const isWatchdogSourceDecomposition =
+      decompositionWatchdogScope.kind === "watchdog" &&
+      sourceIssue.id !== decompositionWatchdogScope.watchdogIssueId;
+    let result;
+    if (isWatchdogSourceDecomposition) {
+      const mutation = await taskWatchdogsSvc.executeSourceMutation(
+        decompositionWatchdogScope,
+        {
+          operationKind: "accepted_plan_decomposition",
+          method: req.method,
+          path: req.originalUrl,
+          targetIssueId: sourceIssue.id,
+          body: req.body,
+          agentApiKeyId: actor.agentApiKeyId,
+          establishesContinuationPath: normalizedChildren.some((child) =>
+            child.status === "todo" || child.status === "in_progress" || child.status === "in_review"),
+        },
+        async (tx) => {
+          const decomposed = await svc.decomposeAcceptedPlan(
+            sourceIssue.id,
+            decompositionInput,
+            tx as unknown as Db,
+          );
+          return {
+            value: decomposed,
+            receiptResult: {
+              decomposition: decomposed.decomposition,
+              childIssueIds: decomposed.childIssueIds,
+              newlyCreatedChildIssueIds: decomposed.newlyCreatedIssues.map((issue) => issue.id),
+            },
+          };
+        },
+      );
+      if (mutation.replayed) {
+        res.status(200).json(mutation.receipt.result);
+        return;
+      }
+      result = mutation.value;
+    } else {
+      result = await svc.decomposeAcceptedPlan(sourceIssue.id, decompositionInput);
+    }
 
     await logActivity(db, {
       companyId: sourceIssue.companyId,
@@ -7931,21 +8036,30 @@ export function issueRoutes(
     }
 
     let issue;
+    let atomicWatchdogComment: Awaited<ReturnType<typeof svc.addComment>> | null = null;
+    let isAtomicWatchdogMutation = false;
     try {
-      if (transition.decision && decisionId) {
-        const decision = transition.decision;
-        issue = await db.transaction(async (tx) => {
-          const updated = await svc.update(
-            id,
-            {
-              ...updateFields,
-              actorAgentId: actor.agentId ?? null,
-              actorUserId: actor.actorType === "user" ? actor.actorId : null,
-            },
-            tx,
-          );
-          if (!updated) return null;
+      const watchdogScope = await resolveTaskWatchdogMutationScope(db, req.actor);
+      const isWatchdogSourceMutation =
+        watchdogScope.kind === "watchdog" && existing.id !== watchdogScope.watchdogIssueId;
+      isAtomicWatchdogMutation = isWatchdogSourceMutation;
+      const atomicCommentSourceTrust = commentBody
+        ? await sourceTrustForActorWrite(existing, actor)
+        : null;
+      const applyUpdate = async (tx: any) => {
+        const updated = await svc.update(
+          id,
+          {
+            ...updateFields,
+            actorAgentId: actor.agentId ?? null,
+            actorUserId: actor.actorType === "user" ? actor.actorId : null,
+          },
+          tx,
+        );
+        if (!updated) return { updated: null, comment: null };
 
+        if (transition.decision && decisionId) {
+          const decision = transition.decision;
           await tx.insert(issueExecutionDecisions).values({
             id: decisionId,
             companyId: updated.companyId,
@@ -7958,9 +8072,66 @@ export function issueRoutes(
             body: decision.body,
             createdByRunId: actor.runId ?? null,
           });
+        }
 
-          return updated;
+        const insertedComment = isWatchdogSourceMutation && commentBody
+          ? await svc.addComment(id, commentBody, {
+              agentId: actor.agentId ?? undefined,
+              userId: actor.actorType === "user" ? actor.actorId : undefined,
+              runId: actor.runId,
+            }, { sourceTrust: atomicCommentSourceTrust }, tx)
+          : null;
+        return { updated, comment: insertedComment };
+      };
+
+      if (isWatchdogSourceMutation) {
+        const mutation = await taskWatchdogsSvc.executeSourceMutation(
+          watchdogScope,
+          {
+            operationKind: "issue_update",
+            method: req.method,
+            path: req.originalUrl,
+            targetIssueId: existing.id,
+            body: req.body,
+            agentApiKeyId: actor.agentApiKeyId,
+            establishesContinuationPath:
+              updateFields.status === "todo" ||
+              updateFields.status === "in_progress" ||
+              updateFields.status === "in_review",
+          },
+          async (tx) => {
+            const result = await applyUpdate(tx);
+            if (!result.updated) throw new Error("Task-watchdog mutation target disappeared inside transaction");
+            return {
+              value: result,
+              receiptResult: {
+                issueId: result.updated.id,
+                commentId: result.comment?.id ?? null,
+              },
+            };
+          },
+        );
+        if (mutation.replayed) {
+          const receiptResult = mutation.receipt.result as { issueId?: unknown; commentId?: unknown } | null;
+          issue = await svc.getById(
+            typeof receiptResult?.issueId === "string" ? receiptResult.issueId : existing.id,
+          );
+          atomicWatchdogComment = typeof receiptResult?.commentId === "string"
+            ? await svc.getComment(receiptResult.commentId)
+            : null;
+          if (commentBody && !atomicWatchdogComment) {
+            throw new Error("Task-watchdog replay receipt comment is missing");
+          }
+        } else {
+          issue = mutation.value.updated;
+          atomicWatchdogComment = mutation.value.comment;
+        }
+      } else if (transition.decision && decisionId) {
+        const result = await db.transaction(async (tx) => {
+          const applied = await applyUpdate(tx);
+          return applied.updated;
         });
+        issue = result;
       } else {
         issue = await svc.update(id, {
           ...updateFields,
@@ -8373,7 +8544,7 @@ export function issueRoutes(
     if (commentBody) {
       const commentReferenceSummaryBefore = updateReferenceSummaryAfter
         ?? await issueReferencesSvc.listIssueReferenceSummary(issue.id);
-      comment = await svc.addComment(id, commentBody, {
+      comment = isAtomicWatchdogMutation ? atomicWatchdogComment! : await svc.addComment(id, commentBody, {
         agentId: actor.agentId ?? undefined,
         userId: actor.actorType === "user" ? actor.actorId : undefined,
         runId: actor.runId,
@@ -9685,6 +9856,9 @@ export function issueRoutes(
     }
 
     const actor = getActorInfo(req);
+    const commentWatchdogScope = await resolveTaskWatchdogMutationScope(db, req.actor);
+    const isWatchdogSourceComment =
+      commentWatchdogScope.kind === "watchdog" && issue.id !== commentWatchdogScope.watchdogIssueId;
     const reopenRequested = req.body.reopen === true;
     const resumeRequested = req.body.resume === true;
     const interruptRequested = req.body.interrupt === true;
@@ -9709,11 +9883,17 @@ export function issueRoutes(
     ) {
       if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
     }
+    const explicitMoveToTodoRequested = effectiveReopenRequested || effectiveResumeRequested === true;
+    if (isWatchdogSourceComment && explicitMoveToTodoRequested) {
+      res.status(409).json({
+        error: "Task-watchdog recovery status and comment must be submitted atomically through PATCH /issues/:id.",
+      });
+      return;
+    }
     if (effectiveResumeRequested === true && !(await assertExplicitResumeIntentAllowed(req, res, issue))) return;
     if (effectiveResumeRequested !== true && effectiveReopenRequested === true && req.actor.type === "agent") {
       if (!(await assertExplicitResumeIntentAllowed(req, res, issue))) return;
     }
-    const explicitMoveToTodoRequested = effectiveReopenRequested || effectiveResumeRequested === true;
     const scheduledRetryForHumanComment =
       shouldHumanCommentResumeInProgressScheduledRetry({
         hasComment: true,
@@ -9977,16 +10157,46 @@ export function issueRoutes(
         requestedByActorId: actor.actorId,
       });
     } else {
-      comment = await svc.addComment(id, req.body.body, {
+      const commentActor = {
         agentId: actor.agentId ?? undefined,
         userId: actor.actorType === "user" ? actor.actorId : undefined,
         runId: actor.runId,
-      }, {
+      };
+      const commentOptions = {
         authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
         presentation: req.body.presentation ?? null,
         metadata: req.body.metadata ?? null,
         sourceTrust: await sourceTrustForActorWrite(currentIssue, actor),
-      });
+      };
+      if (isWatchdogSourceComment) {
+        const mutation = await taskWatchdogsSvc.executeSourceMutation(
+          commentWatchdogScope,
+          {
+            operationKind: "issue_comment",
+            method: req.method,
+            path: req.originalUrl,
+            targetIssueId: currentIssue.id,
+            body: req.body,
+            agentApiKeyId: actor.agentApiKeyId,
+          },
+          async (tx) => {
+            const inserted = await svc.addComment(id, req.body.body, commentActor, commentOptions, tx);
+            return { value: inserted, receiptResult: { commentId: inserted.id } };
+          },
+        );
+        if (mutation.replayed) {
+          const result = mutation.receipt.result as { commentId?: unknown } | null;
+          const replayedComment = typeof result?.commentId === "string"
+            ? await svc.getComment(result.commentId)
+            : null;
+          if (!replayedComment) throw new Error("Task-watchdog replay receipt comment is missing");
+          res.status(200).json(replayedComment);
+          return;
+        }
+        comment = mutation.value;
+      } else {
+        comment = await svc.addComment(id, req.body.body, commentActor, commentOptions);
+      }
     }
 
     await issueReferencesSvc.syncComment(comment.id);

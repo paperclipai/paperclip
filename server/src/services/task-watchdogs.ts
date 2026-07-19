@@ -16,13 +16,14 @@ import {
   issueWorkProducts,
 } from "@paperclipai/db";
 import type { IssueWatchdog, IssueWatchdogSummary } from "@paperclipai/shared";
-import { conflict, notFound } from "../errors.js";
+import { conflict, forbidden, notFound } from "../errors.js";
 import { parseObject } from "../adapters/utils.js";
 import { logActivity } from "./activity-log.js";
 import { evaluateAgentInvokabilityFromDb } from "./agent-invokability.js";
 import { issueService } from "./issues.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
 import { TASK_WATCHDOG_ORIGIN_KIND } from "./task-watchdog-scope.js";
+import type { TaskWatchdogMutationScope } from "./task-watchdog-scope.js";
 
 const TASK_WATCHDOG_STOP_FINGERPRINT_PREFIX = "task_watchdog_stop:";
 const TASK_WATCHDOG_SUBTREE_MAX_DEPTH = 100;
@@ -190,6 +191,64 @@ type TaskWatchdogWakeup = (
 export type TaskWatchdogServiceDeps = {
   enqueueWakeup?: TaskWatchdogWakeup;
 };
+
+export type TaskWatchdogSourceMutationRequest = {
+  operationKind: string;
+  method: string;
+  path: string;
+  targetIssueId: string;
+  body: unknown;
+  agentApiKeyId?: string | null;
+  establishesContinuationPath?: boolean;
+};
+
+type TaskWatchdogMutationReceipt = {
+  version: 1;
+  digest: string;
+  operationKind: string;
+  targetIssueId: string;
+  oldFingerprint: string;
+  newFingerprint: string | null;
+  cursorState: "open" | "sealed";
+  result: unknown;
+  committedAt: string;
+};
+
+function canonicalizeJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalizeJson);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, entry]) => [key, canonicalizeJson(entry)]),
+  );
+}
+
+function taskWatchdogMutationDigest(input: TaskWatchdogSourceMutationRequest) {
+  return createHash("sha256")
+    .update(JSON.stringify(canonicalizeJson({
+      method: input.method.toUpperCase(),
+      path: input.path,
+      targetIssueId: input.targetIssueId,
+      body: input.body,
+    })))
+    .digest("hex");
+}
+
+function readTaskWatchdogMutationReceipt(value: unknown): TaskWatchdogMutationReceipt | null {
+  const receipt = parseObject(value);
+  if (
+    receipt.version !== 1 ||
+    typeof receipt.digest !== "string" ||
+    typeof receipt.operationKind !== "string" ||
+    typeof receipt.targetIssueId !== "string" ||
+    typeof receipt.oldFingerprint !== "string" ||
+    (receipt.newFingerprint !== null && typeof receipt.newFingerprint !== "string") ||
+    (receipt.cursorState !== "open" && receipt.cursorState !== "sealed") ||
+    typeof receipt.committedAt !== "string"
+  ) return null;
+  return receipt as TaskWatchdogMutationReceipt;
+}
 
 function normalizeInstructions(value: string | null | undefined): string | null {
   if (value == null) return null;
@@ -553,10 +612,21 @@ function watchdogWakeContext(input: {
     wakeReason: "task_watchdog_stopped_subtree",
     source: TASK_WATCHDOG_ORIGIN_KIND,
     taskWatchdog: {
+      version: 1,
+      watchdogId: input.watchdog.id,
+      watchdogIssueId: input.watchdogIssue.id,
       watchedIssueId: input.sourceIssue.id,
+      companyId: input.watchdog.companyId,
+      agentId: input.watchdog.watchdogAgentId,
       watchedIssueIdentifier: input.sourceIssue.identifier,
       watchedIssueTitle: input.sourceIssue.title,
       stopFingerprint: input.classification.stopFingerprint,
+      recoveryCursor: {
+        version: 1,
+        state: "open",
+        fingerprint: input.classification.stopFingerprint,
+        lastMutationReceipt: null,
+      },
       capabilities: {
         targetScope: {
           watchedIssueId: input.sourceIssue.id,
@@ -721,8 +791,8 @@ export async function upsertIssueWatchdogForIssue(
 export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) {
   const issuesSvc = issueService(db);
 
-  async function loadWatchdogSubtreeIssues(companyId: string, watchedIssueId: string) {
-    const rows = await db.execute(sql`
+  async function loadWatchdogSubtreeIssues(companyId: string, watchedIssueId: string, dbOrTx: any = db) {
+    const rows = await dbOrTx.execute(sql`
       WITH RECURSIVE watched_issues AS (
         SELECT
           id,
@@ -782,8 +852,8 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
     return (Array.isArray(rows) ? rows : []) as TaskWatchdogClassifierIssue[];
   }
 
-  async function collectClassifierInput(companyId: string, watchdog: IssueWatchdogRow) {
-    const issueRows = await loadWatchdogSubtreeIssues(companyId, watchdog.issueId);
+  async function collectClassifierInput(companyId: string, watchdog: IssueWatchdogRow, dbOrTx: any = db) {
+    const issueRows = await loadWatchdogSubtreeIssues(companyId, watchdog.issueId, dbOrTx);
     const subtreeIssueIds = issueRows.map((issue) => issue.id);
     if (subtreeIssueIds.length === 0) {
       return {
@@ -811,7 +881,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
       documentActivityRows,
       workProductActivityRows,
     ] = await Promise.all([
-      db
+      dbOrTx
         .select({
           companyId: heartbeatRuns.companyId,
           agentId: heartbeatRuns.agentId,
@@ -827,7 +897,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
             inArray(sql`${heartbeatRuns.contextSnapshot}->>'taskId'`, subtreeIssueIds),
           ),
         )),
-      db
+      dbOrTx
         .select({
           companyId: issues.companyId,
           agentId: heartbeatRuns.agentId,
@@ -842,7 +912,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
           visibleIssueCondition(),
           inArray(heartbeatRuns.status, [...TASK_WATCHDOG_LIVE_RUN_STATUSES]),
         )),
-      db
+      dbOrTx
         .select({
           companyId: agentWakeupRequests.companyId,
           agentId: agentWakeupRequests.agentId,
@@ -860,7 +930,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
             inArray(sql`${agentWakeupRequests.payload}->'_paperclipWakeContext'->>'taskId'`, subtreeIssueIds),
           ),
         )),
-      db
+      dbOrTx
         .select({
           companyId: issueRelations.companyId,
           blockerIssueId: issueRelations.issueId,
@@ -872,7 +942,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
           eq(issueRelations.type, "blocks"),
           inArray(issueRelations.relatedIssueId, subtreeIssueIds),
         )),
-      db
+      dbOrTx
         .select({
           companyId: issueThreadInteractions.companyId,
           issueId: issueThreadInteractions.issueId,
@@ -885,7 +955,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
           inArray(issueThreadInteractions.issueId, subtreeIssueIds),
           eq(issueThreadInteractions.status, "pending"),
         )),
-      db
+      dbOrTx
         .select({
           companyId: issueApprovals.companyId,
           issueId: issueApprovals.issueId,
@@ -899,7 +969,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
           inArray(issueApprovals.issueId, subtreeIssueIds),
           inArray(approvals.status, ["pending", "revision_requested"]),
         )),
-      db
+      dbOrTx
         .select({
           issueId: issueComments.issueId,
           latestAt: sql<Date | null>`MAX(${issueComments.updatedAt})`,
@@ -911,7 +981,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
           isNull(issueComments.deletedAt),
         ))
         .groupBy(issueComments.issueId),
-      db
+      dbOrTx
         .select({
           issueId: issueDocuments.issueId,
           latestAt: sql<Date | null>`MAX(${issueDocuments.updatedAt})`,
@@ -922,7 +992,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
           inArray(issueDocuments.issueId, subtreeIssueIds),
         ))
         .groupBy(issueDocuments.issueId),
-      db
+      dbOrTx
         .select({
           issueId: issueWorkProducts.issueId,
           latestAt: sql<Date | null>`MAX(${issueWorkProducts.updatedAt})`,
@@ -934,9 +1004,15 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         ))
         .groupBy(issueWorkProducts.issueId),
     ]);
-    const latestCommentByIssueId = new Map(commentActivityRows.map((row) => [row.issueId, row.latestAt]));
-    const latestDocumentByIssueId = new Map(documentActivityRows.map((row) => [row.issueId, row.latestAt]));
-    const latestWorkProductByIssueId = new Map(workProductActivityRows.map((row) => [row.issueId, row.latestAt]));
+    const latestCommentByIssueId = new Map<string, Date | null>(
+      commentActivityRows.map((row: { issueId: string; latestAt: Date | null }) => [row.issueId, row.latestAt]),
+    );
+    const latestDocumentByIssueId = new Map<string, Date | null>(
+      documentActivityRows.map((row: { issueId: string; latestAt: Date | null }) => [row.issueId, row.latestAt]),
+    );
+    const latestWorkProductByIssueId = new Map<string, Date | null>(
+      workProductActivityRows.map((row: { issueId: string; latestAt: Date | null }) => [row.issueId, row.latestAt]),
+    );
 
     const evaluatedAt = new Date();
     const evaluatedAtMs = evaluatedAt.getTime();
@@ -950,7 +1026,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         return createdAtMs != null && evaluatedAtMs - createdAtMs < TASK_WATCHDOG_FIRST_RUN_GRACE_MS;
       })
       .map((row) => row.id);
-    const completedRunIssueIds = await collectCompletedRunIssueIds(companyId, freshIssueIds);
+    const completedRunIssueIds = await collectCompletedRunIssueIds(companyId, freshIssueIds, dbOrTx);
 
     return {
       watchdog: summarizeIssueWatchdog(watchdog),
@@ -960,13 +1036,13 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         latestDocumentAt: latestDocumentByIssueId.get(issue.id) ?? null,
         latestWorkProductAt: latestWorkProductByIssueId.get(issue.id) ?? null,
       })),
-      activeRuns: activeRunRows.map((row) => ({
+      activeRuns: activeRunRows.map((row: { companyId: string; agentId: string; status: string; contextSnapshot: unknown }) => ({
         companyId: row.companyId,
         agentId: row.agentId,
         status: row.status,
         issueId: issueIdFromRunContext(row.contextSnapshot),
       })).concat(activeIssueRunRows),
-      queuedWakeRequests: wakeRows.map((row) => ({
+      queuedWakeRequests: wakeRows.map((row: { companyId: string; agentId: string; status: string; payload: unknown }) => ({
         companyId: row.companyId,
         agentId: row.agentId,
         status: row.status,
@@ -984,11 +1060,11 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
   // Returns the subset of `issueIds` that already have at least one run in a
   // terminal status. Such issues have demonstrably executed, so a stopped
   // subtree is genuine and must not be masked by the pending-first-run guard.
-  async function collectCompletedRunIssueIds(companyId: string, issueIds: string[]) {
+  async function collectCompletedRunIssueIds(companyId: string, issueIds: string[], dbOrTx: any = db) {
     if (issueIds.length === 0) return [];
     const candidates = new Set(issueIds);
     const [contextRuns, executionRuns] = await Promise.all([
-      db
+      dbOrTx
         .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
         .from(heartbeatRuns)
         .where(and(
@@ -999,7 +1075,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
             inArray(sql`${heartbeatRuns.contextSnapshot}->>'taskId'`, issueIds),
           ),
         )),
-      db
+      dbOrTx
         .select({ issueId: issues.id })
         .from(issues)
         .innerJoin(heartbeatRuns, eq(issues.executionRunId, heartbeatRuns.id))
@@ -1449,50 +1525,154 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
       ));
   }
 
-  async function revalidateMutationScope(scope: {
-    kind: "watchdog";
-    watchdogId: string;
-    companyId: string;
-    watchedIssueId: string;
-    stopFingerprint: string | null;
-  }) {
-    if (!scope.stopFingerprint) {
-      return {
-        allowed: false as const,
-        reason: "Task-watchdog run context is missing the stopped fingerprint required for mutation revalidation.",
+  async function executeSourceMutation<T>(
+    scope: Extract<TaskWatchdogMutationScope, { kind: "watchdog" }>,
+    request: TaskWatchdogSourceMutationRequest,
+    applyMutation: (tx: any) => Promise<{ value: T; receiptResult: unknown }>,
+  ): Promise<
+    | { replayed: false; value: T; receipt: TaskWatchdogMutationReceipt }
+    | { replayed: true; value: null; receipt: TaskWatchdogMutationReceipt }
+  > {
+    const digest = taskWatchdogMutationDigest(request);
+    return db.transaction(async (tx) => {
+      // Shared lock order for every watchdog source write: run cursor, active
+      // watchdog identity, then the route's target mutation.
+      const run = await tx
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, scope.runId))
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      if (!run || run.status !== "running") {
+        throw conflict("Task-watchdog source mutation requires its exact heartbeat run to still be running.");
+      }
+      if (run.companyId !== scope.companyId || run.agentId !== scope.agentId) {
+        throw forbidden("Task-watchdog run identity no longer matches this actor.");
+      }
+
+      const context = parseObject(run.contextSnapshot);
+      const taskWatchdog = parseObject(context.taskWatchdog);
+      const cursor = parseObject(taskWatchdog.recoveryCursor);
+      if (
+        taskWatchdog.version !== 1 ||
+        taskWatchdog.watchdogId !== scope.watchdogId ||
+        taskWatchdog.watchdogIssueId !== scope.watchdogIssueId ||
+        taskWatchdog.watchedIssueId !== scope.watchedIssueId ||
+        taskWatchdog.companyId !== scope.companyId ||
+        taskWatchdog.agentId !== scope.agentId ||
+        taskWatchdog.stopFingerprint !== scope.initialStopFingerprint ||
+        cursor.version !== 1 ||
+        (cursor.state !== "open" && cursor.state !== "sealed") ||
+        typeof cursor.fingerprint !== "string"
+      ) {
+        throw forbidden("Task-watchdog run snapshot identity or recovery cursor is invalid.");
+      }
+
+      const watchdog = await tx
+        .select()
+        .from(issueWatchdogs)
+        .where(eq(issueWatchdogs.id, scope.watchdogId))
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      if (
+        !watchdog ||
+        watchdog.status !== "active" ||
+        watchdog.companyId !== scope.companyId ||
+        watchdog.issueId !== scope.watchedIssueId ||
+        watchdog.watchdogAgentId !== scope.agentId ||
+        watchdog.watchdogIssueId !== scope.watchdogIssueId
+      ) {
+        throw forbidden("Task-watchdog run context is not backed by its exact active persisted watchdog identity.");
+      }
+
+      const priorReceipt = readTaskWatchdogMutationReceipt(cursor.lastMutationReceipt);
+      if (priorReceipt?.digest === digest) {
+        return { replayed: true as const, value: null, receipt: priorReceipt };
+      }
+      if (cursor.state === "sealed") {
+        throw conflict("Task-watchdog source mutation cursor is sealed because recovery already established a continuation path.");
+      }
+      if (cursor.fingerprint !== scope.cursorFingerprint) {
+        throw conflict("Task-watchdog source mutation lost the recovery cursor compare-and-swap.");
+      }
+
+      const before = classifyTaskWatchdogSubtree(await collectClassifierInput(scope.companyId, watchdog, tx));
+      if (before.state !== "stopped" || before.stopFingerprint !== cursor.fingerprint) {
+        throw conflict(
+          before.state === "stopped"
+            ? "Task-watchdog review is stale because external source evidence changed the recovery cursor fingerprint."
+            : "Task-watchdog review is stale because the watched subtree no longer has a stopped recovery path.",
+        );
+      }
+
+      const mutation = await applyMutation(tx);
+      const after = classifyTaskWatchdogSubtree(await collectClassifierInput(scope.companyId, watchdog, tx));
+      const cursorState = after.state === "stopped" && !request.establishesContinuationPath
+        ? "open" as const
+        : "sealed" as const;
+      const newFingerprint = cursorState === "open" && after.state === "stopped"
+        ? after.stopFingerprint
+        : null;
+      const receipt: TaskWatchdogMutationReceipt = {
+        version: 1,
+        digest,
+        operationKind: request.operationKind,
+        targetIssueId: request.targetIssueId,
+        oldFingerprint: cursor.fingerprint,
+        newFingerprint,
+        cursorState,
+        result: mutation.receiptResult,
+        committedAt: new Date().toISOString(),
       };
-    }
-
-    const watchdog = await db
-      .select()
-      .from(issueWatchdogs)
-      .where(and(
-        eq(issueWatchdogs.id, scope.watchdogId),
-        eq(issueWatchdogs.companyId, scope.companyId),
-        eq(issueWatchdogs.issueId, scope.watchedIssueId),
-        eq(issueWatchdogs.status, "active"),
-      ))
-      .then((rows) => rows[0] ?? null);
-    if (!watchdog) {
-      return {
-        allowed: false as const,
-        reason: "Task-watchdog run context is not backed by an active persisted watchdog.",
+      const nextContextSnapshot = {
+        ...context,
+        taskWatchdog: {
+          ...taskWatchdog,
+          recoveryCursor: {
+            version: 1,
+            state: cursorState,
+            fingerprint: newFingerprint ?? cursor.fingerprint,
+            lastMutationReceipt: receipt,
+          },
+        },
       };
-    }
+      const advanced = await tx
+        .update(heartbeatRuns)
+        .set({ contextSnapshot: nextContextSnapshot, updatedAt: new Date() })
+        .where(and(
+          eq(heartbeatRuns.id, scope.runId),
+          eq(heartbeatRuns.status, "running"),
+          eq(heartbeatRuns.contextSnapshot, run.contextSnapshot!),
+        ))
+        .returning({ id: heartbeatRuns.id });
+      if (advanced.length !== 1) {
+        throw conflict("Task-watchdog source mutation lost the recovery cursor compare-and-swap.");
+      }
 
-    const input = await collectClassifierInput(watchdog.companyId, watchdog);
-    const classification = classifyTaskWatchdogSubtree(input);
-    if (classification.state === "stopped" && classification.stopFingerprint === scope.stopFingerprint) {
-      return { allowed: true as const, classification };
-    }
+      await logActivity(tx as unknown as Db, {
+        companyId: scope.companyId,
+        actorType: "agent",
+        actorId: scope.agentId,
+        agentId: scope.agentId,
+        runId: scope.runId,
+        agentApiKeyId: request.agentApiKeyId ?? null,
+        action: "issue.task_watchdog_source_mutation_committed",
+        entityType: "issue",
+        entityId: request.targetIssueId,
+        issueId: request.targetIssueId,
+        details: {
+          watchdogId: scope.watchdogId,
+          runId: scope.runId,
+          targetIssueId: request.targetIssueId,
+          oldFingerprint: cursor.fingerprint,
+          newFingerprint,
+          cursorState,
+          operationKind: request.operationKind,
+        },
+      });
 
-    return {
-      allowed: false as const,
-      reason: classification.state === "stopped"
-        ? "Task-watchdog review is stale because the watched subtree stop fingerprint changed; refresh the source state before mutating it."
-        : "Task-watchdog review is stale because the watched subtree now has a live, waiting, already-reviewed, or not-applicable path; refresh the source state before mutating it.",
-      classification,
-    };
+      return { replayed: false as const, value: mutation.value, receipt };
+    });
   }
 
   return {
@@ -1648,6 +1828,6 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
       return result;
     },
 
-    revalidateMutationScope,
+    executeSourceMutation,
   };
 }
