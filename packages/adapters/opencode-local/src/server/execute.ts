@@ -45,6 +45,10 @@ import {
   readPaperclipIssueWorkModeFromContext,
   resolvePaperclipDesiredSkillNames,
 } from "@paperclipai/adapter-utils/server-utils";
+import {
+  OPENCODE_MISSING_CREDENTIAL_MESSAGE,
+  evaluateOpenCodeCredentialPreflight,
+} from "./credential-preflight.js";
 import { isOpenCodeUnknownSessionError, parseOpenCodeJsonl } from "./parse.js";
 import {
   ensureOpenCodeModelConfiguredAndAvailable,
@@ -319,6 +323,32 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         (entry): entry is [string, string] => typeof entry[1] === "string",
       ),
     );
+    // Credential preflight: a run with no chance to authenticate against any
+    // model provider must fail fast with the permanent errorCode
+    // `inference_auth_invalid` (the heartbeat pauses the agent on it) instead of
+    // launching OpenCode, which wraps the missing credential as an opaque
+    // transient "Unexpected server error" and feeds an endless retry storm.
+    // Host-level auth (`opencode auth login`), host config providers, injected
+    // gateway providers, and env keys all pass, so self-hosted setups that
+    // authenticate on the host are unaffected.
+    const credentialPreflight = await evaluateOpenCodeCredentialPreflight({ env: runtimeEnv });
+    if (!credentialPreflight.ready) {
+      await onLog("stderr", `[paperclip] ${OPENCODE_MISSING_CREDENTIAL_MESSAGE}\n`);
+      return {
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        errorMessage: OPENCODE_MISSING_CREDENTIAL_MESSAGE,
+        errorCode: "inference_auth_invalid",
+        errorMeta: {
+          credentialPreflight: "missing_provider_credential",
+        },
+        resultJson: {
+          credentialPreflight: "missing_provider_credential",
+        },
+      };
+    }
+
     const timeoutSec = resolveAdapterExecutionTargetTimeoutSec(
       executionTarget,
       asNumber(config.timeoutSec, 0),
