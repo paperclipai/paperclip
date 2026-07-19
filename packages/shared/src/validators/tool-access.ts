@@ -555,6 +555,13 @@ export const toolPolicyConditionsSchema = z.object({
     paperclipSelfOnly: z.boolean().optional(),
   }).strict().optional(),
   timeWindow: timeWindowConditionSchema.optional(),
+  requester: z.object({
+    minRole: z.enum(["guest", "member", "board"]).optional(),
+    denyAutonomous: z.boolean().optional(),
+  }).strict().refine(
+    (value) => value.minRole !== undefined || value.denyAutonomous !== undefined,
+    { message: "requester condition must include minRole or denyAutonomous" },
+  ).optional(),
 }).strict().refine(
   (value) => Object.keys(value).length > 0,
   { message: "Tool policy conditions must include at least one supported condition group" },

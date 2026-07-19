@@ -41,6 +41,13 @@ import type {
   ToolRiskLevel,
 } from "@paperclipai/shared";
 import { toolPolicyConditionsSchema } from "@paperclipai/shared";
+import {
+  effectiveClearance,
+  meetsMinRequesterRole,
+  type InvocationSource,
+  type OriginAuthzContext,
+  type ToolClearanceRole,
+} from "./requester-clearance.js";
 import { badRequest, conflict, notFound, unprocessable } from "../errors.js";
 import { narrowestScopeBindings, profileIdsInBindingOrder } from "./tool-profile-binding-precedence.js";
 import { recordToolRuntimeAuditWriteFailure } from "./tool-runtime-metrics.js";
@@ -68,6 +75,13 @@ type ToolAccessContext = {
   riskLevel: ToolRiskLevel | null;
   argumentsHash: string;
   arguments: unknown;
+  // NEO-568 (563a): requester-clearance dimension. `effectiveRequesterClearance`
+  // is MIN(agentAuthority, requester, origin) with the guest floor and autonomous
+  // handling already applied (see requester-clearance.effectiveClearance).
+  // `requesterIsAutonomous` marks a request with no resolved human behind it (an
+  // autonomous heartbeat), which `denyAutonomous` conditions key on.
+  effectiveRequesterClearance: ToolClearanceRole;
+  requesterIsAutonomous: boolean;
 };
 
 type RedactionResult = {
@@ -340,6 +354,11 @@ function selectorMatches(selector: ToolAccessSelector | Record<string, unknown> 
     const many = listValues(s[pluralKey]);
     return (!single || values.includes(single)) && (many.length === 0 || many.some((value) => values.includes(value)));
   };
+  // NEO-568 (563a): requester-clearance dimension. Matches only when the
+  // request's effective clearance meets the selector's minimum human role.
+  const minRequesterRole = typeof s.minRequesterRole === "string" ? String(s.minRequesterRole) : null;
+  const requesterClearanceMatches =
+    !minRequesterRole || meetsMinRequesterRole(ctx.effectiveRequesterClearance, minRequesterRole);
   return (
     match("actorType", "actorTypes", ctx.actorType) &&
     match("agentId", "agentIds", ctx.agentId) &&
@@ -353,7 +372,8 @@ function selectorMatches(selector: ToolAccessSelector | Record<string, unknown> 
     match("applicationKey", "applicationKeys", ctx.applicationKey) &&
     match("providerType", "providerTypes", ctx.providerType) &&
     matchAny("toolName", "toolNames", [ctx.toolName, ctx.upstreamToolName]) &&
-    match("riskLevel", "riskLevels", ctx.riskLevel)
+    match("riskLevel", "riskLevels", ctx.riskLevel) &&
+    requesterClearanceMatches
   );
 }
 
@@ -523,6 +543,22 @@ function evaluatePolicyConditions(
       return conditionGroupFail("timeWindow", "Current UTC time is outside the policy condition window.");
     }
     matchedGroups.push("timeWindow");
+  }
+
+  // NEO-568 (563a): requester-clearance condition. Gate the policy on the human
+  // behind the request — effective clearance (MIN of agent/requester/origin, with
+  // autonomous heartbeats floored to guest) must meet minRole, and an autonomous
+  // request fails when denyAutonomous is set.
+  if (conditions.requester) {
+    const requester = conditions.requester as Record<string, unknown>;
+    if (boolCondition(requester.denyAutonomous) === true && ctx.requesterIsAutonomous) {
+      return conditionGroupFail("requester", "Policy condition denies autonomous (no-human) requests.");
+    }
+    const minRole = typeof requester.minRole === "string" ? requester.minRole : null;
+    if (minRole && !meetsMinRequesterRole(ctx.effectiveRequesterClearance, minRole)) {
+      return conditionGroupFail("requester", "Requester clearance is below the policy condition minimum role.");
+    }
+    matchedGroups.push("requester");
   }
 
   return { matched: true, matchedGroups };
@@ -970,6 +1006,34 @@ export function toolAccessPolicyService(db: Db) {
         ? "mcp_local_stdio"
         : null);
 
+    // NEO-568 (563a): resolve the requester-clearance dimension. The caller
+    // supplies it from the trusted run row (NEO-570 wires the gateway path);
+    // when absent we fail closed — an autonomous guest — so min-role policies
+    // deny while dimension-free policies are unaffected.
+    const requesterInput = input.requester ?? null;
+    const requesterOrigin: OriginAuthzContext | null = requesterInput?.origin
+      ? {
+          kind: requesterInput.origin.kind,
+          userId: requesterInput.origin.userId ?? null,
+          role: requesterInput.origin.role ?? null,
+          depth: typeof requesterInput.origin.depth === "number" ? requesterInput.origin.depth : 0,
+        }
+      : null;
+    const requestingUserRole = requesterInput?.requestingUserRole ?? null;
+    const effectiveRequesterClearance = requesterInput
+      ? effectiveClearance({
+          agentAuthority: requesterInput.agentAuthority ?? "board",
+          requestingUserRole,
+          autonomousAllowed: requesterInput.autonomousAllowed === true,
+          invocationSource: (requesterInput.invocationSource ?? null) as InvocationSource,
+          origin: requesterOrigin,
+        })
+      : "guest";
+    // Autonomous = no resolved human behind the request (fail-closed default true).
+    const requesterIsAutonomous = requesterInput
+      ? requestingUserRole == null && requesterOrigin?.kind !== "user"
+      : true;
+
     return {
       ok: true,
       redaction,
@@ -996,6 +1060,8 @@ export function toolAccessPolicyService(db: Db) {
         riskLevel,
         argumentsHash: redaction.summary.sha256 ?? sha256(input.request.arguments ?? {}),
         arguments: input.request.arguments ?? {},
+        effectiveRequesterClearance,
+        requesterIsAutonomous,
       },
     };
   }
@@ -1495,6 +1561,13 @@ export function toolAccessPolicyService(db: Db) {
         riskLevel: invocation.riskLevel,
         argumentsHash: invocation.argumentsHash ?? "",
         arguments: {},
+        // NEO-568 (563a): this retrospective count matches already-approved
+        // action requests; the historical effective requester clearance is not
+        // persisted on the invocation row, so the requester dimension is treated
+        // as not-applicable here (permissive) to preserve existing approval-count
+        // semantics. The dimension is enforced live at the PEP, not retroactively.
+        effectiveRequesterClearance: "board",
+        requesterIsAutonomous: false,
       })) return false;
       if (input.filters.allowAny === true) return true;
       return Boolean(invocation.argumentsHash && allowedHashes.has(invocation.argumentsHash));

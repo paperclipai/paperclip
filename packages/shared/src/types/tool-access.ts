@@ -1064,7 +1064,18 @@ export interface ToolAccessSelector {
   toolNames?: string[];
   riskLevel?: ToolRiskLevel;
   riskLevels?: ToolRiskLevel[];
+  /**
+   * NEO-568 (563a): requester-clearance dimension. The policy matches only when
+   * the invoking request's EFFECTIVE clearance — MIN(agent, requester, origin),
+   * autonomous heartbeats floored to guest — meets this minimum human role.
+   * Unlike the other selector keys, this keys on the human behind the request,
+   * not the actor/agent/context identity.
+   */
+  minRequesterRole?: ToolClearanceRole;
 }
+
+/** Human clearance level a request carries (guest < member < board). */
+export type ToolClearanceRole = "guest" | "member" | "board";
 
 export interface ToolRateLimitRule {
   limit: number;
@@ -1126,6 +1137,17 @@ export interface ToolPolicyConditions {
     daysOfWeekUtc?: number[];
     startHourUtc?: number;
     endHourUtc?: number;
+  };
+  /**
+   * NEO-568 (563a): requester-clearance condition group. The policy applies only
+   * when the request's effective clearance meets `minRole`; `denyAutonomous`
+   * additionally fails the group for an autonomous heartbeat (one with no human
+   * behind it, floored to guest). This lets a block/allow policy gate on the
+   * human behind the request — the dimension the fork enforced per-tool.
+   */
+  requester?: {
+    minRole?: ToolClearanceRole;
+    denyAutonomous?: boolean;
   };
 }
 
@@ -1195,6 +1217,30 @@ export interface ToolAccessDecisionInput {
     idempotencyKey?: string | null;
     sideEffecting?: boolean;
   };
+  /**
+   * NEO-568 (563a): the requester-clearance dimension of the decision, derived
+   * by the caller (gateway/run cutover, NEO-570) from the TRUSTED run row — never
+   * agent-supplied. When omitted, the policy layer fails closed: the request is
+   * treated as an autonomous guest, so any `minRequesterRole`/`requester` policy
+   * denies while policies that don't use the dimension are unaffected.
+   */
+  requester?: {
+    /** The agent principal's own clearance ceiling (upstream analog of binding authority). */
+    agentAuthority?: ToolClearanceRole | string | null;
+    /** The human behind the request; null when none is resolved (autonomous). */
+    requestingUserRole?: ToolClearanceRole | string | null;
+    /** Whether the agent binding is permitted to act autonomously at full authority. */
+    autonomousAllowed?: boolean;
+    /** Originating surface of the request. */
+    invocationSource?: "heartbeat" | "channel" | null;
+    /** Trusted delegation-chain origin principal. */
+    origin?: {
+      kind: "user" | "autonomous" | "unresolved";
+      userId?: string | null;
+      role?: string | null;
+      depth?: number;
+    } | null;
+  } | null;
   consumeRateLimit?: boolean;
   writeAuditEvent?: boolean;
 }
