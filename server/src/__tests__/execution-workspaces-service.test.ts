@@ -2391,6 +2391,134 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     });
   }, 20_000);
 
+  it("keeps operator git state and adopted ownership immutable across rejected patches and archive", async () => {
+    const git = await createAdoptionGitFixture({ branch: "feature/immutable-adoption" });
+    tempDirs.add(git.repoRoot);
+    tempDirs.add(git.worktreePath);
+    const scope = await seedAdoptionScope(db, {
+      repoRoot: git.repoRoot,
+      repoUrl: git.repoUrl,
+    });
+    const adopted = await svc.adoptGitWorktree(
+      scope.companyId,
+      adoptionRequest({ ...git, ...scope }, { bindIssueId: null }),
+      {
+        actorType: "user",
+        actorId: "local-board",
+        agentId: null,
+        runId: null,
+      },
+    );
+    const evidencePath = path.join(git.worktreePath, "operator-untracked.txt");
+    await fs.writeFile(evidencePath, "preserve me\n", "utf8");
+    const gitStateBefore = {
+      head: await readGit(git.worktreePath, ["rev-parse", "HEAD"]),
+      branch: await readGit(git.worktreePath, ["symbolic-ref", "HEAD"]),
+      upstream: await readGit(git.worktreePath, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]),
+      status: await readGit(git.worktreePath, ["status", "--porcelain=v1", "--untracked-files=all"]),
+    };
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = {
+        type: "board",
+        userId: "local-board",
+        companyIds: [scope.companyId],
+        source: "local_implicit",
+        isInstanceAdmin: false,
+      };
+      next();
+    });
+    app.use("/api", executionWorkspaceRoutes(db));
+    app.use(errorHandler);
+
+    for (const patch of [
+      {
+        metadata: {
+          ...(adopted.workspace.metadata as Record<string, unknown>),
+          ownsGitArtifacts: true,
+        },
+      },
+      { metadata: null },
+      {
+        metadata: {
+          ...(adopted.workspace.metadata as Record<string, unknown>),
+          adoption: {
+            ...((adopted.workspace.metadata as Record<string, unknown>).adoption as Record<string, unknown>),
+            immutableFingerprint: "execution_workspace_adoption:v1:sha256:rewritten",
+          },
+        },
+      },
+      {
+        cwd: `${git.worktreePath}-other`,
+        providerRef: `${git.worktreePath}-other`,
+        repoUrl: "ssh://git@example.com/other/repo",
+        branchName: "feature/other",
+        baseRef: "origin/other",
+      },
+    ]) {
+      const rejected = await supertest(app)
+        .patch(`/api/execution-workspaces/${adopted.workspace.id}`)
+        .send(patch);
+      expect(rejected.status).toBe(409);
+      expect(rejected.body.reasonCode).toBe("adopted_workspace_identity_immutable");
+    }
+
+    const archived = await supertest(app)
+      .patch(`/api/execution-workspaces/${adopted.workspace.id}`)
+      .send({ status: "archived" });
+    expect(archived.status).toBe(200);
+    expect(archived.body.status).toBe("archived");
+
+    const postArchiveEscalation = await supertest(app)
+      .patch(`/api/execution-workspaces/${adopted.workspace.id}`)
+      .send({
+        metadata: {
+          ...(adopted.workspace.metadata as Record<string, unknown>),
+          ownsGitArtifacts: true,
+        },
+      });
+    expect(postArchiveEscalation.status).toBe(409);
+    expect(postArchiveEscalation.body.reasonCode).toBe("adopted_workspace_identity_immutable");
+
+    const persisted = await svc.getById(adopted.workspace.id);
+    expect(persisted).toMatchObject({
+      status: "archived",
+      cwd: adopted.workspace.cwd,
+      providerRef: adopted.workspace.providerRef,
+      repoUrl: adopted.workspace.repoUrl,
+      branchName: git.branch,
+      baseRef: git.upstream,
+      metadata: {
+        createdByRuntime: false,
+        ownsGitArtifacts: false,
+        fullBranchRef: git.fullBranchRef,
+        adoption: {
+          immutableFingerprint: adopted.inspection.worktreeFingerprint,
+        },
+      },
+    });
+    await expect(fs.stat(evidencePath)).resolves.toBeDefined();
+    await expect(fs.stat(git.worktreePath)).resolves.toBeDefined();
+    await expect(Promise.all([
+      readGit(git.worktreePath, ["rev-parse", "HEAD"]),
+      readGit(git.worktreePath, ["symbolic-ref", "HEAD"]),
+      readGit(git.worktreePath, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]),
+      readGit(git.worktreePath, ["status", "--porcelain=v1", "--untracked-files=all"]),
+    ])).resolves.toEqual([
+      gitStateBefore.head,
+      gitStateBefore.branch,
+      gitStateBefore.upstream,
+      gitStateBefore.status,
+    ]);
+
+    const workspaceActivity = await db.select().from(activityLog).where(eq(activityLog.entityId, adopted.workspace.id));
+    expect(workspaceActivity.map((row) => row.action).sort()).toEqual([
+      "execution_workspace.adopted",
+      "execution_workspace.updated",
+    ]);
+  }, 20_000);
+
   it("serializes concurrent identical adoptions without duplicating operations or activity", async () => {
     const git = await createAdoptionGitFixture();
     tempDirs.add(git.repoRoot);

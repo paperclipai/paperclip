@@ -213,6 +213,7 @@ describe("openapi routes", () => {
       },
     });
     expect(res.body.paths["/api/execution-workspaces/{id}/rollback-adoption"].post.responses["409"]).toBeDefined();
+    expect(res.body.paths["/api/execution-workspaces/{id}"].patch.responses["409"]).toBeDefined();
     expect(JSON.stringify(res.body.paths["/api/tool-gateway/tools"].get)).not.toContain("sessionToken");
     expect(JSON.stringify(res.body.paths["/api/tool-gateway/tools/call"].post)).not.toContain("sessionToken");
   });

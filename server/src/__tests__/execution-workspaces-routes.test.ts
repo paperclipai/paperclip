@@ -538,6 +538,203 @@ describe.sequential("execution workspace routes", () => {
     expect(mockCleanupExecutionWorkspaceArtifacts).not.toHaveBeenCalled();
   });
 
+  it("rejects ownership escalation before archive and keeps adopted cleanup record-only", async () => {
+    const existing = {
+      id: "workspace-1",
+      companyId: "company-1",
+      projectId: "11111111-1111-4111-8111-111111111111",
+      projectWorkspaceId: "22222222-2222-4222-8222-222222222222",
+      sourceIssueId: "33333333-3333-4333-8333-333333333333",
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Adopted workspace",
+      status: "active",
+      closedAt: null,
+      cwd: "/tmp/operator-worktree",
+      repoUrl: "ssh://git@example.com/paperclip/repo",
+      baseRef: "origin/main",
+      branchName: "feature/adopted",
+      providerType: "git_worktree",
+      providerRef: "/tmp/operator-worktree",
+      metadata: {
+        createdByRuntime: false,
+        ownsGitArtifacts: false,
+        fullBranchRef: "refs/heads/feature/adopted",
+        adoption: {
+          version: 1,
+          immutableFingerprint: "execution_workspace_adoption:v1:sha256:original",
+        },
+      },
+    };
+    mockExecutionWorkspaceService.getById.mockResolvedValue(existing);
+    mockExecutionWorkspaceService.getCloseReadiness.mockResolvedValue({
+      workspaceId: existing.id,
+      state: "ready",
+      blockingReasons: [],
+      warnings: [],
+      plannedActions: [{ kind: "archive_record", command: null }],
+    });
+    mockExecutionWorkspaceService.update.mockImplementation(async (_id, patch) => ({ ...existing, ...patch }));
+
+    const escalation = await request(createApp())
+      .patch(`/api/execution-workspaces/${existing.id}`)
+      .send({
+        metadata: {
+          ...existing.metadata,
+          ownsGitArtifacts: true,
+        },
+      });
+
+    expect(escalation.status).toBe(409);
+    expect(escalation.body).toEqual({
+      error: "Adopted execution workspace identity is immutable",
+      reasonCode: "adopted_workspace_identity_immutable",
+    });
+    expect(mockExecutionWorkspaceService.update).not.toHaveBeenCalled();
+    expect(mockDestroyReusableSandboxLeases).not.toHaveBeenCalled();
+    expect(mockStopRuntimeServicesForExecutionWorkspace).not.toHaveBeenCalled();
+    expect(mockCleanupExecutionWorkspaceArtifacts).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+
+    const archive = await request(createApp())
+      .patch(`/api/execution-workspaces/${existing.id}`)
+      .send({ status: "archived" });
+
+    expect(archive.status).toBe(200);
+    expect(mockExecutionWorkspaceService.update).toHaveBeenCalledTimes(1);
+    expect(mockCleanupExecutionWorkspaceArtifacts).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["adoption metadata removal", { metadata: null }],
+    ["adoption fingerprint rewrite", {
+      metadata: {
+        createdByRuntime: false,
+        ownsGitArtifacts: false,
+        fullBranchRef: "refs/heads/feature/adopted",
+        adoption: {
+          version: 1,
+          immutableFingerprint: "execution_workspace_adoption:v1:sha256:rewritten",
+        },
+      },
+    }],
+    ["cwd mutation", { cwd: "/tmp/other" }],
+    ["provider ref mutation", { providerRef: "/tmp/other" }],
+    ["repository mutation", { repoUrl: "ssh://git@example.com/other/repo" }],
+    ["branch mutation", { branchName: "feature/other" }],
+    ["base ref mutation", { baseRef: "origin/other" }],
+  ])("rejects adopted workspace %s without side effects", async (_label, patch) => {
+    mockExecutionWorkspaceService.getById.mockResolvedValue({
+      id: "workspace-1",
+      companyId: "company-1",
+      status: "active",
+      closedAt: null,
+      cwd: "/tmp/operator-worktree",
+      repoUrl: "ssh://git@example.com/paperclip/repo",
+      baseRef: "origin/main",
+      branchName: "feature/adopted",
+      providerRef: "/tmp/operator-worktree",
+      metadata: {
+        createdByRuntime: false,
+        ownsGitArtifacts: false,
+        fullBranchRef: "refs/heads/feature/adopted",
+        adoption: {
+          version: 1,
+          immutableFingerprint: "execution_workspace_adoption:v1:sha256:original",
+        },
+      },
+    });
+
+    const res = await request(createApp())
+      .patch("/api/execution-workspaces/workspace-1")
+      .send(patch);
+
+    expect(res.status).toBe(409);
+    expect(res.body.reasonCode).toBe("adopted_workspace_identity_immutable");
+    expect(mockExecutionWorkspaceService.update).not.toHaveBeenCalled();
+    expect(mockDestroyReusableSandboxLeases).not.toHaveBeenCalled();
+    expect(mockStopRuntimeServicesForExecutionWorkspace).not.toHaveBeenCalled();
+    expect(mockCleanupExecutionWorkspaceArtifacts).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("preserves adopted metadata for allowlisted name and config updates", async () => {
+    const existing = {
+      id: "workspace-1",
+      companyId: "company-1",
+      status: "active",
+      closedAt: null,
+      metadata: {
+        createdByRuntime: false,
+        ownsGitArtifacts: false,
+        fullBranchRef: "refs/heads/feature/adopted",
+        adoption: {
+          version: 1,
+          immutableFingerprint: "execution_workspace_adoption:v1:sha256:original",
+        },
+      },
+    };
+    mockExecutionWorkspaceService.getById.mockResolvedValue(existing);
+    mockExecutionWorkspaceService.update.mockImplementation(async (_id, patch) => ({ ...existing, ...patch }));
+
+    const res = await request(createApp())
+      .patch(`/api/execution-workspaces/${existing.id}`)
+      .send({
+        name: "Updated label",
+        config: { provisionCommand: "pnpm install" },
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockExecutionWorkspaceService.update).toHaveBeenCalledWith(existing.id, {
+      name: "Updated label",
+      metadata: expect.objectContaining({
+        ...existing.metadata,
+        config: expect.objectContaining({ provisionCommand: "pnpm install" }),
+      }),
+    });
+    expect(mockLogActivity).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps ordinary runtime-owned workspace updates valid", async () => {
+    const existing = {
+      id: "workspace-1",
+      companyId: "company-1",
+      status: "active",
+      cwd: "/tmp/runtime-worktree",
+      providerRef: "/tmp/runtime-worktree",
+      metadata: {
+        createdByRuntime: true,
+        ownsGitArtifacts: true,
+      },
+    };
+    mockExecutionWorkspaceService.getById.mockResolvedValue(existing);
+    mockExecutionWorkspaceService.update.mockImplementation(async (_id, patch) => ({ ...existing, ...patch }));
+
+    const res = await request(createApp())
+      .patch(`/api/execution-workspaces/${existing.id}`)
+      .send({
+        cwd: "/tmp/runtime-worktree-moved",
+        providerRef: "/tmp/runtime-worktree-moved",
+        metadata: {
+          createdByRuntime: true,
+          ownsGitArtifacts: true,
+          runtimeNote: "refreshed",
+        },
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockExecutionWorkspaceService.update).toHaveBeenCalledWith(existing.id, {
+      cwd: "/tmp/runtime-worktree-moved",
+      providerRef: "/tmp/runtime-worktree-moved",
+      metadata: {
+        createdByRuntime: true,
+        ownsGitArtifacts: true,
+        runtimeNote: "refreshed",
+      },
+    });
+    expect(mockLogActivity).toHaveBeenCalledTimes(1);
+  });
+
   it.each([
     ["forward", { mode: "forward" }],
     ["override", { mode: "override", reason: "operator break-glass" }],

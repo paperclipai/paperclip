@@ -55,6 +55,23 @@ function adoptionBoundIssueId(metadata: Record<string, unknown> | null | undefin
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
+const ADOPTED_WORKSPACE_MUTABLE_PATCH_KEYS = new Set([
+  "name",
+  "config",
+  "status",
+  "cleanupEligibleAt",
+  "cleanupReason",
+]);
+
+function isAdoptedWorkspace(workspace: {
+  metadata?: Record<string, unknown> | null;
+}) {
+  const adoption = workspace.metadata?.adoption;
+  return adoption !== null
+    && typeof adoption === "object"
+    && !Array.isArray(adoption);
+}
+
 export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: PluginWorkerManager } = {}) {
   const router = Router();
   const svc = executionWorkspaceService(db);
@@ -792,6 +809,16 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Execution workspace not found");
     if (!existing) return;
     if (!(await assertRuntimeManageAllowed(req, res, existing.companyId))) return;
+    if (
+      isAdoptedWorkspace(existing)
+      && Object.keys(req.body).some((key) => !ADOPTED_WORKSPACE_MUTABLE_PATCH_KEYS.has(key))
+    ) {
+      res.status(409).json({
+        error: "Adopted execution workspace identity is immutable",
+        reasonCode: "adopted_workspace_identity_immutable",
+      });
+      return;
+    }
     assertNoAgentHostWorkspaceCommandMutation(
       req,
       collectExecutionWorkspaceCommandPaths({
