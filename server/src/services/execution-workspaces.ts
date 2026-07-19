@@ -2007,21 +2007,6 @@ export function executionWorkspaceService(db: Db, options: ExecutionWorkspaceSer
         },
       };
 
-      const existingRows = await db
-        .select()
-        .from(executionWorkspaces)
-        .where(and(
-          eq(executionWorkspaces.companyId, companyId),
-          ne(executionWorkspaces.status, "archived"),
-          isNull(executionWorkspaces.closedAt),
-          or(
-            eq(executionWorkspaces.cwd, inspection.canonicalCwd),
-            eq(executionWorkspaces.providerRef, inspection.canonicalCwd),
-            eq(executionWorkspaces.branchName, inspection.branchName),
-            sql`${executionWorkspaces.metadata}->>'fullBranchRef' = ${inspection.fullBranchRef}`,
-          ),
-        ))
-        .limit(20);
       const fingerprintMatches = (row: ExecutionWorkspaceRow) =>
         (row.metadata as Record<string, unknown> | null | undefined)?.adoption &&
         isRecord((row.metadata as Record<string, unknown>).adoption) &&
@@ -2030,31 +2015,6 @@ export function executionWorkspaceService(db: Db, options: ExecutionWorkspaceSer
         const adoption = (row.metadata as Record<string, unknown> | null)?.adoption;
         return isRecord(adoption) ? readNullableString(adoption.boundIssueId) : null;
       };
-      const exactExisting = existingRows.find((row) =>
-        (row.cwd === inspection.canonicalCwd || row.providerRef === inspection.canonicalCwd) &&
-        ((row.metadata as Record<string, unknown> | null)?.fullBranchRef === inspection.fullBranchRef || row.branchName === inspection.branchName)
-      );
-      if (exactExisting) {
-        if (fingerprintMatches(exactExisting)) {
-          if ((input.bindIssueId ?? null) !== adoptionBoundIssueId(exactExisting)) {
-            adoptionError("workspace_conflict", 409);
-          }
-          const existingWorkspace = await executionWorkspaceService(db).getById(exactExisting.id);
-          return {
-            workspace: existingWorkspace ?? toExecutionWorkspace(exactExisting),
-            issue: bindIssue ? {
-              id: bindIssue.id,
-              identifier: bindIssue.identifier,
-              title: bindIssue.title,
-              status: bindIssue.status,
-            } : null,
-            inspection,
-            operation: null,
-          };
-        }
-        adoptionError("workspace_conflict", 409);
-      }
-      if (existingRows.length > 0) adoptionError("workspace_conflict", 409);
 
       try {
         return await db.transaction(async (tx) => {
@@ -2373,7 +2333,7 @@ export function executionWorkspaceService(db: Db, options: ExecutionWorkspaceSer
         if (!workspace) throw notFound("Execution workspace not found");
         const metadata = (workspace.metadata as Record<string, unknown> | null) ?? {};
         const adoption = isRecord(metadata.adoption) ? metadata.adoption : null;
-        if (!adoption) throw unprocessable("Only adopted execution workspace records can be rolled back", { reasonCode: "workspace_conflict" });
+        if (!adoption) adoptionError("workspace_conflict", 409);
         const previousBinding = isRecord(adoption.previousIssueBinding) ? adoption.previousIssueBinding : null;
         const boundIssueId = readNullableString(adoption.boundIssueId);
         if (boundIssueId !== authorizedBoundIssueId) adoptionError("workspace_conflict", 409);

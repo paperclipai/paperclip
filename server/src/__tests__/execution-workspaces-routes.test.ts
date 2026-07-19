@@ -207,6 +207,34 @@ describe.sequential("execution workspace routes", () => {
     }, null);
   });
 
+  it("returns a redacted cross-scope response when adoption source revalidation fails", async () => {
+    mockExecutionWorkspaceService.adoptGitWorktree.mockRejectedValue(
+      new ExecutionWorkspaceAdoptionError("cross_scope_not_found", 404),
+    );
+
+    const res = await request(createApp())
+      .post("/api/companies/company-1/execution-workspaces/adopt-git-worktree")
+      .send({
+        projectId: "11111111-1111-4111-8111-111111111111",
+        projectWorkspaceId: "22222222-2222-4222-8222-222222222222",
+        sourceIssueId: "33333333-3333-4333-8333-333333333333",
+        cwd: "/tmp/worktree",
+        expectedBranch: "refs/heads/feature/adopt",
+        expectedHeadSha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        expectedUpstream: "origin/feature/adopt",
+        name: "feature/adopt",
+      });
+
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({
+      error: "Execution workspace adoption rejected",
+      reasonCode: "cross_scope_not_found",
+    });
+    expect(res.body).not.toHaveProperty("workspace");
+    expect(res.body).not.toHaveProperty("issue");
+    expect(res.body).not.toHaveProperty("inspection");
+  });
+
   it("requires independent issue mutation authorization when binding an adopted workspace", async () => {
     const bindIssueId = "44444444-4444-4444-8444-444444444444";
     const projectId = "11111111-1111-4111-8111-111111111111";
@@ -393,6 +421,29 @@ describe.sequential("execution workspace routes", () => {
       agentId: null,
       runId: null,
     }, "operator rollback", null, null);
+  });
+
+  it("returns the stable adoption error shape when rollback targets a non-adopted workspace", async () => {
+    mockExecutionWorkspaceService.getById.mockResolvedValue({
+      id: "workspace-1",
+      companyId: "company-1",
+      projectId: "11111111-1111-4111-8111-111111111111",
+      status: "active",
+      metadata: null,
+    });
+    mockExecutionWorkspaceService.rollbackAdoption.mockRejectedValue(
+      new ExecutionWorkspaceAdoptionError("workspace_conflict", 409),
+    );
+
+    const res = await request(createApp())
+      .post("/api/execution-workspaces/workspace-1/rollback-adoption")
+      .send({ reason: "operator rollback" });
+
+    expect(res.status).toBe(409);
+    expect(res.body).toEqual({
+      error: "Execution workspace adoption rollback rejected",
+      reasonCode: "workspace_conflict",
+    });
   });
 
   it.each([

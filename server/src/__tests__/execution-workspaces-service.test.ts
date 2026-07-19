@@ -29,6 +29,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import {
+  ExecutionWorkspaceAdoptionError,
   executionWorkspaceService,
   mergeExecutionWorkspaceConfig,
   readExecutionWorkspaceConfig,
@@ -2638,6 +2639,56 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     expect(bindingAfter).toEqual(bindingBefore);
   }, 20_000);
 
+  it("rejects an idempotent retry when its adopted workspace source issue moved out of project scope", async () => {
+    const git = await createAdoptionGitFixture();
+    tempDirs.add(git.repoRoot);
+    tempDirs.add(git.worktreePath);
+    const scope = await seedAdoptionScope(db, {
+      repoRoot: git.repoRoot,
+      repoUrl: git.repoUrl,
+    });
+    const request = adoptionRequest({ ...git, ...scope });
+    const actor = {
+      actorType: "user" as const,
+      actorId: "local-board",
+      agentId: null,
+      runId: null,
+    };
+    const adopted = await svc.adoptGitWorktree(scope.companyId, request, actor);
+    const sideEffectsBeforeRetry = await countAdoptionSideEffects(db);
+    const otherProjectId = randomUUID();
+    await db.insert(projects).values({
+      id: otherProjectId,
+      companyId: scope.companyId,
+      name: "Other same-company project",
+      status: "in_progress",
+    });
+    const retrySvc = executionWorkspaceService(db, {
+      afterAdoptionInitialInspection: async () => {
+        await db
+          .update(issues)
+          .set({ projectId: otherProjectId })
+          .where(eq(issues.id, scope.sourceIssueId));
+      },
+    });
+
+    await expect(retrySvc.adoptGitWorktree(scope.companyId, request, actor)).rejects.toMatchObject({
+      reasonCode: "cross_scope_not_found",
+      status: 404,
+    });
+    await expect(countAdoptionSideEffects(db)).resolves.toEqual(sideEffectsBeforeRetry);
+    expect(sideEffectsBeforeRetry).toEqual({
+      workspaces: 1,
+      operations: 1,
+      activity: 2,
+    });
+    const [workspace] = await db
+      .select()
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, adopted.workspace.id));
+    expect(workspace?.status).toBe("active");
+  }, 20_000);
+
   it("re-inspects git state after transaction locks and rejects mutation before insert", async () => {
     const git = await createAdoptionGitFixture();
     tempDirs.add(git.repoRoot);
@@ -2875,6 +2926,45 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     });
   }, 20_000);
 
+  it("rejects rollback of a non-adopted workspace with the stable adoption error contract", async () => {
+    const scope = await seedAdoptionScope(db, {
+      repoRoot: `/tmp/${randomUUID()}`,
+      repoUrl: "git@example.com:paperclip/repo.git",
+    });
+    const workspaceId = randomUUID();
+    await db.insert(executionWorkspaces).values({
+      id: workspaceId,
+      companyId: scope.companyId,
+      projectId: scope.projectId,
+      projectWorkspaceId: scope.projectWorkspaceId,
+      sourceIssueId: scope.sourceIssueId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "ordinary workspace",
+      status: "active",
+      providerType: "git_worktree",
+      cwd: `/tmp/${randomUUID()}`,
+      branchName: "feature/ordinary",
+    });
+
+    const error = await svc.rollbackAdoption(workspaceId, {
+      actorType: "user",
+      actorId: "local-board",
+      agentId: null,
+      runId: null,
+    }, "not adopted", null, null).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(ExecutionWorkspaceAdoptionError);
+    expect(error).toMatchObject({
+      reasonCode: "workspace_conflict",
+      status: 409,
+    });
+    const [workspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspaceId));
+    expect(workspace).toMatchObject({ status: "active", closedAt: null });
+    const activity = await db.select().from(activityLog).where(eq(activityLog.entityId, workspaceId));
+    expect(activity).toHaveLength(0);
+  });
+
   it("rolls back adopted records without deleting or mutating the adopted git worktree", async () => {
     const git = await createAdoptionGitFixture();
     tempDirs.add(git.repoRoot);
@@ -2995,10 +3085,10 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     expect(afterRepeat?.metadata).toEqual(beforeRepeat?.metadata);
     expect(afterRepeat?.updatedAt).toEqual(beforeRepeat?.updatedAt);
     expect(activityAfterRepeat).toEqual(activityBeforeRepeat);
-    expect(activityAfterRepeat.map((row) => row.action)).toEqual([
+    expect(activityAfterRepeat.map((row) => row.action).sort()).toEqual([
       "execution_workspace.adopted",
       "execution_workspace.adoption_rolled_back",
-    ]);
+    ].sort());
   }, 20_000);
 
   it("rolls back atomically when adoption fails after workspace insert but before optional issue binding", async () => {
