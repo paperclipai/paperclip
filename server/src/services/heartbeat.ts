@@ -12354,7 +12354,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       taskSessionParams: taskSession?.sessionParamsJson ?? taskSessionDecodedParams,
       configMetadata: sessionConfigMetadata,
       wakeResetReason: wakeSessionResetReason,
-      preserveLegacySessionWithoutConfigMetadata: acceptedPlanContinuationWake && !acceptedPlanWakeRoutingDecision,
+      preserveLegacySessionWithoutConfigMetadata: true,
     });
     const resetTaskSession = shouldResetTaskSessionForWake(context) || sessionConfigFreshness.reset;
     const sessionResetReason = sessionConfigFreshness.reasons.join("; ") || null;
