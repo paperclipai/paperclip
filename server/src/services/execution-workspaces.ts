@@ -5,7 +5,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { and, asc, desc, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { activityLog, executionWorkspaces, heartbeatRuns, issueComments, issues, projects, projectWorkspaces, workspaceOperations, workspaceRuntimeServices } from "@paperclipai/db";
+import { activityLog, companies, executionWorkspaces, heartbeatRuns, issueComments, issues, projects, projectWorkspaces, workspaceOperations, workspaceRuntimeServices } from "@paperclipai/db";
 import type {
   AdoptGitWorktreeExecutionWorkspace,
   ExecutionWorkspace,
@@ -137,6 +137,31 @@ export type ExecutionWorkspaceAdoptionActor = {
   runId: string | null;
 };
 
+export type ExecutionWorkspaceIssueAuthorizationSnapshot = {
+  id: string;
+  parentId: string | null;
+  assigneeAgentId: string | null;
+  assigneeUserId: string | null;
+  status: string;
+  executionPolicy: unknown;
+  originKind: string | null;
+  originId: string | null;
+};
+
+function matchesIssueAuthorizationSnapshot(
+  issue: ExecutionWorkspaceIssueAuthorizationSnapshot,
+  authorized: ExecutionWorkspaceIssueAuthorizationSnapshot,
+) {
+  return issue.id === authorized.id
+    && issue.parentId === authorized.parentId
+    && issue.assigneeAgentId === authorized.assigneeAgentId
+    && issue.assigneeUserId === authorized.assigneeUserId
+    && issue.status === authorized.status
+    && stableStringify(issue.executionPolicy) === stableStringify(authorized.executionPolicy)
+    && issue.originKind === authorized.originKind
+    && issue.originId === authorized.originId;
+}
+
 type AdoptionInspection = {
   status: "accepted";
   reasonCode: null;
@@ -199,6 +224,14 @@ async function readGitRequired(args: string[], cwd: string, reasonCode: Executio
   }
 }
 
+async function realpathRequiredForAdoption(value: string, reasonCode: ExecutionWorkspaceAdoptionReasonCode) {
+  try {
+    return await fs.realpath(value);
+  } catch {
+    adoptionError(reasonCode);
+  }
+}
+
 async function inspectGitWorktreeForAdoption(input: {
   companyId: string;
   projectId: string;
@@ -212,26 +245,24 @@ async function inspectGitWorktreeForAdoption(input: {
   projectWorkspaceCwd: string | null;
   projectWorkspaceRepoUrl: string | null;
 }): Promise<AdoptionInspection> {
-  let canonicalCwd: string;
-  try {
-    canonicalCwd = await fs.realpath(input.cwd);
-  } catch {
-    adoptionError("repo_mismatch");
-  }
+  const canonicalCwd = await realpathRequiredForAdoption(input.cwd, "repo_mismatch");
   const repoRootRaw = await readGitRequired(["rev-parse", "--show-toplevel"], canonicalCwd, "repo_mismatch");
-  const repoRoot = await fs.realpath(repoRootRaw).catch(() => path.resolve(repoRootRaw));
+  const repoRoot = await realpathRequiredForAdoption(repoRootRaw, "repo_mismatch");
   if (repoRoot !== canonicalCwd) adoptionError("repo_mismatch");
 
-  if (input.projectWorkspaceCwd) {
-    const projectRoot = await fs.realpath(input.projectWorkspaceCwd).catch(() => path.resolve(input.projectWorkspaceCwd!));
-    const commonDir = await readGitRequired(["rev-parse", "--git-common-dir"], canonicalCwd, "repo_mismatch");
-    const commonReal = await fs.realpath(path.isAbsolute(commonDir) ? commonDir : path.join(canonicalCwd, commonDir))
-      .catch(() => path.resolve(canonicalCwd, commonDir));
-    const projectCommon = await readGitStdout(["rev-parse", "--git-common-dir"], projectRoot)
-      .then((value) => value ? fs.realpath(path.isAbsolute(value) ? value : path.join(projectRoot, value)) : null)
-      .catch(() => null);
-    if (projectCommon && commonReal !== projectCommon) adoptionError("repo_mismatch");
-  }
+  if (!input.projectWorkspaceCwd) adoptionError("repo_mismatch");
+  const projectRoot = await realpathRequiredForAdoption(input.projectWorkspaceCwd, "repo_mismatch");
+  const commonDir = await readGitRequired(["rev-parse", "--git-common-dir"], canonicalCwd, "repo_mismatch");
+  const commonReal = await realpathRequiredForAdoption(
+    path.isAbsolute(commonDir) ? commonDir : path.join(canonicalCwd, commonDir),
+    "repo_mismatch",
+  );
+  const projectCommonDir = await readGitRequired(["rev-parse", "--git-common-dir"], projectRoot, "repo_mismatch");
+  const projectCommon = await realpathRequiredForAdoption(
+    path.isAbsolute(projectCommonDir) ? projectCommonDir : path.join(projectRoot, projectCommonDir),
+    "repo_mismatch",
+  );
+  if (commonReal !== projectCommon) adoptionError("repo_mismatch");
 
   const headSha = await readGitRequired(["rev-parse", "--verify", "HEAD^{commit}"], canonicalCwd, "sha_mismatch");
   if (headSha !== input.expectedHeadSha) adoptionError("sha_mismatch");
@@ -1120,6 +1151,7 @@ type WorkspaceOverviewIssueRow = WorkspaceOverviewLinkedIssue & {
 };
 
 export type ExecutionWorkspaceServiceOptions = {
+  afterAdoptionInitialInspection?: () => void | Promise<void>;
   afterAdoptionWorkspaceInsert?: (workspace: ExecutionWorkspaceRow) => void | Promise<void>;
 };
 
@@ -1860,7 +1892,12 @@ export function executionWorkspaceService(db: Db, options: ExecutionWorkspaceSer
       return row ? toExecutionWorkspace(row) : null;
     },
 
-    adoptGitWorktree: async (companyId: string, input: AdoptGitWorktreeExecutionWorkspace, actor: ExecutionWorkspaceAdoptionActor) => {
+    adoptGitWorktree: async (
+      companyId: string,
+      input: AdoptGitWorktreeExecutionWorkspace,
+      actor: ExecutionWorkspaceAdoptionActor,
+      authorizedBindIssue?: ExecutionWorkspaceIssueAuthorizationSnapshot | null,
+    ) => {
       const scopeRows = await db
         .select({
           projectId: projects.id,
@@ -1920,6 +1957,7 @@ export function executionWorkspaceService(db: Db, options: ExecutionWorkspaceSer
         projectWorkspaceCwd: scope.projectWorkspaceCwd ?? null,
         projectWorkspaceRepoUrl: scope.projectWorkspaceRepoUrl ?? null,
       });
+      await options.afterAdoptionInitialInspection?.();
 
       const now = new Date();
       const metadata = {
@@ -2021,9 +2059,57 @@ export function executionWorkspaceService(db: Db, options: ExecutionWorkspaceSer
       try {
         return await db.transaction(async (tx) => {
         const txDb = tx as unknown as Db;
+        // Adoption claims are unique company-wide, so serialize adoption duplicate
+        // checks on the company rather than only on the selected project.
+        await tx.select({ id: companies.id }).from(companies).where(eq(companies.id, companyId)).for("update");
         await tx.select({ id: projects.id }).from(projects).where(eq(projects.id, input.projectId)).for("update");
+        const [lockedProjectWorkspace] = await tx
+          .select({ cwd: projectWorkspaces.cwd, repoUrl: projectWorkspaces.repoUrl })
+          .from(projectWorkspaces)
+          .where(and(
+            eq(projectWorkspaces.id, input.projectWorkspaceId),
+            eq(projectWorkspaces.companyId, companyId),
+            eq(projectWorkspaces.projectId, input.projectId),
+          ))
+          .for("update");
+        if (!lockedProjectWorkspace) adoptionError("cross_scope_not_found", 404);
         await tx.select({ id: issues.id }).from(issues).where(eq(issues.id, input.sourceIssueId)).for("update");
-        if (input.bindIssueId) await tx.select({ id: issues.id }).from(issues).where(eq(issues.id, input.bindIssueId)).for("update");
+        const lockedBindIssue = input.bindIssueId
+          ? await tx
+              .select({
+                id: issues.id,
+                parentId: issues.parentId,
+                assigneeAgentId: issues.assigneeAgentId,
+                assigneeUserId: issues.assigneeUserId,
+                status: issues.status,
+                executionPolicy: issues.executionPolicy,
+                originKind: issues.originKind,
+                originId: issues.originId,
+                executionWorkspaceId: issues.executionWorkspaceId,
+                executionWorkspacePreference: issues.executionWorkspacePreference,
+                executionWorkspaceSettings: issues.executionWorkspaceSettings,
+              })
+              .from(issues)
+              .where(and(
+                eq(issues.id, input.bindIssueId),
+                eq(issues.companyId, companyId),
+                eq(issues.projectId, input.projectId),
+              ))
+              .for("update")
+              .then((rows) => rows[0] ?? null)
+          : null;
+        if (input.bindIssueId && !lockedBindIssue) adoptionError("cross_scope_not_found", 404);
+        if (
+          authorizedBindIssue !== undefined
+          && input.bindIssueId
+          && (
+            !authorizedBindIssue
+            || !lockedBindIssue
+            || !matchesIssueAuthorizationSnapshot(lockedBindIssue, authorizedBindIssue)
+          )
+        ) {
+          adoptionError("workspace_conflict", 409);
+        }
 
         const duplicate = await tx
           .select()
@@ -2035,6 +2121,7 @@ export function executionWorkspaceService(db: Db, options: ExecutionWorkspaceSer
             or(
               eq(executionWorkspaces.cwd, inspection.canonicalCwd),
               eq(executionWorkspaces.providerRef, inspection.canonicalCwd),
+              eq(executionWorkspaces.branchName, inspection.branchName),
               sql`${executionWorkspaces.metadata}->>'fullBranchRef' = ${inspection.fullBranchRef}`,
             ),
           ))
@@ -2042,6 +2129,38 @@ export function executionWorkspaceService(db: Db, options: ExecutionWorkspaceSer
           .limit(1)
           .then((rows) => rows[0] ?? null);
         if (duplicate) adoptionError(fingerprintMatches(duplicate) ? "workspace_conflict" : "workspace_conflict", 409);
+
+        const writeInspection = await inspectGitWorktreeForAdoption({
+          companyId,
+          projectId: input.projectId,
+          projectWorkspaceId: input.projectWorkspaceId,
+          sourceIssueId: input.sourceIssueId,
+          cwd: input.cwd,
+          expectedBranch: input.expectedBranch,
+          expectedHeadSha: input.expectedHeadSha,
+          expectedUpstream: input.expectedUpstream,
+          expectedRepoUrl: input.expectedRepoUrl ?? null,
+          projectWorkspaceCwd: lockedProjectWorkspace.cwd ?? null,
+          projectWorkspaceRepoUrl: lockedProjectWorkspace.repoUrl ?? null,
+        });
+        if (writeInspection.worktreeFingerprint !== inspection.worktreeFingerprint) {
+          adoptionError("workspace_conflict", 409);
+        }
+
+        const transactionalMetadata = {
+          ...metadata,
+          adoption: {
+            ...metadata.adoption,
+            previousIssueBinding: lockedBindIssue
+              ? {
+                  issueId: lockedBindIssue.id,
+                  executionWorkspaceId: lockedBindIssue.executionWorkspaceId ?? null,
+                  executionWorkspacePreference: lockedBindIssue.executionWorkspacePreference ?? null,
+                  executionWorkspaceSettings: lockedBindIssue.executionWorkspaceSettings ?? null,
+                }
+              : null,
+          },
+        };
 
         const [workspaceRow] = await tx
           .insert(executionWorkspaces)
@@ -2062,7 +2181,7 @@ export function executionWorkspaceService(db: Db, options: ExecutionWorkspaceSer
             providerRef: inspection.canonicalCwd,
             lastUsedAt: now,
             openedAt: now,
-            metadata,
+            metadata: transactionalMetadata,
             createdAt: now,
             updatedAt: now,
           })
@@ -2209,7 +2328,13 @@ export function executionWorkspaceService(db: Db, options: ExecutionWorkspaceSer
       }
     },
 
-    rollbackAdoption: async (id: string, actor: ExecutionWorkspaceAdoptionActor, reason?: string | null) => {
+    rollbackAdoption: async (
+      id: string,
+      actor: ExecutionWorkspaceAdoptionActor,
+      reason: string | null | undefined,
+      authorizedBoundIssueId: string | null,
+      authorizedBoundIssue: ExecutionWorkspaceIssueAuthorizationSnapshot | null = null,
+    ) => {
       const now = new Date();
       return await db.transaction(async (tx) => {
         const [workspace] = await tx
@@ -2223,8 +2348,36 @@ export function executionWorkspaceService(db: Db, options: ExecutionWorkspaceSer
         if (!adoption) throw unprocessable("Only adopted execution workspace records can be rolled back", { reasonCode: "workspace_conflict" });
         const previousBinding = isRecord(adoption.previousIssueBinding) ? adoption.previousIssueBinding : null;
         const boundIssueId = readNullableString(adoption.boundIssueId);
+        if (boundIssueId !== authorizedBoundIssueId) adoptionError("workspace_conflict", 409);
         if (boundIssueId) {
-          await tx
+          const [boundIssue] = await tx
+            .select({
+              id: issues.id,
+              parentId: issues.parentId,
+              assigneeAgentId: issues.assigneeAgentId,
+              assigneeUserId: issues.assigneeUserId,
+              status: issues.status,
+              executionPolicy: issues.executionPolicy,
+              originKind: issues.originKind,
+              originId: issues.originId,
+              executionWorkspaceId: issues.executionWorkspaceId,
+            })
+            .from(issues)
+            .where(and(
+              eq(issues.id, boundIssueId),
+              eq(issues.companyId, workspace.companyId),
+              eq(issues.projectId, workspace.projectId),
+            ))
+            .for("update");
+          if (
+            !boundIssue
+            || boundIssue.executionWorkspaceId !== workspace.id
+            || !authorizedBoundIssue
+            || !matchesIssueAuthorizationSnapshot(boundIssue, authorizedBoundIssue)
+          ) {
+            adoptionError("workspace_conflict", 409);
+          }
+          const restored = await tx
             .update(issues)
             .set({
               executionWorkspaceId: readNullableString(previousBinding?.executionWorkspaceId),
@@ -2234,7 +2387,13 @@ export function executionWorkspaceService(db: Db, options: ExecutionWorkspaceSer
                 : null,
               updatedAt: now,
             })
-            .where(and(eq(issues.id, boundIssueId), eq(issues.companyId, workspace.companyId)));
+            .where(and(
+              eq(issues.id, boundIssueId),
+              eq(issues.companyId, workspace.companyId),
+              eq(issues.executionWorkspaceId, workspace.id),
+            ))
+            .returning({ id: issues.id });
+          if (restored.length !== 1) adoptionError("workspace_conflict", 409);
         }
         const nextMetadata = {
           ...metadata,

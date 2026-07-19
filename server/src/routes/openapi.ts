@@ -4328,7 +4328,7 @@ registry.registerPath({
     params: z.object({ id: z.string() }),
     body: jsonBody(rollbackAdoptedExecutionWorkspaceSchema),
   },
-  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 422: r.unprocessable },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 409: r.conflict, 422: r.unprocessable },
 });
 
 registry.registerPath({

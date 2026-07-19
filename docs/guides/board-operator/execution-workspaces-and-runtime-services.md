@@ -85,6 +85,18 @@ Rollback does not:
 
 Use archive/close when you intend Paperclip to perform the normal execution-workspace cleanup flow. Use adoption rollback when the adoption record or issue binding was wrong and the local filesystem/git checkout should remain untouched.
 
+### Adoption evidence, review cadence, and disable thresholds
+
+For every adoption or rollback, operators must read evidence from all of these locations:
+
+- `GET /api/execution-workspaces/:id/workspace-operations` lists the workspace's operations. For the adoption operation, read its persisted log through `GET /api/workspace-operations/:operationId/log`.
+- `GET /api/companies/:companyId/activity?entityType=execution_workspace&entityId=:id` returns the successful adoption or rollback workspace activity (`execution_workspace.adopted` or `execution_workspace.adoption_rolled_back`). Adoption validation rejections occur before a workspace exists, so read `GET /api/companies/:companyId/activity?entityType=company&entityId=:companyId` for `execution_workspace.adoption_rejected`. Rollback authorization or changed-binding conflicts return a stable HTTP `403`, `404`, or `409` without writing a rollback activity; inspect the unchanged workspace and issue readbacks instead. When an issue was bound successfully, also inspect `GET /api/issues/:issueId/activity` for `issue.execution_workspace_bound`.
+- `GET /api/execution-workspaces/:id` and `GET /api/issues/:issueId/heartbeat-context` are the two reverse readbacks. The workspace must name the bound issue and `currentExecutionWorkspace.id` must name the same workspace.
+
+The implementation author runs focused adoption and rollback checks before handoff. A non-author reviewer reviews immediately after implementation, and the CTO verifies the live route plus both reverse readbacks only after the reviewed build is running.
+
+Disable the adoption endpoint and open a high-priority Paperclip defect immediately after **one unauthorized success, one unexpected git mutation, one partial issue bind, or two unexplained HTTP 500 responses**. Keep it disabled until non-author review and CTO approval confirm the root cause and fix. Any unexpected git mutation is also a stop condition: do not retry, clean, reset, checkout, prune, or otherwise modify the affected worktree through this workflow.
+
 ## Resolved workspace logic during heartbeat runs
 
 Heartbeat still resolves a workspace for the run, but that is about code location and session continuity, not runtime-service control.

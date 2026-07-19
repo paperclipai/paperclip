@@ -352,7 +352,7 @@ async function scopeAllows(
   companyId: string,
   grantScope: Record<string, unknown> | null,
   requestedScope: Record<string, unknown> | null | undefined,
-  options: { requireStructuredScope?: boolean } = {},
+  options: { requireStructuredScope?: boolean; requireProjectConstraint?: boolean } = {},
 ) {
   if (!grantScope || Object.keys(grantScope).length === 0) return !options.requireStructuredScope;
   if (!requestedScope) return false;
@@ -426,8 +426,11 @@ async function scopeAllows(
     if (!matchesSubtree) return false;
   }
 
-  // Unknown metadata keys do not constrain the grant. Recognized constraints
-  // return false above when they fail to match the requested assignment scope.
+  if (options.requireProjectConstraint && projectIds.length === 0) return false;
+
+  // Unknown metadata keys do not constrain ordinary grants. Security-sensitive
+  // callers may require a recognized constraint kind above so metadata-only
+  // scopes cannot accidentally become broad grants.
   return !constrained ? true : constrained;
 }
 
@@ -681,6 +684,7 @@ export function authorizationService(db: Db) {
         requireStructuredScope:
           input.permissionKey === "tasks:assign_scope" ||
           input.permissionKey === "execution_workspaces:adopt",
+        requireProjectConstraint: input.permissionKey === "execution_workspaces:adopt",
       }))
     ) {
       return deny({

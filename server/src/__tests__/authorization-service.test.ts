@@ -1651,6 +1651,26 @@ describeEmbeddedPostgres("authorization service", () => {
     });
   });
 
+  it("fails closed when an adoption grant scope has no recognized project constraint", async () => {
+    const company = await createCompany(db, "WorkspaceAdoptUnknownScope");
+    const project = await createProject(db, company.id, "Target");
+    const actorAgent = await createAgent(db, company.id);
+    await grantAgentPermission(db, company.id, actorAgent.id, "execution_workspaces:adopt", {
+      note: "metadata is not a project constraint",
+    });
+
+    const decision = await authorizationService(db).decidePrincipalGrant({
+      companyId: company.id,
+      principalType: "agent",
+      principalId: actorAgent.id,
+      action: "execution_workspaces:adopt",
+      permissionKey: "execution_workspaces:adopt",
+      scope: { projectId: project.id },
+    });
+
+    expect(decision).toMatchObject({ allowed: false, reason: "deny_scope" });
+  });
+
   it("treats unknown grant scope metadata as unconstrained", async () => {
     const company = await createCompany(db, "UnknownScopeMetadata");
     const actorAgent = await createAgent(db, company.id);

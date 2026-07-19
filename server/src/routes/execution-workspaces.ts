@@ -37,9 +37,19 @@ import { assertCanManageExecutionWorkspaceRuntimeServices } from "./workspace-ru
 import { appendWithCap } from "../adapters/utils.js";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
-import { ExecutionWorkspaceAdoptionError } from "../services/execution-workspaces.js";
+import {
+  ExecutionWorkspaceAdoptionError,
+  type ExecutionWorkspaceIssueAuthorizationSnapshot,
+} from "../services/execution-workspaces.js";
 
 const WORKSPACE_CONTROL_OUTPUT_MAX_CHARS = 256 * 1024;
+
+function adoptionBoundIssueId(metadata: Record<string, unknown> | null | undefined) {
+  const adoption = metadata?.adoption;
+  if (!adoption || typeof adoption !== "object" || Array.isArray(adoption)) return null;
+  const value = (adoption as Record<string, unknown>).boundIssueId;
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
 
 export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: PluginWorkerManager } = {}) {
   const router = Router();
@@ -157,6 +167,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
       await logAdoptionRejected(req, companyId, "unauthorized");
       return;
     }
+    let authorizedBindIssue: ExecutionWorkspaceIssueAuthorizationSnapshot | null = null;
     if (parsed.data.bindIssueId) {
       const [bindIssue] = await db
         .select({
@@ -167,6 +178,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,
           status: issues.status,
+          executionPolicy: issues.executionPolicy,
           originKind: issues.originKind,
           originId: issues.originId,
         })
@@ -209,6 +221,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
         });
         return;
       }
+      authorizedBindIssue = bindIssue;
     }
     const actor = getActorInfo(req);
     try {
@@ -217,7 +230,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
-      });
+      }, authorizedBindIssue);
       res.status(result.operation ? 201 : 200).json(result);
     } catch (error) {
       if (error instanceof ExecutionWorkspaceAdoptionError) {
@@ -702,14 +715,72 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Execution workspace not found");
     if (!existing) return;
     if (!(await assertAdoptionAllowed(req, res, existing.companyId, existing.projectId))) return;
+    const boundIssueId = adoptionBoundIssueId(existing.metadata);
+    let authorizedBoundIssue: ExecutionWorkspaceIssueAuthorizationSnapshot | null = null;
+    if (boundIssueId) {
+      const [boundIssue] = await db
+        .select({
+          id: issues.id,
+          parentId: issues.parentId,
+          assigneeAgentId: issues.assigneeAgentId,
+          assigneeUserId: issues.assigneeUserId,
+          status: issues.status,
+          executionPolicy: issues.executionPolicy,
+          originKind: issues.originKind,
+          originId: issues.originId,
+        })
+        .from(issues)
+        .where(and(
+          eq(issues.id, boundIssueId),
+          eq(issues.companyId, existing.companyId),
+          eq(issues.projectId, existing.projectId),
+        ))
+        .limit(1);
+      if (!boundIssue) {
+        res.status(409).json({ error: "Adoption rollback no longer matches the bound issue", reasonCode: "workspace_conflict" });
+        return;
+      }
+      const bindDecision = await access.decide({
+        actor: req.actor,
+        action: "issue:mutate",
+        resource: {
+          type: "issue",
+          companyId: existing.companyId,
+          issueId: boundIssue.id,
+          projectId: existing.projectId,
+          parentIssueId: boundIssue.parentId,
+          assigneeAgentId: boundIssue.assigneeAgentId,
+          assigneeUserId: boundIssue.assigneeUserId,
+          status: boundIssue.status,
+          originKind: boundIssue.originKind,
+          originId: boundIssue.originId,
+        },
+      });
+      if (!bindDecision.allowed) {
+        res.status(req.actor.type === "agent" ? 404 : 403).json({
+          error: req.actor.type === "agent" ? "Execution workspace adoption target not found" : "Issue rollback is not authorized",
+          reasonCode: req.actor.type === "agent" ? "cross_scope_not_found" : "unauthorized",
+        });
+        return;
+      }
+      authorizedBoundIssue = boundIssue;
+    }
     const actor = getActorInfo(req);
-    const workspace = await svc.rollbackAdoption(id, {
-      actorType: actor.actorType,
-      actorId: actor.actorId,
-      agentId: actor.agentId,
-      runId: actor.runId,
-    }, req.body.reason ?? null);
-    res.json({ workspace });
+    try {
+      const workspace = await svc.rollbackAdoption(id, {
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+      }, req.body.reason ?? null, boundIssueId, authorizedBoundIssue);
+      res.json({ workspace });
+    } catch (error) {
+      if (error instanceof ExecutionWorkspaceAdoptionError) {
+        res.status(error.status).json({ error: "Execution workspace adoption rollback rejected", reasonCode: error.reasonCode });
+        return;
+      }
+      throw error;
+    }
   });
 
   router.patch("/execution-workspaces/:id", validate(updateExecutionWorkspaceSchema), async (req, res) => {

@@ -3,6 +3,7 @@ import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { errorHandler } from "../middleware/index.js";
 import { executionWorkspaceRoutes } from "../routes/execution-workspaces.js";
+import { ExecutionWorkspaceAdoptionError } from "../services/execution-workspaces.js";
 
 const mockExecutionWorkspaceService = vi.hoisted(() => ({
   list: vi.fn(),
@@ -203,7 +204,7 @@ describe.sequential("execution workspace routes", () => {
       actorId: "local-board",
       agentId: null,
       runId: null,
-    });
+    }, null);
   });
 
   it("requires independent issue mutation authorization when binding an adopted workspace", async () => {
@@ -221,6 +222,7 @@ describe.sequential("execution workspace routes", () => {
               assigneeAgentId: "other-agent",
               assigneeUserId: null,
               status: "todo",
+              executionPolicy: null,
               originKind: "manual",
               originId: null,
             }],
@@ -254,6 +256,12 @@ describe.sequential("execution workspace routes", () => {
         status: "todo",
       }),
     }));
+    expect(mockExecutionWorkspaceService.adoptGitWorktree).toHaveBeenCalledWith(
+      "company-1",
+      body,
+      expect.any(Object),
+      expect.objectContaining({ id: bindIssueId, assigneeAgentId: "other-agent", status: "todo" }),
+    );
   });
 
   it("denies agent adoption before service inspection when no project grant is available", async () => {
@@ -306,8 +314,74 @@ describe.sequential("execution workspace routes", () => {
       actorId: "local-board",
       agentId: null,
       runId: null,
-    }, "operator rollback");
+    }, "operator rollback", null, null);
     expect(mockExecutionWorkspaceService.update).not.toHaveBeenCalled();
+  });
+
+  it("requires independent issue mutation authorization before rollback", async () => {
+    const bindIssueId = "44444444-4444-4444-8444-444444444444";
+    const projectId = "11111111-1111-4111-8111-111111111111";
+    mockExecutionWorkspaceService.getById.mockResolvedValue({
+      id: "workspace-1",
+      companyId: "company-1",
+      projectId,
+      metadata: { adoption: { boundIssueId: "44444444-4444-4444-8444-444444444444" } },
+    });
+    mockAccessService.decide
+      .mockResolvedValueOnce({ allowed: true, action: "execution_workspaces:adopt", reason: "allow_test" })
+      .mockResolvedValueOnce({ allowed: false, action: "issue:mutate", reason: "deny_test" });
+    const db = {
+      select: vi.fn(() => ({
+        from: () => ({
+          where: () => ({
+            limit: async () => [{
+              id: bindIssueId,
+              parentId: null,
+              assigneeAgentId: "other-agent",
+              assigneeUserId: null,
+              status: "todo",
+              executionPolicy: null,
+              originKind: "manual",
+              originId: null,
+            }],
+          }),
+        }),
+      })),
+    };
+
+    const res = await request(createApp(undefined, db))
+      .post("/api/execution-workspaces/workspace-1/rollback-adoption")
+      .send({ reason: "operator rollback" });
+
+    expect(res.status).toBe(403);
+    expect(res.body).toMatchObject({ reasonCode: "unauthorized" });
+    expect(mockAccessService.decide).toHaveBeenLastCalledWith(expect.objectContaining({
+      action: "issue:mutate",
+      resource: expect.objectContaining({ issueId: bindIssueId }),
+    }));
+    expect(mockExecutionWorkspaceService.rollbackAdoption).not.toHaveBeenCalled();
+  });
+
+  it("returns a stable conflict when rollback observes a changed binding", async () => {
+    mockExecutionWorkspaceService.getById.mockResolvedValue({
+      id: "workspace-1",
+      companyId: "company-1",
+      projectId: "11111111-1111-4111-8111-111111111111",
+      metadata: { adoption: { boundIssueId: null } },
+    });
+    mockExecutionWorkspaceService.rollbackAdoption.mockRejectedValue(
+      new ExecutionWorkspaceAdoptionError("workspace_conflict", 409),
+    );
+
+    const res = await request(createApp())
+      .post("/api/execution-workspaces/workspace-1/rollback-adoption")
+      .send({ reason: "operator rollback" });
+
+    expect(res.status).toBe(409);
+    expect(res.body).toEqual({
+      error: "Execution workspace adoption rollback rejected",
+      reasonCode: "workspace_conflict",
+    });
   });
 
   it.each([
