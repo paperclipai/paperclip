@@ -2390,6 +2390,54 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     });
   }, 20_000);
 
+  it("serializes concurrent identical adoptions without duplicating operations or activity", async () => {
+    const git = await createAdoptionGitFixture();
+    tempDirs.add(git.repoRoot);
+    tempDirs.add(git.worktreePath);
+    const scope = await seedAdoptionScope(db, {
+      repoRoot: git.repoRoot,
+      repoUrl: git.repoUrl,
+    });
+    const request = adoptionRequest({ ...git, ...scope });
+    let arrivals = 0;
+    let releaseBarrier!: () => void;
+    const barrier = new Promise<void>((resolve) => {
+      releaseBarrier = resolve;
+    });
+    const raceSvc = executionWorkspaceService(db, {
+      afterAdoptionInitialInspection: async () => {
+        arrivals += 1;
+        if (arrivals === 2) releaseBarrier();
+        await barrier;
+      },
+    });
+    const actor = {
+      actorType: "user" as const,
+      actorId: "local-board",
+      agentId: null,
+      runId: null,
+    };
+
+    const results = await Promise.all([
+      raceSvc.adoptGitWorktree(scope.companyId, request, actor),
+      raceSvc.adoptGitWorktree(scope.companyId, request, actor),
+    ]);
+
+    expect(new Set(results.map((result) => result.workspace.id))).toHaveProperty("size", 1);
+    expect(results.filter((result) => result.operation !== null)).toHaveLength(1);
+    expect(results.filter((result) => result.operation === null)).toHaveLength(1);
+    await expect(countAdoptionSideEffects(db)).resolves.toEqual({
+      workspaces: 1,
+      operations: 1,
+      activity: 2,
+    });
+    const workspaceId = results[0]!.workspace.id;
+    const workspaceActivity = await db.select().from(activityLog).where(eq(activityLog.entityId, workspaceId));
+    expect(workspaceActivity.map((row) => row.action)).toEqual(["execution_workspace.adopted"]);
+    const issueActivity = await db.select().from(activityLog).where(eq(activityLog.entityId, scope.bindIssueId!));
+    expect(issueActivity.map((row) => row.action)).toEqual(["issue.execution_workspace_bound"]);
+  }, 20_000);
+
   it.each([
     {
       name: "remote-only missing local branch",
@@ -2805,6 +2853,93 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     await expect(readGit(git.worktreePath, ["status", "--porcelain=v1", "--untracked-files=all"])).resolves.toBeNull();
     const operations = await db.select().from(workspaceOperations).where(eq(workspaceOperations.executionWorkspaceId, adopted.workspace.id));
     expect(operations.map((row) => row.phase)).toEqual(["workspace_adopt"]);
+    const [beforeRepeat] = await db
+      .select()
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, adopted.workspace.id));
+    const activityBeforeRepeat = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, adopted.workspace.id));
+
+    await expect(svc.rollbackAdoption(adopted.workspace.id, {
+      actorType: "user",
+      actorId: "different-board-actor",
+      agentId: null,
+      runId: null,
+    }, "must not replace first rollback", scope.bindIssueId, authorizedBoundIssue)).rejects.toMatchObject({
+      reasonCode: "workspace_conflict",
+      status: 409,
+    });
+
+    const [afterRepeat] = await db
+      .select()
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, adopted.workspace.id));
+    const activityAfterRepeat = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, adopted.workspace.id));
+    expect(afterRepeat?.metadata).toEqual(beforeRepeat?.metadata);
+    expect(afterRepeat?.updatedAt).toEqual(beforeRepeat?.updatedAt);
+    expect(activityAfterRepeat).toEqual(activityBeforeRepeat);
+  }, 20_000);
+
+  it("rejects repeated rollback of an unbound adopted workspace without changing metadata or activity", async () => {
+    const git = await createAdoptionGitFixture();
+    tempDirs.add(git.repoRoot);
+    tempDirs.add(git.worktreePath);
+    const scope = await seedAdoptionScope(db, {
+      bindIssueId: null,
+      repoRoot: git.repoRoot,
+      repoUrl: git.repoUrl,
+    });
+    const adopted = await svc.adoptGitWorktree(scope.companyId, adoptionRequest({ ...git, ...scope }), {
+      actorType: "user",
+      actorId: "local-board",
+      agentId: null,
+      runId: null,
+    });
+    await svc.rollbackAdoption(adopted.workspace.id, {
+      actorType: "user",
+      actorId: "local-board",
+      agentId: null,
+      runId: null,
+    }, "first rollback", null, null);
+    const [beforeRepeat] = await db
+      .select()
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, adopted.workspace.id));
+    const activityBeforeRepeat = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, adopted.workspace.id));
+
+    await expect(svc.rollbackAdoption(adopted.workspace.id, {
+      actorType: "user",
+      actorId: "different-board-actor",
+      agentId: null,
+      runId: null,
+    }, "must not replace first rollback", null, null)).rejects.toMatchObject({
+      reasonCode: "workspace_conflict",
+      status: 409,
+    });
+
+    const [afterRepeat] = await db
+      .select()
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, adopted.workspace.id));
+    const activityAfterRepeat = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, adopted.workspace.id));
+    expect(afterRepeat?.metadata).toEqual(beforeRepeat?.metadata);
+    expect(afterRepeat?.updatedAt).toEqual(beforeRepeat?.updatedAt);
+    expect(activityAfterRepeat).toEqual(activityBeforeRepeat);
+    expect(activityAfterRepeat.map((row) => row.action)).toEqual([
+      "execution_workspace.adopted",
+      "execution_workspace.adoption_rolled_back",
+    ]);
   }, 20_000);
 
   it("rolls back atomically when adoption fails after workspace insert but before optional issue binding", async () => {

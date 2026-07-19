@@ -362,12 +362,17 @@ describe.sequential("execution workspace routes", () => {
     expect(mockExecutionWorkspaceService.rollbackAdoption).not.toHaveBeenCalled();
   });
 
-  it("returns a stable conflict when rollback observes a changed binding", async () => {
+  it("returns a stable conflict when an unbound adopted workspace was already rolled back", async () => {
     mockExecutionWorkspaceService.getById.mockResolvedValue({
       id: "workspace-1",
       companyId: "company-1",
       projectId: "11111111-1111-4111-8111-111111111111",
-      metadata: { adoption: { boundIssueId: null } },
+      status: "archived",
+      cleanupReason: "adoption_rollback",
+      metadata: {
+        adoption: { boundIssueId: null },
+        adoptionRollback: { version: 1, reason: "first rollback" },
+      },
     });
     mockExecutionWorkspaceService.rollbackAdoption.mockRejectedValue(
       new ExecutionWorkspaceAdoptionError("workspace_conflict", 409),
@@ -382,6 +387,12 @@ describe.sequential("execution workspace routes", () => {
       error: "Execution workspace adoption rollback rejected",
       reasonCode: "workspace_conflict",
     });
+    expect(mockExecutionWorkspaceService.rollbackAdoption).toHaveBeenCalledWith("workspace-1", {
+      actorType: "user",
+      actorId: "local-board",
+      agentId: null,
+      runId: null,
+    }, "operator rollback", null, null);
   });
 
   it.each([

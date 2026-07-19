@@ -590,7 +590,7 @@ Failure responses use stable redacted `reasonCode` values and do not include arb
 { "error": "Execution workspace adoption rejected", "reasonCode": "workspace_conflict" }
 ```
 
-Retries are idempotent only when the active existing adopted record has the same immutable fingerprint. If the cwd, provider ref, or full branch ref is already registered with a different fingerprint, the control returns `409 workspace_conflict`.
+Retries are idempotent only when the active existing adopted record has the same immutable fingerprint and bound-issue identity. Concurrent identical requests both return the same workspace; only the request that creates it returns a `workspace_adopt` operation, while the serialized retry returns `operation: null`. If the cwd, provider ref, or full branch ref is already registered with a different fingerprint or issue binding, the control returns `409 workspace_conflict`.
 
 Rollback or disable an adopted record:
 
@@ -603,6 +603,8 @@ curl -X POST "$PAPERCLIP_API_URL/api/execution-workspaces/$EXECUTION_WORKSPACE_I
 ```
 
 Rollback restores the prior issue execution workspace binding, or `null` when there was no previous binding, archives only the execution workspace record, writes `metadata.adoptionRollback`, and writes `execution_workspace.adoption_rolled_back` activity. It intentionally leaves workspace operations, activity, logs, runtime evidence, filesystem paths, git worktrees, branches, and working tree contents untouched.
+
+Rollback is single-use. Repeating the request after the adopted workspace is archived returns `409 workspace_conflict` without changing the first rollback's metadata, restored issue binding, or activity history. The same stable repeat behavior applies when the adopted workspace had no bound issue.
 
 Operational owner: the project owner or board operator who controls the project workspace. Review adopted workspaces weekly, and immediately when an issue is reassigned, a branch is merged, or a workspace conflict appears. Treat repeated `dirty_worktree`, `branch_attached_elsewhere`, or `workspace_conflict` failures on the same project as an escalation threshold: stop adoption attempts, inspect local git state manually, then retry only with fresh exact inputs.
 

@@ -2128,7 +2128,26 @@ export function executionWorkspaceService(db: Db, options: ExecutionWorkspaceSer
           .for("update")
           .limit(1)
           .then((rows) => rows[0] ?? null);
-        if (duplicate) adoptionError(fingerprintMatches(duplicate) ? "workspace_conflict" : "workspace_conflict", 409);
+        if (duplicate) {
+          if (
+            !fingerprintMatches(duplicate)
+            || (input.bindIssueId ?? null) !== adoptionBoundIssueId(duplicate)
+          ) {
+            adoptionError("workspace_conflict", 409);
+          }
+          const existingWorkspace = await executionWorkspaceService(txDb).getById(duplicate.id);
+          return {
+            workspace: existingWorkspace ?? toExecutionWorkspace(duplicate),
+            issue: bindIssue ? {
+              id: bindIssue.id,
+              identifier: bindIssue.identifier,
+              title: bindIssue.title,
+              status: bindIssue.status,
+            } : null,
+            inspection,
+            operation: null,
+          };
+        }
 
         const writeInspection = await inspectGitWorktreeForAdoption({
           companyId,
@@ -2349,6 +2368,13 @@ export function executionWorkspaceService(db: Db, options: ExecutionWorkspaceSer
         const previousBinding = isRecord(adoption.previousIssueBinding) ? adoption.previousIssueBinding : null;
         const boundIssueId = readNullableString(adoption.boundIssueId);
         if (boundIssueId !== authorizedBoundIssueId) adoptionError("workspace_conflict", 409);
+        if (
+          workspace.status === "archived"
+          || workspace.closedAt !== null
+          || isRecord(metadata.adoptionRollback)
+        ) {
+          adoptionError("workspace_conflict", 409);
+        }
         if (boundIssueId) {
           const [boundIssue] = await tx
             .select({

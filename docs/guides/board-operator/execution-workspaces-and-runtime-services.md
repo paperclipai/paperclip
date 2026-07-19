@@ -68,11 +68,13 @@ Adoption is deliberately conservative:
 
 When adoption succeeds, Paperclip writes one execution workspace, one `workspace_adopt` operation, and activity entries in the same database transaction. If a bind issue is supplied, that issue is updated in the same transaction to `reuse_existing` and points at the adopted workspace. If the database transaction fails, the issue binding, workspace record, workspace operation, and activity entries all roll back together.
 
-The immutable adoption fingerprint is derived from the company, project, project workspace, source issue, canonical cwd, repo root, normalized repo URL, full branch ref, head SHA, and upstream. Retrying the same adoption returns the existing workspace without creating a second operation. Retrying the same exact worktree with a different issue binding is rejected as a workspace conflict.
+The immutable adoption fingerprint is derived from the company, project, project workspace, source issue, canonical cwd, repo root, normalized repo URL, full branch ref, head SHA, and upstream. Retrying the same adoption returns the existing workspace without creating a second operation, including when identical requests arrive concurrently. Retrying the same exact worktree with a different issue binding is rejected as a workspace conflict.
 
 ## Adoption rollback
 
 Rollback is also record-only. It restores the bound issue to the execution workspace binding that existed before adoption, archives the adopted workspace record with `cleanupReason: adoption_rollback`, and writes an activity entry.
+
+Rollback is single-use. Repeating rollback after the adopted workspace is archived returns `409 workspace_conflict` and leaves the original rollback metadata, issue binding, and activity history unchanged. This also applies to adopted workspaces that were not bound to an issue.
 
 Rollback does not:
 
