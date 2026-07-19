@@ -56,6 +56,8 @@ const SERVER_INFO_TOGGLE_SELECTOR =
 const BUILT_IN_AGENTS_TOGGLE_SELECTOR =
   'button[aria-label="Toggle built-in agents experimental setting"]';
 const APPS_TOGGLE_SELECTOR = 'button[aria-label="Toggle apps experimental setting"]';
+const SUMMARIES_TOGGLE_SELECTOR =
+  'button[aria-label="Toggle summaries experimental setting"]';
 const AUTO_RECOVERY_TOGGLE_SELECTOR =
   'button[aria-label="Toggle task graph liveness auto-recovery"]';
 
@@ -72,6 +74,7 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableExperimentalFileViewer: false,
     enableExternalObjects: false,
     enableBuiltInAgents: false,
+    enableSummaries: false,
     enableDecisions: false,
     enableGoalsSidebarLink: false,
     enableTaskWatchdogs: false,
@@ -434,6 +437,26 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
 
     expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledWith({
       enableBuiltInAgents: true,
+    });
+    expect(toggle?.getAttribute("aria-checked")).toBe("true");
+  });
+
+  it("renders and patches the Summaries experimental toggle", async () => {
+    await renderPage();
+
+    expect(container.textContent).toContain("Summaries");
+    expect(container.textContent).toContain("Show Summarizer-generated status slots");
+
+    const toggle = container.querySelector<HTMLButtonElement>(SUMMARIES_TOGGLE_SELECTOR);
+    expect(toggle?.getAttribute("aria-checked")).toBe("false");
+
+    await act(async () => {
+      toggle?.click();
+    });
+    await flushReact();
+
+    expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledWith({
+      enableSummaries: true,
     });
     expect(toggle?.getAttribute("aria-checked")).toBe("true");
   });

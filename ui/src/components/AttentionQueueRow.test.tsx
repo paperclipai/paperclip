@@ -113,6 +113,7 @@ function buildItem(overrides: Partial<AttentionItem> = {}): AttentionItem {
     detail: null,
     dismissal: null,
     ...overrides,
+    trainingExampleId: overrides.trainingExampleId ?? null,
   };
 }
 
@@ -614,5 +615,76 @@ describe("AttentionQueueRow", () => {
     const gallery = container?.querySelector('[data-attention-expanded-images="true"]');
     expect(gallery?.textContent).toContain("1 more");
     expect(gallery?.querySelectorAll("a")).toHaveLength(0);
+  });
+
+  // Decision training (PAP-14299): a trainable row shows the train affordance;
+  // the trained/untrained state renders purely from `trainingExampleId`.
+  function trainableItem(overrides: Partial<AttentionItem> = {}): AttentionItem {
+    return buildItem({
+      sourceKind: "issue_thread_interaction",
+      subject: {
+        kind: "interaction",
+        id: "interaction-1",
+        companyId: "c1",
+        title: "Approve the migration plan?",
+        identifier: null,
+        status: "pending",
+        href: "/PAP/issues/PAP-1",
+        metadata: { issueId: "issue-1", kind: "request_confirmation" },
+      },
+      ...overrides,
+    });
+  }
+
+  it("shows an untrained train button and fires onTrain when clicked", () => {
+    const onTrain = vi.fn();
+    render(
+      <AttentionQueueRow
+        item={trainableItem()}
+        companyId="c1"
+        expanded={false}
+        onToggleExpand={noop}
+        onDismiss={noop}
+        onTrain={onTrain}
+      />,
+    );
+    const button = container?.querySelector('[data-testid="attention-train-button"]');
+    expect(button).toBeTruthy();
+    expect(button?.getAttribute("data-training-state")).toBe("untrained");
+    expect(container?.querySelector('[data-testid="attention-trained-badge"]')).toBeNull();
+    act(() => button?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(onTrain).toHaveBeenCalledWith(expect.objectContaining({ id: "a1" }));
+  });
+
+  it("renders a Trained ✓ badge and a filled button once trained", () => {
+    render(
+      <AttentionQueueRow
+        item={trainableItem({ trainingExampleId: "example-1" })}
+        companyId="c1"
+        expanded={false}
+        onToggleExpand={noop}
+        onDismiss={noop}
+        onTrain={noop}
+      />,
+    );
+    expect(
+      container?.querySelector('[data-testid="attention-train-button"]')?.getAttribute("data-training-state"),
+    ).toBe("trained");
+    const badge = container?.querySelector('[data-testid="attention-trained-badge"]');
+    expect(badge?.textContent).toContain("Trained");
+  });
+
+  it("does not offer training on a decision that isn't anchored to an issue", () => {
+    render(
+      <AttentionQueueRow
+        item={buildItem({ subject: { ...buildItem().subject, metadata: {} }, relatedIssue: null })}
+        companyId="c1"
+        expanded={false}
+        onToggleExpand={noop}
+        onDismiss={noop}
+        onTrain={noop}
+      />,
+    );
+    expect(container?.querySelector('[data-testid="attention-train-button"]')).toBeNull();
   });
 });

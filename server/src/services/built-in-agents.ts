@@ -21,6 +21,7 @@ import {
 import { companySkillService } from "./company-skills.js";
 import { routineService } from "./routines.js";
 import { accessService } from "./access.js";
+import { listAdapterModels } from "../adapters/registry.js";
 
 export type BuiltInAgentStatus = "not_provisioned" | "pending_approval" | "needs_setup" | "ready" | "paused";
 
@@ -37,7 +38,10 @@ export interface BuiltInAgentDefinition {
   defaultStatus?: "idle" | "paused";
   defaultManager?: "single_root_agent" | null;
   allowedAdapterTypes?: string[];
+  defaultAdapterType?: string;
+  defaultAdapterConfig?: Record<string, unknown>;
   defaultBudgetMonthlyCents?: number;
+  defaultRuntimeConfig?: Record<string, unknown>;
   bundle?: BuiltInAgentBundleDefinition;
 }
 
@@ -173,6 +177,35 @@ const FALLBACK_REFLECTION_COACH_SKILL = [
   "",
 ].join("\n");
 
+const FALLBACK_SUMMARIZER_INSTRUCTIONS = [
+  "You are Summarizer, a built-in reporting agent at Paperclip.",
+  "",
+  "Turn the current state of a Paperclip scope (project, workspaces overview, or a single project workspace) into a short, honest, human-readable Markdown summary and write it back to that scope's summary slot as a new revision. Use the `summarize-status` skill as your operating procedure.",
+  "",
+  "Read-and-report only: never change issues, workspaces, or code. Cite issue identifiers, never fabricate status, keep every read company-scoped, and run on the low-cost model profile lane by default.",
+  "",
+].join("\n");
+
+const FALLBACK_SUMMARIZER_ROUTINE = [
+  "Regenerate summary slots whose scope has changed since their last revision.",
+  "",
+  "Paused by default; spends no tokens until an operator enables the schedule or runs it manually. Read-and-report only — the only write is the summary revision.",
+  "",
+].join("\n");
+
+const FALLBACK_SUMMARIZER_SKILL = [
+  "---",
+  "name: summarize-status",
+  "description: Write a short, colloquial summary for a Paperclip summary slot: open with the one or two decisions the reader must make — or, when nothing needs deciding, what to review — each with a recommendation, close with one or two recent pieces of work and where they stand, streaming status as it works.",
+  "key: paperclipai/bundled/paperclip-operations/summarize-status",
+  "---",
+  "",
+  "# Summarize status",
+  "",
+  "Turn a Paperclip scope's current state into a short, colloquial Markdown summary — opening with a `**Decide:**` block of at most two bullets (each with the decision's context, a link, and an `**I suggest:**` recommendation), followed by plain prose on the one or two things that matter most, with at most three or four inline issue links and never a trailing link list — then write it back to the scope's summary slot. When nothing needs a decision, open with `**Nothing to decide right now.**` plus a `**Review:**` block (at most two bullets) triaging what is waiting on review — easy approves vs what needs the reader's eyes — each with a link and an `**I suggest:**` recommendation. End every summary with a `**Recent work:**` block: at most two bullets, one line each, naming a recent piece of work and where it stands. Post the first `STATUS:` line immediately from the first task in context and keep streaming `STATUS:` lines while working. Not a task list. Read-and-report only; never fabricate status.",
+  "",
+].join("\n");
+
 const warnedBuiltInTextFallbacks = new Set<string>();
 const warnedBuiltInTextReadErrors = new Set<string>();
 
@@ -245,6 +278,25 @@ const REFLECTION_COACH_SKILL = readBuiltInTextWithFallback(
       : []),
   ],
   FALLBACK_REFLECTION_COACH_SKILL,
+);
+
+const SUMMARIZER_INSTRUCTIONS = readBuiltInText("summarizer/AGENTS.md", FALLBACK_SUMMARIZER_INSTRUCTIONS);
+const SUMMARIZER_ROUTINE = readBuiltInText(
+  "summarizer/routines/refresh-stale-summaries.md",
+  FALLBACK_SUMMARIZER_ROUTINE,
+);
+const SUMMARIZER_SKILL = readBuiltInTextWithFallback(
+  "summarizer/SKILL.md",
+  [
+    path.resolve(
+      moduleDir,
+      "../../../packages/skills-catalog/catalog/bundled/paperclip-operations/summarize-status/SKILL.md",
+    ),
+    ...(skillsCatalogRoot
+      ? [path.join(skillsCatalogRoot, "catalog/bundled/paperclip-operations/summarize-status/SKILL.md")]
+      : []),
+  ],
+  FALLBACK_SUMMARIZER_SKILL,
 );
 
 const DEFINITIONS = validateBuiltInAgentDefinitions([
@@ -337,6 +389,77 @@ const DEFINITIONS = validateBuiltInAgentDefinitions([
             label: "Weekly reflection review",
             enabled: false,
             cronExpression: "0 9 * * 1",
+            timezone: "UTC",
+          },
+        ],
+      },
+    },
+  },
+  {
+    key: "summarizer",
+    displayName: "Summarizer",
+    featureKeys: ["summarizer"],
+    shortPurpose:
+      "Writes short, human-readable Markdown status summaries into project, workspaces-overview, and project-workspace summary slots on demand.",
+    defaultInstructions: SUMMARIZER_INSTRUCTIONS,
+    defaultRole: "general",
+    defaultTitle: "Summarizer",
+    defaultIcon: "sparkles",
+    defaultPermissions: {
+      canCreateAgents: false,
+      canCreateSkills: false,
+    },
+    defaultStatus: "paused",
+    defaultManager: "single_root_agent",
+    allowedAdapterTypes: ["claude_local", "codex_local", "gemini_local", "opencode_local", "process"],
+    defaultAdapterType: "claude_local",
+    defaultAdapterConfig: {
+      model: "claude-haiku-4-5",
+    },
+    defaultBudgetMonthlyCents: 0,
+    bundle: {
+      stockVersion: "2026-07-15",
+      instructions: {
+        entryFile: "AGENTS.md",
+        files: {
+          "AGENTS.md": SUMMARIZER_INSTRUCTIONS,
+        },
+      },
+      skill: {
+        skillKey: "summarize-status",
+        displayName: "Summarize status",
+        slug: "summarize-status",
+        canonicalKey: "paperclipai/bundled/paperclip-operations/summarize-status",
+        files: {
+          "summarize-status/SKILL.md": SUMMARIZER_SKILL,
+        },
+      },
+      routine: {
+        routineKey: "refresh-stale-summaries",
+        title: "Refresh stale summary slots",
+        description: SUMMARIZER_ROUTINE,
+        status: "paused",
+        priority: "medium",
+        concurrencyPolicy: "coalesce_if_active",
+        catchUpPolicy: "skip_missed",
+        variables: [
+          { name: "staleAfterHours", label: "Refresh slots older than (hours)", type: "number", defaultValue: 24, required: true, options: [] },
+          { name: "maxSlots", label: "Max slots to refresh per run", type: "number", defaultValue: 10, required: true, options: [] },
+          {
+            name: "scopeKinds",
+            label: "Scope kinds to include",
+            type: "select",
+            defaultValue: "all",
+            required: true,
+            options: ["all", "project", "workspaces_overview", "project_workspace"],
+          },
+        ],
+        triggers: [
+          {
+            kind: "schedule",
+            label: "Daily stale-summary refresh",
+            enabled: false,
+            cronExpression: "0 8 * * *",
             timezone: "UTC",
           },
         ],
@@ -485,6 +608,13 @@ export function validateBuiltInAgentDefinitions(definitions: BuiltInAgentDefinit
       throw new Error(`Built-in agent ${definition.key} allowedAdapterTypes must be unique non-empty strings`);
     }
     if (
+      definition.defaultAdapterType
+      && definition.allowedAdapterTypes
+      && !definition.allowedAdapterTypes.includes(definition.defaultAdapterType)
+    ) {
+      throw new Error(`Built-in agent ${definition.key} defaultAdapterType must be allowed`);
+    }
+    if (
       definition.defaultBudgetMonthlyCents !== undefined
       && (!Number.isInteger(definition.defaultBudgetMonthlyCents) || definition.defaultBudgetMonthlyCents < 0)
     ) {
@@ -509,6 +639,7 @@ export function validateBuiltInAgentDefinitions(definitions: BuiltInAgentDefinit
     ...definition,
     featureKeys: [...definition.featureKeys],
     allowedAdapterTypes: definition.allowedAdapterTypes ? [...definition.allowedAdapterTypes] : undefined,
+    defaultAdapterConfig: definition.defaultAdapterConfig ? { ...definition.defaultAdapterConfig } : undefined,
     bundle: definition.bundle ? {
       ...definition.bundle,
       instructions: {
@@ -529,7 +660,12 @@ export function validateBuiltInAgentDefinitions(definitions: BuiltInAgentDefinit
 }
 
 export function listBuiltInAgentDefinitions() {
-  return DEFINITIONS.map((definition) => ({ ...definition, featureKeys: [...definition.featureKeys] }));
+  return DEFINITIONS.map((definition) => ({
+    ...definition,
+    featureKeys: [...definition.featureKeys],
+    allowedAdapterTypes: definition.allowedAdapterTypes ? [...definition.allowedAdapterTypes] : undefined,
+    defaultAdapterConfig: definition.defaultAdapterConfig ? { ...definition.defaultAdapterConfig } : undefined,
+  }));
 }
 
 export function getBuiltInAgentDefinition(key: string) {
@@ -543,7 +679,7 @@ export function requireBuiltInAgentDefinition(key: string) {
 }
 
 function defaultAdapterType(definition: BuiltInAgentDefinition) {
-  return definition.allowedAdapterTypes?.[0] ?? "process";
+  return definition.defaultAdapterType ?? definition.allowedAdapterTypes?.[0] ?? "process";
 }
 
 function normalizeAdapterType(value: unknown) {
@@ -618,10 +754,31 @@ function definitionPatch(definition: BuiltInAgentDefinition, input: BuiltInAgent
     icon: definition.defaultIcon ?? null,
     capabilities: definition.shortPurpose,
     adapterType,
-    adapterConfig: input.adapterConfig ?? {},
+    adapterConfig: input.adapterConfig ?? definition.defaultAdapterConfig ?? {},
     permissions: definition.defaultPermissions ?? {},
     budgetMonthlyCents: input.budgetMonthlyCents ?? definition.defaultBudgetMonthlyCents ?? 0,
   };
+}
+
+async function assertKnownBuiltInAgentModel(
+  definition: BuiltInAgentDefinition,
+  input: BuiltInAgentProvisionInput,
+) {
+  const adapterType = input.adapterType ?? defaultAdapterType(definition);
+  const adapterConfig = input.adapterConfig ?? definition.defaultAdapterConfig ?? {};
+  const model = typeof adapterConfig.model === "string" ? adapterConfig.model.trim() : "";
+  if (!model || !hasCompleteAdapterConfig(adapterType, adapterConfig)) return;
+
+  const models = await listAdapterModels(adapterType);
+  if (models.length === 0 || models.some((candidate) => candidate.id === model)) return;
+
+  throw unprocessable(`Model "${model}" is not available for adapter ${adapterType}.`, {
+    code: "built_in_agent_model_unknown",
+    key: definition.key,
+    adapterType,
+    model,
+    availableModelIds: models.map((candidate) => candidate.id),
+  });
 }
 
 function builtInAgentNotConfiguredError(state: BuiltInAgentState) {
@@ -707,6 +864,13 @@ export function builtInAgentService(db: Db) {
 
   async function defaultProvisionInput(companyId: string, definition: BuiltInAgentDefinition, input: BuiltInAgentProvisionInput) {
     if (input.adapterType || input.adapterConfig) return input;
+    if (definition.defaultAdapterType || definition.defaultAdapterConfig) {
+      return {
+        ...input,
+        adapterType: definition.defaultAdapterType,
+        adapterConfig: definition.defaultAdapterConfig ? { ...definition.defaultAdapterConfig } : undefined,
+      };
+    }
     if (!definition.bundle) return input;
     const rows = await db
       .select({
@@ -1412,6 +1576,9 @@ export function builtInAgentService(db: Db) {
     const resolvedInput = existingPendingApproval || preserveExistingAdapter
       ? input
       : await defaultProvisionInput(companyId, definition, input);
+    if (!existingPendingApproval && !preserveExistingAdapter) {
+      await assertKnownBuiltInAgentModel(definition, resolvedInput);
+    }
     if (existing) {
       const patch: Partial<typeof agents.$inferInsert> = {
         metadata: builtInMetadata(definition, existing.metadata),
@@ -1455,11 +1622,13 @@ export function builtInAgentService(db: Db) {
     const created = await agentSvc.create(companyId, {
       ...definitionPatch(definition, resolvedInput),
       status: definition.defaultStatus ?? "idle",
-      pauseReason: definition.defaultStatus === "paused" ? "Built-in Reflection Coach is disabled until explicitly configured." : null,
+      pauseReason: definition.defaultStatus === "paused"
+        ? `Built-in ${definition.displayName} is disabled until explicitly configured.`
+        : null,
       pausedAt: definition.defaultStatus === "paused" ? new Date() : null,
       reportsTo,
       metadata: builtInMetadata(definition),
-      runtimeConfig: {},
+      runtimeConfig: definition.defaultRuntimeConfig ?? {},
       permissions: definition.defaultPermissions ?? {},
       spentMonthlyCents: 0,
       lastHeartbeatAt: null,
@@ -1495,6 +1664,7 @@ export function builtInAgentService(db: Db) {
     if (!company.requireBoardApprovalForNewAgents) {
       return { state: await ensure(companyId, key, input), approval: null };
     }
+    await assertKnownBuiltInAgentModel(definition, input);
 
     const existing = await findSingleAgent(companyId, definition);
     if (existing) {
@@ -1532,7 +1702,7 @@ export function builtInAgentService(db: Db) {
       status: "pending_approval",
       reportsTo,
       metadata: builtInMetadata(definition),
-      runtimeConfig: {},
+      runtimeConfig: definition.defaultRuntimeConfig ?? {},
       permissions: definition.defaultPermissions ?? {},
       spentMonthlyCents: 0,
       lastHeartbeatAt: null,

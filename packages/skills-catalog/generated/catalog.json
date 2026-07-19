@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "packageName": "@paperclipai/skills-catalog",
   "packageVersion": "0.3.1",
-  "generatedAt": "2026-07-10T13:15:25.878Z",
+  "generatedAt": "2026-07-15T22:20:53.895Z",
   "skills": [
     {
       "id": "paperclipai:bundled:docs:doc-maintenance",
@@ -107,6 +107,41 @@
         }
       ],
       "contentHash": "sha256:1c7a82cd9638a1d845b238032da3ff4ad80c5b6a87dca46082f501fa4583db55"
+    },
+    {
+      "id": "paperclipai:bundled:paperclip-operations:summarize-status",
+      "key": "paperclipai/bundled/paperclip-operations/summarize-status",
+      "kind": "bundled",
+      "category": "paperclip-operations",
+      "slug": "summarize-status",
+      "name": "summarize-status",
+      "description": "Write a short, colloquial summary for a Paperclip summary slot: open with the one or two decisions the reader must make — or, when nothing needs deciding, what to review — each with a recommendation, close with one or two recent pieces of work and where they stand, streaming status as it works.",
+      "path": "catalog/bundled/paperclip-operations/summarize-status",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "general",
+        "manager"
+      ],
+      "requires": [],
+      "tags": [
+        "paperclip",
+        "summary",
+        "status",
+        "reporting",
+        "operations"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 16744,
+          "sha256": "6bfacf153b602cdbba4c0edef64956adf8d11c1819bf1b9494a67abb6d4705eb"
+        }
+      ],
+      "contentHash": "sha256:d7e2a979d95f99ee9d7a341a860602dcdfb7a2feb4d2390fccbaddc838d2da51"
     },
     {
       "id": "paperclipai:bundled:paperclip-operations:task-planning",

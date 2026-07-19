@@ -12,6 +12,8 @@ import {
   createAgentKeySchema,
   builtInAgentEmptyMutationSchema,
   builtInAgentProvisionSchema,
+  generateSummarySlotSchema,
+  writeSummarySlotSchema,
   wakeAgentSchema,
   resetAgentSessionSchema,
   agentSkillSyncSchema,
@@ -1367,6 +1369,65 @@ for (const route of [
     },
   });
 }
+
+const summarySlotParams = z.object({
+  companyId: z.string(),
+  scopeKind: z.string(),
+  slotKey: z.string(),
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/summary-slots/{scopeKind}/{slotKey}",
+  tags: ["summaries"],
+  summary: "Get a summary slot with its latest document and generation state",
+  request: { params: summarySlotParams },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/summary-slots/{scopeKind}/{slotKey}/revisions",
+  tags: ["summaries"],
+  summary: "List dated revisions for a summary slot",
+  request: { params: summarySlotParams },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/summary-slots/{scopeKind}/{slotKey}/generate",
+  tags: ["summaries"],
+  summary: "Manually generate (or refresh) a summary slot",
+  request: { params: summarySlotParams, body: jsonBody(generateSummarySlotSchema) },
+  responses: {
+    200: r.ok(),
+    202: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
+});
+
+registry.registerPath({
+  method: "put",
+  path: "/api/companies/{companyId}/summary-slots/{scopeKind}/{slotKey}",
+  tags: ["summaries"],
+  summary: "Write a summary revision (Summarizer built-in agent only)",
+  request: { params: summarySlotParams, body: jsonBody(writeSummarySlotSchema) },
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
+});
 
 registry.registerPath({
   method: "get",
@@ -2976,6 +3037,81 @@ registry.registerPath({
   summary: "List decision-only attention feed items",
   request: { params: z.object({ companyId: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+// ─── Decision training ──────────────────────────────────────────────────────
+
+const decisionTrainingSourceKindSchema = z.enum(["interaction", "approval", "execution_decision"]);
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/decision-training",
+  tags: ["decision-training"],
+  summary: "Capture a decision training example",
+  body: z.object({
+    sourceKind: decisionTrainingSourceKindSchema,
+    sourceId: z.string().uuid(),
+    issueId: z.string().uuid(),
+    notes: z.string().max(100_000).default(""),
+  }).strict(),
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/decision-training/preview",
+  tags: ["decision-training"],
+  summary: "Preview a decision training snapshot",
+  body: z.object({
+    sourceKind: decisionTrainingSourceKindSchema,
+    sourceId: z.string().uuid(),
+    issueId: z.string().uuid(),
+  }).strict(),
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/decision-training",
+  tags: ["decision-training"],
+  summary: "List decision training examples",
+  query: z.object({
+    project: z.string().uuid().optional(),
+    kind: decisionTrainingSourceKindSchema.optional(),
+    author: z.string().optional(),
+    q: z.string().max(500).optional(),
+  }),
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/decision-training/export.jsonl",
+  tags: ["decision-training"],
+  summary: "Export decision training examples as JSONL",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/decision-training/{id}",
+  tags: ["decision-training"],
+  summary: "Get a decision training example",
+});
+
+registerCurrentRoute({
+  method: "patch",
+  path: "/api/decision-training/{id}",
+  tags: ["decision-training"],
+  summary: "Update decision training notes",
+  body: z.object({ notes: z.string().max(100_000) }).strict(),
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registerCurrentRoute({
+  method: "delete",
+  path: "/api/decision-training/{id}",
+  tags: ["decision-training"],
+  summary: "Delete a decision training example",
+  responses: { 204: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
 
 registry.registerPath({

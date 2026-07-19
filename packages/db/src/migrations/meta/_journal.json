@@ -1233,6 +1233,34 @@
       "when": 1784241826832,
       "tag": "0177_activity_log_responsible_user",
       "breakpoints": true
+    },
+    {
+      "idx": 178,
+      "version": "7",
+      "when": 1784241827832,
+      "tag": "0178_summary_slots",
+      "breakpoints": true
+    },
+    {
+      "idx": 179,
+      "version": "7",
+      "when": 1784241828832,
+      "tag": "0179_summary_slot_failure_reason",
+      "breakpoints": true
+    },
+    {
+      "idx": 180,
+      "version": "7",
+      "when": 1784216720808,
+      "tag": "0180_decision_training_examples",
+      "breakpoints": true
+    },
+    {
+      "idx": 181,
+      "version": "7",
+      "when": 1784231633059,
+      "tag": "0181_decision_training_retention_policy",
+      "breakpoints": true
     }
   ]
 }

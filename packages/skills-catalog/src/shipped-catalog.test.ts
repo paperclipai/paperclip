@@ -8,6 +8,7 @@ const EXPECTED_BUNDLED_KEYS = [
   "paperclipai/bundled/docs/doc-maintenance",
   "paperclipai/bundled/paperclip-operations/issue-triage",
   "paperclipai/bundled/paperclip-operations/reflection-coach",
+  "paperclipai/bundled/paperclip-operations/summarize-status",
   "paperclipai/bundled/paperclip-operations/task-planning",
   "paperclipai/bundled/product/paperclip-capsules",
   "paperclipai/bundled/product/wireframe",
@@ -66,6 +67,28 @@ function readFrontmatterDescription(markdown: string): string | null {
 }
 
 describe("shipped skills catalog", () => {
+  it("ships the summarize-status streaming protocol", () => {
+    const skill = readFileSync(
+      path.join(
+        REPO_ROOT,
+        "packages/skills-catalog/catalog/bundled/paperclip-operations/summarize-status/SKILL.md",
+      ),
+      "utf8",
+    );
+
+    expect(skill).toContain("Post the first status update immediately, before doing anything else.");
+    expect(skill).toContain('STATUS: considering "Fix login redirect loop"…');
+    expect(skill).toContain("STATUS: reading the current slot revision…");
+    expect(skill).toContain("<<<SUMMARY-DRAFT>>>");
+    expect(skill).toContain("<<<END-SUMMARY-DRAFT>>>");
+    expect(skill).toContain("Assistant prose streams token-by-token to the UI; tool-call arguments do not");
+    expect(skill).toContain("UI gracefully falls back to its spinner");
+    expect(skill).toContain("**Review:**");
+    expect(skill).toContain("approve on a skim");
+    expect(skill).toContain("**Recent work:**");
+    expect(skill).toContain("Not a changelog");
+  });
+
   it("keeps repo and catalog skill descriptions within the prompt budget cap", () => {
     const violations: string[] = [];
     for (const skillFile of SKILL_FRONTMATTER_ROOTS.flatMap(listSkillFiles)) {

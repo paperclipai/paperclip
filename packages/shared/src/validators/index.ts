@@ -94,6 +94,18 @@ export {
   updateResourceMembershipSchema,
   type UpdateResourceMembership,
 } from "./resource-memberships.js";
+export {
+  generateSummarySlotSchema,
+  summarySlotKeySchema,
+  summarySlotQuerySchema,
+  summarySlotScopeKindSchema,
+  summarySlotScopeSelectorSchema,
+  summarySlotStatusSchema,
+  writeSummarySlotSchema,
+  type GenerateSummarySlotInput,
+  type SummarySlotScopeSelectorInput,
+  type WriteSummarySlotInput,
+} from "./summary-slot.js";
 
 export {
   externalObjectStatusCategorySchema,
