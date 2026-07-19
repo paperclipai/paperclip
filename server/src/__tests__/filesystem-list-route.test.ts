@@ -104,6 +104,33 @@ describe("GET /filesystem/list", () => {
     expect(atRoot.body.parent).toBeNull();
   });
 
+  it("allows navigation when the home directory is a symlink", async () => {
+    if (process.platform === "win32") return;
+
+    const canonicalHome = path.join(fixture.root, "canonical-home");
+    const canonicalProjects = path.join(canonicalHome, "projects");
+    const symlinkedHome = path.join(fixture.root, "symlinked-home");
+    await fs.mkdir(canonicalProjects, { recursive: true });
+    await fs.symlink(canonicalHome, symlinkedHome, "dir");
+    process.env.HOME = symlinkedHome;
+
+    const nested = await request(createApp("local_trusted"))
+      .get("/api/filesystem/list")
+      .query({ path: path.join(symlinkedHome, "projects") });
+
+    expect(nested.status).toBe(200);
+    expect(nested.body.path).toBe(canonicalProjects);
+    expect(nested.body.parent).toBe(canonicalHome);
+
+    const atRoot = await request(createApp("local_trusted"))
+      .get("/api/filesystem/list")
+      .query({ path: nested.body.parent });
+
+    expect(atRoot.status).toBe(200);
+    expect(atRoot.body.path).toBe(canonicalHome);
+    expect(atRoot.body.parent).toBeNull();
+  });
+
   it("rejects denied paths", async () => {
     if (process.platform === "win32") return;
 

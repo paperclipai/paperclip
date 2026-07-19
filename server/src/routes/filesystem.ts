@@ -52,6 +52,10 @@ async function listFilesystemRoots() {
   return uniquePaths([os.homedir()]);
 }
 
+async function resolveFilesystemRoots(roots: string[]) {
+  return uniquePaths(await Promise.all(roots.map((rootPath) => fs.realpath(rootPath))));
+}
+
 function normalizeRequestedPath(requestedPath: string) {
   return path.resolve(requestedPath);
 }
@@ -141,7 +145,7 @@ async function listDirectoryEntries(directoryPath: string) {
 }
 
 async function listRootsResponse(): Promise<FilesystemListResponse> {
-  const roots = await listFilesystemRoots();
+  const roots = await resolveFilesystemRoots(await listFilesystemRoots());
   return {
     path: "",
     parent: null,
@@ -178,7 +182,9 @@ export function filesystemRoutes(opts: { deploymentMode: DeploymentMode }) {
 
     const requestedPath = normalizeRequestedPath(rawPath);
     const roots = await listFilesystemRoots();
-    if (!roots.some((rootPath) => isPathWithinRoot(requestedPath, rootPath))) {
+    const resolvedRoots = await resolveFilesystemRoots(roots);
+    const requestedPathRoots = uniquePaths([...roots, ...resolvedRoots]);
+    if (!requestedPathRoots.some((rootPath) => isPathWithinRoot(requestedPath, rootPath))) {
       throw forbidden("Path is outside the allowed filesystem roots");
     }
 
@@ -190,7 +196,7 @@ export function filesystemRoutes(opts: { deploymentMode: DeploymentMode }) {
     // this, a symlink inside an allowed root whose target escapes the root
     // (e.g. ~/escape -> /var/secrets) would pass the pre-resolution root check
     // and expose out-of-root contents.
-    if (!roots.some((rootPath) => isPathWithinRoot(resolvedPath, rootPath))) {
+    if (!resolvedRoots.some((rootPath) => isPathWithinRoot(resolvedPath, rootPath))) {
       throw forbidden("Resolved path is outside the allowed filesystem roots");
     }
 
@@ -202,7 +208,7 @@ export function filesystemRoutes(opts: { deploymentMode: DeploymentMode }) {
     const rawParent = pathParent(resolvedPath);
     const parent =
       rawParent !== null &&
-      roots.some((rootPath) => isPathWithinRoot(rawParent, rootPath))
+      resolvedRoots.some((rootPath) => isPathWithinRoot(rawParent, rootPath))
         ? rawParent
         : null;
 
