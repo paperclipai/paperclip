@@ -117,6 +117,7 @@ export function acquireControlPlaneLock(opts: {
 
   mkdirSync(dirname(lockPath), { recursive: true });
 
+  let lastErr: unknown;
   for (let attempt = 0; attempt < 5; attempt += 1) {
     try {
       const fd = openSync(lockPath, "wx");
@@ -180,18 +181,21 @@ export function acquireControlPlaneLock(opts: {
       ) {
         try {
           rmSync(lockPath, { force: true });
-        } catch {
+        } catch (e) {
+          lastErr = e;
           // Contended remove — loop and retry exclusive create.
         }
       } else if (!confirmed) {
         try {
           rmSync(lockPath, { force: true });
-        } catch {
+        } catch (e) {
+          lastErr = e;
           // Contended remove — loop and retry exclusive create.
         }
       }
     }
   }
 
-  throw new Error(`Failed to acquire Paperclip control-plane lock at ${lockPath}`);
+  const cause = lastErr instanceof Error ? `: ${lastErr.message}` : "";
+  throw new Error(`Failed to acquire Paperclip control-plane lock at ${lockPath}${cause}`);
 }
