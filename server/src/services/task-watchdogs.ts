@@ -227,6 +227,7 @@ function canonicalizeJson(value: unknown): unknown {
 function taskWatchdogMutationDigest(input: TaskWatchdogSourceMutationRequest) {
   return createHash("sha256")
     .update(JSON.stringify(canonicalizeJson({
+      operationKind: input.operationKind,
       method: input.method.toUpperCase(),
       path: input.path,
       targetIssueId: input.targetIssueId,
@@ -245,9 +246,38 @@ function readTaskWatchdogMutationReceipt(value: unknown): TaskWatchdogMutationRe
     typeof receipt.oldFingerprint !== "string" ||
     (receipt.newFingerprint !== null && typeof receipt.newFingerprint !== "string") ||
     (receipt.cursorState !== "open" && receipt.cursorState !== "sealed") ||
+    !isTaskWatchdogMutationReceiptResult(receipt.operationKind, receipt.result) ||
     typeof receipt.committedAt !== "string"
   ) return null;
   return receipt as TaskWatchdogMutationReceipt;
+}
+
+function isTaskWatchdogMutationReceiptResult(operationKind: unknown, value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const result = value as Record<string, unknown>;
+  switch (operationKind) {
+    case "product_bug_followup_create":
+      return typeof result.issueId === "string" &&
+        (result.deduplicationReason === undefined ||
+          result.deduplicationReason === "idempotency_key" ||
+          result.deduplicationReason === "recent_open_title");
+    case "issue_child_create":
+      return typeof result.childIssueId === "string" && typeof result.parentBlockerAdded === "boolean";
+    case "accepted_plan_decomposition":
+      return !!result.decomposition &&
+        typeof result.decomposition === "object" &&
+        Array.isArray(result.childIssueIds) &&
+        result.childIssueIds.every((id) => typeof id === "string") &&
+        Array.isArray(result.newlyCreatedChildIssueIds) &&
+        result.newlyCreatedChildIssueIds.every((id) => typeof id === "string");
+    case "issue_update":
+      return typeof result.issueId === "string" &&
+        (result.commentId === null || typeof result.commentId === "string");
+    case "issue_comment":
+      return typeof result.commentId === "string";
+    default:
+      return false;
+  }
 }
 
 function normalizeInstructions(value: string | null | undefined): string | null {
@@ -1586,6 +1616,9 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
       }
 
       const priorReceipt = readTaskWatchdogMutationReceipt(cursor.lastMutationReceipt);
+      if (cursor.lastMutationReceipt !== null && !priorReceipt) {
+        throw forbidden("Task-watchdog recovery cursor contains an invalid mutation receipt.");
+      }
       if (priorReceipt?.digest === digest) {
         return { replayed: true as const, value: null, receipt: priorReceipt };
       }
