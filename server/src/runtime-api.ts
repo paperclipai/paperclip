@@ -127,7 +127,7 @@ export function buildRuntimeApiCandidateUrls(input: {
       return null;
     }
   })();
-  const protocol = explicitOrigin ? new URL(explicitOrigin).protocol : "http:";
+  const callbackProtocol = "http:";
 
   pushCandidate(candidates, seen, input.preferredApiUrl);
   pushCandidate(candidates, seen, explicitOrigin);
@@ -135,23 +135,23 @@ export function buildRuntimeApiCandidateUrls(input: {
   for (const rawHost of input.allowedHostnames) {
     const host = normalizeHost(rawHost);
     if (!host) continue;
-    pushCandidate(candidates, seen, formatOrigin(protocol, host, input.port));
+    pushCandidate(candidates, seen, formatOrigin(callbackProtocol, host, input.port));
   }
 
   const bindHost = normalizeHost(input.bindHost);
   if (bindHost && !isWildcardHost(bindHost)) {
-    pushCandidate(candidates, seen, formatOrigin(protocol, bindHost, input.port));
+    pushCandidate(candidates, seen, formatOrigin(callbackProtocol, bindHost, input.port));
   }
 
   if (explicitOrigin) {
     const hostname = new URL(explicitOrigin).hostname;
     if (isLoopbackHost(hostname)) {
-      pushCandidate(candidates, seen, formatOrigin(protocol, "host.docker.internal", input.port));
+      pushCandidate(candidates, seen, formatOrigin(callbackProtocol, "host.docker.internal", input.port));
     }
   }
 
   for (const host of collectReachableInterfaceHosts({ networkInterfacesMap: input.networkInterfacesMap })) {
-    pushCandidate(candidates, seen, formatOrigin(protocol, host, input.port));
+    pushCandidate(candidates, seen, formatOrigin(callbackProtocol, host, input.port));
   }
 
   if (candidates.length === 0) {

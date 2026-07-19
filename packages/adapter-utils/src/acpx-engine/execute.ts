@@ -196,12 +196,46 @@ function resolveManagedCodexHomeDir(companyId: string): string {
 // npm/pnpm binary hoisting in packaged installs while preserving monorepo dev.
 export async function findAncestorBin(startDir: string, binName: string): Promise<string | null> {
   let current = path.resolve(startDir);
+  let preferredClaudeBin: string | null = null;
   while (true) {
     const candidate = path.join(current, "node_modules", ".bin", binName);
-    if (await pathExists(candidate)) return candidate;
+    if (await pathExists(candidate)) {
+      const healthy = await claudeAcpWrapperEntrypointHealthy(candidate);
+      if (healthy !== false) {
+        if (binName !== "claude-agent-acp") return candidate;
+        preferredClaudeBin = candidate;
+      }
+    }
     const parent = path.dirname(current);
-    if (parent === current) return null;
+    if (parent === current) return preferredClaudeBin;
     current = parent;
+  }
+}
+
+async function claudeAcpWrapperEntrypointHealthy(commandPath: string): Promise<boolean | null> {
+  if (path.basename(commandPath) !== "claude-agent-acp") return null;
+  try {
+    const raw = await fs.readFile(commandPath, "utf8");
+    const match = raw.match(/\$basedir\/([^"\n]*@agentclientprotocol\/claude-agent-acp\/dist\/index\.js)/);
+    if (!match) return null;
+    const entrypointPath = path.resolve(path.dirname(commandPath), match[1]);
+    return pathExists(entrypointPath);
+  } catch {
+    return null;
+  }
+}
+
+async function resolveClaudeAcpDirectCommandShell(commandPath: string): Promise<string | null> {
+  if (path.basename(commandPath) !== "claude-agent-acp") return null;
+  try {
+    const raw = await fs.readFile(commandPath, "utf8");
+    const match = raw.match(/\$basedir\/([^"\n]*@agentclientprotocol\/claude-agent-acp\/dist\/index\.js)/);
+    if (!match) return null;
+    const entrypointPath = path.resolve(path.dirname(commandPath), match[1]);
+    if (!(await pathExists(entrypointPath))) return null;
+    return `node ${shellQuote(entrypointPath)}`;
+  } catch {
+    return null;
   }
 }
 
@@ -225,6 +259,10 @@ async function resolveBuiltInAgentCommand(input: {
     return { command: binName, shellCommand: binName };
   }
   const resolved = (await findAncestorBin(packageRootDir, binName)) ?? binName;
+  if (agent === "claude" && (path.isAbsolute(resolved) || resolved.includes("/"))) {
+    const directShell = await resolveClaudeAcpDirectCommandShell(resolved);
+    if (directShell) return { command: directShell, shellCommand: directShell };
+  }
   return { command: resolved, shellCommand: shellQuote(resolved) };
 }
 

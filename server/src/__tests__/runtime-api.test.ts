@@ -87,7 +87,35 @@ describe("runtime API discovery", () => {
     ).toEqual([
       "https://agent-entry.example.test",
       "https://paperclip.example.test",
-      "https://198.51.100.10:3102",
+      "http://198.51.100.10:3102",
+    ]);
+  });
+
+  it("keeps host-derived callback candidates on plain http even when the public base URL is https", () => {
+    expect(
+      buildRuntimeApiCandidateUrls({
+        authPublicBaseUrl: "https://paperclip.example.test/app",
+        allowedHostnames: ["192.168.1.50"],
+        bindHost: "127.0.0.1",
+        port: 3102,
+        networkInterfacesMap: {
+          en0: [
+            {
+              address: "203.0.113.42",
+              family: "IPv4",
+              internal: false,
+              netmask: "255.255.255.0",
+              cidr: "203.0.113.42/24",
+              mac: "00:00:00:00:00:00",
+            },
+          ],
+        },
+      }),
+    ).toEqual([
+      "https://paperclip.example.test",
+      "http://192.168.1.50:3102",
+      "http://127.0.0.1:3102",
+      "http://203.0.113.42:3102",
     ]);
   });
 

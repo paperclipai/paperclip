@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createServer } from "node:http";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -532,6 +533,187 @@ describe("codex execute", () => {
       else process.env.HOME = previousHome;
       if (previousPath === undefined) delete process.env.PATH;
       else process.env.PATH = previousPath;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("selects a reachable Paperclip API URL for issue-run preflight and rewrites managed MCP base URLs", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-preflight-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    const capturePath = path.join(root, "capture.json");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFakeCodexCommand(commandPath);
+
+    const previousHome = process.env.HOME;
+    const previousPaperclipApiUrl = process.env.PAPERCLIP_API_URL;
+    const previousPaperclipRuntimeApiUrl = process.env.PAPERCLIP_RUNTIME_API_URL;
+    const previousPaperclipRuntimeApiCandidates = process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
+    process.env.HOME = root;
+    await seedSharedCodexAuth(root);
+
+    const requests: Array<{ authorization: string | null }> = [];
+    const server = createServer((req, res) => {
+      if (req.url === "/api/agents/me") {
+        requests.push({ authorization: req.headers.authorization ?? null });
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ id: "agent-1" }));
+        return;
+      }
+      res.writeHead(404, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "not_found" }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Expected preflight test server to expose a TCP port");
+    }
+    const reachableApiUrl = `http://127.0.0.1:${address.port}`;
+    process.env.PAPERCLIP_API_URL = "http://127.0.0.1:9";
+    process.env.PAPERCLIP_RUNTIME_API_URL = "http://127.0.0.1:9";
+    process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = JSON.stringify([
+      "http://127.0.0.1:9",
+      reachableApiUrl,
+    ]);
+
+    try {
+      const result = await execute({
+        runId: "run-paperclip-preflight",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: { engine: "cli" },
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          engine: "cli",
+          command: commandPath,
+          cwd: workspace,
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          },
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        runtimeMcp: {
+          getServers: () => [
+            {
+              name: "github",
+              url: "/api/tool-gateway/gateways/gateway-1/mcp",
+              token: "pcgw_secret-managed-token",
+              connectionId: "connection-github",
+            },
+          ],
+        },
+        context: {
+          taskId: "issue-1",
+          paperclipWorkspace: {
+            source: "agent_home",
+            cwd: workspace,
+          },
+        },
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.errorCode).toBeNull();
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      expect(capture.paperclipApiUrl).toBe(reachableApiUrl);
+      expect(capture.codexConfigContents).toContain(
+        `url = "${reachableApiUrl}/api/tool-gateway/gateways/gateway-1/mcp"`,
+      );
+      expect(requests).toEqual([{ authorization: "Bearer run-jwt-token" }]);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousPaperclipApiUrl === undefined) delete process.env.PAPERCLIP_API_URL;
+      else process.env.PAPERCLIP_API_URL = previousPaperclipApiUrl;
+      if (previousPaperclipRuntimeApiUrl === undefined) delete process.env.PAPERCLIP_RUNTIME_API_URL;
+      else process.env.PAPERCLIP_RUNTIME_API_URL = previousPaperclipRuntimeApiUrl;
+      if (previousPaperclipRuntimeApiCandidates === undefined) delete process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
+      else process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = previousPaperclipRuntimeApiCandidates;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("fails fast when no Paperclip API candidate is reachable for an issue run", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-preflight-fail-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    const capturePath = path.join(root, "capture.json");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFakeCodexCommand(commandPath);
+
+    const previousHome = process.env.HOME;
+    const previousPaperclipApiUrl = process.env.PAPERCLIP_API_URL;
+    const previousPaperclipRuntimeApiUrl = process.env.PAPERCLIP_RUNTIME_API_URL;
+    const previousPaperclipRuntimeApiCandidates = process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
+    process.env.HOME = root;
+    await seedSharedCodexAuth(root);
+    process.env.PAPERCLIP_API_URL = "http://127.0.0.1:9";
+    process.env.PAPERCLIP_RUNTIME_API_URL = "http://127.0.0.1:9";
+    process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = JSON.stringify([
+      "http://127.0.0.1:9",
+      "http://127.0.0.1:10",
+    ]);
+
+    try {
+      const result = await execute({
+        runId: "run-paperclip-preflight-fail",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: { engine: "cli" },
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          engine: "cli",
+          command: commandPath,
+          cwd: workspace,
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          },
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {
+          taskId: "issue-1",
+          paperclipWorkspace: {
+            source: "agent_home",
+            cwd: workspace,
+          },
+        },
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(1);
+      expect(result.errorCode).toBe("paperclip_control_plane_unreachable");
+      expect(result.errorMessage).toContain("Paperclip control-plane preflight failed");
+      await expect(fs.readFile(capturePath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousPaperclipApiUrl === undefined) delete process.env.PAPERCLIP_API_URL;
+      else process.env.PAPERCLIP_API_URL = previousPaperclipApiUrl;
+      if (previousPaperclipRuntimeApiUrl === undefined) delete process.env.PAPERCLIP_RUNTIME_API_URL;
+      else process.env.PAPERCLIP_RUNTIME_API_URL = previousPaperclipRuntimeApiUrl;
+      if (previousPaperclipRuntimeApiCandidates === undefined) delete process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
+      else process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = previousPaperclipRuntimeApiCandidates;
       await fs.rm(root, { recursive: true, force: true });
     }
   });

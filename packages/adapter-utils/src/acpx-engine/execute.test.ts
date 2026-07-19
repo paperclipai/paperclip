@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
@@ -1370,6 +1371,23 @@ describe("findAncestorBin", () => {
     return binPath;
   }
 
+  async function writeBrokenClaudeBin(dir: string) {
+    const binDir = path.join(dir, "node_modules", ".bin");
+    await fs.mkdir(binDir, { recursive: true });
+    const binPath = path.join(binDir, "claude-agent-acp");
+    await fs.writeFile(
+      binPath,
+      [
+        "#!/usr/bin/env bash",
+        'basedir=$(dirname "$0")',
+        'exec node "$basedir/../@agentclientprotocol/claude-agent-acp/dist/index.js" "$@"',
+        "",
+      ].join("\n"),
+      { mode: 0o755 },
+    );
+    return binPath;
+  }
+
   it("finds the binary in the start directory's own node_modules/.bin", async () => {
     const root = await makeTempRoot();
     const packageDir = path.join(root, "node_modules", "@paperclipai", "adapter-utils");
@@ -1381,10 +1399,34 @@ describe("findAncestorBin", () => {
     expect(resolved).toBe(expectedBin);
   });
 
+  it("prefers the hoisted claude-agent-acp wrapper when both package-local and ancestor bins exist", async () => {
+    const root = await makeTempRoot();
+    const packageDir = path.join(root, "node_modules", "@paperclipai", "adapter-utils");
+    await fs.mkdir(packageDir, { recursive: true });
+    await writeFakeBin(packageDir, "claude-agent-acp");
+    const expectedBin = await writeFakeBin(root, "claude-agent-acp");
+
+    const resolved = await findAncestorBin(packageDir, "claude-agent-acp");
+
+    expect(resolved).toBe(expectedBin);
+  });
+
   it("finds the binary hoisted to an ancestor node_modules/.bin", async () => {
     const root = await makeTempRoot();
     const packageDir = path.join(root, "node_modules", "@paperclipai", "adapter-utils");
     await fs.mkdir(packageDir, { recursive: true });
+    const expectedBin = await writeFakeBin(root, "claude-agent-acp");
+
+    const resolved = await findAncestorBin(packageDir, "claude-agent-acp");
+
+    expect(resolved).toBe(expectedBin);
+  });
+
+  it("skips a broken package-local claude-agent-acp wrapper and falls back to a healthy ancestor bin", async () => {
+    const root = await makeTempRoot();
+    const packageDir = path.join(root, "node_modules", "@paperclipai", "adapter-utils");
+    await fs.mkdir(packageDir, { recursive: true });
+    await writeBrokenClaudeBin(packageDir);
     const expectedBin = await writeFakeBin(root, "claude-agent-acp");
 
     const resolved = await findAncestorBin(packageDir, "claude-agent-acp");
@@ -1450,6 +1492,39 @@ describe("gemini ACP flag selection", () => {
     expect(scriptName).toBeTypeOf("string");
     return fs.readFile(path.join(wrappersDir, scriptName!), "utf8");
   }
+
+  it("writes Claude wrappers against the resolved ACP entrypoint instead of the package-local .bin shim", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const realClaudePackageRoot = path.resolve(
+      path.dirname(fileURLToPath(import.meta.url)),
+      "../../../adapters/claude-local",
+    );
+    const execute = createAcpxEngineExecutor({
+      packageRootDir: realClaudePackageRoot,
+      createRuntime: () => buildRuntime() as never,
+    });
+
+    const result = await execute({
+      runId: "run-claude-wrapper-1",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: {
+        agent: "claude",
+        stateDir,
+        env: { HOME: path.join(root, "home") },
+      },
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+    } as never);
+
+    expect(result.exitCode).toBe(0);
+    const script = await readGeminiWrapperScript(stateDir);
+    expect(script).toContain('exec node ');
+    expect(script).toContain('@agentclientprotocol/claude-agent-acp/dist/index.js');
+    expect(script).not.toContain('/packages/adapters/claude-local/node_modules/.bin/claude-agent-acp');
+  });
 
   it("writes a gemini wrapper that execs a multi-word command instead of a single quoted token", async () => {
     const root = await makeTempRoot();
