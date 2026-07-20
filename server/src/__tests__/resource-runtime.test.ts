@@ -126,6 +126,15 @@ describeEmbeddedPostgres("resourceRuntimeService", () => {
     await fs.writeFile(path.join(mixedRefWorkspace, "resources", "context", "context.md"), "mixed-ref\n", "utf8");
     await expect(mixedRefPrepared!.publish()).resolves.toMatchObject([{ status: "pushed", targetRef: "main" }]);
 
+    const sourceTargetOnlySeedPath = path.join(fixtureRoot, "source-target-only-seed");
+    await git(["clone", "--branch", "main", remotePath, sourceTargetOnlySeedPath]);
+    await git(["config", "user.name", "Fixture"], sourceTargetOnlySeedPath);
+    await git(["config", "user.email", "fixture@example.com"], sourceTargetOnlySeedPath);
+    await fs.writeFile(path.join(sourceTargetOnlySeedPath, "nested", "target-only.md"), "preserve source target file\n", "utf8");
+    await git(["add", "nested/target-only.md"], sourceTargetOnlySeedPath);
+    await git(["commit", "-m", "add source target-only file"], sourceTargetOnlySeedPath);
+    await git(["push", "origin", "main"], sourceTargetOnlySeedPath);
+
     const sourcePathWorkspace = path.join(fixtureRoot, "source-path-rebase-workspace");
     const sourcePathPrepared = await resourceRuntimeService(db).prepare({
       companyId,
@@ -138,6 +147,7 @@ describeEmbeddedPostgres("resourceRuntimeService", () => {
     const sourcePathCheck = path.join(fixtureRoot, "source-path-rebase-check");
     await git(["clone", "--branch", "main", remotePath, sourcePathCheck]);
     expect(await fs.readFile(path.join(sourcePathCheck, "nested", "context.md"), "utf8")).toBe("nested-after-rebase\n");
+    expect(await fs.readFile(path.join(sourcePathCheck, "nested", "target-only.md"), "utf8")).toBe("preserve source target file\n");
 
     const targetOnlySeedPath = path.join(fixtureRoot, "target-only-seed");
     await git(["clone", "--branch", "main", remotePath, targetOnlySeedPath]);

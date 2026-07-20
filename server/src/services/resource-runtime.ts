@@ -244,6 +244,53 @@ async function applyFullTreeChanges(input: {
   }
 }
 
+async function applyScopedTreeChanges(input: {
+  repoPath: string;
+  sourceRoot: string;
+  destinationRoot: string;
+  gitPrefix: string;
+  expectedCommit: string;
+  baselineCommit: string;
+  trackedChanges: WorkingTreeChange[];
+  untrackedPaths: string[];
+  env: NodeJS.ProcessEnv;
+}) {
+  const prefix = input.gitPrefix.replaceAll(path.sep, "/").replace(/\/$/, "");
+  const relativePath = (gitPath: string) => {
+    const normalized = gitPath.replaceAll(path.sep, "/");
+    if (normalized === prefix) return "";
+    if (!normalized.startsWith(`${prefix}/`)) throw unprocessable(`Unsafe Git path: ${gitPath}`);
+    return normalized.slice(prefix.length + 1);
+  };
+
+  for (const change of input.trackedChanges) {
+    const relative = relativePath(change.relativePath);
+    assertSafeRepositoryPath(relative);
+    const gitPath = `${prefix}/${relative}`;
+    const expectedHash = await commitPathHash(input.repoPath, input.expectedCommit, gitPath, input.env);
+    const baselineHash = await commitPathHash(input.repoPath, input.baselineCommit, gitPath, input.env);
+    if (expectedHash !== baselineHash) throw conflict(`Resource file changed across refs: ${gitPath}`);
+    const destination = path.join(input.destinationRoot, relative);
+    if (change.status === "D") {
+      await fs.rm(destination, { force: true });
+      continue;
+    }
+    await fs.mkdir(path.dirname(destination), { recursive: true });
+    await fs.cp(path.join(input.sourceRoot, relative), destination, { recursive: true, force: true });
+  }
+
+  for (const gitPath of input.untrackedPaths) {
+    const relative = relativePath(gitPath);
+    assertSafeRepositoryPath(relative);
+    if (await commitPathHash(input.repoPath, input.baselineCommit, gitPath, input.env)) {
+      throw conflict(`Resource file changed across refs: ${gitPath}`);
+    }
+    const destination = path.join(input.destinationRoot, relative);
+    await fs.mkdir(path.dirname(destination), { recursive: true });
+    await fs.cp(path.join(input.sourceRoot, relative), destination, { recursive: true, force: true });
+  }
+}
+
 function resourceEnvKey(resourceKey: string) {
   return `BIZBOX_RESOURCE_${resourceKey.replace(/[^A-Za-z0-9]+/g, "_").toUpperCase()}_PATH`;
 }
@@ -551,19 +598,35 @@ export function resourceRuntimeService(db: Db) {
             const outputSnapshotPath = rebasingOutput
               ? path.join(stagingRoot, ".output-snapshots", item.resource.id)
               : null;
-            const trackedChanges = outputSnapshotPath && !item.resource.sourcePath
-              ? parseWorkingTreeChanges(await runGit(["diff", "--name-status", "--no-renames", "-z", item.expectedCommit!, "--"], { cwd: item.repoPath, env }))
-              : null;
-            const untrackedPaths = outputSnapshotPath && !item.resource.sourcePath
-              ? (await runGit(["ls-files", "--others", "--exclude-standard"], { cwd: item.repoPath, env })).split("\n").filter(Boolean)
-              : [];
+            let trackedChanges: WorkingTreeChange[] | null = null;
+            let untrackedPaths: string[] = [];
             if (outputSnapshotPath) {
               await fs.rm(outputSnapshotPath, { recursive: true, force: true });
               await fs.mkdir(outputSnapshotPath, { recursive: true });
-              await copyWorkingTreeContents(item.repoPath, outputSnapshotPath);
+              if (item.resource.sourcePath) {
+                await copyResourceTree(item.mountPath, path.join(item.repoPath, item.resource.sourcePath));
+                trackedChanges = parseWorkingTreeChanges(await runGit(["diff", "--name-status", "--no-renames", "-z", item.expectedCommit!, "--", item.resource.sourcePath], { cwd: item.repoPath, env }));
+                untrackedPaths = (await runGit(["ls-files", "--others", "--exclude-standard", "--", item.resource.sourcePath], { cwd: item.repoPath, env })).split("\n").filter(Boolean);
+              } else {
+                await copyWorkingTreeContents(item.repoPath, outputSnapshotPath);
+                trackedChanges = parseWorkingTreeChanges(await runGit(["diff", "--name-status", "--no-renames", "-z", item.expectedCommit!, "--"], { cwd: item.repoPath, env }));
+                untrackedPaths = (await runGit(["ls-files", "--others", "--exclude-standard"], { cwd: item.repoPath, env })).split("\n").filter(Boolean);
+              }
               await runGit(["reset", "--hard", item.outputBaselineCommit!], { cwd: item.repoPath, env });
               await runGit(["clean", "-fd"], { cwd: item.repoPath, env });
-              if (!item.resource.sourcePath) {
+              if (item.resource.sourcePath) {
+                await applyScopedTreeChanges({
+                  repoPath: item.repoPath,
+                  sourceRoot: item.mountPath,
+                  destinationRoot: path.join(item.repoPath, item.resource.sourcePath),
+                  gitPrefix: item.resource.sourcePath,
+                  expectedCommit: item.expectedCommit,
+                  baselineCommit: item.outputBaselineCommit!,
+                  trackedChanges: trackedChanges ?? [],
+                  untrackedPaths,
+                  env,
+                });
+              } else {
                 await applyFullTreeChanges({
                   repoPath: item.repoPath,
                   snapshotPath: outputSnapshotPath,
@@ -575,7 +638,7 @@ export function resourceRuntimeService(db: Db) {
                 });
               }
             }
-            if (item.resource.sourcePath) {
+            if (item.resource.sourcePath && !outputSnapshotPath) {
               await copyResourceTree(item.mountPath, path.join(item.repoPath, item.resource.sourcePath));
             }
             const status = await runGit(["status", "--porcelain"], { cwd: item.repoPath, env });
