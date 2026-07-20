@@ -37,6 +37,58 @@ export type ResolveRecoveryActionResponse = {
   recoveryAction: IssueRecoveryAction;
 };
 
+export const DEPLOY_AUTHORIZATION_ISSUED_EVENT = "paperclip:deploy-authorization-issued";
+
+export type OneTimeDeployAuthorization = {
+  id: string;
+  candidateId: string;
+  token: string;
+  tokenReturnedOnce: true;
+  alreadyIssued: boolean;
+  targetHost: string;
+  imageDigest: string;
+  environment: string;
+  sequence: number;
+  expiresAt: string;
+};
+
+type AcceptInteractionApiResponse =
+  | IssueThreadInteraction
+  | {
+      interaction: IssueThreadInteraction;
+      deployAuthorization: Omit<OneTimeDeployAuthorization, "token" | "tokenReturnedOnce"> & {
+        token: string | null;
+        tokenReturnedOnce: boolean;
+      };
+    };
+
+function isWrappedAcceptInteractionResponse(
+  response: AcceptInteractionApiResponse,
+): response is Extract<AcceptInteractionApiResponse, { interaction: IssueThreadInteraction }> {
+  return "interaction" in response && "deployAuthorization" in response;
+}
+
+async function acceptInteraction(
+  id: string,
+  interactionId: string,
+  data?: { selectedClientKeys?: string[]; selectedOptionIds?: string[] },
+) {
+  const response = await api.post<AcceptInteractionApiResponse>(
+    `/issues/${id}/interactions/${interactionId}/accept`,
+    data ?? {},
+  );
+  if (!isWrappedAcceptInteractionResponse(response)) return response;
+
+  const authorization = response.deployAuthorization;
+  if (typeof window !== "undefined" && authorization.tokenReturnedOnce && authorization.token) {
+    window.dispatchEvent(new CustomEvent<OneTimeDeployAuthorization>(
+      DEPLOY_AUTHORIZATION_ISSUED_EVENT,
+      { detail: { ...authorization, token: authorization.token, tokenReturnedOnce: true } },
+    ));
+  }
+  return response.interaction;
+}
+
 export type IssueListFilters = {
   attention?: "blocked";
   status?: string;
@@ -240,8 +292,7 @@ export const issuesApi = {
     id: string,
     interactionId: string,
     data?: { selectedClientKeys?: string[]; selectedOptionIds?: string[] },
-  ) =>
-    api.post<IssueThreadInteraction>(`/issues/${id}/interactions/${interactionId}/accept`, data ?? {}),
+  ) => acceptInteraction(id, interactionId, data),
   rejectInteraction: (id: string, interactionId: string, reason?: string) =>
     api.post<IssueThreadInteraction>(`/issues/${id}/interactions/${interactionId}/reject`, reason ? { reason } : {}),
   cancelInteraction: (id: string, interactionId: string, reason?: string) =>

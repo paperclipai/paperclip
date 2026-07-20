@@ -1,3 +1,5 @@
+// @vitest-environment jsdom
+
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockApi = vi.hoisted(() => ({
@@ -9,7 +11,7 @@ vi.mock("./client", () => ({
   api: mockApi,
 }));
 
-import { issuesApi } from "./issues";
+import { DEPLOY_AUTHORIZATION_ISSUED_EVENT, issuesApi } from "./issues";
 
 describe("issuesApi.list", () => {
   beforeEach(() => {
@@ -108,5 +110,51 @@ describe("issuesApi.list", () => {
         sourceIssueStatus: "done",
       },
     );
+  });
+
+  it("surfaces a one-time deploy authorization and returns the accepted interaction", async () => {
+    const interaction = {
+      id: "interaction-1",
+      companyId: "company-1",
+      issueId: "issue-1",
+      kind: "request_confirmation",
+      status: "accepted",
+    };
+    const deployAuthorization = {
+      id: "authorization-1",
+      candidateId: "candidate-1",
+      token: "one-time-secret-token",
+      tokenReturnedOnce: true,
+      alreadyIssued: false,
+      targetHost: "srv1749248",
+      imageDigest: "ghcr.io/backbond/scanner@sha256:abc",
+      environment: "production",
+      sequence: 21,
+      expiresAt: "2026-07-21T00:00:00.000Z",
+    };
+    mockApi.post.mockResolvedValue({ interaction, deployAuthorization });
+    const listener = vi.fn();
+    window.addEventListener(DEPLOY_AUTHORIZATION_ISSUED_EVENT, listener);
+
+    const result = await issuesApi.acceptInteraction("issue-1", "interaction-1");
+
+    expect(result).toBe(interaction);
+    expect(listener).toHaveBeenCalledOnce();
+    expect((listener.mock.calls[0]?.[0] as CustomEvent).detail).toEqual(deployAuthorization);
+    window.removeEventListener(DEPLOY_AUTHORIZATION_ISSUED_EVENT, listener);
+  });
+
+  it("does not emit an event when an authorization token was already issued", async () => {
+    const interaction = { id: "interaction-1" };
+    mockApi.post.mockResolvedValue({
+      interaction,
+      deployAuthorization: { token: null, tokenReturnedOnce: false },
+    });
+    const listener = vi.fn();
+    window.addEventListener(DEPLOY_AUTHORIZATION_ISSUED_EVENT, listener);
+
+    expect(await issuesApi.acceptInteraction("issue-1", "interaction-1")).toBe(interaction);
+    expect(listener).not.toHaveBeenCalled();
+    window.removeEventListener(DEPLOY_AUTHORIZATION_ISSUED_EVENT, listener);
   });
 });
