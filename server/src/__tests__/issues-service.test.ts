@@ -5885,3 +5885,91 @@ describeEmbeddedPostgres("issueService.assertCheckoutOwner stale checkout adopti
   });
 
 });
+
+describeEmbeddedPostgres("issueService.addComment createdByRunId", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  let companyId!: string;
+  let agentId!: string;
+  let issueId!: string;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-comment-runid-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+
+    companyId = randomUUID();
+    agentId = randomUUID();
+    issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "TestAgent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Test issue",
+      status: "todo",
+      priority: "medium",
+    });
+  }, 20_000);
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function createdByRunIdFor(commentId: string) {
+    return db
+      .select({ createdByRunId: issueComments.createdByRunId })
+      .from(issueComments)
+      .where(eq(issueComments.id, commentId))
+      .then((rows) => rows[0]?.createdByRunId ?? null);
+  }
+
+  it("nulls out a non-UUID x-paperclip-run-id instead of 500-ing", async () => {
+    const comment = await svc.addComment(issueId, "hello from a synthetic run id", {
+      runId: "client-request-abc123",
+    });
+
+    expect(comment.id).toBeTruthy();
+    expect(await createdByRunIdFor(comment.id)).toBeNull();
+  });
+
+  it("nulls out a UUID runId absent from heartbeat_runs instead of 500-ing", async () => {
+    const comment = await svc.addComment(issueId, "hello from a stale run", {
+      runId: randomUUID(),
+    });
+
+    expect(comment.id).toBeTruthy();
+    expect(await createdByRunIdFor(comment.id)).toBeNull();
+  });
+
+  it("preserves a valid runId that exists in heartbeat_runs for the company", async () => {
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+    });
+
+    const comment = await svc.addComment(issueId, "hello from a live run", { runId });
+
+    expect(await createdByRunIdFor(comment.id)).toBe(runId);
+  });
+});

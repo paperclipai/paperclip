@@ -272,9 +272,8 @@ type DerivedIssueCommentAttribution = {
 };
 
 /**
- * Resolve a comment `created_by_run_id` that is safe for the heartbeat_runs FK.
- * Board/session requests often set X-Paperclip-Run-Id to non-run UUIDs or
- * synthetic strings; those must not fail comment inserts with a 500.
+ * Resolve a `created_by_run_id` safe for the heartbeat_runs FK; returns null for
+ * missing/invalid ids so an unknown run id never 500s a comment insert.
  */
 async function resolveCommentCreatedByRunId(
   dbOrTx: any,
@@ -7104,9 +7103,7 @@ export function issueService(db: Db) {
       const presentation = issueCommentPresentationSchema.nullable().parse(options?.presentation ?? null);
       const metadata = issueCommentMetadataSchema.nullable().parse(options?.metadata ?? null);
       const createdAt = options?.createdAt ? new Date(options.createdAt) : null;
-      // Board/session actors often forward X-Paperclip-Run-Id values that are not
-      // heartbeat_runs rows (client request ids, synthetic strings, deleted runs).
-      // created_by_run_id is a UUID FK — invalid values used to 500 every comment.
+      // Invalid/stale run ids must not 500 the insert — null out unknowns.
       const createdByRunId = await resolveCommentCreatedByRunId(dbOrTx, issue.companyId, actor.runId);
       if (actor.runId && !createdByRunId) {
         logger.warn(
