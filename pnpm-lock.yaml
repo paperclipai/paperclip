@@ -477,8 +477,8 @@ importers:
         specifier: ^6.2.5
         version: 6.2.5
       '@codemirror/language':
-        specifier: ^6.12.3
-        version: 6.12.3
+        specifier: ^6.12.4
+        version: 6.12.4
       '@codemirror/state':
         specifier: ^6.7.0
         version: 6.7.0
@@ -890,7 +890,7 @@ importers:
         version: 0.46.0(typescript@5.9.3)
       '@mdxeditor/editor':
         specifier: ^3.55.0
-        version: 3.55.0(@codemirror/language@6.12.3)(@lezer/highlight@1.2.3)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(typescript@5.9.3)(yjs@13.6.29)
+        version: 3.55.0(@codemirror/language@6.12.4)(@lezer/highlight@1.2.3)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(typescript@5.9.3)(yjs@13.6.29)
       '@paperclipai/adapter-claude-local':
         specifier: workspace:*
         version: link:../packages/adapters/claude-local
@@ -1617,8 +1617,8 @@ packages:
   '@codemirror/language-data@6.5.2':
     resolution: {integrity: sha512-CPkWBKrNS8stYbEU5kwBwTf3JB1kghlbh4FSAwzGW2TEscdeHHH4FGysREW86Mqnj3Qn09s0/6Ea/TutmoTobg==}
 
-  '@codemirror/language@6.12.3':
-    resolution: {integrity: sha512-QwCZW6Tt1siP37Jet9Tb02Zs81TQt6qQrZR2H+eGMcFsL1zMrk2/b9CLC7/9ieP1fjIUMgviLWMmgiHoJrj+ZA==}
+  '@codemirror/language@6.12.4':
+    resolution: {integrity: sha512-1q4PaT+o6PbgpkJt4Q8Fv5XJxTy4FUZ4MWETtyiDw3J0Pyr9E2vqcKL+k9wcvjNTIsauxvE7OfmWj3FRPHQ76A==}
 
   '@codemirror/legacy-modes@6.5.3':
     resolution: {integrity: sha512-xCsmIzH78MyWkib9jlPaaun57XNkfbMIhagfaZVd0iLTqlpw3jXaIcbZm72MTmmn64eTZpBVNjbyYh+QXnxRsg==}
@@ -7271,8 +7271,8 @@ packages:
     resolution: {integrity: sha512-IQ7TZdoaqbT+LCpShg46jnZVlhWD2w6iQYAcYXfHARZ7X1t/UGhhceQDs5X0cGqKvYlHNOuv7Oa1xmb0oQuA3w==}
     engines: {node: '>=4'}
 
-  postcss@8.5.19:
-    resolution: {integrity: sha512-Mz8SaolMd8nB+G13WkORcxQKHZ/NE4xXevtkJHVuG+guo9/wYKlIMTKAqGdEmYOXR2ijPjTYNHssizdaVSUNdQ==}
+  postcss@8.5.20:
+    resolution: {integrity: sha512-lW616l85ucIQL+FocMmL7pQFPqBmwejrCMg+iPxyImlrANNJG9NHq/RkyCZopDhd8C3LA03PHRJDjkbGu8vvug==}
     engines: {node: ^10 || ^12 || >=14}
 
   postcss@8.5.6:
@@ -9103,28 +9103,28 @@ snapshots:
 
   '@codemirror/autocomplete@6.20.0':
     dependencies:
-      '@codemirror/language': 6.12.3
+      '@codemirror/language': 6.12.4
       '@codemirror/state': 6.7.0
       '@codemirror/view': 6.43.1
       '@lezer/common': 1.5.2
 
   '@codemirror/autocomplete@6.20.3':
     dependencies:
-      '@codemirror/language': 6.12.3
+      '@codemirror/language': 6.12.4
       '@codemirror/state': 6.7.0
       '@codemirror/view': 6.43.1
       '@lezer/common': 1.5.2
 
   '@codemirror/commands@6.10.2':
     dependencies:
-      '@codemirror/language': 6.12.3
+      '@codemirror/language': 6.12.4
       '@codemirror/state': 6.7.0
       '@codemirror/view': 6.43.1
       '@lezer/common': 1.5.2
 
   '@codemirror/commands@6.10.3':
     dependencies:
-      '@codemirror/language': 6.12.3
+      '@codemirror/language': 6.12.4
       '@codemirror/state': 6.7.0
       '@codemirror/view': 6.43.1
       '@lezer/common': 1.5.2
@@ -9133,20 +9133,20 @@ snapshots:
     dependencies:
       '@codemirror/lang-html': 6.4.11
       '@codemirror/lang-javascript': 6.2.5
-      '@codemirror/language': 6.12.3
+      '@codemirror/language': 6.12.4
       '@lezer/common': 1.5.2
       '@lezer/highlight': 1.2.3
       '@lezer/lr': 1.4.10
 
   '@codemirror/lang-cpp@6.0.3':
     dependencies:
-      '@codemirror/language': 6.12.3
+      '@codemirror/language': 6.12.4
       '@lezer/cpp': 1.1.6
 
   '@codemirror/lang-css@6.3.1':
     dependencies:
       '@codemirror/autocomplete': 6.20.3
-      '@codemirror/language': 6.12.3
+      '@codemirror/language': 6.12.4
       '@codemirror/state': 6.7.0
       '@lezer/common': 1.5.2
       '@lezer/css': 1.3.3
@@ -9154,7 +9154,7 @@ snapshots:
   '@codemirror/lang-go@6.0.1':
     dependencies:
       '@codemirror/autocomplete': 6.20.3
-      '@codemirror/language': 6.12.3
+      '@codemirror/language': 6.12.4
       '@codemirror/state': 6.7.0
       '@lezer/common': 1.5.2
       '@lezer/go': 1.0.1
@@ -9164,7 +9164,7 @@ snapshots:
       '@codemirror/autocomplete': 6.20.3
       '@codemirror/lang-css': 6.3.1
       '@codemirror/lang-javascript': 6.2.5
-      '@codemirror/language': 6.12.3
+      '@codemirror/language': 6.12.4
       '@codemirror/state': 6.7.0
       '@codemirror/view': 6.43.1
       '@lezer/common': 1.5.2
@@ -9173,13 +9173,13 @@ snapshots:
 
   '@codemirror/lang-java@6.0.2':
     dependencies:
-      '@codemirror/language': 6.12.3
+      '@codemirror/language': 6.12.4
       '@lezer/java': 1.1.3
 
   '@codemirror/lang-javascript@6.2.5':
     dependencies:
       '@codemirror/autocomplete': 6.20.3
-      '@codemirror/language': 6.12.3
+      '@codemirror/language': 6.12.4
       '@codemirror/lint': 6.9.6
       '@codemirror/state': 6.7.0
       '@codemirror/view': 6.43.1
@@ -9190,7 +9190,7 @@ snapshots:
     dependencies:
       '@codemirror/autocomplete': 6.20.3
       '@codemirror/lang-html': 6.4.11
-      '@codemirror/language': 6.12.3
+      '@codemirror/language': 6.12.4
       '@codemirror/state': 6.7.0
       '@codemirror/view': 6.43.1
       '@lezer/common': 1.5.2
@@ -9199,13 +9199,13 @@ snapshots:
 
   '@codemirror/lang-json@6.0.2':
     dependencies:
-      '@codemirror/language': 6.12.3
+      '@codemirror/language': 6.12.4
       '@lezer/json': 1.0.3
 
   '@codemirror/lang-less@6.0.2':
     dependencies:
       '@codemirror/lang-css': 6.3.1
-      '@codemirror/language': 6.12.3
+      '@codemirror/language': 6.12.4
       '@lezer/common': 1.5.2
       '@lezer/highlight': 1.2.3
       '@lezer/lr': 1.4.10
@@ -9214,7 +9214,7 @@ snapshots:
     dependencies:
       '@codemirror/autocomplete': 6.20.3
       '@codemirror/lang-html': 6.4.11
-      '@codemirror/language': 6.12.3
+      '@codemirror/language': 6.12.4
       '@codemirror/state': 6.7.0
       '@codemirror/view': 6.43.1
       '@lezer/common': 1.5.2
@@ -9225,7 +9225,7 @@ snapshots:
     dependencies:
       '@codemirror/autocomplete': 6.20.3
       '@codemirror/lang-html': 6.4.11
-      '@codemirror/language': 6.12.3
+      '@codemirror/language': 6.12.4
       '@codemirror/state': 6.7.0
       '@codemirror/view': 6.43.1
       '@lezer/common': 1.5.2
@@ -9234,7 +9234,7 @@ snapshots:
   '@codemirror/lang-php@6.0.2':
     dependencies:
       '@codemirror/lang-html': 6.4.11
-      '@codemirror/language': 6.12.3
+      '@codemirror/language': 6.12.4
       '@codemirror/state': 6.7.0
       '@lezer/common': 1.5.2
       '@lezer/php': 1.0.5
@@ -9242,20 +9242,20 @@ snapshots:
   '@codemirror/lang-python@6.2.1':
     dependencies:
       '@codemirror/autocomplete': 6.20.3
-      '@codemirror/language': 6.12.3
+      '@codemirror/language': 6.12.4
       '@codemirror/state': 6.7.0
       '@lezer/common': 1.5.2
       '@lezer/python': 1.1.19
 
   '@codemirror/lang-rust@6.0.2':
     dependencies:
-      '@codemirror/language': 6.12.3
+      '@codemirror/language': 6.12.4
       '@lezer/rust': 1.0.2
 
   '@codemirror/lang-sass@6.0.2':
     dependencies:
       '@codemirror/lang-css': 6.3.1
-      '@codemirror/language': 6.12.3
+      '@codemirror/language': 6.12.4
       '@codemirror/state': 6.7.0
       '@lezer/common': 1.5.2
       '@lezer/sass': 1.1.0
@@ -9263,7 +9263,7 @@ snapshots:
   '@codemirror/lang-sql@6.10.0':
     dependencies:
       '@codemirror/autocomplete': 6.20.3
-      '@codemirror/language': 6.12.3
+      '@codemirror/language': 6.12.4
       '@codemirror/state': 6.7.0
       '@lezer/common': 1.5.2
       '@lezer/highlight': 1.2.3
@@ -9273,14 +9273,14 @@ snapshots:
     dependencies:
       '@codemirror/lang-html': 6.4.11
       '@codemirror/lang-javascript': 6.2.5
-      '@codemirror/language': 6.12.3
+      '@codemirror/language': 6.12.4
       '@lezer/common': 1.5.2
       '@lezer/highlight': 1.2.3
       '@lezer/lr': 1.4.10
 
   '@codemirror/lang-wast@6.0.2':
     dependencies:
-      '@codemirror/language': 6.12.3
+      '@codemirror/language': 6.12.4
       '@lezer/common': 1.5.2
       '@lezer/highlight': 1.2.3
       '@lezer/lr': 1.4.10
@@ -9288,7 +9288,7 @@ snapshots:
   '@codemirror/lang-xml@6.1.0':
     dependencies:
       '@codemirror/autocomplete': 6.20.3
-      '@codemirror/language': 6.12.3
+      '@codemirror/language': 6.12.4
       '@codemirror/state': 6.7.0
       '@codemirror/view': 6.43.1
       '@lezer/common': 1.5.2
@@ -9297,7 +9297,7 @@ snapshots:
   '@codemirror/lang-yaml@6.1.3':
     dependencies:
       '@codemirror/autocomplete': 6.20.3
-      '@codemirror/language': 6.12.3
+      '@codemirror/language': 6.12.4
       '@codemirror/state': 6.7.0
       '@lezer/common': 1.5.2
       '@lezer/highlight': 1.2.3
@@ -9327,10 +9327,10 @@ snapshots:
       '@codemirror/lang-wast': 6.0.2
       '@codemirror/lang-xml': 6.1.0
       '@codemirror/lang-yaml': 6.1.3
-      '@codemirror/language': 6.12.3
+      '@codemirror/language': 6.12.4
       '@codemirror/legacy-modes': 6.5.3
 
-  '@codemirror/language@6.12.3':
+  '@codemirror/language@6.12.4':
     dependencies:
       '@codemirror/state': 6.7.0
       '@codemirror/view': 6.43.1
@@ -9341,7 +9341,7 @@ snapshots:
 
   '@codemirror/legacy-modes@6.5.3':
     dependencies:
-      '@codemirror/language': 6.12.3
+      '@codemirror/language': 6.12.4
 
   '@codemirror/lint@6.9.4':
     dependencies:
@@ -9357,7 +9357,7 @@ snapshots:
 
   '@codemirror/merge@6.12.2':
     dependencies:
-      '@codemirror/language': 6.12.3
+      '@codemirror/language': 6.12.4
       '@codemirror/state': 6.7.0
       '@codemirror/view': 6.43.1
       '@lezer/highlight': 1.2.3
@@ -9401,7 +9401,7 @@ snapshots:
       '@codemirror/lang-css': 6.3.1
       '@codemirror/lang-html': 6.4.11
       '@codemirror/lang-javascript': 6.2.5
-      '@codemirror/language': 6.12.3
+      '@codemirror/language': 6.12.4
       '@codemirror/state': 6.7.0
       '@codemirror/view': 6.43.1
       '@codesandbox/sandpack-client': 2.19.8
@@ -10393,7 +10393,7 @@ snapshots:
       '@types/react': 19.2.17
       react: 19.2.7
 
-  '@mdxeditor/editor@3.55.0(@codemirror/language@6.12.3)(@lezer/highlight@1.2.3)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(typescript@5.9.3)(yjs@13.6.29)':
+  '@mdxeditor/editor@3.55.0(@codemirror/language@6.12.4)(@lezer/highlight@1.2.3)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(typescript@5.9.3)(yjs@13.6.29)':
     dependencies:
       '@codemirror/commands': 6.10.3
       '@codemirror/lang-markdown': 6.5.0
@@ -10422,7 +10422,7 @@ snapshots:
       '@radix-ui/react-toolbar': 1.1.13(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
       '@radix-ui/react-tooltip': 1.2.10(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
       classnames: 2.5.1
-      cm6-theme-basic-light: 0.2.0(@codemirror/language@6.12.3)(@codemirror/state@6.7.0)(@codemirror/view@6.43.1)(@lezer/highlight@1.2.3)
+      cm6-theme-basic-light: 0.2.0(@codemirror/language@6.12.4)(@codemirror/state@6.7.0)(@codemirror/view@6.43.1)(@lezer/highlight@1.2.3)
       codemirror: 6.0.2
       downshift: 7.6.2(react@19.2.7)
       js-yaml: 4.1.1
@@ -12857,9 +12857,9 @@ snapshots:
 
   clsx@2.1.1: {}
 
-  cm6-theme-basic-light@0.2.0(@codemirror/language@6.12.3)(@codemirror/state@6.7.0)(@codemirror/view@6.43.1)(@lezer/highlight@1.2.3):
+  cm6-theme-basic-light@0.2.0(@codemirror/language@6.12.4)(@codemirror/state@6.7.0)(@codemirror/view@6.43.1)(@lezer/highlight@1.2.3):
     dependencies:
-      '@codemirror/language': 6.12.3
+      '@codemirror/language': 6.12.4
       '@codemirror/state': 6.7.0
       '@codemirror/view': 6.43.1
       '@lezer/highlight': 1.2.3
@@ -12880,7 +12880,7 @@ snapshots:
     dependencies:
       '@codemirror/autocomplete': 6.20.0
       '@codemirror/commands': 6.10.2
-      '@codemirror/language': 6.12.3
+      '@codemirror/language': 6.12.4
       '@codemirror/lint': 6.9.4
       '@codemirror/search': 6.6.0
       '@codemirror/state': 6.7.0
@@ -15244,7 +15244,7 @@ snapshots:
       cssesc: 3.0.0
       util-deprecate: 1.0.2
 
-  postcss@8.5.19:
+  postcss@8.5.20:
     dependencies:
       nanoid: 3.3.16
       picocolors: 1.1.1
@@ -16370,7 +16370,7 @@ snapshots:
       esbuild: 0.27.7
       fdir: 6.5.0(picomatch@4.0.5)
       picomatch: 4.0.5
-      postcss: 8.5.19
+      postcss: 8.5.20
       rollup: 4.62.2
       tinyglobby: 0.2.17
     optionalDependencies:
@@ -16385,7 +16385,7 @@ snapshots:
       esbuild: 0.27.7
       fdir: 6.5.0(picomatch@4.0.5)
       picomatch: 4.0.5
-      postcss: 8.5.19
+      postcss: 8.5.20
       rollup: 4.62.2
       tinyglobby: 0.2.17
     optionalDependencies:
@@ -16400,7 +16400,7 @@ snapshots:
       esbuild: 0.27.7
       fdir: 6.5.0(picomatch@4.0.5)
       picomatch: 4.0.5
-      postcss: 8.5.19
+      postcss: 8.5.20
       rollup: 4.62.2
       tinyglobby: 0.2.17
     optionalDependencies:
