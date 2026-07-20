@@ -17,6 +17,18 @@ const SKIPPED_SELECTOR = [
   "style",
   "textarea",
 ].join(",");
+const HARD_SKIPPED_SELECTOR = [
+  "[data-i18n-skip]",
+  ".paperclip-markdown",
+  "code",
+  "kbd",
+  "noscript",
+  "pre",
+  "script",
+  "style",
+  "textarea",
+].join(",");
+const EDITOR_CONTROL_SELECTOR = "button,[role='button'],[role='combobox'],[data-toolbar-item='true']";
 
 type LegacyTranslations = Record<string, string>;
 type TemplateTranslation = {
@@ -98,12 +110,33 @@ export function translateLegacyLiteral(value: string) {
   return null;
 }
 
-function isSkipped(node: Node, allowContentEditableSelf = false) {
-  const element = node.nodeType === Node.ELEMENT_NODE ? node as Element : node.parentElement;
-  if (allowContentEditableSelf && element?.matches("[contenteditable='true']")) {
-    return Boolean(element.parentElement?.closest(SKIPPED_SELECTOR));
-  }
+function nodeElement(node: Node) {
+  return node.nodeType === Node.ELEMENT_NODE ? node as Element : node.parentElement;
+}
+
+function isEditorControl(node: Node) {
+  const element = nodeElement(node);
+  return Boolean(
+    element?.closest("[contenteditable='true']") && element.closest(EDITOR_CONTROL_SELECTOR),
+  );
+}
+
+function isSkipped(node: Node) {
+  const element = nodeElement(node);
   return Boolean(element?.closest(SKIPPED_SELECTOR));
+}
+
+function isTextSkipped(node: Text) {
+  const element = nodeElement(node);
+  if (isEditorControl(node)) return Boolean(element?.closest(HARD_SKIPPED_SELECTOR));
+  return Boolean(element?.closest(SKIPPED_SELECTOR));
+}
+
+function isAttributeSkipped(element: Element) {
+  if (element.matches("[contenteditable='true']") || isEditorControl(element)) {
+    return Boolean(element.closest(HARD_SKIPPED_SELECTOR));
+  }
+  return Boolean(element.closest(SKIPPED_SELECTOR));
 }
 
 export function LegacyLiteralLocalizer() {
@@ -119,7 +152,7 @@ export function LegacyLiteralLocalizer() {
     let chineseActive = i18n.resolvedLanguage === "zh-CN" || i18n.language === "zh-CN";
 
     function localizeTextNode(node: Text) {
-      if (!chineseActive || !node.isConnected || isSkipped(node)) return;
+      if (!chineseActive || !node.isConnected || isTextSkipped(node)) return;
       const lastLocalized = localizedText.get(node);
       if (lastLocalized !== undefined && node.data === lastLocalized) return;
       const translated = translateLegacyLiteral(node.data);
@@ -141,7 +174,7 @@ export function LegacyLiteralLocalizer() {
     }
 
     function localizeAttributes(element: Element) {
-      if (!chineseActive || !element.isConnected || isSkipped(element, true)) return;
+      if (!chineseActive || !element.isConnected || isAttributeSkipped(element)) return;
       for (const attribute of LOCALIZED_ATTRIBUTES) {
         const current = element.getAttribute(attribute);
         if (!current) continue;
@@ -177,7 +210,11 @@ export function LegacyLiteralLocalizer() {
       if (root.nodeType !== Node.ELEMENT_NODE) return;
       const element = root as Element;
       localizeAttributes(element);
-      if (isSkipped(root)) return;
+      if (
+        isSkipped(root)
+        && !element.matches("[contenteditable='true']")
+        && !isEditorControl(root)
+      ) return;
       const walker = document.createTreeWalker(element, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT);
       let current = walker.nextNode();
       while (current) {

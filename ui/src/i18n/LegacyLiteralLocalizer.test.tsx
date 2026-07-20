@@ -78,15 +78,22 @@ describe("LegacyLiteralLocalizer", () => {
       root.render(
         <>
           <LegacyLiteralLocalizer />
-          <div contentEditable aria-label="editable markdown">Delete</div>
+          <div contentEditable aria-label="editable markdown">
+            Delete
+            <button aria-label="Language" title="Delete code block">Language</button>
+          </div>
         </>,
       );
     });
     await flushMutations();
 
     const editor = container.querySelector("[contenteditable]");
+    const editorButton = container.querySelector("[contenteditable] button");
     expect(editor?.getAttribute("aria-label")).toBe("可编辑的 Markdown");
-    expect(editor?.textContent).toBe("Delete");
+    expect(editor?.firstChild?.textContent?.trim()).toBe("Delete");
+    expect(editorButton?.getAttribute("aria-label")).toBe("语言");
+    expect(editorButton?.getAttribute("title")).toBe("删除代码块");
+    expect(editorButton?.textContent).toBe("语言");
   });
 
   it("does not retranslate its own dynamic template output", async () => {
