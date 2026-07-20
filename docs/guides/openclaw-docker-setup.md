@@ -93,6 +93,10 @@ Then restart Paperclip and rerun the smoke script.
 npx paperclipai allowed-hostname <host>
 ```
 
+## Related Workflow: TweetClaw Routines
+
+After onboarding, use [OpenClaw TweetClaw Routine](/guides/openclaw-tweetclaw-routine) to install the optional Skill and schedule a read-only X/Twitter review.
+
 ## Prerequisites
 
 - **Docker Desktop v29+** (with Docker Sandbox support)

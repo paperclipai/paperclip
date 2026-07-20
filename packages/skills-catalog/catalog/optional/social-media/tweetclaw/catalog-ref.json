@@ -1,0 +1,34 @@
+{
+  "source": {
+    "type": "github",
+    "hostname": "github.com",
+    "owner": "Xquik-dev",
+    "repo": "tweetclaw",
+    "ref": "v1.6.44",
+    "commit": "59a44db32ef0fb90cf36ff9ca084ad055f7a9689",
+    "path": "skills/tweetclaw"
+  },
+  "files": [
+    "SKILL.md"
+  ],
+  "defaultInstall": false,
+  "recommendedForRoles": [
+    "researcher",
+    "marketer",
+    "support",
+    "community-manager"
+  ],
+  "requires": [
+    "node",
+    "openclaw"
+  ],
+  "tags": [
+    "twitter",
+    "x",
+    "social-media",
+    "search",
+    "monitoring",
+    "openclaw",
+    "xquik"
+  ]
+}

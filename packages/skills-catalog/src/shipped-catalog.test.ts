@@ -24,6 +24,7 @@ const EXPECTED_OPTIONAL_KEYS = [
   "paperclipai/optional/finance/ramp",
   "paperclipai/optional/product/design-critique",
   "paperclipai/optional/research/last30days",
+  "paperclipai/optional/social-media/tweetclaw",
   "paperclipai/optional/software-development/prepare-mcp-integration",
 ];
 
@@ -130,6 +131,25 @@ describe("shipped skills catalog", () => {
     expect(scriptBearing.map((skill) => skill.key)).toEqual([
       "paperclipai/optional/research/last30days",
     ]);
+  });
+
+  it("pins TweetClaw as a markdown-only OpenClaw skill", () => {
+    const skill = resolveCatalogSkillRef("paperclipai/optional/social-media/tweetclaw");
+
+    expect(skill).toMatchObject({
+      defaultInstall: false,
+      requires: ["node", "openclaw"],
+      source: {
+        type: "github",
+        owner: "Xquik-dev",
+        repo: "tweetclaw",
+        ref: "v1.6.44",
+        commit: "59a44db32ef0fb90cf36ff9ca084ad055f7a9689",
+        path: "skills/tweetclaw",
+      },
+      trustLevel: "markdown_only",
+    });
+    expect(skill?.files.map((file) => file.path)).toEqual(["SKILL.md"]);
   });
 
   it("populates browse/search-relevant fields for every shipped skill", () => {

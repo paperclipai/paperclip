@@ -71,6 +71,10 @@ Structured gateway event logs use:
 
 UI/CLI parsers consume these lines to render transcript updates.
 
+## Workflow Recipes
+
+- [OpenClaw TweetClaw Routine](../../../docs/guides/openclaw-tweetclaw-routine.md) installs the optional Skill and schedules a read-only X/Twitter review.
+
 ## No-remote-git contract
 
 Like every Paperclip adapter, this one must treat the local execution-workspace
