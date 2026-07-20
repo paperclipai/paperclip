@@ -3015,6 +3015,43 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return (await isAgentInvokable(candidate)) && !budgetBlock ? candidate.id : null;
   }
 
+  // Local: does this company have an explicit stranded-recovery routing lane?
+  // Either a pinned `companies.strandedRecoveryOwnerAgentId`, or a cheap
+  // shell-handler catch-all lane that owns genuine routine-execution recovery.
+  async function hasExplicitStrandedRecoveryRouting(issue: typeof issues.$inferSelect) {
+    const company = await db
+      .select({ strandedRecoveryOwnerAgentId: companies.strandedRecoveryOwnerAgentId })
+      .from(companies)
+      .where(eq(companies.id, issue.companyId))
+      .then((rows) => rows[0] ?? null);
+    if (company?.strandedRecoveryOwnerAgentId) return true;
+    return (await resolveCheapRecoveryReviewerAgentId(db, issue.companyId)) !== null;
+  }
+
+  // Local: upstream classifies any run that died with `process_lost` as the
+  // `process_lost` recovery cause, which makes `resolveStrandedRecoveryRouting`
+  // hand the recovery straight back to the original assignee and skip the fork's
+  // stranded-recovery ladder entirely. That shortcut is only correct for companies
+  // that have no recovery routing of their own — there is nobody else to ask. When
+  // the company pins a stranded recovery owner, or runs a shell-handler catch-all
+  // lane, the operator has already declared who owns stranded work, so the ladder
+  // (company owner -> manager chain -> CTO/CEO -> assignee) must win and the action
+  // stays the generic `stranded_assigned_issue` cause. Only the *inferred* cause is
+  // downgraded; explicit causes passed by callers (successful_run_missing_state,
+  // configuration_incomplete, provider_quota, review-participant recovery, ...)
+  // keep their own semantics.
+  async function resolveEffectiveStrandedRecoveryCause(
+    issue: typeof issues.$inferSelect,
+    latestRun: LatestIssueRun,
+    explicitCause?: StrandedRecoveryCause,
+  ): Promise<StrandedRecoveryCause> {
+    const recoveryCause = resolveStrandedRecoveryCause(latestRun, explicitCause);
+    if (explicitCause || recoveryCause !== "process_lost") return recoveryCause;
+    return (await hasExplicitStrandedRecoveryRouting(issue))
+      ? "stranded_assigned_issue"
+      : recoveryCause;
+  }
+
   async function resolveStrandedRecoveryRouting(input: {
     issue: typeof issues.$inferSelect;
     latestRun: LatestIssueRun;
@@ -3308,7 +3345,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     recoveryOwnerAgentId?: string | null;
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
   }) {
-    const recoveryCause = resolveStrandedRecoveryCause(input.latestRun, input.recoveryCause);
+    const recoveryCause = await resolveEffectiveStrandedRecoveryCause(
+      input.issue,
+      input.latestRun,
+      input.recoveryCause,
+    );
     const routing = await resolveStrandedRecoveryRouting({
       issue: input.issue,
       latestRun: input.latestRun,
@@ -3888,7 +3929,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       });
     }
 
-    const recoveryCause = resolveStrandedRecoveryCause(input.latestRun, input.recoveryCause);
+    const recoveryCause = await resolveEffectiveStrandedRecoveryCause(
+      input.issue,
+      input.latestRun,
+      input.recoveryCause,
+    );
     const recoveryAction = await ensureSourceScopedStrandedRecoveryAction({
       issue: input.issue,
       previousStatus: input.previousStatus,
