@@ -9,7 +9,7 @@ const validDraft: ResourceDraft = {
   sourcePath: "content",
   defaultRef: "main",
   mountPath: "campaign",
-  credentialRef: "secret-1",
+  credentialRef: "11111111-1111-4111-8111-111111111111",
   labels: [{ key: "team", value: "marketing" }],
 };
 
@@ -25,6 +25,10 @@ describe("Resource form contract", () => {
     expect(validateResourceDraft({ ...validDraft, sourcePath: "../private" })).toContain("Source path");
   });
 
+  it("rejects unsupported repository URLs", () => {
+    expect(validateResourceDraft({ ...validDraft, repository: "ftp://github.com/acme/campaign.git" })).toContain("supported");
+  });
+
   it("converts editable label rows to the API payload without secret values", () => {
     expect(toResourcePayload(validDraft)).toEqual({
       key: "campaign",
@@ -33,7 +37,7 @@ describe("Resource form contract", () => {
       sourcePath: "content",
       defaultRef: "main",
       mountPath: "campaign",
-      credentialRef: "secret-1",
+      credentialRef: "11111111-1111-4111-8111-111111111111",
       labels: { team: "marketing" },
     });
   });

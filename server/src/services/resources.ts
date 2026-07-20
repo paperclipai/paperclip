@@ -99,7 +99,9 @@ export function resourceService(db: Db) {
       if (!scope) return null;
       const existing = await db.select().from(resources).where(scope).then((rows) => rows[0] ?? null);
       if (!existing) return null;
-      await assertCredential(existing.companyId, patch.credentialRef !== undefined ? patch.credentialRef : existing.credentialRef);
+      if (patch.credentialRef !== undefined) {
+        await assertCredential(existing.companyId, patch.credentialRef);
+      }
       try {
         const row = await db.update(resources).set({
           ...(patch.key !== undefined ? { key: patch.key } : {}),

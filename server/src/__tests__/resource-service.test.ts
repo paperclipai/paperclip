@@ -106,6 +106,7 @@ describeEmbeddedPostgres("resourceService", () => {
     });
     await db.update(resources).set({ credentialRef: randomUUID() }).where(eq(resources.id, created.id));
 
+    await expect(resourceService(db).update(created.id, { defaultRef: "develop" })).resolves.toMatchObject({ defaultRef: "develop" });
     await expect(resourceService(db).update(created.id, { credentialRef: null })).resolves.toMatchObject({ credentialRef: null });
   });
 });

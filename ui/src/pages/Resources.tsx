@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { Resource, CompanySecret } from "@paperclipai/shared";
+import { createResourceSchema, type Resource, type CompanySecret } from "@paperclipai/shared";
 import { Database, Pencil, Plus, Archive, AlertCircle, X } from "lucide-react";
 import { resourcesApi, type ResourceMutationInput } from "@/api/resources";
 import { secretsApi } from "@/api/secrets";
@@ -71,18 +71,8 @@ export function toResourcePayload(draft: ResourceDraft): ResourceMutationInput {
 }
 
 export function validateResourceDraft(draft: ResourceDraft): string | null {
-  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(draft.key.trim())) {
-    return "Key must start with a letter or number and contain only letters, numbers, ., _, or -.";
-  }
-  if (!draft.repository.trim()) return "Repository is required.";
-  if (!draft.defaultRef.trim()) return "Default ref is required.";
-  if (!draft.mountPath.trim() || draft.mountPath.startsWith("/") || draft.mountPath.split(/[\\/]/).includes("..")) {
-    return "Mount path must be relative and cannot contain .. segments.";
-  }
-  if (draft.sourcePath?.startsWith("/") || draft.sourcePath?.split(/[\\/]/).includes("..")) {
-    return "Source path must be relative and cannot contain .. segments.";
-  }
-  return null;
+  const result = createResourceSchema.safeParse(toResourcePayload(draft));
+  return result.success ? null : result.error.issues[0]?.message ?? "Invalid Resource configuration.";
 }
 
 function SecretOption({ secret }: { secret: CompanySecret }) {
