@@ -95,6 +95,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { cn } from "../lib/utils";
 import { copyTextToClipboard } from "../lib/clipboard";
 import { PageTabBar } from "../components/PageTabBar";
+import { AgentSelect } from "../components/AgentMultiSelect";
 import { ImportFromVaultDialog } from "./secrets/ImportFromVaultDialog";
 import { MyUserSecretsTab } from "./secrets/MyUserSecretsTab";
 import { SetMyUserSecretDialog } from "./secrets/SetMyUserSecretDialog";
@@ -3955,19 +3956,14 @@ function AgentAccessSection({
               >
                 Agent
               </label>
-              <select
+              <AgentSelect
                 id="agent-access-agent"
-                className="h-8 w-full rounded-md border border-border bg-background px-2 text-xs outline-none"
+                agents={grantableAgents}
                 value={selectedAgentId}
-                onChange={(event) => setSelectedAgentId(event.target.value)}
-              >
-                <option value="">Select agent…</option>
-                {grantableAgents.map((agent) => (
-                  <option key={agent.id} value={agent.id}>
-                    {agent.name}
-                  </option>
-                ))}
-              </select>
+                onChange={setSelectedAgentId}
+                triggerClassName="h-8 text-xs"
+                emptyMessage="No agents available."
+              />
             </div>
             <div className="min-w-0 flex-1">
               <label
