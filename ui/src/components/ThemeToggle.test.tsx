@@ -3,7 +3,10 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { i18n } from "@/i18n";
 import { ThemeToggle } from "./ThemeToggle";
+
+void i18n.changeLanguage("zh-CN");
 
 const mockToggleTheme = vi.hoisted(() => vi.fn());
 const mockTheme = vi.hoisted(() => ({ value: "dark" as "dark" | "light" }));
@@ -48,8 +51,8 @@ describe("ThemeToggle", () => {
 
     const button = container.querySelector("button");
     expect(button).not.toBeNull();
-    expect(button?.getAttribute("aria-label")).toBe("Switch to light mode");
-    expect(button?.getAttribute("title")).toBe("Switch to light mode");
+    expect(button?.getAttribute("aria-label")).toBe("切换到浅色模式");
+    expect(button?.getAttribute("title")).toBe("切换到浅色模式");
 
     await act(async () => {
       button?.click();
@@ -66,8 +69,8 @@ describe("ThemeToggle", () => {
     });
     await flushReact();
 
-    expect(container.textContent).toContain("Switch to light mode");
-    expect(container.textContent).toContain("Toggle the app appearance.");
+    expect(container.textContent).toContain("切换到浅色模式");
+    expect(container.textContent).toContain("切换应用的显示外观。");
 
     await act(async () => root.unmount());
   });
@@ -100,7 +103,7 @@ describe("ThemeToggle", () => {
     await flushReact();
 
     const button = container.querySelector("button");
-    expect(button?.getAttribute("aria-label")).toBe("Switch to dark mode");
+    expect(button?.getAttribute("aria-label")).toBe("切换到深色模式");
 
     await act(async () => root.unmount());
   });

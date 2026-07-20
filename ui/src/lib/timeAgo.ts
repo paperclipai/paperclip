@@ -1,3 +1,5 @@
+import { i18n } from "@/i18n";
+
 const MINUTE = 60;
 const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
@@ -9,23 +11,24 @@ export function timeAgo(date: Date | string): string {
   const then = new Date(date).getTime();
   const seconds = Math.round((now - then) / 1000);
 
-  if (seconds < MINUTE) return "just now";
+  if (seconds < MINUTE) return i18n.t("common.justNow");
+  const relative = new Intl.RelativeTimeFormat(i18n.resolvedLanguage ?? i18n.language, { numeric: "always" });
   if (seconds < HOUR) {
     const m = Math.floor(seconds / MINUTE);
-    return `${m}m ago`;
+    return relative.format(-m, "minute");
   }
   if (seconds < DAY) {
     const h = Math.floor(seconds / HOUR);
-    return `${h}h ago`;
+    return relative.format(-h, "hour");
   }
   if (seconds < WEEK) {
     const d = Math.floor(seconds / DAY);
-    return `${d}d ago`;
+    return relative.format(-d, "day");
   }
   if (seconds < MONTH) {
     const w = Math.floor(seconds / WEEK);
-    return `${w}w ago`;
+    return relative.format(-w, "week");
   }
   const mo = Math.floor(seconds / MONTH);
-  return `${mo}mo ago`;
+  return relative.format(-mo, "month");
 }

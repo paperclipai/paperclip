@@ -3,13 +3,15 @@ import type { Resource } from "i18next";
 import { assertValidLocaleMessages } from "./locale-validation";
 
 export const DEFAULT_LOCALE = "en" as const;
+export const FALLBACK_LOCALE = "en" as const;
+export const ACTIVE_LOCALES = [DEFAULT_LOCALE, "zh-CN"] as const;
 
 const localeModules = import.meta.glob("./locales/*.json", {
   eager: true,
   import: "default",
 }) as Record<string, unknown>;
 
-export const localeMessages = Object.fromEntries(
+const discoveredLocaleMessages = Object.fromEntries(
   Object.entries(localeModules).map(([path, messages]) => {
     const locale = path.match(/\/([A-Za-z0-9_-]+)\.json$/)?.[1];
     if (!locale) {
@@ -17,6 +19,12 @@ export const localeMessages = Object.fromEntries(
     }
     return [locale, messages];
   }),
+);
+
+// Only expose locales whose application messages are kept in parity. Other
+// seed locale files remain available for future translation work.
+export const localeMessages = Object.fromEntries(
+  ACTIVE_LOCALES.map((locale) => [locale, discoveredLocaleMessages[locale]]),
 );
 
 if (!(DEFAULT_LOCALE in localeMessages)) {
@@ -38,4 +46,4 @@ export const i18nextResources: Resource = Object.fromEntries(
   Object.entries(localeMessages).map(([locale, messages]) => [locale, { translation: messages }]),
 ) as Resource;
 
-export type SupportedLocale = keyof typeof localeMessages;
+export type SupportedLocale = (typeof ACTIVE_LOCALES)[number];

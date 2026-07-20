@@ -167,6 +167,7 @@ import {
   type InboxWorkItemGroupBy,
 } from "../lib/inbox";
 import { useDismissedInboxAlerts, useInboxDismissals, useReadInboxItems } from "../hooks/useInboxBadge";
+import { useTranslation } from "react-i18next";
 
 const INBOX_HEARTBEAT_RUN_LIMIT = 200;
 const INBOX_ISSUE_LIST_LIMIT = 500;
@@ -693,6 +694,7 @@ function JoinRequestInboxRow({
 }
 
 export function Inbox() {
+  const { t } = useTranslation();
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { openNewIssue } = useDialogActions();
@@ -735,11 +737,11 @@ export function Inbox() {
   const issueLinkState = useMemo(
     () =>
       createIssueDetailLocationState(
-        "Inbox",
+        t("navigation.inbox"),
         `${location.pathname}${location.search}${location.hash}`,
         "inbox",
       ),
-    [location.pathname, location.search, location.hash],
+    [location.pathname, location.search, location.hash, t],
   );
 
   const { data: session } = useQuery({
@@ -774,8 +776,8 @@ export function Inbox() {
   });
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Inbox" }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([{ label: t("navigation.inbox") }]);
+  }, [setBreadcrumbs, t]);
 
   useEffect(() => {
     saveLastInboxTab(tab);
@@ -2086,7 +2088,7 @@ export function Inbox() {
   }, [selectedIndex]);
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={InboxIcon} message="Select a company to view inbox." />;
+    return <EmptyState icon={InboxIcon} message={t("inbox.selectCompany")} />;
   }
 
   const hasRunFailures = failedRuns.length > 0;
@@ -2144,7 +2146,7 @@ export function Inbox() {
           <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
           <Input
             type="search"
-            placeholder="Search inbox…"
+            placeholder={t("inbox.search")}
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             onKeyDown={(e) => {
@@ -2174,15 +2176,15 @@ export function Inbox() {
             items={[
               {
                 value: "mine",
-                label: "Mine",
+                label: t("common.mine"),
               },
               {
                 value: "recent",
-                label: "Recent",
+                label: t("common.recent"),
               },
-              { value: "unread", label: "Unread" },
-              { value: "blocked", label: "Blocked" },
-              { value: "all", label: "All" },
+              { value: "unread", label: t("common.unread") },
+              { value: "blocked", label: t("common.blocked") },
+              { value: "all", label: t("common.all") },
             ]}
           />
         </Tabs>
@@ -2192,7 +2194,7 @@ export function Inbox() {
             <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
             <Input
               type="search"
-              placeholder="Search inbox…"
+              placeholder={t("inbox.search")}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               onKeyDown={(e) => {
@@ -2269,7 +2271,7 @@ export function Inbox() {
                 visibleColumnSet={visibleIssueColumnSet}
                 onToggleColumn={toggleIssueColumn}
                 onResetColumns={() => setIssueColumns(DEFAULT_INBOX_ISSUE_COLUMNS)}
-                title="Choose which inbox columns stay visible"
+                title={t("inbox.chooseColumns")}
                 iconOnly
               />
               <Popover>
@@ -2312,7 +2314,7 @@ export function Inbox() {
                 size="icon"
                 className={cn("hidden h-8 w-8 shrink-0 sm:inline-flex", nestingEnabled && "bg-accent")}
                 onClick={toggleNesting}
-                title={nestingEnabled ? "Disable parent-child nesting" : "Enable parent-child nesting"}
+                title={nestingEnabled ? t("tasks.disableNesting") : t("tasks.enableNesting")}
               >
                 <ListTree className="h-3.5 w-3.5" />
               </Button>
@@ -2338,7 +2340,7 @@ export function Inbox() {
                     variant="outline"
                     size="icon"
                     className={cn("h-8 w-8 shrink-0", groupBy !== "none" && "bg-accent")}
-                    title="Group"
+                    title={t("common.group")}
                   >
                     <Layers className="h-3.5 w-3.5" />
                   </Button>
@@ -2346,11 +2348,11 @@ export function Inbox() {
                 <PopoverContent align="end" className="w-40 p-2">
                   <div className="space-y-0.5">
                     {([
-                      ["none", "None"],
-                      ["type", "Type"],
-                      ["assignee", "Responsible"],
-                      ["project", "Project"],
-                      ...(isolatedWorkspacesEnabled ? ([["workspace", "Workspace"]] as const) : []),
+                      ["none", "common.none"],
+                      ["type", "common.type"],
+                      ["assignee", "common.responsible"],
+                      ["project", "common.project"],
+                      ...(isolatedWorkspacesEnabled ? ([["workspace", "common.workspace"]] as const) : []),
                     ] as const).map(([value, label]) => (
                       <button
                         key={value}
@@ -2361,7 +2363,7 @@ export function Inbox() {
                         )}
                         onClick={() => updateGroupBy(value)}
                       >
-                        <span>{label}</span>
+                        <span>{t(label)}</span>
                         {groupBy === value ? <Check className="h-3.5 w-3.5" /> : null}
                       </button>
                     ))}
@@ -2373,7 +2375,7 @@ export function Inbox() {
                 visibleColumnSet={visibleIssueColumnSet}
                 onToggleColumn={toggleIssueColumn}
                 onResetColumns={() => setIssueColumns(DEFAULT_INBOX_ISSUE_COLUMNS)}
-                title="Choose which inbox columns stay visible"
+                title={t("inbox.chooseColumns")}
                 iconOnly
               />
               {canMarkAllRead && (
@@ -2386,19 +2388,19 @@ export function Inbox() {
                     onClick={() => setShowMarkAllReadConfirm(true)}
                     disabled={markAllReadMutation.isPending}
                   >
-                    {markAllReadMutation.isPending ? "Marking…" : "Mark all as read"}
+                    {markAllReadMutation.isPending ? t("inbox.marking") : t("inbox.markAllRead")}
                   </Button>
                   <Dialog open={showMarkAllReadConfirm} onOpenChange={setShowMarkAllReadConfirm}>
                     <DialogContent className="sm:max-w-md">
                       <DialogHeader>
-                        <DialogTitle>Mark all as read?</DialogTitle>
+                        <DialogTitle>{t("inbox.markAllReadConfirm")}</DialogTitle>
                         <DialogDescription>
-                          This will mark {unreadIssueIds.length} unread {unreadIssueIds.length === 1 ? "item" : "items"} as read.
+                          {t("inbox.markAllReadDescription", { count: unreadIssueIds.length })}
                         </DialogDescription>
                       </DialogHeader>
                       <DialogFooter>
                         <Button variant="outline" onClick={() => setShowMarkAllReadConfirm(false)}>
-                          Cancel
+                          {t("common.cancel")}
                         </Button>
                         <Button
                           onClick={() => {
@@ -2406,7 +2408,7 @@ export function Inbox() {
                             markAllReadMutation.mutate(unreadIssueIds);
                           }}
                         >
-                          Mark all as read
+                          {t("inbox.markAllRead")}
                         </Button>
                       </DialogFooter>
                     </DialogContent>
@@ -2426,15 +2428,15 @@ export function Inbox() {
             onValueChange={(value) => updateAllCategoryFilter(value as InboxCategoryFilter)}
           >
             <SelectTrigger className="h-8 w-(--sz-170px) text-xs">
-              <SelectValue placeholder="Category" />
+              <SelectValue placeholder={t("inbox.category")} />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="everything">All categories</SelectItem>
-              <SelectItem value="issues_i_touched">My recent tasks</SelectItem>
-              <SelectItem value="join_requests">Join requests</SelectItem>
-              <SelectItem value="approvals">Approvals</SelectItem>
-              <SelectItem value="failed_runs">Failed runs</SelectItem>
-              <SelectItem value="alerts">Alerts</SelectItem>
+              <SelectItem value="everything">{t("inbox.allCategories")}</SelectItem>
+              <SelectItem value="issues_i_touched">{t("inbox.myRecentTasks")}</SelectItem>
+              <SelectItem value="join_requests">{t("inbox.joinRequests")}</SelectItem>
+              <SelectItem value="approvals">{t("inbox.approvals")}</SelectItem>
+              <SelectItem value="failed_runs">{t("inbox.failedRuns")}</SelectItem>
+              <SelectItem value="alerts">{t("inbox.alerts")}</SelectItem>
             </SelectContent>
           </Select>
 
@@ -2444,12 +2446,12 @@ export function Inbox() {
               onValueChange={(value) => updateAllApprovalFilter(value as InboxApprovalFilter)}
             >
               <SelectTrigger className="h-8 w-(--sz-170px) text-xs">
-                <SelectValue placeholder="Approval status" />
+                <SelectValue placeholder={t("inbox.approvalStatus")} />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">All approval statuses</SelectItem>
-                <SelectItem value="actionable">Needs action</SelectItem>
-                <SelectItem value="resolved">Resolved</SelectItem>
+                <SelectItem value="all">{t("inbox.allApprovalStatuses")}</SelectItem>
+                <SelectItem value="actionable">{t("inbox.needsAction")}</SelectItem>
+                <SelectItem value="resolved">{t("inbox.resolved")}</SelectItem>
               </SelectContent>
             </Select>
           )}
@@ -2488,14 +2490,14 @@ export function Inbox() {
           icon={searchQuery.trim() ? Search : InboxIcon}
           message={
             searchQuery.trim()
-              ? "No inbox items match your search."
+              ? t("inbox.noSearchMatch")
               : tab === "mine"
-              ? "Inbox zero."
+              ? t("inbox.zero")
               : tab === "unread"
-              ? "No new inbox items."
+              ? t("inbox.noNew")
               : tab === "recent"
-                ? "No recent inbox items."
-                : "No inbox items match these filters."
+                ? t("inbox.noRecent")
+                : t("inbox.noFilterMatch")
           }
         />
       )}

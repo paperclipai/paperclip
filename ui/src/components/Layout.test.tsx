@@ -4,7 +4,10 @@ import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { i18n } from "@/i18n";
 import { Layout } from "./Layout";
+
+void i18n.changeLanguage("zh-CN");
 
 const mockHealthApi = vi.hoisted(() => ({
   get: vi.fn(),
@@ -458,15 +461,15 @@ describe("Layout", () => {
     const selector = container.querySelector("select");
     expect(selector).not.toBeNull();
     expect(selector?.value).toBe("secrets");
-    const selectorText = selector?.textContent?.toLowerCase() ?? "";
-    expect(selectorText).toContain("general");
-    expect(selectorText).toContain("cloud upstream");
-    expect(selectorText).toContain("members");
-    expect(selectorText).toContain("invites");
-    expect(selectorText).toContain("secrets");
-    expect(selectorText).toContain("instance general");
-    expect(selectorText).toContain("instance environments");
-    expect(selectorText).toContain("instance plugins");
+    const selectorText = selector?.textContent ?? "";
+    expect(selectorText).toContain("常规");
+    expect(selectorText).toContain("云端同步");
+    expect(selectorText).toContain("成员");
+    expect(selectorText).toContain("邀请");
+    expect(selectorText).toContain("密钥");
+    expect(selectorText).toContain("实例常规设置");
+    expect(selectorText).toContain("实例运行环境");
+    expect(selectorText).toContain("实例插件");
 
     await act(async () => {
       root.unmount();

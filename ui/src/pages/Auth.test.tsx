@@ -5,8 +5,11 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { i18n } from "@/i18n";
 import { queryKeys } from "../lib/queryKeys";
 import { AuthPage } from "./Auth";
+
+void i18n.changeLanguage("zh-CN");
 
 const getSessionMock = vi.hoisted(() => vi.fn());
 const signInEmailMock = vi.hoisted(() => vi.fn());
@@ -151,7 +154,7 @@ describe("AuthPage", () => {
     const { root } = await mount();
 
     const createOne = Array.from(container.querySelectorAll("button")).find(
-      (button) => button.textContent === "Create one",
+      (button) => button.textContent === "创建一个",
     );
     expect(createOne).not.toBeNull();
 

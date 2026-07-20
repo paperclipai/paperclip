@@ -64,6 +64,7 @@ import {
   selectedFolderFromList,
   type FolderSelection,
 } from "../components/folders/FolderControls";
+import { useTranslation } from "react-i18next";
 
 const concurrencyPolicies = ["coalesce_if_active", "always_enqueue", "skip_if_active"];
 const catchUpPolicies = ["skip_missed", "enqueue_missed_with_cap"];
@@ -283,6 +284,7 @@ function RoutineSectionHeader({
 }
 
 export function Routines() {
+  const { t } = useTranslation();
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
@@ -334,8 +336,8 @@ export function Routines() {
   const folderSelection = normalizeFolderSelection(searchParams.get("folder"));
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Routines" }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([{ label: t("navigation.routines") }]);
+  }, [setBreadcrumbs, t]);
 
   useEffect(() => {
     setRoutineViewState(getRoutineViewState(routineViewStateKey));
@@ -659,11 +661,11 @@ export function Routines() {
   const recentRunsIssueLinkState = useMemo(
     () =>
       createIssueDetailLocationState(
-        "Recent Runs",
+        t("routines.recentRuns"),
         buildRoutinesTabHref("runs"),
         "issues",
       ),
-    [],
+    [t],
   );
   const currentAssignee = draft.assigneeAgentId ? agentById.get(draft.assigneeAgentId) ?? null : null;
   const currentProject = draft.projectId ? projectById.get(draft.projectId) ?? null : null;
@@ -758,7 +760,7 @@ export function Routines() {
   }
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Repeat} message="Select a company to view routines." />;
+    return <EmptyState icon={Repeat} message={t("routines.selectCompany")} />;
   }
 
   if (isLoading) {
@@ -770,15 +772,15 @@ export function Routines() {
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div className="space-y-1">
           <h1 className="text-2xl font-semibold tracking-tight">
-            Routines
+            {t("navigation.routines")}
           </h1>
           <p className="text-sm text-muted-foreground">
-            Recurring work definitions that materialize into auditable execution tasks.
+            {t("routines.description")}
           </p>
         </div>
         <Button onClick={openCreateRoutine}>
           <Plus className="mr-2 h-4 w-4" />
-          Create routine
+          {t("routines.create")}
         </Button>
       </div>
 
@@ -788,30 +790,30 @@ export function Routines() {
           value={activeTab}
           onValueChange={handleTabChange}
           items={[
-            { value: "routines", label: "Routines" },
-            { value: "runs", label: "Recent Runs" },
+            { value: "routines", label: t("navigation.routines") },
+            { value: "runs", label: t("routines.recentRuns") },
           ]}
         />
         <TabsContent value="routines" className="space-y-4">
           <div className="flex items-center justify-between gap-3">
             <p className="text-sm text-muted-foreground">
-              {visibleRoutines.length} routine{visibleRoutines.length === 1 ? "" : "s"}
+              {t("routines.count", { count: visibleRoutines.length })}
             </p>
             <div className="flex items-center gap-1">
               <Popover>
                 <PopoverTrigger asChild>
-                  <Button variant="ghost" size="sm" className="text-xs" title="Sort">
+                  <Button variant="ghost" size="sm" className="text-xs" title={t("common.sort")}>
                     <ArrowUpDown className="h-3.5 w-3.5 sm:h-3 sm:w-3 sm:mr-1" />
-                    <span className="hidden sm:inline">Sort</span>
+                    <span className="hidden sm:inline">{t("common.sort")}</span>
                   </Button>
                 </PopoverTrigger>
                 <PopoverContent align="end" className="w-44 p-0">
                   <div className="p-2 space-y-0.5">
                     {([
-                      ["updated", "Updated"],
-                      ["created", "Created"],
-                      ["lastRun", "Last run"],
-                      ["title", "Title"],
+                      ["updated", "common.updated"],
+                      ["created", "common.created"],
+                      ["lastRun", "routines.lastRun"],
+                      ["title", "common.title"],
                     ] as const).map(([field, label]) => (
                       <button
                         key={field}
@@ -828,7 +830,7 @@ export function Routines() {
                           );
                         }}
                       >
-                        <span>{label}</span>
+                        <span>{t(label)}</span>
                         {routineViewState.sortField === field ? (
                           <span className="text-xs text-muted-foreground">
                             {routineViewState.sortDir === "asc" ? "Asc" : "Desc"}
@@ -923,9 +925,9 @@ export function Routines() {
         >
           <div className="shrink-0 flex flex-wrap items-center justify-between gap-3 border-b border-border/60 px-5 py-3">
             <div>
-              <p className="text-xs font-medium uppercase tracking-(--tracking-caps) text-muted-foreground">New routine</p>
+              <p className="text-xs font-medium uppercase tracking-(--tracking-caps) text-muted-foreground">{t("routines.newRoutine")}</p>
               <p className="text-sm text-muted-foreground">
-                Define the recurring work first. Default project and agent are optional for draft routines.
+                {t("routines.newDescription")}
               </p>
             </div>
             <Button
@@ -937,7 +939,7 @@ export function Routines() {
               }}
               disabled={createRoutine.isPending}
             >
-              Cancel
+              {t("common.cancel")}
             </Button>
           </div>
 
@@ -946,7 +948,7 @@ export function Routines() {
               <textarea
                 ref={titleInputRef}
                 className="w-full resize-none overflow-hidden bg-transparent text-xl font-semibold outline-none placeholder:text-muted-foreground/50"
-                placeholder="Routine title"
+                placeholder={t("routines.routineTitle")}
                 rows={1}
                 value={draft.title}
                 onChange={(event) => {
@@ -1096,7 +1098,7 @@ export function Routines() {
                 ref={descriptionEditorRef}
                 value={draft.description}
                 onChange={(description) => setDraft((current) => ({ ...current, description }))}
-                placeholder="Add instructions..."
+                placeholder={t("routines.instructions")}
                 bordered={false}
                 contentClassName="min-h-(--sz-160px) text-sm text-muted-foreground"
                 mentions={mentionOptions}
@@ -1112,15 +1114,15 @@ export function Routines() {
               <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
                 <CollapsibleTrigger className="flex w-full items-center justify-between text-left">
                   <div>
-                    <p className="text-sm font-medium">Advanced delivery settings</p>
-                    <p className="text-sm text-muted-foreground">Keep policy controls secondary to the work definition.</p>
+                    <p className="text-sm font-medium">{t("routines.advanced")}</p>
+                    <p className="text-sm text-muted-foreground">{t("routines.advancedDescription")}</p>
                   </div>
                   {advancedOpen ? <ChevronDown className="h-4 w-4 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
                 </CollapsibleTrigger>
                 <CollapsibleContent className="pt-3">
                   <div className="grid gap-4 md:grid-cols-2">
                     <div className="space-y-2">
-                      <p className="text-xs font-medium uppercase tracking-(--tracking-caps) text-muted-foreground">Concurrency</p>
+                      <p className="text-xs font-medium uppercase tracking-(--tracking-caps) text-muted-foreground">{t("routines.concurrency")}</p>
                       <Select
                         value={draft.concurrencyPolicy}
                         onValueChange={(concurrencyPolicy) => setDraft((current) => ({ ...current, concurrencyPolicy }))}
@@ -1137,7 +1139,7 @@ export function Routines() {
                       <p className="text-xs text-muted-foreground">{concurrencyPolicyDescriptions[draft.concurrencyPolicy]}</p>
                     </div>
                     <div className="space-y-2">
-                      <p className="text-xs font-medium uppercase tracking-(--tracking-caps) text-muted-foreground">Catch-up</p>
+                      <p className="text-xs font-medium uppercase tracking-(--tracking-caps) text-muted-foreground">{t("routines.catchUp")}</p>
                       <Select
                         value={draft.catchUpPolicy}
                         onValueChange={(catchUpPolicy) => setDraft((current) => ({ ...current, catchUpPolicy }))}
@@ -1161,7 +1163,7 @@ export function Routines() {
 
           <div className="shrink-0 flex flex-col gap-3 border-t border-border/60 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
             <div className="text-sm text-muted-foreground">
-              After creation, Paperclip takes you straight to trigger setup. Draft routines stay paused until you add a default agent.
+              {t("routines.afterCreation")}
             </div>
             <div className="flex flex-col gap-2 sm:items-end">
               <Button
@@ -1172,11 +1174,11 @@ export function Routines() {
                 }
               >
                 <Plus className="mr-2 h-4 w-4" />
-                {createRoutine.isPending ? "Creating..." : "Create routine"}
+                {createRoutine.isPending ? t("routines.creating") : t("routines.create")}
               </Button>
               {createRoutine.isError ? (
                 <p className="text-sm text-destructive">
-                  {createRoutine.error instanceof Error ? createRoutine.error.message : "Failed to create routine"}
+                  {createRoutine.error instanceof Error ? createRoutine.error.message : t("routines.createFailed")}
                 </p>
               ) : null}
             </div>
@@ -1187,7 +1189,7 @@ export function Routines() {
       {error ? (
         <Card>
           <CardContent className="pt-6 text-sm text-destructive">
-            {error instanceof Error ? error.message : "Failed to load routines"}
+            {error instanceof Error ? error.message : t("routines.loadFailed")}
           </CardContent>
         </Card>
       ) : null}
@@ -1247,7 +1249,7 @@ export function Routines() {
             <div className="py-12">
               <EmptyState
                 icon={Repeat}
-                message="No active routines. Use Create routine to define the first recurring workflow."
+                message={t("routines.empty")}
               />
             </div>
           ) : sortedRoutines.length === 0 ? (

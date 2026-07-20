@@ -10,6 +10,7 @@ import {
   taskStatusVarDefault,
 } from "../lib/status-colors";
 import { StatusGlyph } from "./StatusGlyph";
+import { useTranslation } from "react-i18next";
 
 /** Inline `--sc` local var pointing a status helper at a base-hue CSS var. */
 function scStyle(cssVar: string): CSSProperties {
@@ -28,6 +29,7 @@ function sentenceCaseStatus(status: string): string {
 // design-allow(pill-pattern): DECISION-SHEET.md C8 - status badges keep the bespoke WCAG-tuned
 // .status-chip color-mix mechanic and do not wrap the Badge primitive.
 export function StatusBadge({ status, label }: { status: string; label?: string }) {
+  const { t } = useTranslation();
   return (
     <span
       className={cn(
@@ -35,7 +37,7 @@ export function StatusBadge({ status, label }: { status: string; label?: string 
         statusBadge[status] ?? statusBadgeDefault
       )}
     >
-      {label ?? status.replace(/[_-]/g, " ")}
+      {label ?? t(`status.${status}`, { defaultValue: status.replace(/[_-]/g, " ") })}
     </span>
   );
 }
@@ -46,6 +48,7 @@ export function StatusBadge({ status, label }: { status: string; label?: string 
  * renders as "idle" (alias for dead code).
  */
 export function AgentStatusBadge({ status }: { status: string }) {
+  const { t } = useTranslation();
   const cssVar = agentStatusVar[status] ?? agentStatusVarDefault;
   const label = status === "active" ? "idle" : status;
   return (
@@ -53,7 +56,7 @@ export function AgentStatusBadge({ status }: { status: string }) {
       className="status-chip inline-flex items-center rounded-full border px-3 py-1 text-xs font-medium leading-none whitespace-nowrap shrink-0"
       style={scStyle(cssVar)}
     >
-      {label.replace(/_/g, " ")}
+      {t(`status.${label}`, { defaultValue: label.replace(/_/g, " ") })}
     </span>
   );
 }
@@ -84,6 +87,7 @@ export function AgentStatusCapsule({ status }: { status: string }) {
  * unaffected.
  */
 export function IssueStatusBadge({ status }: { status: string }) {
+  const { t } = useTranslation();
   const cssVar = taskStatusVar[status] ?? taskStatusVarDefault;
   return (
     <span
@@ -94,7 +98,7 @@ export function IssueStatusBadge({ status }: { status: string }) {
       style={scStyle(cssVar)}
     >
       <StatusGlyph status={status} size="sm" />
-      {sentenceCaseStatus(status)}
+      {t(`status.${status}`, { defaultValue: sentenceCaseStatus(status) })}
     </span>
   );
 }
