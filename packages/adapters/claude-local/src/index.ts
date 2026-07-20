@@ -5,6 +5,21 @@ export const label = "Claude Code";
 
 export const SANDBOX_INSTALL_COMMAND = "npm install -g @anthropic-ai/claude-code";
 
+/**
+ * Env applied to every claude_local run unless the agent's own adapter config
+ * sets the key explicitly.
+ *
+ * The Claude CLI's autoupdater replaces the `claude` symlink in place. A run
+ * that resolves the command while a swap is mid-flight sees the old path
+ * disappear and fails with `spawn ENOENT` / `Command not found in PATH`, which
+ * looks like a hard failure rather than the transient it is. Paperclip manages
+ * CLI installs itself (see SANDBOX_INSTALL_COMMAND), so the in-process
+ * autoupdater buys nothing and costs a race window on every run.
+ */
+export const DEFAULT_CLAUDE_LOCAL_ENV: Record<string, string> = {
+  DISABLE_AUTOUPDATER: "1",
+};
+
 export const models = [
   { id: "claude-opus-4-8", label: "Claude Opus 4.8" },
   { id: "claude-fable-5", label: "Claude Fable 5" },

@@ -2114,6 +2114,23 @@ async function resolveCommandPath(command: string, cwd: string, env: NodeJS.Proc
   return null;
 }
 
+/**
+ * Resolve a command to its absolute path on the local host, or null when it is
+ * not on PATH. Unlike resolveCommandForLogs this never decorates the result
+ * with a remote/sandbox prefix, so the return value is safe to spawn.
+ *
+ * Callers use this to pin a command at setup time instead of re-resolving it at
+ * spawn time: a package manager that swaps the binary's symlink between those
+ * two points otherwise turns a live install into `spawn ENOENT`.
+ */
+export async function resolveLocalCommandPath(
+  command: string,
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+): Promise<string | null> {
+  return resolveCommandPath(command, cwd, env);
+}
+
 export async function resolveCommandForLogs(
   command: string,
   cwd: string,
