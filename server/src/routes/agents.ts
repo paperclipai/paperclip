@@ -280,6 +280,16 @@ export function agentRoutes(
   }
 
   const IGNORE_ACTIVITY_WINDOW_EXCEPTION_RUNTIME_CONFIG_KEY = "ignoreActivityWindowException";
+  const IGNORE_ACTIVITY_WINDOW_EXCEPTION_SOURCE = "agent-fallback-sisters";
+  /**
+   * Provenance class for the sister-side grant. Deliberately NOT one of the
+   * operator-facing `ignoreActivityWindowExceptionClassSchema` values: those name
+   * a human's justification for a PRIMARY staying always-on, whereas this one
+   * records that the flag was written by this route so a fallback sister can cover
+   * its primary's lane outside the company window. Keeping the vocabularies apart
+   * is the point — it is what lets a reader tell a machine grant from a human one.
+   */
+  const SISTER_LANE_COVERAGE_EXCEPTION_CLASS = "fallback_sister_lane_coverage";
 
   async function reconcileLanePromotionActivityWindowPolicy(input: {
     companyId: string;
@@ -326,9 +336,34 @@ export function agentRoutes(
       if (!hasCompanyActivityWindow) return;
 
       const now = new Date();
+      const sisterRuntimeConfig = readObject(sister.runtimeConfig) ?? {};
+      const existingSisterException = readObject(
+        sisterRuntimeConfig[IGNORE_ACTIVITY_WINDOW_EXCEPTION_RUNTIME_CONFIG_KEY],
+      );
+      // The sister's always-on flag is machine-written, so it carries provenance in
+      // the same shape as the primary's audited exception. Without it a bare
+      // `ignoreActivityWindow: true` is ambiguous — lane residue and an operator's
+      // manual grant look identical, which is why the primary-side cleanup below
+      // still has to clear bare flags.
+      //
+      // An existing lane-coverage record is reused rather than re-stamped: this POST
+      // is an idempotent upsert callers replay, and a fresh recordedAt on every
+      // replay would churn the row and defeat the no-op skip below.
+      const sisterExceptionIsLaneCoverage =
+        existingSisterException?.class === SISTER_LANE_COVERAGE_EXCEPTION_CLASS
+        && existingSisterException?.source === IGNORE_ACTIVITY_WINDOW_EXCEPTION_SOURCE;
       const nextSisterRuntimeConfig = {
-        ...(readObject(sister.runtimeConfig) ?? {}),
+        ...sisterRuntimeConfig,
         [IGNORE_ACTIVITY_WINDOW_RUNTIME_CONFIG_KEY]: true,
+        [IGNORE_ACTIVITY_WINDOW_EXCEPTION_RUNTIME_CONFIG_KEY]: sisterExceptionIsLaneCoverage
+          ? existingSisterException
+          : {
+            class: SISTER_LANE_COVERAGE_EXCEPTION_CLASS,
+            reason: "Fallback sister covers its primary's lane outside the company activity window.",
+            source: IGNORE_ACTIVITY_WINDOW_EXCEPTION_SOURCE,
+            recordedAt: now.toISOString(),
+            recordedBy: input.actorLabel,
+          },
       };
       if (JSON.stringify(nextSisterRuntimeConfig) !== JSON.stringify(sister.runtimeConfig ?? {})) {
         await tx
@@ -343,7 +378,7 @@ export function agentRoutes(
         basePrimaryRuntimeConfig[IGNORE_ACTIVITY_WINDOW_EXCEPTION_RUNTIME_CONFIG_KEY] = {
           class: input.primaryIgnoreActivityWindowExceptionClass,
           reason: input.primaryIgnoreActivityWindowExceptionReason,
-          source: "agent-fallback-sisters",
+          source: IGNORE_ACTIVITY_WINDOW_EXCEPTION_SOURCE,
           recordedAt: now.toISOString(),
           recordedBy: input.actorLabel,
         };
@@ -358,9 +393,20 @@ export function agentRoutes(
         // here. Gating that on "first lane promotion" was tried and reverted: it makes
         // this reconciliation edge-triggered, so a swallowed reconcile failure would
         // strand the flag permanently on every subsequent replay. Keeping it
-        // convergent is the safer failure direction. The real fix is to record
-        // provenance on the sister-side write below, so a bare flag genuinely means
-        // "an operator set this by hand" rather than lane residue.
+        // convergent is the safer failure direction.
+        //
+        // The sister-side write above now records provenance, so a bare flag written
+        // from here on genuinely means "an operator set this by hand". Preserving bare
+        // flags is NOT safe yet, and the blocker is not convergence — a rule derived
+        // purely from current runtime config replays fine. The blocker is the agents
+        // already carrying bare flags written by the pre-provenance sister write: an
+        // ex-sister promoted to primary is indistinguishable from an operator grant,
+        // so preserving bare flags today would grandfather in exactly the sister-only
+        // exemptions this reconciliation exists to clear, and silently. It becomes
+        // safe once every live sister has been re-registered through this route (or
+        // backfilled) so that lane residue always carries a record; the rule then is
+        // "clear when the record is SISTER_LANE_COVERAGE_EXCEPTION_CLASS, preserve
+        // when there is no record at all".
         if (hasAuditedException && !input.retainPrimaryIgnoreActivityWindowProvided) return;
         delete basePrimaryRuntimeConfig[IGNORE_ACTIVITY_WINDOW_RUNTIME_CONFIG_KEY];
         delete basePrimaryRuntimeConfig[IGNORE_ACTIVITY_WINDOW_EXCEPTION_RUNTIME_CONFIG_KEY];

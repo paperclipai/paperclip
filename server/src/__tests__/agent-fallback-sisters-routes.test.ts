@@ -6,6 +6,18 @@ const companyId = "22222222-2222-4222-8222-222222222222";
 const primaryAgentId = "11111111-1111-4111-8111-111111111111";
 const sisterAgentId = "33333333-3333-4333-8333-333333333333";
 
+/**
+ * Provenance the route stamps on the sister side, so a bare `ignoreActivityWindow`
+ * with no record can be read as "an operator set this by hand".
+ */
+const sisterLaneCoverageException = {
+  class: "fallback_sister_lane_coverage",
+  reason: "Fallback sister covers its primary's lane outside the company activity window.",
+  source: "agent-fallback-sisters",
+  recordedAt: "2026-07-16T13:20:00.000Z",
+  recordedBy: "user:local-board",
+};
+
 const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
 }));
@@ -286,11 +298,94 @@ describe("agent fallback sister routes", () => {
 
     expect(res.status).toBe(201);
     expect(db.updateSet).toHaveBeenNthCalledWith(1, expect.objectContaining({
-      runtimeConfig: { ignoreActivityWindow: true },
+      runtimeConfig: {
+        ignoreActivityWindow: true,
+        ignoreActivityWindowException: {
+          class: "fallback_sister_lane_coverage",
+          reason: "Fallback sister covers its primary's lane outside the company activity window.",
+          source: "agent-fallback-sisters",
+          recordedAt: expect.any(String),
+          recordedBy: "user:local-board",
+        },
+      },
     }));
     expect(db.updateSet).toHaveBeenNthCalledWith(2, expect.objectContaining({
       runtimeConfig: {},
     }));
+  });
+
+  it("does not re-stamp an existing sister lane-coverage record on replay", async () => {
+    const db = createDbStub({
+      selectRows: [
+        [
+          { id: primaryAgentId },
+          { id: sisterAgentId },
+        ],
+        [{ activityWindow: { timezone: "Europe/Dublin", startHour: 17, endHour: 3 } }],
+        [
+          { id: primaryAgentId, runtimeConfig: {} },
+          {
+            id: sisterAgentId,
+            runtimeConfig: { ignoreActivityWindow: true, ignoreActivityWindowException: sisterLaneCoverageException },
+          },
+        ],
+      ],
+      returningRows: [{
+        id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+        companyId,
+        primaryAgentId,
+        sisterAgentId,
+        priority: 0,
+        createdBy: "agent:test-agent",
+        createdAt: new Date("2026-07-20T09:20:00.000Z"),
+        revokedAt: null,
+      }],
+    });
+
+    const res = await request(await createApp(db.db))
+      .post(`/api/companies/${companyId}/agent-fallback-sisters`)
+      .send({ primaryAgentId, sisterAgentId });
+
+    expect(res.status).toBe(201);
+    expect(db.updateSet).not.toHaveBeenCalled();
+  });
+
+  it("still clears a bare pre-provenance ignoreActivityWindow from a promoted primary", async () => {
+    const db = createDbStub({
+      selectRows: [
+        [
+          { id: primaryAgentId },
+          { id: sisterAgentId },
+        ],
+        [{ activityWindow: { timezone: "Europe/Dublin", startHour: 17, endHour: 3 } }],
+        [
+          { id: primaryAgentId, runtimeConfig: { ignoreActivityWindow: true } },
+          {
+            id: sisterAgentId,
+            runtimeConfig: { ignoreActivityWindow: true, ignoreActivityWindowException: sisterLaneCoverageException },
+          },
+        ],
+      ],
+      returningRows: [{
+        id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+        companyId,
+        primaryAgentId,
+        sisterAgentId,
+        priority: 0,
+        createdBy: "agent:test-agent",
+        createdAt: new Date("2026-07-20T09:25:00.000Z"),
+        revokedAt: null,
+      }],
+    });
+
+    const res = await request(await createApp(db.db))
+      .post(`/api/companies/${companyId}/agent-fallback-sisters`)
+      .send({ primaryAgentId, sisterAgentId });
+
+    expect(res.status).toBe(201);
+    // Only the primary is written: the sister already carries provenance.
+    expect(db.updateSet).toHaveBeenCalledTimes(1);
+    expect(db.updateSet).toHaveBeenCalledWith(expect.objectContaining({ runtimeConfig: {} }));
   });
 
   it("retains ignoreActivityWindow for an explicit audited primary exception", async () => {
@@ -313,7 +408,10 @@ describe("agent fallback sister routes", () => {
         [{ activityWindow: { timezone: "Europe/Dublin", startHour: 17, endHour: 3 } }],
         [
           { id: primaryAgentId, runtimeConfig: { ignoreActivityWindow: true } },
-          { id: sisterAgentId, runtimeConfig: { ignoreActivityWindow: true } },
+          {
+            id: sisterAgentId,
+            runtimeConfig: { ignoreActivityWindow: true, ignoreActivityWindowException: sisterLaneCoverageException },
+          },
         ],
       ],
       returningRows: [createdRow],
@@ -364,7 +462,10 @@ describe("agent fallback sister routes", () => {
             id: primaryAgentId,
             runtimeConfig: { ignoreActivityWindow: true, ignoreActivityWindowException: auditedException },
           },
-          { id: sisterAgentId, runtimeConfig: { ignoreActivityWindow: true } },
+          {
+            id: sisterAgentId,
+            runtimeConfig: { ignoreActivityWindow: true, ignoreActivityWindowException: sisterLaneCoverageException },
+          },
         ],
       ],
       returningRows: [{
@@ -403,7 +504,10 @@ describe("agent fallback sister routes", () => {
               ignoreActivityWindowException: { class: "window_flipped_cto", source: "agent-fallback-sisters" },
             },
           },
-          { id: sisterAgentId, runtimeConfig: { ignoreActivityWindow: true } },
+          {
+            id: sisterAgentId,
+            runtimeConfig: { ignoreActivityWindow: true, ignoreActivityWindowException: sisterLaneCoverageException },
+          },
         ],
       ],
       returningRows: [{
