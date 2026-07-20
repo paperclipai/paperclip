@@ -16,6 +16,7 @@ export const queryKeys = {
       ["company-skills", companyId, "github-credentials", hostname ?? "__all__", owner ?? "__all__"] as const,
   },
   resources: {
+    all: (companyId: string) => ["resources", companyId] as const,
     list: (companyId: string, includeArchived = false) => ["resources", companyId, includeArchived] as const,
     detail: (id: string) => ["resources", "detail", id] as const,
   },

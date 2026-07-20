@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { queryKeys } from "@/lib/queryKeys";
 import { toResourcePayload, validateResourceDraft, type ResourceDraft } from "./Resources";
 
 const validDraft: ResourceDraft = {
@@ -13,6 +14,12 @@ const validDraft: ResourceDraft = {
 };
 
 describe("Resource form contract", () => {
+  it("provides a company-wide query prefix for active and archived list variants", () => {
+    expect(queryKeys.resources.all("company-1")).toEqual(["resources", "company-1"]);
+    expect(queryKeys.resources.list("company-1", false)).toEqual(["resources", "company-1", false]);
+    expect(queryKeys.resources.list("company-1", true)).toEqual(["resources", "company-1", true]);
+  });
+
   it("rejects unsafe mount and source paths", () => {
     expect(validateResourceDraft({ ...validDraft, mountPath: "../outside" })).toContain("Mount path");
     expect(validateResourceDraft({ ...validDraft, sourcePath: "../private" })).toContain("Source path");

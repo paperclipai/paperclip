@@ -292,7 +292,7 @@ export function Resources() {
     queryFn: () => secretsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId && formOpen,
   });
-  const invalidateResources = () => queryClient.invalidateQueries({ queryKey: queryKeys.resources.list(selectedCompanyId!) });
+  const invalidateResources = () => queryClient.invalidateQueries({ queryKey: queryKeys.resources.all(selectedCompanyId!) });
   const saveMutation = useMutation({
     mutationFn: (payload: ResourceMutationInput) => editingResource ? resourcesApi.update(editingResource.id, payload) : resourcesApi.create(selectedCompanyId!, payload),
     onSuccess: async () => {
@@ -314,6 +314,13 @@ export function Resources() {
       await invalidateResources();
       setArchiveTarget(null);
       pushToast({ title: "Resource archived", tone: "success" });
+    },
+    onError: (error) => {
+      pushToast({
+        title: "Failed to archive Resource",
+        body: error instanceof Error ? error.message : "Unable to archive this Resource.",
+        tone: "error",
+      });
     },
   });
 
