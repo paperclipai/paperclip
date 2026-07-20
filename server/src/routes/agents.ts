@@ -383,31 +383,39 @@ export function agentRoutes(
           recordedBy: input.actorLabel,
         };
       } else {
-        const hasAuditedException =
-          readObject(basePrimaryRuntimeConfig[IGNORE_ACTIVITY_WINDOW_EXCEPTION_RUNTIME_CONFIG_KEY]) !== null;
-        // A re-registration that never mentioned the flag must not silently revoke
-        // a previously granted, audited exception. Revocation stays possible, but
-        // only when the caller explicitly sends retainPrimaryIgnoreActivityWindow=false.
+        const existingPrimaryException = readObject(
+          basePrimaryRuntimeConfig[IGNORE_ACTIVITY_WINDOW_EXCEPTION_RUNTIME_CONFIG_KEY],
+        );
+        // Lane residue: written by the sister-side branch above (or stamped onto a
+        // pre-provenance sister by scripts/lane_registry/backfill_sister_lane_coverage_provenance.py).
+        // A promoted primary no longer needs its old sister-lane coverage, so this is
+        // the one record class the cleanup clears.
+        const primaryExceptionIsLaneCoverage =
+          existingPrimaryException?.class === SISTER_LANE_COVERAGE_EXCEPTION_CLASS
+          && existingPrimaryException?.source === IGNORE_ACTIVITY_WINDOW_EXCEPTION_SOURCE;
+        // An operator's audited grant. A re-registration that never mentioned the flag
+        // must not silently revoke it; revocation stays possible, but only when the
+        // caller explicitly sends retainPrimaryIgnoreActivityWindow=false.
+        const hasOperatorException = existingPrimaryException !== null && !primaryExceptionIsLaneCoverage;
+        if (hasOperatorException && !input.retainPrimaryIgnoreActivityWindowProvided) return;
+        // A BARE `ignoreActivityWindow: true` — flag set, no record at all — is also an
+        // operator grant, and is preserved on the same terms. That reading only holds
+        // because every machine-written grant now carries provenance: the sister-side
+        // branch above stamps it going forward, and the backfill script stamps the
+        // sisters registered before it existed. With both in place "bare" reliably
+        // means "a human set this by hand".
         //
-        // A BARE `ignoreActivityWindow: true` (no exception record) is still cleared
-        // here. Gating that on "first lane promotion" was tried and reverted: it makes
-        // this reconciliation edge-triggered, so a swallowed reconcile failure would
-        // strand the flag permanently on every subsequent replay. Keeping it
-        // convergent is the safer failure direction.
-        //
-        // The sister-side write above now records provenance, so a bare flag written
-        // from here on genuinely means "an operator set this by hand". Preserving bare
-        // flags is NOT safe yet, and the blocker is not convergence — a rule derived
-        // purely from current runtime config replays fine. The blocker is the agents
-        // already carrying bare flags written by the pre-provenance sister write: an
-        // ex-sister promoted to primary is indistinguishable from an operator grant,
-        // so preserving bare flags today would grandfather in exactly the sister-only
-        // exemptions this reconciliation exists to clear, and silently. It becomes
-        // safe once every live sister has been re-registered through this route (or
-        // backfilled) so that lane residue always carries a record; the rule then is
-        // "clear when the record is SISTER_LANE_COVERAGE_EXCEPTION_CLASS, preserve
-        // when there is no record at all".
-        if (hasAuditedException && !input.retainPrimaryIgnoreActivityWindowProvided) return;
+        // This stays CONVERGENT, which the reverted "clear only on first lane promotion"
+        // attempt did not: the decision is a pure function of the primary's CURRENT
+        // runtime config, never of registry history. The caller swallows reconcile
+        // failures, so every path has to be safe to replay — and each case here is a
+        // fixed point. A preserved grant re-reads as preserved; a cleared lane-coverage
+        // record re-reads as "no flag, nothing to do"; an edge-triggered rule instead
+        // strands the flag forever the first time the reconcile throws.
+        const hasBareOperatorGrant =
+          existingPrimaryException === null
+          && basePrimaryRuntimeConfig[IGNORE_ACTIVITY_WINDOW_RUNTIME_CONFIG_KEY] === true;
+        if (hasBareOperatorGrant && !input.retainPrimaryIgnoreActivityWindowProvided) return;
         delete basePrimaryRuntimeConfig[IGNORE_ACTIVITY_WINDOW_RUNTIME_CONFIG_KEY];
         delete basePrimaryRuntimeConfig[IGNORE_ACTIVITY_WINDOW_EXCEPTION_RUNTIME_CONFIG_KEY];
       }

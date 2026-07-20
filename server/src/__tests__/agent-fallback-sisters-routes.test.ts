@@ -281,7 +281,12 @@ describe("agent fallback sister routes", () => {
         ],
         [{ activityWindow: { timezone: "Europe/Dublin", startHour: 17, endHour: 3 } }],
         [
-          { id: primaryAgentId, runtimeConfig: { ignoreActivityWindow: true } },
+          // Sister-only residue is identified by its lane-coverage RECORD, not by a
+          // bare flag — a bare flag is an operator grant and is preserved.
+          {
+            id: primaryAgentId,
+            runtimeConfig: { ignoreActivityWindow: true, ignoreActivityWindowException: sisterLaneCoverageException },
+          },
           { id: sisterAgentId, runtimeConfig: {} },
         ],
       ],
@@ -350,7 +355,11 @@ describe("agent fallback sister routes", () => {
     expect(db.updateSet).not.toHaveBeenCalled();
   });
 
-  it("still clears a bare pre-provenance ignoreActivityWindow from a promoted primary", async () => {
+  it("preserves a bare primary ignoreActivityWindow as an operator grant", async () => {
+    // Every machine-written grant now carries provenance — stamped by the sister-side
+    // write, or by scripts/lane_registry/backfill_sister_lane_coverage_provenance.py for
+    // sisters registered before it existed. So a BARE flag means a human set it, and a
+    // re-registration that never mentions the flag must not revoke it.
     const db = createDbStub({
       selectRows: [
         [
@@ -383,9 +392,129 @@ describe("agent fallback sister routes", () => {
       .send({ primaryAgentId, sisterAgentId });
 
     expect(res.status).toBe(201);
-    // Only the primary is written: the sister already carries provenance.
+    // Neither side is written: the sister already carries provenance and the primary's
+    // bare grant is preserved. Replaying reads the same and writes nothing again, so a
+    // swallowed reconcile failure cannot strand the lane.
+    expect(db.updateSet).not.toHaveBeenCalled();
+  });
+
+  it("revokes a bare primary grant when the caller explicitly sends retain=false", async () => {
+    const db = createDbStub({
+      selectRows: [
+        [
+          { id: primaryAgentId },
+          { id: sisterAgentId },
+        ],
+        [{ activityWindow: { timezone: "Europe/Dublin", startHour: 17, endHour: 3 } }],
+        [
+          { id: primaryAgentId, runtimeConfig: { ignoreActivityWindow: true } },
+          {
+            id: sisterAgentId,
+            runtimeConfig: { ignoreActivityWindow: true, ignoreActivityWindowException: sisterLaneCoverageException },
+          },
+        ],
+      ],
+      returningRows: [{
+        id: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+        companyId,
+        primaryAgentId,
+        sisterAgentId,
+        priority: 0,
+        createdBy: "agent:test-agent",
+        createdAt: new Date("2026-07-20T09:30:00.000Z"),
+        revokedAt: null,
+      }],
+    });
+
+    const res = await request(await createApp(db.db))
+      .post(`/api/companies/${companyId}/agent-fallback-sisters`)
+      .send({ primaryAgentId, sisterAgentId, retainPrimaryIgnoreActivityWindow: false });
+
+    expect(res.status).toBe(201);
     expect(db.updateSet).toHaveBeenCalledTimes(1);
     expect(db.updateSet).toHaveBeenCalledWith(expect.objectContaining({ runtimeConfig: {} }));
+  });
+
+  it("clears a lane-coverage record from a primary promoted out of a sister lane", async () => {
+    // Lane flip: yesterday's sister is today's primary, so it arrives carrying the
+    // record the sister-side write stamped on it. That is exactly the sister-only
+    // exemption this reconciliation exists to drop — it is NOT an operator grant.
+    const db = createDbStub({
+      selectRows: [
+        [
+          { id: primaryAgentId },
+          { id: sisterAgentId },
+        ],
+        [{ activityWindow: { timezone: "Europe/Dublin", startHour: 17, endHour: 3 } }],
+        [
+          {
+            id: primaryAgentId,
+            runtimeConfig: { ignoreActivityWindow: true, ignoreActivityWindowException: sisterLaneCoverageException },
+          },
+          {
+            id: sisterAgentId,
+            runtimeConfig: { ignoreActivityWindow: true, ignoreActivityWindowException: sisterLaneCoverageException },
+          },
+        ],
+      ],
+      returningRows: [{
+        id: "12121212-1212-4121-8121-121212121212",
+        companyId,
+        primaryAgentId,
+        sisterAgentId,
+        priority: 0,
+        createdBy: "agent:test-agent",
+        createdAt: new Date("2026-07-20T09:35:00.000Z"),
+        revokedAt: null,
+      }],
+    });
+
+    const res = await request(await createApp(db.db))
+      .post(`/api/companies/${companyId}/agent-fallback-sisters`)
+      .send({ primaryAgentId, sisterAgentId });
+
+    expect(res.status).toBe(201);
+    expect(db.updateSet).toHaveBeenCalledTimes(1);
+    expect(db.updateSet).toHaveBeenCalledWith(expect.objectContaining({ runtimeConfig: {} }));
+  });
+
+  it("converges on replay after the lane-coverage record has already been cleared", async () => {
+    // The caller swallows reconcile failures, so every outcome has to be a fixed
+    // point: replaying the same registration against the END state of the previous
+    // run must write nothing rather than oscillate or re-stamp.
+    const db = createDbStub({
+      selectRows: [
+        [
+          { id: primaryAgentId },
+          { id: sisterAgentId },
+        ],
+        [{ activityWindow: { timezone: "Europe/Dublin", startHour: 17, endHour: 3 } }],
+        [
+          { id: primaryAgentId, runtimeConfig: {} },
+          {
+            id: sisterAgentId,
+            runtimeConfig: { ignoreActivityWindow: true, ignoreActivityWindowException: sisterLaneCoverageException },
+          },
+        ],
+      ],
+      returningRows: [{
+        id: "13131313-1313-4131-8131-131313131313",
+        companyId,
+        primaryAgentId,
+        sisterAgentId,
+        priority: 0,
+        createdBy: "agent:test-agent",
+        createdAt: new Date("2026-07-20T09:40:00.000Z"),
+        revokedAt: null,
+      }],
+    });
+
+    const res = await request(await createApp(db.db))
+      .post(`/api/companies/${companyId}/agent-fallback-sisters`)
+      .send({ primaryAgentId, sisterAgentId });
+
+    expect(res.status).toBe(201);
+    expect(db.updateSet).not.toHaveBeenCalled();
   });
 
   it("retains ignoreActivityWindow for an explicit audited primary exception", async () => {
