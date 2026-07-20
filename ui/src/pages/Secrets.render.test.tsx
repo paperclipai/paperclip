@@ -1511,8 +1511,8 @@ describe("Secrets folder view (PAP-14698)", () => {
     expect(table.textContent).toContain("dev");
     expect(table.textContent).toContain("prod");
     expect(table.textContent).toContain("standalone");
-    // dev groups both oauth secrets recursively; github is its single subfolder.
-    expect(table.textContent).toContain("2 secrets · 1 folder");
+    // dev groups both oauth secrets recursively; github and oauth are descendant folders.
+    expect(table.textContent).toContain("2 secrets · 2 folders");
     expect(table.textContent).toContain("1 secret · 1 folder");
     // Folder rows are real links carrying ?path=.
     const links = [...container.querySelectorAll("a")].map((a) => a.getAttribute("href") ?? "");

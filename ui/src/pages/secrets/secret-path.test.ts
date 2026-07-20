@@ -29,8 +29,8 @@ describe("secret path normalization", () => {
     expect(normalizeSecretPath("//dev///github/")).toBe("dev/github");
     expect(buildSecretPathListing(rows, "/")).toEqual({
       folders: [
-        { name: "dev", path: "dev", secretCount: 1, directSubfolderCount: 0 },
-        { name: "prod", path: "prod", secretCount: 1, directSubfolderCount: 1 },
+        { name: "dev", path: "dev", secretCount: 1, folderCount: 0 },
+        { name: "prod", path: "prod", secretCount: 1, folderCount: 1 },
       ],
       secrets: [rows[2]],
     });
@@ -50,7 +50,11 @@ describe("buildSecretPathListing", () => {
     const nested = companyRow("nested", "dev/oauth/token");
 
     expect(buildSecretPathListing([exact, nested], "")).toEqual({
-      folders: [{ name: "dev", path: "dev", secretCount: 1, directSubfolderCount: 1 }],
+      folders: [{ name: "dev", path: "dev", secretCount: 1, folderCount: 1 }],
+      secrets: [exact],
+    });
+    expect(buildSecretPathListing([exact, nested], "dev")).toEqual({
+      folders: [{ name: "oauth", path: "dev/oauth", secretCount: 1, folderCount: 0 }],
       secrets: [exact],
     });
   });
@@ -90,7 +94,7 @@ describe("buildSecretPathListing", () => {
         name: "100%",
         path: "team & ops/100%",
         secretCount: 1,
-        directSubfolderCount: 0,
+        folderCount: 0,
       },
     ]);
     expect(buildSecretPathBreadcrumbs("/team & ops//100%/api?key=a%2Fb/")).toEqual([
@@ -100,7 +104,7 @@ describe("buildSecretPathListing", () => {
     ]);
   });
 
-  it("computes recursive secret and direct subfolder counts from the provided rows", () => {
+  it("computes recursive secret and folder counts from the provided rows", () => {
     const allRows = [
       companyRow("direct", "dev/direct"),
       companyRow("a", "dev/a/token"),
@@ -111,12 +115,12 @@ describe("buildSecretPathListing", () => {
     const filteredRows = allRows.filter((row) => row.id !== "filtered");
 
     expect(buildSecretPathListing(filteredRows, "").folders).toEqual([
-      { name: "dev", path: "dev", secretCount: 4, directSubfolderCount: 2 },
+      { name: "dev", path: "dev", secretCount: 4, folderCount: 3 },
     ]);
     expect(buildSecretPathListing(filteredRows, "dev")).toEqual({
       folders: [
-        { name: "a", path: "dev/a", secretCount: 1, directSubfolderCount: 0 },
-        { name: "b", path: "dev/b", secretCount: 2, directSubfolderCount: 1 },
+        { name: "a", path: "dev/a", secretCount: 1, folderCount: 0 },
+        { name: "b", path: "dev/b", secretCount: 2, folderCount: 1 },
       ],
       secrets: [allRows[0]],
     });

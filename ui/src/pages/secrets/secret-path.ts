@@ -6,7 +6,7 @@ export interface SecretPathFolder {
   name: string;
   path: string;
   secretCount: number;
-  directSubfolderCount: number;
+  folderCount: number;
 }
 
 export interface SecretPathBreadcrumb {
@@ -60,13 +60,13 @@ export function buildSecretPathListing<Row extends SecretPathRow>(
   for (const entry of entries) {
     if (!startsWithSegments(entry.segments, pathSegments)) continue;
     const relativeDepth = entry.segments.length - pathSegments.length;
-    if (relativeDepth === 1) secrets.push(entry.row);
+    if (relativeDepth === 0 || relativeDepth === 1) secrets.push(entry.row);
     if (relativeDepth >= 2) folderNames.add(entry.segments[pathSegments.length]);
   }
 
   const folders = [...folderNames].map((name): SecretPathFolder => {
     const folderSegments = [...pathSegments, name];
-    const directSubfolderNames = new Set<string>();
+    const descendantFolderPaths = new Set<string>();
     let secretCount = 0;
 
     for (const entry of entries) {
@@ -74,14 +74,18 @@ export function buildSecretPathListing<Row extends SecretPathRow>(
       const relativeDepth = entry.segments.length - folderSegments.length;
       if (relativeDepth < 1) continue;
       secretCount += 1;
-      if (relativeDepth >= 2) directSubfolderNames.add(entry.segments[folderSegments.length]);
+      for (let depth = 1; depth < relativeDepth; depth += 1) {
+        descendantFolderPaths.add(
+          entry.segments.slice(folderSegments.length, folderSegments.length + depth).join("/"),
+        );
+      }
     }
 
     return {
       name,
       path: folderSegments.join("/"),
       secretCount,
-      directSubfolderCount: directSubfolderNames.size,
+      folderCount: descendantFolderPaths.size,
     };
   });
 

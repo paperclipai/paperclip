@@ -1595,7 +1595,7 @@ export function Secrets() {
             <span className="truncate font-medium text-foreground">{folder.name}</span>
           </div>
           <div className="mt-0.5 pl-6 text-xs text-muted-foreground">
-            {formatSecretPathCounts(folder.secretCount, folder.directSubfolderCount)}
+            {formatSecretPathCounts(folder.secretCount, folder.folderCount)}
           </div>
         </div>
         <div role="cell" aria-hidden="true" />
@@ -1620,7 +1620,7 @@ export function Secrets() {
           <div className="min-w-0">
             <div className="truncate font-medium text-foreground">{folder.name}</div>
             <div className="text-xs text-muted-foreground">
-              {formatSecretPathCounts(folder.secretCount, folder.directSubfolderCount)}
+              {formatSecretPathCounts(folder.secretCount, folder.folderCount)}
             </div>
           </div>
         </div>
@@ -1630,7 +1630,7 @@ export function Secrets() {
   }
 
   function renderUpRow(variant: "table" | "card") {
-    const parentLabel = parentFolderPath ? parentFolderPath.split("/").pop()! : "all secrets";
+    const parentLabel = parentFolderPath ? parentFolderPath.split("/").pop()! : "All secrets";
     return (
       <Link
         to={folderLinkTo(parentFolderPath)}
