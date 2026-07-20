@@ -44,6 +44,12 @@
     "starResource": "收藏 {{name}}",
     "unstarResource": "取消收藏 {{name}}",
     "couldntSaveRetry": "保存失败 — 重试",
+    "join": "加入",
+    "joining": "正在加入...",
+    "leave": "离开",
+    "leaving": "正在离开...",
+    "joinResource": "加入 {{name}}",
+    "leaveResource": "离开 {{name}}",
     "selectCompany": "请选择公司后继续。",
     "filterByType": "按类型筛选",
     "allTypes": "全部类型",
@@ -78,6 +84,47 @@
       "blocked": "受阻",
       "cancelled": "已取消",
       "backlog": "待办池"
+    }
+  },
+  "statusIcon": {
+    "blocked": "受阻",
+    "waitingActiveSubTask": "受阻 · 正在等待活跃子任务 {{identifier}}",
+    "waitingOneActiveSubTask": "受阻 · 正在等待 1 个活跃子任务",
+    "waitingActiveSubTasks": "受阻 · 正在等待 {{count}} 个活跃子任务",
+    "coveredByActiveDependency": "受阻 · 已由活跃依赖项 {{identifier}} 处理",
+    "coveredByOneActiveDependency": "受阻 · 已由 1 个活跃依赖项处理",
+    "coveredByActiveDependencies": "受阻 · 已由 {{count}} 个活跃依赖项处理",
+    "reviewStalledOn": "受阻 · {{identifier}} 的审核已停滞",
+    "reviewStalledOne": "受阻 · 审核停滞且没有明确的下一步",
+    "reviewsStalled": "受阻 · {{count}} 项审核停滞且没有明确的下一步",
+    "oneBlockerNeedsAttention": "受阻 · 1 个阻塞项需要处理",
+    "blockersNeedAttention": "受阻 · {{count}} 个阻塞项需要处理",
+    "oneBlockerNeedsAttentionCovered": "受阻 · 1 个阻塞项需要处理；{{coveredCount}} 个已有活跃工作跟进",
+    "blockersNeedAttentionCovered": "受阻 · {{count}} 个阻塞项需要处理；{{coveredCount}} 个已有活跃工作跟进"
+  },
+  "blockedInbox": {
+    "reasonSeverity": "原因：{{reason}}，严重性：{{severity}}",
+    "variants": {
+      "needs_decision": "需要决策",
+      "stalled": "阻塞链已停滞",
+      "needs_attention": "需要处理",
+      "recovery_required": "需要恢复",
+      "external_wait": "等待外部处理",
+      "owner_paused": "负责人已暂停"
+    },
+    "severity": {
+      "critical": "紧急",
+      "high": "高",
+      "medium": "中",
+      "low": "低"
+    }
+  },
+  "artifacts": {
+    "groupCurrent": "工件分组（当前：{{group}}）",
+    "group": {
+      "none": "不分组",
+      "task": "任务",
+      "parent_task": "父任务"
     }
   },
   "navigation": {

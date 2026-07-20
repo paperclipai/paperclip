@@ -44,6 +44,12 @@
     "starResource": "Star {{name}}",
     "unstarResource": "Unstar {{name}}",
     "couldntSaveRetry": "Couldn't save — retry",
+    "join": "Join",
+    "joining": "Joining...",
+    "leave": "Leave",
+    "leaving": "Leaving...",
+    "joinResource": "Join {{name}}",
+    "leaveResource": "Leave {{name}}",
     "selectCompany": "Select a company to continue.",
     "filterByType": "Filter by type",
     "allTypes": "All types",
@@ -78,6 +84,47 @@
       "blocked": "Blocked",
       "cancelled": "Cancelled",
       "backlog": "Backlog"
+    }
+  },
+  "statusIcon": {
+    "blocked": "Blocked",
+    "waitingActiveSubTask": "Blocked · waiting on active sub-task {{identifier}}",
+    "waitingOneActiveSubTask": "Blocked · waiting on 1 active sub-task",
+    "waitingActiveSubTasks": "Blocked · waiting on {{count}} active sub-tasks",
+    "coveredByActiveDependency": "Blocked · covered by active dependency {{identifier}}",
+    "coveredByOneActiveDependency": "Blocked · covered by 1 active dependency",
+    "coveredByActiveDependencies": "Blocked · covered by {{count}} active dependencies",
+    "reviewStalledOn": "Blocked · review stalled on {{identifier}}",
+    "reviewStalledOne": "Blocked · review stalled with no clear next step",
+    "reviewsStalled": "Blocked · {{count}} reviews stalled with no clear next step",
+    "oneBlockerNeedsAttention": "Blocked · 1 blocker needs attention",
+    "blockersNeedAttention": "Blocked · {{count}} blockers need attention",
+    "oneBlockerNeedsAttentionCovered": "Blocked · 1 blocker needs attention; {{coveredCount}} covered by active work",
+    "blockersNeedAttentionCovered": "Blocked · {{count}} blockers need attention; {{coveredCount}} covered by active work"
+  },
+  "blockedInbox": {
+    "reasonSeverity": "Reason: {{reason}}, severity {{severity}}",
+    "variants": {
+      "needs_decision": "Needs decision",
+      "stalled": "Blocked chain stalled",
+      "needs_attention": "Needs attention",
+      "recovery_required": "Recovery required",
+      "external_wait": "External wait",
+      "owner_paused": "Owner paused"
+    },
+    "severity": {
+      "critical": "critical",
+      "high": "high",
+      "medium": "medium",
+      "low": "low"
+    }
+  },
+  "artifacts": {
+    "groupCurrent": "Group artifacts (currently {{group}})",
+    "group": {
+      "none": "None",
+      "task": "Task",
+      "parent_task": "Parent task"
     }
   },
   "navigation": {
