@@ -57,7 +57,17 @@ export async function inheritCompanyCredentialEnv(
   } catch {
     return requestedAdapterConfig;
   }
-  const donors = donorRows.filter((row) => asRecord(asRecord(row.adapterConfig)?.env));
+  // A donor must have at least one secret_ref binding: an agent whose env is
+  // empty (or holds only plain/cleared values) would otherwise win the ceo
+  // preference and make inheritance a silent no-op.
+  const donors = donorRows.filter((row) => {
+    const env = asRecord(asRecord(row.adapterConfig)?.env);
+    if (!env) return false;
+    return Object.values(env).some((binding) => {
+      const parsed = asRecord(binding);
+      return parsed?.type === "secret_ref" && typeof parsed.secretId === "string";
+    });
+  });
   const donor = donors.find((row) => row.role === "ceo") ?? donors[0];
   if (!donor) return requestedAdapterConfig;
   const donorEnv = asRecord(asRecord(donor.adapterConfig)?.env) ?? {};

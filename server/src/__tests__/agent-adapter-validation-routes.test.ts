@@ -409,6 +409,36 @@ describe("agent routes adapter validation", () => {
     });
   });
 
+  it("skips donors without secret_ref bindings so an empty-env ceo does not shadow a credentialed agent", async () => {
+    const app = await createApp({
+      agentRows: [
+        { role: "ceo", adapterConfig: { env: {} } },
+        {
+          role: "general",
+          adapterConfig: {
+            env: { MY_TOKEN: { type: "secret_ref", secretId: "22222222-2222-4222-8222-222222222222" } },
+          },
+        },
+      ],
+    });
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post("/api/companies/company-1/agents")
+        .send({
+          name: "Second Agent",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        }),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    const createInput = mockAgentService.create.mock.calls.at(-1)?.[1] as Record<string, unknown>;
+    const adapterConfig = createInput.adapterConfig as Record<string, unknown>;
+    expect(adapterConfig.env).toMatchObject({
+      MY_TOKEN: { type: "secret_ref", secretId: "22222222-2222-4222-8222-222222222222", version: "latest" },
+    });
+  });
+
   it("inherits a same-adapter company agent's secret_ref env when hiring an agent", async () => {
     const app = await createApp({
       agentRows: [
