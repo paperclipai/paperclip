@@ -80,6 +80,16 @@ export { backfillLegacyToolOAuthTokens } from "./tool-oauth-legacy-backfill.js";
 export { toolAccessPolicyService } from "./tool-access-policy.js";
 export { routineService } from "./routines.js";
 export { costService } from "./costs.js";
+export {
+  buildBillingPreview,
+  calculateOverage,
+  classifyUsageBilling,
+  createCheckoutSession,
+  createPortalSession,
+  resolveStripePriceId,
+  TIERS,
+  usageMeteringService,
+} from "./usage-metering.js";
 export { financeService } from "./finance.js";
 export { heartbeatService, resolveHeartbeatSchedulingSuppression } from "./heartbeat.js";
 export {
