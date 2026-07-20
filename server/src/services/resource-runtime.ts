@@ -63,7 +63,7 @@ function normalizePublishRef(ref: string | undefined, fallback: string) {
 }
 
 function validateBranch(branch: string) {
-  if (!branch || branch.startsWith("-") || branch.includes("..") || /[\s~^:?*\\\[\]]/.test(branch)) {
+  if (!branch || branch.startsWith("-") || branch.endsWith(".") || branch.includes("..") || /[\s~^:?*\\\[\]]/.test(branch)) {
     throw unprocessable("Invalid Git output branch");
   }
   return branch;

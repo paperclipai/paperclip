@@ -183,6 +183,13 @@ describeEmbeddedPostgres("resourceRuntimeService", () => {
       manifest: { version: 1, resources: [{ resourceId, mode: "input_output", output: { action: "push", targetRef: "feat[scope" } }] },
     })).rejects.toThrow("Invalid Git output branch");
 
+    await expect(resourceRuntimeService(db).prepare({
+      companyId,
+      runId: "run-trailing-dot-branch-test",
+      workspaceRoot: path.join(fixtureRoot, "trailing-dot-branch-workspace"),
+      manifest: { version: 1, resources: [{ resourceId, mode: "input_output", output: { action: "pull_request", branch: "feature." } }] },
+    })).rejects.toThrow("Invalid Git output branch");
+
     const collidingResourceId = randomUUID();
     await db.insert(resources).values({
       id: collidingResourceId,
