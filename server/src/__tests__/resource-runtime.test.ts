@@ -210,6 +210,24 @@ describeEmbeddedPostgres("resourceRuntimeService", () => {
     expect((request?.headers as Record<string, string>).authorization).toBe("Bearer secret-token");
   });
 
+  it("retries transient GitHub API failures before succeeding", async () => {
+    let attempts = 0;
+    const provider = githubPullRequestProvider(async () => {
+      attempts += 1;
+      if (attempts < 3) return new Response("temporarily unavailable", { status: 503 });
+      return new Response(JSON.stringify({ number: 43, html_url: "https://github.com/acme/repo/pull/43" }), { status: 201 });
+    }, 0);
+    await expect(provider.create({
+      repository: "https://github.com/acme/repo.git",
+      token: "secret-token",
+      head: "bizbox/update",
+      base: "main",
+      title: "Update",
+      body: "Generated",
+    })).resolves.toEqual({ id: "43", url: "https://github.com/acme/repo/pull/43" });
+    expect(attempts).toBe(3);
+  });
+
   it("only allows credential-backed HTTPS Git hosts", () => {
     expect(() => validateCredentialRepository("https://github.com/acme/repo.git")).not.toThrow();
     expect(() => validateCredentialRepository("http://attacker.example/repo.git")).toThrow("require an HTTPS Git repository");
@@ -217,22 +235,23 @@ describeEmbeddedPostgres("resourceRuntimeService", () => {
   });
 
   it("redacts provider failure details", async () => {
-    const provider = githubPullRequestProvider(async () => new Response("token=secret-token", { status: 500 }));
-    await expect(provider.create({
+    const provider = githubPullRequestProvider(async () => new Response(JSON.stringify({
+      message: "Validation Failed",
+      errors: [{ resource: "PullRequest", code: "custom", message: "A pull request already exists" }],
+      token: "secret-token",
+    }), { status: 422, headers: { "content-type": "application/json" } }));
+    const error = await provider.create({
       repository: "git@github.com:acme/repo.git",
       token: "secret-token",
       head: "branch",
       base: "main",
       title: "Update",
       body: "",
-    })).rejects.toThrow("GitHub pull request creation failed");
-    await expect(provider.create({
-      repository: "git@github.com:acme/repo.git",
-      token: "secret-token",
-      head: "branch",
-      base: "main",
-      title: "Update",
-      body: "",
-    })).rejects.not.toThrow("secret-token");
+    }).catch((caught) => caught);
+    expect(error).toMatchObject({ status: 422 });
+    expect(error.message).toContain("GitHub pull request creation failed (HTTP 422)");
+    expect(error.message).toContain("Validation Failed");
+    expect(error.message).toContain("A pull request already exists");
+    expect(error.message).not.toContain("secret-token");
   });
 });

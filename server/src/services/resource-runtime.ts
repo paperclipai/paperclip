@@ -225,26 +225,70 @@ function githubRepository(repository: string) {
   return { owner: match[1], repo: match[2] };
 }
 
-export function githubPullRequestProvider(fetchImpl: typeof fetch = fetch): PullRequestProvider {
+function sanitizeGithubDetail(value: string, token: string) {
+  const redacted = token ? value.replaceAll(token, "[REDACTED]") : value;
+  return redacted.replace(/[\r\n\t]+/g, " ").trim().slice(0, 300);
+}
+
+async function githubResponseDetail(response: Response, token: string) {
+  const body = await response.text();
+  if (!body) return "";
+  try {
+    const data = JSON.parse(body) as {
+      message?: unknown;
+      errors?: unknown;
+    };
+    const details = [
+      typeof data.message === "string" ? data.message : null,
+      Array.isArray(data.errors)
+        ? data.errors.map((error) => {
+          if (!error || typeof error !== "object") return null;
+          const item = error as { resource?: unknown; field?: unknown; code?: unknown; message?: unknown };
+          return [item.resource, item.field, item.code, item.message]
+            .filter((part): part is string => typeof part === "string")
+            .join(" ");
+        }).filter(Boolean).join("; ")
+        : null,
+    ].filter((detail): detail is string => Boolean(detail));
+    return sanitizeGithubDetail(details.join(" — "), token);
+  } catch {
+    return sanitizeGithubDetail(body, token);
+  }
+}
+
+export function githubPullRequestProvider(fetchImpl: typeof fetch = fetch, retryDelayMs = 250): PullRequestProvider {
   return {
     create: async ({ repository, token, head, base, title, body }) => {
       const { owner, repo } = githubRepository(repository);
-      let response: Response;
-      try {
-        response = await fetchImpl(`https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls`, {
-          method: "POST",
-          headers: {
-            accept: "application/vnd.github+json",
-            authorization: `Bearer ${token}`,
-            "content-type": "application/json",
-            "x-github-api-version": "2022-11-28",
-          },
-          body: JSON.stringify({ title, body, head, base }),
-        });
-      } catch {
-        throw unprocessable("GitHub pull request creation failed");
+      let response!: Response;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        try {
+          response = await fetchImpl(`https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls`, {
+            method: "POST",
+            headers: {
+              accept: "application/vnd.github+json",
+              authorization: `Bearer ${token}`,
+              "content-type": "application/json",
+              "x-github-api-version": "2022-11-28",
+            },
+            body: JSON.stringify({ title, body, head, base }),
+          });
+        } catch {
+          throw unprocessable("GitHub pull request creation failed (network error)");
+        }
+        if (response.ok) break;
+        if (![502, 503, 504].includes(response.status) || attempt === 2) break;
+        await new Promise((resolve) => setTimeout(resolve, retryDelayMs * 2 ** attempt));
       }
-      if (!response.ok) throw unprocessable("GitHub pull request creation failed");
+      if (!response.ok) {
+        const detail = await githubResponseDetail(response, token);
+        const suffix = detail ? `: ${detail}` : "";
+        throw unprocessable(`GitHub pull request creation failed (HTTP ${response.status})${suffix}`, {
+          provider: "github",
+          status: response.status,
+          reason: detail || undefined,
+        });
+      }
       const data = await response.json() as { number?: number; html_url?: string };
       if (typeof data.number !== "number" || typeof data.html_url !== "string") {
         throw unprocessable("GitHub pull request response was invalid");
