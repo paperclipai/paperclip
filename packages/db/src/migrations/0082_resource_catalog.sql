@@ -16,8 +16,8 @@ CREATE TABLE "resources" (
 --> statement-breakpoint
 ALTER TABLE "resources" ADD CONSTRAINT "resources_company_id_companies_id_fk" FOREIGN KEY ("company_id") REFERENCES "public"."companies"("id") ON DELETE cascade ON UPDATE no action;
 --> statement-breakpoint
-CREATE UNIQUE INDEX "resources_company_key_uq" ON "resources" USING btree ("company_id","key");
+CREATE UNIQUE INDEX "resources_company_key_uq" ON "resources" USING btree ("company_id","key") WHERE "resources"."status" = 'active';
 --> statement-breakpoint
-CREATE UNIQUE INDEX "resources_company_mount_path_uq" ON "resources" USING btree ("company_id","mount_path");
+CREATE UNIQUE INDEX "resources_company_mount_path_uq" ON "resources" USING btree ("company_id","mount_path") WHERE "resources"."status" = 'active';
 --> statement-breakpoint
 CREATE INDEX "resources_company_status_idx" ON "resources" USING btree ("company_id","status");

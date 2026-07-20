@@ -16002,6 +16002,7 @@
             }
           ],
           "isUnique": true,
+          "where": "\"resources\".\"status\" = 'active'",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -16023,6 +16024,7 @@
             }
           ],
           "isUnique": true,
+          "where": "\"resources\".\"status\" = 'active'",
           "concurrently": false,
           "method": "btree",
           "with": {}

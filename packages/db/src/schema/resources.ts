@@ -1,4 +1,5 @@
 import { index, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { companies } from "./companies.js";
 
 export const resources = pgTable(
@@ -19,8 +20,12 @@ export const resources = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
-    companyKeyUq: uniqueIndex("resources_company_key_uq").on(table.companyId, table.key),
-    companyMountPathUq: uniqueIndex("resources_company_mount_path_uq").on(table.companyId, table.mountPath),
+    companyKeyUq: uniqueIndex("resources_company_key_uq")
+      .on(table.companyId, table.key)
+      .where(sql`${table.status} = 'active'`),
+    companyMountPathUq: uniqueIndex("resources_company_mount_path_uq")
+      .on(table.companyId, table.mountPath)
+      .where(sql`${table.status} = 'active'`),
     companyStatusIdx: index("resources_company_status_idx").on(table.companyId, table.status),
   }),
 );

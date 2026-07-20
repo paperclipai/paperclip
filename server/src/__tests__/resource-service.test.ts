@@ -50,8 +50,18 @@ describeEmbeddedPostgres("resourceService", () => {
     expect((await svc.list(companyId)).map((resource) => resource.key)).toEqual(["platform_code"]);
     expect((await svc.update(created.id, { defaultRef: "develop" }))?.defaultRef).toBe("develop");
     expect((await svc.archive(created.id))?.status).toBe("archived");
-    expect(await svc.list(companyId)).toEqual([]);
-    expect((await svc.list(companyId, true)).map((resource) => resource.status)).toEqual(["archived"]);
+    await expect(svc.create(companyId, {
+      key: "platform_code",
+      type: "git",
+      repository: "/tmp/platform-next",
+      sourcePath: null,
+      defaultRef: "main",
+      mountPath: "platform_code",
+      credentialRef: null,
+      labels: { purpose: "replacement" },
+    })).resolves.toMatchObject({ key: "platform_code", mountPath: "platform_code", status: "active" });
+    expect((await svc.list(companyId)).map((resource) => resource.key)).toEqual(["platform_code"]);
+    expect((await svc.list(companyId, true)).map((resource) => resource.status)).toEqual(["active", "archived"]);
   });
 
   it("keeps resource keys company-scoped", async () => {
