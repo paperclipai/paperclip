@@ -7,8 +7,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // --- Mocks (hoisted so vi.mock factories can close over them) ----------------
 
-const ONBOARDING_STORAGE_KEY = "paperclip-onboarding-state";
-
 const mockDialog = vi.hoisted(() => ({
   onboardingOpen: true,
   onboardingOptions: {} as { initialStep?: number; companyId?: string },
@@ -110,7 +108,7 @@ vi.mock("./AsciiArtAnimation", () => ({ AsciiArtAnimation: () => null }));
 vi.mock("./FrontDoor", () => ({ FrontDoor: () => null }));
 vi.mock("./AgentCapsule", () => ({ AgentCapsule: () => null }));
 
-import { OnboardingWizard } from "./OnboardingWizard";
+import { ONBOARDING_STORAGE_KEY, OnboardingWizard } from "./OnboardingWizard";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
