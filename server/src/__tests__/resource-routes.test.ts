@@ -52,11 +52,17 @@ describeEmbeddedPostgres("resource routes", () => {
 
     const created = await request(app).post(`/api/companies/${companyId}/resources`).send({
       key: "briefs",
-      repository: "/tmp/briefs",
+      repository: "https://github.com/acme/briefs.git",
       mountPath: "briefs",
     });
     expect(created.status).toBe(201);
     expect(created.body.key).toBe("briefs");
+
+    expect((await request(app).post(`/api/companies/${companyId}/resources`).send({
+      key: "local-briefs",
+      repository: "/var/data/internal-repo",
+      mountPath: "local-briefs",
+    })).status).toBe(403);
 
     expect((await request(app).get(`/api/companies/${otherCompanyId}/resources`)).status).toBe(403);
     const otherResourceId = randomUUID();
@@ -77,6 +83,7 @@ describeEmbeddedPostgres("resource routes", () => {
     expect((await request(app).patch(`/api/resources/${otherResourceId}`).send({ defaultRef: "develop" })).status).toBe(404);
     expect((await request(app).delete(`/api/resources/${otherResourceId}`)).status).toBe(404);
     expect((await request(app).patch(`/api/resources/${created.body.id}`).send({ defaultRef: "develop" })).status).toBe(200);
+    expect((await request(app).patch(`/api/resources/${created.body.id}`).send({ repository: "/var/data/internal-repo" })).status).toBe(403);
     expect((await request(app).delete(`/api/resources/${created.body.id}`)).body.status).toBe("archived");
     const archiveActivities = async () => db.select().from(activityLog).where(eq(activityLog.action, "resource.archived"));
     expect((await archiveActivities()).length).toBe(1);

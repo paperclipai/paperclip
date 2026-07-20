@@ -1,6 +1,7 @@
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
 import { createResourceSchema, updateResourceSchema } from "@paperclipai/shared";
+import { forbidden } from "../errors.js";
 import { validate } from "../middleware/validate.js";
 import { resourceService, logActivity } from "../services/index.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
@@ -15,6 +16,13 @@ export function resourceRoutes(db: Db) {
     return req.actor.companyIds ?? [];
   }
 
+  function assertAgentRepositoryPolicy(req: Parameters<typeof assertCompanyAccess>[0], repository: string) {
+    if (req.actor.type !== "agent") return;
+    const value = repository.trim();
+    const isLocalPath = value === "." || value.startsWith("./") || value.startsWith(".\\") || value.startsWith("/");
+    if (isLocalPath) throw forbidden("Agent Resources must use a remote Git repository");
+  }
+
   router.get("/companies/:companyId/resources", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
@@ -25,6 +33,7 @@ export function resourceRoutes(db: Db) {
   router.post("/companies/:companyId/resources", validate(createResourceSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    assertAgentRepositoryPolicy(req, req.body.repository);
     const created = await svc.create(companyId, req.body);
     const actor = getActorInfo(req);
     await logActivity(db, {
@@ -59,6 +68,9 @@ export function resourceRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, existing.companyId);
+    if (req.body.repository !== undefined) {
+      assertAgentRepositoryPolicy(req, req.body.repository);
+    }
     const updated = await svc.update(existing.id, req.body, companyIds);
     if (!updated) {
       res.status(404).json({ error: "Resource not found" });
