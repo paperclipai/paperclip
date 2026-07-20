@@ -516,7 +516,7 @@ function isSensitiveEnvKey(key: string) {
   return SENSITIVE_ENV_KEY_RE.test(key);
 }
 
-function normalizeSecretKey(input: string) {
+export function normalizeSecretKey(input: string) {
   return input
     .trim()
     .toLowerCase()
