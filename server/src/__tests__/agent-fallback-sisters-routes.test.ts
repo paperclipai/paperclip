@@ -98,14 +98,18 @@ function createDbStub(options: {
     where: vi.fn(async () => updateReturningRows.shift() ?? []),
   };
 
+  const db: Record<string, unknown> = {
+    select: vi.fn(() => createSelectQuery(selectRows.shift() ?? [])),
+    insert: vi.fn(() => insertChain),
+    update: vi.fn(() => updateChain),
+  };
+  db.transaction = vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(db));
+
   return {
-    db: {
-      select: vi.fn(() => createSelectQuery(selectRows.shift() ?? [])),
-      insert: vi.fn(() => insertChain),
-      update: vi.fn(() => updateChain),
-    },
+    db,
     insertValues,
     onConflictDoUpdate,
+    transaction: db.transaction as ReturnType<typeof vi.fn>,
     updateSet: updateChain.set,
     updateWhere: updateChain.where,
   };
@@ -265,7 +269,7 @@ describe("agent fallback sister routes", () => {
         ],
         [{ activityWindow: { timezone: "Europe/Dublin", startHour: 17, endHour: 3 } }],
         [
-          { id: primaryAgentId, runtimeConfig: { ignoreActivityWindow: true, ignoreActivityWindowException: { class: "old" } } },
+          { id: primaryAgentId, runtimeConfig: { ignoreActivityWindow: true } },
           { id: sisterAgentId, runtimeConfig: {} },
         ],
       ],
@@ -338,6 +342,182 @@ describe("agent fallback sister routes", () => {
         }),
       }),
     }));
+  });
+
+  it("preserves an audited primary exception when a re-registration does not mention the flag", async () => {
+    const auditedException = {
+      class: "window_flipped_cto",
+      reason: "Window-flipped CTO primary stays always-on outside the company sprint.",
+      source: "agent-fallback-sisters",
+      recordedAt: "2026-07-16T13:15:00.000Z",
+      recordedBy: "user:local-board",
+    };
+    const db = createDbStub({
+      selectRows: [
+        [
+          { id: primaryAgentId },
+          { id: sisterAgentId },
+        ],
+        [{ activityWindow: { timezone: "Europe/Dublin", startHour: 17, endHour: 3 } }],
+        [
+          {
+            id: primaryAgentId,
+            runtimeConfig: { ignoreActivityWindow: true, ignoreActivityWindowException: auditedException },
+          },
+          { id: sisterAgentId, runtimeConfig: { ignoreActivityWindow: true } },
+        ],
+      ],
+      returningRows: [{
+        id: "99999999-9999-4999-8999-999999999999",
+        companyId,
+        primaryAgentId,
+        sisterAgentId,
+        priority: 0,
+        createdBy: "agent:test-agent",
+        createdAt: new Date("2026-07-20T09:00:00.000Z"),
+        revokedAt: null,
+      }],
+    });
+
+    const res = await request(await createApp(db.db))
+      .post(`/api/companies/${companyId}/agent-fallback-sisters`)
+      .send({ primaryAgentId, sisterAgentId });
+
+    expect(res.status).toBe(201);
+    expect(db.updateSet).not.toHaveBeenCalled();
+  });
+
+  it("revokes an audited primary exception when the caller explicitly sends retain=false", async () => {
+    const db = createDbStub({
+      selectRows: [
+        [
+          { id: primaryAgentId },
+          { id: sisterAgentId },
+        ],
+        [{ activityWindow: { timezone: "Europe/Dublin", startHour: 17, endHour: 3 } }],
+        [
+          {
+            id: primaryAgentId,
+            runtimeConfig: {
+              ignoreActivityWindow: true,
+              ignoreActivityWindowException: { class: "window_flipped_cto", source: "agent-fallback-sisters" },
+            },
+          },
+          { id: sisterAgentId, runtimeConfig: { ignoreActivityWindow: true } },
+        ],
+      ],
+      returningRows: [{
+        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        companyId,
+        primaryAgentId,
+        sisterAgentId,
+        priority: 0,
+        createdBy: "agent:test-agent",
+        createdAt: new Date("2026-07-20T09:05:00.000Z"),
+        revokedAt: null,
+      }],
+    });
+
+    const res = await request(await createApp(db.db))
+      .post(`/api/companies/${companyId}/agent-fallback-sisters`)
+      .send({ primaryAgentId, sisterAgentId, retainPrimaryIgnoreActivityWindow: false });
+
+    expect(res.status).toBe(201);
+    expect(db.updateSet).toHaveBeenCalledTimes(1);
+    expect(db.updateSet).toHaveBeenCalledWith(expect.objectContaining({ runtimeConfig: {} }));
+  });
+
+  it("leaves both lane sides untouched when the company has no activity window", async () => {
+    const db = createDbStub({
+      selectRows: [
+        [
+          { id: primaryAgentId },
+          { id: sisterAgentId },
+        ],
+        [{ activityWindow: null }],
+        [
+          { id: primaryAgentId, runtimeConfig: { ignoreActivityWindow: true } },
+          { id: sisterAgentId, runtimeConfig: {} },
+        ],
+      ],
+      returningRows: [{
+        id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        companyId,
+        primaryAgentId,
+        sisterAgentId,
+        priority: 0,
+        createdBy: "agent:test-agent",
+        createdAt: new Date("2026-07-20T09:10:00.000Z"),
+        revokedAt: null,
+      }],
+    });
+
+    const res = await request(await createApp(db.db))
+      .post(`/api/companies/${companyId}/agent-fallback-sisters`)
+      .send({ primaryAgentId, sisterAgentId });
+
+    expect(res.status).toBe(201);
+    expect(db.updateSet).not.toHaveBeenCalled();
+  });
+
+  it("still returns 201 when the activity-window reconciliation fails", async () => {
+    const db = createDbStub({
+      selectRows: [[
+        { id: primaryAgentId },
+        { id: sisterAgentId },
+      ]],
+      returningRows: [{
+        id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+        companyId,
+        primaryAgentId,
+        sisterAgentId,
+        priority: 0,
+        createdBy: "agent:test-agent",
+        createdAt: new Date("2026-07-20T09:15:00.000Z"),
+        revokedAt: null,
+      }],
+    });
+    db.transaction.mockRejectedValue(new Error("reconciliation exploded"));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const res = await request(await createApp(db.db))
+      .post(`/api/companies/${companyId}/agent-fallback-sisters`)
+      .send({ primaryAgentId, sisterAgentId });
+
+    expect(res.status).toBe(201);
+    expect(res.body).toMatchObject({ companyId, primaryAgentId, sisterAgentId });
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it("rejects an exception class without retainPrimaryIgnoreActivityWindow=true", async () => {
+    const db = createDbStub();
+
+    const res = await request(await createApp(db.db))
+      .post(`/api/companies/${companyId}/agent-fallback-sisters`)
+      .send({
+        primaryAgentId,
+        sisterAgentId,
+        primaryIgnoreActivityWindowExceptionClass: "window_flipped_cto",
+      });
+
+    expect(res.status).toBe(400);
+    expect(db.db.insert).not.toHaveBeenCalled();
+  });
+
+  it("rejects retainPrimaryIgnoreActivityWindow=true without a class and reason", async () => {
+    const db = createDbStub();
+
+    const res = await request(await createApp(db.db))
+      .post(`/api/companies/${companyId}/agent-fallback-sisters`)
+      .send({
+        primaryAgentId,
+        sisterAgentId,
+        retainPrimaryIgnoreActivityWindow: true,
+      });
+
+    expect(res.status).toBe(400);
+    expect(db.db.insert).not.toHaveBeenCalled();
   });
 
   it("allows cto lanes to seed the registry without an explicit fallback grant", async () => {

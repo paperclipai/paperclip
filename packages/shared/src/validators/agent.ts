@@ -208,7 +208,9 @@ export const createAgentFallbackSisterSchema = z.object({
   sisterAgentId: z.string().uuid(),
   priority: z.number().int().optional().default(0),
   createdBy: z.string().trim().min(1).optional(),
-  retainPrimaryIgnoreActivityWindow: z.boolean().optional().default(false),
+  // Deliberately no .default(false): the route distinguishes "caller explicitly
+  // asked to revoke" from "caller never mentioned it", and a default erases that.
+  retainPrimaryIgnoreActivityWindow: z.boolean().optional(),
   primaryIgnoreActivityWindowExceptionClass: ignoreActivityWindowExceptionClassSchema.optional(),
   primaryIgnoreActivityWindowExceptionReason: z.string().trim().min(1).max(280).optional(),
 }).strict().superRefine((value, ctx) => {

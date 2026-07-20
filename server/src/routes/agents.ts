@@ -286,64 +286,83 @@ export function agentRoutes(
     primaryAgentId: string;
     sisterAgentId: string;
     retainPrimaryIgnoreActivityWindow: boolean;
+    /**
+     * Whether the caller actually sent `retainPrimaryIgnoreActivityWindow` on the
+     * wire. The field carries a schema default of `false`, so the parsed body
+     * cannot tell "revoke the exception" from "never mentioned it" — and this POST
+     * is an idempotent upsert callers replay routinely.
+     */
+    retainPrimaryIgnoreActivityWindowProvided: boolean;
     primaryIgnoreActivityWindowExceptionClass?: IgnoreActivityWindowExceptionClass;
     primaryIgnoreActivityWindowExceptionReason?: string;
     actorLabel: string;
   }) {
-    const [companyRow] = await db
-      .select({ activityWindow: companies.activityWindow })
-      .from(companies)
-      .where(eq(companies.id, input.companyId))
-      .limit(1);
-    const hasCompanyActivityWindow = parseCompanyActivityWindow(companyRow?.activityWindow ?? null) !== null;
-    const agents = await db
-      .select({
-        id: agentsTable.id,
-        runtimeConfig: agentsTable.runtimeConfig,
-      })
-      .from(agentsTable)
-      .where(and(
-        eq(agentsTable.companyId, input.companyId),
-        inArray(agentsTable.id, [input.primaryAgentId, input.sisterAgentId]),
-      ));
-    const agentById = new Map(agents.map((agent) => [agent.id, agent]));
-    const primary = agentById.get(input.primaryAgentId);
-    const sister = agentById.get(input.sisterAgentId);
-    if (!primary || !sister) return;
+    // Both lane sides move together: a partial apply would leave the sister
+    // promoted while the primary kept a stale always-on flag.
+    await db.transaction(async (tx) => {
+      const [companyRow] = await tx
+        .select({ activityWindow: companies.activityWindow })
+        .from(companies)
+        .where(eq(companies.id, input.companyId))
+        .limit(1);
+      const hasCompanyActivityWindow = parseCompanyActivityWindow(companyRow?.activityWindow ?? null) !== null;
+      const agents = await tx
+        .select({
+          id: agentsTable.id,
+          runtimeConfig: agentsTable.runtimeConfig,
+        })
+        .from(agentsTable)
+        .where(and(
+          eq(agentsTable.companyId, input.companyId),
+          inArray(agentsTable.id, [input.primaryAgentId, input.sisterAgentId]),
+        ));
+      const agentById = new Map(agents.map((agent) => [agent.id, agent]));
+      const primary = agentById.get(input.primaryAgentId);
+      const sister = agentById.get(input.sisterAgentId);
+      if (!primary || !sister) return;
 
-    const now = new Date();
-    const nextSisterRuntimeConfig = {
-      ...(readObject(sister.runtimeConfig) ?? {}),
-      [IGNORE_ACTIVITY_WINDOW_RUNTIME_CONFIG_KEY]: true,
-    };
-    if (JSON.stringify(nextSisterRuntimeConfig) !== JSON.stringify(sister.runtimeConfig ?? {})) {
-      await db
-        .update(agentsTable)
-        .set({ runtimeConfig: nextSisterRuntimeConfig, updatedAt: now })
-        .where(eq(agentsTable.id, input.sisterAgentId));
-    }
+      // ignoreActivityWindow is meaningless without a company activity window, so
+      // neither side of the lane is touched when the company has none.
+      if (!hasCompanyActivityWindow) return;
 
-    if (!hasCompanyActivityWindow) return;
-
-    const basePrimaryRuntimeConfig = { ...(readObject(primary.runtimeConfig) ?? {}) };
-    if (input.retainPrimaryIgnoreActivityWindow) {
-      basePrimaryRuntimeConfig[IGNORE_ACTIVITY_WINDOW_RUNTIME_CONFIG_KEY] = true;
-      basePrimaryRuntimeConfig[IGNORE_ACTIVITY_WINDOW_EXCEPTION_RUNTIME_CONFIG_KEY] = {
-        class: input.primaryIgnoreActivityWindowExceptionClass,
-        reason: input.primaryIgnoreActivityWindowExceptionReason,
-        source: "agent-fallback-sisters",
-        recordedAt: now.toISOString(),
-        recordedBy: input.actorLabel,
+      const now = new Date();
+      const nextSisterRuntimeConfig = {
+        ...(readObject(sister.runtimeConfig) ?? {}),
+        [IGNORE_ACTIVITY_WINDOW_RUNTIME_CONFIG_KEY]: true,
       };
-    } else {
-      delete basePrimaryRuntimeConfig[IGNORE_ACTIVITY_WINDOW_RUNTIME_CONFIG_KEY];
-      delete basePrimaryRuntimeConfig[IGNORE_ACTIVITY_WINDOW_EXCEPTION_RUNTIME_CONFIG_KEY];
-    }
-    if (JSON.stringify(basePrimaryRuntimeConfig) === JSON.stringify(primary.runtimeConfig ?? {})) return;
-    await db
-      .update(agentsTable)
-      .set({ runtimeConfig: basePrimaryRuntimeConfig, updatedAt: now })
-      .where(eq(agentsTable.id, input.primaryAgentId));
+      if (JSON.stringify(nextSisterRuntimeConfig) !== JSON.stringify(sister.runtimeConfig ?? {})) {
+        await tx
+          .update(agentsTable)
+          .set({ runtimeConfig: nextSisterRuntimeConfig, updatedAt: now })
+          .where(eq(agentsTable.id, input.sisterAgentId));
+      }
+
+      const basePrimaryRuntimeConfig = { ...(readObject(primary.runtimeConfig) ?? {}) };
+      if (input.retainPrimaryIgnoreActivityWindow) {
+        basePrimaryRuntimeConfig[IGNORE_ACTIVITY_WINDOW_RUNTIME_CONFIG_KEY] = true;
+        basePrimaryRuntimeConfig[IGNORE_ACTIVITY_WINDOW_EXCEPTION_RUNTIME_CONFIG_KEY] = {
+          class: input.primaryIgnoreActivityWindowExceptionClass,
+          reason: input.primaryIgnoreActivityWindowExceptionReason,
+          source: "agent-fallback-sisters",
+          recordedAt: now.toISOString(),
+          recordedBy: input.actorLabel,
+        };
+      } else {
+        const hasAuditedException =
+          readObject(basePrimaryRuntimeConfig[IGNORE_ACTIVITY_WINDOW_EXCEPTION_RUNTIME_CONFIG_KEY]) !== null;
+        // A re-registration that never mentioned the flag must not silently revoke
+        // a previously granted, audited exception. Revocation stays possible, but
+        // only when the caller explicitly sends retainPrimaryIgnoreActivityWindow=false.
+        if (hasAuditedException && !input.retainPrimaryIgnoreActivityWindowProvided) return;
+        delete basePrimaryRuntimeConfig[IGNORE_ACTIVITY_WINDOW_RUNTIME_CONFIG_KEY];
+        delete basePrimaryRuntimeConfig[IGNORE_ACTIVITY_WINDOW_EXCEPTION_RUNTIME_CONFIG_KEY];
+      }
+      if (JSON.stringify(basePrimaryRuntimeConfig) === JSON.stringify(primary.runtimeConfig ?? {})) return;
+      await tx
+        .update(agentsTable)
+        .set({ runtimeConfig: basePrimaryRuntimeConfig, updatedAt: now })
+        .where(eq(agentsTable.id, input.primaryAgentId));
+    });
   }
 
   /**
@@ -2260,7 +2279,7 @@ export function agentRoutes(
         sisterAgentId: string;
         priority: number;
         createdBy?: string;
-        retainPrimaryIgnoreActivityWindow: boolean;
+        retainPrimaryIgnoreActivityWindow?: boolean;
         primaryIgnoreActivityWindowExceptionClass?: IgnoreActivityWindowExceptionClass;
         primaryIgnoreActivityWindowExceptionReason?: string;
       };
@@ -2310,15 +2329,26 @@ export function agentRoutes(
         })
         .returning(fallbackSisterRowSelection);
 
-      await reconcileLanePromotionActivityWindowPolicy({
-        companyId,
-        primaryAgentId,
-        sisterAgentId,
-        retainPrimaryIgnoreActivityWindow,
-        primaryIgnoreActivityWindowExceptionClass,
-        primaryIgnoreActivityWindowExceptionReason,
-        actorLabel,
-      });
+      try {
+        await reconcileLanePromotionActivityWindowPolicy({
+          companyId,
+          primaryAgentId,
+          sisterAgentId,
+          retainPrimaryIgnoreActivityWindow: retainPrimaryIgnoreActivityWindow === true,
+          retainPrimaryIgnoreActivityWindowProvided: retainPrimaryIgnoreActivityWindow !== undefined,
+          primaryIgnoreActivityWindowExceptionClass,
+          primaryIgnoreActivityWindowExceptionReason,
+          actorLabel,
+        });
+      } catch (err) {
+        // The registry row is already committed and the reconciliation is
+        // transactional, so a failure here leaves no partial lane state — but it
+        // must not report the registration itself as failed.
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[agent-fallback-sisters] Activity-window reconciliation failed for primary ${primaryAgentId}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
 
       res.status(201).json(row);
     },
