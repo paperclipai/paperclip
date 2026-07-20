@@ -98,8 +98,11 @@ export function translateLegacyLiteral(value: string) {
   return null;
 }
 
-function isSkipped(node: Node) {
+function isSkipped(node: Node, allowContentEditableSelf = false) {
   const element = node.nodeType === Node.ELEMENT_NODE ? node as Element : node.parentElement;
+  if (allowContentEditableSelf && element?.matches("[contenteditable='true']")) {
+    return Boolean(element.parentElement?.closest(SKIPPED_SELECTOR));
+  }
   return Boolean(element?.closest(SKIPPED_SELECTOR));
 }
 
@@ -138,7 +141,7 @@ export function LegacyLiteralLocalizer() {
     }
 
     function localizeAttributes(element: Element) {
-      if (!chineseActive || !element.isConnected || isSkipped(element)) return;
+      if (!chineseActive || !element.isConnected || isSkipped(element, true)) return;
       for (const attribute of LOCALIZED_ATTRIBUTES) {
         const current = element.getAttribute(attribute);
         if (!current) continue;
@@ -171,9 +174,10 @@ export function LegacyLiteralLocalizer() {
         localizeTextNode(root as Text);
         return;
       }
-      if (root.nodeType !== Node.ELEMENT_NODE || isSkipped(root)) return;
+      if (root.nodeType !== Node.ELEMENT_NODE) return;
       const element = root as Element;
       localizeAttributes(element);
+      if (isSkipped(root)) return;
       const walker = document.createTreeWalker(element, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT);
       let current = walker.nextNode();
       while (current) {

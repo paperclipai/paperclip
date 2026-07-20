@@ -437,6 +437,9 @@
     "input": "输入",
     "output": "输出",
     "cost": "成本",
+    "copyInstructionsFileMarkdown": "以 Markdown 格式复制指令文件",
+    "copyAsMarkdown": "复制为 Markdown",
+    "copied": "已复制",
     "tabs": {
       "dashboard": "仪表盘",
       "instructions": "指令",

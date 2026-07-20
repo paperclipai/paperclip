@@ -73,6 +73,22 @@ describe("LegacyLiteralLocalizer", () => {
     expect(button.getAttribute("aria-label")).toBe("删除");
   });
 
+  it("localizes a contenteditable label without touching editor content", async () => {
+    await act(async () => {
+      root.render(
+        <>
+          <LegacyLiteralLocalizer />
+          <div contentEditable aria-label="editable markdown">Delete</div>
+        </>,
+      );
+    });
+    await flushMutations();
+
+    const editor = container.querySelector("[contenteditable]");
+    expect(editor?.getAttribute("aria-label")).toBe("可编辑的 Markdown");
+    expect(editor?.textContent).toBe("Delete");
+  });
+
   it("does not retranslate its own dynamic template output", async () => {
     await act(async () => {
       root.render(

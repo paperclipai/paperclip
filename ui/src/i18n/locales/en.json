@@ -437,6 +437,9 @@
     "input": "Input",
     "output": "Output",
     "cost": "Cost",
+    "copyInstructionsFileMarkdown": "Copy instructions file as markdown",
+    "copyAsMarkdown": "Copy as markdown",
+    "copied": "Copied",
     "tabs": {
       "dashboard": "Dashboard",
       "instructions": "Instructions",
