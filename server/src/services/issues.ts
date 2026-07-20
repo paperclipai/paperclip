@@ -3459,14 +3459,19 @@ async function listIssueBoardActionRequirementMap(
       ))
       .orderBy(desc(issueThreadInteractions.resolvedAt), desc(issueThreadInteractions.createdAt)),
   ]);
-  // NOTE: the raw max() aggregate comes back as a driver string, not a Date, so
-  // the `latestUserCommentAt >= interaction.createdAt` supersede check below
-  // never fires. Coercing it here revives that branch — which would stop
-  // flagging a still-PENDING request_confirmation as board-action-required as
-  // soon as any user comment postdates it, regardless of whether that comment
-  // answers the prompt. That is the "pending without boardActionRequired"
-  // hidden-operator-decision trap, so the coercion is deliberately NOT applied
-  // pending an operator decision. Over-flagging is the safe failure direction.
+  // OPERATOR RULING 2026-07-20: leave this branch dead. Do not "fix" it.
+  //
+  // The raw max() aggregate comes back as a driver string, not a Date, so the
+  // `latestUserCommentAt >= interaction.createdAt` supersede check below never
+  // fires. Coercing it revives the branch — which would stop flagging a
+  // still-PENDING request_confirmation as board-action-required as soon as ANY
+  // user comment postdates it, regardless of whether that comment answers the
+  // prompt. That is the "pending without boardActionRequired"
+  // hidden-operator-decision trap, and over-flagging is the safe direction.
+  //
+  // If this is ever revisited, the acceptable shape is a stricter predicate
+  // that supersedes only when the comment actually resolves the ask — not a
+  // bare timestamp comparison.
   const latestUserCommentAtByIssue = new Map<string, Date>(
     latestUserCommentRows.map((row: { issueId: string; latestCreatedAt: Date }) => [row.issueId, row.latestCreatedAt]),
   );
