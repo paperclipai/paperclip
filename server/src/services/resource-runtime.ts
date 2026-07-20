@@ -380,10 +380,13 @@ export function resourceRuntimeService(db: Db) {
         const outputBranch = output.action === "pull_request"
           ? validateBranch(output.branch ?? generatedBranch(input.runId, resource.key))
           : null;
+        const outputTargetRef = output.action !== "none"
+          ? validateBranch(normalizePublishRef(output.targetRef, resource.defaultRef))
+          : null;
         const outputBaselineCommit = attachment.mode !== "input" && output.action !== "none"
           ? (resource.repository.startsWith("/") || resource.repository.startsWith(".")
-            ? await resolveLocalRef(resource, normalizePublishRef(output.targetRef, resource.defaultRef))
-            : await resolveRemoteRef(resource, normalizePublishRef(output.targetRef, resource.defaultRef), env))
+            ? await resolveLocalRef(resource, outputTargetRef!)
+            : await resolveRemoteRef(resource, outputTargetRef!, env))
           : null;
         if (outputBranch) await assertPublishBranchAvailable(resource, outputBranch, env);
         // Full Git Resources are cloned directly into their mount. A
@@ -445,7 +448,7 @@ export function resourceRuntimeService(db: Db) {
               });
               continue;
             }
-            const targetRef = normalizePublishRef(output.targetRef, item.resource.defaultRef);
+            const targetRef = validateBranch(normalizePublishRef(output.targetRef, item.resource.defaultRef));
             const credential = await credentialContext(db, item.resource);
             const env = credential.env;
             const currentCommit = item.resource.repository.startsWith("/") || item.resource.repository.startsWith(".")
@@ -464,9 +467,7 @@ export function resourceRuntimeService(db: Db) {
               await copyWorkingTreeContents(item.repoPath, outputSnapshotPath);
               await runGit(["reset", "--hard", item.outputBaselineCommit!], { cwd: item.repoPath, env });
               await runGit(["clean", "-fd"], { cwd: item.repoPath, env });
-              if (item.resource.sourcePath) {
-                await copyResourceTree(outputSnapshotPath, path.join(item.repoPath, item.resource.sourcePath));
-              } else {
+              if (!item.resource.sourcePath) {
                 await clearWorkingTreeContents(item.repoPath);
                 await copyWorkingTreeContents(outputSnapshotPath, item.repoPath);
               }

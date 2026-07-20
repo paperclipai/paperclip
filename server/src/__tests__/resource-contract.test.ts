@@ -18,6 +18,13 @@ describe("resource contracts", () => {
     }).success).toBe(false);
   });
 
+  it("rejects unsupported Git repository transports", () => {
+    expect(createResourceSchema.safeParse({ key: "http", repository: "http://github.com/example/repo.git", mountPath: "repo" }).success).toBe(false);
+    expect(createResourceSchema.safeParse({ key: "ext", repository: "ext::ssh host sh -c command", mountPath: "repo" }).success).toBe(false);
+    expect(createResourceSchema.safeParse({ key: "ssh", repository: "git@github.com:example/repo.git", mountPath: "repo" }).success).toBe(true);
+    expect(createResourceSchema.safeParse({ key: "local", repository: "/tmp/repo", mountPath: "repo" }).success).toBe(true);
+  });
+
   it("rejects duplicate manifest attachments", () => {
     const resourceId = "00000000-0000-4000-8000-000000000001";
     expect(workflowResourceManifestSchema.safeParse({

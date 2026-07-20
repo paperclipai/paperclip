@@ -41,6 +41,8 @@ describeEmbeddedPostgres("resourceRuntimeService", () => {
     await git(["config", "user.name", "Fixture"], seedPath);
     await git(["config", "user.email", "fixture@example.com"], seedPath);
     await fs.writeFile(path.join(seedPath, "context.md"), "before\n", "utf8");
+    await fs.mkdir(path.join(seedPath, "nested"), { recursive: true });
+    await fs.writeFile(path.join(seedPath, "nested", "context.md"), "nested-before\n", "utf8");
     await git(["add", "."], seedPath);
     await git(["commit", "-m", "initial"], seedPath);
     await git(["branch", "-M", "main"], seedPath);
@@ -99,6 +101,20 @@ describeEmbeddedPostgres("resourceRuntimeService", () => {
     await git(["add", "."], seedPath);
     await git(["commit", "-m", "feature change"], seedPath);
     await git(["push", "origin", "feature"], seedPath);
+    const sourceResourceId = randomUUID();
+    await db.insert(resources).values({
+      id: sourceResourceId,
+      companyId,
+      key: "nested-context",
+      type: "git",
+      repository: remotePath,
+      sourcePath: "nested",
+      defaultRef: "main",
+      mountPath: "nested-context",
+      credentialRef: null,
+      labels: {},
+      status: "active",
+    });
     const mixedRefWorkspace = path.join(fixtureRoot, "mixed-ref-workspace");
     const mixedRefPrepared = await resourceRuntimeService(db).prepare({
       companyId,
@@ -108,6 +124,19 @@ describeEmbeddedPostgres("resourceRuntimeService", () => {
     });
     await fs.writeFile(path.join(mixedRefWorkspace, "resources", "context", "context.md"), "mixed-ref\n", "utf8");
     await expect(mixedRefPrepared!.publish()).resolves.toMatchObject([{ status: "pushed", targetRef: "main" }]);
+
+    const sourcePathWorkspace = path.join(fixtureRoot, "source-path-rebase-workspace");
+    const sourcePathPrepared = await resourceRuntimeService(db).prepare({
+      companyId,
+      runId: "run-source-path-rebase-test",
+      workspaceRoot: sourcePathWorkspace,
+      manifest: { version: 1, resources: [{ resourceId: sourceResourceId, mode: "input_output", version: "branch:feature", output: { action: "push", targetRef: "main" } }] },
+    });
+    await fs.writeFile(path.join(sourcePathWorkspace, "resources", "nested-context", "context.md"), "nested-after-rebase\n", "utf8");
+    await expect(sourcePathPrepared!.publish()).resolves.toMatchObject([{ status: "pushed", targetRef: "main" }]);
+    const sourcePathCheck = path.join(fixtureRoot, "source-path-rebase-check");
+    await git(["clone", "--branch", "main", remotePath, sourcePathCheck]);
+    expect(await fs.readFile(path.join(sourcePathCheck, "nested", "context.md"), "utf8")).toBe("nested-after-rebase\n");
 
     await expect(resourceRuntimeService(db).prepare({
       companyId,
@@ -131,6 +160,13 @@ describeEmbeddedPostgres("resourceRuntimeService", () => {
       runId: "run-invalid-branch-test",
       workspaceRoot: invalidBranchWorkspace,
       manifest: { version: 1, resources: [{ resourceId, mode: "input_output", output: { action: "pull_request", branch: "feat[scope" } }] },
+    })).rejects.toThrow("Invalid Git output branch");
+
+    await expect(resourceRuntimeService(db).prepare({
+      companyId,
+      runId: "run-invalid-target-ref-test",
+      workspaceRoot: path.join(fixtureRoot, "invalid-target-ref-workspace"),
+      manifest: { version: 1, resources: [{ resourceId, mode: "input_output", output: { action: "push", targetRef: "feat[scope" } }] },
     })).rejects.toThrow("Invalid Git output branch");
 
     const collidingResourceId = randomUUID();

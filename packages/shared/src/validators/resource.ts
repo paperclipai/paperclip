@@ -26,10 +26,21 @@ const sourcePathSchema = z.string()
     message: "Source path must be relative and cannot contain '..'.",
   });
 
+const repositorySchema = z.string()
+  .trim()
+  .min(1)
+  .max(2_000)
+  .refine((value) => {
+    if (value === "." || value.startsWith("./") || value.startsWith(".\\") || value.startsWith("/")) {
+      return !value.split(/[\\/]/).includes("..");
+    }
+    return /^(?:https:\/\/|ssh:\/\/git@|git@[^:]+:|git:\/\/)/i.test(value);
+  }, "Repository must use a supported HTTPS, SSH, Git transport, or safe local path.");
+
 export const createResourceSchema = z.object({
   key: resourceKeySchema,
   type: resourceTypeSchema.default("git"),
-  repository: z.string().trim().min(1).max(2_000),
+  repository: repositorySchema,
   sourcePath: sourcePathSchema.nullable().optional(),
   defaultRef: z.string().trim().min(1).max(255).default("main"),
   mountPath: mountPathSchema,
