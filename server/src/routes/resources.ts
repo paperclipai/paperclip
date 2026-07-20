@@ -9,6 +9,12 @@ export function resourceRoutes(db: Db) {
   const router = Router();
   const svc = resourceService(db);
 
+  function visibleCompanyIds(req: Parameters<typeof assertCompanyAccess>[0]) {
+    if (req.actor.type === "agent") return req.actor.companyId ? [req.actor.companyId] : [];
+    if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return undefined;
+    return req.actor.companyIds ?? [];
+  }
+
   router.get("/companies/:companyId/resources", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
@@ -36,7 +42,7 @@ export function resourceRoutes(db: Db) {
   });
 
   router.get("/resources/:id", async (req, res) => {
-    const resource = await svc.getById(req.params.id as string);
+    const resource = await svc.getById(req.params.id as string, visibleCompanyIds(req));
     if (!resource) {
       res.status(404).json({ error: "Resource not found" });
       return;
@@ -46,13 +52,14 @@ export function resourceRoutes(db: Db) {
   });
 
   router.patch("/resources/:id", validate(updateResourceSchema), async (req, res) => {
-    const existing = await svc.getById(req.params.id as string);
+    const companyIds = visibleCompanyIds(req);
+    const existing = await svc.getById(req.params.id as string, companyIds);
     if (!existing) {
       res.status(404).json({ error: "Resource not found" });
       return;
     }
     assertCompanyAccess(req, existing.companyId);
-    const updated = await svc.update(existing.id, req.body);
+    const updated = await svc.update(existing.id, req.body, companyIds);
     if (!updated) {
       res.status(404).json({ error: "Resource not found" });
       return;
@@ -73,13 +80,14 @@ export function resourceRoutes(db: Db) {
   });
 
   router.delete("/resources/:id", async (req, res) => {
-    const existing = await svc.getById(req.params.id as string);
+    const companyIds = visibleCompanyIds(req);
+    const existing = await svc.getById(req.params.id as string, companyIds);
     if (!existing) {
       res.status(404).json({ error: "Resource not found" });
       return;
     }
     assertCompanyAccess(req, existing.companyId);
-    const archived = await svc.archive(existing.id);
+    const archived = await svc.archive(existing.id, companyIds);
     const actor = getActorInfo(req);
     await logActivity(db, {
       companyId: existing.companyId,

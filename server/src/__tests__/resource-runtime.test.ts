@@ -154,6 +154,20 @@ describeEmbeddedPostgres("resourceRuntimeService", () => {
     });
     expect(commitPrepared!.inputVersions[0]!.commit).toBe(initialCommit);
 
+    await expect(resourceRuntimeService(db).prepare({
+      companyId,
+      runId: "run-short-commit-ref-test",
+      workspaceRoot: path.join(fixtureRoot, "short-commit-ref-workspace"),
+      manifest: { version: 1, resources: [{ resourceId, mode: "input", version: "commit:abcdefg" }] },
+    })).rejects.toThrow("Git ref not found");
+
+    await expect(resourceRuntimeService(db).prepare({
+      companyId,
+      runId: "run-empty-branch-ref-test",
+      workspaceRoot: path.join(fixtureRoot, "empty-branch-ref-workspace"),
+      manifest: { version: 1, resources: [{ resourceId, mode: "input", version: "branch:" }] },
+    })).rejects.toThrow("Git ref cannot be empty");
+
     const invalidBranchWorkspace = path.join(fixtureRoot, "invalid-branch-workspace");
     await expect(resourceRuntimeService(db).prepare({
       companyId,
@@ -202,6 +216,17 @@ describeEmbeddedPostgres("resourceRuntimeService", () => {
     });
     const noChange = await noChangePrepared!.publish();
     expect(noChange[0]).toMatchObject({ action: "push", status: "no_changes" });
+
+    const noCredentialPrWorkspace = path.join(fixtureRoot, "no-credential-pr-workspace");
+    const noCredentialPrPrepared = await resourceRuntimeService(db).prepare({
+      companyId,
+      runId: "run-no-credential-pr-test",
+      workspaceRoot: noCredentialPrWorkspace,
+      manifest: { version: 1, resources: [{ resourceId, mode: "input_output", output: { action: "pull_request", branch: "no-credential-pr" } }] },
+    });
+    await fs.writeFile(path.join(noCredentialPrWorkspace, "resources", "context", "context.md"), "pr-without-credential\n", "utf8");
+    await expect(noCredentialPrPrepared!.publish()).rejects.toThrow("Pull request output requires a Resource credential");
+    expect((await execFile("git", ["ls-remote", "--heads", remotePath, "refs/heads/no-credential-pr"])).stdout.trim()).toBe("");
 
     const inputOnlyWorkspace = path.join(fixtureRoot, "input-only-workspace");
     const inputOnlyPrepared = await resourceRuntimeService(db).prepare({

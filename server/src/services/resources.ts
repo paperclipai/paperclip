@@ -1,4 +1,4 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { resources } from "@paperclipai/db";
 import type { CreateResource, Resource, UpdateResource } from "@paperclipai/shared";
@@ -34,6 +34,13 @@ function isUniqueViolation(error: unknown, constraint: string) {
 export function resourceService(db: Db) {
   const secrets = secretService(db);
 
+  function resourceScope(id: string, companyIds?: string[]) {
+    if (companyIds && companyIds.length === 0) return null;
+    return companyIds
+      ? and(eq(resources.id, id), inArray(resources.companyId, companyIds))
+      : eq(resources.id, id);
+  }
+
   async function assertCredential(companyId: string, credentialRef: string | null | undefined) {
     if (!credentialRef) return;
     const secret = await secrets.getById(credentialRef);
@@ -51,8 +58,10 @@ export function resourceService(db: Db) {
       return rows.map(toResource);
     },
 
-    getById: async (id: string) => {
-      const row = await db.select().from(resources).where(eq(resources.id, id)).then((rows) => rows[0] ?? null);
+    getById: async (id: string, companyIds?: string[]) => {
+      const scope = resourceScope(id, companyIds);
+      if (!scope) return null;
+      const row = await db.select().from(resources).where(scope).then((rows) => rows[0] ?? null);
       return row ? toResource(row) : null;
     },
 
@@ -85,8 +94,10 @@ export function resourceService(db: Db) {
       }
     },
 
-    update: async (id: string, patch: UpdateResource) => {
-      const existing = await db.select().from(resources).where(eq(resources.id, id)).then((rows) => rows[0] ?? null);
+    update: async (id: string, patch: UpdateResource, companyIds?: string[]) => {
+      const scope = resourceScope(id, companyIds);
+      if (!scope) return null;
+      const existing = await db.select().from(resources).where(scope).then((rows) => rows[0] ?? null);
       if (!existing) return null;
       await assertCredential(existing.companyId, patch.credentialRef !== undefined ? patch.credentialRef : existing.credentialRef);
       try {
@@ -101,7 +112,7 @@ export function resourceService(db: Db) {
           ...(patch.labels !== undefined ? { labels: patch.labels } : {}),
           ...(patch.status !== undefined ? { status: patch.status } : {}),
           updatedAt: new Date(),
-        }).where(eq(resources.id, id)).returning().then((rows) => rows[0] ?? null);
+        }).where(scope).returning().then((rows) => rows[0] ?? null);
         return row ? toResource(row) : null;
       } catch (error) {
         if (isUniqueViolation(error, "resources_company_key_uq")) throw conflict("Resource key already exists in this company");
@@ -110,8 +121,10 @@ export function resourceService(db: Db) {
       }
     },
 
-    archive: async (id: string) => {
-      const row = await db.update(resources).set({ status: "archived", updatedAt: new Date() }).where(eq(resources.id, id)).returning().then((rows) => rows[0] ?? null);
+    archive: async (id: string, companyIds?: string[]) => {
+      const scope = resourceScope(id, companyIds);
+      if (!scope) return null;
+      const row = await db.update(resources).set({ status: "archived", updatedAt: new Date() }).where(scope).returning().then((rows) => rows[0] ?? null);
       return row ? toResource(row) : null;
     },
   };

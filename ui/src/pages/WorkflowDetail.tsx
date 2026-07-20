@@ -1072,7 +1072,7 @@ function WorkflowResourceManifestEditor({
                   <select
                     aria-label="Workflow Resource"
                     value={attachment.resourceId}
-                    onChange={(event) => updateResource(attachment.resourceId, { resourceId: event.target.value })}
+                    onChange={(event) => updateResource(attachment.resourceId, { resourceId: event.target.value, version: undefined, output: undefined })}
                     className="h-9 min-w-0 flex-1 rounded-md border border-input bg-background px-3 text-sm"
                   >
                     {availableResources
@@ -2188,6 +2188,15 @@ function readRunResourceOutputs(run: { contextSnapshot: Record<string, unknown> 
   });
 }
 
+function isSafePullRequestUrl(value: string) {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && url.hostname === "github.com";
+  } catch {
+    return false;
+  }
+}
+
 function WorkflowRunResourcesCard({ runDetail }: { runDetail: WorkflowRunDetail | null }) {
   const versions = runDetail ? readRunResourceVersions(runDetail) : [];
   const outputs = runDetail ? readRunResourceOutputs(runDetail) : [];
@@ -2232,7 +2241,7 @@ function WorkflowRunResourcesCard({ runDetail }: { runDetail: WorkflowRunDetail 
                   {output.outputCommit ? <span>Commit: <code>{output.outputCommit.slice(0, 12)}</code></span> : null}
                   {output.branch ? <span>Branch: <code>{output.branch}</code></span> : null}
                   {output.targetRef ? <span>Target: <code>{output.targetRef}</code></span> : null}
-                  {output.pullRequestUrl ? <a className="text-cyan-700 underline dark:text-cyan-300" href={output.pullRequestUrl} target="_blank" rel="noreferrer">Pull request</a> : null}
+                  {output.pullRequestUrl && isSafePullRequestUrl(output.pullRequestUrl) ? <a className="text-cyan-700 underline dark:text-cyan-300" href={output.pullRequestUrl} target="_blank" rel="noreferrer">Pull request</a> : null}
                   {output.changedFiles ? <span>Files: {output.changedFiles.length}</span> : null}
                 </div>
               </div>

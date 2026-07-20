@@ -34,7 +34,7 @@ const repositorySchema = z.string()
     if (value === "." || value.startsWith("./") || value.startsWith(".\\") || value.startsWith("/")) {
       return !value.split(/[\\/]/).includes("..");
     }
-    return /^(?:https:\/\/|ssh:\/\/git@|git@[^:]+:|git:\/\/)/i.test(value);
+    return /^(?:https:\/\/|ssh:\/\/git@|git@[^:]+:)/i.test(value);
   }, "Repository must use a supported HTTPS, SSH, Git transport, or safe local path.");
 
 export const createResourceSchema = z.object({

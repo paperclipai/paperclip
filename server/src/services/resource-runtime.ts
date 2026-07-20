@@ -44,9 +44,13 @@ async function runGit(args: string[], options: GitCommandOptions = {}) {
 function normalizeRef(ref: string | undefined, fallback: string) {
   const requested = (ref?.trim() || "latest");
   if (requested === "latest") return fallback;
-  if (requested.startsWith("branch:")) return requested.slice("branch:".length).trim();
-  if (requested.startsWith("tag:")) return requested.slice("tag:".length).trim();
-  if (requested.startsWith("commit:")) return requested.slice("commit:".length).trim();
+  for (const prefix of ["branch:", "tag:", "commit:"]) {
+    if (requested.startsWith(prefix)) {
+      const value = requested.slice(prefix.length).trim();
+      if (!value) throw unprocessable("Git ref cannot be empty");
+      return value;
+    }
+  }
   return requested;
 }
 
@@ -81,7 +85,7 @@ function parseDiffStat(value: string) {
 }
 
 function isCommit(ref: string) {
-  return /^[0-9a-f]{7,64}$/i.test(ref);
+  return /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(ref);
 }
 
 function resolveMountPath(workspaceRoot: string, mountPath: string) {
@@ -450,6 +454,10 @@ export function resourceRuntimeService(db: Db) {
             }
             const targetRef = validateBranch(normalizePublishRef(output.targetRef, item.resource.defaultRef));
             const credential = await credentialContext(db, item.resource);
+            const credentialToken = credential.token;
+            if (output.action === "pull_request" && !credentialToken) {
+              throw unprocessable("Pull request output requires a Resource credential");
+            }
             const env = credential.env;
             const currentCommit = item.resource.repository.startsWith("/") || item.resource.repository.startsWith(".")
               ? await resolveLocalRef(item.resource, targetRef)
@@ -497,11 +505,10 @@ export function resourceRuntimeService(db: Db) {
               results.push({ resourceId: item.resource.id, inputCommit: item.expectedCommit, outputCommit: commit, action: output.action, branch: pushRef, targetRef, changedFiles, insertions, deletions, status: "pushed" });
               continue;
             }
-            if (!credential.token) throw unprocessable("Pull request output requires a Resource credential");
             const provider = input.pullRequestProvider ?? githubPullRequestProvider();
             const pullRequest = await provider.create({
               repository: item.resource.repository,
-              token: credential.token,
+              token: credentialToken!,
               head: pushRef,
               base: targetRef,
               title,

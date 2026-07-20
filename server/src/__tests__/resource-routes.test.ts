@@ -58,6 +58,23 @@ describeEmbeddedPostgres("resource routes", () => {
     expect(created.body.key).toBe("briefs");
 
     expect((await request(app).get(`/api/companies/${otherCompanyId}/resources`)).status).toBe(403);
+    const otherResourceId = randomUUID();
+    await db.insert(resources).values({
+      id: otherResourceId,
+      companyId: otherCompanyId,
+      key: "other-briefs",
+      type: "git",
+      repository: "/tmp/other-briefs",
+      sourcePath: null,
+      defaultRef: "main",
+      mountPath: "other-briefs",
+      credentialRef: null,
+      labels: {},
+      status: "active",
+    });
+    expect((await request(app).get(`/api/resources/${otherResourceId}`)).status).toBe(404);
+    expect((await request(app).patch(`/api/resources/${otherResourceId}`).send({ defaultRef: "develop" })).status).toBe(404);
+    expect((await request(app).delete(`/api/resources/${otherResourceId}`)).status).toBe(404);
     expect((await request(app).patch(`/api/resources/${created.body.id}`).send({ defaultRef: "develop" })).status).toBe(200);
     expect((await request(app).delete(`/api/resources/${created.body.id}`)).body.status).toBe("archived");
 
