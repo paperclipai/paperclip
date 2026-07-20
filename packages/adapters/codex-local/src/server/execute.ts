@@ -213,15 +213,22 @@ function listPaperclipControlPlaneCandidates(env: Record<string, string>): strin
   return out;
 }
 
-function shouldPreflightPaperclipControlPlane(env: Record<string, string>): boolean {
-  if (env.PAPERCLIP_API_BRIDGE_MODE === "queue_v1") return false;
-  if (!(typeof env.PAPERCLIP_TASK_ID === "string" && env.PAPERCLIP_TASK_ID.trim().length > 0)) return false;
-  if (env.PAPERCLIP_WORKSPACE_SOURCE !== "agent_home") return false;
-  return Boolean(
-    process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON?.trim() ||
-      process.env.PAPERCLIP_RUNTIME_API_URL?.trim() ||
-      process.env.PAPERCLIP_API_URL?.trim(),
-  );
+function evaluatePaperclipControlPlanePreflight(env: Record<string, string>): {
+  enabled: boolean;
+  reasons: string[];
+  candidateCount: number;
+} {
+  const reasons: string[] = [];
+  if (env.PAPERCLIP_API_BRIDGE_MODE === "queue_v1") reasons.push("bridge_mode=queue_v1");
+  if (!(typeof env.PAPERCLIP_TASK_ID === "string" && env.PAPERCLIP_TASK_ID.trim().length > 0)) {
+    reasons.push("missing_task_id");
+  }
+  if (env.PAPERCLIP_WORKSPACE_SOURCE !== "agent_home") {
+    reasons.push(`workspace_source=${env.PAPERCLIP_WORKSPACE_SOURCE || "missing"}`);
+  }
+  const candidateCount = listPaperclipControlPlaneCandidates(env).length;
+  if (candidateCount === 0) reasons.push("no_api_candidates");
+  return { enabled: reasons.length === 0, reasons, candidateCount };
 }
 
 function formatPaperclipControlPlaneAttemptSummary(attempt: PaperclipControlPlaneProbeAttempt): string {
@@ -642,7 +649,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const workspaceContext = parseObject(context.paperclipWorkspace);
   const workspaceCwd = asString(workspaceContext.cwd, "");
-  const workspaceSource = asString(workspaceContext.source, "");
+  const inheritedWorkspaceSource = asString(process.env.PAPERCLIP_WORKSPACE_SOURCE, "");
+  const workspaceSource = asString(workspaceContext.source, "") || inheritedWorkspaceSource;
   const workspaceStrategy = asString(workspaceContext.strategy, "");
   const workspaceId = asString(workspaceContext.workspaceId, "");
   const workspaceRepoUrl = asString(workspaceContext.repoUrl, "");
@@ -996,8 +1004,23 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         `[paperclip] Confining Codex with ${scopes} scope.\n`,
       );
     }
+    const controlPlanePreflightDecision = !executionTargetIsRemote
+      ? evaluatePaperclipControlPlanePreflight(env)
+      : null;
+    if (controlPlanePreflightDecision?.enabled) {
+      await onLog(
+        "stdout",
+        `[paperclip] Control-plane preflight engaged for this Codex issue run. ` +
+          `workspace_source=${env.PAPERCLIP_WORKSPACE_SOURCE}; candidates=${controlPlanePreflightDecision.candidateCount}.\n`,
+      );
+    } else if (controlPlanePreflightDecision) {
+      await onLog(
+        "stdout",
+        `[paperclip] Control-plane preflight skipped for this Codex issue run: ${controlPlanePreflightDecision.reasons.join(", ")}.\n`,
+      );
+    }
     const controlPlanePreflight =
-      !executionTargetIsRemote && shouldPreflightPaperclipControlPlane(env)
+      controlPlanePreflightDecision?.enabled
         ? await preflightPaperclipControlPlaneReachability({
             runId,
             target: runtimeExecutionTarget,
@@ -1013,6 +1036,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         controlPlanePreflight.attempts.length > 0
           ? controlPlanePreflight.attempts.slice(0, 4).map(formatPaperclipControlPlaneAttemptSummary).join("; ")
           : "no Paperclip API candidates were exported to the Codex issue run";
+      await onLog(
+        "stdout",
+        `[paperclip] Control-plane preflight failed for this Codex issue run. Tried: ${attemptSummary}\n`,
+      );
       return {
         exitCode: 1,
         signal: null,
@@ -1033,13 +1060,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         resultJson: { paperclipControlPlanePreflight: controlPlanePreflight },
       };
     }
-    if (controlPlanePreflight?.ok && controlPlanePreflight.url !== env.PAPERCLIP_API_URL) {
-      env.PAPERCLIP_API_URL = controlPlanePreflight.url;
-      effectiveEnv.PAPERCLIP_API_URL = controlPlanePreflight.url;
-      await onLog(
-        "stdout",
-        `[paperclip] Selected reachable Paperclip API URL ${controlPlanePreflight.url} for this Codex issue run.\n`,
-      );
+    if (controlPlanePreflight?.ok) {
+      if (controlPlanePreflight.url !== env.PAPERCLIP_API_URL) {
+        env.PAPERCLIP_API_URL = controlPlanePreflight.url;
+        effectiveEnv.PAPERCLIP_API_URL = controlPlanePreflight.url;
+        await onLog(
+          "stdout",
+          `[paperclip] Selected reachable Paperclip API URL ${controlPlanePreflight.url} for this Codex issue run.\n`,
+        );
+      } else {
+        await onLog(
+          "stdout",
+          `[paperclip] Control-plane preflight confirmed ${controlPlanePreflight.url} is reachable for this Codex issue run.\n`,
+        );
+      }
       if (managedMcpGateways.length > 0) {
         const refreshedManagedMcp = await writeManagedCodexMcpConfig({
           codexHome: effectiveCodexHome,

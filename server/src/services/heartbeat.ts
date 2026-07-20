@@ -2762,13 +2762,19 @@ export function buildExplicitResumeSessionOverride(input: {
   const runSessionParams = requiresCanonicalSessionIds(input.adapterType)
     ? normalizeResumeParamsForAdapter(
         input.adapterType,
-        input.sessionCodec.deserialize(input.resumeRunSessionParams ?? null),
+        mergePaperclipSessionMetadataIntoSessionParams({
+          sessionParams: input.sessionCodec.deserialize(input.resumeRunSessionParams ?? null),
+          metadataSource: input.resumeRunSessionParams ?? null,
+        }),
       )
     : null;
   const runSessionDisplayId = truncateDisplayId(readNonEmptyString(runSessionParams?.sessionId));
   const taskSessionParams = normalizeResumeParamsForAdapter(
     input.adapterType,
-    input.sessionCodec.deserialize(input.taskSession?.sessionParamsJson ?? null),
+    mergePaperclipSessionMetadataIntoSessionParams({
+      sessionParams: input.sessionCodec.deserialize(input.taskSession?.sessionParamsJson ?? null),
+      metadataSource: input.taskSession?.sessionParamsJson ?? null,
+    }),
   );
   const taskSessionRawDisplayId = input.taskSession?.sessionDisplayId ?? null;
   const taskSessionDisplayId = truncateDisplayId(
@@ -5279,6 +5285,23 @@ function normalizeResumeParamsForAdapter(
   if (!requiresCanonicalSessionIds(adapterType)) return normalized;
   const sessionId = readNonEmptyString(normalized.sessionId);
   return isCanonicalSessionIdForAdapter(adapterType, sessionId) ? normalized : null;
+}
+
+function mergePaperclipSessionMetadataIntoSessionParams(input: {
+  sessionParams: Record<string, unknown> | null | undefined;
+  metadataSource: Record<string, unknown> | null | undefined;
+}) {
+  const normalized = normalizeSessionParams(input.sessionParams);
+  const source = input.metadataSource;
+  if (!source) return normalized;
+  const next = { ...(normalized ?? {}) };
+  let changed = false;
+  for (const key of PAPERCLIP_SESSION_METADATA_KEYS) {
+    if (!(key in source)) continue;
+    next[key] = source[key];
+    changed = true;
+  }
+  return changed ? next : normalized;
 }
 
 export function resolveNextSessionState(input: {
@@ -12139,11 +12162,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       ? await getTaskSession(agent.companyId, agent.id, agent.adapterType, taskKey)
       : null;
     const taskSessionDecodedParams = normalizeSessionParams(
-      sessionCodec.deserialize(taskSession?.sessionParamsJson ?? null),
+      mergePaperclipSessionMetadataIntoSessionParams({
+        sessionParams: sessionCodec.deserialize(taskSession?.sessionParamsJson ?? null),
+        metadataSource: taskSession?.sessionParamsJson ?? null,
+      }),
     );
     const explicitResumeSessionParams = normalizeResumeParamsForAdapter(
       agent.adapterType,
-      sessionCodec.deserialize(parseObject(context.resumeSessionParams)),
+      mergePaperclipSessionMetadataIntoSessionParams({
+        sessionParams: sessionCodec.deserialize(parseObject(context.resumeSessionParams)),
+        metadataSource: parseObject(context.resumeSessionParams),
+      }),
     );
     const explicitResumeSessionDisplayId = truncateDisplayId(
       readNonEmptyString(context.resumeSessionDisplayId) ??
