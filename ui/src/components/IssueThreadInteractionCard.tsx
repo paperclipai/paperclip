@@ -260,7 +260,8 @@ type ToolActionCardState =
   | "executed"
   | "failed"
   | "declined"
-  | "expired";
+  | "expired"
+  | "cancelled";
 
 /**
  * Derives the visible lifecycle state from the interaction status plus the
@@ -275,6 +276,10 @@ function toolActionCardState(
   if (interaction.status === "pending") return "pending";
   if (interaction.status === "rejected") return "declined";
   if (interaction.status === "expired") return "expired";
+  // The stale sweeps cancel a pending approval rather than expiring it. Without
+  // this the card falls through to the transient "running…" state below and
+  // spins forever on an action that never ran.
+  if (interaction.status === "cancelled") return "cancelled";
   // Terminal execution outcomes take precedence over the coarse interaction
   // status so a self-resolving "running…" advances to its real result.
   if (execStatus === "executed") return "executed";
@@ -329,6 +334,14 @@ function toolActionStatusClasses(state: ToolActionCardState): {
         shell: "border-2 border-border bg-transparent",
         badge: "border-border bg-muted/60 text-muted-foreground",
         label: "Expired",
+        Icon: Clock,
+        dimmed: true,
+      };
+    case "cancelled":
+      return {
+        shell: "border-2 border-border bg-transparent",
+        badge: "border-border bg-muted/60 text-muted-foreground",
+        label: "Cancelled",
         Icon: Clock,
         dimmed: true,
       };
@@ -1346,19 +1359,33 @@ function RequestConfirmationResolution({
     );
   }
 
-  if (interaction.status === "expired") {
+  // A stale cancellation is terminal in the same way an expiry is. Only the
+  // lazy read-path staleness check writes "expired"; the document-revision
+  // sweep, the issue-state sweep and the comment sweeps all write "cancelled",
+  // so keying this block off "expired" alone left those asks rendering nothing.
+  if (interaction.status === "expired" || interaction.status === "cancelled") {
+    const cancelled = interaction.status === "cancelled";
     const expiredByComment = outcome === "superseded_by_comment";
+    const expiredByIssueState = outcome === "stale_issue_state";
     const expiredByTargetChange = outcome === "stale_target";
+    const staleReason = expiredByIssueState ? interaction.result?.reason?.trim() : null;
     return (
       <div className="space-y-3 rounded-sm border border-amber-500/60 bg-amber-500/10 px-4 py-3 text-sm text-amber-900 dark:text-amber-100">
         <div className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-amber-700">
-          {expiredByComment ? "Expired by comment" : "Expired by target change"}
+          {expiredByComment
+            ? cancelled ? "Cancelled by comment" : "Expired by comment"
+            : expiredByIssueState
+              ? "Cancelled by issue change"
+              : cancelled ? "Cancelled by target change" : "Expired by target change"}
         </div>
         <p className="leading-6">
           {expiredByComment
             ? "A board comment superseded this confirmation before it was resolved."
-            : "The requested target changed before this confirmation was resolved."}
+            : expiredByIssueState
+              ? "The issue changed before this confirmation was resolved."
+              : "The requested target changed before this confirmation was resolved."}
         </p>
+        {staleReason ? <p className="leading-6">{staleReason}</p> : null}
         {expiredByComment && interaction.result?.commentId ? (
           <Button asChild size="sm" variant="ghost" className="h-7 px-2 text-amber-950 hover:bg-amber-500/15 dark:text-amber-50">
             <a href={`#comment-${interaction.result.commentId}`}>Jump to comment</a>
@@ -1401,7 +1428,7 @@ function ToolActionIdentityHeader({
 }) {
   const risk = toolActionRiskBadge(payload.risk);
   const RiskIcon = risk.Icon;
-  const dimmed = state === "declined" || state === "expired";
+  const dimmed = state === "declined" || state === "expired" || state === "cancelled";
   const subParts = [payload.appDisplayName, payload.toolName].filter(
     (part): part is string => Boolean(part && part.trim()),
   );
@@ -1602,6 +1629,32 @@ function ToolActionResolution({
             <MarkdownBody>{reason}</MarkdownBody>
           </div>
         ) : null}
+      </div>
+    );
+  }
+
+  if (state === "cancelled") {
+    // A sweep killed the pending approval — never the 60-minute countdown, so
+    // the expired copy below would be a lie. Name which sweep and why.
+    const outcome = interaction.result?.outcome;
+    const bySupersedingComment = outcome === "superseded_by_comment";
+    const reason = outcome === "stale_issue_state" ? interaction.result?.reason?.trim() : null;
+    return (
+      <div className="space-y-1 rounded-sm border border-border bg-muted/50 px-4 py-3 text-sm text-muted-foreground">
+        <div className="flex items-start gap-2 leading-6">
+          <Clock className="mt-0.5 h-4 w-4 shrink-0" />
+          <div>
+            <div className="font-medium text-foreground">
+              Cancelled{when ? ` at ${when}` : ""} —{" "}
+              {bySupersedingComment ? "superseded by a later comment" : "the issue changed"}
+            </div>
+            <p>
+              The action did <strong>not</strong> run. If it's still needed, the agent can
+              request approval again — a fresh card will appear.
+            </p>
+            {reason ? <p className="mt-1">{reason}</p> : null}
+          </div>
+        </div>
       </div>
     );
   }
@@ -2158,7 +2211,9 @@ function RequestCheckboxConfirmationResolution({
     return <RequestConfirmationResolution interaction={interaction as unknown as RequestConfirmationInteraction} />;
   }
 
-  if (interaction.status === "expired") {
+  // The same sweeps that terminate a request_confirmation also terminate a
+  // checkbox one, and they write "cancelled" rather than "expired".
+  if (interaction.status === "expired" || interaction.status === "cancelled") {
     return <RequestConfirmationResolution interaction={interaction as unknown as RequestConfirmationInteraction} />;
   }
 
@@ -2806,13 +2861,21 @@ function RequestItemVerdictsCard({
         <div className="rounded-sm border border-amber-500/50 bg-amber-500/10 px-3 py-2 text-sm text-amber-900 dark:text-amber-100">
           <div className="flex items-center gap-2 font-medium">
             <AlertTriangle className="h-4 w-4" aria-hidden />
+            {/* The verb tracks the real status: the document-revision and
+                issue-state sweeps CANCEL, everything else expires. Saying
+                "expired" for a cancelled row misdescribes what the operator
+                is looking at. */}
             {interaction.result?.outcome === "superseded_by_comment"
               ? "This review expired after a later comment."
               : interaction.result?.outcome === "stale_target"
-                ? "This review expired after the target changed."
+                ? interaction.status === "cancelled"
+                  ? "This review was cancelled after the target changed."
+                  : "This review expired after the target changed."
                 : interaction.result?.outcome === "stale_issue_state"
                   ? "This review was cancelled after the issue changed."
-                  : "This review expired."}
+                  : interaction.status === "cancelled"
+                    ? "This review was cancelled."
+                    : "This review expired."}
           </div>
           {isStaleIssueState && interaction.result?.reason ? (
             <p className="mt-1 text-xs leading-5">{interaction.result.reason}</p>

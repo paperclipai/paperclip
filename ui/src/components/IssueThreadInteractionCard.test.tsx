@@ -26,6 +26,11 @@ import {
   runningToolActionInteraction,
   completeRequestItemVerdictsInteraction,
   supersededRequestItemVerdictsInteraction,
+  staleIssueStateRequestCheckboxConfirmationInteraction,
+  staleIssueStateRequestConfirmationInteraction,
+  staleIssueStateRequestItemVerdictsInteraction,
+  staleIssueStateToolActionInteraction,
+  staleTargetCancelledRequestConfirmationInteraction,
   staleTargetRequestConfirmationInteraction,
   rejectedSuggestedTasksInteraction,
 } from "../fixtures/issueThreadInteractionFixtures";
@@ -591,6 +596,79 @@ describe("IssueThreadInteractionCard", () => {
     expect(host.textContent).toContain("expired after a later comment");
     expect(host.textContent).toContain("cannot be");
     expect(host.textContent?.toLowerCase()).toContain("revert");
+  });
+});
+
+// The stale sweeps write status "cancelled", not "expired" — a card that keys
+// terminal presentation off "expired" alone renders a dead ask as still live and
+// swallows the closing reason entirely.
+describe("IssueThreadInteractionCard stale cancellations", () => {
+  it("renders a cancelled item-verdicts review as terminal and shows the reason", () => {
+    const host = renderCard({ interaction: staleIssueStateRequestItemVerdictsInteraction });
+
+    expect(host.textContent).toContain("This review was cancelled after the issue changed.");
+    expect(host.textContent).toContain(
+      "Issue was closed as done before the remaining posts were reviewed.",
+    );
+    // Already-applied verdicts are still explained, and nothing is actionable.
+    expect(host.textContent).toContain("cannot be");
+    expect(host.querySelector("button[data-verdict]")).toBeNull();
+    // The green "all decided" summary must not claim success on a dead review.
+    expect(host.textContent).not.toContain("Apply ");
+  });
+
+  it("renders a cancelled confirmation with the issue-change wording and reason", () => {
+    const host = renderCard({ interaction: staleIssueStateRequestConfirmationInteraction });
+
+    expect(host.textContent).toContain("Cancelled by issue change");
+    expect(host.textContent).toContain("The issue changed before this confirmation was resolved.");
+    expect(host.textContent).toContain(
+      "Issue was closed as done before the confirmation was answered.",
+    );
+    // Never presented as still awaiting an answer.
+    expect(host.textContent).not.toContain("Approve plan");
+  });
+
+  it("keeps the target-specific wording when a confirmation is cancelled by the document sweep", () => {
+    const host = renderCard({ interaction: staleTargetCancelledRequestConfirmationInteraction });
+
+    expect(host.textContent).toContain("Cancelled by target change");
+    expect(host.textContent).toContain(
+      "The requested target changed before this confirmation was resolved.",
+    );
+    expect(host.textContent).not.toContain("Expired by");
+  });
+
+  it("still labels a genuinely expired confirmation as expired", () => {
+    const host = renderCard({ interaction: staleTargetRequestConfirmationInteraction });
+
+    expect(host.textContent).toContain("Expired by target change");
+    expect(host.textContent).not.toContain("Cancelled by");
+  });
+
+  it("renders a cancelled checkbox confirmation as terminal with its reason", () => {
+    const host = renderCard({ interaction: staleIssueStateRequestCheckboxConfirmationInteraction });
+
+    expect(host.textContent).toContain("Cancelled by issue change");
+    expect(host.textContent).toContain(
+      "Issue was reassigned before the selection was confirmed.",
+    );
+    // The pending option list and its CTA are gone.
+    expect(host.querySelector('[role="checkbox"]')).toBeNull();
+    expect(host.textContent).not.toContain("Delete selected");
+  });
+
+  it("settles a cancelled tool-action approval instead of spinning on Running", () => {
+    const host = renderCard({ interaction: staleIssueStateToolActionInteraction });
+
+    expect(host.textContent).toContain("Cancelled");
+    expect(host.textContent).not.toContain("Running…");
+    expect(host.textContent).toContain("the issue changed");
+    expect(host.textContent).toContain(
+      "Issue was closed as done before the approval was answered.",
+    );
+    // The 60-minute expiry copy would be a lie here.
+    expect(host.textContent).not.toContain("no one responded within 60 minutes");
   });
 });
 

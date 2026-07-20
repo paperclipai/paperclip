@@ -683,6 +683,19 @@ export const expiredToolActionInteraction = createToolActionConfirmationInteract
   },
 });
 
+/** Stale-issue-state sweep on a pending approval: cancelled, never executed. */
+export const staleIssueStateToolActionInteraction = createToolActionConfirmationInteraction({
+  id: "interaction-tool-action-cancelled-issue-state",
+  status: "cancelled",
+  updatedAt: new Date("2026-04-20T16:05:00.000Z"),
+  resolvedAt: new Date("2026-04-20T16:05:00.000Z"),
+  result: {
+    version: 1,
+    outcome: "stale_issue_state",
+    reason: "Issue was closed as done before the approval was answered.",
+  },
+});
+
 export const commentExpiredRequestConfirmationInteraction = createRequestConfirmationInteraction({
   id: "interaction-confirmation-expired-comment",
   status: "expired",
@@ -716,6 +729,40 @@ export const staleTargetRequestConfirmationInteraction = createRequestConfirmati
       revisionNumber: 4,
     },
   },
+  result: {
+    version: 1,
+    outcome: "stale_target",
+    staleTarget: {
+      type: "issue_document",
+      issueId: issueThreadInteractionFixtureMeta.issueId,
+      key: "plan",
+      revisionId: "11111111-1111-4111-8111-111111111111",
+      revisionNumber: 3,
+    },
+  },
+});
+
+/** Stale-issue-state sweep: cancels rather than expires, and carries a reason. */
+export const staleIssueStateRequestConfirmationInteraction = createRequestConfirmationInteraction({
+  id: "interaction-confirmation-cancelled-issue-state",
+  status: "cancelled",
+  resolvedByUserId: issueThreadInteractionFixtureMeta.currentUserId,
+  resolvedAt: new Date("2026-04-20T14:41:00.000Z"),
+  updatedAt: new Date("2026-04-20T14:41:00.000Z"),
+  result: {
+    version: 1,
+    outcome: "stale_issue_state",
+    reason: "Issue was closed as done before the confirmation was answered.",
+  },
+});
+
+/** Document-revision sweep: cancels with the target-specific outcome. */
+export const staleTargetCancelledRequestConfirmationInteraction = createRequestConfirmationInteraction({
+  id: "interaction-confirmation-cancelled-target",
+  status: "cancelled",
+  resolvedByAgentId: "agent-codex",
+  resolvedAt: new Date("2026-04-20T14:41:30.000Z"),
+  updatedAt: new Date("2026-04-20T14:41:30.000Z"),
   result: {
     version: 1,
     outcome: "stale_target",
@@ -871,6 +918,21 @@ export const staleTargetRequestCheckboxConfirmationInteraction =
         revisionId: "11111111-1111-4111-8111-111111111111",
         revisionNumber: 3,
       },
+    },
+  });
+
+/** Stale-issue-state sweep on a checkbox ask: cancelled, with a reason. */
+export const staleIssueStateRequestCheckboxConfirmationInteraction =
+  createRequestCheckboxConfirmationInteraction({
+    id: "interaction-checkbox-cancelled-issue-state",
+    status: "cancelled",
+    resolvedByUserId: issueThreadInteractionFixtureMeta.currentUserId,
+    resolvedAt: new Date("2026-04-20T14:52:00.000Z"),
+    updatedAt: new Date("2026-04-20T14:52:00.000Z"),
+    result: {
+      version: 1,
+      outcome: "stale_issue_state",
+      reason: "Issue was reassigned before the selection was confirmed.",
     },
   });
 
@@ -1038,6 +1100,36 @@ export const supersededRequestItemVerdictsInteraction = createRequestItemVerdict
     outcome: "superseded_by_comment",
     complete: false,
     commentId: "33333333-3333-4333-8333-333333333333",
+    items: [
+      {
+        id: "post-spring-recap",
+        verdict: "approve",
+        resolvedByUserId: issueThreadInteractionFixtureMeta.currentUserId,
+        resolvedAt: new Date("2026-04-20T15:08:00.000Z"),
+      },
+      {
+        id: "post-changelog-digest",
+        verdict: "reject",
+        reason: "Tone is off-brand — too dry. Warm it up and re-submit.",
+        resolvedByUserId: issueThreadInteractionFixtureMeta.currentUserId,
+        resolvedAt: new Date("2026-04-20T15:08:00.000Z"),
+      },
+    ],
+  },
+});
+
+/** S6b — cancelled by the stale-issue-state sweep after two items were applied. */
+export const staleIssueStateRequestItemVerdictsInteraction = createRequestItemVerdictsInteraction({
+  id: "interaction-verdicts-cancelled-issue-state",
+  status: "cancelled",
+  resolvedByUserId: issueThreadInteractionFixtureMeta.currentUserId,
+  resolvedAt: new Date("2026-04-20T15:18:00.000Z"),
+  updatedAt: new Date("2026-04-20T15:18:00.000Z"),
+  result: {
+    version: 1,
+    outcome: "stale_issue_state",
+    complete: false,
+    reason: "Issue was closed as done before the remaining posts were reviewed.",
     items: [
       {
         id: "post-spring-recap",

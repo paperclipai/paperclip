@@ -199,6 +199,63 @@ describe("issue thread interaction helpers", () => {
       status: "expired",
       result: { version: 1, outcome: "stale_target" },
     })).toBe("Selection expired after target changed");
+
+    // The sweeps cancel rather than expire — keep the outcome-specific wording.
+    expect(buildIssueThreadInteractionSummary({
+      ...base,
+      status: "cancelled",
+      result: { version: 1, outcome: "stale_issue_state", reason: "Issue closed as done." },
+    })).toBe("Selection cancelled after issue state changed");
+
+    expect(buildIssueThreadInteractionSummary({
+      ...base,
+      status: "cancelled",
+      result: { version: 1, outcome: "stale_target" },
+    })).toBe("Selection cancelled after target changed");
+
+    expect(buildIssueThreadInteractionSummary({
+      ...base,
+      status: "cancelled",
+      result: { version: 1, outcome: "superseded_by_comment", commentId: "c-1" },
+    })).toBe("Selection cancelled after comment");
+  });
+
+  it("summarizes stale cancellations of a request_confirmation by outcome", () => {
+    const base = {
+      id: "interaction-confirmation",
+      companyId: "company-1",
+      issueId: "issue-1",
+      kind: "request_confirmation" as const,
+      continuationPolicy: "wake_assignee" as const,
+      createdAt: "2026-04-06T12:00:00.000Z",
+      updatedAt: "2026-04-06T12:00:00.000Z",
+      payload: { version: 1 as const, prompt: "Approve?" },
+    };
+
+    expect(buildIssueThreadInteractionSummary({
+      ...base,
+      status: "cancelled",
+      result: { version: 1, outcome: "stale_issue_state", reason: "Issue closed as done." },
+    })).toBe("Confirmation cancelled after issue state changed");
+
+    expect(buildIssueThreadInteractionSummary({
+      ...base,
+      status: "cancelled",
+      result: { version: 1, outcome: "stale_target" },
+    })).toBe("Confirmation cancelled after target changed");
+
+    expect(buildIssueThreadInteractionSummary({
+      ...base,
+      status: "cancelled",
+      result: { version: 1, outcome: "superseded_by_comment", commentId: "c-1" },
+    })).toBe("Confirmation cancelled after comment");
+
+    // The lazy read-path staleness check still expires; that wording stands.
+    expect(buildIssueThreadInteractionSummary({
+      ...base,
+      status: "expired",
+      result: { version: 1, outcome: "stale_target" },
+    })).toBe("Confirmation expired after target changed");
   });
 
   it("maps selected checkbox option ids back to labels", () => {

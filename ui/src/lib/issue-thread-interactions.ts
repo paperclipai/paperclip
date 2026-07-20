@@ -211,6 +211,16 @@ export function buildIssueThreadInteractionSummary(
       if (outcome === "stale_target") return "Confirmation expired after target changed";
       return "Confirmation expired";
     }
+    // Only the lazy read-path staleness check expires a confirmation; every
+    // sweep that terminates one writes "cancelled" instead, so without this the
+    // dead ask reads as still open.
+    if (interaction.status === "cancelled") {
+      const outcome = interaction.result?.outcome;
+      if (outcome === "superseded_by_comment") return "Confirmation cancelled after comment";
+      if (outcome === "stale_issue_state") return "Confirmation cancelled after issue state changed";
+      if (outcome === "stale_target") return "Confirmation cancelled after target changed";
+      return "Confirmation cancelled";
+    }
     return "Requested confirmation";
   }
 
@@ -229,6 +239,13 @@ export function buildIssueThreadInteractionSummary(
       if (outcome === "superseded_by_comment") return "Selection expired after comment";
       if (outcome === "stale_target") return "Selection expired after target changed";
       return "Selection expired";
+    }
+    if (interaction.status === "cancelled") {
+      const outcome = interaction.result?.outcome;
+      if (outcome === "superseded_by_comment") return "Selection cancelled after comment";
+      if (outcome === "stale_issue_state") return "Selection cancelled after issue state changed";
+      if (outcome === "stale_target") return "Selection cancelled after target changed";
+      return "Selection cancelled";
     }
     return optionCount === 1
       ? "Requested a selection from 1 option"
