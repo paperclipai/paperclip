@@ -41,17 +41,21 @@ async function runGit(args: string[], options: GitCommandOptions = {}) {
   }
 }
 
-function normalizeRef(ref: string | undefined, fallback: string) {
+type GitRef = {
+  value: string;
+  kind: "branch" | "tag" | "commit" | "unqualified";
+};
+
+function normalizeRef(ref: string | undefined, fallback: string): GitRef {
   const requested = (ref?.trim() || "latest");
-  if (requested === "latest") return fallback;
-  for (const prefix of ["branch:", "tag:", "commit:"]) {
-    if (requested.startsWith(prefix)) {
-      const value = requested.slice(prefix.length).trim();
-      if (!value) throw unprocessable("Git ref cannot be empty");
-      return value;
-    }
+  if (requested === "latest") return { value: fallback, kind: "unqualified" };
+  const prefix = requested.match(/^(branch|tag|commit):/i)?.[1]?.toLowerCase();
+  if (prefix) {
+    const value = requested.slice(prefix.length + 1).trim();
+    if (!value) throw unprocessable("Git ref cannot be empty");
+    return { value, kind: prefix as GitRef["kind"] };
   }
-  return requested;
+  return { value: requested, kind: "unqualified" };
 }
 
 function normalizePublishRef(ref: string | undefined, fallback: string) {
@@ -110,16 +114,17 @@ async function credentialContext(db: Db, resource: Resource): Promise<{ env: Nod
     }, token };
 }
 
-async function resolveRemoteRef(resource: Resource, requestedRef: string, env: NodeJS.ProcessEnv) {
-  if (isCommit(requestedRef)) {
-    return requestedRef;
+async function resolveRemoteRef(resource: Resource, inputRef: GitRef | string, env: NodeJS.ProcessEnv) {
+  const requestedRef: GitRef = typeof inputRef === "string" ? { value: inputRef, kind: "unqualified" } : inputRef;
+  if (requestedRef.kind === "commit" || (requestedRef.kind === "unqualified" && isCommit(requestedRef.value))) {
+    return requestedRef.value;
   }
 
-  const candidates = [
-    `refs/heads/${requestedRef}`,
-    `refs/tags/${requestedRef}`,
-    requestedRef,
-  ];
+  const candidates = requestedRef.kind === "tag"
+    ? [`refs/tags/${requestedRef.value}`]
+    : requestedRef.kind === "branch"
+      ? [`refs/heads/${requestedRef.value}`]
+      : [`refs/heads/${requestedRef.value}`, `refs/tags/${requestedRef.value}`, requestedRef.value];
   for (const candidate of candidates) {
     try {
       const output = await runGit(["ls-remote", "--refs", resource.repository, candidate], { env });
@@ -129,7 +134,7 @@ async function resolveRemoteRef(resource: Resource, requestedRef: string, env: N
       // Try next ref form. Final failure below is the user-facing error.
     }
   }
-  throw notFound(`Git ref not found: ${requestedRef}`);
+  throw notFound(`Git ref not found: ${requestedRef.value}`);
 }
 
 async function assertPublishBranchAvailable(resource: Resource, branch: string, env: NodeJS.ProcessEnv) {
@@ -142,13 +147,18 @@ async function assertPublishBranchAvailable(resource: Resource, branch: string, 
   if (output) throw conflict(`Git output branch already exists: ${branch}`);
 }
 
-async function resolveLocalRef(resource: Resource, requestedRef: string) {
+async function resolveLocalRef(resource: Resource, inputRef: GitRef | string) {
+  const requestedRef: GitRef = typeof inputRef === "string" ? { value: inputRef, kind: "unqualified" } : inputRef;
   const env = process.env;
-  const candidate = requestedRef === "HEAD" ? "HEAD" : requestedRef;
+  const candidate = requestedRef.kind === "tag"
+    ? `refs/tags/${requestedRef.value}`
+    : requestedRef.kind === "branch"
+      ? `refs/heads/${requestedRef.value}`
+      : requestedRef.value === "HEAD" ? "HEAD" : requestedRef.value;
   try {
     return await runGit(["-C", resource.repository, "rev-parse", `${candidate}^{commit}`], { env });
   } catch {
-    throw notFound(`Git ref not found: ${requestedRef}`);
+    throw notFound(`Git ref not found: ${requestedRef.value}`);
   }
 }
 
@@ -421,7 +431,7 @@ export function resourceRuntimeService(db: Db) {
           repoPath,
           expectedCommit,
           outputBaselineCommit,
-          resolvedRef: requestedRef,
+          resolvedRef: requestedRef.value,
         });
       }
 

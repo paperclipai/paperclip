@@ -138,6 +138,16 @@ describeEmbeddedPostgres("resourceRuntimeService", () => {
     await git(["clone", "--branch", "main", remotePath, sourcePathCheck]);
     expect(await fs.readFile(path.join(sourcePathCheck, "nested", "context.md"), "utf8")).toBe("nested-after-rebase\n");
 
+    await git(["tag", "feature", initialCommit], seedPath);
+    await git(["push", "origin", "refs/tags/feature"], seedPath);
+    const tagPrepared = await resourceRuntimeService(db).prepare({
+      companyId,
+      runId: "run-tag-ref-test",
+      workspaceRoot: path.join(fixtureRoot, "tag-ref-workspace"),
+      manifest: { version: 1, resources: [{ resourceId, mode: "input", version: "tag:feature" }] },
+    });
+    expect(tagPrepared!.inputVersions[0]!.commit).toBe(initialCommit);
+
     await expect(resourceRuntimeService(db).prepare({
       companyId,
       runId: "run-existing-pr-branch-test",
