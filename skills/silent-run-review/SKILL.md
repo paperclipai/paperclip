@@ -1,6 +1,6 @@
 ---
 name: silent-run-review
-description: Fast triage checklist for system-generated run-health review issues. Use whenever the wake issue title starts with "Review silent active run for" (stale active-run watchdog) or "Review productivity for" (productivity review). Classifies the run in ~5 minutes — limit/auth failure, hung process, benign long-runner, or routine noise — and closes the review issue with the right disposition. Not for whole-tree stall forensics; that is the diagnose-why-work-stopped skill.
+description: Fast triage checklist for system-generated run-health review issues. Use whenever the wake issue title starts with "Review silent active run for" (stale active-run watchdog) or "Review productivity for" (productivity review). Classifies the run in ~5 minutes — limit/auth failure, hung process, benign long-runner, routine noise, or an expected run-loop brake (issue_rewake_throttled / no_external_activity) — and closes the review issue with the right disposition. Not for whole-tree stall forensics; that is the diagnose-why-work-stopped skill.
 ---
 
 # Silent Run Review
@@ -46,14 +46,46 @@ Treat `process_lost` and `codex_output_inactivity_monitor` as deterministic reco
 
 **5. Routine noise during a halt/pause window?** If the run belongs to an agent or routine that is deliberately paused/halted (maintenance, emergency stop, limit window already being handled), cancel the review with the standard comment: `routine watchdog noise during <halt context> — no action needed, see <controlling issue>`.
 
+**6. A run-loop brake fired?** Two skip reasons are *working brakes*, not defects. If the silence is explained by either, the classification is "brake fired as designed" — close the review as productive/noise, do NOT kick the agent, do NOT file a silent-skip defect. See "Run-loop brakes" below for how to confirm and how to tell a brake from a real stall.
+
 For productivity reviews specifically, the manager decision menu is in the issue body: close as productive / continue with a snooze window / request decomposition, reroute, block with an unblock owner, or stop/cancel the source work if it is inefficient. Pick one explicitly.
+
+## Run-loop brakes are EXPECTED, not defects
+
+Paperclip deliberately holds some wakes back. A held wake looks like silence from the outside, so it will land in front of you as a review. **Neither of these is a silent-skip defect. Do not "fix" them by re-kicking the agent or filing a platform bug.**
+
+### `issue_rewake_throttled` — the re-wake throttle (PAP-13775)
+
+`server/src/services/issue-rewake-throttle.ts`. Once the same agent has **2 consecutive `succeeded` runs on the same issue that left no issue-visible progress**, further information-free wakes for that issue are held for an escalating cooldown (2 min, doubling, capped at **30 min**) anchored to the last run's finish time. Purpose: stop external pollers and reconcilers from paying full adapter sessions for zero new information.
+
+**How it surfaces:** a row in `agent_wakeup_requests` with `status = 'skipped'`, `reason = 'issue_rewake_throttled'`, and `payload.heartbeatSkip` carrying `requestedReason`, `noProgressStreak`, `cooldownMs`, `lastRunFinishedAt`, `nextAllowedAt`. **No** `heartbeat_run` is created. That absence is the design, not a lost wake.
+
+**What it applies to:** reason-less on-demand invokes, plus `issue_assigned`, `issue_continuation_needed`, `issue_assignment_recovery`, `issue_graph_liveness_backstop`. Everything else — comment wakes, mentions, blockers-resolved, interactions, approvals, monitors, reviews — passes through untouched. So does any wake carrying `forceFreshSession: true`, an explicit resume, or a wake comment. Server-side recovery retries (process-loss, missing-comment follow-ups) insert runs directly and never reach this gate, so crash recovery is never delayed by it.
+
+**Brake vs. genuine stall:**
+- **Brake working** — the streak is real: the last runs `succeeded` and genuinely left no comment/mutation/document/work-product behind, and `nextAllowedAt` is in the near future (≤30 min). The agent will be woken again on its own. Close the review noting the streak and `nextAllowedAt`.
+- **Genuine stall underneath** — the throttle is the *messenger*. A 2+ no-progress streak means the agent keeps finishing without moving the issue. That is the defect worth reporting, and it is a **work** problem (bad next action, missing context, wedged agent), not a platform problem. Do not blame the throttle; classify the work.
+- **Real red flag** — a wake that should never have been a throttle candidate got held (an event-carrying reason in `requestedReason`), or `nextAllowedAt` has long passed and still nothing ran. Then escalate as a platform defect with the wakeup-request row as evidence.
+
+### `no_external_activity` — the routine activity gate
+
+`server/src/services/routines.ts`. A routine whose `activity_gate_policy` is `require_external_activity` (the column defaults to `always`, so this is opt-in per routine) does **not** fire when nothing external has happened since its last dispatched run. Purpose: stop quiet-period routines from generating work nobody asked for.
+
+**How it surfaces:** a `routine_runs` row with `status = 'skipped'` and `failure_reason = 'no_external_activity'`, routine touched-state `skipped_no_activity`, and a `routine.run_skipped` activity entry whose details carry `activityGate.verdict = 'quiet'` and the window start. The routine's `nextRunAt` still advances normally.
+
+**Brake vs. genuine stall:**
+- **Brake working** — the routine is gated, the window really was quiet, and `nextRunAt` advanced. Cancel the review as noise. A gated routine skipping during a quiet period is the feature.
+- **Genuine stall** — the window was *not* quiet (there is obvious external activity in the period) and it still skipped, or `nextRunAt` stopped advancing, or the routine is gated but should not be. Those are real; report them with the skipped-run row and the activity you expected it to match.
+
+**Never confuse either brake with:** `paused` (deliberate pause), `worktree_execution_cutoff` (worktree suppression), `issue_terminal_status` coalescing, or a per-agent daily-cap skip. Those are separate reasons with separate remedies — read the `reason` / `failure_reason` verbatim before classifying.
 
 ## Required evidence in your closing comment
 
 - Run id (and pid, if a process was involved)
 - Last-output timestamp and silence duration at triage time
 - Adapter error string verbatim when classification was limit/auth
-- The classification (1–5 above) and the action taken on the source issue
+- The skip `reason` / `failure_reason` verbatim when classification was a run-loop brake, plus `nextAllowedAt` (throttle) or the quiet-window start (activity gate)
+- The classification (1–6 above) and the action taken on the source issue
 
 ## Disposition rules
 

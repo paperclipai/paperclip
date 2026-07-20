@@ -152,6 +152,40 @@ For a delegated follow-up, create the follow-up issue directly, link it with `pa
 
 **Step 9 — Delegate if needed.** Create subtasks with `POST /api/companies/{companyId}/issues`. Always set `parentId` and `goalId`. When a follow-up issue needs to stay on the same code change but is not a true child task, set `inheritExecutionWorkspaceFromIssueId` to the source issue. Set `billingCode` for cross-team work.
 
+## Issue Creation Is Deduplicated By Default
+
+`POST /api/companies/{companyId}/issues` does **not** always create a new issue. `allowDuplicate` defaults to `false`, so a create is silently folded into an existing issue when either guard matches:
+
+- **`recent_open_title`** — an issue with the same normalized title (trimmed, whitespace-collapsed, lowercased) already exists in the same company, under the same `parentId` (or both at root), not hidden, not `done`/`cancelled`, and created within the last **48 hours**. The oldest match wins.
+- **`idempotency_key`** — you passed an `idempotencyKey` that was already used for a create in this company. Idempotency keys always replay their original issue, even with `allowDuplicate: true`.
+
+**A dedup is a SUCCESS, not an error.** Tell the two apart by status code and marker:
+
+```
+POST /api/companies/{companyId}/issues
+{ "title": "Fix flaky auth test", "parentId": "issue-101" }
+
+-> 201  { "id": "issue-500", "identifier": "PAP-500", ... }          # created
+-> 200  { "id": "issue-412", "identifier": "PAP-412", ...,           # deduplicated
+          "deduplicated": true,
+          "deduplicationReason": "recent_open_title" }
+```
+
+The `201` body is the new issue. The `200` body is the **pre-existing** issue — a different id, a different assignee, possibly a different status and description, and comments you have not read.
+
+**Rules when you get `deduplicated: true`:**
+
+- Never assume you created a card. Read `id`/`identifier` off the response and work with **that** issue: fetch its comments, check its status and assignee, and add your context as a comment rather than re-stating it in a description that was never written.
+- Do not retry the create. A retry will dedup again for the full 48h window.
+- Do not report "created PAP-500" in your summary. Report that the work folded into the returned issue, with its identifier.
+- If the returned issue is already `in_progress` under someone else, you are now a second actor on it — comment, do not silently take it over.
+
+**When to pass `allowDuplicate: true`:** genuinely recurring same-titled work that must exist as separate cards — a daily/weekly routine card, a per-run report, one card per candidate/order/build that happens to share a title. Prefer this over defeating the guard with a throwaway suffix.
+
+**When to add a distinguishing suffix instead:** the work is *not* the same as the open card and the title collision is accidental. Make the title carry the distinguishing fact (`Fix flaky auth test — token refresh path`, `Weekly growth report — 2026-07-20`). A specific title is better for the operator than an identical one plus a flag.
+
+**When to do neither:** the dedup is correct — the open card really is your work. Follow it.
+
 ## Managing A User's Inbox
 
 Agents may archive an issue from a user's Mine inbox with `POST /api/issues/{issueId}/inbox-archive` and reverse it with `DELETE /api/issues/{issueId}/inbox-archive`. Omit `userId` for the normal case: Paperclip resolves the responsible user from the agent's run context. An explicit `userId` targets another user and requires a matching `inbox:manage` grant.

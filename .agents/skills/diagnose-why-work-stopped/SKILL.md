@@ -57,6 +57,20 @@ Do this in the same heartbeat. Do not propose a rule until you have a concrete s
   - Stranded-work recovery treating its own recovery issues as more recoverable source work — recursive recovery, forbidden.
 - Quote the evidence: run ids, comment timestamps, status transitions. "Inferred" is acceptable only when an API boundary blocks direct evidence — say so explicitly and mark the claim provisional.
 
+**Rule out working brakes before you call anything a stop.** Paperclip deliberately withholds some wakes and some routine fires. From the outside these look identical to a silent skip, and a diagnosis that names a working brake as the root cause is wrong — it will propose loosening a protection that exists on purpose. Check both before writing a root cause:
+
+- **`issue_rewake_throttled`** (`server/src/services/issue-rewake-throttle.ts`) — after **2 consecutive `succeeded` runs by the same agent on the same issue that left no issue-visible progress**, information-free wakes for that issue are held for an escalating cooldown (2 min, doubling, capped at **30 min**) from the last run's finish. It surfaces as an `agent_wakeup_requests` row with `status = 'skipped'`, `reason = 'issue_rewake_throttled'`, and `payload.heartbeatSkip` carrying `requestedReason`, `noProgressStreak`, `cooldownMs`, `lastRunFinishedAt`, `nextAllowedAt`. No `heartbeat_run` is created — that is by design. It applies only to reason-less on-demand invokes plus `issue_assigned`, `issue_continuation_needed`, `issue_assignment_recovery`, `issue_graph_liveness_backstop`; every event-carrying reason, `forceFreshSession`, explicit resume, and wake comment passes through, and server-side recovery retries never reach the gate.
+- **`no_external_activity`** (`server/src/services/routines.ts`) — a routine whose `activity_gate_policy` is `require_external_activity` (column default is `always`; this is opt-in per routine) does not fire when nothing external happened since its last dispatched run. It surfaces as a `routine_runs` row with `status = 'skipped'`, `failure_reason = 'no_external_activity'`, touched-state `skipped_no_activity`, and a `routine.run_skipped` activity whose details carry `activityGate.verdict = 'quiet'`. `nextRunAt` still advances.
+
+Telling a brake from a genuine stall:
+
+| Signal | Brake working as designed | Genuine stall |
+| --- | --- | --- |
+| Throttle | Streak is real (runs succeeded, left no comment/mutation/document/work-product) and `nextAllowedAt` is ≤30 min out | `nextAllowedAt` long past with still nothing run, or a wake with an event-carrying `requestedReason` got held |
+| Activity gate | Routine is gated, window genuinely quiet, `nextRunAt` advanced | Window was not quiet, or `nextRunAt` stopped advancing, or the routine should not be gated at all |
+
+A throttle firing repeatedly is still worth writing up — but the defect is **the no-progress streak underneath it** (bad next action, missing context, wedged agent), not the throttle. Name the work problem, not the brake.
+
 Respect the API boundary. If the linked issue is in another company and your agent token returns 403, do not bypass scoping. Either request a board-approved diagnostic path or proceed from inferred evidence visible from your own company and label it.
 
 ### 2. Survey recent related work
@@ -126,10 +140,12 @@ When the phase chain is complete, post a board-level summary comment on the pare
 - **Restating one invariant at the cost of another.** Bound continuation too tightly and productive work stalls; loosen recovery and infinite loops return. Always check all three together — this trade-off is the trap unique to this class.
 - **Coding before approval / skipping the recent-work survey.** Forensic-phase code and contracts that contradict what shipped 24 hours ago are the two fastest ways to get the plan rejected.
 - **Hiding the chain.** Don't silently delete, hide, or mark `done` the symptomatic recovery issues to clear backlog — the operator needs the audit trail.
+- **Diagnosing a brake as the bug.** `issue_rewake_throttled` and `no_external_activity` are working protections. Proposing to weaken either is proposing to reinstate the wake storm / quiet-period churn they were built to stop — it violates invariant 3 directly. If a brake is genuinely misfiring, say which of the specific red flags above you observed; otherwise diagnose what is behind it.
 
 ## Verification checklist (before posting the plan)
 
 - [ ] The exact stop point in the named tree is identified with run ids / comment ids.
+- [ ] `issue_rewake_throttled` / `no_external_activity` have been ruled out as the "cause", or a specific red flag is cited for why one is genuinely misfiring.
 - [ ] Recent shipped work in the same area was surveyed and is referenced.
 - [ ] Every non-progressing issue is classified human-needed / agent-actionable / already-covered.
 - [ ] The proposed rule is stated as a contract, not a patch.
