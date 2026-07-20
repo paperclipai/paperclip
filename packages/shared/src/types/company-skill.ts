@@ -327,6 +327,29 @@ export interface CompanySkillProjectScanRequest {
   }>;
 }
 
+export interface CompanySkillProjectBrowseRequest {
+  projectId: string;
+  workspaceId: string;
+  path?: string | null;
+}
+
+export interface CompanySkillProjectBrowseEntry {
+  name: string;
+  path: string;
+  kind: "directory" | "file";
+  isSkill: boolean;
+}
+
+export interface CompanySkillProjectBrowseResult {
+  projectId: string;
+  workspaceId: string;
+  workspaceName: string;
+  path: string;
+  parentPath: string | null;
+  entries: CompanySkillProjectBrowseEntry[];
+  truncated: boolean;
+}
+
 export type CompanySkillProjectScanCandidateStatus = "new" | "already_imported" | "conflict" | "skipped";
 
 export interface CompanySkillProjectScanCandidate {

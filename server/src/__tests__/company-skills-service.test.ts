@@ -1990,6 +1990,60 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     expect(versions).toHaveLength(2);
   });
 
+  it("browses project folders and imports a selected non-standard skill", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const workspaceId = randomUUID();
+    const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-skill-browse-"));
+    cleanupDirs.add(workspaceDir);
+    const skillDir = path.join(workspaceDir, "content", "teams", "editorial");
+    await fs.mkdir(skillDir, { recursive: true });
+    await fs.writeFile(path.join(skillDir, "SKILL.md"), "---\nname: Editorial\n---\n", "utf8");
+    await fs.writeFile(path.join(workspaceDir, "content", "README.md"), "# Content\n", "utf8");
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({ id: projectId, companyId, name: "Skills Project" });
+    await db.insert(projectWorkspaces).values({
+      id: workspaceId,
+      companyId,
+      projectId,
+      name: "Primary",
+      cwd: workspaceDir,
+      isPrimary: true,
+    });
+
+    const root = await svc.browseProjectWorkspace(companyId, { projectId, workspaceId });
+    expect(root.entries).toEqual([expect.objectContaining({ name: "content", kind: "directory", isSkill: false })]);
+
+    const content = await svc.browseProjectWorkspace(companyId, { projectId, workspaceId, path: "content" });
+    expect(content).toMatchObject({ path: "content", parentPath: "." });
+    expect(content.entries).toEqual([
+      expect.objectContaining({ name: "teams", kind: "directory", isSkill: false }),
+      expect.objectContaining({ name: "README.md", kind: "file", isSkill: false }),
+    ]);
+
+    const teams = await svc.browseProjectWorkspace(companyId, { projectId, workspaceId, path: "content/teams" });
+    expect(teams.entries).toEqual([
+      expect.objectContaining({
+        name: "editorial",
+        path: "content/teams/editorial",
+        kind: "directory",
+        isSkill: true,
+      }),
+    ]);
+
+    const imported = await svc.scanProjectWorkspaces(companyId, {
+      projectIds: [projectId],
+      mode: "import",
+      selection: [{ workspaceId, path: "content/teams/editorial" }],
+    });
+    expect(imported.imported).toEqual([expect.objectContaining({ name: "Editorial" })]);
+  });
+
   it("previews project workspace skill candidates without importing them", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();

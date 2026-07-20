@@ -273,6 +273,12 @@ export const companySkillProjectScanRequestSchema = z.object({
   })).optional(),
 });
 
+export const companySkillProjectBrowseRequestSchema = z.object({
+  projectId: z.string().uuid(),
+  workspaceId: z.string().uuid(),
+  path: z.string().nullable().optional(),
+});
+
 export const companySkillProjectScanCandidateSchema = z.object({
   slug: z.string().min(1),
   name: z.string().min(1),
@@ -556,6 +562,7 @@ export const companySkillInstallCatalogResultSchema = z.object({
 export type CompanySkillImport = z.infer<typeof companySkillImportSchema>;
 export type CompanySkillListQuery = z.infer<typeof companySkillListQuerySchema>;
 export type CompanySkillProjectScan = z.infer<typeof companySkillProjectScanRequestSchema>;
+export type CompanySkillProjectBrowse = z.infer<typeof companySkillProjectBrowseRequestSchema>;
 export type CompanySkillCreate = z.infer<typeof companySkillCreateSchema>;
 export type CompanySkillFileUpdate = z.infer<typeof companySkillFileUpdateSchema>;
 export type CompanySkillFileDelete = z.infer<typeof companySkillFileDeleteSchema>;
