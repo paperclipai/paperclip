@@ -57,8 +57,8 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=sha
           labels: |
-            ing.paperclip.schema.last-migration=${{ steps.schema.outputs.last }}
-            ing.paperclip.schema.migration-count=${{ steps.schema.outputs.count }}
+            io.github.paperclipai.schema.last-migration=${{ steps.schema.outputs.last }}
+            io.github.paperclipai.schema.migration-count=${{ steps.schema.outputs.count }}
 
       - name: Build and push
         uses: docker/build-push-action@v7
