@@ -13389,6 +13389,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       })();
       return queuedResponsibleUserIdPromise;
     };
+    // Settled pre-resolution for the queued-run branches: resolution must run
+    // outside db.transaction() to avoid nested pool acquisition (#89), but a
+    // resolution failure may only surface on paths that actually queue a run —
+    // defer/merge outcomes historically never evaluated the resolver.
+    type QueuedResponsibleUserAttempt = { ok: true; userId: string } | { ok: false; error: unknown };
+    const settleQueuedResponsibleUserId = (): Promise<QueuedResponsibleUserAttempt> =>
+      resolveQueuedResponsibleUserId().then(
+        (userId): QueuedResponsibleUserAttempt => ({ ok: true, userId }),
+        (error): QueuedResponsibleUserAttempt => ({ ok: false, error }),
+      );
+    const requireQueuedResponsibleUserId = (attempt: QueuedResponsibleUserAttempt): string => {
+      if (!attempt.ok) throw attempt.error;
+      return attempt.userId;
+    };
 
     const budgetBlock = await budgets.getInvocationBlock(agent.companyId, agentId, {
       issueId,
@@ -13500,7 +13514,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       // not `tx`. Calling it lazily from inside the transaction would acquire a
       // second pool connection while this transaction already holds one, and
       // under enough concurrent wakeups that deadlocks the whole pool (issue #89).
-      const queuedResponsibleUserId = await resolveQueuedResponsibleUserId();
+      // Settled, not thrown: defer/merge outcomes must not 422 on resolution failure.
+      const queuedResponsibleUserIdAttempt = await settleQueuedResponsibleUserId();
 
       const outcome = await db.transaction(async (tx) => {
         await tx.execute(
@@ -13984,7 +13999,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             invocationSource: source,
             triggerDetail,
             status: "queued",
-            responsibleUserId: queuedResponsibleUserId,
+            responsibleUserId: requireQueuedResponsibleUserId(queuedResponsibleUserIdAttempt),
             wakeupRequestId: wakeupRequest.id,
             contextSnapshot: enrichedContextSnapshot,
             sessionIdBefore: sessionBefore,
@@ -14096,7 +14111,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     // Resolve outside db.transaction(): see comment on the issue-scoped branch
     // above — calling this lazily from inside the transaction can deadlock the
     // pool under concurrent wakeups (issue #89).
-    const queuedResponsibleUserId = await resolveQueuedResponsibleUserId();
+    // Settled, not thrown: defer/merge outcomes must not 422 on resolution failure.
+    const queuedResponsibleUserIdAttempt = await settleQueuedResponsibleUserId();
 
     const queueOutcome = await db.transaction(async (tx) => {
       await tx.execute(
@@ -14165,7 +14181,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           invocationSource: source,
           triggerDetail,
           status: "queued",
-          responsibleUserId: queuedResponsibleUserId,
+          responsibleUserId: requireQueuedResponsibleUserId(queuedResponsibleUserIdAttempt),
           wakeupRequestId: wakeupRequest.id,
           contextSnapshot: enrichedContextSnapshot,
           sessionIdBefore: sessionBefore,
