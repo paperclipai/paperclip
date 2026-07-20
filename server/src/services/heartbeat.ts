@@ -88,7 +88,7 @@ import type {
   UsageSummary,
 } from "../adapters/index.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
-import { parseObject, asBoolean, asNumber, appendWithByteCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
+import { parseObject, parseJson, asBoolean, asNumber, asString, appendWithByteCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
 import { costService } from "./costs.js";
 import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
@@ -303,6 +303,10 @@ const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
 const MAX_RUN_EVENT_PAYLOAD_STRING_CHARS = 16 * 1024;
 const MAX_RUN_EVENT_PAYLOAD_ARRAY_ITEMS = 50;
+// Tail of a killed run's log scanned to recover the usage its adapter never got
+// to report. Generous enough to span the last few JSONL turn records without
+// pulling a long session's whole log into memory.
+const HUNG_RUN_USAGE_RECOVERY_TAIL_BYTES = 256 * 1024;
 
 export function redactDetectedSuccessfulRunProgressSummaryForBoard(
   summary: string,
@@ -12381,6 +12385,92 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   /**
+   * Reassembles the stdout a still-running run has produced so far. The run log
+   * is the only durable mid-run source: it is appended on every chunk, whereas
+   * stdoutExcerpt is a local accumulator that is not persisted until the run
+   * finishes, so it is still NULL on the running rows the watchdog sees. Falls
+   * back to the excerpt for rows that do have one (finished/replayed runs).
+   */
+  async function readRunStdoutTailForUsageRecovery(run: typeof heartbeatRuns.$inferSelect) {
+    if (run.logStore && run.logRef) {
+      try {
+        const totalBytes = run.lastOutputBytes ?? run.logBytes ?? 0;
+        const offset = Math.max(0, totalBytes - HUNG_RUN_USAGE_RECOVERY_TAIL_BYTES);
+        const result = await runLogStore.read(
+          { store: run.logStore as "local_file", logRef: run.logRef },
+          { offset, limitBytes: HUNG_RUN_USAGE_RECOVERY_TAIL_BYTES },
+        );
+        // The log stores {ts,stream,chunk} NDJSON wrappers, not raw stdout.
+        // Concatenate the stdout chunks back together so codex JSONL records
+        // split across chunk boundaries are rejoined before parsing. A tail read
+        // can start mid-record; that leading partial wrapper simply fails to
+        // parse and is dropped.
+        const stdout = result.content
+          .split(/\r?\n/)
+          .map((line) => parseJson(line.trim()))
+          .filter((event): event is Record<string, unknown> => event != null && event.stream === "stdout")
+          .map((event) => asString(event.chunk, ""))
+          .join("");
+        if (stdout) return stdout;
+      } catch (err) {
+        logger.warn({ err, runId: run.id }, "hung-run usage recovery could not read the run log");
+      }
+    }
+    return run.stdoutExcerpt ?? "";
+  }
+
+  /**
+   * A hung run is killed before its adapter ever returns, so the token usage the
+   * adapter would have reported dies with the child and the run lands in the
+   * books as free. codex streams per-turn usage as JSONL on stdout, so recover
+   * the totals from what the run already persisted rather than losing them.
+   * Returns null whenever nothing trustworthy can be recovered — a run with no
+   * completed turn must stay unaccounted rather than gain a fabricated zero row.
+   */
+  async function recoverHungRunTerminationUsage(
+    run: typeof heartbeatRuns.$inferSelect,
+    agent: typeof agents.$inferSelect,
+  ): Promise<Record<string, unknown> | null> {
+    // Only codex emits machine-readable per-turn usage on stdout; the other
+    // local adapters report usage solely through their adapter result, which a
+    // killed run never produces.
+    if (agent.adapterType !== "codex_local") return null;
+
+    const stdout = await readRunStdoutTailForUsageRecovery(run);
+    if (!stdout) return null;
+
+    const parsed = parseCodexJsonl(stdout);
+    const rawUsage = normalizeUsageTotals(parsed.usage);
+    if (!rawUsage) return null;
+    if (rawUsage.inputTokens <= 0 && rawUsage.cachedInputTokens <= 0 && rawUsage.outputTokens <= 0) {
+      return null;
+    }
+
+    // Mirrors the normal completion path so the two cannot drift. codex reports
+    // per-run usage, so this is a passthrough today, but it stays correct if the
+    // adapter ever switches to session-cumulative totals.
+    const sessionUsageResolution = await resolveNormalizedUsageForSession({
+      agentId: run.agentId,
+      runId: run.id,
+      sessionId: parsed.sessionId,
+      rawUsage,
+      usageBasis: parsed.usageBasis,
+    });
+
+    return {
+      ...(sessionUsageResolution.normalizedUsage ?? rawUsage),
+      rawInputTokens: rawUsage.inputTokens,
+      rawCachedInputTokens: rawUsage.cachedInputTokens,
+      rawOutputTokens: rawUsage.outputTokens,
+      ...(parsed.sessionId ? { persistedSessionId: parsed.sessionId } : {}),
+      // Provenance: these totals were scraped back off a killed run's own
+      // output, not reported by the adapter. No cost/billing fields are
+      // synthesised here — the run never reached the cost-event ledger.
+      usageSource: "hung_run_recovery",
+    };
+  }
+
+  /**
    * Hung-run watchdog. Terminates runs whose local child process is still ALIVE
    * (so reapOrphanedRuns, which only fails dead-pid runs, will never touch them)
    * but that are clearly stuck: either no output for `noOutputMs` (silence), or
@@ -18024,7 +18114,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               },
             },
           );
-          sameScopeQueuedRun = null;
+          sameScopeQueuedRun = undefined;
         }
       }
     }
@@ -18314,6 +18404,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   type CancelRunOptions = {
     errorCode?: string;
     resultJson?: Record<string, unknown>;
+    usageJson?: Record<string, unknown> | null;
     eventMessage?: string;
     eventPayload?: Record<string, unknown>;
   };
@@ -18359,6 +18450,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       error: reason,
       errorCode,
       ...(resultJson ? { resultJson } : {}),
+      ...(options.usageJson ? { usageJson: options.usageJson } : {}),
     });
 
     await setWakeupStatus(run.wakeupRequestId, "cancelled", {
