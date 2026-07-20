@@ -29,6 +29,11 @@ const translations = {
   ...(legacyZhCNOverrides as LegacyTranslations),
 };
 
+// This source has no literal boundary and therefore matches arbitrary prose or
+// user names containing "of" (for example "Chief of staff"). Count labels that
+// use it should migrate to regular i18next keys instead of a DOM-level pattern.
+const UNSAFE_TEMPLATE_SOURCES = new Set(["{{value1}} of {{value2}}"]);
+
 function decodeJsxEntities(value: string) {
   return value
     .replaceAll("&apos;", "'")
@@ -57,6 +62,7 @@ const templateTranslations: TemplateTranslation[] = [];
 for (const [source, translation] of Object.entries(translations)) {
   const normalizedSource = normalize(source);
   if (!normalizedSource) continue;
+  if (UNSAFE_TEMPLATE_SOURCES.has(normalizedSource)) continue;
   const placeholderMatches = [...normalizedSource.matchAll(/{{value(\d+)}}/g)];
   if (placeholderMatches.length === 0) {
     exactTranslations.set(normalizedSource, translation);

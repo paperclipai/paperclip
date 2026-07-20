@@ -37,6 +37,7 @@ describe("LegacyLiteralLocalizer", () => {
   it("translates exact literals and preserves dynamic template values", () => {
     expect(translateLegacyLiteral("Advanced Permissions")).toBe("高级权限");
     expect(translateLegacyLiteral("Acting on behalf of Alice")).toBe("代表 Alice 行事");
+    expect(translateLegacyLiteral("收藏 Chief of staff")).toBeNull();
   });
 
   it("localizes visible text and accessible attributes while skipping user-authored markdown", async () => {
