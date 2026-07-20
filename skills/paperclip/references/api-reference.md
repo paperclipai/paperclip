@@ -429,16 +429,26 @@ Rules:
 - `resetAt` is required for limit-based takeovers and optional for `paused_primary`.
 - `primaryRunId` is required for limit-based takeovers and optional for `paused_primary`.
 - Allowed `resetAt` horizon is `6h` for `session_limit` / `usage_limit`, `7d` for `weekly_limit`, and `14d` for `paused_primary`.
-- `expectedFromAgentId` is optional but recommended. When present, it protects the caller against races by turning a stale-primary view into `409` instead of a silent move.
+- `expectedFromAgentId` is optional but recommended. When present, it protects the caller against races by turning a stale-primary view into `409` instead of a silent move. It is compared against the **effective primary** (see recovery-owned takeover below), not necessarily the live assignee, and it is checked *after* authorization — an unauthorized caller gets `403`, never a `409` that would confirm who holds the issue.
 
-Runtime authorization summary:
+Runtime authorization summary, in the order the route applies it:
 
+- An unknown issue id **and** an issue in another company both return `404 Issue not found`. Cross-company access is never reported as `403`; that would make the route an existence oracle for issues in other tenants.
 - Caller must be agent-authenticated; board/user callers are rejected.
 - Caller must send the normal mutating-run header: `X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID`.
 - The issue must currently be assigned to a primary agent.
-- The target must be the authenticated sister itself; third-party takeovers are rejected.
-- The caller must be the registered fallback sister for the current primary and must satisfy the scoped `tasks:fallback_reassign` authorization check with `scope.targetAgentId = <caller-agent-id>`.
+- The target must resolve to the authenticated caller itself. A non-sister executor targeting the registered sister on its behalf is rejected with `403` and `details.reason = "third_party_target"` (plus `actorAgentId` and `targetAgentId`). There is no delegated fallback-executor route: an executor may only take an issue over *for itself*.
+- The caller must satisfy the scoped `tasks:fallback_reassign` authorization check with `scope.targetAgentId = <caller-agent-id>`, evaluated against the effective primary as the issue's assignee.
+- A live, unrevoked fallback relationship must exist between the effective primary and the calling sister, and the effective primary must still exist in the same company.
 - The primary must be fallback-eligible: paused for `paused_primary`, or a failed run with a limit/reset signal for limit-based reasons.
+
+Recovery-owned takeover:
+
+A stranded issue may have been rebound to a recovery agent, so the live assignee is not the failed primary. When the live assignee is the owner of an active recovery action, the route resolves the **effective primary** from that action's `previousOwnerAgentId`, then its `returnOwnerAgentId`, taking the first candidate that has a live unrevoked fallback relationship to the calling sister. If neither candidate qualifies, the effective primary stays the live assignee — the takeover then only succeeds if the caller is that assignee's own registered sister.
+
+The effective primary is what the route authorizes against, what `expectedFromAgentId` is compared to, what the fallback relationship is looked up for, what is checked for fallback eligibility, and what comes back as `reassignedFromAgentId`.
+
+On a successful recovery-owned takeover the route also **resolves the active recovery action** (status `resolved`, outcome `delegated`) before waking the sister, so a takeover can never leave an action active with a stale owner for the recovery sweep to re-fire. If that resolution fails the whole request fails — a `200` always implies the action was disposed of. When the takeover is not recovery-owned, no recovery action is touched.
 
 Successful response:
 
@@ -456,8 +466,24 @@ Successful response:
 Idempotency / race notes:
 
 - If the issue is already assigned to the target sister, the route returns `200` with `noop: true`.
-- If `expectedFromAgentId` does not match the issue's current assignee, the route returns `409`.
-- On success, the server writes the audit comment and queues the sister wakeup. Clients should not add a second manual reassignment comment.
+- If `expectedFromAgentId` does not match the effective primary, the route returns `409` with a details payload that lets the caller re-derive the real state without a second read:
+
+```json
+{
+  "error": "Fallback reassignment primary mismatch",
+  "details": {
+    "issueId": "issue-99",
+    "expectedFromAgentId": "what-the-caller-sent",
+    "actualAssigneeAgentId": "effective-primary-agent-id",
+    "currentAssigneeAgentId": "live-assignee-agent-id",
+    "recoveryOwnerAgentId": "recovery-owner-agent-id-or-null"
+  }
+}
+```
+
+  `actualAssigneeAgentId` is the effective primary, `currentAssigneeAgentId` is who actually holds the issue right now, and `recoveryOwnerAgentId` is the active recovery action's owner (or `null` when there is no active action). On a plain takeover the first two are the same agent.
+
+- On success, the server writes the audit comment, resolves any active recovery action it took the issue from, and queues the sister wakeup. Clients should not add a second manual reassignment comment.
 
 Worked example:
 
@@ -480,9 +506,9 @@ Error families to handle:
 
 | Status | Example codes / reasons | Meaning |
 | ------ | ----------------------- | ------- |
-| `403` | `FEATURE_DISABLED`, non-agent executor, target mismatch, authorization boundary | The route is off or the caller is not the authorized sister for this takeover. |
-| `404` | issue missing, fallback relationship missing, primary agent missing | The issue or required registry row does not exist in the current company state. |
-| `409` | unassigned primary, `expectedFromAgentId` mismatch | The issue is not currently in the state the caller expected. |
+| `403` | `FEATURE_DISABLED`, non-agent executor, `third_party_target`, authorization boundary | The route is off, or the caller is not taking the issue over for itself, or it is not the authorized sister for this takeover. |
+| `404` | issue missing **or in another company**, `missing_fallback_relationship`, primary agent missing | The issue or required registry row does not exist in the caller's company state. |
+| `409` | unassigned primary, `expectedFromAgentId` mismatch (details carry the effective primary, live assignee, and recovery owner) | The issue is not currently in the state the caller expected. |
 | `422` | unresolved target, invalid or out-of-horizon `resetAt`, missing `primaryRunId`, primary not fallback-eligible | The JSON body is well-formed but invalid for fallback takeover. |
 
 ### Fallback Sister Registry Notes
@@ -497,7 +523,7 @@ As of 2026-06-29, the live server exposes:
 The registry still matters in two live places beyond the management endpoints themselves:
 
 - `GET /api/companies/:companyId/agents` returns `lanePrimaryAgentId` derived from active `agent_fallback_sisters` rows.
-- `POST /api/issues/:issueId/fallback-reassign` uses the registry to prove the caller is the registered fallback sister for the current primary.
+- `POST /api/issues/:issueId/fallback-reassign` uses the registry to prove the caller is the registered fallback sister for the effective primary, including when recovery has temporarily rebound the issue away from that primary.
 
 ---
 
