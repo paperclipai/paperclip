@@ -31,6 +31,7 @@ import { useAdapterCapabilities } from "../adapters/use-adapter-capabilities";
 import { getAdapterDisplay } from "../adapters/adapter-display-registry";
 import { defaultCreateValues } from "./agent-config-defaults";
 import { parseOnboardingGoalInput } from "../lib/onboarding-goal";
+import { restoreOnboardingState } from "../lib/onboarding-state";
 import { composeCeoInstructions } from "../lib/ceo-instructions";
 import {
   buildOnboardingIssuePayload,
@@ -91,16 +92,62 @@ const DEFAULT_TASK_DESCRIPTION = `You are the CEO. You set the direction for the
 const INCOMPLETE_ONBOARDING_STATE_MESSAGE =
   "Onboarding state is incomplete. Please restart onboarding and try again.";
 
-function loadSavedState(): Record<string, unknown> | null {
-  try {
+/**
+ * Thin gate in front of {@link OnboardingWizardInner}. The inner component's
+ * ~20 `useState(saved?.x ?? default)` initializers only read `saved` on their
+ * very first render, so it must never mount before the restored draft is
+ * final, otherwise every field locks to its default and the draft is lost
+ * for good. restoreOnboardingState requires the SETTLED companies list (see
+ * its JSDoc), so when a saved blob exists we wait for `companiesLoading` to
+ * clear before computing `saved` and mounting the inner component at all.
+ */
+export function OnboardingWizard() {
+  const { companies, loading: companiesLoading } = useCompany();
+
+  // Parsed once (not re-parsed by the cleanup effect below) so the restored
+  // value and the "should we wipe the blob" decision always agree.
+  const rawBlob = useMemo(() => {
     const raw = localStorage.getItem(ONBOARDING_STORAGE_KEY);
-    return raw ? JSON.parse(raw) : null;
-  } catch {
+    if (!raw) return undefined;
+    try {
+      return JSON.parse(raw) as unknown;
+    } catch {
+      return null; // malformed: treated as stale below, same as before
+    }
+  }, []);
+
+  const { saved, staleStateDetected } = useMemo(() => {
+    if (rawBlob === undefined) return { saved: null, staleStateDetected: false };
+    // Companies not settled yet: restoreOnboardingState must not be called
+    // (see its CONTRACT). Not stale, just not decidable yet.
+    if (companiesLoading) return { saved: null, staleStateDetected: false };
+    if (rawBlob === null) return { saved: null, staleStateDetected: true };
+    const restored = restoreOnboardingState(rawBlob, companies);
+    return { saved: restored, staleStateDetected: restored === null };
+  }, [rawBlob, companiesLoading, companies]);
+
+  // A discarded/malformed state should not sit in storage waiting to confuse
+  // the next onboarding attempt (e.g. a different signed-in user).
+  useEffect(() => {
+    if (staleStateDetected) {
+      localStorage.removeItem(ONBOARDING_STORAGE_KEY);
+    }
+  }, [staleStateDetected]);
+
+  // A saved blob exists but companies haven't settled yet: wait rather than
+  // mount the inner wizard with a premature (and unrecoverable) guess.
+  if (rawBlob !== undefined && companiesLoading) {
     return null;
   }
+
+  return <OnboardingWizardInner saved={saved} />;
 }
 
-export function OnboardingWizard() {
+function OnboardingWizardInner({
+  saved,
+}: {
+  saved: Record<string, unknown> | null;
+}) {
   const {
     onboardingOpen,
     onboardingOptions,
@@ -137,9 +184,6 @@ export function OnboardingWizard() {
 
   const initialStep = effectiveOnboardingOptions.initialStep ?? 0;
   const existingCompanyId = effectiveOnboardingOptions.companyId;
-
-  // Restore saved state from localStorage (read once on mount)
-  const saved = useMemo(loadSavedState, []);
 
   const [step, setStep] = useState<Step>((saved?.step as Step) ?? initialStep);
   const [onboardingPath, setOnboardingPath] = useState<"create" | "grow" | null>((saved?.onboardingPath as "create" | "grow" | null) ?? null);
