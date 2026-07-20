@@ -174,6 +174,14 @@ async function flushReact() {
   });
 }
 
+async function waitForReact(predicate: () => boolean, attempts = 20) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (predicate()) return;
+    await flushReact();
+  }
+  throw new Error("Timed out waiting for React state to settle");
+}
+
 function makeDiscoveryPreview(
   overrides: Partial<SecretProviderConfigDiscoveryPreviewResult> = {},
 ): SecretProviderConfigDiscoveryPreviewResult {
@@ -1649,9 +1657,17 @@ describe("Secrets folder view (PAP-14698)", () => {
     await act(async () => setInputValue(folderInput, "  staged  "));
     await flushReact();
     await act(async () => createFolderButton.click());
-    await flushReact();
+    await waitForReact(() =>
+      [...container.querySelectorAll('[aria-current="page"]')].some((node) =>
+        node.textContent?.includes("staged"),
+      ),
+    );
 
-    expect(container.querySelector('[aria-current="page"]')?.textContent).toContain("staged");
+    expect(
+      [...container.querySelectorAll('[aria-current="page"]')].some((node) =>
+        node.textContent?.includes("staged"),
+      ),
+    ).toBe(true);
     expect(container.textContent).toContain("No secrets in this folder yet.");
     expect(container.querySelector('input[aria-label="Folder name"]')).toBeNull();
 
