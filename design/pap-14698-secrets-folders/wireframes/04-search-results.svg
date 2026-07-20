@@ -1,0 +1,147 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="800" viewBox="0 0 1280 800"
+     font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5">
+  <!-- canvas border -->
+  <rect x="0" y="0" width="1280" height="800" />
+
+  <!-- ============ left sidebar ============ -->
+  <g transform="translate(0,0)">
+    <rect width="224" height="800" />
+    <text x="24" y="44" font-size="14" font-weight="600" stroke="none" fill="#000">Company settings</text>
+    <text x="24" y="88" font-size="14" stroke="none" fill="#666">General</text>
+    <text x="24" y="120" font-size="14" stroke="none" fill="#666">Members</text>
+    <rect x="8" y="136" width="208" height="32" rx="4" fill="#e6e6e6" />
+    <text x="24" y="157" font-size="14" font-weight="600" stroke="none" fill="#000">Secrets</text>
+    <text x="24" y="200" font-size="14" stroke="none" fill="#666">Environments</text>
+    <text x="24" y="232" font-size="14" stroke="none" fill="#666">Tools</text>
+  </g>
+
+  <!-- ============ page header ============ -->
+  <text x="248" y="56" font-size="28" font-weight="700" stroke="none" fill="#000">Secrets</text>
+  <text x="248" y="80" font-size="14" stroke="none" fill="#666">Store credentials once, reference them from agents, tools and environments.</text>
+
+  <!-- ============ tab bar ============ -->
+  <g transform="translate(248,104)">
+    <text x="0" y="20" font-size="14" font-weight="600" stroke="none" fill="#000">Secrets</text>
+    <line x1="0" y1="32" x2="56" y2="32" stroke-width="3" />
+    <text x="88" y="20" font-size="14" stroke="none" fill="#666">My secrets</text>
+    <text x="184" y="20" font-size="14" stroke="none" fill="#666">Provider vaults</text>
+    <line x1="0" y1="33" x2="1008" y2="33" stroke="#666" stroke-width="0.5" />
+  </g>
+
+  <!-- ============ toolbar (search active) ============ -->
+  <g transform="translate(248,160)">
+    <rect width="288" height="40" rx="20" fill="#e6e6e6" />
+    <circle cx="20" cy="20" r="6" />
+    <line x1="24" y1="24" x2="30" y2="30" />
+    <text x="40" y="25" font-size="14" stroke="none" fill="#000">client</text>
+    <text x="264" y="25" font-size="14" stroke="none" fill="#666">✕</text>
+    <g transform="translate(304,0)">
+      <rect width="96" height="40" rx="4" />
+      <text x="48" y="25" font-size="14" text-anchor="middle" stroke="none" fill="#000">Filters</text>
+    </g>
+    <!-- view toggle disabled during search -->
+    <g transform="translate(560,0)">
+      <rect width="176" height="40" rx="4" stroke="#666" />
+      <text x="45" y="25" font-size="14" text-anchor="middle" stroke="none" fill="#666">Folders</text>
+      <text x="132" y="25" font-size="14" text-anchor="middle" stroke="none" fill="#666">Flat</text>
+    </g>
+    <g transform="translate(752,0)">
+      <rect width="112" height="40" rx="4" />
+      <text x="56" y="25" font-size="14" text-anchor="middle" stroke="none" fill="#000">New folder</text>
+    </g>
+    <g transform="translate(880,0)">
+      <rect width="128" height="40" rx="4" fill="#000" />
+      <text x="64" y="25" font-size="14" text-anchor="middle" stroke="none" fill="#fff">Create secret</text>
+    </g>
+  </g>
+
+  <!-- ============ results summary row ============ -->
+  <g transform="translate(248,224)">
+    <text x="0" y="17" font-size="14" font-weight="600" stroke="none" fill="#000">Search results</text>
+    <text x="112" y="17" font-size="12" stroke="none" fill="#666">4 matches across all folders · searching everywhere, not just dev/github/oauth</text>
+  </g>
+
+  <!-- ============ flat results table w/ full paths ============ -->
+  <g transform="translate(248,256)">
+    <rect width="1008" height="32" fill="#e6e6e6" />
+    <text x="16" y="21" font-size="12" font-weight="600" stroke="none" fill="#000">NAME</text>
+    <text x="560" y="21" font-size="12" font-weight="600" stroke="none" fill="#000">STATUS</text>
+    <text x="672" y="21" font-size="12" font-weight="600" stroke="none" fill="#000">VERSION / COVERAGE</text>
+    <text x="880" y="21" font-size="12" font-weight="600" stroke="none" fill="#000">UPDATED</text>
+
+    <!-- result 1 -->
+    <g transform="translate(0,32)">
+      <rect width="1008" height="64" />
+      <text x="16" y="28" font-size="14" stroke="none" fill="#666">dev/github/oauth/</text>
+      <text x="136" y="28" font-size="14" font-weight="700" stroke="none" fill="#000">clientsecret</text>
+      <text x="16" y="48" font-size="12" stroke="none" fill="#666">DEV_GITHUB_OAUTH_CLIENTSECRET · Company</text>
+      <g transform="translate(552,20)">
+        <rect width="64" height="24" rx="12" />
+        <text x="32" y="16" font-size="12" text-anchor="middle" stroke="none" fill="#000">Active</text>
+      </g>
+      <text x="672" y="38" font-size="14" stroke="none" fill="#000">v4 · managed</text>
+      <text x="880" y="38" font-size="14" stroke="none" fill="#666">2h ago</text>
+      <text x="972" y="38" font-size="14" stroke="none" fill="#000">…</text>
+    </g>
+
+    <!-- result 2 -->
+    <g transform="translate(0,96)">
+      <rect width="1008" height="64" />
+      <text x="16" y="28" font-size="14" stroke="none" fill="#666">dev/github/oauth/</text>
+      <text x="136" y="28" font-size="14" font-weight="700" stroke="none" fill="#000">clientid</text>
+      <text x="16" y="48" font-size="12" stroke="none" fill="#666">DEV_GITHUB_OAUTH_CLIENTID · Company</text>
+      <g transform="translate(552,20)">
+        <rect width="64" height="24" rx="12" />
+        <text x="32" y="16" font-size="12" text-anchor="middle" stroke="none" fill="#000">Active</text>
+      </g>
+      <text x="672" y="38" font-size="14" stroke="none" fill="#000">v1 · managed</text>
+      <text x="880" y="38" font-size="14" stroke="none" fill="#666">2h ago</text>
+      <text x="972" y="38" font-size="14" stroke="none" fill="#000">…</text>
+    </g>
+
+    <!-- result 3 -->
+    <g transform="translate(0,160)">
+      <rect width="1008" height="64" />
+      <text x="16" y="28" font-size="14" stroke="none" fill="#666">prod/github/oauth/</text>
+      <text x="144" y="28" font-size="14" font-weight="700" stroke="none" fill="#000">clientsecret</text>
+      <text x="16" y="48" font-size="12" stroke="none" fill="#666">PROD_GITHUB_OAUTH_CLIENTSECRET · Company</text>
+      <g transform="translate(552,20)">
+        <rect width="64" height="24" rx="12" />
+        <text x="32" y="16" font-size="12" text-anchor="middle" stroke="none" fill="#000">Active</text>
+      </g>
+      <text x="672" y="38" font-size="14" stroke="none" fill="#000">v2 · managed</text>
+      <text x="880" y="38" font-size="14" stroke="none" fill="#666">3d ago</text>
+      <text x="972" y="38" font-size="14" stroke="none" fill="#000">…</text>
+    </g>
+
+    <!-- result 4 -->
+    <g transform="translate(0,224)">
+      <rect width="1008" height="64" />
+      <text x="16" y="28" font-size="14" stroke="none" fill="#666">integrations/slack/</text>
+      <text x="144" y="28" font-size="14" font-weight="700" stroke="none" fill="#000">client-token</text>
+      <text x="16" y="48" font-size="12" stroke="none" fill="#666">INTEGRATIONS_SLACK_CLIENT_TOKEN · Each user</text>
+      <g transform="translate(552,20)">
+        <rect width="64" height="24" rx="12" />
+        <text x="32" y="16" font-size="12" text-anchor="middle" stroke="none" fill="#000">Active</text>
+      </g>
+      <text x="672" y="38" font-size="14" stroke="none" fill="#000">2 of 5 users</text>
+      <text x="880" y="38" font-size="14" stroke="none" fill="#666">1w ago</text>
+      <text x="972" y="38" font-size="14" stroke="none" fill="#000">…</text>
+    </g>
+  </g>
+
+  <!-- ============ annotations ============ -->
+  <g stroke="#d33" stroke-dasharray="6,4" fill="none">
+    <rect x="240" y="216" width="720" height="32" rx="4" />
+    <circle cx="224" cy="232" r="12" stroke-dasharray="none" fill="#fff" />
+    <rect x="256" y="296" width="248" height="24" rx="4" />
+    <circle cx="240" cy="308" r="12" stroke-dasharray="none" fill="#fff" />
+    <rect x="800" y="152" width="192" height="56" rx="4" />
+    <circle cx="784" cy="180" r="12" stroke-dasharray="none" fill="#fff" />
+  </g>
+  <g stroke="none" fill="#d33" font-size="12" font-weight="700">
+    <text x="224" y="236" text-anchor="middle">1</text>
+    <text x="240" y="312" text-anchor="middle">2</text>
+    <text x="784" y="184" text-anchor="middle">3</text>
+  </g>
+</svg>
