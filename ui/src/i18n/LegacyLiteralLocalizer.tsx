@@ -102,20 +102,33 @@ export function LegacyLiteralLocalizer() {
 
   useEffect(() => {
     const originalText = new WeakMap<Text, string>();
+    const localizedText = new WeakMap<Text, string>();
     const originalAttributes = new WeakMap<Element, Map<string, string>>();
+    const localizedAttributes = new WeakMap<Element, Map<string, string>>();
     const trackedText = new Set<Text>();
     const trackedElements = new Set<Element>();
     let chineseActive = i18n.resolvedLanguage === "zh-CN" || i18n.language === "zh-CN";
 
     function localizeTextNode(node: Text) {
       if (!chineseActive || !node.isConnected || isSkipped(node)) return;
+      const lastLocalized = localizedText.get(node);
+      if (lastLocalized !== undefined && node.data === lastLocalized) return;
       const translated = translateLegacyLiteral(node.data);
-      if (!translated || translated === normalize(node.data)) return;
+      if (!translated || translated === normalize(node.data)) {
+        if (lastLocalized !== undefined) {
+          originalText.delete(node);
+          localizedText.delete(node);
+          trackedText.delete(node);
+        }
+        return;
+      }
       originalText.set(node, node.data);
       trackedText.add(node);
       const leading = node.data.match(/^\s*/)?.[0] ?? "";
       const trailing = node.data.match(/\s*$/)?.[0] ?? "";
-      node.data = `${leading}${translated}${trailing}`;
+      const localized = `${leading}${translated}${trailing}`;
+      localizedText.set(node, localized);
+      node.data = localized;
     }
 
     function localizeAttributes(element: Element) {
@@ -123,11 +136,25 @@ export function LegacyLiteralLocalizer() {
       for (const attribute of LOCALIZED_ATTRIBUTES) {
         const current = element.getAttribute(attribute);
         if (!current) continue;
+        const localizedValues = localizedAttributes.get(element);
+        const lastLocalized = localizedValues?.get(attribute);
+        if (lastLocalized !== undefined && current === lastLocalized) continue;
         const translated = translateLegacyLiteral(current);
-        if (!translated || translated === normalize(current)) continue;
+        if (!translated || translated === normalize(current)) {
+          if (lastLocalized !== undefined) {
+            const originals = originalAttributes.get(element);
+            originals?.delete(attribute);
+            localizedValues?.delete(attribute);
+            if ((originals?.size ?? 0) === 0) trackedElements.delete(element);
+          }
+          continue;
+        }
         const originals = originalAttributes.get(element) ?? new Map<string, string>();
         originals.set(attribute, current);
         originalAttributes.set(element, originals);
+        const localized = localizedValues ?? new Map<string, string>();
+        localized.set(attribute, translated);
+        localizedAttributes.set(element, localized);
         trackedElements.add(element);
         element.setAttribute(attribute, translated);
       }

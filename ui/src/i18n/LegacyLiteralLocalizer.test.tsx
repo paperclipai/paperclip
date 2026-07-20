@@ -72,6 +72,23 @@ describe("LegacyLiteralLocalizer", () => {
     expect(button.getAttribute("aria-label")).toBe("删除");
   });
 
+  it("does not retranslate its own dynamic template output", async () => {
+    await act(async () => {
+      root.render(
+        <>
+          <LegacyLiteralLocalizer />
+          <button aria-label="Open actions for Chief of staff">Open</button>
+        </>,
+      );
+    });
+    await flushMutations();
+    await flushMutations();
+
+    expect(container.querySelector("button")?.getAttribute("aria-label")).toBe(
+      "打开 Chief of staff 的操作",
+    );
+  });
+
   it("restores original English text when the locale changes", async () => {
     await act(async () => {
       root.render(
