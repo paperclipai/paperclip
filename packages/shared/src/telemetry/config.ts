@@ -11,18 +11,18 @@ export const TELEMETRY_DEFAULTS: {
   readonly maxEventsPerBatch: number;
   readonly maxBodyBytes: number;
   readonly maxPendingRetryBatches: number;
-  readonly backoff: TelemetryBackoffConfig;
-} = {
+  readonly backoff: Readonly<TelemetryBackoffConfig>;
+} = Object.freeze({
   maxEventsPerBatch: 50,
   maxBodyBytes: 512 * 1024, // 524288
   maxPendingRetryBatches: 20,
-  backoff: {
+  backoff: Object.freeze({
     baseDelayMs: 1_000,
     maxDelayMs: 30_000,
     maxAttempts: 5,
     jitterRatio: 0.25,
-  },
-};
+  }),
+});
 
 /** Caller-supplied overrides for the additive caps + backoff surface. */
 export type TelemetryConfigOverrides = Partial<
