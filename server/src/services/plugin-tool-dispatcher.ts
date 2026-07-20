@@ -39,6 +39,7 @@ import {
 } from "./plugin-tool-registry.js";
 import { pluginRegistryService } from "./plugin-registry.js";
 import { logger } from "../middleware/logger.js";
+import { withToolCallSpan } from "../otel/spans.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -413,10 +414,24 @@ export function createPluginToolDispatcher(
         "dispatching tool execution",
       );
 
-      const result = await registry.executeTool(
-        namespacedName,
-        parameters,
-        runContext,
+      const result = await withToolCallSpan(
+        {
+          toolName: namespacedName,
+          agentId: runContext.agentId,
+          runId: runContext.runId,
+        },
+        async (span) => {
+          const res = await registry.executeTool(
+            namespacedName,
+            parameters,
+            runContext,
+          );
+          span.setAttribute("tool.plugin_id", res.pluginId);
+          if (res.result.error) {
+            span.setAttribute("tool.error", true);
+          }
+          return res;
+        },
       );
 
       log.debug(
