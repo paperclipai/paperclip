@@ -935,6 +935,47 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(inboxIssues.map((issue) => issue.id)).toContain(previousIssue.id);
   });
 
+  it("skip_if_active treats an open routine issue with no live run as active (#89)", async () => {
+    const { companyId, issueSvc, routine, svc } = await seedFixture();
+    const userId = randomUUID();
+    const previousRunId = randomUUID();
+
+    await db
+      .update(routines)
+      .set({ concurrencyPolicy: "skip_if_active" })
+      .where(eq(routines.id, routine.id));
+
+    // Open `todo` issue from an earlier run, but no heartbeat run and no
+    // execution lock — e.g. a cap-blocked agent that never picked it up. The
+    // 5-minute-routine outage in #89 spawned ~400 duplicates from this shape.
+    const previousIssue = await issueSvc.create(companyId, {
+      projectId: routine.projectId,
+      title: routine.title,
+      description: routine.description,
+      status: "todo",
+      priority: routine.priority,
+      assigneeAgentId: routine.assigneeAgentId,
+      originKind: "routine_execution",
+      originId: routine.id,
+      originRunId: previousRunId,
+    });
+    await db.insert(routineRuns).values({
+      id: previousRunId,
+      companyId,
+      routineId: routine.id,
+      triggerId: null,
+      source: "manual",
+      status: "issue_created",
+      triggeredAt: new Date("2026-03-20T12:00:00.000Z"),
+      linkedIssueId: previousIssue.id,
+    });
+
+    const run = await svc.runRoutine(routine.id, { source: "manual" }, { userId });
+
+    expect(run.status).toBe("skipped");
+    expect(run.linkedIssueId).toBe(previousIssue.id);
+  });
+
   it("touches a skipped active routine issue for the manual runner's inbox", async () => {
     const { agentId, companyId, issueSvc, routine, svc } = await seedFixture();
     const userId = randomUUID();
