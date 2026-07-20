@@ -276,6 +276,12 @@ Paperclip is a full control plane, not a wrapper. Before you build any of this y
 
 <br/>
 
+<br/>
+
+## How Paperclip compares
+
+See [Competitive Comparison](https://paperclip.ing/docs/start/competitive-comparison) for a detailed breakdown of Paperclip vs. agent frameworks (LangGraph, CrewAI, OpenAI Agents SDK), workflow engines (Temporal, n8n), and enterprise platforms (Salesforce, ServiceNow, Microsoft).
+
 ## Quickstart
 
 Open source. Self-hosted. No Paperclip account required.
