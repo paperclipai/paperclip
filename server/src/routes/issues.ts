@@ -1722,6 +1722,7 @@ function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   assigneeAgentId: string | null | undefined;
   actorType: "agent" | "user";
   actorId: string;
+  actorSource: "local_implicit" | "session" | "board_key" | "cloud_tenant" | "agent_key" | "agent_jwt";
   actorRunId: string | null | undefined;
   checkoutRunId: string | null | undefined;
   executionRunId: string | null | undefined;
@@ -1744,6 +1745,22 @@ function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   if (input.actorType !== "user") return false;
   if (!isClosedIssueStatus(input.issueStatus) && input.issueStatus !== "blocked") return false;
   if (typeof input.assigneeAgentId !== "string" || input.assigneeAgentId.length === 0) return false;
+  // A local-CLI agent posts its disposition comments under `local-board` auth
+  // (source: local_implicit) with x-paperclip-run-id set. On an already-closed,
+  // assigned issue the checkout/execution run ids are cleared, so the run-id
+  // match above cannot fire. Treat any run-attributed local_implicit comment on
+  // the assignee's own closed issue as self-authored to break the no-op reopen
+  // cycle. Genuine human board comments (session/board_key/cloud_tenant) still
+  // reopen; explicit `resume: true` / `reopen: true` still force the move via
+  // explicitMoveToTodoRequested.
+  if (
+    isClosedIssueStatus(input.issueStatus)
+    && input.actorSource === "local_implicit"
+    && typeof input.actorRunId === "string"
+    && input.actorRunId.length > 0
+  ) {
+    return false;
+  }
   return true;
 }
 
@@ -7724,6 +7741,7 @@ export function issueRoutes(
             assigneeAgentId: requestedAssigneeAgentId,
             actorType: actor.actorType,
             actorId: actor.actorId,
+            actorSource: actor.actorSource,
             actorRunId: actor.runId,
             checkoutRunId: existing.checkoutRunId,
             executionRunId: existing.executionRunId,
@@ -9742,6 +9760,7 @@ export function issueRoutes(
           assigneeAgentId: issue.assigneeAgentId,
           actorType: actor.actorType,
           actorId: actor.actorId,
+          actorSource: actor.actorSource,
           actorRunId: actor.runId,
           checkoutRunId: issue.checkoutRunId,
           executionRunId: issue.executionRunId,

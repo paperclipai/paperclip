@@ -6063,3 +6063,141 @@ describeEmbeddedPostgres("issueService.assertCheckoutOwner stale checkout adopti
   });
 
 });
+
+describeEmbeddedPostgres("issueService status persistence durability (ULT-57)", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-status-durability-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(issueRelations);
+    await db.delete(issueInboxArchives);
+    await db.delete(activityLog);
+    await db.delete(issues);
+    await db.delete(heartbeatRuns);
+    await db.delete(agents);
+    await db.delete(instanceSettings);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seedAssignedIssue(status: string) {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CSLead",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Durability check",
+      status,
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+    return { companyId, agentId, issueId };
+  }
+
+  async function readBackStatus(issueId: string) {
+    const row = await db
+      .select({
+        status: issues.status,
+        completedAt: issues.completedAt,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    return row;
+  }
+
+  it("stays done after set → done → read-back (no silent revert)", async () => {
+    const { issueId, agentId } = await seedAssignedIssue("in_progress");
+
+    const updated = await svc.update(issueId, {
+      status: "done",
+      assigneeAgentId: agentId,
+    });
+
+    expect(updated?.status).toBe("done");
+    expect(updated?.completedAt).toBeInstanceOf(Date);
+
+    const readBack = await readBackStatus(issueId);
+    expect(readBack?.status).toBe("done");
+    expect(readBack?.completedAt).toBeInstanceOf(Date);
+    expect(readBack?.checkoutRunId).toBeNull();
+    expect(readBack?.executionRunId).toBeNull();
+  });
+
+  it("stays done across multiple sequential read-backs (durable under repeated access)", async () => {
+    const { issueId, agentId } = await seedAssignedIssue("in_progress");
+    await svc.update(issueId, { status: "done", assigneeAgentId: agentId });
+
+    for (let i = 0; i < 5; i++) {
+      const readBack = await readBackStatus(issueId);
+      expect(readBack?.status).toBe("done");
+      expect(readBack?.completedAt).toBeInstanceOf(Date);
+    }
+  });
+
+  it("clearCheckoutRunIfTerminal does not revert a done issue to in_progress", async () => {
+    const { issueId, agentId } = await seedAssignedIssue("in_progress");
+    // Move to done via the service so completedAt is set, then clear locks.
+    await svc.update(issueId, { status: "done", assigneeAgentId: agentId });
+    const result = await svc.clearCheckoutRunIfTerminal(issueId);
+    expect(result).toBe(false);
+
+    const readBack = await readBackStatus(issueId);
+    expect(readBack?.status).toBe("done");
+    expect(readBack?.completedAt).toBeInstanceOf(Date);
+  });
+
+  it("clearExecutionRunIfTerminal does not revert a done issue to in_progress", async () => {
+    const { issueId } = await seedAssignedIssue("done");
+    const result = await svc.clearExecutionRunIfTerminal(issueId);
+    expect(result).toBe(false);
+
+    const readBack = await readBackStatus(issueId);
+    expect(readBack?.status).toBe("done");
+  });
+
+  it("getById reads back done status without reverting", async () => {
+    const { issueId, agentId } = await seedAssignedIssue("in_progress");
+    await svc.update(issueId, { status: "done", assigneeAgentId: agentId });
+
+    const fetched = await svc.getById(issueId);
+    expect(fetched?.status).toBe("done");
+    expect(fetched?.completedAt).toBeInstanceOf(Date);
+
+    // Re-read to ensure no side-effect.
+    const fetchedAgain = await svc.getById(issueId);
+    expect(fetchedAgain?.status).toBe("done");
+  });
+});

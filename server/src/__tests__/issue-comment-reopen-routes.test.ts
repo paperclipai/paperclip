@@ -1156,7 +1156,11 @@ describe.sequential("issue comment reopen routes", () => {
     );
   });
 
-  it("still implicitly reopens done issues via POST comments when the comment runId differs from the issue's owning run", async () => {
+  it("still implicitly reopens done issues via POST comments for session-source comments when the comment runId differs from the issue's owning run", async () => {
+    // Contrast: a genuine human board comment (session source) on a done
+    // assigned issue must still reopen even when the comment carries a
+    // different run id. local_implicit run-attributed comments are suppressed
+    // by the new self-authored guard above.
     mockIssueService.getById.mockResolvedValue({
       ...makeIssue("done"),
       checkoutRunId: "run-owning",
@@ -1169,9 +1173,9 @@ describe.sequential("issue comment reopen routes", () => {
 
     const res = await request(await installActor(createApp(), {
       type: "board",
-      userId: "local-board",
+      userId: "human-user",
       companyIds: ["company-1"],
-      source: "local_implicit",
+      source: "session",
       isInstanceAdmin: false,
       runId: "run-different",
     }))
@@ -1182,6 +1186,138 @@ describe.sequential("issue comment reopen routes", () => {
     expect(mockIssueService.update).toHaveBeenCalledWith(
       "11111111-1111-4111-8111-111111111111",
       { status: "todo" },
+    );
+  });
+
+  it("does not implicitly reopen done issues via POST comments for local_implicit run-attributed comments when checkout/execution runs are cleared", async () => {
+    // Regression: local-CLI agent posts a disposition comment under local-board
+    // auth (source: local_implicit) with x-paperclip-run-id set. On a done
+    // issue the checkout/execution run ids are cleared, so the run-id match
+    // guard cannot fire. The local_implicit suppression arm must break the
+    // no-op reopen cycle.
+    mockIssueService.getById.mockResolvedValue({
+      ...makeIssue("done"),
+      checkoutRunId: null,
+      executionRunId: null,
+    });
+
+    const res = await request(await installActor(createApp(), {
+      type: "board",
+      userId: "local-board",
+      companyIds: ["company-1"],
+      source: "local_implicit",
+      isInstanceAdmin: false,
+      runId: "run-cleared-checkout",
+    }))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "Done — disposition summary from the run that closed the issue" });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.update).not.toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({ status: "todo" }),
+    );
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalledWith(
+      "22222222-2222-4222-8222-222222222222",
+      expect.objectContaining({ reason: "issue_reopened_via_comment" }),
+    );
+  });
+
+  it("still implicitly reopens done issues via POST comments for session-source comments when checkout/execution runs are cleared", async () => {
+    // Contrast: genuine human board comments (session source) on a done
+    // assigned issue with cleared run ids must still reopen.
+    mockIssueService.getById.mockResolvedValue({
+      ...makeIssue("done"),
+      checkoutRunId: null,
+      executionRunId: null,
+    });
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue("done"),
+      ...patch,
+    }));
+
+    const res = await request(await installActor(createApp(), {
+      type: "board",
+      userId: "human-user",
+      companyIds: ["company-1"],
+      source: "session",
+      isInstanceAdmin: false,
+      runId: "run-human-session",
+    }))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "Real human follow-up — please reopen" });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      { status: "todo" },
+    );
+  });
+
+  it("does not implicitly reopen done issues via the PATCH comment path for local_implicit run-attributed comments when checkout/execution runs are cleared", async () => {
+    // Regression on the PATCH update path: same no-op reopen cycle scenario.
+    const issue = {
+      ...makeIssue("done"),
+      checkoutRunId: null,
+      executionRunId: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+    }));
+
+    const res = await request(await installActor(createApp(), {
+      type: "board",
+      userId: "local-board",
+      companyIds: ["company-1"],
+      source: "local_implicit",
+      isInstanceAdmin: false,
+      runId: "run-cleared-checkout",
+    }))
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ comment: "Done — disposition summary from the run that closed the issue" });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).not.toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({ status: "todo" }),
+    );
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalledWith(
+      "22222222-2222-4222-8222-222222222222",
+      expect.objectContaining({ reason: "issue_reopened_via_comment" }),
+    );
+  });
+
+  it("still forces reopen via the PATCH comment path when local_implicit requests explicit resume on a done issue with cleared runs", async () => {
+    // Explicit resume: true still forces the move-to-todo even for
+    // local_implicit run-attributed comments.
+    const issue = {
+      ...makeIssue("done"),
+      checkoutRunId: null,
+      executionRunId: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+    }));
+
+    const res = await request(await installActor(createApp(), {
+      type: "board",
+      userId: "local-board",
+      companyIds: ["company-1"],
+      source: "local_implicit",
+      isInstanceAdmin: false,
+      runId: "run-explicit-resume",
+    }))
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ comment: "please continue the follow-up", resume: true });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({ status: "todo" }),
     );
   });
 
