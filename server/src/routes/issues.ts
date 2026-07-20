@@ -8782,6 +8782,52 @@ export function issueRoutes(
         resetAtValidation.resetAt,
         actorRunId,
       );
+
+      // The takeover moves the issue away from the agent that owned the active
+      // recovery action, which leaves that action active with a stale owner. The
+      // recovery sweep reconciles active actions on every pass, so a dangling
+      // action re-fires against an agent that no longer holds the issue. Dispose
+      // of it here — before the sister is woken and before we report success —
+      // so a successful reassign can never leave the action active-and-stale.
+      const staleRecoveryAction =
+        activeRecoveryAction && activeRecoveryAction.ownerAgentId === fromAgentId
+          ? activeRecoveryAction
+          : null;
+      if (staleRecoveryAction) {
+        const resolvedRecoveryAction = await recoveryActionsSvc.resolveActiveForIssue({
+          companyId: existing.companyId,
+          sourceIssueId: existing.id,
+          actionId: staleRecoveryAction.id,
+          status: "resolved",
+          outcome: "delegated",
+          resolutionNote:
+            "Recovery action resolved because the registered fallback sister took the issue over from its owner.",
+        });
+        if (resolvedRecoveryAction) {
+          await logActivity(db, {
+            companyId: existing.companyId,
+            actorType: req.actor.type,
+            actorId: actorAgentId,
+            agentId: actorAgentId,
+            runId: actorRunId,
+            action: "issue.recovery_action_resolved",
+            entityType: "issue",
+            entityId: existing.id,
+            details: {
+              identifier: existing.identifier ?? null,
+              recoveryActionId: resolvedRecoveryAction.id,
+              recoveryActionStatus: resolvedRecoveryAction.status,
+              outcome: resolvedRecoveryAction.outcome,
+              resolutionNote: resolvedRecoveryAction.resolutionNote,
+              source: "fallback_reassign",
+              recoveryOwnerAgentId: staleRecoveryAction.ownerAgentId,
+              fromAgentId: effectivePrimaryAgentId,
+              toAgentId: targetAgentId,
+            },
+          });
+        }
+      }
+
       await issueReferencesSvc.syncComment(result.comment.id);
 
       await logActivity(db, {

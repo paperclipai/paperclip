@@ -259,6 +259,7 @@ describe("authorized fallback reassignment", () => {
       revokedAt: null,
     });
     mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue(null);
+    mockIssueRecoveryActionService.resolveActiveForIssue.mockResolvedValue(null);
     mockAgentService.isPausedOrLimitFailed.mockResolvedValue(true);
     mockHeartbeatService.wakeup.mockResolvedValue(undefined);
     mockAccessService.decide.mockImplementation(grantedDecide());
@@ -377,6 +378,110 @@ describe("authorized fallback reassignment", () => {
       null,
       executorActor().runId,
     );
+  });
+
+  it("resolves the recovery action so a recovery-owned takeover leaves nothing active and stale", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ assigneeAgentId: recoveryOwnerAgentId }));
+    mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue({
+      id: "recovery-action-1",
+      issueId,
+      companyId,
+      status: "active",
+      kind: "stranded_assigned_issue",
+      ownerAgentId: recoveryOwnerAgentId,
+      previousOwnerAgentId: primaryAgentId,
+      returnOwnerAgentId: null,
+    });
+    mockIssueRecoveryActionService.resolveActiveForIssue.mockImplementation(async (input: Record<string, unknown>) => ({
+      id: input.actionId,
+      companyId,
+      sourceIssueId: issueId,
+      status: input.status,
+      outcome: input.outcome,
+      resolutionNote: input.resolutionNote,
+      ownerAgentId: recoveryOwnerAgentId,
+    }));
+
+    const res = await request(await createApp(executorActor()))
+      .post(`/api/issues/${issueId}/fallback-reassign`)
+      .send({
+        toAgentId: sisterAgentId,
+        expectedFromAgentId: primaryAgentId,
+        reason: "paused_primary",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    // The action owned by the agent we took the issue from must not stay active.
+    expect(mockIssueRecoveryActionService.resolveActiveForIssue).toHaveBeenCalledWith(
+      expect.objectContaining({
+        companyId,
+        sourceIssueId: issueId,
+        actionId: "recovery-action-1",
+        status: "resolved",
+        outcome: "delegated",
+      }),
+    );
+    expect(logActivityMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.recovery_action_resolved",
+        entityId: issueId,
+        details: expect.objectContaining({
+          recoveryActionId: "recovery-action-1",
+          source: "fallback_reassign",
+          recoveryOwnerAgentId: recoveryOwnerAgentId,
+          toAgentId: sisterAgentId,
+        }),
+      }),
+    );
+    // Disposition happens before the sister is woken, so the sweep cannot see a
+    // dangling action racing the woken takeover.
+    const resolveOrder = mockIssueRecoveryActionService.resolveActiveForIssue.mock.invocationCallOrder[0]!;
+    const wakeupOrder = mockHeartbeatService.wakeup.mock.invocationCallOrder[0]!;
+    expect(resolveOrder).toBeLessThan(wakeupOrder);
+  });
+
+  it("fails the takeover request when the recovery action cannot be resolved", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ assigneeAgentId: recoveryOwnerAgentId }));
+    mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue({
+      id: "recovery-action-1",
+      issueId,
+      companyId,
+      status: "active",
+      kind: "stranded_assigned_issue",
+      ownerAgentId: recoveryOwnerAgentId,
+      previousOwnerAgentId: primaryAgentId,
+      returnOwnerAgentId: null,
+    });
+    mockIssueRecoveryActionService.resolveActiveForIssue.mockRejectedValue(new Error("resolve failed"));
+
+    const res = await request(await createApp(executorActor()))
+      .post(`/api/issues/${issueId}/fallback-reassign`)
+      .send({
+        toAgentId: sisterAgentId,
+        expectedFromAgentId: primaryAgentId,
+        reason: "paused_primary",
+      });
+
+    // A 200 must imply the action was disposed of, so a failed disposition is
+    // surfaced rather than silently leaving it active.
+    expect(res.status).toBe(500);
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("does not touch recovery actions when the takeover is not recovery-owned", async () => {
+    const res = await request(await createApp(executorActor()))
+      .post(`/api/issues/${issueId}/fallback-reassign`)
+      .send({
+        toAgentId: sisterAgentId,
+        expectedFromAgentId: primaryAgentId,
+        reason: "usage_limit",
+        resetAt: validResetAt,
+        primaryRunId: primaryAgentId,
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueRecoveryActionService.resolveActiveForIssue).not.toHaveBeenCalled();
   });
 
   it("rejects the executor when it lacks the fallback-reassignment grant", async () => {
