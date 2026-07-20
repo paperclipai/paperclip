@@ -168,7 +168,7 @@ export function projectRoutes(db: Db) {
         ...collectProjectWorkspaceCommandPaths(workspace, "workspace"),
       ],
     );
-    if (projectData.env !== undefined) {
+    if (projectData.env !== undefined && projectData.env !== null) {
       projectData.env = await secretsSvc.normalizeEnvBindingsForPersistence(
         companyId,
         projectData.env,
@@ -233,7 +233,7 @@ export function projectRoutes(db: Db) {
     if (typeof body.archivedAt === "string") {
       body.archivedAt = new Date(body.archivedAt);
     }
-    if (body.env !== undefined) {
+    if (body.env !== undefined && body.env !== null) {
       body.env = await secretsSvc.normalizeEnvBindingsForPersistence(existing.companyId, body.env, {
         strictMode: strictSecretsMode,
         fieldPath: "env",
