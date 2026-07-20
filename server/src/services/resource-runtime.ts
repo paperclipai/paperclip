@@ -117,6 +117,9 @@ async function credentialContext(db: Db, resource: Resource): Promise<{ env: Nod
 
 async function resolveRemoteRef(resource: Resource, inputRef: GitRef | string, env: NodeJS.ProcessEnv) {
   const requestedRef: GitRef = typeof inputRef === "string" ? { value: inputRef, kind: "unqualified" } : inputRef;
+  if (requestedRef.kind === "commit" && !isCommit(requestedRef.value)) {
+    throw unprocessable("Git commit ref must be a full SHA");
+  }
   if (requestedRef.kind === "commit" || (requestedRef.kind === "unqualified" && isCommit(requestedRef.value))) {
     return requestedRef.value;
   }
@@ -150,6 +153,9 @@ async function assertPublishBranchAvailable(resource: Resource, branch: string, 
 
 async function resolveLocalRef(resource: Resource, inputRef: GitRef | string) {
   const requestedRef: GitRef = typeof inputRef === "string" ? { value: inputRef, kind: "unqualified" } : inputRef;
+  if (requestedRef.kind === "commit" && !isCommit(requestedRef.value)) {
+    throw unprocessable("Git commit ref must be a full SHA");
+  }
   const env = process.env;
   const candidate = requestedRef.kind === "tag"
     ? `refs/tags/${requestedRef.value}`
@@ -379,7 +385,13 @@ export function resourceRuntimeService(db: Db) {
           throw unprocessable(`Resource source path is unsafe: ${resource.sourcePath}`);
         }
         const mountPath = resolveMountPath(resourcesRoot, resource.mountPath);
-        if (usedMounts.has(mountPath)) throw conflict(`Resource mount path is used more than once: ${resource.mountPath}`);
+        if ([...usedMounts].some((usedMount) =>
+          usedMount === mountPath ||
+          usedMount.startsWith(`${mountPath}${path.sep}`) ||
+          mountPath.startsWith(`${usedMount}${path.sep}`),
+        )) {
+          throw conflict(`Resource mount path overlaps another resource: ${resource.mountPath}`);
+        }
         usedMounts.add(mountPath);
         const environmentKey = resourceEnvKey(resource.key);
         if (usedEnvironmentKeys.has(environmentKey)) {

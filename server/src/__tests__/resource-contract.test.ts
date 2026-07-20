@@ -30,6 +30,7 @@ describe("resource contracts", () => {
     expect(createResourceSchema.safeParse({ key: "embedded", repository: "https://user:secret@github.com/example/repo.git", mountPath: "repo" }).success).toBe(false);
     expect(createResourceSchema.safeParse({ key: "ssh", repository: "git@github.com:example/repo.git", mountPath: "repo" }).success).toBe(true);
     expect(createResourceSchema.safeParse({ key: "local", repository: "/tmp/repo", mountPath: "repo" }).success).toBe(true);
+    expect(createResourceSchema.safeParse({ key: "empty-source", repository: "/tmp/repo", sourcePath: "", mountPath: "repo" }).success).toBe(false);
   });
 
   it("rejects duplicate manifest attachments", () => {

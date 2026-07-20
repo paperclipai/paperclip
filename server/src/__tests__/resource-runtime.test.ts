@@ -177,7 +177,7 @@ describeEmbeddedPostgres("resourceRuntimeService", () => {
       runId: "run-short-commit-ref-test",
       workspaceRoot: path.join(fixtureRoot, "short-commit-ref-workspace"),
       manifest: { version: 1, resources: [{ resourceId, mode: "input", version: "commit:abcdefg" }] },
-    })).rejects.toThrow("Git ref not found");
+    })).rejects.toThrow("Git commit ref must be a full SHA");
 
     await expect(resourceRuntimeService(db).prepare({
       companyId,
@@ -245,6 +245,30 @@ describeEmbeddedPostgres("resourceRuntimeService", () => {
         { resourceId: collidingResourceId, mode: "input" },
       ] },
     })).rejects.toThrow("Resource environment key is used more than once");
+
+    const nestedMountResourceId = randomUUID();
+    await db.insert(resources).values({
+      id: nestedMountResourceId,
+      companyId,
+      key: "nested-mount",
+      type: "git",
+      repository: remotePath,
+      sourcePath: null,
+      defaultRef: "main",
+      mountPath: "context/child",
+      credentialRef: null,
+      labels: {},
+      status: "active",
+    });
+    await expect(resourceRuntimeService(db).prepare({
+      companyId,
+      runId: "run-nested-mount-collision-test",
+      workspaceRoot: path.join(fixtureRoot, "nested-mount-collision-workspace"),
+      manifest: { version: 1, resources: [
+        { resourceId, mode: "input" },
+        { resourceId: nestedMountResourceId, mode: "input" },
+      ] },
+    })).rejects.toThrow("Resource mount path overlaps another resource");
 
     const noChangeWorkspace = path.join(fixtureRoot, "no-change-workspace");
     const noChangePrepared = await resourceRuntimeService(db).prepare({

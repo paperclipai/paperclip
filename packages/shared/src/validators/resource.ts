@@ -21,6 +21,7 @@ const mountPathSchema = z.string()
 
 const sourcePathSchema = z.string()
   .trim()
+  .min(1)
   .max(2_000)
   .refine((value) => !value.startsWith("/") && !value.split(/[\\/]/).includes(".."), {
     message: "Source path must be relative and cannot contain '..'.",
