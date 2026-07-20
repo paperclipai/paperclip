@@ -1496,6 +1496,47 @@ registry.registerPath({
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
 
+const AgentSecretListResponseSchema = z.object({
+  secrets: z.array(z.object({
+    key: z.string(),
+    name: z.string(),
+    description: z.string().nullable(),
+    delivery: z.enum(["env", "api", "both"]),
+    projectionClass: z.string(),
+    latestVersion: z.number().int().nonnegative(),
+    versionSelector: z.union([z.literal("latest"), z.number().int().positive()]),
+    resolvedVersion: z.number().int().positive(),
+  })),
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/agents/me/secrets",
+  tags: ["secrets"],
+  summary: "List secrets accessible to the current agent run",
+  responses: {
+    200: { description: "Accessible secret metadata", content: { "application/json": { schema: AgentSecretListResponseSchema } } },
+    401: r.unauthorized,
+    403: r.forbidden,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/agents/me/secrets/{key}/value",
+  tags: ["secrets"],
+  summary: "Fetch one secret value for the current agent run",
+  request: { params: z.object({ key: z.string() }) },
+  responses: {
+    200: {
+      description: "Decrypted secret value",
+      content: { "application/json": { schema: z.object({ key: z.string(), value: z.string(), version: z.number().int().positive() }) } },
+    },
+    401: r.unauthorized,
+    403: r.forbidden,
+  },
+});
+
 registry.registerPath({
   method: "post",
   path: "/api/agents/me/connections/{connectionId}/token",
