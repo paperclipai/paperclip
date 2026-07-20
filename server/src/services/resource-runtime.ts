@@ -1,6 +1,5 @@
 import { execFile as execFileCallback } from "node:child_process";
 import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { and, eq, inArray } from "drizzle-orm";
@@ -69,7 +68,7 @@ function normalizePublishRef(ref: string | undefined, fallback: string) {
 }
 
 function validateBranch(branch: string) {
-  if (!branch || branch.startsWith("-") || branch.endsWith(".") || branch.includes("..") || /[\s~^:?*\\\[\]]/.test(branch)) {
+  if (!branch || branch.startsWith("-") || branch.endsWith(".") || branch.endsWith(".lock") || branch.includes("..") || /[\s~^:?*\\\[\]]/.test(branch)) {
     throw unprocessable("Invalid Git output branch");
   }
   return branch;
