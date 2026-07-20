@@ -7,6 +7,10 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Issue } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CompanyJoinRequest } from "../api/access";
+import {
+  clearLocalInboxArchive,
+  getLocalInboxArchiveIssueIds,
+} from "../lib/inboxArchiveCache";
 
 const routerMock = vi.hoisted(() => ({
   location: { pathname: "/", search: "", hash: "" },
@@ -289,6 +293,9 @@ describe("Inbox toolbar", () => {
   });
 
   afterEach(() => {
+    for (const issueId of getLocalInboxArchiveIssueIds("company-1")) {
+      clearLocalInboxArchive("company-1", issueId);
+    }
     container.remove();
   });
 
@@ -643,6 +650,106 @@ describe("Inbox toolbar", () => {
     act(() => {
       root.unmount();
     });
+  });
+
+  it("keeps a successful archive hidden when stale query data arrives", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    const archivedIssue = createIssue({
+      id: "issue-a",
+      identifier: "PAP-1001",
+      title: "Archived inbox row",
+    });
+    apiMocks.issuesList.mockResolvedValue([archivedIssue]);
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 0, gcTime: 0 } },
+    });
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Inbox />
+        </QueryClientProvider>,
+      );
+    });
+    await vi.waitFor(() => {
+      expect(container.textContent).toContain("Archived inbox row");
+    });
+
+    const archiveButton = container.querySelector<HTMLButtonElement>('button[aria-label="Archive"]');
+    expect(archiveButton).not.toBeNull();
+
+    await act(async () => {
+      archiveButton!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    });
+    await vi.waitFor(() => {
+      expect(apiMocks.archiveFromInbox).toHaveBeenCalledWith("issue-a");
+      expect(container.textContent).not.toContain("Archived inbox row");
+    });
+
+    await act(async () => {
+      queryClient.setQueriesData<Issue[]>(
+        { queryKey: ["issues", "company-1", "mine-by-me"] },
+        [archivedIssue],
+      );
+    });
+
+    expect(container.textContent).not.toContain("Archived inbox row");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("restores a locally hidden archive when undo is pressed", async () => {
+    generalSettingsMock.keyboardShortcutsEnabled = true;
+    routerMock.location.pathname = "/inbox/mine";
+    const archivedIssue = createIssue({
+      id: "issue-a",
+      identifier: "PAP-1001",
+      title: "Undoable inbox row",
+    });
+    apiMocks.issuesList.mockResolvedValue([archivedIssue]);
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 0, gcTime: 0 } },
+    });
+    const root = createRoot(container);
+
+    try {
+      await act(async () => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <Inbox />
+          </QueryClientProvider>,
+        );
+      });
+      await vi.waitFor(() => {
+        expect(container.textContent).toContain("Undoable inbox row");
+      });
+
+      const archiveButton = container.querySelector<HTMLButtonElement>('button[aria-label="Archive"]');
+      expect(archiveButton).not.toBeNull();
+      await act(async () => {
+        archiveButton!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+      });
+      await vi.waitFor(() => {
+        expect(container.textContent).not.toContain("Undoable inbox row");
+        expect(queryClient.isMutating()).toBe(0);
+      });
+
+      await act(async () => {
+        document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "u", bubbles: true }));
+      });
+      await vi.waitFor(() => {
+        expect(apiMocks.unarchiveFromInbox).toHaveBeenCalledWith("issue-a");
+        expect(container.textContent).toContain("Undoable inbox row");
+      });
+    } finally {
+      generalSettingsMock.keyboardShortcutsEnabled = false;
+      act(() => root.unmount());
+    }
   });
 });
 
