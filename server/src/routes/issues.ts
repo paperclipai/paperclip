@@ -6352,6 +6352,49 @@ export function issueRoutes(
     },
   );
 
+  router.patch(
+    "/issues/:id/documents/:key/artifact-visibility",
+    validate(z.object({ visible: z.boolean() })),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+      if (!issue) return;
+      if (req.actor.type !== "board") {
+        res.status(403).json({ error: "Board authentication required" });
+        return;
+      }
+      const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
+      if (!keyParsed.success) {
+        res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
+        return;
+      }
+
+      const result = await documentsSvc.setIssueDocumentArtifactVisibility(
+        issue.id,
+        keyParsed.data,
+        req.body.visible,
+      );
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
+        action: "issue.document_artifact_visibility_updated",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          key: keyParsed.data,
+          visible: result.visible,
+          changed: result.changed,
+        },
+      });
+      res.json(result);
+    },
+  );
+
   router.delete("/issues/:id/documents/:key", async (req, res) => {
     const id = req.params.id as string;
     const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");

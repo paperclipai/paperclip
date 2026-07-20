@@ -347,6 +347,7 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
         const documentArtifactId = sql<string>`concat('document:', ${documents.id})`;
         const documentConditions: SQL[] = [
           eq(issueDocuments.companyId, companyId),
+          eq(issueDocuments.artifactVisible, true),
           eq(documents.companyId, companyId),
           or(isNotNull(documents.createdByAgentId), isNotNull(documents.updatedByAgentId))!,
           notInArray(issueDocuments.key, [...SYSTEM_ISSUE_DOCUMENT_KEYS]),

@@ -1125,6 +1125,7 @@ export function companySearchService(db: Db) {
         ];
         const documentArtifactConditions = [
           eq(issueDocuments.companyId, companyId),
+          eq(issueDocuments.artifactVisible, true),
           eq(documents.companyId, companyId),
           or(isNotNull(documents.createdByAgentId), isNotNull(documents.updatedByAgentId))!,
           notInArray(issueDocuments.key, [...SYSTEM_ISSUE_DOCUMENT_KEYS]),

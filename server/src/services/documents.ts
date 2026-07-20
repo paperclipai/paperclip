@@ -1,4 +1,4 @@
-import { and, asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { documentRevisions, documents, issueDocuments, issues } from "@paperclipai/db";
 import { isSystemIssueDocumentKey, issueDocumentKeySchema } from "@paperclipai/shared";
@@ -45,6 +45,7 @@ export function mapIssueDocumentRow(
     companyId: string;
     issueId: string;
     key: string;
+    artifactVisible: boolean;
     title: string | null;
     format: string;
     latestBody: string;
@@ -68,6 +69,7 @@ export function mapIssueDocumentRow(
     companyId: row.companyId,
     issueId: row.issueId,
     key: row.key,
+    artifactVisible: row.artifactVisible,
     title: row.title,
     format: row.format,
     ...(includeBody ? { body: row.latestBody } : {}),
@@ -91,6 +93,7 @@ export const issueDocumentSelect = {
   companyId: documents.companyId,
   issueId: issueDocuments.issueId,
   key: issueDocuments.key,
+  artifactVisible: issueDocuments.artifactVisible,
   title: documents.title,
   format: documents.format,
   latestBody: documents.latestBody,
@@ -710,6 +713,29 @@ export function documentService(db: Db) {
           },
         };
       });
+    },
+
+    setIssueDocumentArtifactVisibility: async (issueId: string, rawKey: string, visible: boolean) => {
+      const key = normalizeDocumentKey(rawKey);
+      const changed = await db
+        .update(issueDocuments)
+        .set({ artifactVisible: visible, updatedAt: new Date() })
+        .where(and(
+          eq(issueDocuments.issueId, issueId),
+          eq(issueDocuments.key, key),
+          ne(issueDocuments.artifactVisible, visible),
+        ))
+        .returning({ id: issueDocuments.id })
+        .then((rows) => rows[0] ?? null);
+      if (changed) return { changed: true as const, visible };
+
+      const existing = await db
+        .select({ id: issueDocuments.id })
+        .from(issueDocuments)
+        .where(and(eq(issueDocuments.issueId, issueId), eq(issueDocuments.key, key)))
+        .then((rows) => rows[0] ?? null);
+      if (!existing) throw notFound("Document not found");
+      return { changed: false as const, visible };
     },
 
     deleteIssueDocument: async (issueId: string, rawKey: string) => {

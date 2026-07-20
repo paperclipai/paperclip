@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   agents,
@@ -300,6 +300,17 @@ describeEmbeddedPostgres("companySearchService", () => {
     });
     expect(result.results[0]?.snippet).toMatch(/comet tail/i);
     expect(result.countsByType).toEqual({ issue: 0, comment: 0, document: 0, artifact: 1, agent: 0, project: 0 });
+
+    await db
+      .update(issueDocuments)
+      .set({ artifactVisible: false })
+      .where(eq(issueDocuments.documentId, documentId));
+    const hidden = await svc.search(
+      companyId,
+      companySearchQuerySchema.parse({ q: "comet-tail", scope: "artifacts" }),
+    );
+    expect(hidden.results).toEqual([]);
+    expect(hidden.countsByType.artifact).toBe(0);
   });
 
   it("does not pass high-offset search fetch windows through to artifact query validation", async () => {

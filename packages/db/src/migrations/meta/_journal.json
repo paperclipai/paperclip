@@ -1261,6 +1261,13 @@
       "when": 1784231633059,
       "tag": "0181_decision_training_retention_policy",
       "breakpoints": true
+    },
+    {
+      "idx": 182,
+      "version": "7",
+      "when": 1784515950000,
+      "tag": "0182_issue_document_artifact_visibility",
+      "breakpoints": true
     }
   ]
 }

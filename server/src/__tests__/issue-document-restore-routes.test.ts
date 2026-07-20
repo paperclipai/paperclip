@@ -13,6 +13,7 @@ const mockDocumentsService = vi.hoisted(() => ({
   listIssueDocuments: vi.fn(),
   listIssueDocumentRevisions: vi.fn(),
   restoreIssueDocumentRevision: vi.fn(),
+  setIssueDocumentArtifactVisibility: vi.fn(),
 }));
 
 const mockAccessService = vi.hoisted(() => ({
@@ -267,6 +268,10 @@ describe("issue document revision routes", () => {
         updatedAt: new Date("2026-03-26T12:10:00.000Z"),
       },
     });
+    mockDocumentsService.setIssueDocumentArtifactVisibility.mockResolvedValue({
+      changed: true,
+      visible: false,
+    });
     mockHeartbeatService.wakeup.mockResolvedValue(undefined);
     mockHeartbeatService.reportRunActivity.mockResolvedValue(undefined);
     mockInstanceSettingsService.get.mockResolvedValue({
@@ -346,6 +351,42 @@ describe("issue document revision routes", () => {
       title: "Plan v1",
       latestRevisionNumber: 3,
     }));
+  });
+
+  it("lets the board idempotently hide an issue document from company artifacts", async () => {
+    const res = await request(await createApp())
+      .patch(`/api/issues/${issueId}/documents/plan/artifact-visibility`)
+      .send({ visible: false });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ changed: true, visible: false });
+    expect(mockDocumentsService.setIssueDocumentArtifactVisibility).toHaveBeenCalledWith(
+      issueId,
+      "plan",
+      false,
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.document_artifact_visibility_updated",
+        details: { key: "plan", visible: false, changed: true },
+      }),
+    );
+  });
+
+  it("rejects non-board artifact visibility mutations", async () => {
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId,
+      runId: "run-1",
+      source: "agent_jwt",
+    }))
+      .patch(`/api/issues/${issueId}/documents/plan/artifact-visibility`)
+      .send({ visible: false });
+
+    expect(res.status).toBe(403);
+    expect(mockDocumentsService.setIssueDocumentArtifactVisibility).not.toHaveBeenCalled();
   });
 
   it("blocks cheap status-only recovery runs from restoring issue documents", async () => {

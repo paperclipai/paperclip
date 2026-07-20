@@ -25,6 +25,7 @@ import {
 import { errorHandler } from "../middleware/index.js";
 import { companyRoutes } from "../routes/companies.js";
 import { companyArtifactsService } from "../services/company-artifacts.js";
+import { documentService } from "../services/documents.js";
 import type { StorageService } from "../storage/types.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -358,6 +359,40 @@ describeEmbeddedPostgres("companyArtifactsService", () => {
     expect(result.artifacts.some((artifact) => artifact.title === "operator-screenshot.png")).toBe(false);
     expect(result.artifacts.some((artifact) => artifact.title === "comment-screenshot.png")).toBe(false);
     expect(result.artifacts.some((artifact) => artifact.issue.identifier === "OTH-1")).toBe(false);
+  });
+
+  it("hides an issue document from artifacts without deleting the document or issue link", async () => {
+    const { companyId, secondIssueId } = await seedArtifacts();
+    const documentsSvc = documentService(db) as ReturnType<typeof documentService> & {
+      setIssueDocumentArtifactVisibility: (
+        issueId: string,
+        key: string,
+        visible: boolean,
+      ) => Promise<{ changed: boolean; visible: boolean }>;
+    };
+
+    const hiddenResults = await Promise.all([
+      documentsSvc.setIssueDocumentArtifactVisibility(secondIssueId, "review", false),
+      documentsSvc.setIssueDocumentArtifactVisibility(secondIssueId, "review", false),
+    ]);
+
+    expect(hiddenResults).toEqual(expect.arrayContaining([
+      { changed: true, visible: false },
+      { changed: false, visible: false },
+    ]));
+    expect((await companyArtifactsService(db).list(companyId, { limit: 20 })).artifacts)
+      .not.toEqual(expect.arrayContaining([expect.objectContaining({ title: "Review Notes" })]));
+    expect(await documentsSvc.getIssueDocumentByKey(secondIssueId, "review")).toEqual(expect.objectContaining({
+      title: "Review Notes",
+      body: "# Review\n\nAgent-created review document with useful details.",
+    }));
+    expect(await db.select().from(issueDocuments).where(eq(issueDocuments.issueId, secondIssueId)))
+      .toHaveLength(1);
+
+    const shown = await documentsSvc.setIssueDocumentArtifactVisibility(secondIssueId, "review", true);
+    expect(shown).toEqual({ changed: true, visible: true });
+    expect((await companyArtifactsService(db).list(companyId, { limit: 20 })).artifacts)
+      .toEqual(expect.arrayContaining([expect.objectContaining({ title: "Review Notes" })]));
   });
 
   it("supports project, kind, search, and cursor filters", async () => {
