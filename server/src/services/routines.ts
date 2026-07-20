@@ -1260,7 +1260,7 @@ export function routineService(
       .then((rows) => rows[0]?.issues ?? null);
     if (executionBoundIssue) return executionBoundIssue;
 
-    return executor
+    const liveRunBoundIssue = await executor
       .select()
       .from(issues)
       .innerJoin(
@@ -1284,6 +1284,33 @@ export function routineService(
       .orderBy(desc(issues.updatedAt), desc(issues.createdAt))
       .limit(1)
       .then((rows) => rows[0]?.issues ?? null);
+    if (liveRunBoundIssue) return liveRunBoundIssue;
+
+    // skip_if_active only: fall back to any still-open issue for this origin,
+    // even with no live heartbeat run attached (e.g. a cap-blocked agent's
+    // pending `todo`). A 5-minute routine cron would otherwise treat those as
+    // "not active" and spawn a fresh duplicate issue every tick — see #89.
+    // coalesce_if_active keeps the stricter live-run-only definition: an idle
+    // issue with no in-flight run is intentionally treated as available for a
+    // fresh coalesced run.
+    if (routine.concurrencyPolicy !== "skip_if_active") return null;
+
+    return executor
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, routine.companyId),
+          eq(issues.originKind, originKind),
+          eq(issues.originId, originId),
+          inArray(issues.status, OPEN_ISSUE_STATUSES),
+          isNull(issues.hiddenAt),
+          ...(fingerprintCondition ? [fingerprintCondition] : []),
+        ),
+      )
+      .orderBy(desc(issues.updatedAt), desc(issues.createdAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
   }
 
   async function finalizeRun(runId: string, patch: Partial<typeof routineRuns.$inferInsert>, executor: Db = db) {

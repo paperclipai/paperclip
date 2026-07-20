@@ -496,6 +496,76 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     });
   });
 
+  it("bounds cap-blocked skip wakeups to one per UTC day window instead of one per attempt (#89)", async () => {
+    const { agentId } = await seedCompanyAndAgent({
+      heartbeatConfig: {
+        maxDailyRuns: 0,
+      },
+    });
+
+    for (let i = 0; i < 5; i += 1) {
+      const run = await heartbeat.wakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_assignment_recovery",
+        payload: { retryOfRunId: randomUUID() },
+      });
+      expect(run).toBeNull();
+    }
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+
+    const skippedWakeups = await db
+      .select({ status: agentWakeupRequests.status, reason: agentWakeupRequests.reason })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+
+    expect(skippedWakeups).toHaveLength(1);
+    expect(skippedWakeups[0]).toMatchObject({
+      status: "skipped",
+      reason: "heartbeat.daily_run_limit",
+    });
+  });
+
+  it("bounds issue-scoped cap-blocked skip wakeups across different issues to one per UTC day window (#89)", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent({
+      heartbeatConfig: {
+        maxDailyRuns: 0,
+      },
+    });
+    const issueIds = [randomUUID(), randomUUID()];
+    for (const issueId of issueIds) {
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title: `Cap-blocked issue ${issueId.slice(0, 8)}`,
+        status: "todo",
+        priority: "high",
+        assigneeAgentId: agentId,
+      });
+    }
+
+    for (let i = 0; i < 4; i += 1) {
+      const run = await heartbeat.wakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        payload: { issueId: issueIds[i % 2] },
+      });
+      expect(run).toBeNull();
+    }
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+
+    const skippedWakeups = await db
+      .select({ status: agentWakeupRequests.status, reason: agentWakeupRequests.reason })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+
+    expect(skippedWakeups).toHaveLength(1);
+    expect(skippedWakeups[0]).toMatchObject({
+      status: "skipped",
+      reason: "heartbeat.daily_run_limit",
+    });
+  });
+
   it("counts started cancelled runs toward the per-agent daily run cap", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent({
       heartbeatConfig: {

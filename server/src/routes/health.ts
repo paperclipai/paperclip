@@ -18,6 +18,28 @@ function shouldExposeFullHealthDetails(
   return actorType === "board" || actorType === "agent";
 }
 
+const HEALTH_DB_PROBE_TIMEOUT_MS = 3000;
+
+// Bounds the readiness probe's DB round-trip so pool starvation (e.g. every
+// connection wedged in a nested-transaction deadlock) fails fast with a
+// 503/database_unreachable response instead of hanging past the readiness
+// probe's own timeout and taking the whole instance out silently (#89).
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
 function hasDevServerStatusToken(providedToken: string | undefined) {
   const expectedToken = process.env.PAPERCLIP_DEV_SERVER_STATUS_TOKEN?.trim();
   const token = providedToken?.trim();
@@ -105,7 +127,7 @@ export function healthRoutes(
     }
 
     try {
-      await db.execute(sql`SELECT 1`);
+      await withTimeout(db.execute(sql`SELECT 1`), HEALTH_DB_PROBE_TIMEOUT_MS, "Health check database probe");
     } catch (error) {
       logger.warn({ err: error }, "Health check database probe failed");
       res.status(503).json({

@@ -8909,6 +8909,33 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return null;
   }
 
+  // Bounds cap-blocked wakeup skip rows to one per (agent, cap reason, UTC day
+  // window) instead of one per sweep/retry attempt. Without this, a cap-blocked
+  // agent with a large todo pile (or a repeatedly-requeued retry) floods
+  // agent_wakeup_requests with "skipped" inserts at sweep cadence — see #89.
+  async function hasRecentCapBlockWakeupSkip(
+    agent: typeof agents.$inferSelect,
+    reason: string,
+    client: Pick<Db, "select"> = db,
+  ) {
+    const { start, end } = currentUtcDayWindow();
+    const [row] = await client
+      .select({ id: agentWakeupRequests.id })
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.companyId, agent.companyId),
+          eq(agentWakeupRequests.agentId, agent.id),
+          eq(agentWakeupRequests.status, "skipped"),
+          eq(agentWakeupRequests.reason, reason),
+          gte(agentWakeupRequests.requestedAt, start),
+          lt(agentWakeupRequests.requestedAt, end),
+        ),
+      )
+      .limit(1);
+    return Boolean(row);
+  }
+
   async function cancelQueuedRunForHeartbeatDailyCap(
     run: typeof heartbeatRuns.$inferSelect,
     dailyCapBlock: NonNullable<Awaited<ReturnType<typeof getHeartbeatDailyCapBlock>>>,
@@ -13362,6 +13389,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       })();
       return queuedResponsibleUserIdPromise;
     };
+    // Settled pre-resolution for the queued-run branches: resolution must run
+    // outside db.transaction() to avoid nested pool acquisition (#89), but a
+    // resolution failure may only surface on paths that actually queue a run —
+    // defer/merge outcomes historically never evaluated the resolver.
+    type QueuedResponsibleUserAttempt = { ok: true; userId: string } | { ok: false; error: unknown };
+    const settleQueuedResponsibleUserId = (): Promise<QueuedResponsibleUserAttempt> =>
+      resolveQueuedResponsibleUserId().then(
+        (userId): QueuedResponsibleUserAttempt => ({ ok: true, userId }),
+        (error): QueuedResponsibleUserAttempt => ({ ok: false, error }),
+      );
+    const requireQueuedResponsibleUserId = (attempt: QueuedResponsibleUserAttempt): string => {
+      if (!attempt.ok) throw attempt.error;
+      return attempt.userId;
+    };
 
     const budgetBlock = await budgets.getInvocationBlock(agent.companyId, agentId, {
       issueId,
@@ -13467,6 +13508,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       // still respect the issue execution lock so a second agent cannot start on the
       // same issue workspace while the assignee already has a live run.
       const agentNameKey = normalizeAgentNameKey(agent.name);
+
+      // Resolve outside db.transaction(): this performs pool-backed lookups
+      // (issue/routine/company/parent-issue queries) via the shared `db` handle,
+      // not `tx`. Calling it lazily from inside the transaction would acquire a
+      // second pool connection while this transaction already holds one, and
+      // under enough concurrent wakeups that deadlocks the whole pool (issue #89).
+      // Settled, not thrown: defer/merge outcomes must not 422 on resolution failure.
+      const queuedResponsibleUserIdAttempt = await settleQueuedResponsibleUserId();
 
       const outcome = await db.transaction(async (tx) => {
         await tx.execute(
@@ -13891,26 +13940,28 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         const dailyCapBlock = await getHeartbeatDailyCapBlock(agent, policy, {}, tx);
         if (dailyCapBlock) {
           const now = new Date();
-          await tx.insert(agentWakeupRequests).values({
-            companyId: agent.companyId,
-            agentId,
-            source,
-            triggerDetail,
-            reason: dailyCapBlock.reason,
-            payload: {
-              ...(payload ?? {}),
-              heartbeatSkip: {
-                reason: "Per-agent heartbeat daily cap reached before adapter invocation.",
-                observed: dailyCapBlock.observed,
-                limit: dailyCapBlock.limit,
+          if (!(await hasRecentCapBlockWakeupSkip(agent, dailyCapBlock.reason, tx))) {
+            await tx.insert(agentWakeupRequests).values({
+              companyId: agent.companyId,
+              agentId,
+              source,
+              triggerDetail,
+              reason: dailyCapBlock.reason,
+              payload: {
+                ...(payload ?? {}),
+                heartbeatSkip: {
+                  reason: "Per-agent heartbeat daily cap reached before adapter invocation.",
+                  observed: dailyCapBlock.observed,
+                  limit: dailyCapBlock.limit,
+                },
               },
-            },
-            status: "skipped",
-            requestedByActorType: opts.requestedByActorType ?? null,
-            requestedByActorId: opts.requestedByActorId ?? null,
-            idempotencyKey: opts.idempotencyKey ?? null,
-            finishedAt: now,
-          });
+              status: "skipped",
+              requestedByActorType: opts.requestedByActorType ?? null,
+              requestedByActorId: opts.requestedByActorId ?? null,
+              idempotencyKey: opts.idempotencyKey ?? null,
+              finishedAt: now,
+            });
+          }
           if (source === "timer") {
             await tx
               .update(agents)
@@ -13948,7 +13999,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             invocationSource: source,
             triggerDetail,
             status: "queued",
-            responsibleUserId: await resolveQueuedResponsibleUserId(),
+            responsibleUserId: requireQueuedResponsibleUserId(queuedResponsibleUserIdAttempt),
             wakeupRequestId: wakeupRequest.id,
             contextSnapshot: enrichedContextSnapshot,
             sessionIdBefore: sessionBefore,
@@ -14057,6 +14108,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return mergedRun;
     }
 
+    // Resolve outside db.transaction(): see comment on the issue-scoped branch
+    // above — calling this lazily from inside the transaction can deadlock the
+    // pool under concurrent wakeups (issue #89).
+    // Settled, not thrown: defer/merge outcomes must not 422 on resolution failure.
+    const queuedResponsibleUserIdAttempt = await settleQueuedResponsibleUserId();
+
     const queueOutcome = await db.transaction(async (tx) => {
       await tx.execute(
         sql`select id from agents where id = ${agentId} and company_id = ${agent.companyId} for update`,
@@ -14065,26 +14122,28 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const dailyCapBlock = await getHeartbeatDailyCapBlock(agent, policy, {}, tx);
       if (dailyCapBlock) {
         const now = new Date();
-        await tx.insert(agentWakeupRequests).values({
-          companyId: agent.companyId,
-          agentId,
-          source,
-          triggerDetail,
-          reason: dailyCapBlock.reason,
-          payload: {
-            ...(payload ?? {}),
-            heartbeatSkip: {
-              reason: "Per-agent heartbeat daily cap reached before adapter invocation.",
-              observed: dailyCapBlock.observed,
-              limit: dailyCapBlock.limit,
+        if (!(await hasRecentCapBlockWakeupSkip(agent, dailyCapBlock.reason, tx))) {
+          await tx.insert(agentWakeupRequests).values({
+            companyId: agent.companyId,
+            agentId,
+            source,
+            triggerDetail,
+            reason: dailyCapBlock.reason,
+            payload: {
+              ...(payload ?? {}),
+              heartbeatSkip: {
+                reason: "Per-agent heartbeat daily cap reached before adapter invocation.",
+                observed: dailyCapBlock.observed,
+                limit: dailyCapBlock.limit,
+              },
             },
-          },
-          status: "skipped",
-          requestedByActorType: opts.requestedByActorType ?? null,
-          requestedByActorId: opts.requestedByActorId ?? null,
-          idempotencyKey: opts.idempotencyKey ?? null,
-          finishedAt: now,
-        });
+            status: "skipped",
+            requestedByActorType: opts.requestedByActorType ?? null,
+            requestedByActorId: opts.requestedByActorId ?? null,
+            idempotencyKey: opts.idempotencyKey ?? null,
+            finishedAt: now,
+          });
+        }
         if (source === "timer") {
           await tx
             .update(agents)
@@ -14122,7 +14181,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           invocationSource: source,
           triggerDetail,
           status: "queued",
-          responsibleUserId: await resolveQueuedResponsibleUserId(),
+          responsibleUserId: requireQueuedResponsibleUserId(queuedResponsibleUserIdAttempt),
           wakeupRequestId: wakeupRequest.id,
           contextSnapshot: enrichedContextSnapshot,
           sessionIdBefore: sessionBefore,
