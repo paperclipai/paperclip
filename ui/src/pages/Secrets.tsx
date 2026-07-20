@@ -65,6 +65,13 @@ import { ApiError } from "../api/client";
 import { accessApi, type CompanyUserDirectoryEntry } from "../api/access";
 import { agentsApi } from "../api/agents";
 import { envKeyFromSecretName } from "../components/environment-variables-editor/model";
+import {
+  AGENT_ACCESS_CONFIG_PATH_PREFIX,
+  aliasFromConfigPath,
+  consumerTypeLabel,
+  deliveryModeForConfigPath,
+  deliveryModeLabel,
+} from "../lib/secret-delivery";
 import { queryKeys } from "../lib/queryKeys";
 import { EmptyState } from "../components/EmptyState";
 import { Button } from "@/components/ui/button";
@@ -4224,6 +4231,25 @@ function envKeysReferencingSecret(env: unknown, reference: AgentAccessReference)
     .sort();
 }
 
+/**
+ * Top-level `access.<ALIAS>` keys in an agent's adapter config that resolve to
+ * this secret (API-access delivery). Only company secrets support API access;
+ * user secrets remain env-only.
+ */
+function apiAliasesReferencingSecret(adapterConfig: unknown, reference: AgentAccessReference): string[] {
+  if (reference.kind !== "company") return [];
+  if (typeof adapterConfig !== "object" || adapterConfig === null || Array.isArray(adapterConfig)) return [];
+  return Object.entries(adapterConfig as Record<string, unknown>)
+    .filter(([key, binding]) => {
+      if (!key.startsWith(AGENT_ACCESS_CONFIG_PATH_PREFIX)) return false;
+      if (typeof binding !== "object" || binding === null) return false;
+      const record = binding as Record<string, unknown>;
+      return record.type === "secret_ref" && record.secretId === reference.secret.id;
+    })
+    .map(([key]) => key.slice(AGENT_ACCESS_CONFIG_PATH_PREFIX.length))
+    .sort();
+}
+
 function AgentAccessSection({
   companyId,
   reference,
@@ -4253,14 +4279,15 @@ function AgentAccessSection({
   const agentAccess = useMemo(
     () =>
       agents
-        .map((agent) => ({
-          agent,
-          envKeys: envKeysReferencingSecret(
-            (agent.adapterConfig as Record<string, unknown> | null)?.env,
-            reference,
-          ),
-        }))
-        .filter((entry) => entry.envKeys.length > 0),
+        .map((agent) => {
+          const adapterConfig = (agent.adapterConfig as Record<string, unknown> | null) ?? null;
+          return {
+            agent,
+            envKeys: envKeysReferencingSecret(adapterConfig?.env, reference),
+            apiAliases: apiAliasesReferencingSecret(adapterConfig, reference),
+          };
+        })
+        .filter((entry) => entry.envKeys.length > 0 || entry.apiAliases.length > 0),
     [agents, reference],
   );
   const grantableAgents = useMemo(
@@ -4325,8 +4352,10 @@ function AgentAccessSection({
       const adapterConfig = { ...((detail.adapterConfig ?? {}) as Record<string, unknown>) };
       const env = { ...((adapterConfig.env ?? {}) as Record<string, unknown>) };
       const keys = envKeysReferencingSecret(env, reference);
-      if (keys.length === 0) return detail;
+      const aliases = apiAliasesReferencingSecret(adapterConfig, reference);
+      if (keys.length === 0 && aliases.length === 0) return detail;
       for (const key of keys) delete env[key];
+      for (const alias of aliases) delete adapterConfig[`${AGENT_ACCESS_CONFIG_PATH_PREFIX}${alias}`];
       return agentsApi.update(
         agentId,
         { adapterConfig: { ...adapterConfig, env }, replaceAdapterConfig: true },
@@ -4352,7 +4381,7 @@ function AgentAccessSection({
       </div>
       <p className="mt-0.5 text-(length:--text-micro) text-muted-foreground">
         {reference.kind === "company"
-          ? "These agents receive this secret as an environment variable at run start."
+          ? "Add here to inject this secret as an environment variable at run start. API-access grants (fetched on demand, no env var) are managed from each agent's Secret access settings and shown below."
           : "These agents resolve the responsible user's value as an environment variable at run start."}
       </p>
       {agentsQuery.isPending ? (
@@ -4365,15 +4394,30 @@ function AgentAccessSection({
         <>
           {agentAccess.length > 0 ? (
             <ul className="mt-2 space-y-1">
-              {agentAccess.map(({ agent, envKeys }) => (
+              {agentAccess.map(({ agent, envKeys, apiAliases }) => (
                 <li
                   key={agent.id}
                   className="flex items-center gap-2 rounded border border-border/60 bg-background px-2 py-1"
                 >
                   <span className="min-w-0 flex-1 truncate text-xs font-medium">{agent.name}</span>
-                  <code className="shrink-0 font-mono text-(length:--text-micro) text-muted-foreground">
-                    {envKeys.join(", ")}
-                  </code>
+                  <span className="flex shrink-0 flex-wrap items-center justify-end gap-1">
+                    {envKeys.length > 0 ? (
+                      <Badge
+                        variant="outline"
+                        className="h-5 px-1.5 text-(length:--text-nano) font-normal border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-300"
+                      >
+                        Env · {envKeys.join(", ")}
+                      </Badge>
+                    ) : null}
+                    {apiAliases.length > 0 ? (
+                      <Badge
+                        variant="outline"
+                        className="h-5 px-1.5 text-(length:--text-nano) font-normal border-violet-500/30 bg-violet-500/10 text-violet-700 dark:text-violet-300"
+                      >
+                        API · {apiAliases.join(", ")}
+                      </Badge>
+                    ) : null}
+                  </span>
                   <Button
                     type="button"
                     variant="ghost"
@@ -4517,7 +4561,7 @@ function DetailRow({ label, children }: { label: string; children: React.ReactNo
   );
 }
 
-function SecretUsageTab({ loading, bindings }: { loading: boolean; bindings: CompanySecretUsageBinding[] }) {
+export function SecretUsageTab({ loading, bindings }: { loading: boolean; bindings: CompanySecretUsageBinding[] }) {
   if (loading) {
     return <div className="py-6 text-center text-xs text-muted-foreground">Loading…</div>;
   }
@@ -4530,42 +4574,65 @@ function SecretUsageTab({ loading, bindings }: { loading: boolean; bindings: Com
   }
   return (
     <div className="space-y-2">
-      {bindings.map((binding) => (
-        <div
-          key={binding.id}
-          className="rounded-md border border-border bg-muted/30 p-2 text-xs"
-        >
-          <div className="flex items-center justify-between gap-2">
-            <span className="font-medium capitalize">{binding.target.type}</span>
-            <span className="font-mono text-muted-foreground">v{binding.versionSelector}</span>
+      {bindings.map((binding) => {
+        const deliveryMode = deliveryModeForConfigPath(binding.configPath);
+        return (
+          <div
+            key={binding.id}
+            className="rounded-md border border-border bg-muted/30 p-2 text-xs"
+          >
+            <div className="flex items-center justify-between gap-2">
+              <span className="flex items-center gap-1.5">
+                <span className="font-medium capitalize">{binding.target.type}</span>
+                <Badge
+                  variant="outline"
+                  className={cn(
+                    "h-5 px-1.5 text-(length:--text-nano) font-normal",
+                    deliveryMode === "api"
+                      ? "border-violet-500/30 bg-violet-500/10 text-violet-700 dark:text-violet-300"
+                      : deliveryMode === "env"
+                        ? "border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-300"
+                        : null,
+                  )}
+                >
+                  {deliveryModeLabel(deliveryMode)}
+                </Badge>
+              </span>
+              <span className="font-mono text-muted-foreground">v{binding.versionSelector}</span>
+            </div>
+            <div className="mt-0.5 flex min-w-0 items-center gap-2">
+              {binding.target.href ? (
+                <Link to={binding.target.href} className="truncate font-medium text-primary hover:underline">
+                  {binding.target.label}
+                </Link>
+              ) : (
+                <span className="truncate font-medium">{binding.target.label}</span>
+              )}
+              {binding.target.status ? (
+                <Badge variant="outline" className="h-5 px-1.5 text-(length:--text-nano) font-normal">
+                  {binding.target.status.replaceAll("_", " ")}
+                </Badge>
+              ) : null}
+            </div>
+            <div className="font-mono text-(length:--text-micro) text-muted-foreground break-all">
+              {binding.targetId}
+            </div>
+            <div className="text-(length:--text-micro) text-muted-foreground">
+              {deliveryMode === "api" ? (
+                <>API alias <span className="font-mono">{aliasFromConfigPath(binding.configPath)}</span></>
+              ) : (
+                <span className="font-mono">{binding.configPath}</span>
+              )}{" "}
+              {binding.required ? "· required" : "· optional"}
+            </div>
           </div>
-          <div className="mt-0.5 flex min-w-0 items-center gap-2">
-            {binding.target.href ? (
-              <Link to={binding.target.href} className="truncate font-medium text-primary hover:underline">
-                {binding.target.label}
-              </Link>
-            ) : (
-              <span className="truncate font-medium">{binding.target.label}</span>
-            )}
-            {binding.target.status ? (
-              <Badge variant="outline" className="h-5 px-1.5 text-(length:--text-nano) font-normal">
-                {binding.target.status.replaceAll("_", " ")}
-              </Badge>
-            ) : null}
-          </div>
-          <div className="font-mono text-(length:--text-micro) text-muted-foreground break-all">
-            {binding.targetId}
-          </div>
-          <div className="text-(length:--text-micro) text-muted-foreground">
-            {binding.configPath} {binding.required ? "· required" : "· optional"}
-          </div>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
 
-function SecretEventsTab({
+export function SecretEventsTab({
   loading,
   events,
   companyId,
@@ -4608,8 +4675,9 @@ function SecretEventsTab({
       {events.map((event) => (
         <div key={event.id} className="rounded border border-border px-2 py-1.5 text-xs">
           <div className="flex items-center justify-between gap-2">
-            <span className="flex items-center gap-1.5 capitalize">
-              {event.consumerType} · {event.outcome}
+            <span className="flex items-center gap-1.5">
+              <span>{consumerTypeLabel(event.consumerType)}</span>
+              <span className="capitalize">· {event.outcome}</span>
               {event.secretScope === "user" ? (
                 <Badge
                   variant="outline"
