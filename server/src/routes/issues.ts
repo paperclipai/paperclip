@@ -8609,12 +8609,10 @@ export function issueRoutes(
         return;
       }
       const id = req.params.id as string;
-      const existing = await svc.getById(id);
-      if (!existing) {
-        res.status(404).json({ error: "Issue not found" });
-        return;
-      }
-      assertCompanyAccess(req, existing.companyId);
+      // Two-step gate: a cross-tenant id must 404 like a missing one, otherwise
+      // 403-vs-404 leaks whether the issue exists in another company.
+      const existing = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+      if (!existing) return;
 
       if (req.actor.type !== "agent") {
         res.status(403).json({ error: "Fallback reassignment requires an agent executor identity" });

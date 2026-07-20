@@ -99,6 +99,7 @@ describe("parseCodexJsonl", () => {
         cachedInputTokens: 2,
         outputTokens: 4,
       },
+      usageBasis: "per_run",
       errorMessage: null,
       disposition: {
         status: "done",
