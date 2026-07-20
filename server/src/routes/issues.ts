@@ -7628,6 +7628,15 @@ export function issueRoutes(
     if (!existing) return;
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
     if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+    if (
+      req.actor.type === "agent" &&
+      req.actor.agentId === existing.assigneeAgentId &&
+      existing.status === "cancelled" &&
+      req.body.status === "in_progress"
+    ) {
+      res.status(409).json({ error: "Cancelled issues cannot be resumed by a stale agent run" });
+      return;
+    }
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
 
     const actor = getActorInfo(req);
