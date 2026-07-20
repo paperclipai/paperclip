@@ -1,7 +1,20 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
+import { HERMES_PAPERCLIP_WAKE_DISCIPLINE_LINES } from "../../shared/constants.js";
 import { execute, mapFinalResultForTest, parseSseFramesForTest, resolveSessionKey } from "./execute.js";
 import { testEnvironment } from "./test.js";
+
+const WAKE_DISCIPLINE_SECTION = HERMES_PAPERCLIP_WAKE_DISCIPLINE_LINES.join("\n");
+
+function countOccurrences(haystack: string, needle: string): number {
+  let count = 0;
+  let index = haystack.indexOf(needle);
+  while (index !== -1) {
+    count += 1;
+    index = haystack.indexOf(needle, index + needle.length);
+  }
+  return count;
+}
 
 function makeCtx(
   config: Record<string, unknown>,
@@ -146,7 +159,9 @@ describe("execute", () => {
     const body = JSON.parse(String(init.body));
     expect(body.input).toContain("Wake-handling discipline:");
     expect(body.input).toContain("not by ending the run with a payload echo");
-    expect(body.input.indexOf("Wake-handling discipline:")).toBeLessThan(body.input.indexOf("## Paperclip Wake Payload"));
+    expect(countOccurrences(body.input, "Wake-handling discipline:")).toBe(1);
+    expect(countOccurrences(body.input, WAKE_DISCIPLINE_SECTION)).toBe(1);
+    expect(body.input.indexOf("Wake-handling discipline:")).toBeLessThan(body.input.indexOf("\n## Paperclip Wake Payload"));
     expect(body.input).toContain("Do the thing");
     expect(body.session_id).toBe("paperclip:company:company-1:agent:agent-1:issue:issue-1");
   });

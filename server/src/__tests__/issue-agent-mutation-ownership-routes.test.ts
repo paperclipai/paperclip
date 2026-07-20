@@ -21,7 +21,9 @@ const mockIssueService = vi.hoisted(() => ({
   getByIdentifier: vi.fn(),
   getById: vi.fn(),
   getComment: vi.fn(),
+  getDependencyReadiness: vi.fn(),
   getRelationSummaries: vi.fn(),
+  listUnresolvedBlockerIssueIds: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
   list: vi.fn(),
   listAttachments: vi.fn(),
@@ -48,6 +50,7 @@ const mockAccessService = vi.hoisted(() => ({
 
 const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
+  getFallbackPrimaryRelationshipForSister: vi.fn(),
   list: vi.fn(),
   resolveByReference: vi.fn(),
 }));
@@ -141,7 +144,6 @@ const mockExternalObjectService = vi.hoisted(() => ({
   syncDocumentSafely: vi.fn(async () => undefined),
   syncIssueSafely: vi.fn(async () => undefined),
 }));
-const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 
 function registerRouteMocks() {
   vi.doMock("@paperclipai/shared/telemetry", () => ({
@@ -412,6 +414,7 @@ describe("agent issue mutation checkout ownership", () => {
     }));
     mockAccessService.hasPermission.mockReset();
     mockAgentService.getById.mockReset();
+    mockAgentService.getFallbackPrimaryRelationshipForSister.mockReset();
     mockAgentService.list.mockReset();
     mockAgentService.resolveByReference.mockReset();
     mockCompanyService.getById.mockReset();
@@ -425,7 +428,9 @@ describe("agent issue mutation checkout ownership", () => {
     mockIssueService.getByIdentifier.mockReset();
     mockIssueService.getById.mockReset();
     mockIssueService.getComment.mockReset();
+    mockIssueService.getDependencyReadiness.mockReset();
     mockIssueService.getRelationSummaries.mockReset();
+    mockIssueService.listUnresolvedBlockerIssueIds.mockReset();
     mockIssueService.getWakeableParentAfterChildCompletion.mockReset();
     mockIssueService.list.mockReset();
     mockIssueService.listAttachments.mockReset();
@@ -541,6 +546,8 @@ describe("agent issue mutation checkout ownership", () => {
       makeAgent(peerAgentId),
     ]);
     mockAgentService.resolveByReference.mockResolvedValue({ ambiguous: false, agent: null });
+    // No fallback-sister remapping by default: assignee references resolve as given.
+    mockAgentService.getFallbackPrimaryRelationshipForSister.mockResolvedValue(null);
     mockCompanyService.getById.mockResolvedValue({ id: companyId, issuePrefix: "PAP" });
     mockIssueService.getById.mockResolvedValue(makeIssue());
     mockIssueService.getByIdentifier.mockResolvedValue(null);
@@ -596,6 +603,16 @@ describe("agent issue mutation checkout ownership", () => {
       };
     });
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
+    mockIssueService.getDependencyReadiness.mockResolvedValue({
+      issueId,
+      blockerIssueIds: [],
+      unresolvedBlockerIssueIds: [],
+      unresolvedBlockerCount: 0,
+      pendingFinalizeBlockerIssueIds: [],
+      allBlockersDone: true,
+      isDependencyReady: true,
+    });
+    mockIssueService.listUnresolvedBlockerIssueIds.mockResolvedValue([]);
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
     mockIssueService.findMentionedAgents.mockResolvedValue([]);
@@ -1998,6 +2015,17 @@ describe("agent issue mutation checkout ownership", () => {
         ...makeIssue({ assigneeAgentId: ownerAgentId }),
         ...patch,
       }));
+      // An unresolved blocker is a valid enter-blocked reason, so the enter-blocked
+      // guard is satisfied — this isolates the test to the watchdog boundary grant.
+      mockIssueService.getDependencyReadiness.mockResolvedValue({
+        issueId,
+        blockerIssueIds: ["ffffffff-ffff-4fff-8fff-ffffffffffff"],
+        unresolvedBlockerIssueIds: ["ffffffff-ffff-4fff-8fff-ffffffffffff"],
+        unresolvedBlockerCount: 1,
+        pendingFinalizeBlockerIssueIds: [],
+        allBlockersDone: false,
+        isDependencyReady: false,
+      });
 
       const app = await createApp(watchdogActor(), createWatchdogDb());
       const res = await request(app).patch(`/api/issues/${issueId}`).send({ status });
@@ -2195,7 +2223,13 @@ describe("agent issue mutation checkout ownership", () => {
         .patch(`/api/issues/${issueId}`)
         .send({ boardActionRequired: false });
 
-      expect(res.status, JSON.stringify(res.body)).toBe(422);
+      // boardActionRequired is derived and declared `z.never()` on the patch
+      // schema, so the write is rejected by request validation (400) rather than
+      // by a hand-rolled guard. Either way it must never reach the service.
+      expect(res.status, JSON.stringify(res.body)).toBe(400);
+      expect(res.body.details).toEqual(
+        expect.arrayContaining([expect.objectContaining({ path: ["boardActionRequired"] })]),
+      );
       expect(mockIssueService.update).not.toHaveBeenCalled();
     });
 
