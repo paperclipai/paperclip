@@ -3017,6 +3017,77 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     expect(workspace?.status).toBe("active");
   }, 20_000);
 
+  it("never executes a repository-configured fsmonitor during either adoption inspection", async () => {
+    const git = await createAdoptionGitFixture({ branch: "feature/fsmonitor-safe-adoption" });
+    tempDirs.add(git.repoRoot);
+    tempDirs.add(git.worktreePath);
+    const hookPath = path.join(git.repoRoot, "fsmonitor-hook.sh");
+    const markerPath = path.join(git.repoRoot, "fsmonitor-executed.txt");
+    await fs.writeFile(
+      hookPath,
+      "#!/bin/sh\nmarker_path=\"$(dirname \"$0\")/fsmonitor-executed.txt\"\nprintf invoked > \"$marker_path\"\nprintf \"%s\\n\" \"$2\"\n",
+      "utf8",
+    );
+    await fs.chmod(hookPath, 0o755);
+    await runGit(git.worktreePath, ["config", "core.fsmonitor", hookPath]);
+    await runGit(git.worktreePath, ["config", "core.fsmonitorHookVersion", "2"]);
+    const scope = await seedAdoptionScope(db, {
+      repoRoot: git.repoRoot,
+      repoUrl: git.repoUrl,
+    });
+    let markerExistedAfterInitialInspection = false;
+    const hardenedSvc = executionWorkspaceService(db, {
+      afterAdoptionInitialInspection: async () => {
+        markerExistedAfterInitialInspection = await fs.access(markerPath).then(() => true).catch(() => false);
+      },
+    });
+
+    await expect(hardenedSvc.adoptGitWorktree(scope.companyId, adoptionRequest({ ...git, ...scope }), {
+      actorType: "user",
+      actorId: "local-board",
+      agentId: null,
+      runId: null,
+    })).resolves.toMatchObject({ inspection: { status: "accepted" } });
+
+    expect(markerExistedAfterInitialInspection).toBe(false);
+    await expect(fs.access(markerPath)).rejects.toMatchObject({ code: "ENOENT" });
+  }, 20_000);
+
+  it("leaves a stale clean index byte-for-byte unchanged after both adoption inspections", async () => {
+    const git = await createAdoptionGitFixture({ branch: "feature/index-safe-adoption" });
+    tempDirs.add(git.repoRoot);
+    tempDirs.add(git.worktreePath);
+    const scope = await seedAdoptionScope(db, {
+      repoRoot: git.repoRoot,
+      repoUrl: git.repoUrl,
+    });
+    const indexPathRaw = await readGit(git.worktreePath, ["rev-parse", "--git-path", "index"]);
+    const indexPath = path.isAbsolute(indexPathRaw!)
+      ? indexPathRaw!
+      : path.join(git.worktreePath, indexPathRaw!);
+    const indexBeforeInspection = await fs.readFile(indexPath);
+    const trackedPath = path.join(git.worktreePath, "README.md");
+    const staleMtime = new Date(Date.now() + 60_000);
+    await fs.utimes(trackedPath, staleMtime, staleMtime);
+    let indexAfterInitialInspection: Buffer | null = null;
+    const hardenedSvc = executionWorkspaceService(db, {
+      afterAdoptionInitialInspection: async () => {
+        indexAfterInitialInspection = await fs.readFile(indexPath);
+      },
+    });
+
+    await expect(hardenedSvc.adoptGitWorktree(scope.companyId, adoptionRequest({ ...git, ...scope }), {
+      actorType: "user",
+      actorId: "local-board",
+      agentId: null,
+      runId: null,
+    })).resolves.toMatchObject({ inspection: { status: "accepted" } });
+
+    expect(indexAfterInitialInspection).not.toBeNull();
+    expect(indexAfterInitialInspection!.equals(indexBeforeInspection)).toBe(true);
+    expect((await fs.readFile(indexPath)).equals(indexBeforeInspection)).toBe(true);
+  }, 20_000);
+
   it("rejects adoption binding when issue authorization fields change before the transaction lock", async () => {
     const git = await createAdoptionGitFixture();
     tempDirs.add(git.repoRoot);

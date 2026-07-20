@@ -531,7 +531,7 @@ For project execution worktrees, Paperclip can also run a project-defined provis
 
 ## Adopt An Existing Git Worktree As An Execution Workspace
 
-Use this control only when an operator has already created and inspected a git worktree and wants Paperclip to reuse it for exact-branch issue execution. The control is record-only: Paperclip inspects the path with read-only git commands, persists an execution workspace record, optionally binds an issue to reuse that record, and does not checkout, clean, remove, start, stop, or otherwise mutate the filesystem/git worktree.
+Use this control only when an operator has already created and inspected a git worktree and wants Paperclip to reuse it for exact-branch issue execution. The control is record-only: Paperclip inspects the path with argv-only git commands that disable repository-configured fsmonitor execution and optional Git locks/index refresh writes, persists an execution workspace record, optionally binds an issue to reuse that record, and does not checkout, clean, remove, start, stop, or otherwise mutate the filesystem/git worktree.
 
 Prerequisites:
 

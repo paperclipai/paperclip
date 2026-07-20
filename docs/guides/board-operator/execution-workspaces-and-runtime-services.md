@@ -62,7 +62,7 @@ Adoption is deliberately conservative:
 
 - Authenticated non-viewer board users may adopt inside companies where they have active membership. Agent callers must be standard-trust same-company principals with an explicit `execution_workspaces:adopt` permission scoped to the target project.
 - The request must name the project, project workspace, source issue, absolute cwd, full branch ref, expected head SHA, expected upstream, and workspace name.
-- Paperclip inspects git with argv-based `git -C <cwd> ...` calls. It does not create branches, checkout refs, clean files, remove worktrees, push, pull, or otherwise mutate git during adoption.
+- Paperclip inspects git through one argv-based read-only policy that disables repository-configured fsmonitor execution and optional Git locks/index refresh writes. It does not create branches, checkout refs, clean files, remove worktrees, push, pull, or otherwise mutate git during adoption.
 - The worktree must be clean, on the exact requested `refs/heads/*` branch, at the exact requested commit, tracking the exact requested upstream, and from the expected repository.
 - The same branch cannot already be attached to another local worktree. Cwd/provider claims remain company-wide; branch/full-ref claims conflict only inside the same project and canonical git repository, so unrelated repositories/projects may use the same branch name.
 

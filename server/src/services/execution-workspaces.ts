@@ -218,11 +218,21 @@ function fingerprintAdoption(input: {
 
 async function readGitRequired(args: string[], cwd: string, reasonCode: ExecutionWorkspaceAdoptionReasonCode) {
   try {
-    const output = await execFileAsync("git", ["-C", cwd, ...args], { cwd });
+    const output = await runGitForAdoption(args, cwd);
     return output.stdout.trim();
   } catch {
     adoptionError(reasonCode);
   }
+}
+
+async function runGitForAdoption(args: string[], cwd: string) {
+  return await execFileAsync("git", ["-c", "core.fsmonitor=false", "-C", cwd, ...args], {
+    cwd,
+    env: {
+      ...process.env,
+      GIT_OPTIONAL_LOCKS: "0",
+    },
+  });
 }
 
 async function realpathRequiredForAdoption(value: string, reasonCode: ExecutionWorkspaceAdoptionReasonCode) {
@@ -287,12 +297,14 @@ async function inspectGitWorktreeForAdoption(input: {
   }
   if (dirtyTrackedCount > 0 || untrackedCount > 0) adoptionError("dirty_worktree");
 
-  const repoUrl = await readGitStdout(["config", "--get", "remote.origin.url"], canonicalCwd).catch(() => null);
+  const repoUrl = await runGitForAdoption(["config", "--get", "remote.origin.url"], canonicalCwd)
+    .then((output) => output.stdout.trim() || null)
+    .catch(() => null);
   const normalizedRepoUrl = normalizeRepoUrl(repoUrl);
   const expectedRepoUrl = normalizeRepoUrl(input.expectedRepoUrl) ?? normalizeRepoUrl(input.projectWorkspaceRepoUrl);
   if (expectedRepoUrl && normalizedRepoUrl !== expectedRepoUrl) adoptionError("repo_mismatch");
 
-  const worktreeRows = await execFileAsync("git", ["-C", canonicalCwd, "worktree", "list", "--porcelain", "-z"], { cwd: canonicalCwd })
+  const worktreeRows = await runGitForAdoption(["worktree", "list", "--porcelain", "-z"], canonicalCwd)
     .then((output) => output.stdout.split("\0").filter(Boolean))
     .catch(() => adoptionError("unexpected_failure"));
   let current: Record<string, string> = {};
