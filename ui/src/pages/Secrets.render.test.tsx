@@ -1538,8 +1538,14 @@ describe("Secrets folder view (PAP-14698)", () => {
     expect(container.textContent).toContain("No secrets in this folder yet.");
     const cta = [...container.querySelectorAll("button")].find((b) =>
       b.textContent?.includes("New secret here"),
-    );
+    ) as HTMLButtonElement;
     expect(cta).toBeDefined();
+    await act(async () => cta.click());
+    await flushReact();
+
+    expect(document.body.textContent).toContain("does/not/exist/");
+    expect((document.getElementById("new-secret-name") as HTMLInputElement).value).toBe("");
+    expect(document.querySelector('button[aria-label="Remove folder prefix"]')).not.toBeNull();
 
     await act(async () => root.unmount());
   });
