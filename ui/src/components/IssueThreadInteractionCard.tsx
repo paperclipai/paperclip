@@ -2132,6 +2132,15 @@ function RequestItemVerdictsCard({
   const progress = getItemVerdictProgress({ payload, result: interaction.result });
   const isTerminal = interaction.status !== "pending";
   const isExpired = interaction.status === "expired";
+  // A stale cancellation is terminal in the same way an expiry is: the ask died
+  // before it was resolved, so it shows the same notice instead of a
+  // half-finished progress card. Both stale sweeps write status "cancelled" —
+  // stale_issue_state when the issue closes/reassigns, stale_target when the
+  // watched document revision moves — so neither is caught by isExpired.
+  const isStaleIssueState =
+    interaction.status === "cancelled"
+    && (interaction.result?.outcome === "stale_issue_state"
+      || interaction.result?.outcome === "stale_target");
   const isComplete = interaction.status === "answered" || progress.decided === progress.total;
 
   const draftEntries = [...drafts.entries()];
@@ -2227,7 +2236,7 @@ function RequestItemVerdictsCard({
       </div>
 
       {/* Stale / superseded notice (S6) */}
-      {isExpired ? (
+      {isExpired || isStaleIssueState ? (
         <div className="rounded-sm border border-amber-500/50 bg-amber-500/10 px-3 py-2 text-sm text-amber-900 dark:text-amber-100">
           <div className="flex items-center gap-2 font-medium">
             <AlertTriangle className="h-4 w-4" aria-hidden />
@@ -2235,8 +2244,13 @@ function RequestItemVerdictsCard({
               ? "This review expired after a later comment."
               : interaction.result?.outcome === "stale_target"
                 ? "This review expired after the target changed."
-                : "This review expired."}
+                : interaction.result?.outcome === "stale_issue_state"
+                  ? "This review was cancelled after the issue changed."
+                  : "This review expired."}
           </div>
+          {isStaleIssueState && interaction.result?.reason ? (
+            <p className="mt-1 text-xs leading-5">{interaction.result.reason}</p>
+          ) : null}
           {progress.decided > 0 ? (
             <p className="mt-1 text-xs leading-5">
               {progress.decided === 1 ? "1 item was" : `${progress.decided} items were`} already applied and cannot be
@@ -2340,7 +2354,7 @@ function RequestItemVerdictsCard({
       </ul>
 
       {/* Complete summary (S5) */}
-      {isComplete && !isExpired ? (
+      {isComplete && !isExpired && !isStaleIssueState ? (
         <div className="flex flex-wrap items-center gap-2 rounded-sm border border-emerald-500/50 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-900 dark:text-emerald-100">
           <CheckCircle2 className="h-4 w-4" aria-hidden />
           <span className="font-medium">

@@ -358,5 +358,16 @@ describe("per-item verdict helpers", () => {
         items: [],
       },
     }))).toBe("Verdicts expired after comment");
+
+    expect(buildIssueThreadInteractionSummary(verdictInteraction({
+      status: "cancelled",
+      result: {
+        version: 1,
+        outcome: "stale_issue_state",
+        complete: false,
+        items: [],
+        reason: "Issue closed as done.",
+      },
+    }))).toBe("Verdicts cancelled after issue state changed");
   });
 });

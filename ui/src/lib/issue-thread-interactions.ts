@@ -131,6 +131,14 @@ export function buildItemVerdictsSummary(
     if (outcome === "stale_target") return "Verdicts expired after target changed";
     return "Verdicts expired";
   }
+  if (interaction.status === "cancelled") {
+    const outcome = interaction.result?.outcome;
+    if (outcome === "stale_issue_state") return "Verdicts cancelled after issue state changed";
+    // The document-revision sweep also cancels rather than expires, so keep the
+    // target-specific wording instead of falling through to the generic label.
+    if (outcome === "stale_target") return "Verdicts cancelled after target changed";
+    return "Verdicts cancelled";
+  }
   return `${progress.decided} of ${progress.total} decided`;
 }
 
