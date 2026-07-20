@@ -1558,6 +1558,24 @@ describe("Secrets folder view (PAP-14698)", () => {
     await act(async () => root.unmount());
   });
 
+  it("distinguishes a filtered-empty folder from a genuinely empty folder", async () => {
+    const root = await renderAt("/?path=dev/github/oauth");
+    const filterButton = document.querySelector('button[title="Filter"]') as HTMLButtonElement;
+    await act(async () => filterButton.click());
+    await flushReact();
+
+    const archivedLabel = [...document.querySelectorAll("label")].find(
+      (label) => label.textContent?.trim() === "Archived",
+    ) as HTMLLabelElement;
+    await act(async () => archivedLabel.click());
+    await waitForReact(() => container.textContent?.includes("No secrets match your filters.") ?? false);
+
+    expect(container.textContent).toContain("No secrets match your filters.");
+    expect(container.textContent).not.toContain("New secret here");
+
+    await act(async () => root.unmount());
+  });
+
   it("creates a company secret from a folder prefix and derives the key from the full name", async () => {
     mockSecretsApi.create.mockResolvedValue(
       makeCompanySecret({ id: "created", name: "dev/github/oauth/clientsecret/deeper" }),

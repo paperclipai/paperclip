@@ -1904,7 +1904,7 @@ export function Secrets() {
                         <div key={index} className="h-14 animate-pulse rounded-md bg-muted/40" />
                       ))}
                     </div>
-                  ) : showFolderView && folderPath ? (
+                  ) : showFolderView && folderPath && activeSecretFilterCount === 0 ? (
                     <EmptyState
                       icon={FolderOpen}
                       message="No secrets in this folder yet."
