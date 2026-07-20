@@ -586,6 +586,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       companyId,
     }, {
       kind: "ask_user_questions",
+      summary: "ASK: Choose the scope. WHY: A later board comment should supersede this. ACTION: Pick Phase 1, or comment to supersede.",
       payload: {
         version: 1,
         questions: [{
@@ -641,6 +642,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       companyId,
     }, {
       kind: "ask_user_questions",
+      summary: "ASK: Choose the scope. WHY: This ask must survive board discussion. ACTION: Pick Phase 1 when ready.",
       payload: {
         version: 1,
         supersedeOnUserComment: false,
@@ -680,6 +682,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       companyId,
     }, {
       kind: "ask_user_questions",
+      summary: "ASK: Choose the scope. WHY: Only later board comments should supersede. ACTION: Pick Phase 1, or comment to supersede.",
       payload: {
         version: 1,
         questions: [{
@@ -740,6 +743,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       companyId,
     }, {
       kind: "ask_user_questions",
+      summary: "ASK: Choose the scope. WHY: A later board comment should supersede this. ACTION: Pick Phase 1, or comment to supersede.",
       payload: {
         version: 1,
         questions: [{
@@ -1953,12 +1957,25 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       level: "task",
       status: "active",
     });
+    await db.insert(agents).values({
+      id: "11111111-1111-4111-8111-111111111111",
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    // The interactions are raised while the issue is still live; the reaper below is driven by
+    // the previous/current snapshots it is handed, not by the persisted issue row.
     await db.insert(issues).values({
       id: issueId,
       companyId,
       goalId,
       title: "Issue with pending interactions",
-      status: "done",
+      status: "in_progress",
       priority: "medium",
       assigneeAgentId: "11111111-1111-4111-8111-111111111111",
     });
@@ -2014,7 +2031,8 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     expect(expired).toEqual(expect.arrayContaining([
       expect.objectContaining({
         id: confirmation.id,
-        status: "expired",
+        // The stale-issue sweep cancels rather than expires; see ui/src/lib/issue-thread-interactions.
+        status: "cancelled",
         result: expect.objectContaining({
           version: 1,
           outcome: "stale_issue_state",
@@ -2054,6 +2072,30 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       level: "task",
       status: "active",
     });
+    await db.insert(agents).values([
+      {
+        id: fromAgentId,
+        companyId,
+        name: "CodexCoder",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: toAgentId,
+        companyId,
+        name: "CodexReviewer",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
     await db.insert(issues).values({
       id: issueId,
       companyId,
@@ -2099,7 +2141,8 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     expect(expired).toEqual([
       expect.objectContaining({
         id: confirmation.id,
-        status: "expired",
+        // The stale-issue sweep cancels rather than expires; see ui/src/lib/issue-thread-interactions.
+        status: "cancelled",
         result: expect.objectContaining({
           version: 1,
           outcome: "stale_issue_state",

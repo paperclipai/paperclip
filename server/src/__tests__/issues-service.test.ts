@@ -4090,7 +4090,7 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
         companyId,
         projectId,
         title: "Predecessor",
-        status: "done",
+        status: "in_progress",
         priority: "medium",
         executionWorkspaceId,
       },
@@ -4113,7 +4113,10 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
         executionWorkspaceId,
       },
     ]);
+    // Link the dependency while the blocker is still unresolved so the enter-blocked
+    // guard is satisfied, then complete the blocker the way the real lifecycle does.
     await svc.update(dependentId, { blockedByIssueIds: [blockerId] });
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, blockerId));
 
     return {
       companyId,
@@ -4564,8 +4567,8 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     const blockerId = randomUUID();
     const dependentId = randomUUID();
     await db.insert(issues).values([
-      // Done blocker with no execution workspace ever attached (e.g. closed manually).
-      { id: blockerId, companyId, title: "Manual done blocker", status: "done", priority: "medium" },
+      // Blocker with no execution workspace ever attached (e.g. closed manually).
+      { id: blockerId, companyId, title: "Manual done blocker", status: "in_progress", priority: "medium" },
       {
         id: dependentId,
         companyId,
@@ -4575,7 +4578,10 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
         assigneeAgentId,
       },
     ]);
+    // Link while the blocker is still unresolved so the enter-blocked guard is
+    // satisfied, then mark the blocker done.
     await svc.update(dependentId, { blockedByIssueIds: [blockerId] });
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, blockerId));
 
     // No executionWorkspaceId → no barrier → dependent should be wakeable.
     await expect(svc.listWakeableBlockedDependents(blockerId)).resolves.toEqual([

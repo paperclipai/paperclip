@@ -3353,7 +3353,7 @@ function boardActionResumeTextFromStaleInteraction(reason: string | null) {
 }
 
 function isBoardActionInteraction(
-  interaction: { kind: string; issueId: string; title: string | null; summary: string | null },
+  interaction: { kind: string },
   issueRow: { assigneeUserId?: string | null },
 ) {
   if (
@@ -5246,7 +5246,7 @@ export function issueService(db: Db) {
     const dedupedRemoteIssueIds = [...new Set(input.externalBlockedByIssueIds.filter(Boolean))];
     if (dedupedRemoteIssueIds.length === 0) return [];
 
-    const remoteIssues = await dbOrTx
+    const remoteIssues: ExternalBlockerMirrorRemoteIssue[] = await dbOrTx
       .select({
         id: issues.id,
         companyId: issues.companyId,
@@ -5265,7 +5265,7 @@ export function issueService(db: Db) {
       throw unprocessable("External blocked-by issues must belong to a different company");
     }
 
-    const existingMirrors = await dbOrTx
+    const existingMirrors: Array<{ id: string; originId: string | null }> = await dbOrTx
       .select({
         id: issues.id,
         originId: issues.originId,
@@ -5329,7 +5329,7 @@ export function issueService(db: Db) {
     remoteIssueId: string,
     dbOrTx: any = db,
   ): Promise<ExternalBlockerMirrorSyncResult[]> {
-    const remoteIssue = await dbOrTx
+    const remoteIssue: ExternalBlockerMirrorRemoteIssue | null = await dbOrTx
       .select({
         id: issues.id,
         companyId: issues.companyId,
@@ -5341,7 +5341,7 @@ export function issueService(db: Db) {
       })
       .from(issues)
       .where(eq(issues.id, remoteIssueId))
-      .then((rows) => rows[0] ?? null);
+      .then((rows: ExternalBlockerMirrorRemoteIssue[]) => rows[0] ?? null);
     if (!remoteIssue) return [];
 
     const mirrors = await dbOrTx
@@ -7876,6 +7876,10 @@ export function issueService(db: Db) {
       dbOrTx: any = db,
     ) => {
       const parsedResetAt = resetAt ? new Date(resetAt) : null;
+      // The fallback state file is not transactional. Written inside the
+      // transaction, a rollback leaves a state file describing a reassignment
+      // that never happened, and the swap-back machinery reads that file as
+      // truth. Stage the write here and run it only once the DB work is done.
       const runReassign = async (tx: DbTransaction) => {
         const current = await tx
           .select({
@@ -8022,7 +8026,7 @@ export function issueService(db: Db) {
         if (!updated) throw notFound("Issue not found");
 
         const issueRef = (current.identifier ?? current.id).trim();
-        await persistFallbackReassignState({
+        const persistFallbackState = () => persistFallbackReassignState({
           companyId: current.companyId,
           primaryAgentId,
           sisterAgentId: sister.id,
@@ -8057,14 +8061,27 @@ export function issueService(db: Db) {
 
         const [enriched] = await withIssueLabels(tx, [updated]);
         return {
-          issue: enriched,
-          comment,
-          reassignedFromAgentId: primaryAgentId,
-          reassignedToAgentId: sister.id,
+          result: {
+            issue: enriched,
+            comment,
+            reassignedFromAgentId: primaryAgentId,
+            reassignedToAgentId: sister.id,
+          },
+          persistFallbackState,
         };
       };
 
-      return dbOrTx === db ? db.transaction(runReassign) : runReassign(dbOrTx);
+      // Self-owned transaction: db.transaction() only resolves after commit, so
+      // the state file lands post-commit and a rollback writes nothing.
+      // Caller-supplied transaction: the caller owns the commit and this service
+      // has no hook into it, so the best available guarantee is "after all of
+      // this reassign's DB work" rather than "after commit". See the note on the
+      // dbOrTx parameter — closing that gap needs an explicit after-commit
+      // callback from the caller.
+      const { result, persistFallbackState } =
+        dbOrTx === db ? await db.transaction(runReassign) : await runReassign(dbOrTx);
+      await persistFallbackState();
+      return result;
     },
 
     clearExecutionWorkspaceEnvironmentSelection: async (companyId: string, environmentId: string) => {

@@ -232,6 +232,18 @@ type WatchdogDecisionActor =
   | { type: "agent"; agentId?: string | null; runId?: string | null }
   | { type: "none" };
 
+// Open stale-active-run evaluation issue, keyed by the run it was raised for.
+// `identifier` is nullable because issues.identifier is a nullable column — an
+// issue can exist before its company prefix assigns one.
+type OpenStaleRunEvaluation = {
+  id: string;
+  identifier: string | null;
+  status: string;
+  priority: string;
+  assigneeAgentId: string | null;
+  updatedAt: Date;
+};
+
 export type RunOutputSilenceSummary = {
   lastOutputAt: Date | null;
   lastOutputSeq: number;
@@ -1427,14 +1439,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
   async function findOpenStaleRunEvaluations(companyId: string, runIds: string[]) {
     if (runIds.length === 0) {
-      return new Map<string, {
-        id: string;
-        identifier: string;
-        status: string;
-        priority: string;
-        assigneeAgentId: string | null;
-        updatedAt: Date;
-      }>();
+      return new Map<string, OpenStaleRunEvaluation>();
     }
 
     const rows = await db
@@ -1458,14 +1463,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         ),
       );
 
-    const map = new Map<string, {
-      id: string;
-      identifier: string;
-      status: string;
-      priority: string;
-      assigneeAgentId: string | null;
-      updatedAt: Date;
-    }>();
+    const map = new Map<string, OpenStaleRunEvaluation>();
     for (const row of rows) {
       if (row.originId && !map.has(row.originId)) {
         map.set(row.originId, {
@@ -1650,14 +1648,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     }
 
     const quietDecisions = new Map<string, typeof heartbeatRunWatchdogDecisions.$inferSelect>();
-    const evaluations = new Map<string, {
-      id: string;
-      identifier: string;
-      status: string;
-      priority: string;
-      assigneeAgentId: string | null;
-      updatedAt: Date;
-    }>();
+    const evaluations = new Map<string, OpenStaleRunEvaluation>();
 
     await Promise.all(Array.from(runningByCompany.entries()).map(async ([companyId, runIds]) => {
       const [companyQuietDecisions, companyEvaluations] = await Promise.all([

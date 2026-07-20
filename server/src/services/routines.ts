@@ -919,6 +919,7 @@ export function routineService(
         payload: {
           version: 1,
           prompt: `Review the routine-health issue for ${input.routine.title} and confirm the remediation path.`,
+          allowDeclineReason: true,
         },
       },
       {},
@@ -2572,11 +2573,14 @@ export function routineService(
       : dispatchFingerprint;
     const canReuseTerminalExecutionIssue =
       input.source === "schedule" && routineReusesTerminalExecutionIssue(input.routine);
-    let deferredReuseWake:
-      | {
-        issue: { id: string; assigneeAgentId: string | null; status: string };
-      }
-      | null = null;
+    // Held in a ref cell: the assignment happens inside the transaction callback, and
+    // control-flow analysis does not track closure writes to a plain `let`, so a bare
+    // local would narrow to `null` at the post-commit read below.
+    const deferredReuseWake: {
+      current:
+        | { issue: { id: string; assigneeAgentId: string | null; status: string } }
+        | null;
+    } = { current: null };
     const run = await db.transaction(async (tx) => {
       const txDb = tx as unknown as Db;
       const lockTimeoutMs = input.source === "schedule" ? readScheduleDispatchLockTimeoutMs() : 0;
@@ -2780,6 +2784,11 @@ export function routineService(
 
         if (!executionIssue) {
           try {
+            // Unlike issueSvc.update, issueSvc.create takes no tx handle: it runs on the
+            // pool. That is load-bearing here — the 23505 recovery below keeps querying
+            // txDb after the conflict, which Postgres would refuse had the failing insert
+            // run inside this transaction. The catch block compensates by deleting
+            // createdIssue instead.
             createdIssue = await issueSvc.create(input.routine.companyId, {
               projectId,
               projectWorkspaceId,
@@ -2808,7 +2817,7 @@ export function routineService(
               executionWorkspaceId: input.executionWorkspaceId ?? null,
               executionWorkspacePreference: input.executionWorkspacePreference ?? null,
               executionWorkspaceSettings: input.executionWorkspaceSettings ?? null,
-            }, txDb);
+            });
             executionIssue = createdIssue;
           } catch (error) {
             const isOpenExecutionConflict =
@@ -2866,7 +2875,7 @@ export function routineService(
         // service reads the reused issue as todo instead of the stale pre-commit
         // terminal row. Fresh issue creation keeps the in-transaction fast path.
         if (input.source === "schedule" && dispatchStatus === "issue_reused") {
-          deferredReuseWake = {
+          deferredReuseWake.current = {
             issue: {
               id: executionIssue.id,
               assigneeAgentId: executionIssue.assigneeAgentId,
@@ -2921,10 +2930,10 @@ export function routineService(
       }
     });
 
-    if (deferredReuseWake) {
+    if (deferredReuseWake.current) {
       await queueIssueAssignmentWakeup({
         heartbeat,
-        issue: deferredReuseWake.issue,
+        issue: deferredReuseWake.current.issue,
         reason: "issue_assigned",
         mutation: "update",
         contextSource: "routine.dispatch",

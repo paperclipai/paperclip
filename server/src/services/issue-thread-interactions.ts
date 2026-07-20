@@ -1257,7 +1257,12 @@ export function issueThreadInteractionService(db: Db) {
         }
       }
 
-      if (operatorFacingInteractionRequiresLiveIssue(data.kind) && isTerminalIssueStatus(issue.status)) {
+      // Callers may omit status; the authoritative DB check above already covers that case.
+      if (
+        operatorFacingInteractionRequiresLiveIssue(data.kind)
+        && issue.status
+        && isTerminalIssueStatus(issue.status)
+      ) {
         throw conflict(
           "Operator-facing interactions require a live issue. Reopen the issue or move it out of done/cancelled before creating a board/user interaction.",
           { issueId: issue.id, issueStatus: issue.status },
