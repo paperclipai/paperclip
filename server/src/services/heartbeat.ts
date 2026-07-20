@@ -313,6 +313,7 @@ const DETACHED_PROCESS_ERROR_CODE = "process_detached";
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
 const SESSION_WORKSPACE_CWD_STAT_TIMEOUT_MS = 5_000;
+const pendingSessionWorkspaceCwdStats = new Map<string, Promise<boolean>>();
 const MAX_INLINE_WAKE_COMMENTS = 8;
 const MAX_INLINE_WAKE_COMMENT_BODY_CHARS = 4_000;
 const MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS = 12_000;
@@ -7140,8 +7141,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const runtimeForRun = await getRuntimeState(agent.id);
     return runtimeForRun?.sessionId ?? null;
   }
-
-  const pendingSessionWorkspaceCwdStats = new Map<string, Promise<boolean>>();
 
   async function hasResolvableSessionWorkspaceCwd(sessionParams: Record<string, unknown> | null | undefined) {
     const cwd = readNonEmptyString(sessionParams?.cwd);
