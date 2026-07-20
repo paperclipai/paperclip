@@ -300,6 +300,69 @@ describeEmbeddedPostgres("resourceRuntimeService", () => {
       path.join(collidingMountWorkspace, "resources", "output-working-tree", "preserve-me.txt"),
       "utf8",
     )).resolves.toBe("preserve-me\n");
+
+    const partialRemotePath = path.join(fixtureRoot, "partial-remote.git");
+    const partialSeedPath = path.join(fixtureRoot, "partial-seed");
+    await git(["init", "--bare", partialRemotePath]);
+    await git(["clone", partialRemotePath, partialSeedPath]);
+    await git(["config", "user.name", "Fixture"], partialSeedPath);
+    await git(["config", "user.email", "fixture@example.com"], partialSeedPath);
+    await fs.writeFile(path.join(partialSeedPath, "partial.md"), "before\n", "utf8");
+    await git(["add", "."], partialSeedPath);
+    await git(["commit", "-m", "initial"], partialSeedPath);
+    await git(["branch", "-M", "main"], partialSeedPath);
+    await git(["push", "origin", "main"], partialSeedPath);
+
+    const partialFirstResourceId = randomUUID();
+    const partialSecondResourceId = randomUUID();
+    await db.insert(resources).values([
+      {
+        id: partialFirstResourceId,
+        companyId,
+        key: "partial-first",
+        type: "git",
+        repository: partialRemotePath,
+        sourcePath: null,
+        defaultRef: "main",
+        mountPath: "partial-first",
+        credentialRef: null,
+        labels: {},
+        status: "active",
+      },
+      {
+        id: partialSecondResourceId,
+        companyId,
+        key: "partial-second",
+        type: "git",
+        repository: partialRemotePath,
+        sourcePath: null,
+        defaultRef: "main",
+        mountPath: "partial-second",
+        credentialRef: null,
+        labels: {},
+        status: "active",
+      },
+    ]);
+    const partialWorkspace = path.join(fixtureRoot, "partial-publish-workspace");
+    const partialPrepared = await resourceRuntimeService(db).prepare({
+      companyId,
+      runId: "run-partial-publish-test",
+      workspaceRoot: partialWorkspace,
+      manifest: {
+        version: 1,
+        resources: [
+          { resourceId: partialFirstResourceId, mode: "input_output", output: { action: "push", targetRef: "main" } },
+          { resourceId: partialSecondResourceId, mode: "input_output", output: { action: "push", targetRef: "main" } },
+        ],
+      },
+    });
+    await fs.writeFile(path.join(partialWorkspace, "resources", "partial-first", "first.txt"), "first\n", "utf8");
+    await fs.writeFile(path.join(partialWorkspace, "resources", "partial-second", "second.txt"), "second\n", "utf8");
+    await expect(partialPrepared!.publish()).rejects.toThrow("Resource changed while workflow was running: partial-second");
+    expect(partialPrepared!.inputVersions).toMatchObject([
+      { resourceId: partialFirstResourceId, published: true },
+      { resourceId: partialSecondResourceId, published: false },
+    ]);
   }, 20_000);
 
   it("creates pull requests through the provider without exposing credentials", async () => {

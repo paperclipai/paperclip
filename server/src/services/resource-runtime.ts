@@ -503,6 +503,8 @@ export function resourceRuntimeService(db: Db) {
             await runGit(["push", "origin", `HEAD:refs/heads/${pushRef}`], { cwd: item.repoPath, env, redact: credential.token ? [credential.token] : [] });
             if (output.action === "push") {
               results.push({ resourceId: item.resource.id, inputCommit: item.expectedCommit, outputCommit: commit, action: output.action, branch: pushRef, targetRef, changedFiles, insertions, deletions, status: "pushed" });
+              const inputVersion = inputVersions.find((version) => version.resourceId === item.resource.id);
+              if (inputVersion) inputVersion.published = true;
               continue;
             }
             const provider = input.pullRequestProvider ?? githubPullRequestProvider();
@@ -515,6 +517,8 @@ export function resourceRuntimeService(db: Db) {
               body: output.body?.trim() ?? "",
             });
             results.push({ resourceId: item.resource.id, inputCommit: item.expectedCommit, outputCommit: commit, action: output.action, branch: pushRef, targetRef, pullRequestId: pullRequest.id, pullRequestUrl: pullRequest.url, changedFiles, insertions, deletions, status: "pull_request_created" });
+            const inputVersion = inputVersions.find((version) => version.resourceId === item.resource.id);
+            if (inputVersion) inputVersion.published = true;
             }
           } catch (error) {
             if (error && typeof error === "object") {
