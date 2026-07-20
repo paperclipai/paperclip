@@ -58,6 +58,9 @@ jobs:
       - name: Test general-server shard partition
         run: node --test ./scripts/__tests__/run-vitest-stable-shard.test.mjs
 
+      - name: Test e2e shard partition
+        run: node --test ./scripts/__tests__/e2e-shard.test.mjs
+
       - name: Test release verify workflow wiring
         run: node --test ./scripts/__tests__/release-verify-workflow.test.mjs
 
@@ -356,10 +359,25 @@ jobs:
           fi
           ./scripts/release.sh canary --skip-verify --dry-run
 
-  e2e:
+  e2e_shards:
+    name: e2e shard (${{ matrix.shard_label }})
     needs: [policy]
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The Playwright lane is pinned to workers=1 (tests/e2e/playwright.config.ts)
+          # because every spec shares one throwaway server and some toggle
+          # instance-level flags, so it can only be parallelized across runners.
+          # Each shard boots its own server, which keeps that isolation intact.
+          - shard_index: 0
+            shard_count: 2
+            shard_label: 1/2
+          - shard_index: 1
+            shard_count: 2
+            shard_label: 2/2
 
     steps:
       - name: Checkout repository
@@ -411,14 +429,36 @@ jobs:
         env:
           PAPERCLIP_E2E_SKIP_LLM: "true"
           PAPERCLIP_PLAYWRIGHT_CHANNEL: "chrome"
-        run: pnpm run test:e2e
+        run: |
+          # Playwright's own --shard balances by test count, and one spec
+          # (smoke-lab) is ~40% of the lane's wall clock. Partition by recorded
+          # spec duration instead so both runners finish together.
+          specs="$(node ./scripts/e2e-shard.mjs \
+            --shard-index ${{ matrix.shard_index }} --shard-count ${{ matrix.shard_count }})"
+          echo "shard ${{ matrix.shard_label }} specs: $specs"
+          pnpm run test:e2e -- $specs
 
       - name: Upload Playwright report
         uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: playwright-report
+          name: playwright-report-${{ matrix.shard_index }}
           path: |
             tests/e2e/playwright-report/
             tests/e2e/test-results/
           retention-days: 14
+
+  e2e:
+    # Preserve the legacy required-check name while the specs run sharded
+    # across the matrix above (same pattern as the `verify` aggregate).
+    name: e2e
+    if: ${{ always() }}
+    needs: [e2e_shards]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Fail if any e2e shard failed
+        env:
+          E2E_SHARDS_RESULT: ${{ needs.e2e_shards.result }}
+        run: test "$E2E_SHARDS_RESULT" = "success"
