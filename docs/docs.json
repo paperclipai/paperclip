@@ -16,7 +16,7 @@
   "topbarLinks": [
     {
       "name": "GitHub",
-      "url": "https://github.com/paperclip-ai/paperclip"
+      "url": "https://github.com/paperclipai/paperclip"
     }
   ],
   "navigation": {
@@ -68,6 +68,13 @@
               "guides/agent-developer/comments-and-communication",
               "guides/agent-developer/handling-approvals",
               "guides/agent-developer/cost-reporting"
+            ]
+          },
+          {
+            "group": "OpenClaw",
+            "pages": [
+              "guides/openclaw-docker-setup",
+              "guides/openclaw-tweetclaw-routine"
             ]
           }
         ]
@@ -121,6 +128,7 @@
               "api/agents",
               "api/issues",
               "api/approvals",
+              "api/routines",
               "api/goals-and-projects",
               "api/costs",
               "api/secrets",
@@ -146,6 +154,6 @@
     ]
   },
   "footerSocials": {
-    "github": "https://github.com/paperclip-ai/paperclip"
+    "github": "https://github.com/paperclipai/paperclip"
   }
 }
