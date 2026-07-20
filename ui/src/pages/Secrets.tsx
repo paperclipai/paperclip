@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertCircle,
@@ -7,11 +7,16 @@ import {
   Archive,
   Ban,
   CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
   Cloud,
+  CornerLeftUp,
   Copy,
   Database,
   Edit3,
   ExternalLink,
+  Folder,
+  FolderOpen,
   KeyRound,
   Link2,
   Lock,
@@ -30,7 +35,7 @@ import {
   UserRound,
   Users,
 } from "lucide-react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import type {
   CompanySecret,
   CompanySecretUsageBinding,
@@ -97,6 +102,14 @@ import { copyTextToClipboard } from "../lib/clipboard";
 import { PageTabBar } from "../components/PageTabBar";
 import { ImportFromVaultDialog } from "./secrets/ImportFromVaultDialog";
 import { MyUserSecretsTab } from "./secrets/MyUserSecretsTab";
+import { SecretPathName } from "./secrets/SecretPathName";
+import {
+  buildSecretPathBreadcrumbs,
+  buildSecretPathListing,
+  getSecretPathRowName,
+  normalizeSecretPath,
+  type SecretPathFolder,
+} from "./secrets/secret-path";
 import { SetMyUserSecretDialog } from "./secrets/SetMyUserSecretDialog";
 import {
   coverageSummaryLabel,
@@ -108,6 +121,27 @@ type CreateMode = "managed" | "external";
 type SecretValueProvider = "company" | "user";
 type ProvidedByFilter = "all" | SecretValueProvider;
 type SecretsTab = "secrets" | "my-secrets" | "vaults";
+type SecretsViewMode = "folders" | "flat";
+
+const SECRETS_VIEW_MODE_STORAGE_KEY = "paperclip.secrets.viewMode";
+
+function readStoredViewMode(): SecretsViewMode | null {
+  try {
+    const stored = window.localStorage.getItem(SECRETS_VIEW_MODE_STORAGE_KEY);
+    return stored === "folders" || stored === "flat" ? stored : null;
+  } catch {
+    return null;
+  }
+}
+
+/** "12 secrets · 3 folders" — folder part omitted when there are no subfolders. */
+function formatSecretPathCounts(secretCount: number, folderCount: number): string {
+  const parts = [`${secretCount} ${secretCount === 1 ? "secret" : "secrets"}`];
+  if (folderCount > 0) {
+    parts.push(`${folderCount} ${folderCount === 1 ? "folder" : "folders"}`);
+  }
+  return parts.join(" · ");
+}
 
 type UnifiedSecretRow =
   | { id: string; kind: "company"; secret: CompanySecret }
@@ -817,6 +851,73 @@ export function Secrets() {
     (providerFilter === "all" ? 0 : 1) +
     (providedByFilter === "all" ? 0 : 1);
 
+  // --- Folder view (PAP-14698) --------------------------------------------
+  // Folders are derived purely from slash-delimited secret names; there is no
+  // server-side folder record. `?path=` holds the normalized current folder
+  // and is only meaningful on the main Secrets tab (inert on the others).
+  const [searchParams, setSearchParams] = useSearchParams();
+  const pathParam = normalizeSecretPath(searchParams.get("path") ?? "");
+  const folderPath = activeTab === "secrets" ? pathParam : "";
+  const searching = search.trim().length > 0;
+
+  const [storedViewMode, setStoredViewMode] = useState<SecretsViewMode | null>(readStoredViewMode);
+  const hasSlashNames = useMemo(
+    () => unifiedRows.some((row) => getSecretPathRowName(row).includes("/")),
+    [unifiedRows],
+  );
+  // No explicit preference → default to Folders once any name has a slash.
+  const resolvedViewMode: SecretsViewMode = storedViewMode ?? (hasSlashNames ? "folders" : "flat");
+  // A `?path=` deep link forces folder view for the visit even if the stored
+  // preference is Flat. Search always renders a flat global result set.
+  const effectiveViewMode: SecretsViewMode = folderPath ? "folders" : resolvedViewMode;
+  const showFolderView = effectiveViewMode === "folders" && !searching;
+
+  const goToFolder = useCallback(
+    (path: string) => {
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          const normalized = normalizeSecretPath(path);
+          if (normalized) next.set("path", normalized);
+          else next.delete("path");
+          return next;
+        },
+        { replace: false },
+      );
+    },
+    [setSearchParams],
+  );
+
+  const setViewMode = useCallback(
+    (mode: SecretsViewMode) => {
+      setStoredViewMode(mode);
+      try {
+        window.localStorage.setItem(SECRETS_VIEW_MODE_STORAGE_KEY, mode);
+      } catch {
+        // Ignore storage failures (private mode / disabled); view still works.
+      }
+      // Flat has no notion of a current folder — leaving it out of the URL.
+      if (mode === "flat") goToFolder("");
+    },
+    [goToFolder],
+  );
+
+  const folderListing = useMemo(
+    () => buildSecretPathListing(filteredRows, folderPath),
+    [filteredRows, folderPath],
+  );
+  const breadcrumbs = useMemo(() => buildSecretPathBreadcrumbs(folderPath), [folderPath]);
+  const parentFolderPath = useMemo(() => {
+    const segments = folderPath ? folderPath.split("/") : [];
+    return segments.slice(0, -1).join("/");
+  }, [folderPath]);
+  const currentFolderSecretCount =
+    folderListing.secrets.length +
+    folderListing.folders.reduce((total, folder) => total + folder.secretCount, 0);
+  const folderRows = showFolderView ? folderListing.folders : [];
+  const secretRows = showFolderView ? folderListing.secrets : filteredRows;
+  const showUpRow = showFolderView && folderPath.length > 0;
+
   const usageQuery = useQuery({
     queryKey: selectedSecret ? queryKeys.secrets.usage(selectedSecret.id) : ["secrets", "usage", "__disabled__"],
     queryFn: () => secretsApi.usage(selectedSecret!.id),
@@ -1438,6 +1539,158 @@ export function Secrets() {
     );
   }
 
+  function folderLinkTo(path: string) {
+    const params = new URLSearchParams(searchParams);
+    const normalized = normalizeSecretPath(path);
+    if (normalized) params.set("path", normalized);
+    else params.delete("path");
+    const qs = params.toString();
+    return { search: qs ? `?${qs}` : "" };
+  }
+
+  /** Secret-name treatment: raw in flat view, muted-path/bold-leaf otherwise. */
+  function renderSecretName(name: string) {
+    if (searching) return <SecretPathName name={name} className="text-sm" />;
+    if (showFolderView) return <SecretPathName name={name} basePath={folderPath} className="text-sm" />;
+    return <span className="truncate font-medium text-foreground">{name}</span>;
+  }
+
+  function renderFolderTableRow(folder: SecretPathFolder) {
+    return (
+      <Link
+        key={`folder:${folder.path}`}
+        to={folderLinkTo(folder.path)}
+        role="row"
+        className="grid grid-cols-(--gtc-54) items-center gap-3 border-b border-border/60 px-3 py-3 hover:bg-accent/40"
+      >
+        <div role="cell" className="min-w-0">
+          <div className="flex min-w-0 items-center gap-2">
+            <Folder className="h-4 w-4 shrink-0 text-muted-foreground" />
+            <span className="truncate font-medium text-foreground">{folder.name}</span>
+          </div>
+          <div className="mt-0.5 pl-6 text-xs text-muted-foreground">
+            {formatSecretPathCounts(folder.secretCount, folder.directSubfolderCount)}
+          </div>
+        </div>
+        <div role="cell" aria-hidden="true" />
+        <div role="cell" aria-hidden="true" />
+        <div role="cell" aria-hidden="true" />
+        <div role="cell" className="flex justify-end">
+          <ChevronRight className="h-4 w-4 text-muted-foreground" />
+        </div>
+      </Link>
+    );
+  }
+
+  function renderFolderCard(folder: SecretPathFolder) {
+    return (
+      <Link
+        key={`folder:${folder.path}`}
+        to={folderLinkTo(folder.path)}
+        className="flex items-center justify-between gap-2 rounded-md border border-border bg-background p-3 hover:bg-accent/30"
+      >
+        <div className="flex min-w-0 items-center gap-2">
+          <Folder className="h-4 w-4 shrink-0 text-muted-foreground" />
+          <div className="min-w-0">
+            <div className="truncate font-medium text-foreground">{folder.name}</div>
+            <div className="text-xs text-muted-foreground">
+              {formatSecretPathCounts(folder.secretCount, folder.directSubfolderCount)}
+            </div>
+          </div>
+        </div>
+        <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+      </Link>
+    );
+  }
+
+  function renderUpRow(variant: "table" | "card") {
+    const parentLabel = parentFolderPath ? parentFolderPath.split("/").pop()! : "all secrets";
+    return (
+      <Link
+        to={folderLinkTo(parentFolderPath)}
+        role={variant === "table" ? "row" : undefined}
+        className={cn(
+          "flex items-center gap-2 text-xs text-muted-foreground hover:bg-accent/40",
+          variant === "table"
+            ? "border-b border-border/60 px-3 py-2.5"
+            : "rounded-md border border-border bg-background px-3 py-2.5",
+        )}
+      >
+        <CornerLeftUp className="h-4 w-4 shrink-0" />
+        <span className="truncate">Up to {parentLabel}</span>
+      </Link>
+    );
+  }
+
+  function renderSecretsBreadcrumb() {
+    const currentName = breadcrumbs.length > 0 ? breadcrumbs[breadcrumbs.length - 1].name : "All secrets";
+    const parentLabel = parentFolderPath ? parentFolderPath.split("/").pop()! : "All secrets";
+    const fullTrail: { name: string; path: string }[] = [
+      { name: "All secrets", path: "" },
+      ...breadcrumbs,
+    ];
+    // Middle-truncate deep paths: root · … · last two.
+    const collapsed =
+      fullTrail.length > 4
+        ? [fullTrail[0], { name: "…", path: "" }, ...fullTrail.slice(-2)]
+        : fullTrail;
+
+    return (
+      <nav aria-label="Breadcrumb" className="min-w-0">
+        {/* Wide: full trail */}
+        <ol className="hidden min-w-0 items-center gap-1 text-sm @min-[40rem]:flex">
+          {collapsed.map((crumb, index) => {
+            const isLast = index === collapsed.length - 1;
+            const isEllipsis = crumb.name === "…" && crumb.path === "" && index > 0 && !isLast;
+            return (
+              <li key={`${crumb.path}:${index}`} className="flex min-w-0 items-center gap-1">
+                {index > 0 ? <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground/60" /> : null}
+                {isEllipsis ? (
+                  <span className="px-0.5 text-muted-foreground">…</span>
+                ) : isLast ? (
+                  <span aria-current="page" className="truncate font-medium text-foreground">
+                    {crumb.name}
+                  </span>
+                ) : (
+                  <Link
+                    to={folderLinkTo(crumb.path)}
+                    className="max-w-[10rem] truncate text-muted-foreground hover:text-foreground hover:underline"
+                  >
+                    {crumb.name}
+                  </Link>
+                )}
+              </li>
+            );
+          })}
+        </ol>
+        {/* Narrow: back-chevron + parent/current */}
+        <div className="flex min-w-0 items-center gap-1.5 text-sm @min-[40rem]:hidden">
+          {folderPath ? (
+            <>
+              <Link
+                to={folderLinkTo(parentFolderPath)}
+                aria-label="Up one folder"
+                className="shrink-0 text-muted-foreground hover:text-foreground"
+              >
+                <ChevronLeft className="h-4 w-4" />
+              </Link>
+              {parentLabel !== "All secrets" ? (
+                <span className="shrink-0 text-muted-foreground">{parentLabel} /</span>
+              ) : null}
+              <span aria-current="page" className="truncate font-medium text-foreground">
+                {currentName}
+              </span>
+            </>
+          ) : (
+            <span aria-current="page" className="truncate font-medium text-foreground">
+              All secrets
+            </span>
+          )}
+        </div>
+      </nav>
+    );
+  }
+
   if (!selectedCompanyId) {
     return (
       <div className="p-6 text-sm text-muted-foreground">Select a company to manage secrets.</div>
@@ -1492,6 +1745,32 @@ export function Secrets() {
               onProviderChange={setProviderFilter}
               onProvidedByChange={setProvidedByFilter}
             />
+            <div
+              role="group"
+              aria-label="View mode"
+              className={cn(
+                "inline-flex items-center rounded-md border border-border p-0.5",
+                searching && "opacity-50",
+              )}
+            >
+              {(["folders", "flat"] as const).map((mode) => (
+                <button
+                  key={mode}
+                  type="button"
+                  aria-pressed={effectiveViewMode === mode}
+                  disabled={searching}
+                  onClick={() => setViewMode(mode)}
+                  className={cn(
+                    "rounded-sm px-2.5 py-1 text-xs font-medium capitalize transition-colors disabled:cursor-not-allowed",
+                    effectiveViewMode === mode
+                      ? "bg-accent text-accent-foreground"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  {mode}
+                </button>
+              ))}
+            </div>
             <ImportFromVaultButton
               providerConfigs={providerConfigs}
               onClick={() => openImportFromVault()}
@@ -1525,10 +1804,47 @@ export function Secrets() {
                 action="New secret"
                 onAction={openCreateSecret}
               />
-            ) : filteredRows.length === 0 ? (
-              <EmptyState icon={Search} message="No secrets match your filters." />
             ) : (
               <div className="@container min-w-0 overflow-x-hidden text-sm" data-testid="secrets-list-container">
+                {showFolderView ? (
+                  <div className="mb-3 flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+                    {renderSecretsBreadcrumb()}
+                    <span className="shrink-0 text-xs text-muted-foreground">
+                      {formatSecretPathCounts(currentFolderSecretCount, folderListing.folders.length)}
+                    </span>
+                  </div>
+                ) : searching ? (
+                  <div className="mb-3">
+                    <div className="text-sm font-medium text-foreground">Search results</div>
+                    <div className="text-xs text-muted-foreground">
+                      {filteredRows.length} {filteredRows.length === 1 ? "match" : "matches"} across all
+                      folders{folderPath ? ` · searching everywhere, not just ${folderPath}` : ""}
+                    </div>
+                  </div>
+                ) : null}
+
+                {folderRows.length === 0 && secretRows.length === 0 ? (
+                  secretsQuery.isPending || userDefinitionsQuery.isPending ? (
+                    <div className="space-y-2 py-2" aria-hidden="true" data-testid="secrets-loading-skeleton">
+                      {[0, 1, 2, 3].map((index) => (
+                        <div key={index} className="h-14 animate-pulse rounded-md bg-muted/40" />
+                      ))}
+                    </div>
+                  ) : showFolderView && folderPath ? (
+                    <EmptyState
+                      icon={FolderOpen}
+                      message="No secrets in this folder yet."
+                      action="New secret here"
+                      onAction={openCreateSecret}
+                    />
+                  ) : (
+                    <EmptyState
+                      icon={Search}
+                      message={searching ? "No secrets match your search." : "No secrets match your filters."}
+                    />
+                  )
+                ) : (
+                  <>
                 <div
                   role="table"
                   aria-label="Secrets"
@@ -1546,7 +1862,9 @@ export function Secrets() {
                     <div role="columnheader" className="sr-only">Actions</div>
                   </div>
                   <div role="rowgroup">
-                    {filteredRows.map((row) => {
+                    {showUpRow ? renderUpRow("table") : null}
+                    {folderRows.map(renderFolderTableRow)}
+                    {secretRows.map((row) => {
                       const status = row.kind === "company" ? row.secret.status : row.definition.status;
                       const updatedAt = row.kind === "company" ? row.secret.updatedAt : row.definition.updatedAt;
                       const updatedTooltip =
@@ -1573,9 +1891,7 @@ export function Secrets() {
                         >
                           <div role="cell" className="min-w-0">
                             <div className="flex min-w-0 items-center gap-1.5">
-                              <span className="truncate font-medium text-foreground">
-                                {row.kind === "company" ? row.secret.name : row.definition.name}
-                              </span>
+                              {renderSecretName(row.kind === "company" ? row.secret.name : row.definition.name)}
                               {row.kind === "company" ? (
                                 <SecretProviderIndicator
                                   secret={row.secret}
@@ -1635,7 +1951,9 @@ export function Secrets() {
                 </div>
 
                 <div className="space-y-2 @min-[40rem]:hidden" data-testid="secrets-card-view">
-                  {filteredRows.map((row) => {
+                  {showUpRow ? renderUpRow("card") : null}
+                  {folderRows.map(renderFolderCard)}
+                  {secretRows.map((row) => {
                     const status = row.kind === "company" ? row.secret.status : row.definition.status;
                     return (
                       <div
@@ -1652,8 +1970,8 @@ export function Secrets() {
                       >
                         <div className="flex min-w-0 items-start justify-between gap-2">
                           <div className="min-w-0">
-                            <div className="truncate font-medium text-foreground">
-                              {row.kind === "company" ? row.secret.name : row.definition.name}
+                            <div className="min-w-0 truncate">
+                              {renderSecretName(row.kind === "company" ? row.secret.name : row.definition.name)}
                             </div>
                             <code className="mt-0.5 block truncate text-(length:--text-micro) text-muted-foreground">
                               {row.kind === "company" ? row.secret.key : row.definition.key}
@@ -1699,6 +2017,8 @@ export function Secrets() {
                     );
                   })}
                 </div>
+                  </>
+                )}
               </div>
             )}
           </div>

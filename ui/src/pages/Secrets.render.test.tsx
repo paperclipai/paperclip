@@ -373,9 +373,11 @@ describe("Secrets page layout", () => {
 
     await act(async () => {
       root.render(
-        <QueryClientProvider client={queryClient}>
-          <Secrets />
-        </QueryClientProvider>,
+        <MemoryRouter>
+          <QueryClientProvider client={queryClient}>
+            <Secrets />
+          </QueryClientProvider>
+        </MemoryRouter>,
       );
     });
     await flushReact();
@@ -1438,5 +1440,143 @@ describe("Secrets page layout", () => {
     await act(async () => {
       root.unmount();
     });
+  });
+});
+
+describe("Secrets folder view (PAP-14698)", () => {
+  let container: HTMLDivElement;
+
+  function seedFolderSecrets() {
+    mockSecretsApi.list.mockResolvedValue([
+      makeCompanySecret({ id: "s1", key: "dev_github_oauth_clientid", name: "dev/github/oauth/clientid" }),
+      makeCompanySecret({ id: "s2", key: "dev_github_oauth_clientsecret", name: "dev/github/oauth/clientsecret" }),
+      makeCompanySecret({ id: "s3", key: "prod_api_token", name: "prod/api/token" }),
+      makeCompanySecret({ id: "s4", key: "standalone", name: "standalone" }),
+    ]);
+    mockSecretsApi.providers.mockResolvedValue(providers);
+    mockSecretsApi.providerHealth.mockResolvedValue({ providers: [] });
+    mockSecretsApi.providerConfigs.mockResolvedValue(providerConfigs);
+    mockSecretsApi.listUserSecretDefinitions.mockResolvedValue([]);
+    mockSecretsApi.userSecretDefinitionCoverage.mockResolvedValue(userSecretCoverage);
+    mockSecretsApi.listMyUserSecrets.mockResolvedValue([]);
+    mockAgentsApi.list.mockResolvedValue([]);
+  }
+
+  async function renderAt(path: string) {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => {
+      root.render(
+        <MemoryRouter initialEntries={[path]}>
+          <QueryClientProvider client={queryClient}>
+            <Secrets />
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+    return root;
+  }
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    try {
+      window.localStorage.clear();
+    } catch {
+      /* ignore */
+    }
+    seedFolderSecrets();
+  });
+
+  afterEach(() => {
+    container.remove();
+    document.body.innerHTML = "";
+    vi.clearAllMocks();
+  });
+
+  it("derives folders at the root with filtered counts and a flat standalone secret", async () => {
+    const root = await renderAt("/");
+
+    const table = container.querySelector('[data-testid="secrets-table-view"]')!;
+    expect(table.textContent).toContain("dev");
+    expect(table.textContent).toContain("prod");
+    expect(table.textContent).toContain("standalone");
+    // dev groups both oauth secrets recursively; github is its single subfolder.
+    expect(table.textContent).toContain("2 secrets · 1 folder");
+    expect(table.textContent).toContain("1 secret · 1 folder");
+    // Folder rows are real links carrying ?path=.
+    const links = [...container.querySelectorAll("a")].map((a) => a.getAttribute("href") ?? "");
+    expect(links.some((href) => href.includes("path=dev"))).toBe(true);
+
+    await act(async () => root.unmount());
+  });
+
+  it("opens a deep ?path= link into the folder with breadcrumb, leaves, and an up affordance", async () => {
+    const root = await renderAt("/?path=dev/github/oauth");
+
+    const breadcrumb = container.querySelector('nav[aria-label="Breadcrumb"]');
+    expect(breadcrumb).not.toBeNull();
+    const current = container.querySelector('[aria-current="page"]');
+    expect(current?.textContent).toContain("oauth");
+
+    const table = container.querySelector('[data-testid="secrets-table-view"]')!;
+    expect(table.textContent).toContain("clientid");
+    expect(table.textContent).toContain("clientsecret");
+    expect(table.textContent).toContain("Up to github");
+    // Sibling trees are not shown while drilled in.
+    expect(table.textContent).not.toContain("standalone");
+
+    await act(async () => root.unmount());
+  });
+
+  it("renders the empty-folder state (breadcrumb intact) for an unknown path", async () => {
+    const root = await renderAt("/?path=does/not/exist");
+
+    expect(container.querySelector('nav[aria-label="Breadcrumb"]')).not.toBeNull();
+    expect(container.textContent).toContain("No secrets in this folder yet.");
+    const cta = [...container.querySelectorAll("button")].find((b) =>
+      b.textContent?.includes("New secret here"),
+    );
+    expect(cta).toBeDefined();
+
+    await act(async () => root.unmount());
+  });
+
+  it("Flat toggle reproduces the raw, ungrouped list", async () => {
+    const root = await renderAt("/");
+
+    const flatButton = [...container.querySelectorAll("button")].find(
+      (b) => b.textContent?.trim().toLowerCase() === "flat",
+    ) as HTMLButtonElement | undefined;
+    expect(flatButton).toBeDefined();
+    await act(async () => flatButton!.click());
+    await flushReact();
+
+    const table = container.querySelector('[data-testid="secrets-table-view"]')!;
+    expect(table.textContent).toContain("dev/github/oauth/clientid");
+    expect(table.textContent).not.toContain("2 secrets · 1 folder");
+
+    await act(async () => root.unmount());
+  });
+
+  it("search is global across folders and shows full muted-path names", async () => {
+    const root = await renderAt("/?path=dev/github/oauth");
+
+    const input = container.querySelector(
+      'input[aria-label="Search secrets"]',
+    ) as HTMLInputElement;
+    await act(async () => setInputValue(input, "token"));
+    await flushReact();
+
+    expect(container.textContent).toContain("Search results");
+    expect(container.textContent).toContain("across all folders");
+    const table = container.querySelector('[data-testid="secrets-table-view"]')!;
+    // prod/api/token lives outside the current folder yet still matches.
+    expect(table.textContent).toContain("prod/api/");
+    expect(table.textContent).toContain("token");
+
+    await act(async () => root.unmount());
   });
 });
