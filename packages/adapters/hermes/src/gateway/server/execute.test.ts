@@ -616,6 +616,60 @@ describe("testEnvironment", () => {
   });
 });
 
+describe("message.delta log fragmentation (issue #9901)", () => {
+  it("does not write raw delta text to onLog — only the structured [hermes-gateway:event] line", async () => {
+    const ctx = makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "secret-key",
+      timeoutSec: 5,
+    });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "run-frag-1", status: "started" }), { status: 200 });
+      }
+      if (url.endsWith("/events")) {
+        return new Response(
+          sseStream(
+            [
+              "event: message.delta",
+              'data: {"delta":"Hello"}',
+              "",
+              "event: message.delta",
+              'data: {"delta":" world"}',
+              "",
+              "event: run.completed",
+              'data: {"status":"completed","output":"Hello world"}',
+              "",
+            ].join("\n"),
+          ),
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        );
+      }
+      return new Response(JSON.stringify({ status: "completed" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await execute(ctx);
+    expect(result.exitCode).toBe(0);
+    expect(result.summary).toBe("Hello world");
+
+    const logCalls = (ctx.onLog as ReturnType<typeof vi.fn>).mock.calls as Array<[string, string]>;
+    const stdoutChunks = logCalls.filter(([stream]) => stream === "stdout").map(([, chunk]) => chunk);
+
+    // The structured [hermes-gateway:event] lines SHOULD be present
+    const eventLines = stdoutChunks.filter((c) => c.includes("[hermes-gateway:event]"));
+    expect(eventLines.length).toBeGreaterThanOrEqual(2); // at least the two delta events
+
+    // Raw delta text ("Hello", " world") must NOT appear as standalone log entries
+    // (they would render as one-word-per-line fragments in the UI transcript)
+    const rawDeltaChunks = stdoutChunks.filter(
+      (c) => !c.includes("[hermes-gateway:event]") && !c.includes("[hermes-gateway]") && !c.includes("[paperclip]"),
+    );
+    expect(rawDeltaChunks).toEqual([]);
+  });
+});
+
 describe("mapFinalResultForTest", () => {
   it("maps failed statuses into adapter errors", () => {
     const result = mapFinalResultForTest({
