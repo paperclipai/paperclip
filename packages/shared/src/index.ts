@@ -558,6 +558,17 @@ export type {
   WorkflowRunDetail,
   WorkflowListItem,
   WorkflowDetail,
+  Resource,
+  ResourceType,
+  ResourceStatus,
+  ResourceAttachmentMode,
+  ResourceOutputAction,
+  ResourceManifestAttachment,
+  ResourceOutputConfig,
+  WorkflowResourceManifest,
+  ResourceVersionReference,
+  ResourceOutputResult,
+  ResourceRunOverride,
 } from "./types/index.js";
 export type {
   WorkflowInvocationTargetSelector,
@@ -969,6 +980,20 @@ export {
   type PluginStateScopeKey,
   type SetPluginState,
   type ListPluginState,
+  createResourceSchema,
+  updateResourceSchema,
+  resourceManifestAttachmentSchema,
+  workflowResourceManifestSchema,
+  resourceTypeSchema,
+  resourceStatusSchema,
+  resourceAttachmentModeSchema,
+  resourceOutputActionSchema,
+  resourceRunOverrideSchema,
+  resourceRunOverridesSchema,
+  type CreateResource,
+  type UpdateResource,
+  type WorkflowResourceManifestInput,
+  type ResourceRunOverrideInput,
 } from "./validators/index.js";
 
 export { API_PREFIX, API } from "./api.js";

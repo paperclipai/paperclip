@@ -381,3 +381,4 @@ export {
   BUILDER_MESSAGE_ROLES,
   BUILDER_PROPOSAL_STATUSES,
 } from "./builder.js";
+export * from "./resource.js";

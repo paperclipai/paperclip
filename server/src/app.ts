@@ -18,6 +18,7 @@ import { issueRoutes } from "./routes/issues.js";
 import { deliverableRoutes } from "./routes/deliverables.js";
 import { routineRoutes } from "./routes/routines.js";
 import { workflowRoutes } from "./routes/workflows.js";
+import { resourceRoutes } from "./routes/resources.js";
 import { executionWorkspaceRoutes } from "./routes/execution-workspaces.js";
 import { goalRoutes } from "./routes/goals.js";
 import { approvalRoutes } from "./routes/approvals.js";
@@ -195,6 +196,7 @@ export async function createApp(
   api.use(deliverableRoutes(db));
   api.use(routineRoutes(db));
   api.use(workflowRoutes(db));
+  api.use(resourceRoutes(db));
   api.use(executionWorkspaceRoutes(db));
   api.use(goalRoutes(db));
   api.use(approvalRoutes(db));

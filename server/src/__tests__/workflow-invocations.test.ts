@@ -56,6 +56,7 @@ const mockPrepareInstrumentedWorkflowRuntime = vi.hoisted(() => vi.fn(async (inp
 const mockCollectWorkflowRuntimeArtifacts = vi.hoisted(() => vi.fn(async () => []));
 const mockCloseResolvedHandoff = vi.hoisted(() => vi.fn(async () => null));
 const mockCloseTerminalRunHandoffs = vi.hoisted(() => vi.fn(async () => []));
+const mockPrepareResources = vi.hoisted(() => vi.fn(async () => null));
 const mockWorkflowHandoffBridgeService = vi.hoisted(() => vi.fn(() => ({
   closeResolvedHandoff: mockCloseResolvedHandoff,
   closeTerminalRunHandoffs: mockCloseTerminalRunHandoffs,
@@ -81,6 +82,12 @@ vi.mock("../services/workflows-runtime.js", () => ({
 
 vi.mock("../services/workflow-handoff-bridge.js", () => ({
   workflowHandoffBridgeService: mockWorkflowHandoffBridgeService,
+}));
+
+vi.mock("../services/resource-runtime.js", () => ({
+  resourceRuntimeService: () => ({
+    prepare: mockPrepareResources,
+  }),
 }));
 
 vi.mock("../workflow-run-jwt.js", () => ({
@@ -342,5 +349,82 @@ describeEmbeddedPostgres("workflow invocation bridge", () => {
         },
       },
     });
+  });
+
+  it("passes invocation Resource manifests into runtime preparation", async () => {
+    const companyId = await seedCompany(db);
+    const { routineId, routineRunId } = await seedRoutine(db, companyId);
+    await seedWorkflow(db, companyId, {
+      title: "Resource workflow",
+      workflowKey: "resource-workflow",
+    });
+    mockPrepareResources.mockResolvedValueOnce({
+      environment: {},
+      inputVersions: [],
+      publish: vi.fn(async () => []),
+    });
+
+    const resourceManifest = { version: 1 as const, resources: [] };
+    await workflowInvocationService(db).invokeFromRoutine({
+      routineId,
+      sourceRoutineRunId: routineRunId,
+      envelope: {
+        contractVersion: "workflow-invocation/v1",
+        target: { workflowKey: "resource-workflow" },
+        payload: {
+          kind: "json",
+          inputJson: { resourceManifest },
+        },
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(mockPrepareResources).toHaveBeenCalledWith(expect.objectContaining({
+        companyId,
+        manifest: resourceManifest,
+        overrides: [],
+      }));
+    }, 10_000);
+  });
+
+  it("preserves the agent result when Resource publication fails", async () => {
+    const companyId = await seedCompany(db);
+    const { routineId, routineRunId } = await seedRoutine(db, companyId);
+    await seedWorkflow(db, companyId, {
+      title: "Publishing workflow",
+      workflowKey: "publishing-workflow",
+    });
+    mockPrepareResources.mockResolvedValueOnce({
+      environment: {},
+      inputVersions: [],
+      publish: vi.fn(async () => {
+        throw Object.assign(new Error("Resource publication failed"), {
+          resourceOutputs: [{ resourceId: "published-resource", action: "push", status: "pushed" }],
+        });
+      }),
+    });
+
+    const result = await workflowInvocationService(db).invokeFromRoutine({
+      routineId,
+      sourceRoutineRunId: routineRunId,
+      envelope: {
+        contractVersion: "workflow-invocation/v1",
+        target: { workflowKey: "publishing-workflow" },
+        payload: {
+          kind: "json",
+          inputJson: { resourceManifest: { version: 1 as const, resources: [] } },
+        },
+      },
+    });
+
+    await vi.waitFor(async () => {
+      const run = await db.select().from(workflowRuns).where(eq(workflowRuns.id, result.workflowRunId!)).then((rows) => rows[0] ?? null);
+      expect(run?.status).toBe("failed");
+      expect(run?.contextSnapshot).toMatchObject({
+        resultJson: { ok: true },
+        resourceOutputs: [{ resourceId: "published-resource", status: "pushed" }],
+        resourceOutputError: "Resource publication failed",
+      });
+    }, 10_000);
   });
 });

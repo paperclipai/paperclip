@@ -35,6 +35,7 @@ import { CompanyInvites } from "./pages/CompanyInvites";
 import { CompanyAwaitingHumanSettings } from "./pages/CompanyAwaitingHumanSettings";
 import { CompanyBuilderSettings } from "./pages/CompanyBuilderSettings";
 import { CompanySkills } from "./pages/CompanySkills";
+import { Resources } from "./pages/Resources";
 import { CompanyBuilder } from "./pages/CompanyBuilder";
 import { CompanyExport } from "./pages/CompanyExport";
 import { CompanyImport } from "./pages/CompanyImport";
@@ -76,6 +77,7 @@ function boardRoutes() {
       <Route path="company/export/*" element={<CompanyExport />} />
       <Route path="company/import" element={<CompanyImport />} />
       <Route path="skills/*" element={<CompanySkills />} />
+      <Route path="resources" element={<Resources />} />
       <Route path="settings" element={<LegacySettingsRedirect />} />
       <Route path="settings/*" element={<LegacySettingsRedirect />} />
       <Route path="plugins/:pluginId" element={<PluginPage />} />

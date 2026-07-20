@@ -7,7 +7,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildWorkflowGraph, WorkflowDetail } from "./WorkflowDetail";
 import { queryKeys } from "../lib/queryKeys";
-import type { WorkflowHandoff } from "@paperclipai/shared";
+import type { ResourceOutputResult, ResourceVersionReference, WorkflowHandoff } from "@paperclipai/shared";
 
 const getWorkflowMock = vi.hoisted(() => vi.fn());
 const getRunMock = vi.hoisted(() => vi.fn());
@@ -137,7 +137,31 @@ const workflowDetail = {
     stdoutExcerpt: null,
     stderrExcerpt: "latest stderr",
     consoleEntries: [],
-    contextSnapshot: null,
+    contextSnapshot: {
+      resourceVersions: [{
+        resourceId: "resource-1",
+        resourceKey: "campaign",
+        requestedRef: "branch:main",
+        resolvedRef: "main",
+        commit: "abcdef1234567890",
+        mountPath: "resources/campaign",
+        published: true,
+      } satisfies ResourceVersionReference],
+      resourceOutputs: [{
+        resourceId: "resource-1",
+        inputCommit: "abcdef1234567890",
+        outputCommit: "fedcba0987654321",
+        action: "pull_request",
+        branch: "bizbox/campaign-update",
+        targetRef: "main",
+        pullRequestId: "42",
+        pullRequestUrl: "https://github.com/acme/campaign/pull/42",
+        changedFiles: ["context.md"],
+        insertions: 1,
+        deletions: 0,
+        status: "pull_request_created",
+      } satisfies ResourceOutputResult],
+    },
     startedAt: new Date("2026-06-10T10:01:00.000Z"),
     finishedAt: new Date("2026-06-10T10:02:00.000Z"),
     createdAt: new Date("2026-06-10T10:00:00.000Z"),
@@ -159,7 +183,31 @@ const workflowDetail = {
       stdoutExcerpt: null,
       stderrExcerpt: "latest stderr",
       consoleEntries: [],
-      contextSnapshot: null,
+      contextSnapshot: {
+        resourceVersions: [{
+          resourceId: "resource-1",
+          resourceKey: "campaign",
+          requestedRef: "branch:main",
+          resolvedRef: "main",
+          commit: "abcdef1234567890",
+          mountPath: "resources/campaign",
+          published: true,
+        } satisfies ResourceVersionReference],
+        resourceOutputs: [{
+          resourceId: "resource-1",
+          inputCommit: "abcdef1234567890",
+          outputCommit: "fedcba0987654321",
+          action: "pull_request",
+          branch: "bizbox/campaign-update",
+          targetRef: "main",
+          pullRequestId: "42",
+          pullRequestUrl: "https://github.com/acme/campaign/pull/42",
+          changedFiles: ["context.md"],
+          insertions: 1,
+          deletions: 0,
+          status: "pull_request_created",
+        } satisfies ResourceOutputResult],
+      },
       startedAt: new Date("2026-06-10T10:01:00.000Z"),
       finishedAt: new Date("2026-06-10T10:02:00.000Z"),
       createdAt: new Date("2026-06-10T10:00:00.000Z"),
@@ -407,6 +455,20 @@ describe("WorkflowDetail page", () => {
     expect(container.textContent).not.toContain("latest input");
     expect(container.textContent).not.toContain("latest stderr");
     expect(container.textContent).not.toContain("Latest brief");
+  });
+
+  it("marks Resource-backed runs and shows their mounted version", async () => {
+    await renderAt(container, "/workflows/workflow-1");
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).toContain("1 Resource");
+    expect(container.textContent).toContain("Run Resources");
+    expect(container.textContent).toContain("campaign");
+    expect(container.textContent).toContain("resources/campaign");
+    expect(container.textContent).toContain("abcdef123456");
+    expect(container.textContent).toContain("campaign-update");
+    expect(container.textContent).toContain("pull request");
   });
 
   it("includes active run handoff ids in the activity query", async () => {

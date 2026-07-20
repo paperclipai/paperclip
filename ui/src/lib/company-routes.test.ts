@@ -32,4 +32,10 @@ describe("company routes", () => {
       "/deliverables/deliverable-123",
     );
   });
+
+  it("treats Resources as company-prefixed board pages", () => {
+    expect(isBoardPathWithoutPrefix("/resources")).toBe(true);
+    expect(applyCompanyPrefix("/resources", "CITRO")).toBe("/CITRO/resources");
+    expect(toCompanyRelativePath("/CITRO/resources")).toBe("/resources");
+  });
 });

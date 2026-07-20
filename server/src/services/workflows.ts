@@ -31,7 +31,10 @@ import type {
   WorkflowRunConsoleChunk,
   WorkflowRunDetail,
   WorkflowRunUsage,
+  ResourceRunOverride,
+  WorkflowResourceManifest,
 } from "@paperclipai/shared";
+import { resourceRunOverridesSchema, workflowResourceManifestSchema } from "@paperclipai/shared";
 import { unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { getStorageService } from "../storage/index.js";
@@ -45,10 +48,13 @@ import {
   prepareInstrumentedWorkflowRuntime,
 } from "./workflows-runtime.js";
 import { workflowHandoffBridgeService } from "./workflow-handoff-bridge.js";
+import { resourceRuntimeService } from "./resource-runtime.js";
 
 type WorkflowRunLaunchContext = {
   invocation?: WorkflowRunInvocationSummary | null;
   invocationInputJson?: Record<string, unknown> | null;
+  resourceOverrides?: ResourceRunOverride[];
+  resourceManifest?: WorkflowResourceManifest;
 };
 
 function toWorkflow(row: typeof workflows.$inferSelect): Workflow {
@@ -591,17 +597,48 @@ export function workflowService(db: Db) {
       throw new Error("Missing workflow JWT secret");
     }
 
+    const resourceManifest = launchContext?.resourceManifest;
+    const runnerConfigWithoutResourceManifest = { ...workflow.runnerConfig };
+    delete runnerConfigWithoutResourceManifest.resourceManifest;
     const prepared = await prepareInstrumentedWorkflowRuntime({
       workflowId: workflow.id,
       runId,
       companyId: workflow.companyId,
       runnerConfig: {
-        ...workflow.runnerConfig,
+        ...runnerConfigWithoutResourceManifest,
         timeoutSec: WORKFLOW_ADK_TIMEOUT_SEC,
       },
       analysis,
       runToken,
     });
+
+    let preparedResources;
+    try {
+      preparedResources = await resourceRuntimeService(db).prepare({
+        companyId: workflow.companyId,
+        runId,
+        // The workflow run owns one temp root. The ADK project and Resource
+        // mounts are separate directories inside that same run workspace.
+        workspaceRoot: prepared.tempRoot,
+        manifest: resourceManifest,
+        overrides: launchContext?.resourceOverrides,
+      });
+    } catch (error) {
+      await Promise.all([
+        fs.rm(prepared.tempRoot, { recursive: true, force: true }).catch(() => {}),
+        fs.rm(prepared.runtimeRoot, { recursive: true, force: true }).catch(() => {}),
+      ]);
+      throw error;
+    }
+    if (preparedResources) {
+      prepared.patchedRunnerConfig = {
+        ...prepared.patchedRunnerConfig,
+        env: {
+          ...(prepared.patchedRunnerConfig.env as Record<string, string> | undefined),
+          ...preparedResources.environment,
+        },
+      };
+    }
 
     const contextSnapshot: Record<string, unknown> = {
       runtimeRoot: prepared.runtimeRoot,
@@ -611,6 +648,8 @@ export function workflowService(db: Db) {
       stdoutExcerpt: "",
       stderrExcerpt: "",
       resultJson: null,
+      resourceVersions: preparedResources?.inputVersions ?? [],
+      resourceOutputs: [],
       ...(launchContext?.invocation
         ? {
             invocation: {
@@ -717,6 +756,12 @@ export function workflowService(db: Db) {
       contextSnapshot.resultJson = result.resultJson ?? null;
       await persistContextSnapshot();
 
+      if (!result.errorMessage && preparedResources) {
+        const outputResults = await preparedResources.publish();
+        contextSnapshot.resourceOutputs = outputResults;
+        await persistContextSnapshot();
+      }
+
       const artifacts = await collectWorkflowRuntimeArtifacts(prepared.runtimeRoot);
       // Deliverable persistence is best-effort: a transient storage or DB error
       // must not corrupt the run's terminal status. The agent invocation already
@@ -763,14 +808,19 @@ export function workflowService(db: Db) {
         notInArray(workflowRuns.status, ["succeeded", "failed", "cancelled"]),
       ));
     } catch (err) {
-      contextSnapshot.resultJson = {
-        error: err instanceof Error ? err.message : String(err),
-      };
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      if (err && typeof err === "object" && "resourceOutputs" in err && Array.isArray(err.resourceOutputs)) {
+        contextSnapshot.resourceOutputs = err.resourceOutputs;
+      }
+      if (contextSnapshot.resultJson === null || contextSnapshot.resultJson === undefined) {
+        contextSnapshot.resultJson = { error: errorMessage };
+      } else {
+        contextSnapshot.resourceOutputError = errorMessage;
+      }
       if (err instanceof Error && err.message) {
         await appendConsoleChunk("stderr", `${err.message}\n`);
-      } else {
-        await persistContextSnapshot();
       }
+      await persistContextSnapshot();
       await finishOpenPhases("failed");
       await db.update(workflowRuns).set({
         status: "failed",
@@ -1019,7 +1069,10 @@ export function workflowService(db: Db) {
       }
       assertWorkflowRuntimeJwtConfigured();
       const refreshed = await refreshWorkflowAnalysis(workflowRow);
-      return launchWorkflowRun(refreshed.workflow, refreshed.analysis, input.inputMarkdown);
+      return launchWorkflowRun(refreshed.workflow, refreshed.analysis, input.inputMarkdown, {
+        resourceManifest: input.resourceManifest,
+        resourceOverrides: input.resourceOverrides,
+      });
     },
 
     runInvocation: async (
@@ -1032,9 +1085,17 @@ export function workflowService(db: Db) {
       }
       assertWorkflowRuntimeJwtConfigured();
       const refreshed = await refreshWorkflowAnalysis(workflowRow);
+      const resourceManifest = workflowResourceManifestSchema.safeParse(input.invocationInputJson?.resourceManifest);
+      if (!resourceManifest.success && input.invocationInputJson?.resourceManifest !== undefined) {
+        throw unprocessable("Invalid Resource invocation manifest", resourceManifest.error.flatten());
+      }
+      const resourceOverrides = resourceRunOverridesSchema.safeParse(input.invocationInputJson?.resourceOverrides ?? []);
+      if (!resourceOverrides.success) throw unprocessable("Invalid Resource run overrides", resourceOverrides.error.flatten());
       return launchWorkflowRun(refreshed.workflow, refreshed.analysis, input.inputMarkdown, {
         invocation: input.invocation ?? null,
         invocationInputJson: input.invocationInputJson ?? null,
+        resourceManifest: resourceManifest.success ? resourceManifest.data : undefined,
+        resourceOverrides: resourceOverrides.data,
       });
     },
 

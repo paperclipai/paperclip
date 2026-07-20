@@ -8,6 +8,7 @@ import type {
   WorkflowRunDetail,
   WorkflowSchedule,
   WorkflowInvocationResult,
+  WorkflowResourceManifest,
 } from "@paperclipai/shared";
 import { activityApi } from "./activity";
 import { api } from "./client";
@@ -54,7 +55,7 @@ export const workflowsApi = {
   get: (id: string) => api.get<WorkflowDetail>(`/workflows/${id}`),
   update: (id: string, data: Partial<WorkflowMutationInput>) =>
     api.patch<Workflow>(`/workflows/${id}`, data),
-  run: (id: string, data: { inputMarkdown: string }) =>
+  run: (id: string, data: { inputMarkdown: string; resourceManifest?: WorkflowResourceManifest }) =>
     api.post<WorkflowRun>(`/workflows/${id}/run`, data),
   invokeFromRoutine: (routineId: string, data: WorkflowInvocationInput) =>
     api.post<WorkflowInvocationResult>(`/routines/${routineId}/workflow-invocations`, data),
