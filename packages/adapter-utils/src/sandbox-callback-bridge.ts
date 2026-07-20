@@ -1069,106 +1069,145 @@ export async function startSandboxCallbackBridgeServer(input: {
 
 function getSandboxCallbackBridgeCurlSource(): string {
   return `#!/usr/bin/env node
-import { randomUUID } from "node:crypto";
-import { promises as fs } from "node:fs";
-import path from "node:path";
-
-const queueDir = process.env.PAPERCLIP_BRIDGE_QUEUE_DIR;
-const apiUrl = process.env.PAPERCLIP_API_URL;
-const timeoutMs = Number(process.env.PAPERCLIP_BRIDGE_RESPONSE_TIMEOUT_MS || "30000");
-const maxBodyBytes = Number(process.env.PAPERCLIP_BRIDGE_MAX_BODY_BYTES || "262144");
+const { randomUUID } = require("node:crypto");
+const fs = require("node:fs").promises;
+const path = require("node:path");
 
 function fail(message) {
   process.stderr.write(message + "\\n");
   process.exit(2);
 }
 
-if (process.env.PAPERCLIP_API_BRIDGE_MODE !== "queue_v1" || !queueDir || !apiUrl) {
-  fail("Queue bridge curl requires PAPERCLIP_API_BRIDGE_MODE=queue_v1, PAPERCLIP_BRIDGE_QUEUE_DIR, and PAPERCLIP_API_URL.");
+function normalizeLoopbackHost(hostname) {
+  const normalized = hostname.toLowerCase();
+  return normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1" || normalized === "[::1]"
+    ? "loopback"
+    : normalized;
 }
 
-const headers = {};
-let method = "GET";
-let body = "";
-let url = null;
-let failOnHttpError = false;
-const args = process.argv.slice(2);
-for (let index = 0; index < args.length; index += 1) {
-  const arg = args[index];
-  if (arg === "-X" || arg === "--request") {
-    method = args[++index] || "GET";
-    continue;
+async function main() {
+  const queueDir = process.env.PAPERCLIP_BRIDGE_QUEUE_DIR;
+  const apiUrl = process.env.PAPERCLIP_API_URL;
+  const timeoutMs = Number(process.env.PAPERCLIP_BRIDGE_RESPONSE_TIMEOUT_MS || "30000");
+  const maxBodyBytes = Number(process.env.PAPERCLIP_BRIDGE_MAX_BODY_BYTES || "262144");
+
+  if (process.env.PAPERCLIP_API_BRIDGE_MODE !== "queue_v1" || !queueDir || !apiUrl) {
+    fail("Queue bridge curl requires PAPERCLIP_API_BRIDGE_MODE=queue_v1, PAPERCLIP_BRIDGE_QUEUE_DIR, and PAPERCLIP_API_URL.");
   }
-  if (arg === "-H" || arg === "--header") {
-    const rawHeader = args[++index] || "";
+
+  const headers = {};
+  let method = "GET";
+  let body = "";
+  let url = null;
+  let failOnHttpError = false;
+  const args = process.argv.slice(2);
+  const setHeader = (rawHeader) => {
     const separator = rawHeader.indexOf(":");
     if (separator > 0) headers[rawHeader.slice(0, separator).trim()] = rawHeader.slice(separator + 1).trim();
-    continue;
+  };
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--request") {
+      method = args[++index] || "GET";
+      continue;
+    }
+    if (arg === "--header") {
+      setHeader(args[++index] || "");
+      continue;
+    }
+    if (arg === "--data" || arg === "--data-binary") {
+      body = args[++index] || "";
+      continue;
+    }
+    if (arg === "--fail") {
+      failOnHttpError = true;
+      continue;
+    }
+    if (arg === "--url") {
+      url = args[++index] || null;
+      continue;
+    }
+    if (arg.startsWith("-") && !arg.startsWith("--")) {
+      const flags = arg.slice(1);
+      for (let flagIndex = 0; flagIndex < flags.length; flagIndex += 1) {
+        const flag = flags[flagIndex];
+        if (flag === "s" || flag === "S") continue;
+        if (flag === "f") {
+          failOnHttpError = true;
+          continue;
+        }
+        if (flag === "X" || flag === "H" || flag === "d") {
+          const value = flags.slice(flagIndex + 1) || args[++index] || "";
+          if (flag === "X") method = value || "GET";
+          if (flag === "H") setHeader(value);
+          if (flag === "d") body = value;
+          break;
+        }
+      }
+      continue;
+    }
+    if (!arg.startsWith("-")) url = arg;
   }
-  if (arg === "-d" || arg === "--data" || arg === "--data-binary") {
-    body = args[++index] || "";
-    continue;
+
+  if (!url) fail("Queue bridge curl requires a Paperclip API URL.");
+
+  let target;
+  let bridge;
+  try {
+    target = new URL(url);
+    bridge = new URL(apiUrl);
+  } catch {
+    fail("Queue bridge curl received an invalid Paperclip API URL.");
   }
-  if (arg === "-f" || arg === "--fail") {
-    failOnHttpError = true;
-    continue;
+  if (
+    target.protocol !== bridge.protocol
+    || target.port !== bridge.port
+    || normalizeLoopbackHost(target.hostname) !== normalizeLoopbackHost(bridge.hostname)
+  ) {
+    fail("Queue bridge curl only supports the configured Paperclip API origin.");
   }
-  if (arg === "--url") {
-    url = args[++index] || null;
-    continue;
+  if (Buffer.byteLength(body, "utf8") > maxBodyBytes) {
+    fail("Queue bridge curl request body exceeds the configured size limit.");
   }
-  if (!arg.startsWith("-")) url = arg;
+
+  const requestId = randomUUID();
+  const requestsDir = path.posix.join(queueDir, "requests");
+  const responsesDir = path.posix.join(queueDir, "responses");
+  const requestPath = path.posix.join(requestsDir, requestId + ".json");
+  const responsePath = path.posix.join(responsesDir, requestId + ".json");
+  await fs.mkdir(requestsDir, { recursive: true });
+  await fs.mkdir(responsesDir, { recursive: true });
+  await fs.writeFile(requestPath + ".partial", JSON.stringify({
+    id: requestId,
+    method: method.trim().toUpperCase() || "GET",
+    path: target.pathname,
+    query: target.search.slice(1),
+    headers,
+    body,
+    createdAt: new Date().toISOString(),
+  }) + "\\n", "utf8");
+  await fs.rename(requestPath + ".partial", requestPath);
+
+  const deadline = Date.now() + (Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 30000);
+  while (Date.now() < deadline) {
+    const raw = await fs.readFile(responsePath, "utf8").catch(() => null);
+    if (raw) {
+      await fs.rm(responsePath, { force: true }).catch(() => undefined);
+      const response = JSON.parse(raw);
+      process.stdout.write(typeof response.body === "string" ? response.body : "");
+      process.exit(failOnHttpError && Number(response.status) >= 400 ? 22 : 0);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+
+  await fs.rm(requestPath, { force: true }).catch(() => undefined);
+  fail("Timed out waiting for queue bridge response.");
 }
 
-if (!url) fail("Queue bridge curl requires a Paperclip API URL.");
-
-let target;
-let bridgeOrigin;
-try {
-  target = new URL(url);
-  bridgeOrigin = new URL(apiUrl).origin;
-} catch {
-  fail("Queue bridge curl received an invalid Paperclip API URL.");
-}
-if (target.origin !== bridgeOrigin) {
-  fail("Queue bridge curl only supports the configured Paperclip API origin.");
-}
-if (Buffer.byteLength(body, "utf8") > maxBodyBytes) {
-  fail("Queue bridge curl request body exceeds the configured size limit.");
-}
-
-const requestId = randomUUID();
-const requestsDir = path.posix.join(queueDir, "requests");
-const responsesDir = path.posix.join(queueDir, "responses");
-const requestPath = path.posix.join(requestsDir, requestId + ".json");
-const responsePath = path.posix.join(responsesDir, requestId + ".json");
-await fs.mkdir(requestsDir, { recursive: true });
-await fs.mkdir(responsesDir, { recursive: true });
-await fs.writeFile(requestPath + ".partial", JSON.stringify({
-  id: requestId,
-  method: method.trim().toUpperCase() || "GET",
-  path: target.pathname,
-  query: target.search.slice(1),
-  headers,
-  body,
-  createdAt: new Date().toISOString(),
-}) + "\\n", "utf8");
-await fs.rename(requestPath + ".partial", requestPath);
-
-const deadline = Date.now() + (Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 30000);
-while (Date.now() < deadline) {
-  const raw = await fs.readFile(responsePath, "utf8").catch(() => null);
-  if (raw) {
-    await fs.rm(responsePath, { force: true }).catch(() => undefined);
-    const response = JSON.parse(raw);
-    process.stdout.write(typeof response.body === "string" ? response.body : "");
-    process.exit(failOnHttpError && Number(response.status) >= 400 ? 22 : 0);
-  }
-  await new Promise((resolve) => setTimeout(resolve, 25));
-}
-
-await fs.rm(requestPath, { force: true }).catch(() => undefined);
-fail("Timed out waiting for queue bridge response.");
+main().catch((error) => {
+  process.stderr.write((error instanceof Error ? error.message : String(error)) + "\\n");
+  process.exit(2);
+});
 `;
 }
 

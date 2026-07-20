@@ -616,6 +616,10 @@ export interface IssueExecutionMonitorPolicy {
 }
 
 export interface IssueExecutionOneShotPolicy {
+  /**
+   * Allows exactly one initial assignment/issue_assigned wake for each assigned agent.
+   * Every later wake source is recorded as an auditable skipped request.
+   */
   enabled: boolean;
 }
 

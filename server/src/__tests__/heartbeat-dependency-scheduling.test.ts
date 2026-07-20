@@ -1108,6 +1108,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
   it("reserves a one-shot issue for its initial assignment and suppresses later comment wakes", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
+    const reassignedAgentId = randomUUID();
     const oneShotIssueId = randomUUID();
     const normalIssueId = randomUUID();
 
@@ -1118,17 +1119,30 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       requireBoardApprovalForNewAgents: false,
       defaultResponsibleUserId: "responsible-user",
     });
-    await db.insert(agents).values({
-      id: agentId,
-      companyId,
-      name: "CreativeLead",
-      role: "lead",
-      status: "active",
-      adapterType: "codex_local",
-      adapterConfig: {},
-      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
-      permissions: {},
-    });
+    await db.insert(agents).values([
+      {
+        id: agentId,
+        companyId,
+        name: "CreativeLead",
+        role: "lead",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+        permissions: {},
+      },
+      {
+        id: reassignedAgentId,
+        companyId,
+        name: "GrowthLead",
+        role: "lead",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+        permissions: {},
+      },
+    ]);
     await db.insert(issues).values([
       {
         id: oneShotIssueId,
@@ -1202,6 +1216,31 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       action: "issue.one_shot_wakeup_suppressed",
       details: expect.objectContaining({ requestedReason: "issue_commented" }),
     });
+
+    const initialRunFinished = await waitForCondition(async () => {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, initialRun!.id))
+        .then((rows) => rows[0] ?? null);
+      return Boolean(run && run.status !== "queued" && run.status !== "running");
+    });
+    expect(initialRunFinished).toBe(true);
+
+    await db
+      .update(issues)
+      .set({ assigneeAgentId: reassignedAgentId })
+      .where(eq(issues.id, oneShotIssueId));
+    const reassignedWake = await heartbeat.wakeup(reassignedAgentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId: oneShotIssueId },
+      contextSnapshot: { issueId: oneShotIssueId, wakeReason: "issue_assigned" },
+      requestedByActorType: "user",
+      requestedByActorId: "board-user",
+    });
+    expect(reassignedWake).not.toBeNull();
 
     const normalCommentWake = await heartbeat.wakeup(agentId, {
       source: "automation",

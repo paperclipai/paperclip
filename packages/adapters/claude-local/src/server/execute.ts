@@ -14,6 +14,7 @@ import {
   describeAdapterExecutionTarget,
   ensureAdapterExecutionTargetCommandResolvable,
   ensureAdapterExecutionTargetRuntimeCommandInstalled,
+  mergeAdapterExecutionTargetPaperclipBridgeEnv,
   prepareAdapterExecutionTargetRuntime,
   readAdapterExecutionTarget,
   resolveAdapterExecutionTargetTimeoutSec,
@@ -677,7 +678,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       onLog,
     });
     if (paperclipBridge) {
-      Object.assign(env, paperclipBridge.env);
+      mergeAdapterExecutionTargetPaperclipBridgeEnv(env, paperclipBridge.env);
       const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
       loggedEnv = buildInvocationEnvForLogs(env, {
         runtimeEnv,

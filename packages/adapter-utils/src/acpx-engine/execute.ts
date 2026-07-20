@@ -15,6 +15,7 @@ import {
   adapterExecutionTargetSessionIdentity,
   formatAdapterExecutionTimeoutErrorMessage,
   formatAdapterExecutionTimeoutStartLogLine,
+  mergeAdapterExecutionTargetPaperclipBridgeEnv,
   readAdapterExecutionTarget,
   resolveAdapterExecutionTargetTimeout,
   startAdapterExecutionTargetPaperclipBridge,
@@ -1234,7 +1235,7 @@ async function buildRuntime(input: {
       onLog: input.ctx.onLog,
     });
     if (paperclipBridge) {
-      Object.assign(env, paperclipBridge.env);
+      mergeAdapterExecutionTargetPaperclipBridgeEnv(env, paperclipBridge.env);
       await input.ctx.onLog("stdout", "[paperclip] Sandbox ACP API callback bridge enabled for this run.\n");
     }
   }

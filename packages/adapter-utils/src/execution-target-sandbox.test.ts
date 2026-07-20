@@ -15,6 +15,7 @@ import {
   ensureAdapterExecutionTargetCommandResolvable,
   formatAdapterExecutionTimeoutErrorMessage,
   formatAdapterExecutionTimeoutStartLogLine,
+  mergeAdapterExecutionTargetPaperclipBridgeEnv,
   resolveAdapterExecutionTargetTimeout,
   resolveAdapterExecutionTargetTimeoutSec,
   runAdapterExecutionTargetProcess,
@@ -39,6 +40,18 @@ describe("sandbox adapter execution targets", () => {
       if (!dir) continue;
       await rm(dir, { recursive: true, force: true }).catch(() => undefined);
     }
+  });
+
+  it("keeps adapter command paths ahead of the queue curl shim and inherited system paths", () => {
+    vi.stubEnv("PATH", "/usr/local/bin:/usr/bin");
+    const env = { PATH: "/adapter/bin:/usr/local/bin:/usr/bin" };
+
+    mergeAdapterExecutionTargetPaperclipBridgeEnv(env, {
+      PAPERCLIP_BRIDGE_CURL_PATH: "/runtime/paperclip-bridge/curl",
+      PATH: "/runtime/paperclip-bridge:/usr/local/bin:/usr/bin",
+    });
+
+    expect(env.PATH).toBe("/adapter/bin:/runtime/paperclip-bridge:/usr/local/bin:/usr/bin");
   });
 
   function createLocalSandboxRunner() {
@@ -1487,7 +1500,7 @@ describe("sandbox adapter execution targets", () => {
         "run-bridge-nested-curl",
         target,
         [
-          "curl -sS -X PATCH http://127.0.0.1:1/api/issues/issue-1",
+          "curl -sSfX PATCH http://localhost:1/api/issues/issue-1",
           "  -H 'content-type: application/json'",
           "  --data-binary '{\"status\":\"in_progress\"}'",
         ].join(" "),

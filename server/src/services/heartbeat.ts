@@ -15445,6 +15445,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             .where(
               and(
                 eq(agentWakeupRequests.companyId, agent.companyId),
+                eq(agentWakeupRequests.agentId, agentId),
                 eq(agentWakeupRequests.source, "assignment"),
                 eq(agentWakeupRequests.reason, "issue_assigned"),
                 sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issue.id}`,

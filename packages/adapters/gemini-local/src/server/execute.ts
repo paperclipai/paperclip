@@ -15,6 +15,7 @@ import {
   describeAdapterExecutionTarget,
   ensureAdapterExecutionTargetCommandResolvable,
   ensureAdapterExecutionTargetRuntimeCommandInstalled,
+  mergeAdapterExecutionTargetPaperclipBridgeEnv,
   prepareAdapterExecutionTargetRuntime,
   readAdapterExecutionTarget,
   readAdapterExecutionTargetHomeDir,
@@ -467,7 +468,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       onLog,
     });
     if (paperclipBridge) {
-      Object.assign(env, paperclipBridge.env);
+      mergeAdapterExecutionTargetPaperclipBridgeEnv(env, paperclipBridge.env);
     }
   }
 
