@@ -41,6 +41,7 @@ describeEmbeddedPostgres("resourceRuntimeService", () => {
     await git(["config", "user.name", "Fixture"], seedPath);
     await git(["config", "user.email", "fixture@example.com"], seedPath);
     await fs.writeFile(path.join(seedPath, "context.md"), "before\n", "utf8");
+    await fs.writeFile(path.join(seedPath, "stable.md"), "stable-before\n", "utf8");
     await fs.mkdir(path.join(seedPath, "nested"), { recursive: true });
     await fs.writeFile(path.join(seedPath, "nested", "context.md"), "nested-before\n", "utf8");
     await git(["add", "."], seedPath);
@@ -137,6 +138,42 @@ describeEmbeddedPostgres("resourceRuntimeService", () => {
     const sourcePathCheck = path.join(fixtureRoot, "source-path-rebase-check");
     await git(["clone", "--branch", "main", remotePath, sourcePathCheck]);
     expect(await fs.readFile(path.join(sourcePathCheck, "nested", "context.md"), "utf8")).toBe("nested-after-rebase\n");
+
+    const targetOnlySeedPath = path.join(fixtureRoot, "target-only-seed");
+    await git(["clone", "--branch", "main", remotePath, targetOnlySeedPath]);
+    await git(["config", "user.name", "Fixture"], targetOnlySeedPath);
+    await git(["config", "user.email", "fixture@example.com"], targetOnlySeedPath);
+    await fs.writeFile(path.join(targetOnlySeedPath, "target-only.md"), "preserve me\n", "utf8");
+    await git(["add", "target-only.md"], targetOnlySeedPath);
+    await git(["commit", "-m", "add target-only file"], targetOnlySeedPath);
+    await git(["push", "origin", "main"], targetOnlySeedPath);
+    const fullTreeResourceId = randomUUID();
+    await db.insert(resources).values({
+      id: fullTreeResourceId,
+      companyId,
+      key: "full-tree-context",
+      type: "git",
+      repository: remotePath,
+      sourcePath: null,
+      defaultRef: "main",
+      mountPath: "full-tree-context",
+      credentialRef: null,
+      labels: {},
+      status: "active",
+    });
+    const fullTreeWorkspace = path.join(fixtureRoot, "full-tree-rebase-workspace");
+    const fullTreePrepared = await resourceRuntimeService(db).prepare({
+      companyId,
+      runId: "run-full-tree-rebase-test",
+      workspaceRoot: fullTreeWorkspace,
+      manifest: { version: 1, resources: [{ resourceId: fullTreeResourceId, mode: "input_output", version: "branch:feature", output: { action: "push", targetRef: "main" } }] },
+    });
+    await fs.writeFile(path.join(fullTreeWorkspace, "resources", "full-tree-context", "stable.md"), "full-tree-after\n", "utf8");
+    await expect(fullTreePrepared!.publish()).resolves.toMatchObject([{ status: "pushed", targetRef: "main" }]);
+    const fullTreeCheck = path.join(fixtureRoot, "full-tree-rebase-check");
+    await git(["clone", "--branch", "main", remotePath, fullTreeCheck]);
+    expect(await fs.readFile(path.join(fullTreeCheck, "stable.md"), "utf8")).toBe("full-tree-after\n");
+    expect(await fs.readFile(path.join(fullTreeCheck, "target-only.md"), "utf8")).toBe("preserve me\n");
 
     await git(["tag", "feature", initialCommit], seedPath);
     await git(["push", "origin", "refs/tags/feature"], seedPath);
@@ -309,10 +346,7 @@ describeEmbeddedPostgres("resourceRuntimeService", () => {
       manifest: { version: 1, resources: [{ resourceId, mode: "input_output", version: "branch:feature", output: { action: "push", targetRef: "main" } }] },
     });
     await fs.rm(path.join(deletionWorkspace, "resources", "context", "context.md"));
-    await expect(deletionPrepared!.publish()).resolves.toMatchObject([{ status: "pushed", targetRef: "main" }]);
-    const deletionCheckPath = path.join(fixtureRoot, "deletion-check");
-    await git(["clone", "--branch", "main", remotePath, deletionCheckPath]);
-    await expect(fs.access(path.join(deletionCheckPath, "context.md"))).rejects.toThrow();
+    await expect(deletionPrepared!.publish()).rejects.toThrow("Resource file changed across refs: context.md");
 
     const collidingMountResourceId = randomUUID();
     await db.insert(resources).values({
@@ -334,7 +368,7 @@ describeEmbeddedPostgres("resourceRuntimeService", () => {
       runId: "run-colliding-mount-test",
       workspaceRoot: collidingMountWorkspace,
       manifest: { version: 1, resources: [
-        { resourceId, mode: "input_output", version: "branch:feature", output: { action: "push", targetRef: "main" } },
+        { resourceId, mode: "input_output", output: { action: "push", targetRef: "main" } },
         { resourceId: collidingMountResourceId, mode: "input" },
       ] },
     });

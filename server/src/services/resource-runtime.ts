@@ -183,11 +183,65 @@ async function copyWorkingTreeContents(sourcePath: string, destinationPath: stri
   }
 }
 
-async function clearWorkingTreeContents(destinationPath: string) {
-  const entries = await fs.readdir(destinationPath, { withFileTypes: true });
-  await Promise.all(entries
-    .filter((entry) => entry.name !== ".git")
-    .map((entry) => fs.rm(path.join(destinationPath, entry.name), { recursive: true, force: true })));
+type WorkingTreeChange = { status: string; relativePath: string };
+
+function parseWorkingTreeChanges(value: string): WorkingTreeChange[] {
+  const parts = value.split("\0").filter(Boolean);
+  const changes: WorkingTreeChange[] = [];
+  for (let index = 0; index + 1 < parts.length; index += 2) {
+    changes.push({ status: parts[index]!, relativePath: parts[index + 1]! });
+  }
+  return changes;
+}
+
+function assertSafeRepositoryPath(relativePath: string) {
+  if (path.isAbsolute(relativePath) || relativePath.split(/[\\/]/).includes("..")) {
+    throw unprocessable(`Unsafe Git path: ${relativePath}`);
+  }
+}
+
+async function commitPathHash(repoPath: string, commit: string, relativePath: string, env: NodeJS.ProcessEnv) {
+  try {
+    return await runGit(["rev-parse", `${commit}:${relativePath}`], { cwd: repoPath, env });
+  } catch {
+    return null;
+  }
+}
+
+async function applyFullTreeChanges(input: {
+  repoPath: string;
+  snapshotPath: string;
+  expectedCommit: string;
+  baselineCommit: string;
+  trackedChanges: WorkingTreeChange[];
+  untrackedPaths: string[];
+  env: NodeJS.ProcessEnv;
+}) {
+  for (const change of input.trackedChanges) {
+    assertSafeRepositoryPath(change.relativePath);
+    const expectedHash = await commitPathHash(input.repoPath, input.expectedCommit, change.relativePath, input.env);
+    const baselineHash = await commitPathHash(input.repoPath, input.baselineCommit, change.relativePath, input.env);
+    if (expectedHash !== baselineHash) {
+      throw conflict(`Resource file changed across refs: ${change.relativePath}`);
+    }
+    const destination = path.join(input.repoPath, change.relativePath);
+    if (change.status === "D") {
+      await fs.rm(destination, { force: true });
+      continue;
+    }
+    await fs.mkdir(path.dirname(destination), { recursive: true });
+    await fs.cp(path.join(input.snapshotPath, change.relativePath), destination, { recursive: true, force: true });
+  }
+
+  for (const relativePath of input.untrackedPaths) {
+    assertSafeRepositoryPath(relativePath);
+    if (await commitPathHash(input.repoPath, input.baselineCommit, relativePath, input.env)) {
+      throw conflict(`Resource file changed across refs: ${relativePath}`);
+    }
+    const destination = path.join(input.repoPath, relativePath);
+    await fs.mkdir(path.dirname(destination), { recursive: true });
+    await fs.cp(path.join(input.snapshotPath, relativePath), destination, { recursive: true, force: true });
+  }
 }
 
 function resourceEnvKey(resourceKey: string) {
@@ -497,6 +551,12 @@ export function resourceRuntimeService(db: Db) {
             const outputSnapshotPath = rebasingOutput
               ? path.join(stagingRoot, ".output-snapshots", item.resource.id)
               : null;
+            const trackedChanges = outputSnapshotPath && !item.resource.sourcePath
+              ? parseWorkingTreeChanges(await runGit(["diff", "--name-status", "--no-renames", "-z", item.expectedCommit!, "--"], { cwd: item.repoPath, env }))
+              : null;
+            const untrackedPaths = outputSnapshotPath && !item.resource.sourcePath
+              ? (await runGit(["ls-files", "--others", "--exclude-standard"], { cwd: item.repoPath, env })).split("\n").filter(Boolean)
+              : [];
             if (outputSnapshotPath) {
               await fs.rm(outputSnapshotPath, { recursive: true, force: true });
               await fs.mkdir(outputSnapshotPath, { recursive: true });
@@ -504,8 +564,15 @@ export function resourceRuntimeService(db: Db) {
               await runGit(["reset", "--hard", item.outputBaselineCommit!], { cwd: item.repoPath, env });
               await runGit(["clean", "-fd"], { cwd: item.repoPath, env });
               if (!item.resource.sourcePath) {
-                await clearWorkingTreeContents(item.repoPath);
-                await copyWorkingTreeContents(outputSnapshotPath, item.repoPath);
+                await applyFullTreeChanges({
+                  repoPath: item.repoPath,
+                  snapshotPath: outputSnapshotPath,
+                  expectedCommit: item.expectedCommit,
+                  baselineCommit: item.outputBaselineCommit!,
+                  trackedChanges: trackedChanges ?? [],
+                  untrackedPaths,
+                  env,
+                });
               }
             }
             if (item.resource.sourcePath) {
