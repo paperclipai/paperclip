@@ -1347,14 +1347,21 @@ describe("Secrets page layout", () => {
     expect(document.body.textContent).toContain("Agent access");
     expect(document.body.textContent).toContain("Reviewer");
 
-    const agentSelect = document.getElementById("agent-access-agent") as HTMLSelectElement;
+    const agentSelect = document.getElementById("agent-access-agent") as HTMLButtonElement;
     const envKeyInput = document.getElementById("agent-access-env-key") as HTMLInputElement;
     expect(envKeyInput.value).toBe("OPENAI_API_KEY");
-    // Agents that already have access are not offered again.
-    expect(Array.from(agentSelect.options).map((option) => option.textContent)).not.toContain("Reviewer");
 
     await act(async () => {
-      setSelectValue(agentSelect, "agent-coder");
+      agentSelect.click();
+    });
+    await flushReact();
+
+    // Agents that already have access are not offered again.
+    expect(document.body.textContent).toContain("CodexCoder");
+    expect(document.body.querySelector('[aria-label="Select Reviewer"]')).toBeNull();
+
+    await act(async () => {
+      (document.body.querySelector('[aria-label="Select CodexCoder"]') as HTMLButtonElement | null)?.click();
     });
     await flushReact();
 
