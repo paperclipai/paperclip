@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { companies, createDb, resources } from "@paperclipai/db";
+import { companies, companySecrets, createDb, resources } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { resourceService } from "../services/resources.ts";
 
@@ -19,6 +19,7 @@ describeEmbeddedPostgres("resourceService", () => {
 
   afterEach(async () => {
     await db.delete(resources);
+    await db.delete(companySecrets);
     await db.delete(companies);
   });
 
@@ -118,5 +119,32 @@ describeEmbeddedPostgres("resourceService", () => {
 
     await expect(resourceService(db).update(created.id, { defaultRef: "develop" })).resolves.toMatchObject({ defaultRef: "develop" });
     await expect(resourceService(db).update(created.id, { credentialRef: null })).resolves.toMatchObject({ credentialRef: null });
+  });
+
+  it("rejects credential-backed SSH repositories at save time", async () => {
+    const companyId = randomUUID();
+    const credentialRef = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Credential Validation Co",
+      issuePrefix: `V${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(companySecrets).values({
+      id: credentialRef,
+      companyId,
+      name: "GitHub token",
+    });
+
+    await expect(resourceService(db).create(companyId, {
+      key: "ssh-repo",
+      type: "git",
+      repository: "git@github.com:acme/repo.git",
+      sourcePath: null,
+      defaultRef: "main",
+      mountPath: "ssh-repo",
+      credentialRef,
+      labels: {},
+    })).rejects.toThrow("Credential-backed Resources require an HTTPS Git repository");
   });
 });

@@ -53,8 +53,10 @@ function normalizeRef(ref: string | undefined, fallback: string): GitRef {
   if (prefix) {
     const value = requested.slice(prefix.length + 1).trim();
     if (!value) throw unprocessable("Git ref cannot be empty");
+    if (value.startsWith("-")) throw unprocessable("Git ref cannot start with '-'");
     return { value, kind: prefix as GitRef["kind"] };
   }
+  if (requested.startsWith("-")) throw unprocessable("Git ref cannot start with '-'");
   return { value: requested, kind: "unqualified" };
 }
 

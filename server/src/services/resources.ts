@@ -4,6 +4,7 @@ import { resources } from "@paperclipai/db";
 import type { CreateResource, Resource, UpdateResource } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { secretService } from "./secrets.js";
+import { validateCredentialRepository } from "./resource-runtime.js";
 
 function toResource(row: typeof resources.$inferSelect): Resource {
   return {
@@ -41,8 +42,9 @@ export function resourceService(db: Db) {
       : eq(resources.id, id);
   }
 
-  async function assertCredential(companyId: string, credentialRef: string | null | undefined) {
+  async function assertCredential(companyId: string, credentialRef: string | null | undefined, repository: string) {
     if (!credentialRef) return;
+    validateCredentialRepository(repository);
     const secret = await secrets.getById(credentialRef);
     if (!secret) throw notFound("Resource credential not found");
     if (secret.companyId !== companyId) throw unprocessable("Resource credential must belong to same company");
@@ -71,7 +73,7 @@ export function resourceService(db: Db) {
     },
 
     create: async (companyId: string, input: CreateResource) => {
-      await assertCredential(companyId, input.credentialRef ?? null);
+      await assertCredential(companyId, input.credentialRef ?? null, input.repository);
       try {
         const row = await db.insert(resources).values({
           companyId,
@@ -99,8 +101,12 @@ export function resourceService(db: Db) {
       if (!scope) return null;
       const existing = await db.select().from(resources).where(scope).then((rows) => rows[0] ?? null);
       if (!existing) return null;
-      if (patch.credentialRef !== undefined) {
-        await assertCredential(existing.companyId, patch.credentialRef);
+      if (patch.credentialRef !== undefined || patch.repository !== undefined) {
+        await assertCredential(
+          existing.companyId,
+          patch.credentialRef !== undefined ? patch.credentialRef : existing.credentialRef,
+          patch.repository !== undefined ? patch.repository : existing.repository,
+        );
       }
       try {
         const row = await db.update(resources).set({

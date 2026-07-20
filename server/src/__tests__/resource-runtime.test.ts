@@ -186,6 +186,13 @@ describeEmbeddedPostgres("resourceRuntimeService", () => {
       manifest: { version: 1, resources: [{ resourceId, mode: "input", version: "branch:" }] },
     })).rejects.toThrow("Git ref cannot be empty");
 
+    await expect(resourceRuntimeService(db).prepare({
+      companyId,
+      runId: "run-leading-hyphen-ref-test",
+      workspaceRoot: path.join(fixtureRoot, "leading-hyphen-ref-workspace"),
+      manifest: { version: 1, resources: [{ resourceId, mode: "input", version: "-bad-ref" }] },
+    })).rejects.toThrow("Git ref cannot start with '-'");
+
     const invalidBranchWorkspace = path.join(fixtureRoot, "invalid-branch-workspace");
     await expect(resourceRuntimeService(db).prepare({
       companyId,

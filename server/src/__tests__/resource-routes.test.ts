@@ -1,6 +1,7 @@
 import express from "express";
 import request from "supertest";
 import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { activityLog, agents, companies, createDb, resources } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
@@ -77,6 +78,10 @@ describeEmbeddedPostgres("resource routes", () => {
     expect((await request(app).delete(`/api/resources/${otherResourceId}`)).status).toBe(404);
     expect((await request(app).patch(`/api/resources/${created.body.id}`).send({ defaultRef: "develop" })).status).toBe(200);
     expect((await request(app).delete(`/api/resources/${created.body.id}`)).body.status).toBe("archived");
+    const archiveActivities = async () => db.select().from(activityLog).where(eq(activityLog.action, "resource.archived"));
+    expect((await archiveActivities()).length).toBe(1);
+    expect((await request(app).delete(`/api/resources/${created.body.id}`)).body.status).toBe("archived");
+    expect((await archiveActivities()).length).toBe(1);
 
     await db.delete(resources);
     await db.delete(activityLog);

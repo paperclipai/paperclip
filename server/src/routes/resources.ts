@@ -87,6 +87,10 @@ export function resourceRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, existing.companyId);
+    if (existing.status === "archived") {
+      res.json(existing);
+      return;
+    }
     const archived = await svc.archive(existing.id, companyIds);
     const actor = getActorInfo(req);
     await logActivity(db, {
