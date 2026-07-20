@@ -267,8 +267,8 @@ export function AgentSecretAccessEditor({ config, secrets, onChange, disabled }:
                 : null;
               return (
                 <div key={row.id} className="space-y-1">
-                  <div className="flex items-start gap-1.5">
-                    <div className="w-[38%] min-w-[8rem]">
+                  <div className="grid grid-cols-(--gtc-65) items-start gap-1.5">
+                    <div>
                       <Input
                         value={row.alias}
                         onChange={(event) => patchRow(row.id, { alias: event.target.value })}
@@ -288,7 +288,7 @@ export function AgentSecretAccessEditor({ config, secrets, onChange, disabled }:
                         )}
                       />
                     </div>
-                    <div className="flex-1">
+                    <div>
                       <SecretBindingPicker
                         value={bindingValue}
                         onChange={(next) =>
