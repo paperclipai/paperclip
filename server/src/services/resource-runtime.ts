@@ -467,7 +467,7 @@ export function resourceRuntimeService(db: Db) {
             }
             const rebasingOutput = item.outputBaselineCommit !== item.expectedCommit;
             const outputSnapshotPath = rebasingOutput
-              ? path.join(path.dirname(item.repoPath), "output-working-tree")
+              ? path.join(stagingRoot, ".output-snapshots", item.resource.id)
               : null;
             if (outputSnapshotPath) {
               await fs.rm(outputSnapshotPath, { recursive: true, force: true });

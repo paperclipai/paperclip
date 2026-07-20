@@ -257,7 +257,50 @@ describeEmbeddedPostgres("resourceRuntimeService", () => {
     const deletionCheckPath = path.join(fixtureRoot, "deletion-check");
     await git(["clone", "--branch", "main", remotePath, deletionCheckPath]);
     await expect(fs.access(path.join(deletionCheckPath, "context.md"))).rejects.toThrow();
-  });
+
+    const collidingMountResourceId = randomUUID();
+    await db.insert(resources).values({
+      id: collidingMountResourceId,
+      companyId,
+      key: "output-working-tree-resource",
+      type: "git",
+      repository: remotePath,
+      sourcePath: null,
+      defaultRef: "main",
+      mountPath: "output-working-tree",
+      credentialRef: null,
+      labels: {},
+      status: "active",
+    });
+    const collidingMountWorkspace = path.join(fixtureRoot, "colliding-mount-workspace");
+    const collidingMountPrepared = await resourceRuntimeService(db).prepare({
+      companyId,
+      runId: "run-colliding-mount-test",
+      workspaceRoot: collidingMountWorkspace,
+      manifest: { version: 1, resources: [
+        { resourceId, mode: "input_output", version: "branch:feature", output: { action: "push", targetRef: "main" } },
+        { resourceId: collidingMountResourceId, mode: "input" },
+      ] },
+    });
+    await fs.writeFile(
+      path.join(collidingMountWorkspace, "resources", "context", "context.md"),
+      "colliding-mount-primary\n",
+      "utf8",
+    );
+    await fs.writeFile(
+      path.join(collidingMountWorkspace, "resources", "output-working-tree", "preserve-me.txt"),
+      "preserve-me\n",
+      "utf8",
+    );
+    await expect(collidingMountPrepared!.publish()).resolves.toMatchObject([
+      { status: "pushed" },
+      { status: "discarded" },
+    ]);
+    await expect(fs.readFile(
+      path.join(collidingMountWorkspace, "resources", "output-working-tree", "preserve-me.txt"),
+      "utf8",
+    )).resolves.toBe("preserve-me\n");
+  }, 20_000);
 
   it("creates pull requests through the provider without exposing credentials", async () => {
     let request: RequestInit | undefined;
