@@ -6,6 +6,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { sql } from "drizzle-orm";
 import {
   activityLog,
+  agentFallbackSisters,
   agents,
   companies,
   createDb,
@@ -20,6 +21,7 @@ import {
   issueInboxArchives,
   issueDocuments,
   issuePlanDecompositions,
+  issueRecoveryActions,
   issueRelations,
   issueThreadInteractions,
   issues,
@@ -82,8 +84,10 @@ describeEmbeddedPostgres("issueService.fallbackReassign", () => {
   afterEach(async () => {
     await db.delete(issueComments);
     await db.delete(activityLog);
+    await db.delete(issueRecoveryActions);
     await db.delete(issues);
     await db.delete(heartbeatRuns);
+    await db.delete(agentFallbackSisters);
     await db.delete(agents);
     await db.delete(companies);
     for (const companyRoot of companyRootsToCleanup) {
@@ -305,6 +309,12 @@ describeEmbeddedPostgres("issueService.fallbackReassign", () => {
         permissions: {},
       },
     ]);
+    await db.insert(agentFallbackSisters).values({
+      companyId,
+      primaryAgentId,
+      sisterAgentId,
+      priority: 0,
+    });
     await db.insert(heartbeatRuns).values({
       id: runId,
       companyId,
@@ -323,6 +333,18 @@ describeEmbeddedPostgres("issueService.fallbackReassign", () => {
       executionRunId: runId,
       executionLockedAt: new Date("2026-06-25T08:00:00.000Z"),
       executionAgentNameKey: "recovery",
+    });
+    await db.insert(issueRecoveryActions).values({
+      companyId,
+      sourceIssueId: issueId,
+      kind: "stalled_run",
+      status: "active",
+      ownerType: "agent",
+      ownerAgentId: recoveryOwnerAgentId,
+      previousOwnerAgentId: primaryAgentId,
+      cause: "primary_paused",
+      fingerprint: `fingerprint-${issueId}`,
+      nextAction: "reassign",
     });
 
     const result = await svc.fallbackReassign(
@@ -364,6 +386,169 @@ describeEmbeddedPostgres("issueService.fallbackReassign", () => {
       executionLockedAt: null,
       executionAgentNameKey: null,
     });
+  });
+
+  it("refuses to attribute the takeover to a caller-supplied primary it cannot verify", async () => {
+    const companyId = randomUUID();
+    const realPrimaryAgentId = randomUUID();
+    const bogusPrimaryAgentId = randomUUID();
+    const recoveryOwnerAgentId = randomUUID();
+    const sisterAgentId = randomUUID();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+    const companyRoot = path.resolve(resolvePaperclipInstanceRoot(), "companies", companyId);
+    companyRootsToCleanup.add(companyRoot);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values([
+      {
+        id: realPrimaryAgentId,
+        companyId,
+        name: "Primary",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: bogusPrimaryAgentId,
+        companyId,
+        name: "Bystander",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: recoveryOwnerAgentId,
+        companyId,
+        name: "Recovery",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: sisterAgentId,
+        companyId,
+        name: "Sister",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    // The bystander even has a live fallback relationship to the sister; it is
+    // still not the primary this recovery action took the issue from.
+    await db.insert(agentFallbackSisters).values([
+      { companyId, primaryAgentId: realPrimaryAgentId, sisterAgentId, priority: 0 },
+      { companyId, primaryAgentId: bogusPrimaryAgentId, sisterAgentId, priority: 1 },
+    ]);
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: sisterAgentId,
+      status: "running",
+      invocationSource: "test",
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Recovery-owned fallback target",
+      identifier: "TST-44",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: recoveryOwnerAgentId,
+    });
+    await db.insert(issueRecoveryActions).values({
+      companyId,
+      sourceIssueId: issueId,
+      kind: "stalled_run",
+      status: "active",
+      ownerType: "agent",
+      ownerAgentId: recoveryOwnerAgentId,
+      previousOwnerAgentId: realPrimaryAgentId,
+      cause: "primary_paused",
+      fingerprint: `fingerprint-${issueId}`,
+      nextAction: "reassign",
+    });
+
+    await expect(
+      svc.fallbackReassign(
+        {
+          id: issueId,
+          companyId,
+          identifier: "TST-44",
+          assigneeAgentId: bogusPrimaryAgentId,
+          currentAssigneeAgentId: recoveryOwnerAgentId,
+        },
+        { id: sisterAgentId },
+        "paused_primary",
+        null,
+        runId,
+      ),
+    ).rejects.toThrow(/recovery action's previous owner/);
+
+    // A primary with no fallback relationship at all is rejected too.
+    const strangerAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: strangerAgentId,
+      companyId,
+      name: "Stranger",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await expect(
+      svc.fallbackReassign(
+        {
+          id: issueId,
+          companyId,
+          identifier: "TST-44",
+          assigneeAgentId: strangerAgentId,
+          currentAssigneeAgentId: recoveryOwnerAgentId,
+        },
+        { id: sisterAgentId },
+        "paused_primary",
+        null,
+        runId,
+      ),
+    ).rejects.toThrow(/registered fallback primary/);
+
+    const storedIssue = await db
+      .select({ assigneeAgentId: issues.assigneeAgentId })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]!);
+    expect(storedIssue.assigneeAgentId).toBe(recoveryOwnerAgentId);
+    const comments = await db
+      .select({ id: issueComments.id })
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(0);
+    for (const attributedAgentId of [bogusPrimaryAgentId, strangerAgentId]) {
+      const state = await readFile(
+        path.resolve(companyRoot, "fallback-state", `${attributedAgentId}.json`),
+        "utf8",
+      ).catch(() => null);
+      expect(state).toBeNull();
+    }
   });
 });
 

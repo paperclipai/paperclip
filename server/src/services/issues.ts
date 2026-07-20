@@ -4,8 +4,10 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { and, asc, desc, eq, gt, gte, inArray, isNull, like, lt, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
+import { ACTIVE_RECOVERY_ACTION_STATUSES } from "./issue-recovery-actions.js";
 import {
   activityLog,
+  agentFallbackSisters,
   agentWakeupRequests,
   agents,
   authUsers,
@@ -3397,6 +3399,14 @@ async function listIssueBoardActionRequirementMap(
       ))
       .orderBy(desc(issueThreadInteractions.resolvedAt), desc(issueThreadInteractions.createdAt)),
   ]);
+  // NOTE: the raw max() aggregate comes back as a driver string, not a Date, so
+  // the `latestUserCommentAt >= interaction.createdAt` supersede check below
+  // never fires. Coercing it here revives that branch — which would stop
+  // flagging a still-PENDING request_confirmation as board-action-required as
+  // soon as any user comment postdates it, regardless of whether that comment
+  // answers the prompt. That is the "pending without boardActionRequired"
+  // hidden-operator-decision trap, so the coercion is deliberately NOT applied
+  // pending an operator decision. Over-flagging is the safe failure direction.
   const latestUserCommentAtByIssue = new Map<string, Date>(
     latestUserCommentRows.map((row: { issueId: string; latestCreatedAt: Date }) => [row.issueId, row.latestCreatedAt]),
   );
@@ -7678,6 +7688,69 @@ export function issueService(db: Db) {
           });
         }
         const primaryAgentId = issue.assigneeAgentId ?? current.assigneeAgentId;
+        if (primaryAgentId !== current.assigneeAgentId) {
+          // The caller claims the failed primary is someone other than the live
+          // assignee (recovery temporarily rebound the issue). That claim becomes
+          // the fallback-state key, the audit comment's "From agent" and the
+          // returned reassignedFromAgentId, so it must be verified here rather
+          // than trusted: an unverified value lets a caller attribute a takeover
+          // to an arbitrary agent. Require both a live fallback relationship to
+          // the sister and that the claimed primary really is the recovery
+          // action's previous owner.
+          const relationship = await tx
+            .select({ id: agentFallbackSisters.id })
+            .from(agentFallbackSisters)
+            .where(and(
+              eq(agentFallbackSisters.companyId, current.companyId),
+              eq(agentFallbackSisters.primaryAgentId, primaryAgentId),
+              eq(agentFallbackSisters.sisterAgentId, sister.id),
+              isNull(agentFallbackSisters.revokedAt),
+            ))
+            .then((rows) => rows[0] ?? null);
+          if (!relationship) {
+            throw conflict("Fallback reassignment primary is not a registered fallback primary for the sister", {
+              issueId: issue.id,
+              primaryAgentId,
+              sisterAgentId: sister.id,
+            });
+          }
+          const recoveryAction = await tx
+            .select({
+              ownerAgentId: issueRecoveryActions.ownerAgentId,
+              previousOwnerAgentId: issueRecoveryActions.previousOwnerAgentId,
+              returnOwnerAgentId: issueRecoveryActions.returnOwnerAgentId,
+            })
+            .from(issueRecoveryActions)
+            .where(and(
+              eq(issueRecoveryActions.companyId, current.companyId),
+              eq(issueRecoveryActions.sourceIssueId, current.id),
+              inArray(issueRecoveryActions.status, [...ACTIVE_RECOVERY_ACTION_STATUSES]),
+            ))
+            // Secondary key: the route resolves the same action independently, so a
+            // bare updatedAt sort can tie-break differently between the two reads
+            // and spuriously reject an honest takeover.
+            .orderBy(desc(issueRecoveryActions.updatedAt), desc(issueRecoveryActions.id))
+            .limit(1)
+            .then((rows) => rows[0] ?? null);
+          const claimedPrimaryOwnsRecovery = Boolean(
+            recoveryAction
+            && recoveryAction.ownerAgentId === current.assigneeAgentId
+            && (
+              recoveryAction.previousOwnerAgentId === primaryAgentId
+              || recoveryAction.returnOwnerAgentId === primaryAgentId
+            ),
+          );
+          if (!claimedPrimaryOwnsRecovery) {
+            throw conflict("Fallback reassignment primary is not the recovery action's previous owner", {
+              issueId: issue.id,
+              expectedFromAgentId: primaryAgentId,
+              actualAssigneeAgentId: current.assigneeAgentId,
+              recoveryOwnerAgentId: recoveryAction?.ownerAgentId ?? null,
+              recoveryPreviousOwnerAgentId: recoveryAction?.previousOwnerAgentId ?? null,
+              recoveryReturnOwnerAgentId: recoveryAction?.returnOwnerAgentId ?? null,
+            });
+          }
+        }
         await assertIssueToolCapabilityAssignment({
           companyId: current.companyId,
           issueId: current.id,

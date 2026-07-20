@@ -9,7 +9,7 @@ import type {
   IssueRecoveryActionStatus,
 } from "@paperclipai/shared";
 
-const ACTIVE_RECOVERY_ACTION_STATUSES = ["active", "escalated"] as const satisfies readonly IssueRecoveryActionStatus[];
+export const ACTIVE_RECOVERY_ACTION_STATUSES = ["active", "escalated"] as const satisfies readonly IssueRecoveryActionStatus[];
 const MAX_UPSERT_RETRIES = 3;
 
 type IssueRecoveryActionRow = typeof issueRecoveryActions.$inferSelect;
@@ -135,7 +135,10 @@ export function issueRecoveryActionService(db: Db) {
           inArray(issueRecoveryActions.status, [...ACTIVE_RECOVERY_ACTION_STATUSES]),
         ),
       )
-      .orderBy(desc(issueRecoveryActions.updatedAt))
+      // Secondary key keeps this in lockstep with the equivalent read in
+      // issueService.fallbackReassign; a bare updatedAt sort can tie-break
+      // differently across the two and spuriously reject an honest takeover.
+      .orderBy(desc(issueRecoveryActions.updatedAt), desc(issueRecoveryActions.id))
       .limit(1)
       .then((rows) => rows[0] ?? null);
     return row ? toReadModel(row) : null;
