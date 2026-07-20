@@ -23,6 +23,12 @@ describe("resource contracts", () => {
     }).success).toBe(false);
   });
 
+  it("rejects keys that cannot produce generated Git branches", () => {
+    for (const key of ["my.", "docs.lock", "a..b"]) {
+      expect(createResourceSchema.safeParse({ key, repository: "/tmp/repo", mountPath: key }).success).toBe(false);
+    }
+  });
+
   it("rejects unsupported Git repository transports", () => {
     expect(createResourceSchema.safeParse({ key: "http", repository: "http://github.com/example/repo.git", mountPath: "repo" }).success).toBe(false);
     expect(createResourceSchema.safeParse({ key: "ext", repository: "ext::ssh host sh -c command", mountPath: "repo" }).success).toBe(false);

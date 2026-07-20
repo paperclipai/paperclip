@@ -9,7 +9,10 @@ const resourceKeySchema = z.string()
   .trim()
   .min(1)
   .max(100)
-  .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/, "Resource key must contain only letters, numbers, '.', '_' or '-'.");
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/, "Resource key must contain only letters, numbers, '.', '_' or '-'.")
+  .refine((value) => !value.includes("..") && !value.endsWith(".") && !value.endsWith(".lock"), {
+    message: "Resource key must produce a valid Git branch name.",
+  });
 
 const mountPathSchema = z.string()
   .trim()
