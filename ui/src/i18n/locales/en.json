@@ -45,6 +45,35 @@
     "justNow": "just now",
     "perMonth": "/mo"
   },
+  "charts": {
+    "noRunsYet": "No runs yet",
+    "noTasks": "No tasks",
+    "runCount": "{{date}}: {{count}} runs",
+    "taskCount": "{{date}}: {{count}} tasks",
+    "succeeded": "Succeeded",
+    "recovered": "Recovered",
+    "failed": "Failed",
+    "other": "Other",
+    "succeededCount": "  succeeded: {{count}}",
+    "recoveredCount": "  recovered: {{count}} (retry succeeded)",
+    "failedCount": "  failed: {{count}}",
+    "otherCount": "  other: {{count}}",
+    "priority": {
+      "critical": "Critical",
+      "high": "High",
+      "medium": "Medium",
+      "low": "Low"
+    },
+    "status": {
+      "todo": "To Do",
+      "in_progress": "In Progress",
+      "in_review": "In Review",
+      "done": "Done",
+      "blocked": "Blocked",
+      "cancelled": "Cancelled",
+      "backlog": "Backlog"
+    }
+  },
   "navigation": {
     "openSearch": "Open search",
     "keepSidebarExpanded": "Keep sidebar expanded",
@@ -521,6 +550,8 @@
     "appearance": "Appearance",
     "logo": "Logo",
     "logoHint": "Upload a PNG, JPEG, WEBP, GIF, or SVG logo image.",
+    "chooseLogo": "Choose logo",
+    "uploadingLogo": "Uploading...",
     "removingLogo": "Removing...",
     "removeLogo": "Remove logo",
     "logoUploadFailed": "Logo upload failed",

@@ -229,12 +229,18 @@ export function CompanySettings() {
                 hint={t("companySettings.logoHint")}
               >
                 <div className="space-y-2">
-                  <input
-                    type="file"
-                    accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml"
-                    onChange={handleLogoFileChange}
-                    className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none file:mr-4 file:rounded-md file:border-0 file:bg-muted file:px-2.5 file:py-1 file:text-xs"
-                  />
+                  <label className="inline-flex h-8 cursor-pointer items-center rounded-md border border-border bg-background px-3 text-xs font-medium transition-colors hover:bg-accent">
+                    {logoUploadMutation.isPending
+                      ? t("companySettings.uploadingLogo")
+                      : t("companySettings.chooseLogo")}
+                    <input
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml"
+                      onChange={handleLogoFileChange}
+                      disabled={logoUploadMutation.isPending}
+                      className="sr-only"
+                    />
+                  </label>
                   {logoUrl && (
                     <div className="flex items-center gap-2">
                       <Button

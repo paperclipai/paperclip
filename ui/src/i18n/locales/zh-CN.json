@@ -45,6 +45,35 @@
     "justNow": "刚刚",
     "perMonth": "/月"
   },
+  "charts": {
+    "noRunsYet": "尚无运行记录",
+    "noTasks": "暂无任务",
+    "runCount": "{{date}}：{{count}} 次运行",
+    "taskCount": "{{date}}：{{count}} 个任务",
+    "succeeded": "成功",
+    "recovered": "重试成功",
+    "failed": "失败",
+    "other": "其他",
+    "succeededCount": "  成功：{{count}}",
+    "recoveredCount": "  重试成功：{{count}}",
+    "failedCount": "  失败：{{count}}",
+    "otherCount": "  其他：{{count}}",
+    "priority": {
+      "critical": "紧急",
+      "high": "高",
+      "medium": "中",
+      "low": "低"
+    },
+    "status": {
+      "todo": "待处理",
+      "in_progress": "进行中",
+      "in_review": "审核中",
+      "done": "已完成",
+      "blocked": "受阻",
+      "cancelled": "已取消",
+      "backlog": "待办池"
+    }
+  },
   "navigation": {
     "openSearch": "打开搜索",
     "keepSidebarExpanded": "保持侧边栏展开",
@@ -521,6 +550,8 @@
     "appearance": "外观",
     "logo": "标志",
     "logoHint": "上传 PNG、JPEG、WEBP、GIF 或 SVG 格式的标志图片。",
+    "chooseLogo": "选择标志图片",
+    "uploadingLogo": "正在上传…",
     "removingLogo": "正在移除...",
     "removeLogo": "移除标志",
     "logoUploadFailed": "标志上传失败",
