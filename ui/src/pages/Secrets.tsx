@@ -108,6 +108,7 @@ import {
   buildSecretPathListing,
   getSecretPathRowName,
   normalizeSecretPath,
+  validateSecretFolderSegment,
   type SecretPathFolder,
 } from "./secrets/secret-path";
 import { SetMyUserSecretDialog } from "./secrets/SetMyUserSecretDialog";
@@ -650,6 +651,7 @@ export function Secrets() {
   const [secretValueProvider, setSecretValueProvider] = useState<SecretValueProvider>("company");
   const [createMode, setCreateMode] = useState<CreateMode>("managed");
   const [editingDefinition, setEditingDefinition] = useState<UserSecretDefinition | null>(null);
+  const [createNamePrefix, setCreateNamePrefix] = useState<string | null>(null);
   const [createKeyDirty, setCreateKeyDirty] = useState(false);
   const [createKeyEditable, setCreateKeyEditable] = useState(false);
   const [createForm, setCreateForm] = useState({
@@ -679,6 +681,9 @@ export function Secrets() {
   const [vaultDiscovery, setVaultDiscovery] =
     useState<SecretProviderConfigDiscoveryPreviewResult | null>(null);
   const [vaultDiscoveryError, setVaultDiscoveryError] = useState<unknown | null>(null);
+  const [newFolderOpen, setNewFolderOpen] = useState(false);
+  const [newFolderName, setNewFolderName] = useState("");
+  const [newFolderError, setNewFolderError] = useState<string | null>(null);
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Secrets" }]);
@@ -888,6 +893,23 @@ export function Secrets() {
     [setSearchParams],
   );
 
+  function closeNewFolder() {
+    setNewFolderOpen(false);
+    setNewFolderName("");
+    setNewFolderError(null);
+  }
+
+  function stageNewFolder() {
+    const segment = newFolderName.trim();
+    const error = validateSecretFolderSegment(segment);
+    if (error) {
+      setNewFolderError(error);
+      return;
+    }
+    goToFolder(folderPath ? `${folderPath}/${segment}` : segment);
+    closeNewFolder();
+  }
+
   const setViewMode = useCallback(
     (mode: SecretsViewMode) => {
       setStoredViewMode(mode);
@@ -953,14 +975,16 @@ export function Secrets() {
   }
 
   function openCreateSecret() {
+    const prefix = folderPath ? `${folderPath}/` : null;
     setEditingDefinition(null);
+    setCreateNamePrefix(prefix);
     setSecretValueProvider("company");
     setCreateMode("managed");
     setCreateKeyDirty(false);
     setCreateKeyEditable(false);
     setCreateError(null);
     setCreateForm({
-      name: "",
+      name: prefix ?? "",
       key: "",
       value: "",
       description: "",
@@ -974,6 +998,7 @@ export function Secrets() {
 
   function openEditDefinition(definition: UserSecretDefinition) {
     setEditingDefinition(definition);
+    setCreateNamePrefix(null);
     setSecretValueProvider("user");
     setCreateMode("managed");
     setCreateKeyDirty(true);
@@ -1045,6 +1070,7 @@ export function Secrets() {
       });
       setCreateOpen(false);
       setEditingDefinition(null);
+      setCreateNamePrefix(null);
       setSecretValueProvider("company");
       setCreateKeyDirty(false);
       setCreateKeyEditable(false);
@@ -1654,7 +1680,7 @@ export function Secrets() {
                 ) : (
                   <Link
                     to={folderLinkTo(crumb.path)}
-                    className="max-w-[10rem] truncate text-muted-foreground hover:text-foreground hover:underline"
+                    className="max-w-40 truncate text-muted-foreground hover:text-foreground hover:underline"
                   >
                     {crumb.name}
                   </Link>
@@ -1777,10 +1803,55 @@ export function Secrets() {
               onManageVaults={() => setActiveTab("vaults")}
               className="ml-auto"
             />
+            {showFolderView ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setNewFolderOpen(true);
+                  setNewFolderError(null);
+                }}
+              >
+                <Folder className="mr-1 h-3.5 w-3.5" /> New folder
+              </Button>
+            ) : null}
             <Button onClick={openCreateSecret} size="sm">
               <Plus className="h-3.5 w-3.5 mr-1" /> New secret
             </Button>
           </div>
+          {newFolderOpen && showFolderView ? (
+            <div className="flex flex-wrap items-start gap-2" role="group" aria-label="Create folder">
+              <div className="min-w-48 flex-1 sm:max-w-80">
+                <Input
+                  value={newFolderName}
+                  onChange={(event) => {
+                    setNewFolderName(event.target.value);
+                    if (newFolderError) setNewFolderError(null);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") stageNewFolder();
+                    if (event.key === "Escape") closeNewFolder();
+                  }}
+                  placeholder="Folder name"
+                  aria-label="Folder name"
+                  aria-invalid={Boolean(newFolderError)}
+                  autoFocus
+                />
+                {newFolderError ? (
+                  <p className="mt-1 text-xs text-destructive" role="alert">
+                    {newFolderError}
+                  </p>
+                ) : null}
+              </div>
+              <Button type="button" size="sm" onClick={stageNewFolder}>
+                Create folder
+              </Button>
+              <Button type="button" variant="ghost" size="sm" onClick={closeNewFolder}>
+                Cancel
+              </Button>
+            </div>
+          ) : null}
           <div className="min-h-0 flex-1 overflow-y-auto">
             {secretsQuery.isError || userDefinitionsQuery.isError ? (
               <div className="text-sm text-destructive flex items-center gap-2 py-4">
@@ -1797,7 +1868,10 @@ export function Secrets() {
                   Retry
                 </Button>
               </div>
-            ) : unifiedRows.length === 0 && !secretsQuery.isPending && !userDefinitionsQuery.isPending ? (
+            ) : unifiedRows.length === 0 &&
+              !secretsQuery.isPending &&
+              !userDefinitionsQuery.isPending &&
+              !(showFolderView && folderPath) ? (
               <EmptyState
                 icon={KeyRound}
                 message="No secrets yet. Create a shared company secret or one that each user supplies."
@@ -2383,7 +2457,13 @@ export function Secrets() {
         />
       )}
 
-      <Dialog open={createOpen} onOpenChange={setCreateOpen}>
+      <Dialog
+        open={createOpen}
+        onOpenChange={(open) => {
+          setCreateOpen(open);
+          if (!open) setCreateNamePrefix(null);
+        }}
+      >
         <DialogContent className="max-h-(--sz-calc-18) overflow-y-auto p-4 sm:max-w-lg sm:p-6">
           <DialogHeader>
             <DialogTitle>{editingDefinition ? "Edit user-provided secret" : "Create secret"}</DialogTitle>
@@ -2433,24 +2513,67 @@ export function Secrets() {
 
             <div>
               <label className="text-xs font-medium" htmlFor="new-secret-name">Name</label>
-              <Input
-                id="new-secret-name"
-                value={createForm.name}
-                onChange={(event) => {
-                  const name = event.target.value;
-                  setCreateForm((current) => ({
-                    ...current,
-                    name,
-                    key: createKeyDirty
-                      ? current.key
-                      : secretValueProvider === "user"
-                        ? normalizeUserSecretKeyForPreview(name)
-                        : normalizeSecretKeyForPreview(name),
-                  }));
-                }}
-                placeholder={secretValueProvider === "user" ? "Personal GitHub token" : "/dev/foo/bar"}
-                autoFocus
-              />
+              {createNamePrefix && !editingDefinition ? (
+                <div className="flex h-9 w-full min-w-0 items-center gap-1.5 rounded-md border border-input bg-transparent px-2 shadow-xs transition-[color,box-shadow] focus-within:border-ring focus-within:ring-ring/50 focus-within:ring-3">
+                  <span
+                    className="inline-flex min-w-0 shrink items-center gap-1 rounded-full bg-muted px-2 py-1 text-xs text-muted-foreground"
+                    title={createNamePrefix}
+                  >
+                    <span className="truncate">{createNamePrefix}</span>
+                    <button
+                      type="button"
+                      className="shrink-0 rounded-full text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      aria-label="Remove folder prefix"
+                      onClick={() => setCreateNamePrefix(null)}
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </span>
+                  <input
+                    id="new-secret-name"
+                    className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+                    value={createForm.name.slice(createNamePrefix.length)}
+                    onChange={(event) => {
+                      const name = createNamePrefix + event.target.value;
+                      setCreateForm((current) => ({
+                        ...current,
+                        name,
+                        key: createKeyDirty
+                          ? current.key
+                          : secretValueProvider === "user"
+                            ? normalizeUserSecretKeyForPreview(name)
+                            : normalizeSecretKeyForPreview(name),
+                      }));
+                    }}
+                    placeholder="clientsecret"
+                    autoFocus
+                  />
+                </div>
+              ) : (
+                <Input
+                  id="new-secret-name"
+                  value={createForm.name}
+                  onChange={(event) => {
+                    const name = event.target.value;
+                    setCreateForm((current) => ({
+                      ...current,
+                      name,
+                      key: createKeyDirty
+                        ? current.key
+                        : secretValueProvider === "user"
+                          ? normalizeUserSecretKeyForPreview(name)
+                          : normalizeSecretKeyForPreview(name),
+                    }));
+                  }}
+                  placeholder={secretValueProvider === "user" ? "Personal GitHub token" : "/dev/foo/bar"}
+                  autoFocus
+                />
+              )}
+              {createNamePrefix && !editingDefinition ? (
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Creating in {folderPath} — remove the chip to type a different path.
+                </p>
+              ) : null}
             </div>
 
             {secretValueProvider === "company" && createMode === "managed" ? (
