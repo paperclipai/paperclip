@@ -436,6 +436,7 @@ describeEmbeddedPostgres("resourceRuntimeService", () => {
 
   it("only allows credential-backed HTTPS Git hosts", () => {
     expect(() => validateCredentialRepository("https://github.com/acme/repo.git")).not.toThrow();
+    expect(() => validateCredentialRepository("https://user:secret@github.com/acme/repo.git")).toThrow("must not include embedded credentials");
     expect(() => validateCredentialRepository("http://attacker.example/repo.git")).toThrow("require an HTTPS Git repository");
     expect(() => validateCredentialRepository("https://attacker.example/repo.git")).toThrow("host is not allowed");
   });

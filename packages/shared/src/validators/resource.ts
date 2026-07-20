@@ -15,8 +15,8 @@ const mountPathSchema = z.string()
   .trim()
   .min(1)
   .max(255)
-  .refine((value) => !value.startsWith("/") && value !== "." && value !== ".." && !value.split(/[\\/]/).includes(".."), {
-    message: "Mount path must be relative and cannot contain '..'.",
+  .refine((value) => !value.startsWith("/") && value !== "." && value !== ".." && !value.startsWith("./") && !value.startsWith(".\\") && !value.split(/[\\/]/).includes(".."), {
+    message: "Mount path must be normalized, relative, and cannot contain '..'.",
   });
 
 const sourcePathSchema = z.string()
@@ -34,7 +34,14 @@ const repositorySchema = z.string()
     if (value === "." || value.startsWith("./") || value.startsWith(".\\") || value.startsWith("/")) {
       return !value.split(/[\\/]/).includes("..");
     }
-    return /^(?:https:\/\/|ssh:\/\/git@|git@[^:]+:)/i.test(value);
+    if (!/^(?:https:\/\/|ssh:\/\/git@|git@[^:]+:)/i.test(value)) return false;
+    if (!/^https:\/\//i.test(value)) return true;
+    try {
+      const url = new URL(value);
+      return !url.username && !url.password;
+    } catch {
+      return false;
+    }
   }, "Repository must use a supported HTTPS, SSH, Git transport, or safe local path.");
 
 export const createResourceSchema = z.object({

@@ -198,6 +198,9 @@ export function validateCredentialRepository(repository: string) {
   if (url.protocol !== "https:") {
     throw unprocessable("Credential-backed Resources require an HTTPS Git repository");
   }
+  if (url.username || url.password) {
+    throw unprocessable("Credential-backed Git repositories must not include embedded credentials");
+  }
   const allowedHosts = (process.env.BIZBOX_GIT_CREDENTIAL_HOSTS ?? "github.com")
     .split(",")
     .map((host) => host.trim().toLowerCase())
