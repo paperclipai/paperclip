@@ -64,7 +64,7 @@ const catchUpPolicyOptions = [
   {
     value: "enqueue_missed_with_cap",
     title: "Enqueue missed with cap",
-    description: "Catch up missed schedule windows in capped batches after recovery.",
+    description: "Catch up missed schedule windows after recovery; sub-hourly schedules are combined into one catch-up run, slower schedules replay each missed window up to a cap.",
   },
 ];
 

@@ -24,6 +24,7 @@ import { IssuesList } from "../components/IssuesList";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { PageTabBar } from "../components/PageTabBar";
 import { ProjectWorkspacesContent } from "../components/ProjectWorkspacesContent";
+import { SummarySlotCard } from "../components/SummarySlotCard";
 import { MembershipAction } from "../components/MembershipAction";
 import { StarToggle } from "../components/StarToggle";
 import { buildProjectWorkspaceSummaries } from "../lib/project-workspaces-tab";
@@ -241,7 +242,8 @@ function ProjectIssuesList({ projectId, companyId }: { projectId: string; compan
     resourceKey: "live-runs",
     queryKey: liveRunsQueryKey,
     enabled: !!companyId,
-    refetchInterval: 5000,
+    // Event-sourced via LiveUpdatesProvider (issue 9627); no interval poll needed.
+    refetchInterval: false,
     leaderOnly: true,
   });
   const { data: liveRuns, dataUpdatedAt: liveRunsUpdatedAt } = useQuery({
@@ -317,7 +319,8 @@ function ProjectPluginOperationsList({
     resourceKey: "live-runs",
     queryKey: liveRunsQueryKey,
     enabled: !!companyId,
-    refetchInterval: 5000,
+    // Event-sourced via LiveUpdatesProvider (issue 9627); no interval poll needed.
+    refetchInterval: false,
     leaderOnly: true,
   });
   const { data: liveRuns, dataUpdatedAt: liveRunsUpdatedAt } = useQuery({
@@ -827,6 +830,14 @@ export function ProjectDetail() {
           />
         </div>
       </div>
+
+      <SummarySlotCard
+        companyId={resolvedCompanyId}
+        scopeKind="project"
+        scopeId={project.id}
+        title="Project summary"
+        description="Summarizer keeps the latest project status, next step, and operator-needed items here."
+      />
 
       <PluginSlotOutlet
         slotTypes={["toolbarButton", "contextMenuItem"]}

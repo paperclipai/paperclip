@@ -11,8 +11,15 @@ import {
   acceptedRequestConfirmationInteraction,
   boundedRequestCheckboxConfirmationInteraction,
   commentExpiredRequestConfirmationInteraction,
+  declinedToolActionInteraction,
+  executedToolActionInteraction,
+  expiredToolActionInteraction,
   failedRequestConfirmationInteraction,
+  failedToolActionInteraction,
   genericPendingRequestConfirmationInteraction,
+  pendingToolActionDestructiveInteraction,
+  pendingToolActionWriteInteraction,
+  runningToolActionInteraction,
   issueThreadInteractionComments,
   issueThreadInteractionEvents,
   issueThreadInteractionFixtureMeta,
@@ -646,6 +653,189 @@ export const RequestConfirmationFailed: Story = {
 
 export const RequestConfirmationAccepted = RequestConfirmationConfirmed;
 export const RequestConfirmationRejected = RequestConfirmationDeclinedWithReason;
+
+// ---------------------------------------------------------------------------
+// MCP tool-approval card (PAP-13745). A `request_confirmation` carrying a
+// `payload.toolAction` renders as the dedicated tool-approval card: identity
+// header, humanized preview, technical-details drawer, and lifecycle states.
+// The governing rule — approve = run — means no terminal state reads "Accepted".
+// ---------------------------------------------------------------------------
+
+function ToolActionCard({
+  interaction,
+  interactive = false,
+}: {
+  interaction: RequestConfirmationInteraction;
+  interactive?: boolean;
+}) {
+  return (
+    <IssueThreadInteractionCard
+      interaction={interaction}
+      agentMap={storybookAgentMap}
+      currentUserId={issueThreadInteractionFixtureMeta.currentUserId}
+      userLabelMap={boardUserLabels}
+      onAcceptInteraction={interactive ? () => undefined : undefined}
+      onRejectInteraction={interactive ? () => undefined : undefined}
+    />
+  );
+}
+
+export const ToolActionPendingWrite: Story = {
+  render: () => (
+    <StoryFrame>
+      <ScenarioCard
+        title="Pending · write"
+        description="A write tool call awaits approval: identity header, WRITE risk badge, humanized preview, collapsible technical details, expiry countdown, and an Approve & run CTA."
+      >
+        <ToolActionCard interaction={pendingToolActionWriteInteraction} interactive />
+      </ScenarioCard>
+    </StoryFrame>
+  ),
+};
+
+export const ToolActionPendingDestructive: Story = {
+  render: () => (
+    <StoryFrame>
+      <ScenarioCard
+        title="Pending · destructive"
+        description="A destructive call takes the red risk badge and a destructive primary button; the countdown sits inside the sub-5-minute urgent window."
+      >
+        <ToolActionCard interaction={pendingToolActionDestructiveInteraction} interactive />
+      </ScenarioCard>
+    </StoryFrame>
+  ),
+};
+
+export const ToolActionRunning: Story = {
+  render: () => (
+    <StoryFrame>
+      <ScenarioCard
+        title="Approved — running…"
+        description="The transient post-approve state: an amber spinner strip that self-resolves to Executed or Failed when the gateway writes back. Buttons are removed to prevent double-submit."
+      >
+        <ToolActionCard interaction={runningToolActionInteraction} />
+      </ScenarioCard>
+    </StoryFrame>
+  ),
+};
+
+export const ToolActionExecuted: Story = {
+  render: () => (
+    <StoryFrame>
+      <ScenarioCard
+        title="Executed"
+        description="The green terminal state reports the real outcome — a result summary plus a deep-link — never a bare checkmark or “Accepted”."
+      >
+        <ToolActionCard interaction={executedToolActionInteraction} />
+      </ScenarioCard>
+    </StoryFrame>
+  ),
+};
+
+export const ToolActionFailed: Story = {
+  render: () => (
+    <StoryFrame>
+      <ScenarioCard
+        title="Failed"
+        description="You approved it and it ran, but the connector errored: amber card, red icon, and the verbatim connector error. Distinct from Declined."
+      >
+        <ToolActionCard interaction={failedToolActionInteraction} />
+      </ScenarioCard>
+    </StoryFrame>
+  ),
+};
+
+export const ToolActionDeclined: Story = {
+  render: () => (
+    <StoryFrame>
+      <ScenarioCard
+        title="Declined"
+        description="You rejected it and nothing ran: red card with a dimmed/greyscale identity header and the decline reason attached."
+      >
+        <ToolActionCard interaction={declinedToolActionInteraction} />
+      </ScenarioCard>
+    </StoryFrame>
+  ),
+};
+
+export const ToolActionExpired: Story = {
+  render: () => (
+    <StoryFrame>
+      <ScenarioCard
+        title="Expired"
+        description="Nobody responded within 60 minutes: a neutral grey (not error-red) card that always states the rule and the recovery path — the agent can request approval again."
+      >
+        <ToolActionCard interaction={expiredToolActionInteraction} />
+      </ScenarioCard>
+    </StoryFrame>
+  ),
+};
+
+export const ToolActionLegacyGeneric: Story = {
+  render: () => (
+    <StoryFrame>
+      <ScenarioCard
+        title="Legacy · no toolAction"
+        description="A confirmation without a toolAction payload keeps the existing generic rendering unchanged — the tool-approval surface is strictly additive."
+      >
+        <ToolActionCard interaction={genericPendingRequestConfirmationInteraction} interactive />
+      </ScenarioCard>
+    </StoryFrame>
+  ),
+};
+
+export const ToolActionAllStates: Story = {
+  render: () => (
+    <StoryFrame>
+      <Section eyebrow="MCP Tool Approval" title="All six lifecycle states (PAP-13745)">
+        <div className="grid gap-6 xl:grid-cols-2">
+          <ScenarioCard title="1 · Pending (write)" description="Awaiting approval — Approve & run.">
+            <ToolActionCard interaction={pendingToolActionWriteInteraction} interactive />
+          </ScenarioCard>
+          <ScenarioCard title="1b · Pending (destructive)" description="Red risk badge, urgent countdown.">
+            <ToolActionCard interaction={pendingToolActionDestructiveInteraction} interactive />
+          </ScenarioCard>
+          <ScenarioCard title="2 · Approved — running…" description="Transient, self-resolving spinner.">
+            <ToolActionCard interaction={runningToolActionInteraction} />
+          </ScenarioCard>
+          <ScenarioCard title="3 · Executed" description="Green, with a result summary.">
+            <ToolActionCard interaction={executedToolActionInteraction} />
+          </ScenarioCard>
+          <ScenarioCard title="4 · Failed" description="Ran, but the connector errored.">
+            <ToolActionCard interaction={failedToolActionInteraction} />
+          </ScenarioCard>
+          <ScenarioCard title="5 · Declined" description="Rejected — nothing ran.">
+            <ToolActionCard interaction={declinedToolActionInteraction} />
+          </ScenarioCard>
+          <ScenarioCard title="6 · Expired" description="No response in 60 min.">
+            <ToolActionCard interaction={expiredToolActionInteraction} />
+          </ScenarioCard>
+          <ScenarioCard title="Legacy · no toolAction" description="Unchanged generic rendering.">
+            <ToolActionCard interaction={genericPendingRequestConfirmationInteraction} interactive />
+          </ScenarioCard>
+        </div>
+      </Section>
+    </StoryFrame>
+  ),
+};
+
+export const ToolActionMobile: Story = {
+  render: () => (
+    <StoryFrame>
+      <ScenarioCard
+        title="Mobile · 390"
+        description="Single column: risk badge wraps under the tool name, actions stack full-width, the technical drawer stays collapsed."
+      >
+        <div className="mx-auto max-w-[358px]">
+          <ToolActionCard interaction={pendingToolActionWriteInteraction} interactive />
+        </div>
+      </ScenarioCard>
+    </StoryFrame>
+  ),
+  parameters: {
+    viewport: { defaultViewport: "mobile1" },
+  },
+};
 
 export const CheckboxConfirmationPending: Story = {
   render: () => (

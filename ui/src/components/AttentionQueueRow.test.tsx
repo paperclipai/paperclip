@@ -2,7 +2,7 @@
 
 import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
-import type { AnchorHTMLAttributes, ReactElement } from "react";
+import { useState, type AnchorHTMLAttributes, type ReactElement } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AttentionItem, AttentionSourceKind } from "@paperclipai/shared";
@@ -32,6 +32,13 @@ vi.mock("../api/issues", () => ({
     rejectInteraction: vi.fn(),
   },
 }));
+
+// Spy on `relativeTime` (called exactly once per active-row render) so the
+// memoization test below can count row renders without a profiling build.
+vi.mock("../lib/utils", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../lib/utils")>();
+  return { ...original, relativeTime: vi.fn(original.relativeTime) };
+});
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -106,6 +113,7 @@ function buildItem(overrides: Partial<AttentionItem> = {}): AttentionItem {
     detail: null,
     dismissal: null,
     ...overrides,
+    trainingExampleId: overrides.trainingExampleId ?? null,
   };
 }
 
@@ -196,6 +204,25 @@ describe("AttentionQueueRow", () => {
     expect(onToggleExpand).toHaveBeenCalledTimes(1);
   });
 
+  it("exposes the visible expand chevron as an accessible button", () => {
+    const onToggleExpand = vi.fn();
+    render(
+      <AttentionQueueRow
+        item={buildItem()}
+        companyId="c1"
+        expanded={false}
+        onToggleExpand={onToggleExpand}
+        onDismiss={noop}
+      />,
+    );
+
+    const chevronButton = container?.querySelector('button[aria-label="Expand decision"]');
+    expect(chevronButton).toBeTruthy();
+    expect(chevronButton?.getAttribute("aria-expanded")).toBe("false");
+    act(() => chevronButton?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(onToggleExpand).toHaveBeenCalledWith(expect.objectContaining({ id: "a1" }));
+  });
+
   it("does not navigate on title click — the title is plain text, not a link", () => {
     render(
       <AttentionQueueRow
@@ -267,7 +294,7 @@ describe("AttentionQueueRow", () => {
     expect(row?.getAttribute("class")).toContain("ring-ring");
   });
 
-  it("renders collapsed inline decision verbs in the right-side action area with semantic variants", () => {
+  it("renders collapsed inline decision verbs in a dedicated action bar with semantic variants", () => {
     render(
       <AttentionQueueRow
         item={buildItem({
@@ -291,12 +318,11 @@ describe("AttentionQueueRow", () => {
     expect(decisionActions?.textContent).toContain("Approve");
     expect(decisionActions?.textContent).toContain("Reject");
 
+    // The action bar is its own full-width band (mobile-first) that collapses to
+    // a right-aligned pill row once the row's container is wide (container query)
+    // — no longer a stretched right column.
     const actionArea = decisionActions?.closest('[data-attention-actions="true"]');
-    expect(actionArea?.getAttribute("class")).toContain("mt-auto");
-
-    const controls = decisionActions?.closest('[data-attention-controls="true"]');
-    expect(controls?.getAttribute("class")).toContain("self-stretch");
-    expect(controls?.getAttribute("class")).toContain("justify-between");
+    expect(actionArea?.getAttribute("class")).toContain("@xl:justify-end");
 
     const rowMenu = container?.querySelector('[aria-label="Row actions"]');
     expect(rowMenu?.closest('[data-attention-menu="true"]')).toBeTruthy();
@@ -416,7 +442,7 @@ describe("AttentionQueueRow", () => {
     expect(issuesApi.rejectInteraction).not.toHaveBeenCalled();
   });
 
-  it("centers thumbnails beside the full card text stack", () => {
+  it("renders evidence thumbnails in a centered context row below the text stack", () => {
     render(
       <AttentionQueueRow
         item={buildItem({
@@ -441,6 +467,30 @@ describe("AttentionQueueRow", () => {
     expect(thumbnailStack?.parentElement?.getAttribute("class")).toContain("items-center");
   });
 
+  it("is memoized — a parent re-render with identical props does not re-render the row", async () => {
+    const { relativeTime } = await import("../lib/utils");
+    const item = buildItem();
+    let bump: () => void = () => {};
+    function Harness() {
+      const [, setTick] = useState(0);
+      bump = () => setTick((n) => n + 1);
+      return (
+        <AttentionQueueRow
+          item={item}
+          companyId="c1"
+          expanded={false}
+          onToggleExpand={noop}
+          onDismiss={noop}
+        />
+      );
+    }
+    render(<Harness />);
+    const rendersAfterMount = vi.mocked(relativeTime).mock.calls.length;
+    expect(rendersAfterMount).toBeGreaterThan(0);
+    act(() => bump());
+    expect(vi.mocked(relativeTime).mock.calls.length).toBe(rendersAfterMount);
+  });
+
   it("does not expose a toggle button for non-inline rows", () => {
     render(
       <AttentionQueueRow
@@ -452,5 +502,189 @@ describe("AttentionQueueRow", () => {
       />,
     );
     expect(container?.querySelector('[role="button"][aria-expanded]')).toBeNull();
+  });
+
+  it("makes a non-inline row with images expandable", () => {
+    const onToggleExpand = vi.fn();
+    render(
+      <AttentionQueueRow
+        item={buildItem({
+          sourceKind: "review" as AttentionSourceKind,
+          inlineResolvable: false,
+          detail: {
+            kind: "generic",
+            summaryExcerpt: "3 files changed",
+            images: [
+              { assetId: "img-1", alt: "one" },
+              { assetId: "img-2", alt: "two" },
+            ],
+          },
+        })}
+        companyId="c1"
+        expanded={false}
+        onToggleExpand={onToggleExpand}
+        onDismiss={noop}
+      />,
+    );
+    const header = container?.querySelector('[role="button"][aria-expanded]');
+    expect(header).not.toBeNull();
+    act(() => (header as HTMLElement).click());
+    expect(onToggleExpand).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows a larger gallery with an n-more link to the issue when expanded", () => {
+    render(
+      <AttentionQueueRow
+        item={buildItem({
+          sourceKind: "review" as AttentionSourceKind,
+          inlineResolvable: false,
+          relatedIssue: {
+            kind: "issue",
+            id: "issue-1",
+            companyId: "c1",
+            title: "Ship it",
+            identifier: "PAP-42",
+            status: "in_progress",
+            href: "/PAP/issues/PAP-42",
+            metadata: {},
+          },
+          detail: {
+            kind: "generic",
+            summaryExcerpt: "5 screenshots",
+            images: [
+              { assetId: "img-1", alt: "one" },
+              { assetId: "img-2", alt: "two" },
+              { assetId: "img-3", alt: "three" },
+              { assetId: "img-4", alt: "four" },
+              { assetId: "img-5", alt: "five" },
+            ],
+          },
+        })}
+        companyId="c1"
+        expanded
+        onToggleExpand={noop}
+        onDismiss={noop}
+      />,
+    );
+    const gallery = container?.querySelector('[data-attention-expanded-images="true"]');
+    expect(gallery).not.toBeNull();
+    // First three images render at the larger size.
+    expect(gallery?.querySelectorAll("img")).toHaveLength(3);
+    // "n more" link points at the related issue (5 images − 3 shown = 2 more).
+    const moreLink = Array.from(gallery?.querySelectorAll("a") ?? []).find((a) =>
+      a.textContent?.includes("2 more"),
+    );
+    expect(moreLink).toBeDefined();
+    expect(moreLink?.getAttribute("href")).toBe("/PAP/issues/PAP-42");
+  });
+
+  it("shows the remaining image count when no issue link is available", () => {
+    render(
+      <AttentionQueueRow
+        item={buildItem({
+          sourceKind: "review" as AttentionSourceKind,
+          inlineResolvable: false,
+          subject: {
+            kind: "issue",
+            id: "issue-1",
+            companyId: "c1",
+            title: "Unlinked review",
+            identifier: null,
+            status: "in_review",
+            href: null,
+            metadata: {},
+          },
+          detail: {
+            kind: "generic",
+            summaryExcerpt: "4 screenshots",
+            images: [
+              { assetId: "img-1", alt: "one" },
+              { assetId: "img-2", alt: "two" },
+              { assetId: "img-3", alt: "three" },
+              { assetId: "img-4", alt: "four" },
+            ],
+          },
+        })}
+        companyId="c1"
+        expanded
+        onToggleExpand={noop}
+        onDismiss={noop}
+      />,
+    );
+
+    const gallery = container?.querySelector('[data-attention-expanded-images="true"]');
+    expect(gallery?.textContent).toContain("1 more");
+    expect(gallery?.querySelectorAll("a")).toHaveLength(0);
+  });
+
+  // Decision training (PAP-14299): a trainable row shows the train affordance;
+  // the trained/untrained state renders purely from `trainingExampleId`.
+  function trainableItem(overrides: Partial<AttentionItem> = {}): AttentionItem {
+    return buildItem({
+      sourceKind: "issue_thread_interaction",
+      subject: {
+        kind: "interaction",
+        id: "interaction-1",
+        companyId: "c1",
+        title: "Approve the migration plan?",
+        identifier: null,
+        status: "pending",
+        href: "/PAP/issues/PAP-1",
+        metadata: { issueId: "issue-1", kind: "request_confirmation" },
+      },
+      ...overrides,
+    });
+  }
+
+  it("shows an untrained train button and fires onTrain when clicked", () => {
+    const onTrain = vi.fn();
+    render(
+      <AttentionQueueRow
+        item={trainableItem()}
+        companyId="c1"
+        expanded={false}
+        onToggleExpand={noop}
+        onDismiss={noop}
+        onTrain={onTrain}
+      />,
+    );
+    const button = container?.querySelector('[data-testid="attention-train-button"]');
+    expect(button).toBeTruthy();
+    expect(button?.getAttribute("data-training-state")).toBe("untrained");
+    expect(container?.querySelector('[data-testid="attention-trained-badge"]')).toBeNull();
+    act(() => button?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(onTrain).toHaveBeenCalledWith(expect.objectContaining({ id: "a1" }));
+  });
+
+  it("renders a Trained ✓ badge and a filled button once trained", () => {
+    render(
+      <AttentionQueueRow
+        item={trainableItem({ trainingExampleId: "example-1" })}
+        companyId="c1"
+        expanded={false}
+        onToggleExpand={noop}
+        onDismiss={noop}
+        onTrain={noop}
+      />,
+    );
+    expect(
+      container?.querySelector('[data-testid="attention-train-button"]')?.getAttribute("data-training-state"),
+    ).toBe("trained");
+    const badge = container?.querySelector('[data-testid="attention-trained-badge"]');
+    expect(badge?.textContent).toContain("Trained");
+  });
+
+  it("does not offer training on a decision that isn't anchored to an issue", () => {
+    render(
+      <AttentionQueueRow
+        item={buildItem({ subject: { ...buildItem().subject, metadata: {} }, relatedIssue: null })}
+        companyId="c1"
+        expanded={false}
+        onToggleExpand={noop}
+        onDismiss={noop}
+        onTrain={noop}
+      />,
+    );
+    expect(container?.querySelector('[data-testid="attention-train-button"]')).toBeNull();
   });
 });

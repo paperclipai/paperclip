@@ -28,8 +28,9 @@ export function InstanceGeneralSettings() {
 
   const signOutMutation = useMutation({
     mutationFn: () => authApi.signOut(),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.health });
     },
     onError: (error) => {
       setActionError(error instanceof Error ? error.message : "Failed to sign out.");

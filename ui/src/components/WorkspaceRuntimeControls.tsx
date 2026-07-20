@@ -11,6 +11,11 @@ import { Activity, ExternalLink, Loader2, Play, RotateCcw, Square } from "lucide
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
+import { timeAgo } from "@/lib/timeAgo";
+import type {
+  WorkspaceServiceControlAction,
+  WorkspaceServiceControlEntry,
+} from "@/components/WorkspaceServiceControlBar";
 
 export type WorkspaceRuntimeAction = "start" | "stop" | "restart" | "run";
 
@@ -200,6 +205,101 @@ export function getRunningRuntimeServiceUrl(
     (item) => (item.statusLabel === "running" || item.statusLabel === "starting") && item.url,
   );
   return runningService?.url ?? null;
+}
+
+function isActiveStatusLabel(statusLabel: string) {
+  return statusLabel === "running" || statusLabel === "starting";
+}
+
+/**
+ * Maps runtime control sections onto the fixed-geometry service control bar
+ * model. In-flight mutations overlay the transitional states (starting /
+ * stopping / restarting) that the server status enum does not carry.
+ */
+export function buildWorkspaceServiceControlEntries(input: {
+  sections: WorkspaceRuntimeControlSections;
+  runtimeServices?: WorkspaceRuntimeService[] | null;
+  isPending?: boolean;
+  pendingRequest?: WorkspaceRuntimeControlRequest | null;
+  pendingRequests?: WorkspaceRuntimeControlRequest[];
+}): WorkspaceServiceControlEntry[] {
+  const runtimeServicesById = new Map(
+    (input.runtimeServices ?? []).map((runtimeService) => [runtimeService.id, runtimeService]),
+  );
+  const pendingRequests = input.pendingRequests
+    ?? (input.isPending && input.pendingRequest ? [input.pendingRequest] : []);
+
+  return [...input.sections.services, ...input.sections.otherServices].map((item) => {
+    let state: WorkspaceServiceControlEntry["state"] =
+      item.statusLabel === "running"
+        ? "running"
+        : item.statusLabel === "starting"
+          ? "starting"
+          : item.statusLabel === "failed"
+            ? "failed"
+            : "stopped";
+
+    const pendingRequest = pendingRequests.find((request) =>
+      request.action !== "run"
+      && (request.workspaceCommandId ?? null) === (item.workspaceCommandId ?? null)
+      && (request.runtimeServiceId ?? null) === (item.runtimeServiceId ?? null)
+      && (request.serviceIndex ?? null) === (item.serviceIndex ?? null));
+    if (pendingRequest) {
+      state = pendingRequest.action === "stop"
+        ? "stopping"
+        : pendingRequest.action === "restart"
+          ? "restarting"
+          : "starting";
+    }
+
+    const runtimeService = item.runtimeServiceId ? runtimeServicesById.get(item.runtimeServiceId) ?? null : null;
+    const failureDetail = state === "failed"
+      ? `Service failed${runtimeService?.stoppedAt ? ` · ${timeAgo(runtimeService.stoppedAt)}` : ""}`
+      : null;
+
+    return {
+      key: item.key,
+      name: item.title,
+      state,
+      healthStatus: item.healthStatus,
+      url: item.url,
+      port: item.port,
+      failureDetail,
+      canStart: item.canStart,
+    };
+  });
+}
+
+/**
+ * Resolves a control-bar action into the runtime control requests to fire.
+ * A null serviceKey targets every applicable service (the aggregate bar and
+ * popover bulk actions).
+ */
+export function resolveWorkspaceServiceControlRequests(
+  sections: WorkspaceRuntimeControlSections,
+  action: WorkspaceServiceControlAction,
+  serviceKey: string | null,
+): WorkspaceRuntimeControlRequest[] {
+  const items = [...sections.services, ...sections.otherServices];
+  if (serviceKey !== null) {
+    const item = items.find((candidate) => candidate.key === serviceKey);
+    return item ? [buildRequest(item, action)] : [];
+  }
+  if (action === "stop") {
+    return items
+      .filter((item) => isActiveStatusLabel(item.statusLabel))
+      .map((item) => buildRequest(item, "stop"));
+  }
+  if (action === "start") {
+    return items
+      .filter((item) => !isActiveStatusLabel(item.statusLabel) && item.canStart)
+      .map((item) => buildRequest(item, "start"));
+  }
+  return items.flatMap((item) => {
+    if (isActiveStatusLabel(item.statusLabel)) return [buildRequest(item, "restart")];
+    if (item.canStart) return [buildRequest(item, "start")];
+    return [];
+  });
 }
 
 function requestMatchesPending(

@@ -418,3 +418,103 @@ describe("plugin-worker-manager stderr failure context", () => {
     }
   });
 });
+
+
+describe("plugin host company context guards", () => {
+  it("rejects config and secret calls without host-issued company context before host services run", async () => {
+    const configGet = vi.fn(async () => ({ apiKey: "unreachable" }));
+    const secretsResolve = vi.fn(async () => "unreachable");
+    const handlers = createHostClientHandlers({
+      pluginId: "test.plugin",
+      capabilities: ["secrets.read-ref"],
+      services: {
+        config: { get: configGet },
+        secrets: { resolve: secretsResolve },
+      } as unknown as HostServices,
+    });
+
+    await expect(handlers["config.get"]({})).rejects.toMatchObject({
+      name: "InvocationScopeDeniedError",
+      message: expect.stringContaining("company context is required"),
+    });
+    await expect(handlers["config.get"]({ companyId: "company-1" })).rejects.toMatchObject({
+      name: "InvocationScopeDeniedError",
+      message: expect.stringContaining("company context is required"),
+    });
+    await expect(
+      handlers["secrets.resolve"]({
+        secretRef: { type: "secret_ref", secretId: "11111111-1111-4111-8111-111111111111" },
+      }),
+    ).rejects.toMatchObject({
+      name: "InvocationScopeDeniedError",
+      message: expect.stringContaining("company context is required"),
+    });
+    await expect(
+      handlers["secrets.resolve"]({
+        companyId: "company-1",
+        secretRef: { type: "secret_ref", secretId: "11111111-1111-4111-8111-111111111111" },
+      }),
+    ).rejects.toMatchObject({
+      name: "InvocationScopeDeniedError",
+      message: expect.stringContaining("company context is required"),
+    });
+
+    expect(configGet).not.toHaveBeenCalled();
+    expect(secretsResolve).not.toHaveBeenCalled();
+  });
+
+  it("rejects cross-company config and secret reads in scoped worker invocations before host services run", async () => {
+    const configGet = vi.fn(async () => ({ apiKeyRef: "unreachable" }));
+    const secretsResolve = vi.fn(async () => "unreachable");
+    const hostHandlers = createHostClientHandlers({
+      pluginId: "test.plugin",
+      capabilities: ["secrets.read-ref"],
+      services: {
+        config: { get: configGet },
+        secrets: { resolve: secretsResolve },
+      } as unknown as HostServices,
+    });
+    const handle = createPluginWorkerHandle("test.plugin", {
+      entrypointPath: INVOCATION_SCOPE_WORKER_ENTRYPOINT,
+      manifest: TEST_MANIFEST,
+      config: {},
+      instanceInfo: {
+        instanceId: "instance-1",
+        hostVersion: "1.0.0",
+      },
+      apiVersion: 1,
+      hostHandlers,
+    });
+
+    try {
+      await handle.start();
+
+      for (const hostMethod of ["config.get", "secrets.resolve"] as const) {
+        await expect(handle.call("performAction", {
+          key: "probe",
+          params: {
+            mode: "echo",
+            hostMethod,
+            requestedCompanyId: "company-b",
+          },
+          actorContext: {
+            type: "agent",
+            userId: null,
+            agentId: "agent-1",
+            runId: "run-1",
+            companyId: "company-a",
+          },
+          renderEnvironment: null,
+        })).rejects.toMatchObject({
+          code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED,
+          message: expect.stringContaining('requested company "company-b"'),
+        });
+      }
+
+      expect(configGet).not.toHaveBeenCalled();
+      expect(secretsResolve).not.toHaveBeenCalled();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+});

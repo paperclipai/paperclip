@@ -702,7 +702,8 @@ describe("SidebarAgents", () => {
     expect(agentLinkLabels(container)).toEqual(["Alpha"]);
 
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(1);
+      await vi.advanceTimersByTimeAsync(5);
+      await vi.advanceTimersByTimeAsync(0);
     });
     expect(agentLinkLabels(container)).toEqual(["Alpha", "Bravo", "Charlie"]);
   });
@@ -758,12 +759,14 @@ describe("SidebarAgents", () => {
     expect(agentLinkLabels(container)).toEqual(["Alpha", "Bravo"]);
 
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(60_001);
+      await vi.advanceTimersByTimeAsync(60_005);
+      await vi.advanceTimersByTimeAsync(0);
     });
     expect(agentLinkLabels(container)).toEqual(["Bravo"]);
 
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(60_000);
+      await vi.advanceTimersByTimeAsync(60_005);
+      await vi.advanceTimersByTimeAsync(0);
     });
     expect(agentLinkLabels(container)).toEqual(["Alpha", "Bravo", "Charlie"]);
   });

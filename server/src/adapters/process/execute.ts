@@ -156,6 +156,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     timeoutSec,
     graceSec,
     onLog,
+    onSpawn: ctx.onSpawn,
   });
   const { disposition, cleanedText } = extractPaperclipDisposition(proc.stdout ?? "");
   const resultJson = {

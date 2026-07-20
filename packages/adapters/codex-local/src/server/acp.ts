@@ -2,12 +2,18 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
+  AdapterBillingType,
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestContext,
   AdapterEnvironmentTestResult,
   AdapterExecutionContext,
   AdapterExecutionResult,
 } from "@paperclipai/adapter-utils";
+import {
+  parseLocalProcessFilesystemScope,
+  parseLocalProcessNetworkScope,
+} from "@paperclipai/adapter-utils/local-process-sandbox";
+import { inferOpenAiCompatibleBiller } from "@paperclipai/adapter-utils";
 import {
   ensureAdapterExecutionTargetCommandResolvable,
   readAdapterExecutionTarget,
@@ -25,6 +31,7 @@ import {
   asString,
   parseObject,
 } from "@paperclipai/adapter-utils/server-utils";
+import { classifyCodexAuthRefreshFailure } from "./parse.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const packageRootDir = path.resolve(moduleDir, "../..");
@@ -64,6 +71,20 @@ export async function resolveCodexExecutionEngineForRun(
   input: CodexEngineResolutionInput,
 ): Promise<CodexEngineSelection> {
   const selection = normalizeEngine(input.config.engine);
+  const filesystemScope = parseLocalProcessFilesystemScope(input.config.filesystemScope);
+  const networkScope = parseLocalProcessNetworkScope(input.config.networkScope);
+  if (filesystemScope || networkScope) {
+    if (selection.explicit && selection.engine === "acp") {
+      throw new Error("Local filesystem/network confinement requires the Codex CLI engine; ACP confinement is not supported.");
+    }
+    return {
+      engine: "cli",
+      explicit: selection.explicit,
+      ...(!selection.explicit
+        ? { fallbackReason: "Local filesystem/network scope requires spawn-level confinement in the CLI lane." }
+        : {}),
+    };
+  }
   if (selection.explicit || selection.engine !== "acp") return selection;
 
   const fallbackReason = await defaultCodexAcpFallbackReason(input);
@@ -113,11 +134,69 @@ export function buildCodexAcpConfig(config: Record<string, unknown>): Record<str
 
 function withCodexAcpDefaults(options: CodexAcpExecutorOptions): AcpxEngineExecutorOptions {
   return {
+    resolveBillingIdentity: resolveCodexAcpBillingIdentity,
     ...options,
     adapterType: "codex_local",
     moduleDir,
     packageRootDir,
   };
+}
+
+function withCodexAuthRefreshFailureClassification(result: AdapterExecutionResult): AdapterExecutionResult {
+  if ((result.exitCode ?? 0) === 0) return result;
+  const resultJson = parseObject(result.resultJson);
+  const stopReason = asString(resultJson.stopReason, "");
+  const authFailure = classifyCodexAuthRefreshFailure({
+    errorMessage: [result.errorMessage ?? "", result.summary ?? "", stopReason]
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .join("\n"),
+  });
+  if (!authFailure) return result;
+
+  return {
+    ...result,
+    errorCode: authFailure,
+    errorFamily: authFailure,
+    resultJson: {
+      ...(result.resultJson ?? {}),
+      errorFamily: authFailure,
+    },
+  };
+}
+
+/**
+ * Classify billing the same way the Codex CLI lane does so ACP runs land in
+ * the cost ledger with a real provider/billingType instead of acpx/unknown.
+ * Host env only counts for local execution targets; remote targets see just
+ * the adapter-config env.
+ */
+export function resolveCodexAcpBillingIdentity(
+  ctx: Pick<AdapterExecutionContext, "config"> &
+    Partial<Pick<AdapterExecutionContext, "executionTarget" | "executionTransport">>,
+): { provider: string; biller: string; billingType: AdapterBillingType } {
+  const envConfig = parseObject(parseObject(ctx.config).env);
+  const target = readAdapterExecutionTarget({
+    executionTarget: ctx.executionTarget,
+    legacyRemoteExecution: ctx.executionTransport?.remoteExecution,
+  });
+  const considerHostEnv = target?.kind !== "remote";
+  const mergedEnv: NodeJS.ProcessEnv = {
+    ...(considerHostEnv ? process.env : {}),
+    ...Object.fromEntries(
+      Object.entries(envConfig).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+    ),
+  };
+  const apiKey = typeof mergedEnv.OPENAI_API_KEY === "string" && mergedEnv.OPENAI_API_KEY.trim().length > 0;
+  const billingType: AdapterBillingType = apiKey ? "api" : "subscription";
+  const openAiCompatibleBiller = inferOpenAiCompatibleBiller(mergedEnv, "openai");
+  const biller =
+    openAiCompatibleBiller === "openrouter"
+      ? "openrouter"
+      : billingType === "subscription"
+      ? "chatgpt"
+      : openAiCompatibleBiller ?? "openai";
+  return { provider: "openai", biller, billingType };
 }
 
 export function createCodexAcpExecutor(options: CodexAcpExecutorOptions = {}): CodexAcpExecutor {
@@ -129,10 +208,11 @@ export function createCodexAcpExecutor(options: CodexAcpExecutorOptions = {}): C
       currentExecutor = createAcpxEngineExecutor(withCodexAcpDefaults(options));
       executor = currentExecutor;
     }
-    return currentExecutor({
+    const result = await currentExecutor({
       ...ctx,
       config: buildCodexAcpConfig(ctx.config),
     });
+    return withCodexAuthRefreshFailureClassification(result);
   };
 }
 

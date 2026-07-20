@@ -46,6 +46,7 @@ import type {
   PermissionKey,
   PrincipalPermissionGrant,
   PrincipalType,
+  EnvSecretRefBinding,
 } from "@paperclipai/shared";
 import type { PluginPerformActionContext } from "./protocol.js";
 
@@ -138,6 +139,7 @@ export type {
   PermissionKey,
   PrincipalPermissionGrant,
   PrincipalType,
+  EnvSecretRefBinding,
 } from "@paperclipai/shared";
 
 // ---------------------------------------------------------------------------
@@ -426,11 +428,11 @@ export interface PluginExecutionWorkspaceMetadata {
  */
 export interface PluginConfigClient {
   /**
-   * Returns the resolved operator configuration for this plugin instance.
-   * Values are validated against the plugin's `instanceConfigSchema` by the
-   * host before being passed to the worker.
+   * Returns the resolved operator configuration for this plugin in a company.
+   * When called during a host-scoped invocation, the host may derive the
+   * companyId; otherwise callers must pass it explicitly.
    */
-  get(): Promise<Record<string, unknown>>;
+  get(companyId?: string): Promise<Record<string, unknown>>;
 }
 
 export interface PluginLocalFolderProblem {
@@ -642,9 +644,9 @@ export interface PluginHttpClient {
  *
  * Requires `secrets.read-ref` capability.
  *
- * Plugins store secret *references* in their config (e.g. a secret name).
- * This client resolves the reference through the Paperclip secret provider
- * system and returns the resolved value at execution time.
+ * Plugins store shared `{ type: "secret_ref", secretId, version? }` bindings in
+ * company-scoped config. This client resolves a bound ref through the
+ * Paperclip secret provider system at execution time.
  *
  * @see PLUGIN_SPEC.md §22 — Secrets
  */
@@ -652,16 +654,19 @@ export interface PluginSecretsClient {
   /**
    * Resolve a secret reference to its current value.
    *
-   * The reference is a string identifier pointing to a secret configured
-   * in the Paperclip secret provider (e.g. `"MY_API_KEY"`).
+   * The reference must be the shared `secret_ref` object shape from plugin
+   * config. Legacy string UUID references fail closed.
    *
    * Secret values are resolved at call time and must never be cached or
    * written to logs, config, or other persistent storage.
    *
-   * @param secretRef - The secret reference string from plugin config
+   * @param secretRef - The secret reference object from plugin config
    * @returns The resolved secret value
    */
-  resolve(secretRef: string): Promise<string>;
+  resolve(
+    secretRef: string | EnvSecretRefBinding,
+    options?: { companyId?: string; configPath?: string },
+  ): Promise<string>;
 }
 
 /**

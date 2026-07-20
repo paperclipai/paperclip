@@ -17,6 +17,7 @@ const testServerInfo = {
     available: true,
     fullSha: "0123456789abcdef0123456789abcdef01234567",
     shortSha: "0123456",
+    branchName: "master",
     subject: "Add server info debug view",
     committedAt: "2026-06-25T23:00:00.000Z",
     localChanges: {
@@ -76,6 +77,7 @@ describe("GET /health", () => {
     expect(res.body).toEqual({
       status: "ok",
       version: serverVersion,
+      serverVersion,
       instance: getInstanceIdentity(),
       serverInfo: testServerInfo,
     });
@@ -110,6 +112,7 @@ describe("GET /health", () => {
     expect(res.body).toEqual({
       status: "unhealthy",
       version: serverVersion,
+      serverVersion,
       error: "database_unreachable",
       instance: getInstanceIdentity(),
       serverInfo: testServerInfo,
@@ -469,6 +472,7 @@ describe("GET /health", () => {
     expect(res.body).toMatchObject({
       status: "ok",
       version: serverVersion,
+      serverVersion,
       deploymentMode: "authenticated",
       deploymentExposure: "public",
       authReady: true,

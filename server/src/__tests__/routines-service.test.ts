@@ -12,6 +12,7 @@ import {
   documentRevisions,
   documents,
   executionWorkspaces,
+  folders,
   goals,
   heartbeatRuns,
   issueComments,
@@ -73,6 +74,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     await db.delete(routineRuns);
     await db.delete(routineTriggers);
     await db.delete(routines);
+    await db.delete(folders);
     await db.delete(routineDocuments);
     await db.delete(documents);
     await db.delete(documentRevisions);
@@ -341,6 +343,26 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     });
   }
 
+  async function insertDispatchedRun(input: {
+    companyId: string;
+    routineId: string;
+    triggeredAt: Date;
+    source?: "schedule" | "manual" | "api" | "webhook";
+  }) {
+    return db
+      .insert(routineRuns)
+      .values({
+        companyId: input.companyId,
+        routineId: input.routineId,
+        source: input.source ?? "schedule",
+        status: "completed",
+        triggeredAt: input.triggeredAt,
+        completedAt: input.triggeredAt,
+      })
+      .returning()
+      .then((rows) => rows[0]!);
+  }
+
   it("filters listed routines by project", async () => {
     const { companyId, agentId, projectId, routine, svc } = await seedFixture();
     const otherProjectId = randomUUID();
@@ -372,6 +394,256 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
 
     expect(projectRoutines.map((entry) => entry.id)).toEqual([routine.id]);
     expect(allRoutines.map((entry) => entry.id)).toEqual(expect.arrayContaining([routine.id, otherRoutine.id]));
+  });
+
+  it("does not reveal folders owned by another company", async () => {
+    const { companyId, agentId, projectId, svc } = await seedFixture();
+    const otherCompanyId = randomUUID();
+    await db.insert(companies).values({
+      id: otherCompanyId,
+      name: "Other company",
+      issuePrefix: `T${otherCompanyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      defaultResponsibleUserId: randomUUID(),
+      requireBoardApprovalForNewAgents: false,
+    });
+    const [otherFolder] = await db.insert(folders).values({
+      companyId: otherCompanyId,
+      kind: "routine",
+      name: "Private folder",
+      slug: "private-folder",
+      position: 0,
+    }).returning();
+
+    await expect(svc.create(companyId, {
+      projectId,
+      folderId: otherFolder!.id,
+      goalId: null,
+      parentIssueId: null,
+      title: "cross-company folder probe",
+      description: null,
+      assigneeAgentId: agentId,
+      priority: "medium",
+      status: "active",
+      concurrencyPolicy: "coalesce_if_active",
+      catchUpPolicy: "skip_missed",
+    }, {})).rejects.toMatchObject({ status: 404, message: "Folder not found" });
+  });
+
+  it("defaults activity gates to always at company scope", async () => {
+    const { routine } = await seedFixture();
+
+    expect(routine.activityGatePolicy).toBe("always");
+    expect(routine.activityGateScope).toBe("company");
+  });
+
+  it("fires an activity gate for a routine that has never dispatched", async () => {
+    const { routine, svc } = await seedFixture();
+
+    await expect(svc.evaluateActivityGate(routine, new Date())).resolves.toEqual({
+      fire: true,
+      windowStart: null,
+      matchedActivity: null,
+    });
+  });
+
+  it("excludes activity from heartbeat runs executing the routine's own issue", async () => {
+    const { agentId, companyId, projectId, routine, svc } = await seedFixture();
+    const windowStart = new Date(Date.now() - 60_000);
+    const now = new Date();
+    await insertDispatchedRun({ companyId, routineId: routine.id, triggeredAt: windowStart });
+    const issueId = randomUUID();
+    const runId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      projectId,
+      title: "Routine execution",
+      originKind: "routine_execution",
+      originId: routine.id,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "completed",
+      contextSnapshot: { issueId },
+    });
+    await db.insert(activityLog).values({
+      companyId,
+      actorType: "agent",
+      actorId: agentId,
+      agentId,
+      runId,
+      action: "issue.comment_added",
+      entityType: "issue",
+      entityId: issueId,
+      createdAt: new Date(windowStart.getTime() + 1_000),
+    });
+
+    await expect(svc.evaluateActivityGate(routine, now)).resolves.toMatchObject({
+      fire: false,
+      windowStart,
+      matchedActivity: null,
+    });
+  });
+
+  it("fires for another agent running a child of the routine issue", async () => {
+    const { agentId, companyId, projectId, routine, svc } = await seedFixture();
+    const windowStart = new Date(Date.now() - 60_000);
+    const now = new Date();
+    await insertDispatchedRun({ companyId, routineId: routine.id, triggeredAt: windowStart });
+    const otherAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: otherAgentId,
+      companyId,
+      name: "Worker",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const routineIssueId = randomUUID();
+    const childIssueId = randomUUID();
+    await db.insert(issues).values([
+      {
+        id: routineIssueId,
+        companyId,
+        projectId,
+        title: "Routine execution",
+        originKind: "routine_execution",
+        originId: routine.id,
+      },
+      {
+        id: childIssueId,
+        companyId,
+        projectId,
+        parentId: routineIssueId,
+        title: "Delegated child",
+      },
+    ]);
+    const childRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: childRunId,
+      companyId,
+      agentId: otherAgentId,
+      status: "running",
+      contextSnapshot: { issueId: childIssueId },
+    });
+    const [activity] = await db.insert(activityLog).values({
+      companyId,
+      actorType: "agent",
+      actorId: otherAgentId,
+      agentId: otherAgentId,
+      runId: childRunId,
+      action: "issue.checkout",
+      entityType: "issue",
+      entityId: childIssueId,
+      createdAt: new Date(windowStart.getTime() + 1_000),
+    }).returning();
+
+    await expect(svc.evaluateActivityGate(routine, now)).resolves.toMatchObject({
+      fire: true,
+      windowStart,
+      matchedActivity: { id: activity!.id },
+    });
+    expect(agentId).not.toBe(otherAgentId);
+  });
+
+  it("fires for a human comment and ignores pure-read activity", async () => {
+    const { companyId, projectId, routine, svc } = await seedFixture();
+    const windowStart = new Date(Date.now() - 60_000);
+    const now = new Date();
+    await insertDispatchedRun({ companyId, routineId: routine.id, triggeredAt: windowStart });
+    const issueId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, projectId, title: "Board task" });
+    await db.insert(activityLog).values([
+      {
+        companyId,
+        actorType: "user",
+        actorId: "user-1",
+        action: "issue.read_marked",
+        entityType: "issue",
+        entityId: issueId,
+        createdAt: new Date(windowStart.getTime() + 1_000),
+      },
+      {
+        companyId,
+        actorType: "user",
+        actorId: "user-1",
+        action: "issue.comment_added",
+        entityType: "issue",
+        entityId: issueId,
+        createdAt: new Date(windowStart.getTime() + 2_000),
+      },
+    ]);
+
+    await expect(svc.evaluateActivityGate(routine, now)).resolves.toMatchObject({
+      fire: true,
+      matchedActivity: { action: "issue.comment_added" },
+    });
+
+    await db.delete(activityLog);
+    await db.insert(activityLog).values([
+      {
+        companyId,
+        actorType: "user",
+        actorId: "user-1",
+        action: "issue.read_marked",
+        entityType: "issue",
+        entityId: issueId,
+        createdAt: new Date(windowStart.getTime() + 1_000),
+      },
+      {
+        companyId,
+        actorType: "user",
+        actorId: "user-1",
+        action: "issue.inbox_archived",
+        entityType: "issue",
+        entityId: issueId,
+        createdAt: new Date(windowStart.getTime() + 2_000),
+      },
+    ]);
+
+    await expect(svc.evaluateActivityGate(routine, now)).resolves.toMatchObject({ fire: false });
+  });
+
+  it("limits project-scoped gates to activity in the routine project", async () => {
+    const { companyId, projectId, routine, svc } = await seedFixture();
+    const otherProjectId = randomUUID();
+    await db.insert(projects).values({ id: otherProjectId, companyId, name: "Other", status: "in_progress" });
+    const windowStart = new Date(Date.now() - 60_000);
+    const now = new Date();
+    await insertDispatchedRun({ companyId, routineId: routine.id, triggeredAt: windowStart });
+    const [otherIssue, ownIssue] = [randomUUID(), randomUUID()];
+    await db.insert(issues).values([
+      { id: otherIssue, companyId, projectId: otherProjectId, title: "Other project" },
+      { id: ownIssue, companyId, projectId, title: "Routine project" },
+    ]);
+    const projectRoutine = { ...routine, activityGateScope: "project" };
+    await db.insert(activityLog).values({
+      companyId,
+      actorType: "user",
+      actorId: "user-1",
+      action: "issue.comment_added",
+      entityType: "issue",
+      entityId: otherIssue,
+      createdAt: new Date(windowStart.getTime() + 1_000),
+    });
+
+    await expect(svc.evaluateActivityGate(projectRoutine, now)).resolves.toMatchObject({ fire: false });
+
+    await db.insert(activityLog).values({
+      companyId,
+      actorType: "user",
+      actorId: "user-1",
+      action: "issue.comment_added",
+      entityType: "issue",
+      entityId: ownIssue,
+      createdAt: new Date(windowStart.getTime() + 2_000),
+    });
+    await expect(svc.evaluateActivityGate(projectRoutine, now)).resolves.toMatchObject({ fire: true });
   });
 
   it("coalesces into an open routine issue even when the previous issue is idle", async () => {
@@ -3188,6 +3460,100 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(newRuns).toMatchObject([{ status: "issue_created" }]);
   });
 
+  it("coalesces multiple missed sub-hourly ticks into one catch-up run", async () => {
+    const { routine, svc } = await seedFixture();
+    await db.update(routines).set({
+      catchUpPolicy: "enqueue_missed_with_cap",
+    }).where(eq(routines.id, routine.id));
+    const { trigger } = await svc.createTrigger(routine.id, {
+      kind: "schedule",
+      cronExpression: "*/10 * * * *",
+      timezone: "UTC",
+    }, {});
+    await db.update(routineTriggers).set({
+      nextRunAt: new Date("2026-07-16T00:00:00.000Z"),
+    }).where(eq(routineTriggers.id, trigger.id));
+
+    expect(await svc.tickScheduledTriggers(new Date("2026-07-16T01:05:00.000Z"))).toEqual({ triggered: 1 });
+
+    const runs = await db.select().from(routineRuns).where(eq(routineRuns.routineId, routine.id));
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.status).toBe("issue_created");
+    const updatedTrigger = await db.select().from(routineTriggers).where(eq(routineTriggers.id, trigger.id)).then((rows) => rows[0]);
+    expect(updatedTrigger?.nextRunAt).toEqual(new Date("2026-07-16T01:10:00.000Z"));
+  });
+
+  it("continues replaying each missed hourly tick", async () => {
+    const { routine, svc } = await seedFixture();
+    await db.update(routines).set({
+      catchUpPolicy: "enqueue_missed_with_cap",
+    }).where(eq(routines.id, routine.id));
+    const { trigger } = await svc.createTrigger(routine.id, {
+      kind: "schedule",
+      cronExpression: "0 * * * *",
+      timezone: "UTC",
+    }, {});
+    await db.update(routineTriggers).set({
+      nextRunAt: new Date("2026-07-16T00:00:00.000Z"),
+    }).where(eq(routineTriggers.id, trigger.id));
+
+    expect(await svc.tickScheduledTriggers(new Date("2026-07-16T02:30:00.000Z"))).toEqual({ triggered: 3 });
+
+    const runs = await db.select().from(routineRuns).where(eq(routineRuns.routineId, routine.id));
+    expect(runs).toHaveLength(3);
+    expect(runs.filter((run) => run.status === "issue_created")).toHaveLength(1);
+    expect(runs.filter((run) => run.status === "coalesced")).toHaveLength(2);
+    const updatedTrigger = await db.select().from(routineTriggers).where(eq(routineTriggers.id, trigger.id)).then((rows) => rows[0]);
+    expect(updatedTrigger?.nextRunAt).toEqual(new Date("2026-07-16T03:00:00.000Z"));
+  });
+
+  it("continues replaying missed ticks for daily schedules with multiple minute values", async () => {
+    const { routine, svc } = await seedFixture();
+    await db.update(routines).set({
+      catchUpPolicy: "enqueue_missed_with_cap",
+    }).where(eq(routines.id, routine.id));
+    const { trigger } = await svc.createTrigger(routine.id, {
+      kind: "schedule",
+      cronExpression: "0,30 9 * * *",
+      timezone: "UTC",
+    }, {});
+    await db.update(routineTriggers).set({
+      nextRunAt: new Date("2026-07-14T09:00:00.000Z"),
+    }).where(eq(routineTriggers.id, trigger.id));
+
+    expect(await svc.tickScheduledTriggers(new Date("2026-07-15T10:00:00.000Z"))).toEqual({ triggered: 4 });
+
+    const runs = await db.select().from(routineRuns).where(eq(routineRuns.routineId, routine.id));
+    expect(runs).toHaveLength(4);
+    expect(runs.filter((run) => run.status === "issue_created")).toHaveLength(1);
+    expect(runs.filter((run) => run.status === "coalesced")).toHaveLength(3);
+    const updatedTrigger = await db.select().from(routineTriggers).where(eq(routineTriggers.id, trigger.id)).then((rows) => rows[0]);
+    expect(updatedTrigger?.nextRunAt).toEqual(new Date("2026-07-16T09:00:00.000Z"));
+  });
+
+  it("coalesces sub-hourly schedules restricted to weekdays", async () => {
+    const { routine, svc } = await seedFixture();
+    await db.update(routines).set({
+      catchUpPolicy: "enqueue_missed_with_cap",
+    }).where(eq(routines.id, routine.id));
+    const { trigger } = await svc.createTrigger(routine.id, {
+      kind: "schedule",
+      cronExpression: "*/10 * * * 1-5",
+      timezone: "UTC",
+    }, {});
+    await db.update(routineTriggers).set({
+      nextRunAt: new Date("2026-07-13T00:00:00.000Z"),
+    }).where(eq(routineTriggers.id, trigger.id));
+
+    expect(await svc.tickScheduledTriggers(new Date("2026-07-13T01:05:00.000Z"))).toEqual({ triggered: 1 });
+
+    const runs = await db.select().from(routineRuns).where(eq(routineRuns.routineId, routine.id));
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.status).toBe("issue_created");
+    const updatedTrigger = await db.select().from(routineTriggers).where(eq(routineTriggers.id, trigger.id)).then((rows) => rows[0]);
+    expect(updatedTrigger?.nextRunAt).toEqual(new Date("2026-07-13T01:10:00.000Z"));
+  });
+
   it("applies the armed cutoff to webhook dispatch but not manual API runs", async () => {
     const runtimeEnv = { PAPERCLIP_IN_WORKTREE: "true", PAPERCLIP_INSTANCE_ID: "worktree-routines-test" };
     const { routine, svc } = await seedFixture({ runtimeEnv });
@@ -3334,5 +3700,73 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(refreshedTrigger?.nextRunAt).not.toBeNull();
     expect(refreshedTrigger!.nextRunAt!.getTime()).toBeGreaterThan(pastDue.getTime());
     expect(refreshedTrigger?.lastResult).toBe("Execution failed; retry scheduled");
+  });
+
+  it("skips a gated scheduled tick when quiet without advancing the activity window", async () => {
+    const { companyId, routine, svc } = await seedFixture();
+    await db.update(routines).set({
+      activityGatePolicy: "require_external_activity",
+    }).where(eq(routines.id, routine.id));
+    const gatedRoutine = { ...routine, activityGatePolicy: "require_external_activity" };
+    const { trigger } = await svc.createTrigger(routine.id, {
+      kind: "schedule",
+      cronExpression: "* * * * *",
+      timezone: "UTC",
+    }, {});
+    const firstTick = new Date();
+    await db.update(routineTriggers).set({ nextRunAt: new Date(firstTick.getTime() - 1_000) }).where(eq(routineTriggers.id, trigger.id));
+
+    expect(await svc.tickScheduledTriggers(firstTick)).toEqual({ triggered: 1 });
+    const [firstRun] = await db.select().from(routineRuns).where(eq(routineRuns.routineId, routine.id));
+    expect(firstRun?.status).toBe("issue_created");
+
+    const quietTick = new Date(firstTick.getTime() + 60_000);
+    await db.update(routineTriggers).set({ nextRunAt: new Date(quietTick.getTime() - 1_000) }).where(eq(routineTriggers.id, trigger.id));
+    expect(await svc.tickScheduledTriggers(quietTick)).toEqual({ triggered: 0 });
+
+    const runsAfterQuietTick = await db.select().from(routineRuns).where(eq(routineRuns.routineId, routine.id));
+    const quietRun = runsAfterQuietTick.find((run) => run.failureReason === "no_external_activity");
+    expect(quietRun).toMatchObject({
+      status: "skipped",
+      source: "schedule",
+      linkedIssueId: null,
+      triggerPayload: {
+        activityGate: {
+          verdict: "quiet",
+          windowStart: firstRun!.triggeredAt.toISOString(),
+          matchedActivityId: null,
+        },
+      },
+    });
+
+    const activityAt = new Date(firstRun!.triggeredAt.getTime() + 30_000);
+    await db.insert(activityLog).values({
+      companyId,
+      actorType: "user",
+      actorId: "user-1",
+      action: "issue.comment_added",
+      entityType: "issue",
+      entityId: firstRun!.linkedIssueId!,
+      createdAt: activityAt,
+    });
+    await db.update(issues).set({ status: "done", completedAt: activityAt }).where(eq(issues.id, firstRun!.linkedIssueId!));
+    const resumedTick = new Date(quietTick.getTime() + 60_000);
+    await db.update(routineTriggers).set({ nextRunAt: new Date(resumedTick.getTime() - 1_000) }).where(eq(routineTriggers.id, trigger.id));
+
+    await expect(svc.evaluateActivityGate(gatedRoutine, resumedTick)).resolves.toMatchObject({
+      fire: true,
+      windowStart: firstRun!.triggeredAt,
+    });
+    expect(await svc.tickScheduledTriggers(resumedTick)).toEqual({ triggered: 1 });
+  });
+
+  it("bypasses the activity gate for webhook dispatches", async () => {
+    const { routine, svc } = await seedFixture();
+    await db.update(routines).set({ activityGatePolicy: "require_external_activity" }).where(eq(routines.id, routine.id));
+    const { trigger } = await svc.createTrigger(routine.id, { kind: "webhook", signingMode: "none" }, {});
+
+    const run = await svc.firePublicTrigger(trigger.publicId!, { payload: { source: "test" } });
+
+    expect(run).toMatchObject({ source: "webhook", status: "issue_created" });
   });
 });

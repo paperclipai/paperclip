@@ -71,6 +71,7 @@ export interface Routine {
   id: string;
   companyId: string;
   projectId: string | null;
+  folderId?: string | null;
   goalId: string | null;
   parentIssueId: string | null;
   title: string;

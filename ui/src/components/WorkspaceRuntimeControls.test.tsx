@@ -7,6 +7,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildWorkspaceRuntimeControlItems,
   buildWorkspaceRuntimeControlSections,
+  buildWorkspaceServiceControlEntries,
+  resolveWorkspaceServiceControlRequests,
   WorkspaceRuntimeQuickControls,
   WorkspaceRuntimeControls,
 } from "./WorkspaceRuntimeControls";
@@ -485,5 +487,151 @@ describe("WorkspaceRuntimeControls", () => {
     expect(Array.from(container.querySelectorAll("button")).map((button) => button.textContent?.trim())).toEqual(["Start"]);
 
     act(() => root.unmount());
+  });
+});
+
+describe("buildWorkspaceServiceControlEntries", () => {
+  const sections = () => buildWorkspaceRuntimeControlSections({
+    runtimeConfig: {
+      commands: [
+        { id: "web", name: "web", kind: "service", command: "pnpm dev" },
+        { id: "db-migrate", name: "db:migrate", kind: "job", command: "pnpm db:migrate" },
+      ],
+    },
+    runtimeServices: [
+      createRuntimeService({
+        id: "service-web",
+        serviceName: "web",
+        status: "running",
+        url: "http://localhost:3100",
+        port: 3100,
+        healthStatus: "healthy",
+      }),
+    ],
+    canStartServices: true,
+    canRunJobs: true,
+  });
+
+  it("maps service items to control bar entries and excludes jobs", () => {
+    const entries = buildWorkspaceServiceControlEntries({ sections: sections() });
+
+    expect(entries).toEqual([
+      expect.objectContaining({
+        name: "web",
+        state: "running",
+        url: "http://localhost:3100",
+        port: 3100,
+        healthStatus: "healthy",
+        failureDetail: null,
+      }),
+    ]);
+  });
+
+  it("overlays transitional states from the pending mutation", () => {
+    const built = sections();
+    const entries = buildWorkspaceServiceControlEntries({
+      sections: built,
+      isPending: true,
+      pendingRequest: {
+        action: "stop",
+        workspaceCommandId: built.services[0].workspaceCommandId ?? null,
+        runtimeServiceId: built.services[0].runtimeServiceId ?? null,
+        serviceIndex: built.services[0].serviceIndex ?? null,
+      },
+    });
+
+    expect(entries[0].state).toBe("stopping");
+  });
+
+  it("overlays every service targeted by a bulk mutation", () => {
+    const built = buildWorkspaceRuntimeControlSections({
+      runtimeConfig: {
+        commands: [
+          { id: "web", name: "web", kind: "service", command: "pnpm dev" },
+          { id: "api", name: "api", kind: "service", command: "pnpm api" },
+        ],
+      },
+      runtimeServices: [
+        createRuntimeService({ id: "service-web", serviceName: "web", status: "running" }),
+        createRuntimeService({
+          id: "service-api",
+          serviceName: "api",
+          status: "running",
+          command: "pnpm api",
+        }),
+      ],
+      canStartServices: true,
+    });
+    const pendingRequests = resolveWorkspaceServiceControlRequests(built, "stop", null);
+
+    const entries = buildWorkspaceServiceControlEntries({ sections: built, pendingRequests });
+
+    expect(entries.map((entry) => entry.state)).toEqual(["stopping", "stopping"]);
+  });
+
+  it("builds a failure detail line from the stopped runtime service", () => {
+    const failed = createRuntimeService({
+      id: "service-web",
+      serviceName: "web",
+      status: "failed",
+      stoppedAt: new Date(Date.now() - 60_000),
+    });
+    const built = buildWorkspaceRuntimeControlSections({
+      runtimeConfig: { commands: [{ id: "web", name: "web", kind: "service", command: "pnpm dev" }] },
+      runtimeServices: [failed],
+      canStartServices: true,
+    });
+    const entries = buildWorkspaceServiceControlEntries({
+      sections: built,
+      runtimeServices: [failed],
+    });
+
+    expect(entries[0].state).toBe("failed");
+    expect(entries[0].failureDetail).toMatch(/^Service failed · /);
+  });
+});
+
+describe("resolveWorkspaceServiceControlRequests", () => {
+  const mixedSections = () => buildWorkspaceRuntimeControlSections({
+    runtimeConfig: {
+      commands: [
+        { id: "web", name: "web", kind: "service", command: "pnpm dev" },
+        { id: "api", name: "api", kind: "service", command: "pnpm api" },
+      ],
+    },
+    runtimeServices: [
+      createRuntimeService({ id: "service-web", serviceName: "web", status: "running" }),
+    ],
+    canStartServices: true,
+  });
+
+  it("targets a single service by key", () => {
+    const built = mixedSections();
+    const requests = resolveWorkspaceServiceControlRequests(built, "stop", built.services[0].key);
+
+    expect(requests).toEqual([
+      expect.objectContaining({ action: "stop", workspaceCommandId: "web", runtimeServiceId: "service-web" }),
+    ]);
+  });
+
+  it("stops only active services for the aggregate stop", () => {
+    const requests = resolveWorkspaceServiceControlRequests(mixedSections(), "stop", null);
+
+    expect(requests).toEqual([expect.objectContaining({ action: "stop", workspaceCommandId: "web" })]);
+  });
+
+  it("starts only inactive services for the aggregate start", () => {
+    const requests = resolveWorkspaceServiceControlRequests(mixedSections(), "start", null);
+
+    expect(requests).toEqual([expect.objectContaining({ action: "start", workspaceCommandId: "api" })]);
+  });
+
+  it("restarts active services and starts stopped ones for the aggregate restart", () => {
+    const requests = resolveWorkspaceServiceControlRequests(mixedSections(), "restart", null);
+
+    expect(requests).toEqual([
+      expect.objectContaining({ action: "restart", workspaceCommandId: "web" }),
+      expect.objectContaining({ action: "start", workspaceCommandId: "api" }),
+    ]);
   });
 });

@@ -295,8 +295,10 @@ describe("routine description annotation routes", () => {
   });
 
   it("rejects agent cross-company routine annotation reads", async () => {
+    // Cross-tenant requests return 404 (not 403) so the status code cannot be
+    // used as an existence oracle for other tenants' routine ids.
     await request(await createApp("agent", otherCompanyId))
       .get(`/api/routines/${routineId}/description/annotations`)
-      .expect(403);
+      .expect(404);
   });
 });

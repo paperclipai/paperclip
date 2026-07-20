@@ -5,6 +5,7 @@ import type {
   SecretProvider,
   SecretProviderConfigHealthStatus,
   SecretProviderConfigStatus,
+  SecretProjectionClass,
   SecretScope,
   SecretStatus,
   SecretVersionStatus,
@@ -17,6 +18,7 @@ export type {
   SecretProvider,
   SecretProviderConfigHealthStatus,
   SecretProviderConfigStatus,
+  SecretProjectionClass,
   SecretScope,
   SecretStatus,
   SecretVersionStatus,
@@ -33,6 +35,8 @@ export interface EnvSecretRefBinding {
   type: "secret_ref";
   secretId: string;
   version?: SecretVersionSelector;
+  projectionClass?: SecretProjectionClass;
+  projectionAllowlistKey?: string | null;
 }
 
 export interface EnvUserSecretRefBinding {
@@ -254,6 +258,8 @@ export interface CompanySecretBinding {
   versionSelector: SecretVersionSelector;
   required: boolean;
   label: string | null;
+  projectionClass: SecretProjectionClass;
+  projectionAllowlistKey: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -284,7 +290,7 @@ export interface SecretAccessEvent {
   credentialSubjectId: string | null;
   actorType: "agent" | "user" | "system" | "plugin";
   actorId: string | null;
-  consumerType: SecretBindingTargetType;
+  consumerType: SecretBindingTargetType | "plugin_worker";
   consumerId: string;
   configPath: string | null;
   issueId: string | null;

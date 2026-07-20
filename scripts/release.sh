@@ -34,7 +34,7 @@ Notes:
     "canary" and create the git tag canary/vYYYY.MDD.P-canary.N.
   - Stable releases publish YYYY.MDD.P under the npm dist-tag "latest" and
     create the git tag vYYYY.MDD.P.
-  - Stable release notes must already exist at releases/vYYYY.MDD.P.md.
+  - Non-dry-run stable release notes must already exist at releases/vYYYY.MDD.P.md.
   - The script rewrites versions temporarily and restores the working tree on
     exit. Tags always point at the original source commit, not a generated
     release commit.
@@ -166,7 +166,7 @@ NOTES_FILE="$(release_notes_file "$TARGET_STABLE_VERSION")"
 require_clean_worktree
 require_npm_publish_auth "$dry_run"
 
-if [ "$channel" = "stable" ] && [ ! -f "$NOTES_FILE" ]; then
+if [ "$channel" = "stable" ] && [ "$dry_run" = false ] && [ ! -f "$NOTES_FILE" ]; then
   release_fail "stable release notes file is required at $NOTES_FILE before publishing stable."
 fi
 

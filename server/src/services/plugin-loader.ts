@@ -2133,18 +2133,11 @@ export function pluginLoader(
       const hostHandlers = buildHostHandlers(pluginId, manifest);
 
       // ------------------------------------------------------------------
-      // 4. Retrieve plugin config (if any)
+      // 4. Bootstrap worker config
       // ------------------------------------------------------------------
-      let config: Record<string, unknown> = {};
-      try {
-        const configRow = await registry.getConfig(pluginId);
-        if (configRow && typeof configRow === "object" && "configJson" in configRow) {
-          config = (configRow as { configJson: Record<string, unknown> }).configJson ?? {};
-        }
-      } catch {
-        // Config may not exist yet — use empty object
-        log.debug({ pluginId }, "plugin-loader: no config found, using empty config");
-      }
+      // Plugin configuration is company-scoped. Workers receive an empty
+      // bootstrap config and must use ctx.config.get(companyId) at runtime.
+      const config: Record<string, unknown> = {};
 
       // ------------------------------------------------------------------
       // 5. Spawn worker process

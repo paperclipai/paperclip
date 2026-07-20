@@ -18,7 +18,7 @@ import { MembershipAction } from "../components/MembershipAction";
 import { getAgentFallbackLane, groupAgentFallbackLanes } from "../lib/agent-lanes";
 import { StarToggle } from "../components/StarToggle";
 import { EntityRow } from "../components/EntityRow";
-import { BuiltInAgentBadge, BuiltInLifecycleChip } from "../components/BuiltInAgentBadges";
+import { BuiltInLifecycleChip } from "../components/BuiltInAgentBadges";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { relativeTime, cn, agentRouteRef, agentUrl } from "../lib/utils";
@@ -359,13 +359,13 @@ export function Agents() {
     const agentJoinLeavePending = agentPending && membershipMutation.variables?.starred === undefined;
     const agentStarred = isStarred(membershipsQuery.data, "agent", agent.id);
     const builtInState = builtInByAgentId.get(agent.id);
-    // Provenance badge + lifecycle chip + inline `Set up`. Rendered inline in
+    const showBuiltInLifecycle = builtInState?.status === "needs_setup" || builtInState?.status === "pending_approval";
+    // Lifecycle chip + inline `Set up`. Rendered inline in
     // `meta` at xl (where there's room and the meta columns align) and on a
     // dedicated full-width line beneath the name below xl, so the chips never
     // starve the name — the row's primary identifier — at narrow widths.
-    const builtInCluster = builtInState ? (
+    const builtInCluster = builtInState && showBuiltInLifecycle ? (
       <>
-        <BuiltInAgentBadge />
         <BuiltInLifecycleChip status={builtInState.status} />
         {builtInState.status === "needs_setup" && (
           <span
@@ -655,6 +655,7 @@ function OrgTreeNode({
 }) {
   const agent = agentMap.get(node.id);
   const builtInState = builtInByAgentId.get(node.id);
+  const showBuiltInLifecycle = builtInState?.status === "needs_setup" || builtInState?.status === "pending_approval";
   const hasInvalidOrgChain = Boolean(agent && agent.orgChainHealth?.status === "invalid_org_chain");
   const membershipState = resourceMembershipState(memberships, "agent", node.id);
   const pending = membershipMutation.isPending &&
@@ -695,9 +696,8 @@ function OrgTreeNode({
               {agent?.title ? ` - ${agent.title}` : ""}
             </span>
           </div>
-          {builtInState && (
+          {builtInState && showBuiltInLifecycle && (
             <div className="flex items-center gap-1.5 shrink-0">
-              <BuiltInAgentBadge />
               <BuiltInLifecycleChip status={builtInState.status} />
               {builtInState.status === "needs_setup" && (
                 <span

@@ -15,6 +15,7 @@ const mockIssueService = vi.hoisted(() => ({
   listBlockerAttention: vi.fn(),
   listProductivityReviews: vi.fn(),
   getCurrentScheduledRetry: vi.fn(),
+  getActiveInboxArchiveFields: vi.fn(),
   listAttachments: vi.fn(),
   applyBoardActionTitlePrefix: vi.fn(),
 }));
@@ -213,6 +214,7 @@ describe.sequential("issue goal context routes", () => {
     mockIssueService.listBlockerAttention.mockResolvedValue(new Map());
     mockIssueService.listProductivityReviews.mockResolvedValue(new Map());
     mockIssueService.getCurrentScheduledRetry.mockResolvedValue(null);
+    mockIssueService.getActiveInboxArchiveFields.mockResolvedValue({});
     mockIssueService.listAttachments.mockResolvedValue([]);
     mockIssueService.applyBoardActionTitlePrefix.mockImplementation((title: unknown, isRequired: boolean) =>
       isRequired && typeof title === "string" ? `BOARD ACTION REQUIRED: ${title}` : title,

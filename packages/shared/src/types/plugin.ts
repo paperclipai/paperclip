@@ -740,15 +740,17 @@ export interface PluginStateRecord {
 // ---------------------------------------------------------------------------
 
 /**
- * Domain type for a plugin's instance configuration as persisted in the
+ * Domain type for a plugin's company-scoped configuration as persisted in the
  * `plugin_config` table.
  * See PLUGIN_SPEC.md §21.3 for the schema definition.
  */
 export interface PluginConfig {
   /** UUID primary key. */
   id: string;
-  /** FK to `plugins.id`. Unique — each plugin has at most one config row. */
+  /** FK to `plugins.id`. Unique together with `companyId`. */
   pluginId: string;
+  /** FK to `companies.id`. */
+  companyId: string;
   /** Operator-provided configuration values (validated against `instanceConfigSchema`). */
   configJson: Record<string, unknown>;
   /** Most recent config validation error, if any. */

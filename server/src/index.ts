@@ -38,6 +38,7 @@ import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import {
   feedbackService,
   backfillPrincipalAccessCompatibility,
+  backfillLegacyToolOAuthTokens,
   bootstrapExecutionPolicyFromEnv,
   environmentCustomImageService,
   heartbeatService,
@@ -47,6 +48,7 @@ import {
   reconcileCodexLocalManagedHomesOnStartup,
   reconcilePersistedRuntimeServicesOnStartup,
   routineService,
+  toolAccessService,
 } from "./services/index.js";
 import { resolveWorktreeRunExecutionActivationState } from "./services/instance-settings.js";
 import {
@@ -63,6 +65,7 @@ import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-
 import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
 import { initTelemetry, getTelemetryClient } from "./telemetry.js";
 import { conflict } from "./errors.js";
+import { coordinateHeartbeatSchedulerShutdown } from "./shutdown.js";
 import type {
   InstanceDatabaseBackupRunResult,
   InstanceDatabaseBackupTrigger,
@@ -547,6 +550,10 @@ export async function startServer(): Promise<StartedServer> {
   if (accessBackfill.agentMembershipsInserted > 0 || accessBackfill.humanGrantsInserted > 0) {
     logger.info(accessBackfill, "Backfilled principal access compatibility records");
   }
+  const toolOAuthBackfill = await backfillLegacyToolOAuthTokens(db as any);
+  if (toolOAuthBackfill.sanitizedConnections > 0 || toolOAuthBackfill.migratedConnections > 0) {
+    logger.info(toolOAuthBackfill, "Backfilled legacy tool OAuth credentials into company secrets");
+  }
   if (config.deploymentMode === "authenticated") {
     const {
       createBetterAuthHandler,
@@ -825,6 +832,7 @@ export async function startServer(): Promise<StartedServer> {
   }
 
   let drainHeartbeatRunsForShutdown: ((signal: "SIGINT" | "SIGTERM") => Promise<unknown>) | null = null;
+  let prepareHotRestartShutdown: ((signal: "SIGINT" | "SIGTERM") => Promise<{ skipDrain: boolean }>) | null = null;
   let heartbeatSchedulerStopped = false;
   let heartbeatSchedulerInterval: ReturnType<typeof setInterval> | null = null;
   const heartbeatSchedulerInFlight = new Set<Promise<void>>();
@@ -846,8 +854,16 @@ export async function startServer(): Promise<StartedServer> {
   if (config.heartbeatSchedulerEnabled) {
     const heartbeat = heartbeatService(db as any, { pluginWorkerManager });
     drainHeartbeatRunsForShutdown = heartbeat.drainRunningRunsForShutdown;
+    prepareHotRestartShutdown = heartbeat.prepareHotRestartShutdown;
     const environmentCustomImages = environmentCustomImageService(db as any, { pluginWorkerManager });
     const routines = routineService(db as any, { pluginWorkerManager });
+    const tools = toolAccessService(db as any, {
+      deploymentMode: config.deploymentMode,
+      deploymentExposure: config.deploymentExposure,
+      trustedLocalStdioRuntimeHost: process.env.PAPERCLIP_TRUSTED_MCP_RUNTIME_HOST
+        ?? process.env.PAPERCLIP_TOOL_RUNTIME_TRUSTED_HOST
+        ?? null,
+    });
     const worktreeRunExecutionActivation = await resolveWorktreeRunExecutionActivationState({
       getExperimental: () => instanceSettingsService(db).getExperimental(),
     });
@@ -884,6 +900,21 @@ export async function startServer(): Promise<StartedServer> {
       );
     } else {
       const startupHeartbeatRecovery = (async () => {
+        try {
+          const hotRestart = await heartbeat.reconcileHotRestartAdoption();
+          if (hotRestart.mode === "reported") {
+            logger.info(
+              hotRestart,
+              "startup hot-restart adoption reconciliation complete",
+            );
+          }
+        } catch (err) {
+          logger.error(
+            { err },
+            "startup hot-restart adoption reconciliation failed - orphan reaper will serve as degraded backstop",
+          );
+        }
+
         for (let attempt = 1; attempt <= 2; attempt++) {
           try {
             const result = await heartbeat.reapOrphanedRuns({ staleThresholdMs: 60 * 1000 });
@@ -898,7 +929,7 @@ export async function startServer(): Promise<StartedServer> {
             } else {
               logger.error(
                 { err },
-                "startup reap of orphaned heartbeat runs failed after retry — periodic reaper will serve as degraded backstop",
+                "startup reap of orphaned heartbeat runs failed after retry - periodic reaper will serve as degraded backstop",
               );
             }
           }
@@ -963,259 +994,277 @@ export async function startServer(): Promise<StartedServer> {
       logger.warn({ ...setupCleanup }, "startup environment customImage setup cleanup changed sessions");
     }
 
+    const toolHealthSweep = await tools.sweepConnectionHealth();
+    if (toolHealthSweep.failed > 0) {
+      logger.warn({ ...toolHealthSweep }, "startup tool connection health sweep found failing connections");
+    }
+
     heartbeatSchedulerInterval = setInterval(() => {
       // Async so the suppression checks below can honor the override-aware
       // resolver (e.g. worktree run-execution opt-in). The gated work is still
       // wrapped in trackHeartbeatSchedulerWork with its own error handling.
       void (async () => {
-      if (heartbeatSchedulerStopped) return;
-      const sweptRuntimeStatuses = heartbeat.sweepExpiredRuntimeStatuses();
-      if (sweptRuntimeStatuses > 0) {
-        logger.info(
-          { swept: sweptRuntimeStatuses },
-          "heartbeat runtime-status sweeper cleared expired entries",
-        );
-      }
+        if (heartbeatSchedulerStopped) return;
+        const sweptRuntimeStatuses = heartbeat.sweepExpiredRuntimeStatuses();
+        if (sweptRuntimeStatuses > 0) {
+          logger.info(
+            { swept: sweptRuntimeStatuses },
+            "heartbeat runtime-status sweeper cleared expired entries",
+          );
+        }
 
-      if (!(await heartbeat.resolveSchedulingSuppression()).suppressed) {
-        trackHeartbeatSchedulerWork(heartbeat
-          .tickTimers(new Date())
+        if (!(await heartbeat.resolveSchedulingSuppression()).suppressed) {
+          trackHeartbeatSchedulerWork(heartbeat
+            .tickTimers(new Date())
+            .then((result) => {
+              if (result.enqueued > 0) {
+                logger.info({ ...result }, "heartbeat timer tick enqueued runs");
+              }
+            })
+            .catch((err) => {
+              logger.error({ err }, "heartbeat timer tick failed");
+            }));
+        }
+
+        if (heartbeatSchedulerStopped) return;
+        trackHeartbeatSchedulerWork(routines
+          .tickScheduledTriggers(new Date())
           .then((result) => {
-            if (result.enqueued > 0) {
-              logger.info({ ...result }, "heartbeat timer tick enqueued runs");
+            if (result.triggered > 0) {
+              logger.info({ ...result }, "routine scheduler tick enqueued runs");
             }
           })
           .catch((err) => {
-            logger.error({ err }, "heartbeat timer tick failed");
+            logger.error({ err }, "routine scheduler tick failed");
           }));
-      }
 
-      if (heartbeatSchedulerStopped) return;
-      trackHeartbeatSchedulerWork(routines
-        .tickScheduledTriggers(new Date())
-        .then((result) => {
-          if (result.triggered > 0) {
-            logger.info({ ...result }, "routine scheduler tick enqueued runs");
-          }
-        })
-        .catch((err) => {
-          logger.error({ err }, "routine scheduler tick failed");
-        }));
+        // Board-noise cleanup: cancel routine-execution issues left `blocked` by a failed
+        // fire once the routine has fired a newer execution (superseded) and they carry no
+        // active blocker. Set ROUTINE_SUPERSEDED_CLEANUP=false to disable.
+        if (process.env.ROUTINE_SUPERSEDED_CLEANUP !== "false") {
+          void routines
+            .cancelSupersededRoutineExecutionIssues()
+            .then((result) => {
+              if (result.cancelled > 0) {
+                logger.info({ ...result }, "cancelled superseded routine-execution issues");
+              }
+            })
+            .catch((err) => {
+              logger.error({ err }, "superseded routine-execution cleanup failed");
+            });
+        }
 
-      // Board-noise cleanup: cancel routine-execution issues left `blocked` by a failed
-      // fire once the routine has fired a newer execution (superseded) and they carry no
-      // active blocker. Set ROUTINE_SUPERSEDED_CLEANUP=false to disable.
-      if (process.env.ROUTINE_SUPERSEDED_CLEANUP !== "false") {
-        void routines
-          .cancelSupersededRoutineExecutionIssues()
-          .then((result) => {
-            if (result.cancelled > 0) {
-              logger.info({ ...result }, "cancelled superseded routine-execution issues");
-            }
-          })
-          .catch((err) => {
-            logger.error({ err }, "superseded routine-execution cleanup failed");
-          });
-      }
+        // Eager webhook-binding reconcile: proactively restore any webhook trigger whose
+        // secret binding has gone missing while the secret is live (companion to the
+        // resolveTriggerSecret fire-path self-heal). Set WEBHOOK_BINDING_RECONCILE=false to disable.
+        if (process.env.WEBHOOK_BINDING_RECONCILE !== "false") {
+          void routines
+            .reconcileWebhookSecretBindings()
+            .then((result) => {
+              if (result.repaired > 0) {
+                logger.info({ ...result }, "reconciled missing webhook secret bindings");
+              }
+            })
+            .catch((err) => {
+              logger.error({ err }, "webhook binding reconcile failed");
+            });
+        }
 
-      // Eager webhook-binding reconcile: proactively restore any webhook trigger whose
-      // secret binding has gone missing while the secret is live (companion to the
-      // resolveTriggerSecret fire-path self-heal). Set WEBHOOK_BINDING_RECONCILE=false to disable.
-      if (process.env.WEBHOOK_BINDING_RECONCILE !== "false") {
-        void routines
-          .reconcileWebhookSecretBindings()
-          .then((result) => {
-            if (result.repaired > 0) {
-              logger.info({ ...result }, "reconciled missing webhook secret bindings");
-            }
-          })
-          .catch((err) => {
-            logger.error({ err }, "webhook binding reconcile failed");
-          });
-      }
-
-      // Sprint-end session purge: clear agent sessions for companies whose
-      // activity window has just closed so the next sprint starts fresh.
-      void heartbeat
-        .sweepActivityWindowSessionPurges(new Date())
-        .then((result) => {
-          if (result.companies > 0 || result.agents > 0) {
-            logger.info({ ...result }, "sprint window session purge cleared agent sessions");
-          }
-        })
-        .catch((err) => {
-          logger.error({ err }, "sprint window session purge failed");
-        });
-
-      // Hung-run watchdog: kill runs whose local child is still alive but stuck
-      // (silent past the no-output threshold, or past the hard runtime cap). The
-      // orphan reaper only handles dead pids, so an alive-but-hung child would
-      // otherwise hold the agent's slot until its process happens to die.
-      if (config.heartbeatHungRunNoOutputMs > 0 || config.heartbeatHungRunMaxRuntimeMs > 0) {
+        // Sprint-end session purge: clear agent sessions for companies whose
+        // activity window has just closed so the next sprint starts fresh.
         void heartbeat
-          .terminateHungRuns({
-            noOutputMs: config.heartbeatHungRunNoOutputMs,
-            maxRuntimeMs: config.heartbeatHungRunMaxRuntimeMs,
-          })
+          .sweepActivityWindowSessionPurges(new Date())
           .then((result) => {
-            if (result.terminated > 0) {
-              logger.warn({ ...result }, "hung-run watchdog terminated runs");
+            if (result.companies > 0 || result.agents > 0) {
+              logger.info({ ...result }, "sprint window session purge cleared agent sessions");
             }
           })
           .catch((err) => {
-            logger.error({ err }, "hung-run watchdog failed");
+            logger.error({ err }, "sprint window session purge failed");
           });
-      }
 
-      // End-of-sprint: terminate still-running, non-exempt runs once a company's
-      // activity window has closed (also unblocks the sprint session purge above,
-      // which skips companies that still have running runs).
-      if (config.terminateRunsOnWindowClose) {
-        void heartbeat
-          .terminateRunsForClosedWindows()
+        // Hung-run watchdog: kill runs whose local child is still alive but stuck
+        // (silent past the no-output threshold, or past the hard runtime cap). The
+        // orphan reaper only handles dead pids, so an alive-but-hung child would
+        // otherwise hold the agent's slot until its process happens to die.
+        if (config.heartbeatHungRunNoOutputMs > 0 || config.heartbeatHungRunMaxRuntimeMs > 0) {
+          void heartbeat
+            .terminateHungRuns({
+              noOutputMs: config.heartbeatHungRunNoOutputMs,
+              maxRuntimeMs: config.heartbeatHungRunMaxRuntimeMs,
+            })
+            .then((result) => {
+              if (result.terminated > 0) {
+                logger.warn({ ...result }, "hung-run watchdog terminated runs");
+              }
+            })
+            .catch((err) => {
+              logger.error({ err }, "hung-run watchdog failed");
+            });
+        }
+
+        // End-of-sprint: terminate still-running, non-exempt runs once a company's
+        // activity window has closed (also unblocks the sprint session purge above,
+        // which skips companies that still have running runs).
+        if (config.terminateRunsOnWindowClose) {
+          void heartbeat
+            .terminateRunsForClosedWindows()
+            .then((result) => {
+              if (result.terminated > 0) {
+                logger.warn({ ...result }, "terminated runs for closed activity windows");
+              }
+            })
+            .catch((err) => {
+              logger.error({ err }, "activity-window run termination failed");
+            });
+        }
+
+        // Stale-queued-run reaper: cancel queued runs that were never claimed (e.g. orphaned
+        // mid-outage) and now wedge an otherwise-idle, window-exempt agent's pipeline. The
+        // orphan reaper / hung-run watchdog only cover RUNNING runs. Default off.
+        if (config.heartbeatStaleQueuedRunMs > 0) {
+          void heartbeat
+            .reapStaleQueuedRuns({ staleMs: config.heartbeatStaleQueuedRunMs })
+            .then((result) => {
+              if (result.reaped > 0) {
+                logger.warn({ ...result }, "stale-queued-run reaper cleared wedged queue");
+              }
+            })
+            .catch((err) => {
+              logger.error({ err }, "stale-queued-run reaper failed");
+            });
+        }
+
+        // Orphaned-wakeup reaper: cancel agent_wakeup_requests left queued/deferred against
+        // an issue that has since resolved (done/cancelled). The stale-queued-run reaper above
+        // only covers heartbeat_runs, so these wakeups otherwise accumulate forever as inert
+        // cruft. Open-issue and no-issue wakeups are left alone. Set
+        // HEARTBEAT_ORPHANED_WAKEUP_REAP=false to disable.
+        if (process.env.HEARTBEAT_ORPHANED_WAKEUP_REAP !== "false") {
+          void heartbeat
+            .reapOrphanedWakeups()
+            .then((result) => {
+              if (result.reaped > 0) {
+                logger.warn({ reaped: result.reaped }, "orphaned-wakeup reaper cleared resolved-issue wakeups");
+              }
+            })
+            .catch((err) => {
+              logger.error({ err }, "orphaned-wakeup reaper failed");
+            });
+        }
+
+        // Aged-task-session reaper: cap how long a window-exempt (24/7) agent's per-task
+        // sessions live, so a long-lived session never grows too big to compact ("remote
+        // compact task: ... ran out of room"). The sprint-end purge skips exempt agents,
+        // so without this their sessions accumulate unbounded (some hit 1000+). Set
+        // HEARTBEAT_EXEMPT_TASK_SESSION_PURGE=false to disable; tune the age cap with
+        // HEARTBEAT_EXEMPT_TASK_SESSION_MAX_AGE_MS (default 48h).
+        if (process.env.HEARTBEAT_EXEMPT_TASK_SESSION_PURGE !== "false") {
+          const maxAgeMs = Number(process.env.HEARTBEAT_EXEMPT_TASK_SESSION_MAX_AGE_MS) || 48 * 60 * 60 * 1000;
+          void heartbeat
+            .reapAgedTaskSessions({ maxAgeMs })
+            .then((result) => {
+              if (result.purged > 0) {
+                logger.warn({ ...result }, "aged-task-session reaper purged exempt-agent sessions");
+              }
+            })
+            .catch((err) => {
+              logger.error({ err }, "aged-task-session reaper failed");
+            });
+        }
+
+        if (heartbeatSchedulerStopped) return;
+        trackHeartbeatSchedulerWork(environmentCustomImages
+          .cleanupExpiredSetupSessions()
           .then((result) => {
-            if (result.terminated > 0) {
-              logger.warn({ ...result }, "terminated runs for closed activity windows");
+            if (result.timedOut > 0 || result.failed > 0) {
+              logger.warn({ ...result }, "environment customImage setup cleanup changed sessions");
             }
           })
           .catch((err) => {
-            logger.error({ err }, "activity-window run termination failed");
-          });
-      }
-
-      // Stale-queued-run reaper: cancel queued runs that were never claimed (e.g. orphaned
-      // mid-outage) and now wedge an otherwise-idle, window-exempt agent's pipeline. The
-      // orphan reaper / hung-run watchdog only cover RUNNING runs. Default off.
-      if (config.heartbeatStaleQueuedRunMs > 0) {
-        void heartbeat
-          .reapStaleQueuedRuns({ staleMs: config.heartbeatStaleQueuedRunMs })
-          .then((result) => {
-            if (result.reaped > 0) {
-              logger.warn({ ...result }, "stale-queued-run reaper cleared wedged queue");
-            }
-          })
-          .catch((err) => {
-            logger.error({ err }, "stale-queued-run reaper failed");
-          });
-      }
-
-      // Orphaned-wakeup reaper: cancel agent_wakeup_requests left queued/deferred against
-      // an issue that has since resolved (done/cancelled). The stale-queued-run reaper above
-      // only covers heartbeat_runs, so these wakeups otherwise accumulate forever as inert
-      // cruft. Open-issue and no-issue wakeups are left alone. Set
-      // HEARTBEAT_ORPHANED_WAKEUP_REAP=false to disable.
-      if (process.env.HEARTBEAT_ORPHANED_WAKEUP_REAP !== "false") {
-        void heartbeat
-          .reapOrphanedWakeups()
-          .then((result) => {
-            if (result.reaped > 0) {
-              logger.warn({ reaped: result.reaped }, "orphaned-wakeup reaper cleared resolved-issue wakeups");
-            }
-          })
-          .catch((err) => {
-            logger.error({ err }, "orphaned-wakeup reaper failed");
-          });
-      }
-
-      // Aged-task-session reaper: cap how long a window-exempt (24/7) agent's per-task
-      // sessions live, so a long-lived session never grows too big to compact ("remote
-      // compact task: ... ran out of room"). The sprint-end purge skips exempt agents,
-      // so without this their sessions accumulate unbounded (some hit 1000+). Set
-      // HEARTBEAT_EXEMPT_TASK_SESSION_PURGE=false to disable; tune the age cap with
-      // HEARTBEAT_EXEMPT_TASK_SESSION_MAX_AGE_MS (default 48h).
-      if (process.env.HEARTBEAT_EXEMPT_TASK_SESSION_PURGE !== "false") {
-        const maxAgeMs = Number(process.env.HEARTBEAT_EXEMPT_TASK_SESSION_MAX_AGE_MS) || 48 * 60 * 60 * 1000;
-        void heartbeat
-          .reapAgedTaskSessions({ maxAgeMs })
-          .then((result) => {
-            if (result.purged > 0) {
-              logger.warn({ ...result }, "aged-task-session reaper purged exempt-agent sessions");
-            }
-          })
-          .catch((err) => {
-            logger.error({ err }, "aged-task-session reaper failed");
-          });
-      }
-
-      trackHeartbeatSchedulerWork(environmentCustomImages
-        .cleanupExpiredSetupSessions()
-        .then((result) => {
-          if (result.timedOut > 0 || result.failed > 0) {
-            logger.warn({ ...result }, "environment customImage setup cleanup changed sessions");
-          }
-        })
-        .catch((err) => {
-          logger.error({ err }, "environment customImage setup cleanup failed");
-        }));
-
-      if (heartbeatSchedulerStopped) return;
-      if (!(await heartbeat.resolveSchedulingSuppression()).suppressed) {
-        // Periodically reap orphaned runs (5-min staleness threshold) and make sure
-        // persisted queued work is still being driven forward.
-        trackHeartbeatSchedulerWork(heartbeat
-          .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 })
-          .then(() => heartbeat.promoteDueScheduledRetries())
-          .then(async (promotion) => {
-            await heartbeat.resumeQueuedRuns();
-            const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
-            if (
-              promotion.promoted > 0 ||
-              reconciled.assignmentDispatched > 0 ||
-              reconciled.dispatchRequeued > 0 ||
-              reconciled.continuationRequeued > 0 ||
-              reconciled.successfulRunHandoffEscalated > 0 ||
-              reconciled.escalated > 0
-            ) {
-              logger.warn(
-                { promotedScheduledRetries: promotion.promoted, promotedScheduledRetryRunIds: promotion.runIds, ...reconciled },
-                "periodic heartbeat recovery changed assigned issue state",
-              );
-            }
-          })
-          .then(async () => {
-            const reconciled = await heartbeat.reconcileIssueGraphLiveness();
-            if (reconciled.escalationsCreated > 0 || reconciled.dependencyWakesHealed > 0) {
-              logger.warn({ ...reconciled }, "periodic issue-graph liveness reconciliation changed issue graph state");
-            }
-          })
-          .then(async () => {
-            const reconciled = await heartbeat.reconcileTaskWatchdogs();
-            if (reconciled.triggered > 0) {
-              logger.warn({ ...reconciled }, "periodic task-watchdog reconciliation triggered watchdog work");
-            }
-          })
-          .then(async () => {
-            const swept = await heartbeat.sweepStaleIssueLocks();
-            if (swept.cleared > 0) {
-              logger.warn({ ...swept }, "periodic stale-lock sweeper cleared issue locks");
-            }
-          })
-          .then(async () => {
-            // Widened, deduped cadence for the churny review scans: only run them
-            // when at least recoveryReviewIntervalMs has elapsed since the last
-            // pass. The per-source dedup (one open review issue per run/source at
-            // a time) lives in the recovery service itself; this gate keeps the
-            // whole scan from re-running every 30s. The operational reconcilers
-            // above (task-watchdog, stale-lock sweep, issue-graph liveness) stay
-            // every-tick; only the reviewer-paging scans below are gated.
-            const nowMs = Date.now();
-            if (nowMs - lastRecoveryReviewScanAt < recoveryReviewIntervalMs) return;
-            lastRecoveryReviewScanAt = nowMs;
-
-            const scanned = await heartbeat.scanSilentActiveRuns();
-            if (scanned.created > 0 || scanned.escalated > 0) {
-              logger.warn({ ...scanned }, "periodic active-run output watchdog created review work");
-            }
-
-            const reviewed = await heartbeat.reconcileProductivityReviews();
-            if (reviewed.created > 0 || reviewed.updated > 0 || reviewed.failed > 0) {
-              logger.warn({ ...reviewed }, "periodic productivity reconciliation created or updated review work");
-            }
-          })
-          .catch((err) => {
-            logger.error({ err }, "periodic heartbeat recovery failed");
+            logger.error({ err }, "environment customImage setup cleanup failed");
           }));
-      }
+
+        if (heartbeatSchedulerStopped) return;
+        trackHeartbeatSchedulerWork(tools
+          .sweepConnectionHealth()
+          .then((swept) => {
+            if (swept.failed > 0) {
+              logger.warn({ ...swept }, "periodic tool connection health sweep found failing connections");
+            }
+          })
+          .catch((err) => {
+            logger.error({ err }, "periodic tool connection health sweep failed");
+          }));
+
+        if (heartbeatSchedulerStopped) return;
+        if (!(await heartbeat.resolveSchedulingSuppression()).suppressed) {
+          // Periodically reap orphaned runs (5-min staleness threshold) and make sure
+          // persisted queued work is still being driven forward.
+          trackHeartbeatSchedulerWork(heartbeat
+            .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 })
+            .then(() => heartbeat.promoteDueScheduledRetries())
+            .then(async (promotion) => {
+              await heartbeat.resumeQueuedRuns();
+              const reconciled = await heartbeat.reconcileStrandedAssignedIssues();
+              if (
+                promotion.promoted > 0 ||
+                reconciled.assignmentDispatched > 0 ||
+                reconciled.dispatchRequeued > 0 ||
+                reconciled.continuationRequeued > 0 ||
+                reconciled.successfulRunHandoffEscalated > 0 ||
+                reconciled.escalated > 0
+              ) {
+                logger.warn(
+                  { promotedScheduledRetries: promotion.promoted, promotedScheduledRetryRunIds: promotion.runIds, ...reconciled },
+                  "periodic heartbeat recovery changed assigned issue state",
+                );
+              }
+            })
+            .then(async () => {
+              const reconciled = await heartbeat.reconcileIssueGraphLiveness();
+              if (reconciled.escalationsCreated > 0 || reconciled.dependencyWakesHealed > 0) {
+                logger.warn({ ...reconciled }, "periodic issue-graph liveness reconciliation changed issue graph state");
+              }
+            })
+            .then(async () => {
+              const reconciled = await heartbeat.reconcileTaskWatchdogs();
+              if (reconciled.triggered > 0) {
+                logger.warn({ ...reconciled }, "periodic task-watchdog reconciliation triggered watchdog work");
+              }
+            })
+            .then(async () => {
+              const swept = await heartbeat.sweepStaleIssueLocks();
+              if (swept.cleared > 0) {
+                logger.warn({ ...swept }, "periodic stale-lock sweeper cleared issue locks");
+              }
+            })
+            .then(async () => {
+              // Widened, deduped cadence for the churny review scans: only run them
+              // when at least recoveryReviewIntervalMs has elapsed since the last
+              // pass. The per-source dedup (one open review issue per run/source at
+              // a time) lives in the recovery service itself; this gate keeps the
+              // whole scan from re-running every 30s. The operational reconcilers
+              // above (task-watchdog, stale-lock sweep, issue-graph liveness) stay
+              // every-tick; only the reviewer-paging scans below are gated.
+              const nowMs = Date.now();
+              if (nowMs - lastRecoveryReviewScanAt < recoveryReviewIntervalMs) return;
+              lastRecoveryReviewScanAt = nowMs;
+
+              const scanned = await heartbeat.scanSilentActiveRuns();
+              if (scanned.created > 0 || scanned.escalated > 0) {
+                logger.warn({ ...scanned }, "periodic active-run output watchdog created review work");
+              }
+
+              const reviewed = await heartbeat.reconcileProductivityReviews();
+              if (reviewed.created > 0 || reviewed.updated > 0 || reviewed.failed > 0) {
+                logger.warn({ ...reviewed }, "periodic productivity reconciliation created or updated review work");
+              }
+            })
+            .catch((err) => {
+              logger.error({ err }, "periodic heartbeat recovery failed");
+            }));
+        }
       })();
     }, config.heartbeatSchedulerIntervalMs);
   }
@@ -1333,7 +1382,24 @@ export async function startServer(): Promise<StartedServer> {
         clearInterval(heartbeatSchedulerInterval);
         heartbeatSchedulerInterval = null;
       }
-      await waitForHeartbeatSchedulerIdle();
+
+      const heartbeatShutdown = await coordinateHeartbeatSchedulerShutdown({
+        signal,
+        prepareHotRestartShutdown,
+        waitForHeartbeatSchedulerIdle,
+      });
+      const skipHeartbeatDrain = heartbeatShutdown.hotRestart?.skipDrain === true;
+      if (skipHeartbeatDrain) {
+        logger.info(
+          { signal, hotRestart: heartbeatShutdown.hotRestart },
+          "hot-restart shutdown prepared; skipping heartbeat scheduler idle wait and graceful run drain",
+        );
+      } else if (heartbeatShutdown.preparationError) {
+        logger.error(
+          { err: heartbeatShutdown.preparationError, signal },
+          "hot-restart shutdown preparation failed; falling back to graceful heartbeat run drain",
+        );
+      }
 
       const telemetryClient = getTelemetryClient();
       if (telemetryClient) {
@@ -1341,7 +1407,7 @@ export async function startServer(): Promise<StartedServer> {
         await telemetryClient.flush();
       }
 
-      if (drainHeartbeatRunsForShutdown) {
+      if (!skipHeartbeatDrain && drainHeartbeatRunsForShutdown) {
         try {
           const drain = await drainHeartbeatRunsForShutdown(signal);
           logger.info({ signal, drain }, "graceful heartbeat run drain complete");

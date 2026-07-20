@@ -51,6 +51,10 @@ class FakeClock {
 }
 
 describe("resolveCodexInactivityTimeout", () => {
+  it("defaults to 30 minutes", () => {
+    expect(DEFAULT_CODEX_OUTPUT_INACTIVITY_TIMEOUT_MS).toBe(30 * 60 * 1000);
+  });
+
   it("uses default when value is unset", () => {
     expect(resolveCodexInactivityTimeout(undefined)).toEqual({
       mode: "default",
@@ -121,7 +125,7 @@ describe("createCodexOutputInactivityMonitor (acceptance criteria 1: fires)", ()
 
     // One event right after spawn.
     clock.advance(50);
-    monitor.noteStdoutChunk('{"type":"thread.started","thread_id":"abc"}\n');
+    monitor.noteOutputChunk("stdout", '{"type":"thread.started","thread_id":"abc"}\n');
     expect(fires).toHaveLength(0);
     expect(monitor.state().parsedEventCount).toBe(1);
 
@@ -157,7 +161,7 @@ describe("createCodexOutputInactivityMonitor (acceptance criteria 1: fires)", ()
     monitor.stop();
   });
 
-  it("ignores non-JSON lines when resetting the timer", () => {
+  it("resets on non-JSON stdout bytes", () => {
     const clock = new FakeClock();
     let fireCount = 0;
     const monitor = createCodexOutputInactivityMonitor({
@@ -169,17 +173,52 @@ describe("createCodexOutputInactivityMonitor (acceptance criteria 1: fires)", ()
         fireCount += 1;
       },
     });
-    // Plain stderr-ish text should NOT reset the monitor.
     clock.advance(500);
-    monitor.noteStdoutChunk("loading model...\n");
-    expect(monitor.state().parsedEventCount).toBe(0);
-    clock.advance(600);
+    monitor.noteOutputChunk("stdout", "loading model...\n");
+    expect(monitor.state()).toMatchObject({
+      outputChunkCount: 1,
+      outputBytes: Buffer.byteLength("loading model...\n", "utf8"),
+      parsedEventCount: 0,
+    });
+    clock.advance(999);
+    expect(fireCount).toBe(0);
+    clock.advance(1);
     expect(fireCount).toBe(1);
     monitor.stop();
   });
 });
 
 describe("createCodexOutputInactivityMonitor (acceptance criteria 2: does not fire)", () => {
+  it("keeps long verification alive while non-JSON stdout and stderr bytes continue", () => {
+    const clock = new FakeClock();
+    let fireCount = 0;
+    const timeoutMs = 7 * 60 * 1000;
+    const monitor = createCodexOutputInactivityMonitor({
+      timeoutMs,
+      now: () => clock.now(),
+      setTimer: (cb, ms) => clock.setTimer(cb, ms),
+      clearTimer: (handle) => clock.clearTimer(handle),
+      onFire: () => {
+        fireCount += 1;
+      },
+    });
+
+    clock.advance(timeoutMs - 1_000);
+    monitor.noteOutputChunk("stdout", "packages/server: typecheck passed\n");
+    clock.advance(timeoutMs - 1_000);
+    monitor.noteOutputChunk("stderr", "packages/ui: build still running\n");
+    clock.advance(timeoutMs - 1_000);
+    monitor.noteOutputChunk("stdout", "packages/ui: build passed\n");
+
+    expect(fireCount).toBe(0);
+    expect(monitor.state()).toMatchObject({
+      outputChunkCount: 3,
+      parsedEventCount: 0,
+      fired: false,
+    });
+    monitor.stop();
+  });
+
   it("does not fire when events arrive every (threshold - 1s)", () => {
     const clock = new FakeClock();
     let fireCount = 0;
@@ -197,7 +236,7 @@ describe("createCodexOutputInactivityMonitor (acceptance criteria 2: does not fi
     // Pump events at threshold-1s intervals for 12 cycles (~84 minutes).
     for (let i = 0; i < 12; i += 1) {
       clock.advance(timeoutMs - 1_000);
-      monitor.noteStdoutChunk(`{"type":"item.completed","item":{"type":"agent_message","text":"tick ${i}"}}\n`);
+      monitor.noteOutputChunk("stdout", `{"type":"item.completed","item":{"type":"agent_message","text":"tick ${i}"}}\n`);
       expect(fireCount).toBe(0);
     }
 
@@ -223,7 +262,8 @@ describe("createCodexOutputInactivityMonitor (acceptance criteria 2: does not fi
       },
     });
     clock.advance(500);
-    monitor.noteStdoutChunk(
+    monitor.noteOutputChunk(
+      "stdout",
       '{"type":"thread.started","thread_id":"a"}\n{"type":"item.completed","item":{"type":"agent_message","text":"hi"}}\n',
     );
     expect(monitor.state().parsedEventCount).toBe(2);

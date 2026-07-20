@@ -72,9 +72,7 @@ describe("codex inactivity monitor (integration: real subprocess)", () => {
           },
           onLog: async (stream, chunk) => {
             logs.push({ stream, chunk });
-            if (stream === "stdout") {
-              monitor.noteStdoutChunk(chunk);
-            }
+            monitor.noteOutputChunk(stream, chunk);
           },
         });
 

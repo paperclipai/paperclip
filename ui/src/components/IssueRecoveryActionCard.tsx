@@ -200,6 +200,8 @@ const STATE_TONE: Record<RecoveryCardCardState, {
 
 const OUTCOME_LABEL: Record<IssueRecoveryActionOutcome, string> = {
   restored: "restored",
+  handed_back: "handed back to original owner",
+  owner_completed: "completed by recovery owner",
   delegated: "delegated to follow-up",
   false_positive: "false positive",
   blocked: "blocked",

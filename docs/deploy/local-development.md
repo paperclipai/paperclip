@@ -79,6 +79,32 @@ curl http://localhost:3100/api/companies
 # -> []
 ```
 
+## Safe Worktree Bootstrap for Local Agent Runs
+
+For safer parallel local experiments, initialize a dedicated worktree instance instead of reusing your main checkout:
+
+```sh
+pnpm paperclipai worktree:make local-lab --seed-mode minimal
+cd ~/paperclip-local-lab
+pnpm paperclipai worktree env                       # inspect generated env exports
+eval "$(pnpm paperclipai worktree env)"             # bash/zsh
+pnpm paperclipai run
+pnpm paperclipai doctor
+```
+
+If the experiment gets noisy, repair or reseed the worktree without touching the main branch:
+
+```sh
+pnpm paperclipai worktree repair --branch paperclip-local-lab
+pnpm paperclipai worktree reseed --from . --to paperclip-local-lab
+```
+
+When done, shut it down and remove the isolated state explicitly:
+
+```sh
+pnpm paperclipai worktree:cleanup local-lab --force
+```
+
 ## Reset Dev Data
 
 To wipe local data and start fresh:

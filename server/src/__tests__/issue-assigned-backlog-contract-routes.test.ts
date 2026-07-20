@@ -188,7 +188,7 @@ describe("assigned backlog creation contract", () => {
     }));
     mockIssueService.create.mockImplementation(async (_companyId: string, data: Record<string, unknown>) =>
       makeIssue({
-        id: "issue-1",
+        id: String(data.id),
         title: String(data.title),
         status: String(data.status),
         assigneeAgentId: data.assigneeAgentId as string | null | undefined,
@@ -396,7 +396,7 @@ describe("assigned backlog creation contract", () => {
       expect.anything(),
       expect.objectContaining({
         action: "issue.created",
-        entityId: "issue-1",
+        entityId: expect.any(String),
         details: expect.objectContaining({
           status: "backlog",
           statusDefaulted: false,
