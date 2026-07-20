@@ -161,6 +161,50 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
     });
   });
 
+  it("counts quarantined runs only for the active seed epoch", async () => {
+    const { companyId, agentId, issueId } = await insertAgentAndIssue();
+    const settings = instanceSettingsService(db, {
+      runtimeEnv: {
+        PAPERCLIP_IN_WORKTREE: "true",
+        PAPERCLIP_INSTANCE_ID: "test-worktree",
+      },
+    });
+    const experimental = await settings.getExperimental();
+    const activeSeedEpoch = experimental.worktreeRunExecutionSeedEpoch;
+    expect(activeSeedEpoch).not.toBeNull();
+
+    await db.insert(heartbeatRuns).values([
+      {
+        id: randomUUID(),
+        companyId,
+        agentId,
+        seedEpoch: activeSeedEpoch,
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        status: "cancelled",
+        errorCode: "worktree_seed_quarantine",
+        responsibleUserId: "responsible-user",
+        contextSnapshot: { issueId },
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        agentId,
+        seedEpoch: randomUUID(),
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        status: "cancelled",
+        errorCode: "worktree_seed_quarantine",
+        responsibleUserId: "responsible-user",
+        contextSnapshot: { issueId },
+      },
+    ]);
+
+    await expect(settings.getWorktreeRunEngineStatus()).resolves.toMatchObject({
+      quarantinedRunCount: 1,
+    });
+  });
+
   async function waitForCompletedRun(runId: string, agentId: string) {
     let latestStatus: string | null = null;
     let latestLastRunId: string | null = null;

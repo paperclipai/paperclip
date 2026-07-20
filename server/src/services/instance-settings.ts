@@ -423,11 +423,16 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
       // Only quarantined-run rows survive a seed (P1 deletes the wakeups/monitors
       // it clears), so this count is the durable evidence of what was neutralized.
       let quarantinedRunCount = 0;
-      if (inWorktree) {
+      if (inWorktree && experimental.worktreeRunExecutionSeedEpoch) {
         const [row] = await db
           .select({ count: sql<number>`count(*)::int` })
           .from(heartbeatRuns)
-          .where(eq(heartbeatRuns.errorCode, WORKTREE_SEED_QUARANTINE_ERROR_CODE));
+          .where(
+            and(
+              eq(heartbeatRuns.errorCode, WORKTREE_SEED_QUARANTINE_ERROR_CODE),
+              eq(heartbeatRuns.seedEpoch, experimental.worktreeRunExecutionSeedEpoch),
+            ),
+          );
         quarantinedRunCount = row?.count ?? 0;
       }
       return {
