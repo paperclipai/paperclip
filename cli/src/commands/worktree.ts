@@ -1206,6 +1206,27 @@ export async function quarantineSeededWorktreeExecutionState(
   try {
     await db.transaction(async (tx) => {
       const now = new Date();
+      const [settingsRow] = await tx
+        .select({ id: instanceSettings.id, experimental: instanceSettings.experimental })
+        .from(instanceSettings)
+        .where(eq(instanceSettings.singletonKey, "default"))
+        .limit(1);
+      const experimental = isRecord(settingsRow?.experimental) ? settingsRow.experimental : {};
+      const existingSeedEpoch = experimental.worktreeRunExecutionSeedEpoch;
+      const seedEpoch = typeof existingSeedEpoch === "string" && existingSeedEpoch.length > 0
+        ? existingSeedEpoch
+        : randomUUID();
+
+      if (settingsRow && seedEpoch !== existingSeedEpoch) {
+        await tx
+          .update(instanceSettings)
+          .set({
+            experimental: { ...experimental, worktreeRunExecutionSeedEpoch: seedEpoch },
+            updatedAt: now,
+          })
+          .where(eq(instanceSettings.id, settingsRow.id));
+      }
+
       const pendingWakeups = await tx
         .select({ id: agentWakeupRequests.id })
         .from(agentWakeupRequests)
@@ -1224,6 +1245,7 @@ export async function quarantineSeededWorktreeExecutionState(
         .set({
           status: "cancelled",
           errorCode: WORKTREE_SEED_QUARANTINE_ERROR_CODE,
+          seedEpoch,
           processPid: null,
           processGroupId: null,
           scheduledRetryAt: null,

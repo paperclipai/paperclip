@@ -532,10 +532,18 @@ describe("worktree helpers", () => {
       for (const run of quarantinedRuns) {
         expect(run.status).toBe("cancelled");
         expect(run.errorCode).toBe("worktree_seed_quarantine");
+        expect(run.seedEpoch).toEqual(expect.any(String));
         expect(run.processPid).toBeNull();
         expect(run.processGroupId).toBeNull();
         expect(run.finishedAt).toBeInstanceOf(Date);
       }
+
+      const [seededSettings] = await db.select().from(instanceSettings);
+      const seededExperimental = seededSettings?.experimental as Record<string, unknown>;
+      expect(quarantinedRuns.map((run) => run.seedEpoch)).toEqual([
+        seededExperimental.worktreeRunExecutionSeedEpoch,
+        seededExperimental.worktreeRunExecutionSeedEpoch,
+      ]);
 
       const [succeededRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, succeededRunId));
       expect(succeededRun?.status).toBe("succeeded");
