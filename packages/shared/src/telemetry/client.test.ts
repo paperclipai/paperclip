@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TelemetryClient } from "./client.js";
+import { resolveTelemetryConfig } from "./config.js";
 import type { TelemetryConfig, TelemetryState } from "./types.js";
 
 const TEST_STATE: TelemetryState = {
@@ -99,5 +100,128 @@ describe("TelemetryClient runtime event gate", () => {
         dimensions: { status: "ok" },
       }),
     ]);
+  });
+});
+
+// Stubs `fetch` to reject the batch with a given non-OK HTTP status for every
+// endpoint the client may try. Returns the mock so call counts can be asserted.
+function stubFetchStatus(status: number) {
+  const fetchMock = vi.fn().mockResolvedValue({ ok: false, status });
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
+}
+
+// Phase 1 (PAP-2862): characterization pins for today's best-effort, silent-drop
+// flush. On ANY non-OK response or network error the drained batch is dropped
+// with no re-queue and no second attempt, and no `batchId` is emitted. These pins
+// lock the current baseline; Impl-2 (PAP-2853) replaces them when retry lands.
+describe("TelemetryClient silent-drop baseline (characterization)", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("drops the batch on a 429 with no re-queue", async () => {
+    const fetchMock = stubFetchStatus(429);
+    const { client } = makeClient();
+
+    client.track("install.started", {});
+    await client.flush();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    // Queue was drained despite the failure: a second flush sends nothing.
+    await client.flush();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("drops the batch on a 413 with no re-queue", async () => {
+    const fetchMock = stubFetchStatus(413);
+    const { client } = makeClient();
+
+    client.track("install.started", {});
+    await client.flush();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    await client.flush();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("drops the batch on a 400 with no re-queue", async () => {
+    const fetchMock = stubFetchStatus(400);
+    const { client } = makeClient();
+
+    client.track("install.started", {});
+    await client.flush();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    await client.flush();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("drops the batch on network error with no re-queue", async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new Error("network down"));
+    vi.stubGlobal("fetch", fetchMock);
+    const { client } = makeClient();
+
+    client.track("install.started", {});
+    await client.flush();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    await client.flush();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("emits no batchId today", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true }));
+    const { client } = makeClient();
+
+    client.track("install.started", {});
+    await client.flush();
+
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(sentBody()).not.toHaveProperty("batchId");
+  });
+});
+
+// Phase 2 (PAP-2862): config surface for soft caps + backoff. Fields are optional
+// and additive; `resolveTelemetryConfig` fills documented defaults centrally so no
+// existing caller changes behavior. Nothing reads these yet — Impl-2 is the first
+// consumer.
+describe("resolveTelemetryConfig caps + backoff surface", () => {
+  it("resolveTelemetryConfig returns default caps and backoff", () => {
+    const config = resolveTelemetryConfig();
+
+    expect(config.maxEventsPerBatch).toBe(50);
+    expect(config.maxBodyBytes).toBe(524288);
+    expect(config.maxPendingRetryBatches).toBe(20);
+    expect(config.backoff).toEqual({
+      baseDelayMs: 1_000,
+      maxDelayMs: 30_000,
+      maxAttempts: 5,
+      jitterRatio: 0.25,
+    });
+  });
+
+  it("honors caps/backoff overrides", () => {
+    const config = resolveTelemetryConfig({
+      maxEventsPerBatch: 10,
+      maxBodyBytes: 1024,
+      maxPendingRetryBatches: 3,
+      backoff: {
+        baseDelayMs: 500,
+        maxDelayMs: 5_000,
+        maxAttempts: 2,
+        jitterRatio: 0.1,
+      },
+    });
+
+    expect(config.maxEventsPerBatch).toBe(10);
+    expect(config.maxBodyBytes).toBe(1024);
+    expect(config.maxPendingRetryBatches).toBe(3);
+    expect(config.backoff).toEqual({
+      baseDelayMs: 500,
+      maxDelayMs: 5_000,
+      maxAttempts: 2,
+      jitterRatio: 0.1,
+    });
   });
 });

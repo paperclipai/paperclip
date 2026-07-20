@@ -10,11 +10,33 @@ export interface TelemetryState {
   firstSeenVersion: string;
 }
 
+/**
+ * Exponential-backoff-with-jitter parameters for the (future) batched-retry
+ * sender. Shape mirrors the plugin worker crash-recovery backoff
+ * (`server/src/services/plugin-worker-manager.ts`). Consumed by Impl-2; nothing
+ * reads it yet.
+ */
+export interface TelemetryBackoffConfig {
+  baseDelayMs: number;
+  maxDelayMs: number;
+  maxAttempts: number;
+  jitterRatio: number;
+}
+
 export interface TelemetryConfig {
   enabled: boolean;
   endpoint?: string;
   app?: string;
   schemaVersion?: string;
+  /**
+   * Optional, additive soft caps + backoff. Defaulted centrally in
+   * `resolveTelemetryConfig`; no wire/envelope change and no consumer today —
+   * Impl-2 (PAP-2853) is the first reader.
+   */
+  maxEventsPerBatch?: number;
+  maxBodyBytes?: number;
+  maxPendingRetryBatches?: number;
+  backoff?: TelemetryBackoffConfig;
 }
 
 export type TelemetryDimensionValue = string | number | boolean;
