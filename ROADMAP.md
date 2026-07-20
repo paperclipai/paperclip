@@ -72,9 +72,9 @@ MCP tools and apps should be available through a governed gateway instead of unm
 
 Secrets need to be centrally managed without giving every agent every credential. Per-agent access, scoped bindings, and audited resolution keep sensitive integrations usable while preserving least privilege.
 
-### ✅ Immutable audit log & activity attribution
+### ✅ Activity log & action attribution
 
-Operators need a durable record of what changed and who initiated it. Immutable audit history and clear activity attribution make human, agent, and system actions inspectable across the control plane.
+Operators need a durable record of what changed and who initiated it. Activity history and clear action attribution make human, agent, and system actions inspectable across the control plane.
 
 ### ✅ Self-healing runs & automatic recovery
 

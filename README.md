@@ -81,9 +81,9 @@ It looks like a task manager. Under the hood: org charts, budgets, governance, g
 Four things have to work for an organization of AI agents to actually produce: the tasks, the org, the training, and the infrastructure. Paperclip is built around exactly those four pillars.
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="doc/assets/four-pillars-dark.png">
-  <source media="(prefers-color-scheme: light)" srcset="doc/assets/four-pillars-light.png">
-  <img src="doc/assets/four-pillars-light.png" alt="The four pillars of Paperclip">
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/paperclipai/paperclip/1ec33ffd8b597f7e36aac3e2fbb4665b8c42dc3c/doc/assets/four-pillars-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/paperclipai/paperclip/1ec33ffd8b597f7e36aac3e2fbb4665b8c42dc3c/doc/assets/four-pillars-light.png">
+  <img src="https://raw.githubusercontent.com/paperclipai/paperclip/1ec33ffd8b597f7e36aac3e2fbb4665b8c42dc3c/doc/assets/four-pillars-light.png" alt="The four pillars of Paperclip">
 </picture>
 
 | Pillar | Built for | What it covers |
@@ -405,7 +405,7 @@ See [doc/DEVELOPING.md](doc/DEVELOPING.md) for the full development guide.
 - ✅ Enforced Outcomes (watchdogs, recovery actions, review gates)
 - ✅ MCP Tool Gateway & Apps (governed tool access)
 - ✅ Secrets Manager with per-agent access
-- ✅ Immutable audit log & activity attribution
+- ✅ Activity log & action attribution
 - ✅ Self-healing runs & automatic recovery
 - ✅ Agent evals & feedback
 - ⚪ Memory / Knowledge
