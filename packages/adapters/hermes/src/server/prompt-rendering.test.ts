@@ -1,6 +1,19 @@
 import { expect, test } from "vitest";
 
+import { HERMES_PAPERCLIP_WAKE_DISCIPLINE_LINES } from "../shared/constants.js";
 import { buildPrompt } from "./execute.js";
+
+const WAKE_DISCIPLINE_SECTION = HERMES_PAPERCLIP_WAKE_DISCIPLINE_LINES.join("\n");
+
+function countOccurrences(haystack: string, needle: string): number {
+  let count = 0;
+  let index = haystack.indexOf(needle);
+  while (index !== -1) {
+    count += 1;
+    index = haystack.indexOf(needle, index + needle.length);
+  }
+  return count;
+}
 
 function baseContext(overrides: Record<string, unknown> = {}) {
   return {
@@ -78,7 +91,10 @@ test("renders standard assignment wake with task authority and no backlog discov
   expect(prompt).toContain("## Paperclip Wake Payload");
   expect(prompt).toContain("Wake-handling discipline:");
   expect(prompt).toContain("not by ending the run with a payload echo");
-  expect(prompt.indexOf("Paperclip runtime identity:")).toBeLessThan(prompt.lastIndexOf("## Paperclip Wake Payload"));
+  expect(countOccurrences(prompt, "Wake-handling discipline:")).toBe(1);
+  expect(countOccurrences(prompt, WAKE_DISCIPLINE_SECTION)).toBe(1);
+  expect(prompt.indexOf("Wake-handling discipline:")).toBeLessThan(prompt.indexOf("Paperclip runtime identity:"));
+  expect(prompt.indexOf("Paperclip runtime identity:")).toBeLessThan(prompt.indexOf("\n## Paperclip Wake Payload"));
   expect(prompt).toContain("- reason: issue_assigned");
   expect(prompt).toContain("- issue: PAP-11750 Add Hermes prompt rendering regression tests");
   expect(prompt).toContain("- issue work mode: standard");
@@ -286,7 +302,9 @@ test("preserves custom prompt templates while exposing runtime and wake variable
 
   expect(prompt).toContain("CUSTOM TEMPLATE");
   expect(prompt).toContain("Wake-handling discipline:");
-  expect(prompt.indexOf("Wake-handling discipline:")).toBeLessThan(prompt.lastIndexOf("Query:"));
+  expect(countOccurrences(prompt, "Wake-handling discipline:")).toBe(1);
+  expect(countOccurrences(prompt, WAKE_DISCIPLINE_SECTION)).toBe(1);
+  expect(prompt.indexOf("Wake-handling discipline:")).toBeLessThan(prompt.indexOf("Query:\nCUSTOM TEMPLATE"));
   expect(prompt).toContain("agent=Hermes Engineer");
   expect(prompt).toContain("api=http://paperclip.local/api");
   expect(prompt).toContain("keyEnv=PAPERCLIP_API_KEY");
