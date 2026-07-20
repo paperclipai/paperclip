@@ -11,6 +11,10 @@ describe("HTTP logger redaction", () => {
     expect(HTTP_LOG_REDACT_PATHS).toContain("req.headers.cookie");
     expect(HTTP_LOG_REDACT_PATHS).toContain('req.headers["set-cookie"]');
     expect(HTTP_LOG_REDACT_PATHS).toContain('res.headers["set-cookie"]');
+    expect(HTTP_LOG_REDACT_PATHS).toContain('req.headers["proxy-authorization"]');
+    expect(HTTP_LOG_REDACT_PATHS).toContain('req.headers["x-csrf-token"]');
+    expect(HTTP_LOG_REDACT_PATHS).toContain('req.headers["x-xsrf-token"]');
+    expect(HTTP_LOG_REDACT_PATHS).toContain('req.headers["x-api-key"]');
   });
 
   it("redacts request and response header secrets from pino-http output", async () => {
