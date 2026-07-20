@@ -8767,20 +8767,6 @@ export function issueRoutes(
         return;
       }
 
-      const result = await svc.fallbackReassign(
-        {
-          id: existing.id,
-          companyId: existing.companyId,
-          identifier: existing.identifier ?? null,
-          assigneeAgentId: effectivePrimaryAgentId,
-          currentAssigneeAgentId: fromAgentId,
-        },
-        { id: targetAgentId },
-        req.body.reason,
-        resetAtValidation.resetAt,
-        actorRunId,
-      );
-
       // The takeover moves the issue away from the agent that owned the active
       // recovery action, which leaves that action active with a stale owner. The
       // recovery sweep reconciles active actions on every pass, so a dangling
@@ -8791,39 +8777,61 @@ export function issueRoutes(
         activeRecoveryAction && activeRecoveryAction.ownerAgentId === fromAgentId
           ? activeRecoveryAction
           : null;
-      if (staleRecoveryAction) {
-        const resolvedRecoveryAction = await recoveryActionsSvc.resolveActiveForIssue({
-          companyId: existing.companyId,
-          sourceIssueId: existing.id,
-          actionId: staleRecoveryAction.id,
-          status: "resolved",
-          outcome: "delegated",
-          resolutionNote:
-            "Recovery action resolved because the registered fallback sister took the issue over from its owner.",
-        });
-        if (resolvedRecoveryAction) {
-          await logActivity(db, {
+      // Both writes share one transaction so they commit or roll back together.
+      // Split across two commits, a crash in the window between them produced the
+      // very dangling state the disposal exists to prevent: the issue reassigned,
+      // the action still active under the previous owner.
+      const { result, resolvedRecoveryAction } = await db.transaction(async (tx) => {
+        const reassigned = await svc.fallbackReassign(
+          {
+            id: existing.id,
             companyId: existing.companyId,
-            actorType: req.actor.type,
-            actorId: actorAgentId,
-            agentId: actorAgentId,
-            runId: actorRunId,
-            action: "issue.recovery_action_resolved",
-            entityType: "issue",
-            entityId: existing.id,
-            details: {
-              identifier: existing.identifier ?? null,
-              recoveryActionId: resolvedRecoveryAction.id,
-              recoveryActionStatus: resolvedRecoveryAction.status,
-              outcome: resolvedRecoveryAction.outcome,
-              resolutionNote: resolvedRecoveryAction.resolutionNote,
-              source: "fallback_reassign",
-              recoveryOwnerAgentId: staleRecoveryAction.ownerAgentId,
-              fromAgentId: effectivePrimaryAgentId,
-              toAgentId: targetAgentId,
-            },
-          });
-        }
+            identifier: existing.identifier ?? null,
+            assigneeAgentId: effectivePrimaryAgentId,
+            currentAssigneeAgentId: fromAgentId,
+          },
+          { id: targetAgentId },
+          req.body.reason,
+          resetAtValidation.resetAt,
+          actorRunId,
+          tx,
+        );
+        const resolved = staleRecoveryAction
+          ? await recoveryActionsSvc.resolveActiveForIssue({
+            companyId: existing.companyId,
+            sourceIssueId: existing.id,
+            actionId: staleRecoveryAction.id,
+            status: "resolved",
+            outcome: "delegated",
+            resolutionNote:
+              "Recovery action resolved because the registered fallback sister took the issue over from its owner.",
+          }, tx)
+          : null;
+        return { result: reassigned, resolvedRecoveryAction: resolved };
+      });
+
+      if (staleRecoveryAction && resolvedRecoveryAction) {
+        await logActivity(db, {
+          companyId: existing.companyId,
+          actorType: req.actor.type,
+          actorId: actorAgentId,
+          agentId: actorAgentId,
+          runId: actorRunId,
+          action: "issue.recovery_action_resolved",
+          entityType: "issue",
+          entityId: existing.id,
+          details: {
+            identifier: existing.identifier ?? null,
+            recoveryActionId: resolvedRecoveryAction.id,
+            recoveryActionStatus: resolvedRecoveryAction.status,
+            outcome: resolvedRecoveryAction.outcome,
+            resolutionNote: resolvedRecoveryAction.resolutionNote,
+            source: "fallback_reassign",
+            recoveryOwnerAgentId: staleRecoveryAction.ownerAgentId,
+            fromAgentId: effectivePrimaryAgentId,
+            toAgentId: targetAgentId,
+          },
+        });
       }
 
       await issueReferencesSvc.syncComment(result.comment.id);

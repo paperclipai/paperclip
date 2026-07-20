@@ -827,6 +827,7 @@ type IssueUserContextInput = {
 };
 type ProjectGoalReader = Pick<Db, "select">;
 type DbReader = Pick<Db, "select">;
+type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
   labelIds?: string[];
   blockedByIssueIds?: string[];
@@ -7865,9 +7866,17 @@ export function issueService(db: Db) {
       reason: "session_limit" | "weekly_limit" | "usage_limit" | "paused_primary",
       resetAt: Date | string | null,
       runId: string | null,
+      // Optional caller-supplied transaction. The takeover orphans the active
+      // recovery action, and the caller has to dispose of that action in the
+      // SAME commit — otherwise a crash between the two writes leaves the issue
+      // reassigned with a still-active action pointing at the old owner, which
+      // is exactly the dangling state the disposal exists to prevent. Callers
+      // that do not need to bundle anything keep the previous behaviour: this
+      // opens and owns its own transaction.
+      dbOrTx: any = db,
     ) => {
       const parsedResetAt = resetAt ? new Date(resetAt) : null;
-      return db.transaction(async (tx) => {
+      const runReassign = async (tx: DbTransaction) => {
         const current = await tx
           .select({
             id: issues.id,
@@ -8053,7 +8062,9 @@ export function issueService(db: Db) {
           reassignedFromAgentId: primaryAgentId,
           reassignedToAgentId: sister.id,
         };
-      });
+      };
+
+      return dbOrTx === db ? db.transaction(runReassign) : runReassign(dbOrTx);
     },
 
     clearExecutionWorkspaceEnvironmentSelection: async (companyId: string, environmentId: string) => {

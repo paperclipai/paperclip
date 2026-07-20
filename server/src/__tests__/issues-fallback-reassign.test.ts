@@ -150,7 +150,23 @@ function makeAgent(id: string, overrides: Record<string, unknown> = {}) {
   return { id, companyId, role: "engineer", reportsTo: null, permissions: { canCreateAgents: false }, ...overrides };
 }
 
-async function createApp(actor: Record<string, unknown>) {
+// The route runs the assignee swap and the recovery-action disposal in one
+// transaction, so the injected db has to hand out a tx. `createTransactionalDb`
+// models commit/rollback well enough to observe whether a failed disposal takes
+// the reassignment down with it.
+function createTransactionalDb() {
+  const committed: Record<string, unknown>[] = [];
+  const transaction = vi.fn(async (callback: (tx: Record<string, unknown>) => Promise<unknown>) => {
+    const staged: Record<string, unknown>[] = [];
+    const tx = { __tx: true, staged };
+    const result = await callback(tx);
+    committed.push(...staged);
+    return result;
+  });
+  return { committed, transaction };
+}
+
+async function createApp(actor: Record<string, unknown>, db: unknown = createTransactionalDb()) {
   const [{ errorHandler }, { issueRoutes }] = await Promise.all([
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
     vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
@@ -161,7 +177,7 @@ async function createApp(actor: Record<string, unknown>) {
     (req as any).actor = actor;
     next();
   });
-  app.use("/api", issueRoutes({} as any, mockStorageService as any));
+  app.use("/api", issueRoutes(db as any, mockStorageService as any));
   app.use(errorHandler);
   return app;
 }
@@ -229,12 +245,24 @@ describe("authorized fallback reassignment", () => {
       ...makeIssue(),
       ...patch,
     }));
-    mockIssueService.fallbackReassign.mockImplementation(async (issue: Record<string, unknown>, sister: { id: string }) => ({
-      issue: { ...makeIssue(), assigneeAgentId: sister.id },
-      comment: { id: "c-system", issueId: issue.id, companyId, body: "system audit" },
-      reassignedFromAgentId: issue.assigneeAgentId,
-      reassignedToAgentId: sister.id,
-    }));
+    mockIssueService.fallbackReassign.mockImplementation(async (
+      issue: Record<string, unknown>,
+      sister: { id: string },
+      _reason: string,
+      _resetAt: Date | null,
+      _runId: string | null,
+      tx?: { staged?: Record<string, unknown>[] },
+    ) => {
+      // Stage the swap on the caller's transaction rather than "committing" it,
+      // so a later failure inside the same transaction discards it.
+      tx?.staged?.push({ kind: "issue_reassigned", issueId: issue.id, assigneeAgentId: sister.id });
+      return {
+        issue: { ...makeIssue(), assigneeAgentId: sister.id },
+        comment: { id: "c-system", issueId: issue.id, companyId, body: "system audit" },
+        reassignedFromAgentId: issue.assigneeAgentId,
+        reassignedToAgentId: sister.id,
+      };
+    });
     mockIssueService.addComment.mockResolvedValue({ id: "c1", issueId, companyId, body: "comment" });
     mockAgentService.resolveByReference.mockImplementation(async (_companyId: string, ref: string) => ({
       ambiguous: false,
@@ -289,6 +317,7 @@ describe("authorized fallback reassignment", () => {
       "usage_limit",
       new Date(validResetAt),
       executorActor().runId,
+      expect.objectContaining({ __tx: true }),
     );
     expect(mockAgentService.getFallbackRelationship).toHaveBeenCalledWith(companyId, primaryAgentId, sisterAgentId);
     expect(mockAgentService.isPausedOrLimitFailed).toHaveBeenCalledWith(
@@ -377,6 +406,7 @@ describe("authorized fallback reassignment", () => {
       "paused_primary",
       null,
       executorActor().runId,
+      expect.objectContaining({ __tx: true }),
     );
   });
 
@@ -420,6 +450,11 @@ describe("authorized fallback reassignment", () => {
         status: "resolved",
         outcome: "delegated",
       }),
+      expect.objectContaining({ __tx: true }),
+    );
+    // Same transaction as the reassignment, so the pair commits or rolls back together.
+    expect(mockIssueRecoveryActionService.resolveActiveForIssue.mock.calls[0]![1]).toBe(
+      mockIssueService.fallbackReassign.mock.calls[0]![5],
     );
     expect(logActivityMock).toHaveBeenCalledWith(
       expect.anything(),
@@ -455,7 +490,8 @@ describe("authorized fallback reassignment", () => {
     });
     mockIssueRecoveryActionService.resolveActiveForIssue.mockRejectedValue(new Error("resolve failed"));
 
-    const res = await request(await createApp(executorActor()))
+    const routeDb = createTransactionalDb();
+    const res = await request(await createApp(executorActor(), routeDb))
       .post(`/api/issues/${issueId}/fallback-reassign`)
       .send({
         toAgentId: sisterAgentId,
@@ -467,6 +503,60 @@ describe("authorized fallback reassignment", () => {
     // surfaced rather than silently leaving it active.
     expect(res.status).toBe(500);
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    // Atomicity: the reassignment was attempted inside the same transaction as
+    // the disposal, so the failed disposal must take it down with it. Nothing
+    // committed — no issue reassigned with a still-active, stale-owner action.
+    expect(mockIssueService.fallbackReassign).toHaveBeenCalled();
+    expect(routeDb.committed).toEqual([]);
+    expect(logActivityMock).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: "issue.fallback_reassigned" }),
+    );
+  });
+
+  it("commits the reassignment and the recovery-action disposal together", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ assigneeAgentId: recoveryOwnerAgentId }));
+    mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue({
+      id: "recovery-action-1",
+      issueId,
+      companyId,
+      status: "active",
+      kind: "stranded_assigned_issue",
+      ownerAgentId: recoveryOwnerAgentId,
+      previousOwnerAgentId: primaryAgentId,
+      returnOwnerAgentId: null,
+    });
+    mockIssueRecoveryActionService.resolveActiveForIssue.mockImplementation(async (
+      input: Record<string, unknown>,
+      tx?: { staged?: Record<string, unknown>[] },
+    ) => {
+      tx?.staged?.push({ kind: "recovery_action_resolved", actionId: input.actionId });
+      return {
+        id: input.actionId,
+        companyId,
+        sourceIssueId: issueId,
+        status: input.status,
+        outcome: input.outcome,
+        resolutionNote: input.resolutionNote,
+        ownerAgentId: recoveryOwnerAgentId,
+      };
+    });
+
+    const routeDb = createTransactionalDb();
+    const res = await request(await createApp(executorActor(), routeDb))
+      .post(`/api/issues/${issueId}/fallback-reassign`)
+      .send({
+        toAgentId: sisterAgentId,
+        expectedFromAgentId: primaryAgentId,
+        reason: "paused_primary",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(routeDb.transaction).toHaveBeenCalledTimes(1);
+    expect(routeDb.committed).toEqual([
+      { kind: "issue_reassigned", issueId, assigneeAgentId: sisterAgentId },
+      { kind: "recovery_action_resolved", actionId: "recovery-action-1" },
+    ]);
   });
 
   it("does not touch recovery actions when the takeover is not recovery-owned", async () => {
