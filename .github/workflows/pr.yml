@@ -359,7 +359,9 @@ jobs:
   e2e:
     needs: [policy]
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Give hosted runners enough budget for browser startup and full
+    # Playwright execution under slow CI conditions.
+    timeout-minutes: 90
 
     steps:
       - name: Checkout repository
@@ -389,7 +391,7 @@ jobs:
       - name: Verify runner Chrome
         # GitHub's Ubuntu runner image already ships Google Chrome, so use that
         # directly for the headless e2e lane instead of downloading Playwright
-        # browser bundles inside the 30 minute job budget.
+        # browser bundles inside the job timeout budget.
         run: google-chrome --version
 
       - name: Generate Paperclip config
