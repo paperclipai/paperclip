@@ -536,14 +536,24 @@ export function resourceRuntimeService(db: Db) {
               continue;
             }
             const provider = input.pullRequestProvider ?? githubPullRequestProvider();
-            const pullRequest = await provider.create({
-              repository: item.resource.repository,
-              token: credentialToken!,
-              head: pushRef,
-              base: targetRef,
-              title,
-              body: output.body?.trim() ?? "",
-            });
+            let pullRequest: { id: string; url: string };
+            try {
+              pullRequest = await provider.create({
+                repository: item.resource.repository,
+                token: credentialToken!,
+                head: pushRef,
+                base: targetRef,
+                title,
+                body: output.body?.trim() ?? "",
+              });
+            } catch (error) {
+              await runGit(["push", "origin", "--delete", pushRef], {
+                cwd: item.repoPath,
+                env,
+                redact: credential.token ? [credential.token] : [],
+              }).catch(() => undefined);
+              throw error;
+            }
             results.push({ resourceId: item.resource.id, inputCommit: item.expectedCommit, outputCommit: commit, action: output.action, branch: pushRef, targetRef, pullRequestId: pullRequest.id, pullRequestUrl: pullRequest.url, changedFiles, insertions, deletions, status: "pull_request_created" });
             const inputVersion = inputVersions.find((version) => version.resourceId === item.resource.id);
             if (inputVersion) inputVersion.published = true;
