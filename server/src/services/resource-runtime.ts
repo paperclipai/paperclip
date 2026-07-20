@@ -402,7 +402,9 @@ export function resourceRuntimeService(db: Db) {
             ? await resolveLocalRef(resource, outputTargetRef!)
             : await resolveRemoteRef(resource, outputTargetRef!, env))
           : null;
-        if (outputBranch) await assertPublishBranchAvailable(resource, outputBranch, env);
+        if (attachment.mode !== "input" && outputBranch) {
+          await assertPublishBranchAvailable(resource, outputBranch, env);
+        }
         // Full Git Resources are cloned directly into their mount. A
         // source_path needs a hidden staging checkout so only that subtree is
         // exposed at the mount; the staging directory remains inside this run

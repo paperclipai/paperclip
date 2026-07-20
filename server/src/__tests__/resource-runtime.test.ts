@@ -155,6 +155,14 @@ describeEmbeddedPostgres("resourceRuntimeService", () => {
       manifest: { version: 1, resources: [{ resourceId, mode: "input_output", output: { action: "pull_request", branch: "feature" } }] },
     })).rejects.toThrow("Git output branch already exists: feature");
 
+    const inputOnlyPullRequestPrepared = await resourceRuntimeService(db).prepare({
+      companyId,
+      runId: "run-input-only-existing-pr-branch-test",
+      workspaceRoot: path.join(fixtureRoot, "input-only-existing-pr-branch-workspace"),
+      manifest: { version: 1, resources: [{ resourceId, mode: "input", output: { action: "pull_request", branch: "feature" } }] },
+    });
+    await expect(inputOnlyPullRequestPrepared!.publish()).resolves.toMatchObject([{ status: "discarded" }]);
+
     const commitWorkspace = path.join(fixtureRoot, "commit-workspace");
     const commitPrepared = await resourceRuntimeService(db).prepare({
       companyId,

@@ -819,9 +819,8 @@ export function workflowService(db: Db) {
       }
       if (err instanceof Error && err.message) {
         await appendConsoleChunk("stderr", `${err.message}\n`);
-      } else {
-        await persistContextSnapshot();
       }
+      await persistContextSnapshot();
       await finishOpenPhases("failed");
       await db.update(workflowRuns).set({
         status: "failed",
