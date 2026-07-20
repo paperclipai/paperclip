@@ -348,3 +348,108 @@ export interface RemoteSecretImportResult {
   errorCount: number;
   results: RemoteSecretImportRowResult[];
 }
+
+/* -------------------------------------------------------------------------- */
+/* Proposed secrets & bindings (PAP-14731)                                    */
+/* -------------------------------------------------------------------------- */
+
+export type SecretProposalKind = "secret" | "binding";
+export type SecretProposalStatus =
+  | "pending"
+  | "approved"
+  | "rejected"
+  | "withdrawn"
+  | "expired";
+
+/** Minimal agent reference surfaced on a proposal (proposer / binding target). */
+export interface SecretProposalAgentRef {
+  id: string;
+  name: string;
+  /** lucide icon slug, if the agent has one. */
+  icon: string | null;
+}
+
+/** Provenance link to the issue a proposal originated from. */
+export interface SecretProposalIssueRef {
+  id: string;
+  /** Human key, e.g. `PAP-14743`. */
+  key: string;
+  title: string;
+}
+
+/**
+ * Board-facing view of a secret/binding proposal. The proposed value is NEVER
+ * included — secret-kind proposals expose only `valueFingerprintSha256` and
+ * `valueLength`, mirroring the no-human-value-read posture (plan §Security 4).
+ */
+export interface SecretProposalView {
+  id: string;
+  companyId: string;
+  kind: SecretProposalKind;
+  status: SecretProposalStatus;
+  justification: string;
+
+  // --- secret-kind ---
+  proposedName: string | null;
+  proposedKey: string | null;
+  proposedDescription: string | null;
+  valueFingerprintSha256: string | null;
+  valueLength: number | null;
+
+  // --- binding-kind ---
+  /** Set when the binding references an existing live secret. */
+  secretId: string | null;
+  /** Resolved name of the live secret referenced by `secretId`, for display. */
+  secretName: string | null;
+  /** Set when the binding depends on a still-pending secret proposal (cascade pairing). */
+  secretProposalId: string | null;
+  /** Resolved proposed name of the dependency secret proposal, for display. */
+  secretProposalName: string | null;
+  /** Binding target type (`"agent"` in v1). */
+  targetType: SecretBindingTargetType | null;
+  /** Resolved target agent for the binding. */
+  target: SecretProposalAgentRef | null;
+  /** Delivery path: `env.<KEY>` (env var) or `access.<ALIAS>` (agent API). */
+  configPath: string | null;
+
+  // --- provenance ---
+  proposedBy: SecretProposalAgentRef;
+  originIssue: SecretProposalIssueRef | null;
+  originRunId: string;
+  /** ISO timestamp; pending proposals auto-expire (default 14d). */
+  expiresAt: string;
+  createdAt: string;
+
+  // --- resolution (terminal statuses only) ---
+  resolvedByUserId: string | null;
+  resolvedAt: string | null;
+  resolutionReason: string | null;
+  createdSecretId: string | null;
+  appliedBindingConfigPath: string | null;
+
+  /**
+   * Server-computed permission preflight for the current viewer, mirroring the
+   * exact authz the approve path enforces (secrets write for secret-kind;
+   * secrets write — when cascading a proposed secret — AND `agent_config:update`
+   * on the target agent for binding-kind). Approve is disabled with
+   * `approveBlockReason` shown when this is `false`.
+   */
+  viewerCanApprove: boolean;
+  approveBlockReason: string | null;
+}
+
+/** Approve body: cascade a proposed dependency secret and/or re-folder/rename before landing. */
+export interface ApproveSecretProposalInput {
+  /** Approve a pending dependency secret proposal in the same transaction. */
+  cascade?: boolean;
+  /** Re-folder / rename / re-provider a secret-kind proposal before it lands. */
+  overrides?: {
+    name?: string;
+    description?: string | null;
+    providerConfigId?: string | null;
+  };
+}
+
+export interface RejectSecretProposalInput {
+  reason: string;
+}

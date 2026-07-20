@@ -1,6 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { KeyRound, Plus, ServerCog, Trash2, Variable } from "lucide-react";
-import type { CompanySecret, EnvSecretRefBinding, SecretVersionSelector } from "@paperclipai/shared";
+import type {
+  CompanySecret,
+  EnvSecretRefBinding,
+  SecretProposalView,
+  SecretVersionSelector,
+} from "@paperclipai/shared";
 import { cn } from "../lib/utils";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -12,6 +17,13 @@ import {
   deliveryModeDescription,
 } from "../lib/secret-delivery";
 import { envKeyFromSecretName } from "./environment-variables-editor/model";
+import {
+  DeliveryBadge as ProposalDeliveryBadge,
+  ProposalActions,
+  ProposedBadge,
+  bindingEnvKey,
+  bindingSecretLabel,
+} from "../pages/secrets/proposal-review";
 
 /* -------------------------------------------------------------------------- */
 /* Pure model (exported for tests)                                            */
@@ -146,6 +158,12 @@ export interface AgentSecretAccessEditorProps {
    */
   onChange: (next: Record<string, EnvSecretRefBinding>) => void;
   disabled?: boolean;
+  /** Pending binding proposals targeting this agent (PAP-14731). */
+  proposals?: readonly SecretProposalView[];
+  /** Open the approve confirm dialog for a proposal (wired by the parent surface). */
+  onApproveProposal?: (proposal: SecretProposalView) => void;
+  /** Open the reject dialog for a proposal (wired by the parent surface). */
+  onRejectProposal?: (proposal: SecretProposalView) => void;
 }
 
 function DeliveryBadge({ mode }: { mode: "env" | "api" }) {
@@ -169,7 +187,19 @@ function DeliveryBadge({ mode }: { mode: "env" | "api" }) {
   );
 }
 
-export function AgentSecretAccessEditor({ config, secrets, onChange, disabled }: AgentSecretAccessEditorProps) {
+export function AgentSecretAccessEditor({
+  config,
+  secrets,
+  onChange,
+  disabled,
+  proposals,
+  onApproveProposal,
+  onRejectProposal,
+}: AgentSecretAccessEditorProps) {
+  const bindingProposals = useMemo(
+    () => (proposals ?? []).filter((proposal) => proposal.kind === "binding"),
+    [proposals],
+  );
   const envBindings = useMemo(() => parseEnvSecretRefs(config), [config]);
   const apiBindings = useMemo(() => parseAccessGrants(config), [config]);
   const summaries = useMemo(() => summarizeAgentBindings(envBindings, apiBindings), [envBindings, apiBindings]);
@@ -250,6 +280,49 @@ export function AgentSecretAccessEditor({ config, secrets, onChange, disabled }:
       ) : (
         <p className="text-sm text-muted-foreground">No secrets are bound to this agent yet.</p>
       )}
+
+      {/* Pending binding proposals targeting this agent (PAP-14731). */}
+      {bindingProposals.length > 0 && onApproveProposal && onRejectProposal ? (
+        <div className="space-y-2">
+          <div className="flex items-center gap-2 text-(length:--text-micro) font-medium uppercase tracking-wide text-muted-foreground">
+            Proposed access
+            <ProposedBadge />
+          </div>
+          {bindingProposals.map((proposal) => {
+            const secret = bindingSecretLabel(proposal);
+            const envKey = bindingEnvKey(proposal);
+            return (
+              <div
+                key={proposal.id}
+                className="flex flex-col gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-2.5 py-2 text-xs sm:flex-row sm:items-center"
+              >
+                <div className="min-w-0 flex-1 space-y-1">
+                  <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+                    <ProposalDeliveryBadge configPath={proposal.configPath} />
+                    <code className="font-mono">{envKey || proposal.configPath}</code>
+                    <span className="text-muted-foreground">→</span>
+                    <KeyRound className="size-3 text-muted-foreground" />
+                    <span className="font-medium">{secret.name}</span>
+                    {secret.pending ? <ProposedBadge /> : null}
+                  </div>
+                  <p className="flex flex-wrap items-center gap-1 text-muted-foreground">
+                    <span>proposed by {proposal.proposedBy.name}</span>
+                    <span aria-hidden="true">·</span>
+                    <span className="truncate italic">“{proposal.justification}”</span>
+                  </p>
+                </div>
+                <ProposalActions
+                  proposal={proposal}
+                  onApprove={onApproveProposal}
+                  onReject={onRejectProposal}
+                  disabled={disabled}
+                  size="xs"
+                />
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
 
       {/* Editable API-access grants (access.<ALIAS>). */}
       <div className="space-y-2">

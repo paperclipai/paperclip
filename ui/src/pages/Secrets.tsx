@@ -109,6 +109,7 @@ import { copyTextToClipboard } from "../lib/clipboard";
 import { PageTabBar } from "../components/PageTabBar";
 import { ImportFromVaultDialog } from "./secrets/ImportFromVaultDialog";
 import { MyUserSecretsTab } from "./secrets/MyUserSecretsTab";
+import { ProposalsTab } from "./secrets/ProposalsTab";
 import { SecretPathName } from "./secrets/SecretPathName";
 import {
   buildSecretPathBreadcrumbs,
@@ -128,7 +129,7 @@ import type { MyUserSecretEntry } from "../api/secrets";
 type CreateMode = "managed" | "external";
 type SecretValueProvider = "company" | "user";
 type ProvidedByFilter = "all" | SecretValueProvider;
-type SecretsTab = "secrets" | "my-secrets" | "vaults";
+type SecretsTab = "secrets" | "my-secrets" | "vaults" | "proposals";
 type SecretsViewMode = "folders" | "flat";
 
 const SECRETS_VIEW_MODE_STORAGE_KEY = "paperclip.secrets.viewMode";
@@ -748,8 +749,17 @@ export function Secrets() {
     retry: false,
   });
 
+  const proposalsQuery = useQuery({
+    queryKey: selectedCompanyId
+      ? queryKeys.secrets.proposals(selectedCompanyId, "pending")
+      : ["secret-proposals", "__disabled__"],
+    queryFn: () => secretsApi.listProposals(selectedCompanyId!, "pending"),
+    enabled: Boolean(selectedCompanyId),
+  });
+
   const secrets = secretsQuery.data ?? EMPTY_SECRETS;
   const userDefinitions = userDefinitionsQuery.data ?? EMPTY_USER_SECRET_DEFINITIONS;
+  const pendingProposalCount = proposalsQuery.data?.length ?? 0;
   const myUserSecrets = myUserSecretsQuery.data ?? EMPTY_MY_USER_SECRETS;
   const providers = providersQuery.data ?? EMPTY_SECRET_PROVIDERS;
   const providerConfigs = providerConfigsQuery.data ?? EMPTY_PROVIDER_CONFIGS;
@@ -1748,6 +1758,22 @@ export function Secrets() {
             { value: "secrets", label: "Secrets" },
             { value: "my-secrets", label: "My secrets" },
             { value: "vaults", label: "Provider vaults" },
+            {
+              value: "proposals",
+              label: (
+                <span className="inline-flex items-center gap-1.5">
+                  Proposals
+                  {pendingProposalCount > 0 ? (
+                    <Badge
+                      variant="outline"
+                      className="h-4 min-w-4 justify-center rounded-full border-amber-500/40 bg-amber-500/10 px-1 text-(length:--text-nano) font-medium text-amber-700 dark:text-amber-300"
+                    >
+                      {pendingProposalCount}
+                    </Badge>
+                  ) : null}
+                </span>
+              ),
+            },
           ]}
           align="start"
           value={activeTab}
@@ -2132,6 +2158,11 @@ export function Secrets() {
               null
             }
           />
+        </TabsContent>
+        <TabsContent value="proposals" className="min-h-0 flex-1 overflow-y-auto">
+          {selectedCompanyId ? (
+            <ProposalsTab companyId={selectedCompanyId} providerConfigs={providerConfigs} />
+          ) : null}
         </TabsContent>
       </Tabs>
 

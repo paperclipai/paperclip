@@ -53,6 +53,7 @@ import {
   type EnvironmentVariablesEditorHandle,
 } from "./environment-variables-editor";
 import { AgentSecretAccessEditor } from "./AgentSecretAccessEditor";
+import { useProposalReview } from "../pages/secrets/proposal-review";
 import { AGENT_ACCESS_CONFIG_PATH_PREFIX } from "../lib/secret-delivery";
 import { shouldShowLegacyWorkingDirectoryField } from "../lib/legacy-agent-config";
 import { listAdapterOptions, listVisibleAdapterTypes } from "../adapters/metadata";
@@ -233,6 +234,25 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     enabled: Boolean(selectedCompanyId),
     retry: false,
   });
+  // Pending binding proposals targeting this agent (PAP-14731). Board-only route;
+  // non-permitted viewers simply get an empty list.
+  const editAgentId = !isCreate ? props.agent.id : null;
+  const { data: pendingProposals = [] } = useQuery({
+    queryKey: selectedCompanyId
+      ? queryKeys.secrets.proposals(selectedCompanyId, "pending")
+      : ["secret-proposals", "none"],
+    queryFn: () => secretsApi.listProposals(selectedCompanyId!, "pending"),
+    enabled: Boolean(selectedCompanyId) && !isCreate,
+    retry: false,
+  });
+  const agentBindingProposals = useMemo(
+    () =>
+      pendingProposals.filter(
+        (proposal) => proposal.kind === "binding" && proposal.target?.id === editAgentId,
+      ),
+    [pendingProposals, editAgentId],
+  );
+  const proposalReview = useProposalReview(selectedCompanyId, []);
   const { data: experimentalSettings } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
@@ -1413,7 +1433,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     config={{ ...config, ...overlay.adapterConfig }}
                     secrets={availableSecrets}
                     onChange={applyAccessGrants}
+                    proposals={agentBindingProposals}
+                    onApproveProposal={proposalReview.requestApprove}
+                    onRejectProposal={proposalReview.requestReject}
                   />
+                  {proposalReview.dialogs}
                 </Field>
               )}
 

@@ -160,4 +160,66 @@ describe("AgentSecretAccessEditor component", () => {
     const last = emitted.at(-1)!;
     expect(last).toEqual({ STRIPE: { type: "secret_ref", secretId: "s1", version: "latest" } });
   });
+
+  it("renders pending binding proposals as Proposed rows with approve/reject", () => {
+    const approved: string[] = [];
+    const rejected: string[] = [];
+    const proposal = {
+      id: "prop-1",
+      companyId: "co",
+      kind: "binding" as const,
+      status: "pending" as const,
+      justification: "Bind Stripe for the billing agent.",
+      proposedName: null,
+      proposedKey: null,
+      proposedDescription: null,
+      valueFingerprintSha256: null,
+      valueLength: null,
+      secretId: "s1",
+      secretName: "STRIPE_KEY",
+      secretProposalId: null,
+      secretProposalName: null,
+      targetType: "agent" as const,
+      target: { id: "agent-1", name: "BillingBot", icon: null },
+      configPath: "access.STRIPE",
+      proposedBy: { id: "agent-2", name: "ClaudeCoder", icon: null },
+      originIssue: null,
+      originRunId: "run-1",
+      expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
+      createdAt: new Date(0).toISOString(),
+      resolvedByUserId: null,
+      resolvedAt: null,
+      resolutionReason: null,
+      createdSecretId: null,
+      appliedBindingConfigPath: null,
+      viewerCanApprove: true,
+      approveBlockReason: null,
+    };
+    render(
+      <AgentSecretAccessEditor
+        config={{}}
+        secrets={secrets}
+        onChange={() => {}}
+        proposals={[proposal]}
+        onApproveProposal={(p) => approved.push(p.id)}
+        onRejectProposal={(p) => rejected.push(p.id)}
+      />,
+    );
+
+    expect(container.textContent).toContain("Proposed access");
+    expect(container.textContent).toContain("STRIPE"); // alias + bound secret name
+    expect(container.textContent).toContain("ClaudeCoder"); // proposer
+
+    const approveButton = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === "Approve",
+    )!;
+    flushSync(() => approveButton.click());
+    expect(approved).toEqual(["prop-1"]);
+
+    const rejectButton = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === "Reject",
+    )!;
+    flushSync(() => rejectButton.click());
+    expect(rejected).toEqual(["prop-1"]);
+  });
 });

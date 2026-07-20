@@ -50,6 +50,9 @@ const mockSecretsApi = vi.hoisted(() => ({
   updateMyUserSecret: vi.fn(),
   rotateMyUserSecret: vi.fn(),
   removeMyUserSecret: vi.fn(),
+  listProposals: vi.fn(),
+  approveProposal: vi.fn(),
+  rejectProposal: vi.fn(),
 }));
 
 const mockAgentsApi = vi.hoisted(() => ({
@@ -364,6 +367,7 @@ describe("Secrets page layout", () => {
     mockSecretsApi.listUserSecretDefinitions.mockResolvedValue([]);
     mockSecretsApi.userSecretDefinitionCoverage.mockResolvedValue(userSecretCoverage);
     mockSecretsApi.listMyUserSecrets.mockResolvedValue([]);
+    mockSecretsApi.listProposals.mockResolvedValue([]);
     mockAgentsApi.list.mockResolvedValue([]);
   });
 
