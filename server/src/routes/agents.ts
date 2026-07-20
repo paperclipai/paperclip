@@ -353,6 +353,14 @@ export function agentRoutes(
         // A re-registration that never mentioned the flag must not silently revoke
         // a previously granted, audited exception. Revocation stays possible, but
         // only when the caller explicitly sends retainPrimaryIgnoreActivityWindow=false.
+        //
+        // A BARE `ignoreActivityWindow: true` (no exception record) is still cleared
+        // here. Gating that on "first lane promotion" was tried and reverted: it makes
+        // this reconciliation edge-triggered, so a swallowed reconcile failure would
+        // strand the flag permanently on every subsequent replay. Keeping it
+        // convergent is the safer failure direction. The real fix is to record
+        // provenance on the sister-side write below, so a bare flag genuinely means
+        // "an operator set this by hand" rather than lane residue.
         if (hasAuditedException && !input.retainPrimaryIgnoreActivityWindowProvided) return;
         delete basePrimaryRuntimeConfig[IGNORE_ACTIVITY_WINDOW_RUNTIME_CONFIG_KEY];
         delete basePrimaryRuntimeConfig[IGNORE_ACTIVITY_WINDOW_EXCEPTION_RUNTIME_CONFIG_KEY];

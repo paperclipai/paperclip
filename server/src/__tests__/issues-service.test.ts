@@ -143,6 +143,13 @@ describeEmbeddedPostgres("issueService.fallbackReassign", () => {
         permissions: {},
       },
     ]);
+    // A takeover is only authorized between a primary and its registered sister.
+    await db.insert(agentFallbackSisters).values({
+      companyId,
+      primaryAgentId,
+      sisterAgentId,
+      priority: 0,
+    });
     await db.insert(heartbeatRuns).values([
       {
         id: checkoutRunId,
@@ -258,6 +265,215 @@ describeEmbeddedPostgres("issueService.fallbackReassign", () => {
     });
     expect(typeof state.detectedAt).toBe("string");
     expect(typeof state.lastDeferredAt).toBe("string");
+  });
+
+  it("refuses a takeover by an agent that is not a registered sister of the live assignee", async () => {
+    // The caller names the live assignee honestly, so nothing is misattributed —
+    // but the target has no fallback relationship to it, so the handover itself
+    // is unauthorized and must be refused.
+    const companyId = randomUUID();
+    const primaryAgentId = randomUUID();
+    const registeredSisterAgentId = randomUUID();
+    const outsiderAgentId = randomUUID();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+    const companyRoot = path.resolve(resolvePaperclipInstanceRoot(), "companies", companyId);
+    companyRootsToCleanup.add(companyRoot);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values([
+      {
+        id: primaryAgentId,
+        companyId,
+        name: "Primary",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: registeredSisterAgentId,
+        companyId,
+        name: "Sister",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: outsiderAgentId,
+        companyId,
+        name: "Outsider",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    // The primary has a real lane — just not to the agent attempting the takeover.
+    await db.insert(agentFallbackSisters).values({
+      companyId,
+      primaryAgentId,
+      sisterAgentId: registeredSisterAgentId,
+      priority: 0,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: outsiderAgentId,
+      status: "running",
+      invocationSource: "test",
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Fallback target",
+      identifier: "TST-45",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: primaryAgentId,
+    });
+
+    await expect(
+      svc.fallbackReassign(
+        {
+          id: issueId,
+          companyId,
+          identifier: "TST-45",
+          assigneeAgentId: primaryAgentId,
+          currentAssigneeAgentId: primaryAgentId,
+        },
+        { id: outsiderAgentId },
+        "usage_limit",
+        null,
+        runId,
+      ),
+    ).rejects.toThrow(/registered fallback primary/);
+
+    // Omitting the primary claim entirely must not bypass the gate either.
+    await expect(
+      svc.fallbackReassign(
+        { id: issueId, companyId, identifier: "TST-45", assigneeAgentId: null },
+        { id: outsiderAgentId },
+        "usage_limit",
+        null,
+        runId,
+      ),
+    ).rejects.toThrow(/registered fallback primary/);
+
+    const storedIssue = await db
+      .select({ assigneeAgentId: issues.assigneeAgentId })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]!);
+    expect(storedIssue.assigneeAgentId).toBe(primaryAgentId);
+    const comments = await db
+      .select({ id: issueComments.id })
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId));
+    expect(comments).toHaveLength(0);
+    const state = await readFile(
+      path.resolve(companyRoot, "fallback-state", `${primaryAgentId}.json`),
+      "utf8",
+    ).catch(() => null);
+    expect(state).toBeNull();
+  });
+
+  it("refuses a takeover through a revoked fallback relationship", async () => {
+    const companyId = randomUUID();
+    const primaryAgentId = randomUUID();
+    const sisterAgentId = randomUUID();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+    const companyRoot = path.resolve(resolvePaperclipInstanceRoot(), "companies", companyId);
+    companyRootsToCleanup.add(companyRoot);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values([
+      {
+        id: primaryAgentId,
+        companyId,
+        name: "Primary",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: sisterAgentId,
+        companyId,
+        name: "Sister",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db.insert(agentFallbackSisters).values({
+      companyId,
+      primaryAgentId,
+      sisterAgentId,
+      priority: 0,
+      revokedAt: new Date("2026-07-01T00:00:00.000Z"),
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: sisterAgentId,
+      status: "running",
+      invocationSource: "test",
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Fallback target",
+      identifier: "TST-46",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: primaryAgentId,
+    });
+
+    await expect(
+      svc.fallbackReassign(
+        {
+          id: issueId,
+          companyId,
+          identifier: "TST-46",
+          assigneeAgentId: primaryAgentId,
+        },
+        { id: sisterAgentId },
+        "usage_limit",
+        null,
+        runId,
+      ),
+    ).rejects.toThrow(/registered fallback primary/);
+
+    const storedIssue = await db
+      .select({ assigneeAgentId: issues.assigneeAgentId })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]!);
+    expect(storedIssue.assigneeAgentId).toBe(primaryAgentId);
   });
 
   it("reassigns a recovery-owned stranded issue when the effective primary is supplied", async () => {

@@ -7904,32 +7904,56 @@ export function issueService(db: Db) {
           });
         }
         const primaryAgentId = issue.assigneeAgentId ?? current.assigneeAgentId;
+        // Capability routing is validated first so work that is merely misrouted
+        // still gets its actionable 422 instead of a takeover conflict. Both this
+        // and the authorization gate below are pure reads that run ahead of any
+        // mutation, so the ordering does not widen what an unauthorized caller
+        // can change.
+        await assertIssueToolCapabilityAssignment({
+          companyId: current.companyId,
+          issueId: current.id,
+          title: current.title,
+          description: current.description,
+          labels: await loadIssueLabelNamesForIssue(current.companyId, current.id, tx),
+          assigneeAgentId: sister.id,
+          dbOrTx: tx,
+        });
+
+        // Takeover authorization. A fallback reassignment is only ever legitimate
+        // between a primary and one of its own registered, unrevoked sisters, so
+        // this lookup is unconditional. Gating it on "the claimed primary differs
+        // from the live assignee" closed only misattribution: a caller that named
+        // the live assignee honestly could still hand the issue to an arbitrary
+        // agent with no fallback relationship at all. The route
+        // (POST /issues/:id/fallback-reassign) already performs the same lookup
+        // against the effective primary before delegating here, so honest callers
+        // are unaffected; this is the service-level backstop for every other
+        // caller.
+        const relationship = await tx
+          .select({ id: agentFallbackSisters.id })
+          .from(agentFallbackSisters)
+          .where(and(
+            eq(agentFallbackSisters.companyId, current.companyId),
+            eq(agentFallbackSisters.primaryAgentId, primaryAgentId),
+            eq(agentFallbackSisters.sisterAgentId, sister.id),
+            isNull(agentFallbackSisters.revokedAt),
+          ))
+          .then((rows) => rows[0] ?? null);
+        if (!relationship) {
+          throw conflict("Fallback reassignment primary is not a registered fallback primary for the sister", {
+            issueId: issue.id,
+            primaryAgentId,
+            sisterAgentId: sister.id,
+          });
+        }
         if (primaryAgentId !== current.assigneeAgentId) {
-          // The caller claims the failed primary is someone other than the live
-          // assignee (recovery temporarily rebound the issue). That claim becomes
-          // the fallback-state key, the audit comment's "From agent" and the
-          // returned reassignedFromAgentId, so it must be verified here rather
+          // The caller additionally claims the failed primary is someone other
+          // than the live assignee (recovery temporarily rebound the issue). That
+          // claim becomes the fallback-state key, the audit comment's "From agent"
+          // and the returned reassignedFromAgentId, so it must be verified rather
           // than trusted: an unverified value lets a caller attribute a takeover
-          // to an arbitrary agent. Require both a live fallback relationship to
-          // the sister and that the claimed primary really is the recovery
-          // action's previous owner.
-          const relationship = await tx
-            .select({ id: agentFallbackSisters.id })
-            .from(agentFallbackSisters)
-            .where(and(
-              eq(agentFallbackSisters.companyId, current.companyId),
-              eq(agentFallbackSisters.primaryAgentId, primaryAgentId),
-              eq(agentFallbackSisters.sisterAgentId, sister.id),
-              isNull(agentFallbackSisters.revokedAt),
-            ))
-            .then((rows) => rows[0] ?? null);
-          if (!relationship) {
-            throw conflict("Fallback reassignment primary is not a registered fallback primary for the sister", {
-              issueId: issue.id,
-              primaryAgentId,
-              sisterAgentId: sister.id,
-            });
-          }
+          // to an arbitrary agent. On top of the relationship required above, the
+          // claimed primary must really be the recovery action's previous owner.
           const recoveryAction = await tx
             .select({
               ownerAgentId: issueRecoveryActions.ownerAgentId,
@@ -7967,15 +7991,6 @@ export function issueService(db: Db) {
             });
           }
         }
-        await assertIssueToolCapabilityAssignment({
-          companyId: current.companyId,
-          issueId: current.id,
-          title: current.title,
-          description: current.description,
-          labels: await loadIssueLabelNamesForIssue(current.companyId, current.id, tx),
-          assigneeAgentId: sister.id,
-          dbOrTx: tx,
-        });
 
         const updated = await tx
           .update(issues)
