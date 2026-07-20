@@ -76,6 +76,25 @@ It looks like a task manager. Under the hood: org charts, budgets, governance, g
 
 <br/>
 
+## The four pillars
+
+Four things have to work for an organization of AI agents to actually produce: the tasks, the org, the training, and the infrastructure. Paperclip is built around exactly those four pillars.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="doc/assets/four-pillars-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="doc/assets/four-pillars-light.png">
+  <img src="doc/assets/four-pillars-light.png" alt="The four pillars of Paperclip">
+</picture>
+
+| Pillar | Built for | What it covers |
+| --- | --- | --- |
+| **Agentic Task Manager** — Declare intent. Agents work. You verify the output. | Everyone, daily | Tasks, approvals & review gates · proactive agent coworkers · auditable routines & workflows · verify from diffs, screenshots & tests |
+| **Org Chart for Agents** — Roles, permissions & boundaries for humans and agents. | Managers | Mixed human + agent org chart · responsibilities, delegation, specialization · governance: who can do what · scoped secrets & company boundaries |
+| **Agent Employee Training** — Design, train & evaluate your AI employees. | Enablers | Skill Studio & shared org-wide skills · evals & saved test runs · active learning loops & quality metrics · performance reviews for agents |
+| **Agentic OS** — The infrastructure that makes the work run. | IT & platform | Cross-provider runtime: any model, any agent · sandboxing, integrations & MCP servers · SSO, GRC, RBAC & cost controls · data privacy, internal trace collection, compounding data value |
+
+<br/>
+
 ## Features
 
 <table>
@@ -375,23 +394,30 @@ See [doc/DEVELOPING.md](doc/DEVELOPING.md) for the full development guide.
 - ✅ Get OpenClaw / claw-style agent employees
 - ✅ companies.sh - import and export entire organizations
 - ✅ Easy AGENTS.md configurations
-- ✅ Skills Manager
+- ✅ Skills Manager, Skill Studio & Skills Store
 - ✅ Scheduled Routines
 - ✅ Better Budgeting
 - ✅ Agent Reviews and Approvals
 - ✅ Multiple Human Users
-- ⚪ Cloud / Sandbox agents (e.g. Cursor / e2b / Novita agents)
-- ⚪ Artifacts & Work Products
+- ✅ Cloud / Sandbox agents (e2b, Cloudflare, Daytona, Modal, Novita, self-hosted Kubernetes)
+- ✅ Artifacts & Work Products
+- ✅ Deep Planning (planning mode, revisioned plans, plan approvals)
+- ✅ Enforced Outcomes (watchdogs, recovery actions, review gates)
+- ✅ MCP Tool Gateway & Apps (governed tool access)
+- ✅ Secrets Manager with per-agent access
+- ✅ Immutable audit log & activity attribution
+- ✅ Self-healing runs & automatic recovery
+- ✅ Agent evals & feedback
 - ⚪ Memory / Knowledge
-- ⚪ Enforced Outcomes
 - ⚪ MAXIMIZER MODE
-- ⚪ Deep Planning
 - ⚪ Work Queues
 - ⚪ Self-Organization
 - ⚪ Automatic Organizational Learning
 - ⚪ CEO Chat
-- ⚪ Cloud deployments
+- 🟡 Cloud deployments (multi-tenant isolation & local→cloud sync shipped)
 - ⚪ Desktop App
+- ⚪ Bring-your-own-ticket-system (Asana / Linear / Jira as on-ramps)
+- ⚪ Connected Apps (one-click integrations, e.g. Vercel)
 
 This is the short roadmap preview. See the full roadmap in [ROADMAP.md](ROADMAP.md).
 
