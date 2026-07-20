@@ -67,6 +67,7 @@ const ADOPTED_WORKSPACE_MUTABLE_PATCH_KEYS = new Set([
 const SERVER_OWNED_EXECUTION_WORKSPACE_METADATA_KEYS = [
   "adoption",
   "adoptionRollback",
+  "repositoryIdentity",
   "fullBranchRef",
   "ownsGitArtifacts",
   "createdByRuntime",

@@ -590,7 +590,7 @@ Failure responses use stable redacted `reasonCode` values and do not include arb
 { "error": "Execution workspace adoption rejected", "reasonCode": "workspace_conflict" }
 ```
 
-Retries are idempotent only when the active existing adopted record has the same immutable fingerprint and bound-issue identity. Concurrent identical requests both return the same workspace; only the request that creates it returns a `workspace_adopt` operation, while the serialized retry returns `operation: null`. If the cwd, provider ref, or full branch ref is already registered with a different fingerprint or issue binding, the control returns `409 workspace_conflict`.
+Retries are idempotent only when the active existing adopted record has the same immutable fingerprint and bound-issue identity. Concurrent identical requests both return the same workspace; only the request that creates it returns a `workspace_adopt` operation, while the serialized retry returns `operation: null`. Cwd/provider-ref claims remain company-wide. A full branch ref conflicts only when it is already claimed in the same project and canonical git repository; unrelated repositories/projects may adopt the same branch name. Conflicting claims return `409 workspace_conflict`.
 
 Rollback or disable an adopted record:
 

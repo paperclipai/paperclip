@@ -698,6 +698,7 @@ describe.sequential("execution workspace routes", () => {
   it.each([
     ["adoption", { version: 1, immutableFingerprint: "execution_workspace_adoption:v1:sha256:forged" }],
     ["adoptionRollback", { version: 1, reason: "forged" }],
+    ["repositoryIdentity", "/tmp/forged-git-common-dir"],
     ["fullBranchRef", "refs/heads/feature/forged"],
     ["ownsGitArtifacts", true],
     ["createdByRuntime", false],

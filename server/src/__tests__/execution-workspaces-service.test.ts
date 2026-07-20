@@ -3045,8 +3045,8 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     });
   }, 20_000);
 
-  it("rejects duplicate cwd, provider ref, branch name, and full ref claims as workspace_conflict", async () => {
-    for (const duplicateField of ["cwd", "providerRef", "branchName", "fullBranchRef"] as const) {
+  it("rejects company-wide cwd/provider claims and same-project repository branch claims as workspace_conflict", async () => {
+    for (const duplicateField of ["cwd", "providerRef", "fullBranchRef"] as const) {
       await db.delete(activityLog);
       await db.delete(workspaceOperations);
       await db.delete(executionWorkspaces);
@@ -3063,6 +3063,10 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
         repoUrl: git.repoUrl,
       });
       const canonicalWorktreePath = await fs.realpath(git.worktreePath);
+      const gitCommonDir = await readGit(git.worktreePath, ["rev-parse", "--git-common-dir"]);
+      const repositoryIdentity = await fs.realpath(
+        path.isAbsolute(gitCommonDir!) ? gitCommonDir! : path.join(git.worktreePath, gitCommonDir!),
+      );
       await db.insert(executionWorkspaces).values({
         companyId: scope.companyId,
         projectId: scope.projectId,
@@ -3075,8 +3079,10 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
         providerType: "git_worktree",
         cwd: duplicateField === "cwd" ? canonicalWorktreePath : `/tmp/${randomUUID()}`,
         providerRef: duplicateField === "providerRef" ? canonicalWorktreePath : `/tmp/${randomUUID()}`,
-        branchName: duplicateField === "branchName" ? git.branch : `feature/${randomUUID()}`,
-        metadata: duplicateField === "fullBranchRef" ? { fullBranchRef: git.fullBranchRef } : null,
+        branchName: duplicateField === "fullBranchRef" ? git.branch : `feature/${randomUUID()}`,
+        metadata: duplicateField === "fullBranchRef"
+          ? { repositoryIdentity, fullBranchRef: git.fullBranchRef }
+          : null,
       });
 
       await expect(svc.adoptGitWorktree(scope.companyId, adoptionRequest({ ...git, ...scope }), {
@@ -3090,6 +3096,80 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       });
     }
   }, 60_000);
+
+  it("allows distinct repositories and projects in one company to adopt the same full branch ref", async () => {
+    const firstGit = await createAdoptionGitFixture({ repoUrl: "git@example.com:paperclip/repo-one.git" });
+    const secondGit = await createAdoptionGitFixture({ repoUrl: "git@example.com:paperclip/repo-two.git" });
+    for (const git of [firstGit, secondGit]) {
+      tempDirs.add(git.repoRoot);
+      tempDirs.add(git.worktreePath);
+    }
+    const firstScope = await seedAdoptionScope(db, {
+      bindIssueId: null,
+      repoRoot: firstGit.repoRoot,
+      repoUrl: firstGit.repoUrl,
+    });
+    const secondProjectId = randomUUID();
+    const secondProjectWorkspaceId = randomUUID();
+    const secondSourceIssueId = randomUUID();
+    await db.insert(projects).values({
+      id: secondProjectId,
+      companyId: firstScope.companyId,
+      name: "Second repository adoption",
+      status: "in_progress",
+    });
+    await db.insert(projectWorkspaces).values({
+      id: secondProjectWorkspaceId,
+      companyId: firstScope.companyId,
+      projectId: secondProjectId,
+      name: "Primary",
+      cwd: secondGit.repoRoot,
+      repoUrl: secondGit.repoUrl,
+      isPrimary: true,
+    });
+    await db.insert(issues).values({
+      id: secondSourceIssueId,
+      companyId: firstScope.companyId,
+      projectId: secondProjectId,
+      title: "Second repository source issue",
+      status: "todo",
+      priority: "medium",
+    });
+    const secondScope = {
+      ...firstScope,
+      projectId: secondProjectId,
+      projectWorkspaceId: secondProjectWorkspaceId,
+      sourceIssueId: secondSourceIssueId,
+    };
+    const actor = {
+      actorType: "user" as const,
+      actorId: "local-board",
+      agentId: null,
+      runId: null,
+    };
+
+    const first = await svc.adoptGitWorktree(
+      firstScope.companyId,
+      adoptionRequest({ ...firstGit, ...firstScope }),
+      actor,
+    );
+    const second = await svc.adoptGitWorktree(
+      firstScope.companyId,
+      adoptionRequest({ ...secondGit, ...secondScope }),
+      actor,
+    );
+
+    expect(second.workspace.id).not.toBe(first.workspace.id);
+    const active = await db
+      .select()
+      .from(executionWorkspaces)
+      .where(and(eq(executionWorkspaces.companyId, firstScope.companyId), eq(executionWorkspaces.status, "active")));
+    expect(active).toHaveLength(2);
+    expect(active.map((row) => row.metadata)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ fullBranchRef: firstGit.fullBranchRef }),
+      expect.objectContaining({ fullBranchRef: secondGit.fullBranchRef }),
+    ]));
+  }, 30_000);
 
   it("serializes company-wide adoption claims across different projects", async () => {
     const git = await createAdoptionGitFixture();

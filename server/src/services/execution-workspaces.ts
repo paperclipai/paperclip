@@ -167,6 +167,7 @@ type AdoptionInspection = {
   reasonCode: null;
   canonicalCwd: string;
   repoRoot: string;
+  repositoryIdentity: string;
   repoUrl: string | null;
   normalizedRepoUrl: string | null;
   fullBranchRef: string;
@@ -322,6 +323,7 @@ async function inspectGitWorktreeForAdoption(input: {
     reasonCode: null,
     canonicalCwd,
     repoRoot,
+    repositoryIdentity: commonReal,
     repoUrl,
     normalizedRepoUrl,
     fullBranchRef,
@@ -2067,8 +2069,11 @@ export function executionWorkspaceService(db: Db, options: ExecutionWorkspaceSer
             or(
               eq(executionWorkspaces.cwd, writeInspection.canonicalCwd),
               eq(executionWorkspaces.providerRef, writeInspection.canonicalCwd),
-              eq(executionWorkspaces.branchName, writeInspection.branchName),
-              sql`${executionWorkspaces.metadata}->>'fullBranchRef' = ${writeInspection.fullBranchRef}`,
+              and(
+                eq(executionWorkspaces.projectId, input.projectId),
+                sql`${executionWorkspaces.metadata}->>'repositoryIdentity' = ${writeInspection.repositoryIdentity}`,
+                sql`${executionWorkspaces.metadata}->>'fullBranchRef' = ${writeInspection.fullBranchRef}`,
+              ),
             ),
           ))
           .for("update")
@@ -2099,6 +2104,7 @@ export function executionWorkspaceService(db: Db, options: ExecutionWorkspaceSer
         const transactionalMetadata = {
           createdByRuntime: false,
           ownsGitArtifacts: false,
+          repositoryIdentity: writeInspection.repositoryIdentity,
           fullBranchRef: writeInspection.fullBranchRef,
           adoption: {
             version: 1,
@@ -2116,6 +2122,7 @@ export function executionWorkspaceService(db: Db, options: ExecutionWorkspaceSer
               repoUrl: writeInspection.normalizedRepoUrl,
             },
             canonicalRepoRoot: writeInspection.repoRoot,
+            canonicalGitCommonDir: writeInspection.repositoryIdentity,
             canonicalCwd: writeInspection.canonicalCwd,
             cleanliness: {
               dirtyTrackedCount: writeInspection.dirtyTrackedCount,

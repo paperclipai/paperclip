@@ -8,10 +8,16 @@ CREATE UNIQUE INDEX IF NOT EXISTS execution_workspaces_active_adopted_cwd_idx
     AND COALESCE(provider_ref, cwd) IS NOT NULL;
 
 CREATE UNIQUE INDEX IF NOT EXISTS execution_workspaces_active_adopted_full_branch_idx
-  ON execution_workspaces (company_id, (metadata->>'fullBranchRef'))
+  ON execution_workspaces (
+    company_id,
+    project_id,
+    (metadata->>'repositoryIdentity'),
+    (metadata->>'fullBranchRef')
+  )
   WHERE status <> 'archived'
     AND closed_at IS NULL
     AND provider_type = 'git_worktree'
     AND strategy_type = 'git_worktree'
     AND metadata ? 'adoption'
+    AND metadata->>'repositoryIdentity' IS NOT NULL
     AND metadata->>'fullBranchRef' IS NOT NULL;

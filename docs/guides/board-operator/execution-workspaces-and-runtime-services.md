@@ -64,7 +64,7 @@ Adoption is deliberately conservative:
 - The request must name the project, project workspace, source issue, absolute cwd, full branch ref, expected head SHA, expected upstream, and workspace name.
 - Paperclip inspects git with argv-based `git -C <cwd> ...` calls. It does not create branches, checkout refs, clean files, remove worktrees, push, pull, or otherwise mutate git during adoption.
 - The worktree must be clean, on the exact requested `refs/heads/*` branch, at the exact requested commit, tracking the exact requested upstream, and from the expected repository.
-- The same branch cannot already be attached to another local worktree, and the same cwd or branch cannot already be claimed by another active execution workspace.
+- The same branch cannot already be attached to another local worktree. Cwd/provider claims remain company-wide; branch/full-ref claims conflict only inside the same project and canonical git repository, so unrelated repositories/projects may use the same branch name.
 
 When adoption succeeds, Paperclip writes one execution workspace, one `workspace_adopt` operation, and activity entries in the same database transaction. If a bind issue is supplied, that issue is updated in the same transaction to `reuse_existing` and points at the adopted workspace. If the database transaction fails, the issue binding, workspace record, workspace operation, and activity entries all roll back together.
 
