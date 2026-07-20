@@ -27,7 +27,20 @@ export const DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS = 10;
 export const DEFAULT_PRODUCTIVITY_REVIEW_LONG_ACTIVE_HOURS = 6;
 export const DEFAULT_PRODUCTIVITY_REVIEW_HIGH_CHURN_HOURLY = 10;
 export const DEFAULT_PRODUCTIVITY_REVIEW_HIGH_CHURN_SIX_HOURS = 30;
-export const DEFAULT_PRODUCTIVITY_REVIEW_RESOLVED_SNOOZE_MS = 6 * 60 * 60 * 1000;
+// Must stay strictly greater than the long-active trigger window. When the two are equal a
+// permanently-long-active source (signal bus, routine execution child) re-satisfies the trigger
+// the instant the snooze expires, producing an unbounded review loop (BLU-7716).
+// Kept below CREATION_WINDOW_MS on purpose: the creation cap independently bounds reviews to
+// MAX_CREATIONS_PER_WINDOW per 24h, and a snooze >= that window would subsume the cap entirely.
+export const DEFAULT_PRODUCTIVITY_REVIEW_RESOLVED_SNOOZE_MS = 12 * 60 * 60 * 1000;
+// Sources that keep producing terminal reviews without ever leaving the long-active state get an
+// escalated snooze. This counts reviews, not source inactivity, so it still engages for busy
+// sources where the no-action suppression streak is reset by ordinary activity.
+export const DEFAULT_PRODUCTIVITY_REVIEW_ESCALATED_SNOOZE_MS = 7 * 24 * 60 * 60 * 1000;
+// Set above MAX_CONSECUTIVE_NO_ACTION_REVIEWS so escalation is a backstop for sources the
+// no-action suppression cannot catch, rather than a shortcut that preempts it.
+export const DEFAULT_PRODUCTIVITY_REVIEW_ESCALATE_AFTER_COMPLETED_REVIEWS = 6;
+export const DEFAULT_PRODUCTIVITY_REVIEW_ESCALATION_LOOKBACK_MS = 30 * 24 * 60 * 60 * 1000;
 export const DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS = 60 * 60 * 1000;
 export const DEFAULT_PRODUCTIVITY_REVIEW_MAX_REFRESH_COMMENTS = 3;
 export const DEFAULT_PRODUCTIVITY_REVIEW_CREATION_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -52,6 +65,9 @@ type ProductivityReviewThresholds = {
   highChurnHourly: number;
   highChurnSixHours: number;
   resolvedSnoozeMs: number;
+  escalatedSnoozeMs: number;
+  escalateAfterCompletedReviews: number;
+  escalationLookbackMs: number;
   refreshIntervalMs: number;
   maxRefreshComments: number;
   creationWindowMs: number;
@@ -143,7 +159,7 @@ function coerceDate(value: Date | string | null | undefined) {
 }
 
 function buildThresholds(overrides?: Partial<ProductivityReviewThresholds>): ProductivityReviewThresholds {
-  return {
+  const resolved: ProductivityReviewThresholds = {
     noCommentStreakRuns: readPositiveInteger(
       overrides?.noCommentStreakRuns ?? DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
       DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
@@ -163,6 +179,18 @@ function buildThresholds(overrides?: Partial<ProductivityReviewThresholds>): Pro
     resolvedSnoozeMs: readPositiveInteger(
       overrides?.resolvedSnoozeMs ?? DEFAULT_PRODUCTIVITY_REVIEW_RESOLVED_SNOOZE_MS,
       DEFAULT_PRODUCTIVITY_REVIEW_RESOLVED_SNOOZE_MS,
+    ),
+    escalatedSnoozeMs: readPositiveInteger(
+      overrides?.escalatedSnoozeMs ?? DEFAULT_PRODUCTIVITY_REVIEW_ESCALATED_SNOOZE_MS,
+      DEFAULT_PRODUCTIVITY_REVIEW_ESCALATED_SNOOZE_MS,
+    ),
+    escalateAfterCompletedReviews: readPositiveInteger(
+      overrides?.escalateAfterCompletedReviews ?? DEFAULT_PRODUCTIVITY_REVIEW_ESCALATE_AFTER_COMPLETED_REVIEWS,
+      DEFAULT_PRODUCTIVITY_REVIEW_ESCALATE_AFTER_COMPLETED_REVIEWS,
+    ),
+    escalationLookbackMs: readPositiveInteger(
+      overrides?.escalationLookbackMs ?? DEFAULT_PRODUCTIVITY_REVIEW_ESCALATION_LOOKBACK_MS,
+      DEFAULT_PRODUCTIVITY_REVIEW_ESCALATION_LOOKBACK_MS,
     ),
     refreshIntervalMs: readPositiveInteger(
       overrides?.refreshIntervalMs ?? DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS,
@@ -185,6 +213,18 @@ function buildThresholds(overrides?: Partial<ProductivityReviewThresholds>): Pro
       DEFAULT_PRODUCTIVITY_REVIEW_MAX_CONSECUTIVE_NO_ACTION_REVIEWS,
     ),
   };
+
+  // Invariant (BLU-7716): a snooze that is not strictly longer than the long-active window lets a
+  // permanently-long-active source re-trigger the moment the snooze lapses. Clamp rather than throw
+  // so a bad override degrades to safe behaviour instead of taking the reconciler down.
+  if (resolved.resolvedSnoozeMs <= resolved.longActiveMs) {
+    resolved.resolvedSnoozeMs = resolved.longActiveMs * 2;
+  }
+  if (resolved.escalatedSnoozeMs < resolved.resolvedSnoozeMs) {
+    resolved.escalatedSnoozeMs = resolved.resolvedSnoozeMs;
+  }
+
+  return resolved;
 }
 
 function choosePrimaryTrigger(input: {
@@ -267,13 +307,54 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       .then((rows) => rows[0] ?? null);
   }
 
+  // Counts completed reviews already raised against this source inside the escalation lookback.
+  // Deliberately keyed on review volume rather than source inactivity: a permanently-active source
+  // always has activity, so the no-action streak never accumulates for exactly the issues that
+  // loop worst (BLU-7716). Cancelled reviews are excluded — a dismissal is not evidence the source
+  // is looping, matching how the creation cap already treats them.
+  async function countCompletedProductivityReviews(
+    companyId: string,
+    sourceIssueId: string,
+    thresholds: ProductivityReviewThresholds,
+    now: Date,
+  ) {
+    const cutoff = new Date(now.getTime() - thresholds.escalationLookbackMs);
+    return db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, PRODUCTIVITY_REVIEW_ORIGIN_KIND),
+          eq(issues.originId, sourceIssueId),
+          visibleIssueCondition(),
+          eq(issues.status, "done"),
+          sql`${issues.createdAt} >= ${cutoff.toISOString()}::timestamptz`,
+        ),
+      )
+      .then((rows) => Number(rows[0]?.count ?? 0));
+  }
+
+  async function resolveEffectiveSnoozeMs(
+    companyId: string,
+    sourceIssueId: string,
+    thresholds: ProductivityReviewThresholds,
+    now: Date,
+  ) {
+    const completedReviews = await countCompletedProductivityReviews(companyId, sourceIssueId, thresholds, now);
+    return completedReviews >= thresholds.escalateAfterCompletedReviews
+      ? thresholds.escalatedSnoozeMs
+      : thresholds.resolvedSnoozeMs;
+  }
+
   async function findRecentTerminalProductivityReview(
     companyId: string,
     sourceIssueId: string,
     thresholds: ProductivityReviewThresholds,
     now: Date,
   ) {
-    const cutoff = new Date(now.getTime() - thresholds.resolvedSnoozeMs);
+    const snoozeMs = await resolveEffectiveSnoozeMs(companyId, sourceIssueId, thresholds, now);
+    const cutoff = new Date(now.getTime() - snoozeMs);
     return db
       .select({ id: issues.id, identifier: issues.identifier, status: issues.status, updatedAt: issues.updatedAt })
       .from(issues)
