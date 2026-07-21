@@ -371,7 +371,7 @@ export function buildSelectedFilesFromImportSelection(
     }
   }
 
-  if (selected.size > 0 && catalog.extensionPath) {
+  if (catalog.extensionPath) {
     selected.add(normalizePortablePath(catalog.extensionPath));
   }
 
