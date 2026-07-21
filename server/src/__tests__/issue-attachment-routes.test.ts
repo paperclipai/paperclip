@@ -860,4 +860,92 @@ describe("issue attachment routes", () => {
       else process.env.PAPERCLIP_IMAGE_PROVIDER = previousImageProvider;
     }
   });
+
+  it("treats explicit reference selection as authoritative over board-linked candidates", async () => {
+    const previousImageProvider = process.env.PAPERCLIP_IMAGE_PROVIDER;
+    delete process.env.PAPERCLIP_IMAGE_PROVIDER;
+    mockGenerateCodexIssueImage.mockReset();
+    vi.doMock("../services/codex-image-generation.js", () => ({
+      generateCodexIssueImage: mockGenerateCodexIssueImage,
+    }));
+
+    const issueId = "11111111-1111-4111-8111-111111111111";
+    const selectedAttachmentId = "2d8a654e-2ece-43cf-9000-ab0fe254e1a6";
+    const autoAttachmentId = "3d8a654e-2ece-43cf-9000-ab0fe254e1a6";
+    const autoAssetId = "4d8a654e-2ece-43cf-9000-ab0fe254e1a6";
+    const storage = createStorageService();
+    storage.getObject = vi.fn(async () => ({
+      stream: Readable.from(Buffer.from("PNGDATA")),
+      contentType: "image/png",
+      contentLength: 7,
+    }));
+    mockIssueService.getById.mockResolvedValue({
+      id: issueId,
+      companyId: "company-1",
+      identifier: "SIX-4514",
+    });
+    mockIssueService.getAttachmentById.mockImplementation(async (id: string) => {
+      if (id !== selectedAttachmentId) throw new Error(`unexpected reference lookup: ${id}`);
+      return {
+        ...makeAttachment("image/png", "selected-reference.png"),
+        id: selectedAttachmentId,
+        issueId,
+        sha256: "selected-reference-sha",
+      };
+    });
+    mockIssueService.createAttachment
+      .mockResolvedValueOnce({
+        ...makeAttachment("image/png", "corrected.png"),
+        id: "33333333-3333-4333-8333-333333333333",
+        issueId,
+      })
+      .mockResolvedValueOnce({
+        ...makeAttachment("application/json", "paperclip-image-audit.json"),
+        id: "44444444-4444-4444-8444-444444444444",
+        issueId,
+      });
+    mockResolveIssueImageReferenceGuardrail.mockResolvedValue({
+      required: true,
+      issueScopeIds: [issueId],
+      boardText: "Use a supplied image as an actual reference.",
+      candidateAttachmentIds: [autoAttachmentId],
+      candidateAssetIds: [autoAssetId],
+    });
+    mockGenerateCodexIssueImage.mockImplementation(async (input) => ({
+      provider: "codex_native",
+      model: "gpt-image-2",
+      endpoint: "codex_exec_image_gen",
+      generationMode: input.references.length > 0 ? "reference_backed" : "prompt_only",
+      actualImageInputsBound: input.references.map((reference: ImageReferenceInput) => reference.sourceId),
+      outputBytes: await createPng(1024, 1024),
+      outputContentType: "image/png",
+      providerRequestId: "thread-2",
+      codexThreadId: "thread-2",
+      codexOutputPath: null,
+    }));
+
+    try {
+      const app = await createApp(storage);
+      const res = await request(app)
+        .post(`/api/issues/${issueId}/image-generations`)
+        .send({
+          prompt: "Use only the specifically selected image reference.",
+          size: "1024x1024",
+          quality: "high",
+          referenceImageAttachmentIds: [selectedAttachmentId],
+        });
+
+      expect(res.status).toBe(201);
+      expect(res.body.generationMode).toBe("reference_backed");
+      expect(res.body.actualImageInputsBound).toEqual([selectedAttachmentId]);
+      expect(res.body.autoBoundReferenceImageAttachmentIds).toEqual([]);
+      expect(res.body.autoBoundReferenceImageAssetIds).toEqual([]);
+      expect(mockGenerateCodexIssueImage).toHaveBeenCalledWith(expect.objectContaining({
+        references: [expect.objectContaining({ sourceId: selectedAttachmentId })],
+      }));
+    } finally {
+      if (previousImageProvider === undefined) delete process.env.PAPERCLIP_IMAGE_PROVIDER;
+      else process.env.PAPERCLIP_IMAGE_PROVIDER = previousImageProvider;
+    }
+  });
 });

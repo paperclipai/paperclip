@@ -117,8 +117,8 @@ const addCommentToolSchema = z.object({
 const generateIssueImageToolSchema = z.object({
   issueId: issueIdSchema,
   prompt: z.string().trim().min(1).max(12000),
-  referenceImageAttachmentIds: z.array(z.string().uuid()).max(PAPERCLIP_IMAGE_MAX_REFERENCE_INPUTS).optional().default([]),
-  referenceImageAssetIds: z.array(z.string().uuid()).max(PAPERCLIP_IMAGE_MAX_REFERENCE_INPUTS).optional().default([]),
+  referenceImageAttachmentIds: z.array(z.string().uuid()).max(PAPERCLIP_IMAGE_MAX_REFERENCE_INPUTS).optional(),
+  referenceImageAssetIds: z.array(z.string().uuid()).max(PAPERCLIP_IMAGE_MAX_REFERENCE_INPUTS).optional(),
   size: z.string().trim().min(1).max(64).optional().default("1024x1024"),
   quality: z.enum(["auto", "low", "medium", "high"]).optional().default("high"),
   model: z.literal("gpt-image-2").optional().default("gpt-image-2"),

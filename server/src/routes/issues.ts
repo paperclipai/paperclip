@@ -171,8 +171,8 @@ function sameRecoveryInventory(left: string[], right: string[]) {
 }
 const generateIssueImageSchema = z.object({
   prompt: z.string().trim().min(1).max(12000),
-  referenceImageAttachmentIds: z.array(z.string().uuid()).max(PAPERCLIP_IMAGE_MAX_REFERENCE_INPUTS).optional().default([]),
-  referenceImageAssetIds: z.array(z.string().uuid()).max(PAPERCLIP_IMAGE_MAX_REFERENCE_INPUTS).optional().default([]),
+  referenceImageAttachmentIds: z.array(z.string().uuid()).max(PAPERCLIP_IMAGE_MAX_REFERENCE_INPUTS).optional(),
+  referenceImageAssetIds: z.array(z.string().uuid()).max(PAPERCLIP_IMAGE_MAX_REFERENCE_INPUTS).optional(),
   size: z.string().trim().min(1).max(64).default("1024x1024"),
   quality: z.enum(["auto", "low", "medium", "high"]).default("high"),
   model: z.literal(PAPERCLIP_IMAGE_MODEL).optional().default(PAPERCLIP_IMAGE_MODEL),
@@ -7659,12 +7659,14 @@ export function issueRoutes(
       issueId: issue.id,
       companyId: issue.companyId,
     });
-    const requestedReferenceImageAttachmentIds = uniqueIds(body.referenceImageAttachmentIds);
-    const requestedReferenceImageAssetIds = uniqueIds(body.referenceImageAssetIds);
-    const autoBoundReferenceImageAttachmentIds = referenceGuardrail.required
+    const requestedReferenceImageAttachmentIds = uniqueIds(body.referenceImageAttachmentIds ?? []);
+    const requestedReferenceImageAssetIds = uniqueIds(body.referenceImageAssetIds ?? []);
+    const hasExplicitReferenceSelection =
+      body.referenceImageAttachmentIds !== undefined || body.referenceImageAssetIds !== undefined;
+    const autoBoundReferenceImageAttachmentIds = referenceGuardrail.required && !hasExplicitReferenceSelection
       ? referenceGuardrail.candidateAttachmentIds
       : [];
-    const autoBoundReferenceImageAssetIds = referenceGuardrail.required
+    const autoBoundReferenceImageAssetIds = referenceGuardrail.required && !hasExplicitReferenceSelection
       ? referenceGuardrail.candidateAssetIds
       : [];
     const effectiveReferenceImageAttachmentIds = uniqueIds([

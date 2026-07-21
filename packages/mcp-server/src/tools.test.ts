@@ -159,7 +159,6 @@ describe("paperclip MCP tools", () => {
     expect(JSON.parse(String(init.body))).toEqual({
       prompt: "Generate a cafe founder carousel image.",
       referenceImageAttachmentIds: ["2d8a654e-2ece-43cf-9000-ab0fe254e1a6"],
-      referenceImageAssetIds: [],
       size: "1080x1350",
       quality: "high",
       model: "gpt-image-2",
@@ -198,6 +197,24 @@ describe("paperclip MCP tools", () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(rejected.content[0]?.text).toContain("at most 16");
+  });
+
+  it("leaves reference arrays absent when the caller did not select inputs", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      mockJsonResponse({ model: "gpt-image-2", generationMode: "reference_backed" }, 201),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const tool = getTool("paperclipGenerateIssueImage");
+    await tool.execute({
+      issueId: "SIX-3832",
+      prompt: "Use the board-linked reference images when required.",
+    });
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(String(init.body));
+    expect(body).not.toHaveProperty("referenceImageAttachmentIds");
+    expect(body).not.toHaveProperty("referenceImageAssetIds");
   });
 
   it("controls issue workspace services through the current execution workspace", async () => {
