@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agentMemberships,
@@ -491,19 +491,23 @@ export function resourceMembershipService(db: Db, options: ResourceMembershipSer
           .onConflictDoUpdate({
             target: [documentMemberships.companyId, documentMemberships.userId, documentMemberships.documentId],
             set: {
-              starredAt: now,
-              updatedAt: now,
+              starredAt: sql`${documentMemberships.starredAt}`,
+              updatedAt: sql`${documentMemberships.updatedAt}`,
             },
           })
-          .returning();
+          .returning({
+            starredAt: documentMemberships.starredAt,
+            updatedAt: documentMemberships.updatedAt,
+            inserted: sql<boolean>`xmax = 0`,
+          });
         return {
           resourceType: "document",
           resourceId: input.documentId,
           state: "joined",
           starredAt: row?.starredAt ?? now,
           updatedAt: row?.updatedAt ?? now,
-          changed: true,
-          changeKind: "starred",
+          changed: row?.inserted === true,
+          changeKind: row?.inserted === true ? "starred" : null,
           policySource: decision.source ?? "oss_default",
         };
       }

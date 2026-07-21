@@ -348,7 +348,7 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
       const artifactSortDates = new Map<string, string>();
       const workProductAttachmentIds = new Set<string>();
 
-      if (query.starred || query.kind === "all" || query.kind === "document") {
+      if (query.kind === "all" || query.kind === "document") {
         const createdAgent = alias(agents, "document_created_agent");
         const updatedAgent = alias(agents, "document_updated_agent");
         const documentArtifactId = sql<string>`concat('document:', ${documents.id})`;
