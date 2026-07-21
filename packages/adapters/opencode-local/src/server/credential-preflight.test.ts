@@ -49,6 +49,20 @@ describe("evaluateOpenCodeCredentialPreflight", () => {
     }
   });
 
+  it("is ready for an env-only credential from a provider beyond the connect UI's three", async () => {
+    // Regression: OpenCode supports many providers, but preflight used to only
+    // recognise Anthropic/OpenAI/OpenRouter, so a valid key for another
+    // provider set directly in the env false-failed as inference_auth_invalid.
+    for (const key of ["GEMINI_API_KEY", "GOOGLE_API_KEY", "MISTRAL_API_KEY", "GROQ_API_KEY", "AWS_ACCESS_KEY_ID", "AZURE_OPENAI_API_KEY"]) {
+      const env = await emptyIsolatedEnv();
+      env[key] = "test-key";
+      const result = await evaluateOpenCodeCredentialPreflight({ env });
+      expect(result.ready, `expected ${key} to satisfy the preflight`).toBe(true);
+      expect(result.source).toBe("env");
+      expect(result.detail).toBe(key);
+    }
+  });
+
   it("ignores empty and whitespace-only env values", async () => {
     const env = await emptyIsolatedEnv();
     env.ANTHROPIC_API_KEY = "   ";

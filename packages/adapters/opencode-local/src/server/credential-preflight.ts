@@ -20,18 +20,39 @@ import path from "node:path";
 // ---------------------------------------------------------------------------
 
 /**
- * Env keys opencode-local documents for provider credentials (see
- * `ui/credential-setup.ts`), plus base-URL overrides: a configured
- * OpenAI-compatible endpoint (e.g. a local proxy or an EU gateway) may
- * intentionally require no key, so its presence counts as a connected provider.
+ * Env keys that satisfy an OpenCode provider credential. OpenCode supports far
+ * more providers than the three we surface in our own connect UI, and a user
+ * may set any of these directly in `config.env` or the host env. Preflight must
+ * recognise every provider OpenCode itself authenticates from an env key, or it
+ * false-negatives a valid credential into `inference_auth_invalid` and pauses a
+ * runnable agent. Keys mirror the provider env names OpenCode reads (via the
+ * Vercel AI SDK / models.dev provider definitions). Base-URL overrides are also
+ * listed: a configured OpenAI-compatible endpoint (e.g. a local proxy or an EU
+ * gateway) may intentionally require no key, so its presence counts too.
  */
 export const OPENCODE_PROVIDER_CREDENTIAL_ENV_KEYS = [
+  // Anthropic
   "ANTHROPIC_API_KEY",
+  "ANTHROPIC_BASE_URL",
+  // OpenAI
   "OPENAI_API_KEY",
-  "OPENROUTER_API_KEY",
   "OPENAI_API_BASE",
   "OPENAI_BASE_URL",
-  "ANTHROPIC_BASE_URL",
+  // OpenRouter
+  "OPENROUTER_API_KEY",
+  // Google Gemini
+  "GOOGLE_API_KEY",
+  "GEMINI_API_KEY",
+  "GOOGLE_GENERATIVE_AI_API_KEY",
+  // Mistral
+  "MISTRAL_API_KEY",
+  // Groq
+  "GROQ_API_KEY",
+  // AWS Bedrock (AWS_SECRET_ACCESS_KEY and a region usually accompany it, but
+  // the access-key id is the credential signal we key on).
+  "AWS_ACCESS_KEY_ID",
+  // Azure OpenAI
+  "AZURE_OPENAI_API_KEY",
 ] as const;
 
 export const OPENCODE_MISSING_CREDENTIAL_MESSAGE =
