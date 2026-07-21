@@ -220,6 +220,11 @@ async function resolveBuiltInAgentCommand(input: {
   if (agent === "gemini") {
     return { command: "gemini --acp", shellCommand: "gemini --acp" };
   }
+  if (agent === "kimi") {
+    // Kimi Code exposes its ACP server via the `kimi acp` subcommand (stdio),
+    // rather than a flag (gemini) or a dedicated bin (claude/codex).
+    return { command: "kimi acp", shellCommand: "kimi acp" };
+  }
   const binName = agent === "claude" ? "claude-agent-acp" : agent === "codex" ? "codex-acp" : null;
   if (!binName) return null;
   if (executionTargetIsRemote) {
