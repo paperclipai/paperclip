@@ -227,7 +227,21 @@ describe("TelemetryClient chunking (count + bytes)", () => {
 // hash input includes `installId` (so two installs sending identical events get
 // distinct ids); C2 — the id is >= 32 hex chars (128-bit collision floor).
 describe("TelemetryClient deterministic batchId", () => {
+  // `deriveBatchId` intentionally hashes the full event objects, INCLUDING each
+  // event's `occurredAt` wall-clock stamp, so the id stays a faithful content
+  // hash: two genuinely distinct sends get distinct ids and the server ledger
+  // (keyed on `batchId`) counts both. Dropping `occurredAt` from the hash would
+  // collapse same-shape sends at different times onto one id and make the server
+  // silently drop the later batch as a replay — the C1/C3 silent-loss failure
+  // mode. These cross-instance determinism checks therefore freeze the clock so
+  // both clients stamp an identical `occurredAt`, isolating the hash's structural
+  // determinism from wall-clock skew.
+  beforeEach(() => {
+    vi.useFakeTimers({ now: new Date("2026-01-01T00:00:00.000Z") });
+  });
+
   afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
