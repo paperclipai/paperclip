@@ -3398,6 +3398,101 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(runs[1]?.failureReason).toBeNull();
   });
 
+  it("creates a fresh execution issue when a stranded non-terminal issue has no live heartbeat run", async () => {
+    const { companyId, routine, svc } = await seedFixture();
+    await svc.update(
+      routine.id,
+      {
+        concurrencyPolicy: "skip_if_active",
+        env: {
+          PAPERCLIP_ROUTINE_ISSUE_MODE: { type: "plain", value: "reuse_terminal" },
+        },
+      },
+      {},
+    );
+    const { trigger } = await svc.createTrigger(
+      routine.id,
+      {
+        kind: "schedule",
+        label: "half-hourly",
+        cronExpression: "*/30 * * * *",
+        timezone: "UTC",
+      },
+      {},
+    );
+    const pastDue = new Date("2020-01-01T00:00:00.000Z");
+
+    await db
+      .update(routineTriggers)
+      .set({ nextRunAt: pastDue })
+      .where(eq(routineTriggers.id, trigger.id));
+    expect((await svc.tickScheduledTriggers(new Date())).triggered).toBe(1);
+
+    const firstIssue = await db
+      .select({
+        id: issues.id,
+        executionRunId: issues.executionRunId,
+      })
+      .from(issues)
+      .where(eq(issues.companyId, companyId))
+      .then((rows) => rows[0] ?? null);
+    expect(firstIssue?.executionRunId).toBeTruthy();
+
+    await db
+      .update(heartbeatRuns)
+      .set({
+        status: "cancelled",
+        finishedAt: new Date("2026-07-20T15:13:00.000Z"),
+      })
+      .where(eq(heartbeatRuns.id, firstIssue!.executionRunId!));
+    await db
+      .update(issues)
+      .set({
+        status: "blocked",
+        checkoutRunId: null,
+        executionRunId: null,
+        executionLockedAt: null,
+      })
+      .where(eq(issues.id, firstIssue!.id));
+
+    await db
+      .update(routineTriggers)
+      .set({ nextRunAt: pastDue })
+      .where(eq(routineTriggers.id, trigger.id));
+    expect((await svc.tickScheduledTriggers(new Date())).triggered).toBe(1);
+
+    const routineIssues = await db
+      .select({
+        id: issues.id,
+        status: issues.status,
+      })
+      .from(issues)
+      .where(eq(issues.companyId, companyId))
+      .orderBy(asc(issues.createdAt));
+    expect(routineIssues).toHaveLength(2);
+    expect(routineIssues[0]).toMatchObject({
+      id: firstIssue!.id,
+      status: "blocked",
+    });
+    expect(routineIssues[1]?.id).not.toBe(firstIssue!.id);
+    expect(routineIssues[1]?.status).toBe("todo");
+
+    const runs = await db
+      .select({
+        status: routineRuns.status,
+        linkedIssueId: routineRuns.linkedIssueId,
+      })
+      .from(routineRuns)
+      .where(eq(routineRuns.routineId, routine.id))
+      .orderBy(asc(routineRuns.createdAt));
+    expect(runs).toHaveLength(2);
+    expect(runs[0]?.status).toBe("issue_created");
+    expect(runs[1]).toMatchObject({
+      status: "issue_created",
+      linkedIssueId: routineIssues[1]?.id,
+    });
+  });
+
   it("records suppressed automatic runs when worktree execution is disabled while allowing manual runs", async () => {
     const runtimeEnv = { PAPERCLIP_IN_WORKTREE: "yes", PAPERCLIP_INSTANCE_ID: "worktree-routines-test" };
     const { companyId, routine, svc } = await seedFixture({ runtimeEnv });

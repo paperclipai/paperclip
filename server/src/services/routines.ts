@@ -1881,28 +1881,61 @@ export function routineService(
       : routineExecutionFingerprintCondition(dispatchFingerprint);
     const originKind = origin?.kind ?? "routine_execution";
     const originId = origin?.id ?? routine.id;
-    return executor
+    const baseConditions = and(
+      eq(issues.companyId, routine.companyId),
+      eq(issues.originKind, originKind),
+      eq(issues.originId, originId),
+      isNotNull(issues.originRunId),
+      inArray(issues.status, OPEN_ISSUE_STATUSES),
+      isNull(issues.hiddenAt),
+      ...(fingerprintCondition ? [fingerprintCondition] : []),
+    );
+    const selectShape = {
+      id: issues.id,
+      identifier: issues.identifier,
+      title: issues.title,
+      status: issues.status,
+      priority: issues.priority,
+      updatedAt: issues.updatedAt,
+      originRunId: issues.originRunId,
+    };
+
+    const liveExecutionIssue = await executor
       .select({
-        id: issues.id,
-        identifier: issues.identifier,
-        title: issues.title,
-        status: issues.status,
-        priority: issues.priority,
-        updatedAt: issues.updatedAt,
-        originRunId: issues.originRunId,
+        ...selectShape,
       })
       .from(issues)
-      .where(
+      .innerJoin(
+        heartbeatRuns,
         and(
-          eq(issues.companyId, routine.companyId),
-          eq(issues.originKind, originKind),
-          eq(issues.originId, originId),
-          isNotNull(issues.originRunId),
-          inArray(issues.status, OPEN_ISSUE_STATUSES),
-          isNull(issues.hiddenAt),
-          ...(fingerprintCondition ? [fingerprintCondition] : []),
+          eq(heartbeatRuns.id, issues.executionRunId),
+          inArray(heartbeatRuns.status, LIVE_HEARTBEAT_RUN_STATUSES),
         ),
       )
+      .where(baseConditions)
+      .orderBy(desc(issues.updatedAt), desc(issues.createdAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (liveExecutionIssue) return liveExecutionIssue;
+
+    // TSMC-17398: a non-terminal routine_execution issue with no live heartbeat
+    // behind it is stranded work, not an active execution anchor. Preserve the
+    // legacy contextSnapshot fallback for older queued/running runs that were
+    // never backfilled onto executionRunId.
+    return executor
+      .select({
+        ...selectShape,
+      })
+      .from(issues)
+      .innerJoin(
+        heartbeatRuns,
+        and(
+          eq(heartbeatRuns.companyId, issues.companyId),
+          inArray(heartbeatRuns.status, LIVE_HEARTBEAT_RUN_STATUSES),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = cast(${issues.id} as text)`,
+        ),
+      )
+      .where(and(baseConditions, isNull(issues.executionRunId)))
       .orderBy(desc(issues.updatedAt), desc(issues.createdAt))
       .limit(1)
       .then((rows) => rows[0] ?? null);
