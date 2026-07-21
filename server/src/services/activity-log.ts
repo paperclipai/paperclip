@@ -124,6 +124,15 @@ export async function resolveResponsibleUserIdForActivity(db: Db, input: LogActi
   return readNonEmptyString(company?.defaultResponsibleUserId);
 }
 
+function isForeignKeyViolation(err: unknown, constraintName?: string): boolean {
+  if (!(err instanceof Error)) return false;
+  const msg = err.message ?? "";
+  const matchesFkViolation = msg.includes("violates foreign key constraint");
+  if (!matchesFkViolation) return false;
+  if (constraintName) return msg.includes(constraintName);
+  return true;
+}
+
 export async function logActivity(db: Db, input: LogActivityInput) {
   const currentUserRedactionOptions = {
     enabled: (await instanceSettingsService(db).getGeneral()).censorUsernameInLogs,
@@ -133,18 +142,46 @@ export async function logActivity(db: Db, input: LogActivityInput) {
     ? redactCurrentUserValue(sanitizedDetails, currentUserRedactionOptions)
     : null;
   const responsibleUserId = await resolveResponsibleUserIdForActivity(db, input);
-  await db.insert(activityLog).values({
-    companyId: input.companyId,
-    actorType: input.actorType,
-    actorId: input.actorId,
-    action: input.action,
-    entityType: input.entityType,
-    entityId: input.entityId,
-    agentId: input.agentId ?? null,
-    runId: input.runId ?? null,
-    responsibleUserId,
-    details: redactedDetails,
-  });
+  let runId: string | null = input.runId ?? null;
+  try {
+    await db.insert(activityLog).values({
+      companyId: input.companyId,
+      actorType: input.actorType,
+      actorId: input.actorId,
+      action: input.action,
+      entityType: input.entityType,
+      entityId: input.entityId,
+      agentId: input.agentId ?? null,
+      runId,
+      responsibleUserId,
+      details: redactedDetails,
+    });
+  } catch (err) {
+    if (
+      runId != null &&
+      isForeignKeyViolation(err, "activity_log_run_id_heartbeat_runs_id_fk")
+    ) {
+      console.warn(
+        { err, runId, action: input.action, entityType: input.entityType, entityId: input.entityId },
+        "activity_log insert failed due to orphan run_id; retrying without run_id",
+      );
+      runId = null;
+      await db.insert(activityLog).values({
+        companyId: input.companyId,
+        actorType: input.actorType,
+        actorId: input.actorId,
+        action: input.action,
+        entityType: input.entityType,
+        entityId: input.entityId,
+        agentId: input.agentId ?? null,
+        runId: null,
+        responsibleUserId,
+        details: redactedDetails,
+      });
+    } else {
+      throw err;
+    }
+  }
 
   publishLiveEvent({
     companyId: input.companyId,
