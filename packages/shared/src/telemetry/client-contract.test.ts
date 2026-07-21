@@ -3,7 +3,7 @@ import { TelemetryClient } from "./client.js";
 import type { TelemetryConfig, TelemetryState } from "./types.js";
 
 /**
- * Wire-contract suite for the telemetry client (PAP-2869, Impl-2).
+ * Wire-contract suite for the telemetry client.
  *
  * These tests assert the client honors the backend wire contract using ONLY
  * relative invariants derived from injected config — never the server's literal
@@ -168,12 +168,12 @@ describe("telemetry client wire contract — retry semantics", () => {
   });
 });
 
-describe("telemetry client wire contract — batchId identity (security C1/C2)", () => {
+describe("telemetry client wire contract — batchId identity", () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
-  it("derives a different batchId for the same events under a different installId (C1)", async () => {
+  it("derives a different batchId for the same events under a different installId", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true }));
 
     const a = makeClient(undefined, () => ({ ...TEST_STATE, installId: "install-a" }));
@@ -191,7 +191,7 @@ describe("telemetry client wire contract — batchId identity (security C1/C2)",
     expect(idA).not.toBe(idB);
   });
 
-  it("emits a batchId of at least 32 hex chars — 128-bit collision floor (C2)", async () => {
+  it("emits a batchId of at least 32 hex chars — 128-bit collision floor", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true }));
     const client = makeClient();
 

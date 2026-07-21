@@ -62,8 +62,7 @@ type TrackArgs<K extends TelemetryEventName> =
     : [dimensions: TelemetryEventDimensions<K>];
 
 // Length of the truncated hex `batchId`. 32 hex chars = 128 bits — the
-// collision-safe floor mandated by the Stage-1 security review (C2). Do not
-// lower below 32.
+// collision-safe floor. Do not lower below 32.
 const BATCH_ID_HEX_LENGTH = 32;
 
 /**
@@ -88,8 +87,8 @@ export class TelemetryClient {
   private readonly random: () => number;
   private state: TelemetryState | null = null;
   private flushInterval: ReturnType<typeof setInterval> | null = null;
-  // In-memory pending-retry store (best-effort; never persisted). Bounded in
-  // Phase 6. Insertion order == age (oldest at the front).
+  // In-memory pending-retry store (best-effort; never persisted). Bounded by
+  // `maxPendingRetryBatches`. Insertion order == age (oldest at the front).
   private pending: PendingBatch[] = [];
   private readonly retryTimers = new Set<ReturnType<typeof setTimeout>>();
 
@@ -210,9 +209,9 @@ export class TelemetryClient {
 
   /**
    * Deterministic, salt-free content-hash idempotency key. Hashes
-   * `{installId, events}` (C1 — scopes the key per install, matching the
+   * `{installId, events}` (scopes the key per install, matching the
    * server's `contentSha256` scope so cross-install batches never collide on the
-   * server ledger key) and truncates to 128 bits (C2). Identical input always
+   * server ledger key) and truncates to 128 bits. Identical input always
    * yields the same id, so a retried batch replays idempotently (202) instead of
    * double-counting; different events/install yield a different id.
    */

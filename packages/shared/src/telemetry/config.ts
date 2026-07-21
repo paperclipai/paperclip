@@ -5,7 +5,7 @@ const CI_ENV_VARS = ["CI", "CONTINUOUS_INTEGRATION", "BUILD_NUMBER", "GITHUB_ACT
 /**
  * Single source of truth for telemetry soft caps + backoff. Kept as config
  * *defaults* (not hardcoded flush logic) so later work reads config, not
- * literals. Exported so Impl-2's `client.ts` consumer resolves the same values.
+ * literals. Exported so the `client.ts` consumer resolves the same values.
  */
 export const TELEMETRY_DEFAULTS: {
   readonly maxEventsPerBatch: number;
@@ -47,7 +47,7 @@ export interface ResolvedTelemetryCaps {
 /**
  * Resolves soft caps + backoff, applying `TELEMETRY_DEFAULTS` for any field the
  * caller did not override. One source of truth for both the config surface and
- * Impl-2's `client.ts` consumer.
+ * the `client.ts` consumer.
  */
 export function resolveCaps(overrides?: TelemetryConfigOverrides): ResolvedTelemetryCaps {
   return {

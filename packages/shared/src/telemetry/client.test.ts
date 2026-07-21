@@ -118,10 +118,9 @@ describe("TelemetryClient runtime event gate", () => {
   });
 });
 
-// Phase 2 (PAP-2862): config surface for soft caps + backoff. Fields are optional
-// and additive; `resolveTelemetryConfig` fills documented defaults centrally so no
-// existing caller changes behavior. Nothing reads these yet — Impl-2 is the first
-// consumer.
+// Config surface for soft caps + backoff. Fields are optional and additive;
+// `resolveTelemetryConfig` fills documented defaults centrally so no existing
+// caller changes behavior.
 describe("resolveTelemetryConfig caps + backoff surface", () => {
   it("resolveTelemetryConfig returns default caps and backoff", () => {
     const config = resolveTelemetryConfig();
@@ -162,7 +161,7 @@ describe("resolveTelemetryConfig caps + backoff surface", () => {
   });
 });
 
-// Phase 3 (PAP-2869): flush() must never emit an oversized batch. The drained
+// flush() must never emit an oversized batch. The drained
 // queue is sub-divided into envelopes of <= config.maxEventsPerBatch events AND
 // <= config.maxBodyBytes serialized bytes, one POST per chunk. Caps are injected
 // (small) so assertions are RELATIVE invariants, never server literals.
@@ -221,19 +220,19 @@ describe("TelemetryClient chunking (count + bytes)", () => {
   });
 });
 
-// Phase 4 (PAP-2869): every emitted chunk carries a deterministic, salt-free
-// content-hash `batchId` so server-side retries de-dupe (202) instead of
-// double-counting. The Stage-1 security review binds two conditions: C1 — the
-// hash input includes `installId` (so two installs sending identical events get
-// distinct ids); C2 — the id is >= 32 hex chars (128-bit collision floor).
+// Every emitted chunk carries a deterministic, salt-free content-hash `batchId`
+// so server-side retries de-dupe (202) instead of double-counting. Two
+// invariants hold: the hash input includes `installId` (so two installs sending
+// identical events get distinct ids), and the id is >= 32 hex chars (128-bit
+// collision floor).
 describe("TelemetryClient deterministic batchId", () => {
   // `deriveBatchId` intentionally hashes the full event objects, INCLUDING each
   // event's `occurredAt` wall-clock stamp, so the id stays a faithful content
   // hash: two genuinely distinct sends get distinct ids and the server ledger
   // (keyed on `batchId`) counts both. Dropping `occurredAt` from the hash would
   // collapse same-shape sends at different times onto one id and make the server
-  // silently drop the later batch as a replay — the C1/C3 silent-loss failure
-  // mode. These cross-instance determinism checks therefore freeze the clock so
+  // silently drop the later batch as a replay — a silent-loss failure mode.
+  // These cross-instance determinism checks therefore freeze the clock so
   // both clients stamp an identical `occurredAt`, isolating the hash's structural
   // determinism from wall-clock skew.
   beforeEach(() => {
@@ -292,7 +291,7 @@ describe("TelemetryClient deterministic batchId", () => {
     expect(idA).not.toBe(idB);
   });
 
-  it("derives a different batchId for the same events under a different installId (C1)", async () => {
+  it("derives a different batchId for the same events under a different installId", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true }));
 
     const stateA = vi.fn(() => ({ ...TEST_STATE, installId: "install-a" }));
@@ -312,7 +311,7 @@ describe("TelemetryClient deterministic batchId", () => {
     expect(idA).not.toBe(idB);
   });
 
-  it("emits a batchId of at least 32 hex chars (C2 collision floor)", async () => {
+  it("emits a batchId of at least 32 hex chars (128-bit collision floor)", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true }));
     const { client } = makeClient();
 
@@ -324,7 +323,7 @@ describe("TelemetryClient deterministic batchId", () => {
     expect(id).toMatch(/^[0-9a-f]+$/);
   });
 
-  it("does not crash flush on a circular dimension; drops-and-logs it and still sends valid events (Superagent P2)", async () => {
+  it("does not crash flush on a circular dimension; drops-and-logs it and still sends valid events", async () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true });
     vi.stubGlobal("fetch", fetchMock);
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -361,7 +360,7 @@ describe("TelemetryClient deterministic batchId", () => {
   });
 });
 
-// Phase 5 (PAP-2869): batch-grouped retry with capped, jittered exponential
+// Batch-grouped retry with capped, jittered exponential
 // backoff. Retryable statuses (429/502/503/504 + network) re-send the EXACT
 // same events + batchId (no re-mix — preserves server idempotency); terminal
 // statuses (400/405/409/413) never retry. Backoff uses the injected seeded RNG
@@ -519,7 +518,7 @@ describe("TelemetryClient batched retry + backoff", () => {
   });
 });
 
-// Phase 6 (PAP-2869): the pending-retry store is bounded at
+// The pending-retry store is bounded at
 // config.maxPendingRetryBatches. On overflow the OLDEST batch is evicted
 // (newest prioritized) and each eviction is logged (no silent loss). In-memory
 // only. Caps are injected; assertions are relative.

@@ -99,7 +99,7 @@ describe("TelemetryClient periodic flush", () => {
   });
 });
 
-describe("TelemetryClient retry integration (PAP-2869)", () => {
+describe("TelemetryClient retry integration", () => {
   beforeEach(() => {
     vi.useFakeTimers();
   });

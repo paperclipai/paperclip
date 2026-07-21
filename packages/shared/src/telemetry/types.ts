@@ -13,8 +13,8 @@ export interface TelemetryState {
 /**
  * Exponential-backoff-with-jitter parameters for the (future) batched-retry
  * sender. Shape mirrors the plugin worker crash-recovery backoff
- * (`server/src/services/plugin-worker-manager.ts`). Consumed by Impl-2; nothing
- * reads it yet.
+ * (`server/src/services/plugin-worker-manager.ts`). Consumed by the
+ * batched-retry sender; nothing reads it yet.
  */
 export interface TelemetryBackoffConfig {
   baseDelayMs: number;
@@ -31,7 +31,7 @@ export interface TelemetryConfig {
   /**
    * Optional, additive soft caps + backoff. Defaulted centrally in
    * `resolveTelemetryConfig`; no wire/envelope change and no consumer today —
-   * Impl-2 (PAP-2853) is the first reader.
+   * the batched-retry sender is the first reader.
    */
   maxEventsPerBatch?: number;
   maxBodyBytes?: number;
@@ -60,7 +60,8 @@ export interface TelemetryEventEnvelope {
    * Deterministic, salt-free content-hash of `{installId, events}` used as the
    * server idempotency key so a retried batch de-dupes (202 replay) instead of
    * double-counting. Derived in `client.ts`; the server allow-set already
-   * accepts it. See PAP-2869 (Impl-2) + the Stage-1 security review (C1/C2).
+   * accepts it. The hash is salt-free so it stays stable across installs and
+   * never leaks the per-install salt.
    */
   batchId: string;
 }
