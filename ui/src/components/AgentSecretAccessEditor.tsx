@@ -284,9 +284,8 @@ export function AgentSecretAccessEditor({
       {/* Pending binding proposals targeting this agent (PAP-14731). */}
       {bindingProposals.length > 0 && onApproveProposal && onRejectProposal ? (
         <div className="space-y-2">
-          <div className="flex items-center gap-2 text-(length:--text-micro) font-medium uppercase tracking-wide text-muted-foreground">
+          <div className="text-(length:--text-micro) font-medium uppercase tracking-wide text-muted-foreground">
             Proposed access
-            <ProposedBadge />
           </div>
           {bindingProposals.map((proposal) => {
             const secret = bindingSecretLabel(proposal);

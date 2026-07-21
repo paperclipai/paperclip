@@ -186,6 +186,8 @@ describe("ProposalsTab", () => {
     expect(text).toContain("40 bytes"); // length
     expect(text).toContain("ClaudeCoder"); // proposer
     expect(text).toContain("PAP-14743"); // origin issue
+    // Justification is framed as an untrusted, agent-authored claim (Q0 concern).
+    expect(text).toContain("Reason given by the agent");
     // Never renders a raw secret value.
     expect(text).not.toContain("ghp_");
   });

@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Fingerprint, KeyRound, Link2, ShieldAlert, Variable, ServerCog } from "lucide-react";
+import { Copy, Fingerprint, KeyRound, Link2, ShieldAlert, Variable, ServerCog } from "lucide-react";
 import type {
   CompanySecretProviderConfig,
   SecretProposalAgentRef,
@@ -32,6 +32,7 @@ import {
   deliveryModeLabel,
 } from "../../lib/secret-delivery";
 import { cn } from "../../lib/utils";
+import { copyTextToClipboard } from "../../lib/clipboard";
 import { SecretPathName } from "./SecretPathName";
 
 /* -------------------------------------------------------------------------- */
@@ -43,6 +44,76 @@ export function fingerprintLabel(fingerprint: string | null, length: number | nu
   const digest = fingerprint ? `sha256:${fingerprint.slice(0, 10)}…` : "no fingerprint";
   const size = typeof length === "number" ? `${length} ${length === 1 ? "byte" : "bytes"}` : null;
   return size ? `${digest} · ${size}` : digest;
+}
+
+/**
+ * Fingerprint + length label. When a full digest is present the truncated form
+ * is click-to-copy so an approver can verify a rotation against a known SHA-256
+ * (10 hex chars isn't enough entropy to compare on sight). Never the value.
+ */
+export function FingerprintChip({
+  fingerprint,
+  length,
+  className,
+}: {
+  fingerprint: string | null;
+  length: number | null;
+  className?: string;
+}) {
+  const { pushToast } = useToastActions();
+  const label = fingerprintLabel(fingerprint, length);
+  if (!fingerprint) {
+    return (
+      <span className={cn("inline-flex items-center gap-1 font-mono", className)}>
+        <Fingerprint className="size-3 shrink-0" />
+        {label}
+      </span>
+    );
+  }
+  const full = `sha256:${fingerprint}`;
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        copyTextToClipboard(full)
+          .then(() => pushToast({ title: "Fingerprint copied", tone: "success" }))
+          .catch(() => pushToast({ title: "Couldn’t copy fingerprint", tone: "error" }));
+      }}
+      title={`Copy full digest — ${full}`}
+      className={cn(
+        "inline-flex items-center gap-1 font-mono hover:text-foreground",
+        className,
+      )}
+    >
+      <Fingerprint className="size-3 shrink-0" />
+      {label}
+      <Copy className="size-3 shrink-0 opacity-60" />
+    </button>
+  );
+}
+
+/**
+ * An agent-authored justification, framed as an *untrusted claim* rather than
+ * trusted UI copy. The muted "Reason given by the agent" caption primes the
+ * approver to read it skeptically — the Q0 social-engineering concern: an agent
+ * can write "Pre-approved by the CEO" and otherwise inherit the interface's
+ * credibility.
+ */
+export function ProposalJustification({
+  justification,
+  className,
+}: {
+  justification: string;
+  className?: string;
+}) {
+  return (
+    <div className={cn("space-y-0.5", className)}>
+      <p className="text-(length:--text-micro) text-muted-foreground">Reason given by the agent</p>
+      <p className="whitespace-pre-wrap break-words text-xs text-foreground/80">
+        “{justification}”
+      </p>
+    </div>
+  );
 }
 
 /** Compact agent chip: icon + name. */
@@ -336,11 +407,9 @@ function ApproveDialog({
             <div className="space-y-1.5 rounded-md border border-border bg-muted/30 p-2.5 text-xs">
               <div className="flex items-center gap-1.5 text-muted-foreground">
                 <span>Proposed by</span>
-                <AgentRefChip agent={draft.proposal.proposedBy} className="text-foreground" />
+                <AgentRefChip agent={draft.proposal.proposedBy} className="font-medium text-foreground" />
               </div>
-              <p className="whitespace-pre-wrap break-words text-foreground/80">
-                “{draft.proposal.justification}”
-              </p>
+              <ProposalJustification justification={draft.proposal.justification} />
             </div>
 
             {isSecret ? (
@@ -409,14 +478,11 @@ function ApproveDialog({
                   </div>
                 ) : null}
 
-                <div className="flex items-center gap-2 rounded-md border border-border bg-background px-2.5 py-1.5 text-xs text-muted-foreground">
-                  <Fingerprint className="size-3.5 shrink-0" />
-                  <span className="font-mono">
-                    {fingerprintLabel(
-                      draft.proposal.valueFingerprintSha256,
-                      draft.proposal.valueLength,
-                    )}
-                  </span>
+                <div className="rounded-md border border-border bg-background px-2.5 py-1.5 text-xs text-muted-foreground">
+                  <FingerprintChip
+                    fingerprint={draft.proposal.valueFingerprintSha256}
+                    length={draft.proposal.valueLength}
+                  />
                 </div>
               </div>
             ) : (

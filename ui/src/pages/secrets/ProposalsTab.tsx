@@ -5,7 +5,6 @@ import {
   AlertCircle,
   ArrowRight,
   ExternalLink,
-  Fingerprint,
   Inbox,
   KeyRound,
   Link2,
@@ -20,11 +19,12 @@ import { SecretPathName } from "./SecretPathName";
 import {
   AgentRefChip,
   DeliveryBadge,
+  FingerprintChip,
   ProposalActions,
+  ProposalJustification,
   ProposedBadge,
   bindingEnvKey,
   bindingSecretLabel,
-  fingerprintLabel,
   useProposalReview,
 } from "./proposal-review";
 
@@ -91,7 +91,7 @@ function ProposalRow({
         {/* Provenance meta */}
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
           <span className="inline-flex items-center gap-1">
-            by <AgentRefChip agent={proposal.proposedBy} className="text-foreground" />
+            by <AgentRefChip agent={proposal.proposedBy} className="font-medium text-foreground" />
           </span>
           {proposal.originIssue ? (
             <>
@@ -109,10 +109,10 @@ function ProposalRow({
           {isSecret ? (
             <>
               <span aria-hidden="true">·</span>
-              <span className="inline-flex items-center gap-1 font-mono">
-                <Fingerprint className="size-3" />
-                {fingerprintLabel(proposal.valueFingerprintSha256, proposal.valueLength)}
-              </span>
+              <FingerprintChip
+                fingerprint={proposal.valueFingerprintSha256}
+                length={proposal.valueLength}
+              />
             </>
           ) : null}
           <span aria-hidden="true">·</span>
@@ -121,10 +121,8 @@ function ProposalRow({
           </span>
         </div>
 
-        {/* Justification (agent-authored — treat as untrusted copy). */}
-        <p className="whitespace-pre-wrap break-words text-xs text-foreground/80">
-          “{proposal.justification}”
-        </p>
+        {/* Justification (agent-authored — framed as an untrusted claim). */}
+        <ProposalJustification justification={proposal.justification} />
       </div>
 
       <div className="shrink-0 sm:pt-0.5">
