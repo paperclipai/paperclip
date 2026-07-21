@@ -3940,8 +3940,9 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     actor?: ActorInfo;
     existingRefs?: typeof connectionGrants.$inferSelect.credentialSecretRefs;
   }) {
-    const existing = input.existingRefs?.find((ref) => ref.configPath === input.configPath)
-      ?? oauthSecretRef(input.connection, input.configPath);
+    const existing = input.existingRefs === undefined
+      ? oauthSecretRef(input.connection, input.configPath)
+      : input.existingRefs.find((ref) => ref.configPath === input.configPath);
     if (existing) {
       await secrets.rotate(existing.secretId, { value: input.value }, actorForSecret(input.actor));
       return existing;
@@ -4915,6 +4916,9 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           eq(connectionGrants.subjectUserId, stateRow.subjectUserId),
         )).limit(1)
       : [undefined];
+    const subjectCredentialSecretRefs = stateRow.subjectUserId
+      ? existingUserGrant?.credentialSecretRefs ?? []
+      : connection.credentialSecretRefs;
     const accessRef = await createOrRotateOAuthSecret({
       companyId: connection.companyId,
       connection,
@@ -4922,11 +4926,10 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       label: "OAuth access token",
       value: token.accessToken,
       actor: input.actor,
-      existingRefs: existingUserGrant?.credentialSecretRefs,
+      existingRefs: stateRow.subjectUserId ? subjectCredentialSecretRefs : undefined,
     });
-    const baseCredentialSecretRefs = existingUserGrant?.credentialSecretRefs ?? connection.credentialSecretRefs;
     const nextCredentialSecretRefs = [
-      ...baseCredentialSecretRefs.filter((ref) => ref.configPath !== "oauth.access_token" && ref.configPath !== "oauth.refresh_token"),
+      ...subjectCredentialSecretRefs.filter((ref) => ref.configPath !== "oauth.access_token" && ref.configPath !== "oauth.refresh_token"),
       accessRef,
     ];
     if (token.refreshToken) {
@@ -4937,10 +4940,10 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         label: "OAuth refresh token",
         value: token.refreshToken,
         actor: input.actor,
-        existingRefs: existingUserGrant?.credentialSecretRefs,
+        existingRefs: stateRow.subjectUserId ? subjectCredentialSecretRefs : undefined,
       }));
     } else {
-      const existingRefreshRef = baseCredentialSecretRefs.find((ref) => ref.configPath === "oauth.refresh_token");
+      const existingRefreshRef = subjectCredentialSecretRefs.find((ref) => ref.configPath === "oauth.refresh_token");
       if (existingRefreshRef) nextCredentialSecretRefs.push(existingRefreshRef);
     }
     const expiresAt = token.expiresIn ? new Date(Date.now() + token.expiresIn * 1000).toISOString() : null;

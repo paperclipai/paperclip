@@ -2885,6 +2885,40 @@ describeEmbeddedPostgres("tool access service", () => {
     const service = toolAccessService(db);
     const connected = await service.connectGalleryApp(company.id, { galleryKey: "slack", name: "Slack user auth" });
 
+    const workspaceStarted = await service.startOAuth(company.id, connected.connectionId, {
+      redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+      actor: { actorType: "user", actorId: "workspace-owner" },
+    });
+    const workspaceState = new URL(workspaceStarted.authorizationUrl).searchParams.get("state")!;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      const href = String(url);
+      if (href === "https://slack.com/api/oauth.v2.access") {
+        const body = init?.body as URLSearchParams;
+        const userAuthorization = body.get("code") === "user-authorization-code";
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            access_token: userAuthorization ? "user-access-token" : "workspace-access-token",
+            refresh_token: userAuthorization ? "user-refresh-token" : "workspace-refresh-token",
+            expires_in: 3600,
+          }),
+        } as Response;
+      }
+      if (href === "https://mcp.slack.com/mcp") {
+        return mcpHttpResponse({ jsonrpc: "2.0", id: "paperclip-catalog-refresh", result: { tools: [] } });
+      }
+      throw new Error(`unexpected fetch ${href}`);
+    });
+    await service.completeOAuthCallback({
+      state: workspaceState,
+      code: "workspace-authorization-code",
+      redirectUri: "https://paperclip.example/api/tools/oauth/callback",
+      actor: { actorType: "user", actorId: "workspace-owner" },
+    });
+    const [workspaceConnection] = await db.select().from(toolConnections).where(eq(toolConnections.id, connected.connectionId));
+    const workspaceSecretIds = workspaceConnection.credentialSecretRefs.map((ref) => ref.secretId).sort();
+
     const started = await service.startAuthorizationForAgent({
       companyId: company.id,
       connectionId: connected.connectionId,
@@ -2908,14 +2942,9 @@ describeEmbeddedPostgres("tool access service", () => {
     });
     expect(interaction.payload).toMatchObject({ target: { href: started.authorizationUrl } });
 
-    vi.spyOn(globalThis, "fetch").mockResolvedValue({
-      ok: true,
-      status: 200,
-      json: async () => ({ access_token: "user-access-token", refresh_token: "user-refresh-token", expires_in: 3600 }),
-    } as Response);
     await service.completeOAuthCallback({
       state: state.state,
-      code: "authorization-code",
+      code: "user-authorization-code",
       redirectUri: "https://paperclip.example/api/tools/oauth/callback",
       actor: { actorType: "user", actorId: "user-for-run" },
     });
@@ -2926,6 +2955,9 @@ describeEmbeddedPostgres("tool access service", () => {
     ));
     expect(grant).toMatchObject({ kind: "user", status: "active" });
     expect(grant.credentialSecretRefs.map((ref) => ref.configPath).sort()).toEqual(["oauth.access_token", "oauth.refresh_token"]);
+    expect(grant.credentialSecretRefs.map((ref) => ref.secretId).sort()).not.toEqual(workspaceSecretIds);
+    const [unchangedConnection] = await db.select().from(toolConnections).where(eq(toolConnections.id, connected.connectionId));
+    expect(unchangedConnection.credentialSecretRefs.map((ref) => ref.secretId).sort()).toEqual(workspaceSecretIds);
     const [resolved] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interaction.id));
     expect(resolved).toMatchObject({ status: "accepted", result: { version: 1, outcome: "accepted" } });
   });
