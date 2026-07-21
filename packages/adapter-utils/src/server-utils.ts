@@ -114,6 +114,14 @@ const REDACTED_LOG_VALUE = "***REDACTED***";
 export function isPaperclipRuntimeEnvKey(key: string): boolean {
   return key.startsWith("PAPERCLIP_");
 }
+
+// PAPERCLIP_API_KEY is never accepted from adapter/user config env: the
+// harness-minted run token is the only source of Paperclip API identity.
+// Other PAPERCLIP_*-named config keys are allowed as long as Paperclip has
+// not assigned the same key for the run (runtime vars always win).
+export function isForbiddenConfigEnvKey(key: string): boolean {
+  return key === "PAPERCLIP_API_KEY";
+}
 const PAPERCLIP_SKILL_ROOT_RELATIVE_CANDIDATES = [
   "../../skills",
   "../../../../../skills",
@@ -2044,9 +2052,11 @@ export function refreshPaperclipWorkspaceEnvForExecution(input: {
     // runtime variable. Non-PAPERCLIP_* keys (plain values and resolved
     // secret_ref values) always forward to the spawned process; a PAPERCLIP_*
     // key from config only applies when Paperclip has NOT already assigned it
-    // for this run (e.g. an explicitly configured PAPERCLIP_API_KEY that the
-    // adapter applies after this merge). This keeps runtime identity, wake, and
-    // workspace vars authoritative regardless of what a config binding sets.
+    // for this run. PAPERCLIP_API_KEY is never accepted from config — the
+    // harness-minted run token is the only source. This keeps runtime
+    // identity, wake, and workspace vars authoritative regardless of what a
+    // config binding sets.
+    if (isForbiddenConfigEnvKey(key)) continue;
     if (isPaperclipRuntimeEnvKey(key) && key in input.env) continue;
     input.env[key] = value;
   }

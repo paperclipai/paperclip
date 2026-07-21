@@ -33,6 +33,7 @@ import {
   ensureAbsoluteDirectory,
   ensurePathInEnv,
   ensurePaperclipSkillSymlink,
+  isForbiddenConfigEnvKey,
   isPaperclipRuntimeEnvKey,
   joinPromptSections,
   materializePaperclipSkillCopy,
@@ -1044,8 +1045,6 @@ async function buildRuntime(input: {
   await fs.mkdir(stateDir, { recursive: true });
 
   const envConfig = parseObject(config.env);
-  const hasExplicitApiKey =
-    typeof envConfig.PAPERCLIP_API_KEY === "string" && envConfig.PAPERCLIP_API_KEY.trim().length > 0;
   const env: Record<string, string> = { ...buildPaperclipEnv(agent), PAPERCLIP_RUN_ID: runId };
   const wakeTaskId =
     (typeof context.taskId === "string" && context.taskId.trim()) ||
@@ -1100,14 +1099,16 @@ async function buildRuntime(input: {
   for (const [key, value] of Object.entries(shapedEnvConfig)) {
     if (typeof value !== "string") continue;
     // Runtime PAPERCLIP_* always wins over config: skip a PAPERCLIP_* key that
-    // Paperclip has already assigned this run. A PAPERCLIP_* key Paperclip did
-    // NOT set (e.g. an explicitly configured PAPERCLIP_API_KEY, applied here) is
-    // stable per-run config, so it applies and feeds the fingerprint hash below.
+    // Paperclip has already assigned this run. PAPERCLIP_API_KEY is never
+    // accepted from config — the harness-minted run token is the only source.
+    // A PAPERCLIP_* key Paperclip did NOT set is stable per-run config, so it
+    // applies and feeds the fingerprint hash below.
+    if (isForbiddenConfigEnvKey(key)) continue;
     if (isPaperclipRuntimeEnvKey(key) && key in env) continue;
     env[key] = value;
     resolvedAdapterEnv[key] = value;
   }
-  if (!hasExplicitApiKey && authToken) env.PAPERCLIP_API_KEY = authToken;
+  if (authToken) env.PAPERCLIP_API_KEY = authToken;
   // For the claude agent, set model via ANTHROPIC_MODEL at startup rather than
   // via session/set_config_option — the ACP server's set_config_option handler
   // validates the value against its internal available-models list and rejects

@@ -633,16 +633,8 @@ describe("shared ACPX engine runtime behavior", () => {
       stateDir,
     };
 
-    await runExecutor({
-      ...baseConfig,
-      agent: "custom-a",
-      env: { PAPERCLIP_API_KEY: "old-key" },
-    });
-    await runExecutor({
-      ...baseConfig,
-      agent: "custom-b",
-      env: { PAPERCLIP_API_KEY: "new-key" },
-    });
+    await runExecutor({ ...baseConfig, agent: "custom-a" }, { authToken: "old-key" });
+    await runExecutor({ ...baseConfig, agent: "custom-b" }, { authToken: "new-key" });
 
     const wrappers = await fs.readdir(path.join(stateDir, "wrappers"));
     expect(wrappers.filter((name) => name.endsWith(".sh"))).toHaveLength(2);
@@ -677,6 +669,10 @@ describe("shared ACPX engine runtime behavior", () => {
           OPENROUTER_API_KEY: "resolved-secret-value",
           // Reserved-namespace config keys must not clobber runtime identity/wake.
           PAPERCLIP_TASK_ID: "attacker-issue",
+          // PAPERCLIP_API_KEY is never accepted from config.
+          PAPERCLIP_API_KEY: "config-key",
+          // A PAPERCLIP_*-named key the harness does not assign flows through.
+          PAPERCLIP_CLOUD_PROVIDER_TOKEN: "cloud-token",
         },
       },
       {
@@ -694,6 +690,11 @@ describe("shared ACPX engine runtime behavior", () => {
     // Runtime PAPERCLIP_TASK_ID (from the wake context) wins over config.
     expect(env).toContain("PAPERCLIP_TASK_ID='issue-real'");
     expect(env).not.toContain("attacker-issue");
+    // The harness-minted run token is the only PAPERCLIP_API_KEY source.
+    expect(env).toContain("PAPERCLIP_API_KEY='runtime-secret-token'");
+    expect(env).not.toContain("config-key");
+    // A PAPERCLIP_*-named user key the harness does not assign passes through.
+    expect(env).toContain("PAPERCLIP_CLOUD_PROVIDER_TOKEN='cloud-token'");
   });
 
   it("busts the session fingerprint when resolved adapter env changes but not across wakes", async () => {
@@ -731,17 +732,17 @@ describe("shared ACPX engine runtime behavior", () => {
     const stateDir = path.join(root, "state");
     const baseConfig = { agentCommand: "node ./fake-acp.js", stateDir };
 
-    // An explicitly configured PAPERCLIP_API_KEY is stable per-run config (not a
-    // per-wake runtime var): rotating it must invalidate a warm/resumable session
-    // so the next launch sources the new key, even across an otherwise-identical
-    // wake context.
+    // A configured PAPERCLIP_*-named value the harness does not assign (e.g. a
+    // cloud provider token binding) is stable per-run config: rotating it must
+    // invalidate a warm/resumable session so the next launch sources the new
+    // value, even across an otherwise-identical wake context.
     const context = { taskId: "issue-1", wakeReason: "issue_assigned" };
     const withKey = await runExecutor(
-      { ...baseConfig, env: { PAPERCLIP_API_KEY: "explicit-key-1" } },
+      { ...baseConfig, env: { PAPERCLIP_CLOUD_PROVIDER_TOKEN: "explicit-key-1" } },
       { context },
     );
     const rotatedKey = await runExecutor(
-      { ...baseConfig, env: { PAPERCLIP_API_KEY: "explicit-key-2" } },
+      { ...baseConfig, env: { PAPERCLIP_CLOUD_PROVIDER_TOKEN: "explicit-key-2" } },
       { context },
     );
 
@@ -812,11 +813,7 @@ describe("shared ACPX engine runtime behavior", () => {
       stateDir,
     };
 
-    await runExecutor({
-      ...baseConfig,
-      agent: "custom-a",
-      env: { PAPERCLIP_API_KEY: "old-key" },
-    });
+    await runExecutor({ ...baseConfig, agent: "custom-a" }, { authToken: "old-key" });
     const oldDate = new Date(Date.now() - 16 * 60 * 1000);
     await Promise.all(
       (await fs.readdir(wrappersDir))
@@ -824,11 +821,7 @@ describe("shared ACPX engine runtime behavior", () => {
         .map((name) => fs.utimes(path.join(wrappersDir, name), oldDate, oldDate)),
     );
 
-    await runExecutor({
-      ...baseConfig,
-      agent: "custom-b",
-      env: { PAPERCLIP_API_KEY: "new-key" },
-    });
+    await runExecutor({ ...baseConfig, agent: "custom-b" }, { authToken: "new-key" });
 
     const wrappers = await fs.readdir(wrappersDir);
     expect(wrappers.filter((name) => name.endsWith(".sh"))).toHaveLength(1);
@@ -846,14 +839,8 @@ describe("shared ACPX engine runtime behavior", () => {
       stateDir,
     };
 
-    await runExecutor({
-      ...baseConfig,
-      env: { PAPERCLIP_API_KEY: "first-key" },
-    });
-    await runExecutor({
-      ...baseConfig,
-      env: { PAPERCLIP_API_KEY: "second-key" },
-    });
+    await runExecutor(baseConfig, { authToken: "first-key" });
+    await runExecutor(baseConfig, { authToken: "second-key" });
 
     const envFileNames = (await fs.readdir(path.join(stateDir, "wrappers"))).filter((name) => name.endsWith(".env"));
     expect(envFileNames).toHaveLength(2);

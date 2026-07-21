@@ -612,28 +612,34 @@ export function requiresPushCapabilityPreflight(input: {
 const LOW_TRUST_SENSITIVE_ENV_KEY_RE =
   /(api[-_]?key|access[-_]?token|auth(?:_?token)?|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)/i;
 
-function isPaperclipRuntimeEnvKey(key: string) {
-  return key.startsWith("PAPERCLIP_");
-}
+// PAPERCLIP_* env binding policy:
+// 1. PAPERCLIP_API_KEY is never accepted from user/adapter/project/routine
+//    config — the harness-minted run token is the only source.
+// 2. A PAPERCLIP_* runtime var the harness assigns for the run (RUN_ID,
+//    AGENT_ID, wake/workspace vars, ...) always wins over a same-named
+//    binding; adapters enforce this at env-merge time.
+// 3. Any other PAPERCLIP_*-named binding is user data and flows through to
+//    the run env like any non-prefixed binding.
+const FORBIDDEN_ENV_BINDING_KEYS = new Set(["PAPERCLIP_API_KEY"]);
 
-function stripPaperclipRuntimeEnvBindings(envValue: unknown): Record<string, unknown> | null {
+function stripForbiddenEnvBindings(envValue: unknown): Record<string, unknown> | null {
   const record = parseObject(envValue);
   const filtered = Object.fromEntries(
-    Object.entries(record).filter(([key]) => !isPaperclipRuntimeEnvKey(key)),
+    Object.entries(record).filter(([key]) => !FORBIDDEN_ENV_BINDING_KEYS.has(key)),
   );
   return Object.keys(filtered).length > 0 ? filtered : null;
 }
 
-function stripPaperclipRuntimeEnvFromAdapterConfig(config: Record<string, unknown>): Record<string, unknown> {
+function stripForbiddenEnvFromAdapterConfig(config: Record<string, unknown>): Record<string, unknown> {
   if (!Object.prototype.hasOwnProperty.call(config, "env")) return config;
   return {
     ...config,
-    env: stripPaperclipRuntimeEnvBindings(config.env) ?? {},
+    env: stripForbiddenEnvBindings(config.env) ?? {},
   };
 }
 
 function assertLowTrustEnvConfigAllowed(envValue: unknown, source: string) {
-  const record = stripPaperclipRuntimeEnvBindings(envValue);
+  const record = stripForbiddenEnvBindings(envValue);
   if (!record) return;
   for (const [key, rawBinding] of Object.entries(record)) {
     const parsed = envBindingSchema.safeParse(rawBinding);
@@ -673,10 +679,10 @@ export async function resolveExecutionRunAdapterConfig(input: {
     remediation: string;
   };
 }) {
-  const executionRunConfig = stripPaperclipRuntimeEnvFromAdapterConfig(input.executionRunConfig);
-  const environmentEnv = stripPaperclipRuntimeEnvBindings(input.environmentEnv);
-  const projectEnv = stripPaperclipRuntimeEnvBindings(input.projectEnv);
-  const routineEnv = stripPaperclipRuntimeEnvBindings(input.routineEnv);
+  const executionRunConfig = stripForbiddenEnvFromAdapterConfig(input.executionRunConfig);
+  const environmentEnv = stripForbiddenEnvBindings(input.environmentEnv);
+  const projectEnv = stripForbiddenEnvBindings(input.projectEnv);
+  const routineEnv = stripForbiddenEnvBindings(input.routineEnv);
   const agentEnv = parseObject(executionRunConfig.env);
   const lowTrustAllowedBindingIds = input.trustPreset?.kind === "low_trust_review"
     ? input.trustPreset.boundary.allowedSecretBindingIds ?? []

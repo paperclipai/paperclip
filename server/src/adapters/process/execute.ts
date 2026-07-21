@@ -5,6 +5,8 @@ import {
   asStringArray,
   parseObject,
   buildPaperclipEnv,
+  isForbiddenConfigEnvKey,
+  isPaperclipRuntimeEnvKey,
   buildInvocationEnvForLogs,
   ensurePathInEnv,
   resolveCommandForLogs,
@@ -23,10 +25,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     ...buildPaperclipEnv(agent),
   };
   for (const [k, v] of Object.entries(envConfig)) {
-    if (typeof v === "string") env[k] = v;
+    if (typeof v !== "string") continue;
+    // Runtime PAPERCLIP_* always wins over config, and PAPERCLIP_API_KEY is
+    // never accepted from config — the harness-minted run token is the only
+    // source. Other PAPERCLIP_* keys Paperclip did not assign flow through.
+    if (isForbiddenConfigEnvKey(k)) continue;
+    if (isPaperclipRuntimeEnvKey(k) && k in env) continue;
+    env[k] = v;
   }
   env.PAPERCLIP_RUN_ID = runId;
-  if (authToken && !env.PAPERCLIP_API_KEY?.trim()) env.PAPERCLIP_API_KEY = authToken;
+  if (authToken) env.PAPERCLIP_API_KEY = authToken;
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
   const resolvedCommand = await resolveCommandForLogs(command, cwd, runtimeEnv);
   const loggedEnv = buildInvocationEnvForLogs(env, {
