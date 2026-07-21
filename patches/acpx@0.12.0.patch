@@ -52,3 +52,6 @@
  			if (!this.options.verbose) return;
  			process.stderr.write(chunk);
  		});
+@@ -2562,1 +2562,1 @@
+-	if (state.ch === "\\" && state.quote !== "'") return {
++	if (process.platform !== "win32" && state.ch === "\\" && state.quote !== "'") return {
