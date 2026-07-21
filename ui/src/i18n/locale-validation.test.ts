@@ -1,14 +1,21 @@
 import { describe, expect, it } from "vitest";
-import { t } from ".";
+import { setLocale, t } from ".";
 import en from "./locales/en.json";
+import zhCN from "./locales/zh-CN.json";
 import { localeMessages } from "./locales";
 import { validateLocaleMessages } from "./locale-validation";
 
 describe("locale validation", () => {
-  it("resolves English messages with key and default fallbacks", () => {
+  it("resolves the default English locale with key and default fallbacks", () => {
     expect(t("app.noCompanies.title")).toBe(en.app.noCompanies.title);
     expect(t("app.missing", { defaultValue: "Fallback" })).toBe("Fallback");
     expect(t("app.missing")).toBe("app.missing");
+  });
+
+  it("switches to Simplified Chinese and back", async () => {
+    await setLocale("zh-CN");
+    expect(t("app.noCompanies.title")).toBe(zhCN.app.noCompanies.title);
+    await setLocale("en");
   });
 
   it("accepts registered locale files", () => {

@@ -4,7 +4,10 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { queryKeys } from "../lib/queryKeys";
+import { i18n } from "@/i18n";
 import { SidebarAccountMenu } from "./SidebarAccountMenu";
+
+void i18n.changeLanguage("zh-CN");
 
 const mockAuthApi = vi.hoisted(() => ({
   getSession: vi.fn(),
@@ -121,7 +124,7 @@ describe("SidebarAccountMenu", () => {
     expect(container.textContent).toContain("Jane Example");
     expect(container.textContent).not.toContain("jane@example.com");
 
-    const trigger = container.querySelector('button[aria-label="Open account menu"]');
+    const trigger = container.querySelector('button[aria-label="打开账户菜单"]');
     expect(trigger).not.toBeNull();
 
     await act(async () => {
@@ -129,10 +132,10 @@ describe("SidebarAccountMenu", () => {
     });
     await flushReact();
 
-    expect(document.body.textContent).toContain("Edit profile");
+    expect(document.body.textContent).toContain("编辑个人资料");
     expect(document.body.textContent).not.toContain("Instance settings");
-    expect(document.body.textContent).toContain("Documentation");
-    expect(document.body.textContent).toContain("Feedback");
+    expect(document.body.textContent).toContain("使用文档");
+    expect(document.body.textContent).toContain("反馈");
 
     // Feedback link opens in a new tab pointing at the feedback URL
     const feedbackAnchor = document.body.querySelector('a[href="https://paperclip.ing/feedback"]') as HTMLAnchorElement | null;
@@ -141,9 +144,9 @@ describe("SidebarAccountMenu", () => {
 
     // Feedback appears after Documentation and before the theme toggle
     const menuText = document.body.querySelector('[data-slot="popover-content"]')?.textContent ?? "";
-    const docsPos = menuText.indexOf("Documentation");
-    const feedbackPos = menuText.indexOf("Feedback");
-    const themePos = menuText.indexOf("Switch to");
+    const docsPos = menuText.indexOf("使用文档");
+    const feedbackPos = menuText.indexOf("反馈");
+    const themePos = menuText.indexOf("切换到");
     expect(docsPos).toBeLessThan(feedbackPos);
     expect(feedbackPos).toBeLessThan(themePos);
 
@@ -154,7 +157,7 @@ describe("SidebarAccountMenu", () => {
     expect(document.body.querySelector('a[href="/company/settings/instance/profile"]')).not.toBeNull();
 
     const signOutButton = Array.from(document.body.querySelectorAll("button")).find(
-      (button) => button.textContent?.includes("Sign out"),
+      (button) => button.textContent?.includes("退出登录"),
     );
     await act(async () => {
       signOutButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));

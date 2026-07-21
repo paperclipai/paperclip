@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { setLocale } from "../i18n";
 import { MembershipAction } from "./MembershipAction";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -21,7 +22,8 @@ describe("MembershipAction", () => {
   let container: HTMLDivElement;
   let root: ReturnType<typeof createRoot> | null;
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    await setLocale("en");
     container = document.createElement("div");
     document.body.appendChild(container);
     root = null;

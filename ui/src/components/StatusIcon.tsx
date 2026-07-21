@@ -1,5 +1,7 @@
 import { useState } from "react";
+import type { TFunction } from "i18next";
 import type { IssueBlockerAttention } from "@paperclipai/shared";
+import { useTranslation } from "../i18n";
 import { cn } from "../lib/utils";
 import { StatusGlyph, type StatusGlyphSize } from "./StatusGlyph";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -7,8 +9,10 @@ import { Button } from "@/components/ui/button";
 
 const allStatuses = ["backlog", "todo", "in_progress", "in_review", "done", "cancelled", "blocked"];
 
-function statusLabel(status: string): string {
-  return status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+function statusLabel(t: TFunction, status: string): string {
+  return t(`charts.status.${status}`, {
+    defaultValue: status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()),
+  });
 }
 
 interface StatusIconProps {
@@ -21,46 +25,48 @@ interface StatusIconProps {
   size?: StatusGlyphSize;
 }
 
-function blockedAttentionLabel(blockerAttention: IssueBlockerAttention | null | undefined) {
-  if (!blockerAttention || blockerAttention.state === "none") return "Blocked";
+function blockedAttentionLabel(t: TFunction, blockerAttention: IssueBlockerAttention | null | undefined) {
+  if (!blockerAttention || blockerAttention.state === "none") return t("statusIcon.blocked");
 
   if (blockerAttention.reason === "active_child") {
     const count = blockerAttention.coveredBlockerCount;
     if (count === 1 && blockerAttention.sampleBlockerIdentifier) {
-      return `Blocked · waiting on active sub-task ${blockerAttention.sampleBlockerIdentifier}`;
+      return t("statusIcon.waitingActiveSubTask", { identifier: blockerAttention.sampleBlockerIdentifier });
     }
-    if (count === 1) return "Blocked · waiting on 1 active sub-task";
-    return `Blocked · waiting on ${count} active sub-tasks`;
+    if (count === 1) return t("statusIcon.waitingOneActiveSubTask");
+    return t("statusIcon.waitingActiveSubTasks", { count });
   }
 
   if (blockerAttention.reason === "active_dependency") {
     const count = blockerAttention.coveredBlockerCount;
     if (count === 1 && blockerAttention.sampleBlockerIdentifier) {
-      return `Blocked · covered by active dependency ${blockerAttention.sampleBlockerIdentifier}`;
+      return t("statusIcon.coveredByActiveDependency", { identifier: blockerAttention.sampleBlockerIdentifier });
     }
-    if (count === 1) return "Blocked · covered by 1 active dependency";
-    return `Blocked · covered by ${count} active dependencies`;
+    if (count === 1) return t("statusIcon.coveredByOneActiveDependency");
+    return t("statusIcon.coveredByActiveDependencies", { count });
   }
 
   if (blockerAttention.reason === "stalled_review") {
     const count = blockerAttention.stalledBlockerCount;
     const leaf = blockerAttention.sampleStalledBlockerIdentifier ?? blockerAttention.sampleBlockerIdentifier;
-    if (count === 1 && leaf) return `Blocked · review stalled on ${leaf}`;
-    if (count === 1) return "Blocked · review stalled with no clear next step";
-    return `Blocked · ${count} reviews stalled with no clear next step`;
+    if (count === 1 && leaf) return t("statusIcon.reviewStalledOn", { identifier: leaf });
+    if (count === 1) return t("statusIcon.reviewStalledOne");
+    return t("statusIcon.reviewsStalled", { count });
   }
 
   if (blockerAttention.reason === "attention_required") {
     const count = blockerAttention.attentionBlockerCount || blockerAttention.unresolvedBlockerCount;
-    const attentionCopy = `${count} ${count === 1 ? "blocker needs" : "blockers need"} attention`;
     const coveredCount = blockerAttention.coveredBlockerCount;
     if (coveredCount > 0) {
-      return `Blocked · ${attentionCopy}; ${coveredCount} covered by active work`;
+      return t(count === 1 ? "statusIcon.oneBlockerNeedsAttentionCovered" : "statusIcon.blockersNeedAttentionCovered", {
+        count,
+        coveredCount,
+      });
     }
-    return `Blocked · ${attentionCopy}`;
+    return t(count === 1 ? "statusIcon.oneBlockerNeedsAttention" : "statusIcon.blockersNeedAttention", { count });
   }
 
-  return "Blocked";
+  return t("statusIcon.blocked");
 }
 
 /**
@@ -76,9 +82,10 @@ function blockedAttentionLabel(blockerAttention: IssueBlockerAttention | null | 
  * still rides on the accessible label.
  */
 export function StatusIcon({ status, blockerAttention, onChange, className, showLabel, size = "md" }: StatusIconProps) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const isCoveredBlocked = status === "blocked" && blockerAttention?.state === "covered";
-  const ariaLabel = status === "blocked" ? blockedAttentionLabel(blockerAttention) : statusLabel(status);
+  const ariaLabel = status === "blocked" ? blockedAttentionLabel(t, blockerAttention) : statusLabel(t, status);
   const glyphStatus = isCoveredBlocked ? "in_queue" : status;
 
   const glyph = (
@@ -94,7 +101,7 @@ export function StatusIcon({ status, blockerAttention, onChange, className, show
     return showLabel ? (
       <span className="inline-flex items-center gap-1.5">
         {glyph}
-        <span className="text-sm">{statusLabel(status)}</span>
+        <span className="text-sm">{statusLabel(t, status)}</span>
       </span>
     ) : (
       glyph
@@ -104,7 +111,7 @@ export function StatusIcon({ status, blockerAttention, onChange, className, show
   const trigger = showLabel ? (
     <button className="inline-flex min-h-5 items-center gap-1.5 cursor-pointer hover:bg-accent/50 rounded px-1 -mx-1 py-0.5 transition-colors">
       {glyph}
-      <span className="text-sm">{statusLabel(status)}</span>
+      <span className="text-sm">{statusLabel(t, status)}</span>
     </button>
   ) : (
     glyph
@@ -126,7 +133,7 @@ export function StatusIcon({ status, blockerAttention, onChange, className, show
             }}
           >
             <StatusIcon status={s} size="lg" />
-            {statusLabel(s)}
+            {statusLabel(t, s)}
           </Button>
         ))}
       </PopoverContent>
