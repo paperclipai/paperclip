@@ -149,6 +149,32 @@ describe("useDocumentStarMutation", () => {
     expect(starredIds(queryClient)).toContain("doc-1");
   });
 
+  it("invalidates the Artifacts list on settle so an unstarred doc leaves the Starred tab", async () => {
+    membershipsApiMock.listMine.mockResolvedValue({
+      ...emptyMemberships(),
+      starredDocumentIds: ["doc-1"],
+      documentStarredAt: { "doc-1": new Date().toISOString() },
+    });
+    membershipsApiMock.updateDocument.mockResolvedValue({
+      resourceType: "document",
+      resourceId: "doc-1",
+      state: "left",
+      starredAt: null,
+      updatedAt: new Date(),
+    });
+
+    let handle: HarnessHandle | null = null;
+    const queryClient = await render((h) => { handle = h; });
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+
+    await act(async () => {
+      handle!.mutate({ documentId: "doc-1", documentName: "Launch Brief", starred: false });
+      await flush();
+    });
+
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["artifacts"] });
+  });
+
   it("rolls back the optimistic unstar and toasts when the server rejects", async () => {
     membershipsApiMock.listMine.mockResolvedValue({
       ...emptyMemberships(),

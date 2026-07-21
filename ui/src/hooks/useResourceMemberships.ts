@@ -259,16 +259,22 @@ export function useDocumentStarMutation(companyId: string | null | undefined) {
     onMutate: async (variables) => {
       await queryClient.cancelQueries({ queryKey });
       const previous = queryClient.getQueryData<ResourceMemberships>(queryKey);
+      // Capture only this document's prior star so a rollback reverts just this
+      // change and leaves any concurrent star mutation's optimistic state intact.
+      const previousStarred = isStarred(previous, "document", variables.documentId);
       queryClient.setQueryData<ResourceMemberships>(
         queryKey,
         applyDocumentStarChange(previous, variables.documentId, variables.starred),
       );
-      return { previous };
+      return { previousStarred };
     },
     onError: (error, variables, context) => {
-      if (context?.previous) {
-        queryClient.setQueryData(queryKey, context.previous);
-      }
+      // Targeted rollback: re-apply this document's prior star on top of the
+      // current cache, so we don't clobber a newer concurrent update.
+      queryClient.setQueryData<ResourceMemberships>(
+        queryKey,
+        (current) => applyDocumentStarChange(current, variables.documentId, context?.previousStarred ?? false),
+      );
       pushToast({
         title: `Couldn't ${variables.starred ? "star" : "unstar"} ${variables.documentName}.`,
         body: error instanceof Error ? error.message : "Try again.",
@@ -284,6 +290,10 @@ export function useDocumentStarMutation(companyId: string | null | undefined) {
     },
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey });
+      // The Artifacts "Starred" tab is a separate list query keyed by ["artifacts", ...],
+      // so refresh it too — otherwise an unstarred document lingers in the grid
+      // until the next natural refetch.
+      queryClient.invalidateQueries({ queryKey: ["artifacts"] });
     },
   });
 }
