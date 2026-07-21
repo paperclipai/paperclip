@@ -38,7 +38,7 @@ The canonical repo ships a `marketplace/` folder that IS the deployment source o
   `DirectoryPath`/`SystemName`). `--skip-build` repackages existing output. Zips are **not** committed.
 - **`marketplace/images/`** — `mp-{iconKey}.png` (catalog icon) + `icon-{iconKey}.png` (banner).
 - **`marketplace/SUBMISSION-GUIDE.md`** — the wave-by-wave plugin/zip/sysName/category table + login.
-- Seller login user `ccasalicchio`; password lives in Paperclip issue **SPL-76** (secret, never in source).
+- Seller login credentials must be supplied by the operator through the approved secret-management flow; never document usernames, passwords, or secret locations in the skill.
 - **Hosting:** built ZIPs are uploaded to **Dropbox** and referenced as `?dl=1` direct links in the two
   URL fields (free listings may instead upload the ZIP directly to nop servers).
 
