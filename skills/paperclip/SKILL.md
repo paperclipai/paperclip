@@ -352,6 +352,55 @@ When an issue needs browser/manual QA or a preview server, inspect its current e
 For commands, response fields, and MCP tools, read:
 `skills/paperclip/references/issue-workspaces.md`
 
+## Proposing Credentials Safely
+
+**When you receive a credential, propose it as a Paperclip secret immediately with `POST /api/agents/me/secret-proposals`. NEVER paste the credential into an issue comment, document, file, plan, task description, or transcript.** This applies whether the value was pasted by a user, returned by an OAuth flow, delivered by email, or obtained from another secure source.
+
+Use only the current run-bound agent JWT. Keep the credential in memory or pass it directly from the secure source; do not place the literal value in the command text or echo it. The example assumes `PROPOSED_SECRET_VALUE` is already populated without printing it:
+
+```bash
+PAPERCLIP_API_BASE="${PAPERCLIP_API_URL%/}"
+PAPERCLIP_API_BASE="${PAPERCLIP_API_BASE%/api}"
+jq -n \
+  --arg name "integrations/vendor/api-token" \
+  --arg value "$PROPOSED_SECRET_VALUE" \
+  --arg justification "Credential supplied for the current task" \
+  '{kind:"secret", name:$name, value:$value, justification:$justification}' |
+curl -s -X POST \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H "Content-Type: application/json" \
+  --data-binary @- \
+  "$PAPERCLIP_API_BASE/api/agents/me/secret-proposals"
+unset PROPOSED_SECRET_VALUE
+```
+
+The response omits the credential. Use the returned proposal `id` to propose a binding to yourself; omit `targetAgentId` for self:
+
+```bash
+jq -n \
+  --arg secretProposalId "$SECRET_PROPOSAL_ID" \
+  --arg configPath "env.VENDOR_API_TOKEN" \
+  --arg justification "Inject the approved credential into my adapter environment" \
+  '{kind:"binding", secretProposalId:$secretProposalId, configPath:$configPath, justification:$justification}' |
+curl -s -X POST \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H "Content-Type: application/json" \
+  --data-binary @- \
+  "$PAPERCLIP_API_BASE/api/agents/me/secret-proposals"
+```
+
+- Use `env.<KEY>` to request environment injection, or `access.<ALIAS>` to request API-only access.
+- A binding may reference either `secretProposalId` for a pending proposed secret or `secretId` for an existing company secret.
+- The default `self_and_reports` policy permits binding to yourself or a downward report. Set `targetAgentId` only when targeting one of your reports; peers, managers, and unrelated agents are denied.
+- List proposals you created plus incoming binding proposals targeting you with `GET /api/agents/me/secret-proposals`.
+- Withdraw one of your pending proposals with `DELETE /api/agents/me/secret-proposals/:id`. You cannot withdraw another agent's proposal or a proposal that is no longer pending.
+- On approval, Paperclip creates the real secret through the normal secret path, syncs an approved binding into the target agent's adapter config, posts a structured resolution comment on the origin issue, and wakes its assignee.
+- On rejection, Paperclip posts the rejection reason on the origin issue, wakes its assignee, and scrubs the stored ciphertext. Rejected or expired secret proposals also reject dependent pending binding proposals.
+- Each agent may have at most 20 pending proposals. Resolve or withdraw existing proposals before creating more.
+- Low-trust review agents, task-bridge keys, skill-test tokens, long-lived agent keys, and any token without `secrets:propose` are denied. Do not work around this by exposing the credential elsewhere; escalate through the issue without including the value.
+
+Exact request and response fields are documented in `skills/paperclip/references/api-reference.md`.
+
 ## Reading Granted Secrets
 
 When authenticated with the current run's agent JWT, list the secrets available to that run before fetching a value:
@@ -500,6 +549,7 @@ If `plan` already exists, fetch the current document first and send its latest `
 | Execution workspace + runtime         | `GET /api/execution-workspaces/:id` • `POST …/runtime-services/:action`                                                         |
 | Set agent instructions path           | `PATCH /api/agents/:agentId/instructions-path`                                                                                  |
 | List agents                           | `GET /api/companies/:companyId/agents`                                                                                          |
+| Secret proposals                      | `POST\|GET /api/agents/me/secret-proposals` • `DELETE /api/agents/me/secret-proposals/:id`                                  |
 | Dashboard                             | `GET /api/companies/:companyId/dashboard`                                                                                       |
 
 Full endpoint table (company imports/exports, OpenClaw invites, company skills, routines, etc.) lives in `references/api-reference.md`.
