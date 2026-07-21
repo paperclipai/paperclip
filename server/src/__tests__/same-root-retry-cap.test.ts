@@ -99,8 +99,8 @@ describe("evaluateSameRootRetry", () => {
   });
 
   it("stops a 144-run same-root failure chain within 4 total runs", () => {
-    // Replay of the FALA-491-class chain: a root that keeps failing and being
-    // recovered. Count the automatic runs that would actually be created.
+    // Replay of the runaway chain this cap targets: a root that keeps failing and
+    // being recovered. Count the automatic runs that would actually be created.
     let automaticRunsCreated = 1; // the first (root) run
     for (let i = 0; i < 144; i += 1) {
       const decision = evaluateSameRootRetry({ priorAutomaticRunCount: automaticRunsCreated });

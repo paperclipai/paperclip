@@ -94,7 +94,7 @@ describeEmbeddedPostgres("same-root retry gate (embedded postgres)", () => {
       .then((rows) => rows[0]?.value ?? 0);
   }
 
-  // Replay of the FALA-491-class chain: a root that keeps failing, each failure
+  // Replay of the runaway chain this cap targets: a root that keeps failing, each failure
   // driving another automatic retry. The gate runs in the same transaction that
   // inserts the retry, so the count and the insert are atomic under its lock.
   async function driveFailureChain(
