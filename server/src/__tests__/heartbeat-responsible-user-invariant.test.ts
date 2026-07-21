@@ -77,6 +77,29 @@ async function deleteHeartbeatRunsAfterEvents(db: ReturnType<typeof createDb>) {
   }
 }
 
+// The heartbeat service may create issue comments asynchronously after a run
+// completes (e.g. run-summary comments), so we re-delete comments on each retry
+// to avoid an issue_comments_issue_id_issues_id_fk FK violation.
+async function deleteIssuesAfterComments(db: ReturnType<typeof createDb>) {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    await db.delete(issueComments);
+    try {
+      await db.delete(issues);
+      return;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (
+        attempt < 4 &&
+        message.includes("issue_comments_issue_id_issues_id_fk")
+      ) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        continue;
+      }
+      throw error;
+    }
+  }
+}
+
 describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
   let db!: ReturnType<typeof createDb>;
   let heartbeat!: ReturnType<typeof heartbeatService>;
@@ -100,12 +123,11 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
       if (activeRuns.length === 0) break;
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
-    await db.delete(issueComments);
     await db.delete(activityLog);
     await deleteHeartbeatRunsAfterEvents(db);
     await db.delete(agentWakeupRequests);
     await db.delete(agentRuntimeState);
-    await db.delete(issues);
+    await deleteIssuesAfterComments(db);
     await db.delete(agents);
     await db.delete(companySkills);
     await db.delete(companyMemberships);
