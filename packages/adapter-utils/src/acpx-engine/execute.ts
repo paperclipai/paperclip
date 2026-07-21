@@ -1267,7 +1267,9 @@ async function buildRuntime(input: {
     await paperclipBridge?.stop().catch(() => {});
     throw err;
   }
-  const overrideCommand = processSessionBridge?.agentCommand ?? wrapperPath;
+  const overrideCommandPath = processSessionBridge?.agentCommand ?? wrapperPath;
+  // ACPX parses overrides as command lines, so generated executable paths must be quoted.
+  const overrideCommand = overrideCommandPath ? shellQuote(overrideCommandPath) : null;
   const overrides = overrideCommand ? { [acpxAgent]: overrideCommand } : undefined;
   const agentRegistry = createAgentRegistry({ overrides });
   const fingerprint = shortHash({

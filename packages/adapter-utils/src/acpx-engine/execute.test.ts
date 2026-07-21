@@ -663,6 +663,21 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(env).not.toContain("old-key");
   });
 
+  it("quotes ACPX wrapper paths that contain spaces", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state with spaces");
+
+    const { runtimeOptions } = await runExecutor({
+      agent: "custom",
+      agentCommand: "node ./fake-acp.js",
+      stateDir,
+    });
+
+    const registry = runtimeOptions[0]?.agentRegistry as AcpRuntimeOptions["agentRegistry"];
+    const command = registry.resolve("custom");
+    expect(command).toMatch(/^'.*\/state with spaces\/wrappers\/custom-[a-f0-9]+\.sh'$/);
+  });
+
   it("forwards resolved adapter env (plain + secret) to the wrapper without overriding runtime vars", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
