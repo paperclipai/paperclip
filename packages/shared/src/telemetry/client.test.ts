@@ -393,3 +393,52 @@ describe("TelemetryClient batched retry + backoff", () => {
     client.stop();
   });
 });
+
+// Phase 6 (PAP-2869): the pending-retry store is bounded at
+// config.maxPendingRetryBatches. On overflow the OLDEST batch is evicted
+// (newest prioritized) and each eviction is logged (no silent loss). In-memory
+// only. Caps are injected; assertions are relative.
+describe("TelemetryClient bounded pending-retry store", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it("evicts the oldest batch and retries only the newest within the bound", async () => {
+    // First 3 POSTs (one per single-event chunk) fail 429; retries then succeed.
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: false, status: 429 })
+      .mockResolvedValueOnce({ ok: false, status: 429 })
+      .mockResolvedValueOnce({ ok: false, status: 429 })
+      .mockResolvedValue({ ok: true });
+    vi.stubGlobal("fetch", fetchMock);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { client } = makeClient(undefined, { maxEventsPerBatch: 1, maxPendingRetryBatches: 2 });
+
+    client.trackDynamic("plugin.telemetry.evt", { n: 1 });
+    client.trackDynamic("plugin.telemetry.evt", { n: 2 });
+    client.trackDynamic("plugin.telemetry.evt", { n: 3 });
+    await client.flush();
+
+    // 3 initial attempts (one per chunk), each 429 -> enqueued; the 3rd enqueue
+    // overflows the bound (2) and evicts the oldest.
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    const initial = sentBodies();
+    const [oldestId, midId, newestId] = initial.map((b) => b.batchId as string);
+    expect(warn).toHaveBeenCalled(); // eviction logged
+
+    await vi.advanceTimersByTimeAsync(120_000);
+
+    // Only the 2 newest were retained and retried; the oldest was dropped.
+    const retriedIds = sentBodies()
+      .slice(3)
+      .map((b) => b.batchId as string);
+    expect(retriedIds.sort()).toEqual([midId, newestId].sort());
+    expect(retriedIds).not.toContain(oldestId);
+    client.stop();
+  });
+});

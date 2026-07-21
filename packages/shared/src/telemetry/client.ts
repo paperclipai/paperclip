@@ -284,9 +284,20 @@ export class TelemetryClient {
     return Math.max(0, Math.min(maxDelayMs, Math.round(base + jitter)));
   }
 
-  /** Pushes a batch onto the pending store and schedules its retry wake-up. */
+  /**
+   * Pushes a batch onto the pending store (bounded), then schedules its retry
+   * wake-up. On overflow the OLDEST batches (front) are evicted first — newest
+   * prioritized — and each eviction is logged so no batch is lost silently.
+   */
   private enqueuePending(batch: PendingBatch): void {
     this.pending.push(batch);
+    const bound = Math.max(0, this.caps.maxPendingRetryBatches);
+    while (this.pending.length > bound) {
+      const evicted = this.pending.shift();
+      this.warn(
+        `pending-retry store full (bound=${bound}); evicted oldest batch ${evicted?.batchId}; ${evicted?.events.length ?? 0} event(s) lost`,
+      );
+    }
     this.scheduleDrain(batch.nextAttemptAt);
   }
 
