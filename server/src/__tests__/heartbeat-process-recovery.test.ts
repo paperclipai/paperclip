@@ -1716,6 +1716,143 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(wakeup?.status).toBe("claimed");
   });
 
+  it("soft-drains: a run that finishes within the drain window is not interrupted", async () => {
+    const { agentId, runId } = await seedRunFixture({ agentStatus: "running" });
+    const heartbeat = heartbeatService(db);
+
+    // Simulate an in-flight run that keeps executing until, during the drain
+    // wait, it completes on its own and flips to succeeded.
+    let ticks = 0;
+    const hasInflightRuns = () => ticks < 1;
+    const sleep = vi.fn(async () => {
+      ticks += 1;
+      await db
+        .update(heartbeatRuns)
+        .set({
+          status: "succeeded",
+          finishedAt: new Date("2026-03-19T00:06:05.000Z"),
+          updatedAt: new Date("2026-03-19T00:06:05.000Z"),
+        })
+        .where(eq(heartbeatRuns.id, runId));
+    });
+
+    const result = await heartbeat.drainRunningRunsForShutdown(
+      "SIGTERM",
+      new Date("2026-03-19T00:06:00.000Z"),
+      { hasInflightRuns, sleep, drainTimeoutMs: 10_000, pollIntervalMs: 100 },
+    );
+
+    expect(sleep).toHaveBeenCalled();
+    expect(result.interrupted).toBe(0);
+    expect(result.interruptedRunIds).toEqual([]);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    // No fresh-from-scratch retry was enqueued; only the original run exists.
+    expect(runs).toHaveLength(1);
+    const run = runs[0];
+    expect(run.status).toBe("succeeded");
+    expect(run.errorCode).not.toBe("server_shutdown_interrupted");
+  });
+
+  it("soft-drains: new-run dispatch is quiesced before the drain wait begins", async () => {
+    const { runId } = await seedRunFixture({ agentStatus: "running" });
+    const heartbeat = heartbeatService(db);
+
+    // Before shutdown, scheduling is not suppressed.
+    expect((await heartbeat.resolveSchedulingSuppression()).suppressed).toBe(false);
+
+    let suppressedDuringDrain: boolean | null = null;
+    let ticks = 0;
+    const hasInflightRuns = () => ticks < 1;
+    const sleep = vi.fn(async () => {
+      ticks += 1;
+      suppressedDuringDrain = (await heartbeat.resolveSchedulingSuppression()).suppressed;
+      await db
+        .update(heartbeatRuns)
+        .set({
+          status: "succeeded",
+          finishedAt: new Date("2026-03-19T00:06:05.000Z"),
+          updatedAt: new Date("2026-03-19T00:06:05.000Z"),
+        })
+        .where(eq(heartbeatRuns.id, runId));
+    });
+
+    await heartbeat.drainRunningRunsForShutdown(
+      "SIGTERM",
+      new Date("2026-03-19T00:06:00.000Z"),
+      { hasInflightRuns, sleep, drainTimeoutMs: 10_000, pollIntervalMs: 100 },
+    );
+
+    // Dispatch was quiesced before the wait, and stays quiesced afterwards.
+    expect(suppressedDuringDrain).toBe(true);
+    expect((await heartbeat.resolveSchedulingSuppression()).suppressed).toBe(true);
+  });
+
+  it("soft-drains: a run still running at the drain deadline is interrupted and retried", async () => {
+    const { agentId, runId } = await seedRunFixture({ agentStatus: "running" });
+    const heartbeat = heartbeatService(db);
+
+    // The run never finishes on its own, so the drain must hit its deadline.
+    const hasInflightRuns = () => true;
+    const sleep = vi.fn(async () => {});
+
+    const result = await heartbeat.drainRunningRunsForShutdown(
+      "SIGTERM",
+      new Date("2026-03-19T00:06:00.000Z"),
+      { hasInflightRuns, sleep, drainTimeoutMs: 100, pollIntervalMs: 25 },
+    );
+
+    expect(result.interrupted).toBe(1);
+    expect(result.interruptedRunIds).toEqual([runId]);
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(2);
+    const interruptedRun = runs.find((row) => row.id === runId);
+    const retryRun = runs.find((row) => row.retryOfRunId === runId);
+    expect(interruptedRun).toMatchObject({
+      status: "interrupted",
+      errorCode: "server_shutdown_interrupted",
+      signal: "SIGTERM",
+    });
+    expect(retryRun).toMatchObject({ status: "queued", retryOfRunId: runId });
+  });
+
+  it("soft-drains: the wait is bounded by the drain timeout", async () => {
+    const { runId } = await seedRunFixture({ agentStatus: "running" });
+    const heartbeat = heartbeatService(db);
+
+    // Drive a fake clock so the bound is deterministic without wall-clock sleeps.
+    let fakeNow = 0;
+    const nowMs = () => fakeNow;
+    const hasInflightRuns = () => true; // never drains on its own
+    const sleep = vi.fn(async (ms: number) => {
+      fakeNow += ms;
+    });
+
+    await heartbeat.drainRunningRunsForShutdown(
+      "SIGTERM",
+      new Date("2026-03-19T00:06:00.000Z"),
+      { hasInflightRuns, sleep, nowMs, drainTimeoutMs: 100, pollIntervalMs: 25 },
+    );
+
+    // deadline=100, interval=25 => at most 4 polls before the bound is reached.
+    expect(sleep).toHaveBeenCalledTimes(4);
+
+    // The still-running run is interrupted at the deadline, never left "running".
+    const run = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    expect(run?.status).toBe("interrupted");
+  });
+
   it("does not enqueue duplicate restart recovery for the same interrupted run", async () => {
     const { agentId, runId, issueId, wakeupRequestId } = await seedRunFixture({
       agentStatus: "running",
