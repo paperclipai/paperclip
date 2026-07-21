@@ -35,6 +35,7 @@ Core fields:
 
 Operational fields:
 - timeoutSec (number, optional): run timeout in seconds
+- outputIdleTimeoutSec (number, optional): terminate a run after this many seconds without stdout/stderr; defaults to 600
 - graceSec (number, optional): SIGTERM grace period in seconds
 
 Notes:
