@@ -67,6 +67,105 @@ function stripServerManagedExperimentalPatchFields(
   return patchable as PatchInstanceExperimentalSettings;
 }
 
+const OVERRIDES_ENV_VAR = "PAPERCLIP_INSTANCE_SETTINGS_OVERRIDES";
+
+export interface InstanceSettingsOverrides {
+  general: Record<string, unknown>;
+  experimental: Record<string, unknown>;
+}
+
+function emptyOverrides(): InstanceSettingsOverrides {
+  return { general: {}, experimental: {} };
+}
+
+const warnedOverrideInputs = new Set<string>();
+
+function warnOverridesOnce(cacheKey: string, message: string) {
+  if (warnedOverrideInputs.has(cacheKey)) return;
+  warnedOverrideInputs.add(cacheKey);
+  console.warn(message);
+}
+
+/**
+ * Parses PAPERCLIP_INSTANCE_SETTINGS_OVERRIDES (a JSON object with optional
+ * "general" / "experimental" sections). Overridden keys win over the stored
+ * instance settings at read time, letting operators pin settings declaratively
+ * from deployment config. Invalid JSON or an invalid section is warned about
+ * once and ignored (the stored settings apply).
+ */
+export function parseInstanceSettingsOverrides(
+  env: Record<string, string | undefined> = process.env,
+): InstanceSettingsOverrides {
+  const raw = env[OVERRIDES_ENV_VAR]?.trim();
+  if (!raw) return emptyOverrides();
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    warnOverridesOnce(raw, `${OVERRIDES_ENV_VAR} is not valid JSON; ignoring overrides`);
+    return emptyOverrides();
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    warnOverridesOnce(raw, `${OVERRIDES_ENV_VAR} must be a JSON object; ignoring overrides`);
+    return emptyOverrides();
+  }
+
+  const sections = parsed as Record<string, unknown>;
+  const sectionSchemas = {
+    general: instanceGeneralSettingsSchema.partial().strip(),
+    experimental: instanceExperimentalSettingsSchema.partial().strip(),
+  } as const;
+
+  const result = emptyOverrides();
+  for (const key of ["general", "experimental"] as const) {
+    if (sections[key] === undefined) continue;
+    const sectionParsed = sectionSchemas[key].safeParse(sections[key]);
+    if (!sectionParsed.success) {
+      warnOverridesOnce(
+        `${raw}:${key}`,
+        `${OVERRIDES_ENV_VAR}.${key} failed validation; ignoring this section`,
+      );
+      continue;
+    }
+    result[key] = sectionParsed.data as Record<string, unknown>;
+  }
+  result.experimental = stripServerManagedExperimentalPatchFields(
+    result.experimental,
+  ) as Record<string, unknown>;
+  return result;
+}
+
+/**
+ * Override-aware resolution: normalize the stored value, spread the env
+ * overrides on top, and re-normalize. Nested objects (backupRetention) are
+ * overridden whole, matching the existing shallow patch semantics.
+ */
+export function resolveGeneralSettings(
+  raw: unknown,
+  overrides: Record<string, unknown> = {},
+): InstanceGeneralSettings {
+  return normalizeGeneralSettings({ ...normalizeGeneralSettings(raw), ...overrides });
+}
+
+export function resolveExperimentalSettings(
+  raw: unknown,
+  overrides: Record<string, unknown> = {},
+): InstanceExperimentalSettings {
+  return normalizeExperimentalSettings({ ...normalizeExperimentalSettings(raw), ...overrides });
+}
+
+/** Env-overridden keys are read-time-forced and must never persist via a patch. */
+export function stripOverriddenPatchKeys<T extends Record<string, unknown>>(
+  patch: T,
+  overrideKeys: string[],
+): T {
+  if (overrideKeys.length === 0) return patch;
+  const next: Record<string, unknown> = { ...patch };
+  for (const key of overrideKeys) delete next[key];
+  return next as T;
+}
+
 export function applyExperimentalSettingsPatch(
   current: unknown,
   patch: PatchInstanceExperimentalSettings | Record<string, unknown>,

@@ -4,6 +4,10 @@ import {
   applyExperimentalSettingsPatch,
   normalizeExperimentalSettings,
   resolveWorktreeRunExecutionActivationState,
+  parseInstanceSettingsOverrides,
+  resolveExperimentalSettings,
+  resolveGeneralSettings,
+  stripOverriddenPatchKeys,
 } from "../services/instance-settings.js";
 
 describe("instance settings service", () => {
@@ -352,5 +356,82 @@ describe("instance settings service", () => {
     });
     expect(getExperimental).not.toHaveBeenCalled();
   });
+});
 
+describe("parseInstanceSettingsOverrides", () => {
+  it("returns empty overrides when the env var is unset or blank", () => {
+    expect(parseInstanceSettingsOverrides({})).toEqual({ general: {}, experimental: {} });
+    expect(parseInstanceSettingsOverrides({ PAPERCLIP_INSTANCE_SETTINGS_OVERRIDES: "  " })).toEqual({
+      general: {}, experimental: {},
+    });
+  });
+
+  it("parses experimental boolean overrides", () => {
+    const overrides = parseInstanceSettingsOverrides({
+      PAPERCLIP_INSTANCE_SETTINGS_OVERRIDES: '{"experimental":{"enableApps":true,"enablePipelines":true}}',
+    });
+    expect(overrides.experimental).toEqual({ enableApps: true, enablePipelines: true });
+    expect(overrides.general).toEqual({});
+  });
+
+  it("ignores invalid JSON entirely", () => {
+    expect(parseInstanceSettingsOverrides({ PAPERCLIP_INSTANCE_SETTINGS_OVERRIDES: "{nope" })).toEqual({
+      general: {}, experimental: {},
+    });
+  });
+
+  it("strips unknown keys within a section", () => {
+    const overrides = parseInstanceSettingsOverrides({
+      PAPERCLIP_INSTANCE_SETTINGS_OVERRIDES: '{"experimental":{"enableApps":true,"notAFlag":true}}',
+    });
+    expect(overrides.experimental).toEqual({ enableApps: true });
+  });
+
+  it("drops a section that fails validation", () => {
+    const overrides = parseInstanceSettingsOverrides({
+      PAPERCLIP_INSTANCE_SETTINGS_OVERRIDES: '{"experimental":{"enableApps":"yes"},"general":{"keyboardShortcuts":true}}',
+    });
+    expect(overrides.experimental).toEqual({});
+    expect(overrides.general).toEqual({ keyboardShortcuts: true });
+  });
+
+  it("strips server-managed worktree activation fields from experimental overrides", () => {
+    const overrides = parseInstanceSettingsOverrides({
+      PAPERCLIP_INSTANCE_SETTINGS_OVERRIDES:
+        '{"experimental":{"enableApps":true,"worktreeRunExecutionActivatedAt":"2026-01-01T00:00:00Z"}}',
+    });
+    expect(overrides.experimental).toEqual({ enableApps: true });
+  });
+});
+
+describe("override resolution", () => {
+  it("env overrides win over stored values", () => {
+    expect(resolveExperimentalSettings({ enableApps: false }, { enableApps: true }).enableApps).toBe(true);
+  });
+
+  it("stored values survive when not overridden", () => {
+    const resolved = resolveExperimentalSettings({ enablePipelines: true }, { enableApps: true });
+    expect(resolved.enablePipelines).toBe(true);
+    expect(resolved.enableApps).toBe(true);
+    expect(resolved.enableCases).toBe(false);
+  });
+
+  it("general overrides merge over stored general settings", () => {
+    const resolved = resolveGeneralSettings({ keyboardShortcuts: true }, { censorUsernameInLogs: true });
+    expect(resolved.keyboardShortcuts).toBe(true);
+    expect(resolved.censorUsernameInLogs).toBe(true);
+  });
+});
+
+describe("stripOverriddenPatchKeys", () => {
+  it("removes keys that are env-overridden so patches cannot persist forced values", () => {
+    expect(stripOverriddenPatchKeys({ enableApps: false, enableCases: true }, ["enableApps"])).toEqual({
+      enableCases: true,
+    });
+  });
+
+  it("returns the patch unchanged when nothing is overridden", () => {
+    const patch = { enableCases: true };
+    expect(stripOverriddenPatchKeys(patch, [])).toEqual(patch);
+  });
 });
