@@ -66,6 +66,12 @@ class TestReturnChannel(unittest.TestCase):
         with mock.patch("paperclip_client.urllib.request.urlopen", return_value=_fake_response(labels)):
             self.assertEqual(pc.resolve_label_id("tok", "comp", "entscheidung-noetig"), "l2")
 
+    def test_list_issues_appends_assignee_query(self):
+        with mock.patch("paperclip_client.urllib.request.urlopen",
+                        return_value=_fake_response({"issues": []})) as uo:
+            pc.list_issues("tok", "comp", assignee_agent_id="ceo-1")
+        self.assertIn("?assigneeAgentId=ceo-1", uo.call_args[0][0].full_url)
+
     def test_list_issues_appends_label_query(self):
         with mock.patch("paperclip_client.urllib.request.urlopen",
                         return_value=_fake_response({"issues": []})) as uo:

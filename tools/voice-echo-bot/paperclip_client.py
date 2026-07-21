@@ -52,10 +52,15 @@ def _unwrap(data):
     return data.get("issues", data.get("data", data.get("labels", [])))
 
 
-def list_issues(token, company_id, label_id=None):
-    path = "/companies/{}/issues".format(company_id)
+def list_issues(token, company_id, label_id=None, assignee_agent_id=None):
+    params = []
     if label_id:
-        path += "?labelId={}".format(label_id)
+        params.append("labelId={}".format(label_id))
+    if assignee_agent_id:
+        params.append("assigneeAgentId={}".format(assignee_agent_id))
+    path = "/companies/{}/issues".format(company_id)
+    if params:
+        path += "?" + "&".join(params)
     return _unwrap(_get_json(token, path))
 
 
@@ -66,8 +71,8 @@ def resolve_label_id(token, company_id, name):
     return None
 
 
-def find_issue_by_identifier(token, company_id, identifier):
-    for issue in list_issues(token, company_id):
+def find_issue_by_identifier(token, company_id, identifier, assignee_agent_id=None):
+    for issue in list_issues(token, company_id, assignee_agent_id=assignee_agent_id):
         if issue.get("identifier") == identifier:
             return issue
     return None

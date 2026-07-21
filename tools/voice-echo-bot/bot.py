@@ -86,7 +86,8 @@ class BotApp:
         if text is None:
             return
         token = self._token()
-        issue = find_issue_by_identifier(token, tenant["company_id"], identifier)
+        issue = find_issue_by_identifier(token, tenant["company_id"], identifier,
+                                         assignee_agent_id=tenant["ceo_agent_id"])
         if not issue:
             self.tg.send_message(chat_id, "Konnte kein passendes Issue ({}) finden.".format(identifier))
             return
@@ -161,7 +162,8 @@ class BotApp:
         for uid, tenant in self.cfg["tenants"].items():
             try:
                 label_id = resolve_label_id(token, tenant["company_id"], self.cfg["decision_label"])
-                issues = list_issues(token, tenant["company_id"])
+                issues = list_issues(token, tenant["company_id"],
+                                     assignee_agent_id=tenant["ceo_agent_id"])
                 events, keys = notifier.collect_events(issues, label_id, base_seen)
                 if self._seeded:
                     for ev in events:

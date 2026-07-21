@@ -44,7 +44,7 @@ class TestReply(unittest.TestCase):
         with mock.patch.object(bot, "find_issue_by_identifier", return_value={"id": "iss-9", "identifier": "WHI-2857"}) as fi, \
              mock.patch.object(bot, "add_comment", return_value={"id": "c1"}) as ac:
             app.handle_update(msg(8311805232, text="Ja, mach DMARC so.", reply_text="🟠 Entscheidung benötigt — WHI-2857: DMARC"))
-        fi.assert_called_once_with("tok", "comp-1", "WHI-2857")
+        fi.assert_called_once_with("tok", "comp-1", "WHI-2857", assignee_agent_id="ceo-1")
         ac.assert_called_once_with("tok", "iss-9", "Ja, mach DMARC so.", resume=True)
 
     def test_reply_unknown_identifier_no_comment(self):
