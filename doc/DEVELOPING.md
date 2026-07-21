@@ -529,6 +529,87 @@ eval "$(pnpm paperclipai worktree env)"
 
 For project execution worktrees, Paperclip can also run a project-defined provision command after it creates or reuses an isolated git worktree. Configure this on the project's execution workspace policy (`workspaceStrategy.provisionCommand`). The command runs inside the derived worktree and receives `PAPERCLIP_WORKSPACE_*`, `PAPERCLIP_PROJECT_ID`, `PAPERCLIP_AGENT_ID`, and `PAPERCLIP_ISSUE_*` environment variables so each repo can bootstrap itself however it wants.
 
+## Adopt An Existing Git Worktree As An Execution Workspace
+
+Use this control only when an operator has already created and inspected a git worktree and wants Paperclip to reuse it for exact-branch issue execution. The control is record-only: Paperclip inspects the path with argv-only git commands that disable repository-configured fsmonitor execution and optional Git locks/index refresh writes, persists an execution workspace record, optionally binds an issue to reuse that record, and does not checkout, clean, remove, start, stop, or otherwise mutate the filesystem/git worktree.
+
+Prerequisites:
+
+- The project and project workspace already exist in the same company.
+- The source issue is in the same company and project.
+- Optional `bindIssueId` is in the same company and project.
+- `cwd` is an existing absolute path that resolves to the worktree root.
+- `expectedBranch` is the full local branch ref, for example `refs/heads/feature/exact-adoption`.
+- `expectedHeadSha` is the exact 40-character commit SHA currently at `HEAD` and at the local branch ref.
+- `expectedUpstream` is the exact upstream reported by `git rev-parse --abbrev-ref --symbolic-full-name @{upstream}`.
+- The worktree is clean, including untracked files.
+- The local branch is not attached to another git worktree.
+
+Control:
+
+```sh
+curl -X POST "$PAPERCLIP_API_URL/api/companies/$COMPANY_ID/execution-workspaces/adopt-git-worktree" \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H "Content-Type: application/json" \
+  -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
+  --data '{
+    "projectId": "PROJECT_ID",
+    "projectWorkspaceId": "PROJECT_WORKSPACE_ID",
+    "sourceIssueId": "SOURCE_ISSUE_ID",
+    "bindIssueId": "OPTIONAL_BOUND_ISSUE_ID",
+    "cwd": "/absolute/path/to/worktree",
+    "expectedBranch": "refs/heads/feature/exact-adoption",
+    "expectedHeadSha": "0123456789abcdef0123456789abcdef01234567",
+    "expectedUpstream": "origin/feature/exact-adoption",
+    "expectedRepoUrl": "git@github.com:example/repo.git",
+    "name": "feature/exact-adoption"
+  }'
+```
+
+Authorization:
+
+- Authenticated non-viewer board users may adopt inside companies where they have an active membership. Agents must be same-company standard-trust principals with an explicit `execution_workspaces:adopt` grant scoped to the requested project, for example `{"projectId":"PROJECT_ID"}` or `{"projectIds":["PROJECT_ID"]}`.
+- Local trusted implicit board and instance-admin actors still follow the normal privileged development-mode behavior.
+- If `bindIssueId` is present, the actor must also pass `issue:mutate` for that issue.
+- Manage grants through the board permissions surfaces or access APIs; do not patch the database manually.
+
+Success returns `{ workspace, issue, inspection, operation }`. `workspace.metadata.adoption` contains the immutable fingerprint, expected/observed branch/SHA/upstream/repo details, canonical repo root/cwd, cleanliness counts, project/workspace/source/bound issue ids, actor, run id, and `ownsGitArtifacts: false`. Evidence is also written to:
+
+- `workspace_operations` with phase `workspace_adopt`, status `succeeded`, and `command = null`.
+- `activity_log` action `execution_workspace.adopted`.
+- If bound, `activity_log` action `issue.execution_workspace_bound`.
+- `GET /api/execution-workspaces/:id`, which includes source/bound issue summaries when available.
+- Issue heartbeat context, through the bound issue's `currentExecutionWorkspace`.
+
+Failure responses use stable redacted `reasonCode` values and do not include arbitrary git output. Common examples:
+
+```json
+{ "error": "Execution workspace adoption rejected", "reasonCode": "missing_branch" }
+{ "error": "Execution workspace adoption rejected", "reasonCode": "sha_mismatch" }
+{ "error": "Execution workspace adoption rejected", "reasonCode": "dirty_worktree" }
+{ "error": "Execution workspace adoption rejected", "reasonCode": "workspace_conflict" }
+```
+
+Retries are idempotent only when the active existing adopted record has the same immutable fingerprint and bound-issue identity. Concurrent identical requests both return the same workspace; only the request that creates it returns a `workspace_adopt` operation, while the serialized retry returns `operation: null`. Cwd/provider-ref claims remain company-wide. A full branch ref conflicts only when it is already claimed in the same project and canonical git repository; unrelated repositories/projects may adopt the same branch name. Conflicting claims return `409 workspace_conflict`.
+
+Rollback or disable an adopted record:
+
+```sh
+curl -X POST "$PAPERCLIP_API_URL/api/execution-workspaces/$EXECUTION_WORKSPACE_ID/rollback-adoption" \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H "Content-Type: application/json" \
+  -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
+  --data '{ "reason": "Operator is replacing the adopted worktree" }'
+```
+
+Rollback restores the prior issue execution workspace binding, or `null` when there was no previous binding, archives only the execution workspace record, writes `metadata.adoptionRollback`, and writes `execution_workspace.adoption_rolled_back` activity. It intentionally leaves workspace operations, activity, logs, runtime evidence, filesystem paths, git worktrees, branches, and working tree contents untouched.
+
+Rollback is single-use. Repeating the request after the adopted workspace is archived returns `409 workspace_conflict` without changing the first rollback's metadata, restored issue binding, or activity history. The same stable repeat behavior applies when the adopted workspace had no bound issue.
+
+Generic close/archive honors the same ownership boundary. For an adopted workspace with `metadata.ownsGitArtifacts: false`, close readiness advertises record archive only (plus runtime-service stop when applicable), and `PATCH /api/execution-workspaces/:id` with `status: "archived"` does not run workspace/project cleanup commands, teardown commands, `git worktree remove`, branch deletion, or local-directory removal. The Paperclip record archives while the operator-owned checkout remains unchanged; use the explicit single-use rollback control when issue-binding restoration is required.
+
+Operational owner: the project owner or board operator who controls the project workspace. Review adopted workspaces weekly, and immediately when an issue is reassigned, a branch is merged, or a workspace conflict appears. Treat repeated `dirty_worktree`, `branch_attached_elsewhere`, or `workspace_conflict` failures on the same project as an escalation threshold: stop adoption attempts, inspect local git state manually, then retry only with fresh exact inputs.
+
 ## App-Shipped Skills Catalog
 
 The Paperclip app ships a curated catalog of company skills out of the box. The

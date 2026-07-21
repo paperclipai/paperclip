@@ -505,7 +505,9 @@ export {
 
 export {
   executionWorkspaceConfigSchema,
+  adoptGitWorktreeExecutionWorkspaceSchema,
   reconcileExecutionWorkspaceBranchSchema,
+  rollbackAdoptedExecutionWorkspaceSchema,
   updateExecutionWorkspaceSchema,
   workspaceOverviewQuerySchema,
   executionWorkspaceStatusSchema,
@@ -515,7 +517,9 @@ export {
   executionWorkspaceCloseLinkedIssueSchema,
   executionWorkspaceCloseReadinessSchema,
   executionWorkspaceCloseReadinessStateSchema,
+  type AdoptGitWorktreeExecutionWorkspace,
   type ReconcileExecutionWorkspaceBranch,
+  type RollbackAdoptedExecutionWorkspace,
   type UpdateExecutionWorkspace,
   type WorkspaceOverviewQuery,
 } from "./execution-workspace.js";

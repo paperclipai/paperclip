@@ -3139,6 +3139,70 @@ describe("realizeExecutionWorkspace", () => {
     });
   });
 
+  it("preserves adopted operator-owned git artifacts and skips cleanup commands", async () => {
+    const repoRoot = await createTempRepo();
+    const branchName = "operator-owned-close";
+    const worktreePath = path.join(path.dirname(repoRoot), `paperclip-operator-owned-${randomUUID()}`);
+    const cleanupMarker = path.join(repoRoot, "cleanup-ran");
+    const teardownMarker = path.join(repoRoot, "teardown-ran");
+    const { recorder, operations } = createWorkspaceOperationRecorderDouble();
+
+    await runGit(repoRoot, ["remote", "add", "origin", repoRoot]);
+    await runGit(repoRoot, ["branch", branchName]);
+    const initialHead = await readGit(repoRoot, ["rev-parse", branchName]);
+    await runGit(repoRoot, ["update-ref", `refs/remotes/origin/${branchName}`, initialHead!]);
+    await runGit(repoRoot, ["branch", "--set-upstream-to", `origin/${branchName}`, branchName]);
+    await runGit(repoRoot, ["worktree", "add", worktreePath, branchName]);
+    await fs.writeFile(path.join(worktreePath, "README.md"), "operator edit\n", "utf8");
+    await fs.writeFile(path.join(worktreePath, "operator-untracked.txt"), "preserve me\n", "utf8");
+
+    const before = {
+      head: await readGit(worktreePath, ["rev-parse", "HEAD"]),
+      branchRef: await readGit(repoRoot, ["rev-parse", `refs/heads/${branchName}`]),
+      branch: await readGit(worktreePath, ["symbolic-ref", "--short", "HEAD"]),
+      upstream: await readGit(worktreePath, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]),
+      status: await readGit(worktreePath, ["status", "--porcelain", "--untracked-files=all"]),
+    };
+
+    const cleanup = await cleanupExecutionWorkspaceArtifacts({
+      workspace: {
+        id: "adopted-workspace-1",
+        cwd: worktreePath,
+        providerType: "git_worktree",
+        providerRef: worktreePath,
+        branchName,
+        repoUrl: repoRoot,
+        baseRef: "main",
+        projectId: "project-1",
+        projectWorkspaceId: "project-workspace-1",
+        sourceIssueId: "issue-1",
+        metadata: {
+          createdByRuntime: true,
+          ownsGitArtifacts: false,
+        },
+      },
+      projectWorkspace: {
+        cwd: repoRoot,
+        cleanupCommand: `node -e "require('node:fs').writeFileSync(${JSON.stringify(cleanupMarker)}, 'ran')"`,
+      },
+      teardownCommand: `node -e "require('node:fs').writeFileSync(${JSON.stringify(teardownMarker)}, 'ran')"`,
+      recorder,
+    });
+
+    expect(cleanup).toEqual({ cleanedPath: null, cleaned: true, warnings: [] });
+    expect(operations).toEqual([]);
+    await expect(fs.stat(worktreePath)).resolves.toBeDefined();
+    await expect(fs.stat(cleanupMarker)).rejects.toThrow();
+    await expect(fs.stat(teardownMarker)).rejects.toThrow();
+    await expect(readGit(worktreePath, ["rev-parse", "HEAD"])).resolves.toBe(before.head);
+    await expect(readGit(repoRoot, ["rev-parse", `refs/heads/${branchName}`])).resolves.toBe(before.branchRef);
+    await expect(readGit(worktreePath, ["symbolic-ref", "--short", "HEAD"])).resolves.toBe(before.branch);
+    await expect(
+      readGit(worktreePath, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]),
+    ).resolves.toBe(before.upstream);
+    await expect(readGit(worktreePath, ["status", "--porcelain", "--untracked-files=all"])).resolves.toBe(before.status);
+  });
+
   it("keeps an unmerged runtime-created branch and warns instead of force deleting it", async () => {
     const repoRoot = await createTempRepo();
 

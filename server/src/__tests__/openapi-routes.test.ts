@@ -189,6 +189,31 @@ describe("openapi routes", () => {
     expect(res.body.paths["/api/companies/{companyId}/folders/items/move"].post.summary).toBe(
       "Move an item into or out of a folder",
     );
+    expect(res.body.paths["/api/companies/{companyId}/execution-workspaces/adopt-git-worktree"].post.requestBody.content["application/json"].schema).toMatchObject({
+      type: "object",
+      required: expect.arrayContaining([
+        "projectId",
+        "projectWorkspaceId",
+        "sourceIssueId",
+        "cwd",
+        "expectedBranch",
+        "expectedHeadSha",
+        "expectedUpstream",
+        "name",
+      ]),
+      properties: {
+        expectedBranch: { type: "string" },
+        expectedHeadSha: { type: "string", pattern: "^[0-9a-f]{40}$" },
+      },
+    });
+    expect(res.body.paths["/api/execution-workspaces/{id}/rollback-adoption"].post.requestBody.content["application/json"].schema).toMatchObject({
+      type: "object",
+      properties: {
+        reason: { type: "string" },
+      },
+    });
+    expect(res.body.paths["/api/execution-workspaces/{id}/rollback-adoption"].post.responses["409"]).toBeDefined();
+    expect(res.body.paths["/api/execution-workspaces/{id}"].patch.responses["409"]).toBeDefined();
     expect(JSON.stringify(res.body.paths["/api/tool-gateway/tools"].get)).not.toContain("sessionToken");
     expect(JSON.stringify(res.body.paths["/api/tool-gateway/tools/call"].post)).not.toContain("sessionToken");
   });
@@ -225,6 +250,30 @@ describe("openapi routes", () => {
     ]);
     expect(spec.paths["/api/execution-workspaces/{id}/reconcile-branch"].post["x-paperclip-authorization"]).toEqual({
       actor: "board",
+    });
+    expect(spec.paths["/api/companies/{companyId}/execution-workspaces/adopt-git-worktree"].post.security).toEqual([
+      { BoardSessionAuth: [] },
+      { BoardApiKeyAuth: [] },
+      { AgentBearerAuth: [] },
+    ]);
+    expect(spec.paths["/api/companies/{companyId}/execution-workspaces/adopt-git-worktree"].post["x-paperclip-authorization"]).toEqual({
+      actor: "board_or_agent",
+    });
+    expect(spec.paths["/api/companies/{companyId}/execution-workspaces/adopt-git-worktree"].post.requestBody.content["application/json"].schema).toMatchObject({
+      type: "object",
+      required: [
+        "projectId",
+        "projectWorkspaceId",
+        "sourceIssueId",
+        "cwd",
+        "expectedBranch",
+        "expectedHeadSha",
+        "expectedUpstream",
+        "name",
+      ],
+    });
+    expect(spec.paths["/api/execution-workspaces/{id}/rollback-adoption"].post["x-paperclip-authorization"]).toEqual({
+      actor: "board_or_agent",
     });
     expect(spec.paths["/api/companies/{companyId}/cost-events"].post.responses["201"]).toBeDefined();
     expect(spec.paths["/api/companies/{companyId}/cost-events"].post.responses["403"]).toBeDefined();

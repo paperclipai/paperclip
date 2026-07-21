@@ -166,6 +166,42 @@ export const reconcileExecutionWorkspaceBranchSchema = z.discriminatedUnion("mod
   }).strict(),
 ]);
 
+const safeAdoptionText = z.string()
+  .trim()
+  .min(1)
+  .max(512)
+  .refine((value) => !/[\0\r\n`$;&|<>]/.test(value), "contains unsafe shell-shaped characters");
+
+const safeAdoptionPath = z.string()
+  .trim()
+  .min(1)
+  .max(4096)
+  .refine((value) => value.startsWith("/"), "must be an absolute path")
+  .refine((value) => !/[\0\r\n`$;&|<>]/.test(value), "contains unsafe shell-shaped characters");
+
+export const adoptGitWorktreeExecutionWorkspaceSchema = z.object({
+  projectId: z.string().uuid(),
+  projectWorkspaceId: z.string().uuid(),
+  sourceIssueId: z.string().uuid(),
+  bindIssueId: z.string().uuid().optional().nullable(),
+  cwd: safeAdoptionPath,
+  expectedBranch: safeAdoptionText.refine((value) => value.startsWith("refs/heads/"), "must be a full refs/heads/* ref"),
+  expectedHeadSha: z.string().regex(/^[0-9a-f]{40}$/),
+  expectedUpstream: safeAdoptionText,
+  expectedRepoUrl: safeAdoptionText.optional().nullable(),
+  name: z.string()
+    .trim()
+    .min(1)
+    .max(160)
+    .refine((value) => !/[\0\r\n`$;&|<>]/.test(value), "contains unsafe shell-shaped characters"),
+}).strict();
+
+export const rollbackAdoptedExecutionWorkspaceSchema = z.object({
+  reason: z.string().trim().min(1).max(512).optional().nullable(),
+}).strict();
+
 export type UpdateExecutionWorkspace = z.infer<typeof updateExecutionWorkspaceSchema>;
 export type ReconcileExecutionWorkspaceBranch = z.infer<typeof reconcileExecutionWorkspaceBranchSchema>;
+export type AdoptGitWorktreeExecutionWorkspace = z.infer<typeof adoptGitWorktreeExecutionWorkspaceSchema>;
+export type RollbackAdoptedExecutionWorkspace = z.infer<typeof rollbackAdoptedExecutionWorkspaceSchema>;
 export type WorkspaceOverviewQuery = z.infer<typeof workspaceOverviewQuerySchema>;

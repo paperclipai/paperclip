@@ -54,6 +54,51 @@ Execution workspaces are durable until a human closes them.
 - Closing an execution workspace stops its runtime services and cleans up its workspace artifacts when allowed.
 - Shared workspaces that point at the project primary checkout are treated more conservatively during cleanup than disposable isolated workspaces.
 
+## Exact-branch adoption
+
+Exact-branch adoption is the record-only path for telling Paperclip about an already-existing local git worktree. It is intended for operator workflows where the branch and checkout already exist outside Paperclip, but the control plane should track them as an execution workspace and optionally bind an issue to reuse that workspace.
+
+Adoption is deliberately conservative:
+
+- Authenticated non-viewer board users may adopt inside companies where they have active membership. Agent callers must be standard-trust same-company principals with an explicit `execution_workspaces:adopt` permission scoped to the target project.
+- The request must name the project, project workspace, source issue, absolute cwd, full branch ref, expected head SHA, expected upstream, and workspace name.
+- Paperclip inspects git through one argv-based read-only policy that disables repository-configured fsmonitor execution and optional Git locks/index refresh writes. It does not create branches, checkout refs, clean files, remove worktrees, push, pull, or otherwise mutate git during adoption.
+- The worktree must be clean, on the exact requested `refs/heads/*` branch, at the exact requested commit, tracking the exact requested upstream, and from the expected repository.
+- The same branch cannot already be attached to another local worktree. Cwd/provider claims remain company-wide; branch/full-ref claims conflict only inside the same project and canonical git repository, so unrelated repositories/projects may use the same branch name.
+
+When adoption succeeds, Paperclip writes one execution workspace, one `workspace_adopt` operation, and activity entries in the same database transaction. If a bind issue is supplied, that issue is updated in the same transaction to `reuse_existing` and points at the adopted workspace. If the database transaction fails, the issue binding, workspace record, workspace operation, and activity entries all roll back together.
+
+The immutable adoption fingerprint is derived from the company, project, project workspace, source issue, canonical cwd, repo root, normalized repo URL, full branch ref, head SHA, and upstream. Retrying the same adoption returns the existing workspace without creating a second operation, including when identical requests arrive concurrently. Retrying the same exact worktree with a different issue binding is rejected as a workspace conflict.
+
+## Adoption rollback
+
+Rollback is also record-only. It restores the bound issue to the execution workspace binding that existed before adoption, archives the adopted workspace record with `cleanupReason: adoption_rollback`, and writes an activity entry.
+
+Rollback is single-use. Repeating rollback after the adopted workspace is archived returns `409 workspace_conflict` and leaves the original rollback metadata, issue binding, and activity history unchanged. This also applies to adopted workspaces that were not bound to an issue.
+
+Rollback does not:
+
+- run cleanup commands
+- stop or start runtime services
+- remove local directories
+- remove git worktrees
+- delete or checkout branches
+- push, pull, or mutate git
+
+Use archive/close when you intend Paperclip to perform the normal execution-workspace cleanup flow. Use adoption rollback when the adoption record or issue binding was wrong and the local filesystem/git checkout should remain untouched.
+
+### Adoption evidence, review cadence, and disable thresholds
+
+For every adoption or rollback, operators must read evidence from all of these locations:
+
+- `GET /api/execution-workspaces/:id/workspace-operations` lists the workspace's operations. For the adoption operation, read its persisted log through `GET /api/workspace-operations/:operationId/log`.
+- `GET /api/companies/:companyId/activity?entityType=execution_workspace&entityId=:id` returns the successful adoption or rollback workspace activity (`execution_workspace.adopted` or `execution_workspace.adoption_rolled_back`). Adoption validation rejections occur before a workspace exists, so read `GET /api/companies/:companyId/activity?entityType=company&entityId=:companyId` for `execution_workspace.adoption_rejected`. Rollback authorization or changed-binding conflicts return a stable HTTP `403`, `404`, or `409` without writing a rollback activity; inspect the unchanged workspace and issue readbacks instead. When an issue was bound successfully, also inspect `GET /api/issues/:issueId/activity` for `issue.execution_workspace_bound`.
+- `GET /api/execution-workspaces/:id` and `GET /api/issues/:issueId/heartbeat-context` are the two reverse readbacks. The workspace must name the bound issue and `currentExecutionWorkspace.id` must name the same workspace.
+
+The implementation author runs focused adoption and rollback checks before handoff. A non-author reviewer reviews immediately after implementation, and the CTO verifies the live route plus both reverse readbacks only after the reviewed build is running.
+
+Disable the adoption endpoint and open a high-priority Paperclip defect immediately after **one unauthorized success, one unexpected git mutation, one partial issue bind, or two unexplained HTTP 500 responses**. Keep it disabled until non-author review and CTO approval confirm the root cause and fix. Any unexpected git mutation is also a stop condition: do not retry, clean, reset, checkout, prune, or otherwise modify the affected worktree through this workflow.
+
 ## Resolved workspace logic during heartbeat runs
 
 Heartbeat still resolves a workspace for the run, but that is about code location and session continuity, not runtime-service control.

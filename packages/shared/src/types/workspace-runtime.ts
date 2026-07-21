@@ -257,8 +257,17 @@ export interface ExecutionWorkspace {
   config: ExecutionWorkspaceConfig | null;
   metadata: Record<string, unknown> | null;
   runtimeServices?: WorkspaceRuntimeService[];
+  sourceIssue?: WorkspaceLinkedIssueSummary | null;
+  boundIssue?: WorkspaceLinkedIssueSummary | null;
   createdAt: Date;
   updatedAt: Date;
+}
+
+export interface WorkspaceLinkedIssueSummary {
+  id: string;
+  identifier: string | null;
+  title: string;
+  status: string;
 }
 
 export interface WorkspaceRuntimeService {

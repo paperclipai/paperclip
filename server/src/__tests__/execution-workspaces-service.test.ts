@@ -5,8 +5,10 @@ import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
+import express from "express";
+import supertest from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import {
   activityLog,
   agents,
@@ -19,6 +21,7 @@ import {
   issues,
   projectWorkspaces,
   projects,
+  workspaceOperations,
   workspaceRuntimeServices,
 } from "@paperclipai/db";
 import {
@@ -26,6 +29,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import {
+  ExecutionWorkspaceAdoptionError,
   executionWorkspaceService,
   mergeExecutionWorkspaceConfig,
   readExecutionWorkspaceConfig,
@@ -34,6 +38,9 @@ import {
   startRuntimeServicesForWorkspaceControl,
   stopRuntimeServicesForExecutionWorkspace,
 } from "../services/workspace-runtime.ts";
+import { errorHandler } from "../middleware/index.ts";
+import { executionWorkspaceRoutes } from "../routes/execution-workspaces.ts";
+import { issueRoutes } from "../routes/issues.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -159,6 +166,155 @@ async function createTempRepo() {
   return repoRoot;
 }
 
+async function createAdoptionGitFixture(options: {
+  branch?: string;
+  upstream?: string;
+  repoUrl?: string;
+  worktreeSlug?: string;
+} = {}) {
+  const branch = options.branch ?? "feature/exact";
+  const upstream = options.upstream ?? `origin/${branch}`;
+  const repoUrl = options.repoUrl ?? "git@example.com:paperclip/repo.git";
+  const repoRoot = await createTempRepo();
+  const worktreePath = path.join(path.dirname(repoRoot), `${options.worktreeSlug ?? "paperclip-adopt"}-${randomUUID()}`);
+
+  await runGit(repoRoot, ["remote", "add", "origin", repoUrl]);
+  await runGit(repoRoot, ["branch", branch]);
+  const headSha = await readGit(repoRoot, ["rev-parse", branch]);
+  await runGit(repoRoot, ["update-ref", `refs/remotes/${upstream}`, headSha!]);
+  await runGit(repoRoot, ["branch", "--set-upstream-to", upstream, branch]);
+  await runGit(repoRoot, ["worktree", "add", worktreePath, branch]);
+
+  return {
+    repoRoot,
+    worktreePath,
+    branch,
+    fullBranchRef: `refs/heads/${branch}`,
+    upstream,
+    repoUrl,
+    headSha: headSha!,
+  };
+}
+
+async function seedAdoptionScope(db: ReturnType<typeof createDb>, input: {
+  companyId?: string;
+  projectId?: string;
+  projectWorkspaceId?: string;
+  sourceIssueId?: string;
+  bindIssueId?: string | null;
+  repoRoot: string;
+  repoUrl?: string | null;
+}) {
+  const companyId = input.companyId ?? randomUUID();
+  const projectId = input.projectId ?? randomUUID();
+  const projectWorkspaceId = input.projectWorkspaceId ?? randomUUID();
+  const sourceIssueId = input.sourceIssueId ?? randomUUID();
+  const bindIssueId = input.bindIssueId === undefined ? randomUUID() : input.bindIssueId;
+
+  await db.insert(companies).values({
+    id: companyId,
+    name: "Paperclip",
+    issuePrefix: `A${companyId.replace(/-/g, "").slice(0, 5).toUpperCase()}`,
+    requireBoardApprovalForNewAgents: false,
+  });
+  await db.insert(projects).values({
+    id: projectId,
+    companyId,
+    name: "Exact branch adoption",
+    status: "in_progress",
+  });
+  await db.insert(projectWorkspaces).values({
+    id: projectWorkspaceId,
+    companyId,
+    projectId,
+    name: "Primary",
+    cwd: input.repoRoot,
+    repoUrl: input.repoUrl ?? "git@example.com:paperclip/repo.git",
+    isPrimary: true,
+  });
+
+  const issueRows = [
+    {
+      id: sourceIssueId,
+      companyId,
+      projectId,
+      title: "Source issue",
+      status: "todo",
+      priority: "medium",
+    },
+  ];
+  if (bindIssueId) {
+    issueRows.push({
+      id: bindIssueId,
+      companyId,
+      projectId,
+      title: "Bound issue",
+      status: "todo",
+      priority: "medium",
+    });
+  }
+  await db.insert(issues).values(issueRows);
+
+  return {
+    companyId,
+    projectId,
+    projectWorkspaceId,
+    sourceIssueId,
+    bindIssueId,
+  };
+}
+
+function adoptionRequest(input: Awaited<ReturnType<typeof createAdoptionGitFixture>> & Awaited<ReturnType<typeof seedAdoptionScope>>, patch: Partial<{
+  bindIssueId: string | null;
+  cwd: string;
+  expectedBranch: string;
+  expectedHeadSha: string;
+  expectedUpstream: string;
+  expectedRepoUrl: string | null;
+  name: string;
+}> = {}) {
+  return {
+    projectId: input.projectId,
+    projectWorkspaceId: input.projectWorkspaceId,
+    sourceIssueId: input.sourceIssueId,
+    bindIssueId: patch.bindIssueId === undefined ? input.bindIssueId : patch.bindIssueId,
+    cwd: patch.cwd ?? input.worktreePath,
+    expectedBranch: patch.expectedBranch ?? input.fullBranchRef,
+    expectedHeadSha: patch.expectedHeadSha ?? input.headSha,
+    expectedUpstream: patch.expectedUpstream ?? input.upstream,
+    expectedRepoUrl: patch.expectedRepoUrl === undefined ? input.repoUrl : patch.expectedRepoUrl,
+    name: patch.name ?? input.branch,
+  };
+}
+
+async function countAdoptionSideEffects(db: ReturnType<typeof createDb>) {
+  const [workspaceCount] = await db.select({ count: sql<number>`count(*)::int` }).from(executionWorkspaces);
+  const [operationCount] = await db.select({ count: sql<number>`count(*)::int` }).from(workspaceOperations);
+  const [activityCount] = await db.select({ count: sql<number>`count(*)::int` }).from(activityLog);
+  return {
+    workspaces: workspaceCount?.count ?? 0,
+    operations: operationCount?.count ?? 0,
+    activity: activityCount?.count ?? 0,
+  };
+}
+
+async function readIssueAuthorizationSnapshot(db: ReturnType<typeof createDb>, issueId: string) {
+  return db
+    .select({
+      id: issues.id,
+      parentId: issues.parentId,
+      assigneeAgentId: issues.assigneeAgentId,
+      assigneeUserId: issues.assigneeUserId,
+      status: issues.status,
+      executionPolicy: issues.executionPolicy,
+      originKind: issues.originKind,
+      originId: issues.originId,
+    })
+    .from(issues)
+    .where(eq(issues.id, issueId))
+    .then((rows) => rows[0] ?? null);
+}
+
 async function waitForPath(filePath: string, timeoutMs = 5_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -181,6 +337,24 @@ function stableStringifyForTest(value: unknown): string {
     return `{${Object.keys(rec).sort().map((key) => `${JSON.stringify(key)}:${stableStringifyForTest(rec[key])}`).join(",")}}`;
   }
   return JSON.stringify(value);
+}
+
+function fingerprintAdoptionForTest(input: {
+  companyId: string;
+  projectId: string;
+  projectWorkspaceId: string;
+  sourceIssueId: string;
+  canonicalCwd: string;
+  repoRoot: string;
+  normalizedRepoUrl: string | null;
+  fullBranchRef: string;
+  headSha: string;
+  upstream: string;
+}) {
+  const digest = createHash("sha256")
+    .update(stableStringifyForTest({ version: 1, kind: "execution_workspace_adoption", ...input }))
+    .digest("hex");
+  return `execution_workspace_adoption:v1:sha256:${digest}`;
 }
 
 async function fingerprintWorkspaceBranchIncoherenceForTest(input: {
@@ -229,6 +403,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
 
   afterEach(async () => {
     await db.delete(workspaceRuntimeServices);
+    await db.delete(workspaceOperations);
     await db.delete(activityLog);
     await db.delete(issueRecoveryActions);
     await db.delete(issueComments);
@@ -2117,6 +2292,1515 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     expect(comments).toHaveLength(0);
   }, 20_000);
 
+  it("adopts an exact clean git worktree idempotently and rejects rebinding the same fingerprint", async () => {
+    const git = await createAdoptionGitFixture();
+    tempDirs.add(git.repoRoot);
+    tempDirs.add(git.worktreePath);
+    const scope = await seedAdoptionScope(db, {
+      repoRoot: git.repoRoot,
+      repoUrl: git.repoUrl,
+    });
+    const otherBindIssueId = randomUUID();
+
+    await db.update(issues).set({ identifier: "PAP-456" }).where(eq(issues.id, scope.bindIssueId!));
+    await db.insert(issues).values({
+      id: otherBindIssueId,
+      companyId: scope.companyId,
+      projectId: scope.projectId,
+      title: "Other bound issue",
+      status: "todo",
+      priority: "medium",
+    });
+
+    const request = adoptionRequest({ ...git, ...scope });
+
+    const first = await svc.adoptGitWorktree(scope.companyId, request, {
+      actorType: "user",
+      actorId: "local-board",
+      agentId: null,
+      runId: null,
+    });
+    const retry = await svc.adoptGitWorktree(scope.companyId, request, {
+      actorType: "user",
+      actorId: "local-board",
+      agentId: null,
+      runId: null,
+    });
+
+    expect(first.operation).toMatchObject({
+      phase: "workspace_adopt",
+      status: "succeeded",
+      issueId: scope.bindIssueId,
+    });
+    expect(first.workspace).toMatchObject({
+      companyId: scope.companyId,
+      projectId: scope.projectId,
+      projectWorkspaceId: scope.projectWorkspaceId,
+      sourceIssueId: scope.sourceIssueId,
+      boundIssue: {
+        id: scope.bindIssueId,
+        identifier: "PAP-456",
+      },
+      status: "active",
+      providerType: "git_worktree",
+      branchName: "feature/exact",
+    });
+    expect(first.inspection.worktreeFingerprint).toMatch(/^execution_workspace_adoption:v1:sha256:/);
+    expect(retry.workspace.id).toBe(first.workspace.id);
+    expect(retry.operation).toBeNull();
+
+    const readBack = await svc.getById(first.workspace.id);
+    expect(readBack).toMatchObject({
+      id: first.workspace.id,
+      boundIssue: {
+        id: scope.bindIssueId,
+        identifier: "PAP-456",
+      },
+    });
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = {
+        type: "board",
+        userId: "local-board",
+        companyIds: [scope.companyId],
+        source: "local_implicit",
+        isInstanceAdmin: false,
+      };
+      next();
+    });
+    app.use("/api", executionWorkspaceRoutes(db));
+    app.use("/api", issueRoutes(db, {} as never));
+    app.use(errorHandler);
+    const workspaceReadback = await supertest(app).get(`/api/execution-workspaces/${first.workspace.id}`);
+    expect(workspaceReadback.status).toBe(200);
+    expect(workspaceReadback.body).toMatchObject({
+      id: first.workspace.id,
+      boundIssue: { id: scope.bindIssueId },
+    });
+    const heartbeatContext = await supertest(app).get(`/api/issues/${scope.bindIssueId}/heartbeat-context`);
+    expect(heartbeatContext.status).toBe(200);
+    expect(heartbeatContext.body.currentExecutionWorkspace).toMatchObject({ id: first.workspace.id });
+    const [boundIssue] = await db.select().from(issues).where(eq(issues.id, scope.bindIssueId!));
+    expect(boundIssue).toMatchObject({
+      executionWorkspaceId: first.workspace.id,
+      executionWorkspacePreference: "reuse_existing",
+    });
+    const operations = await db.select().from(workspaceOperations).where(eq(workspaceOperations.executionWorkspaceId, first.workspace.id));
+    expect(operations).toHaveLength(1);
+    const activity = await db.select().from(activityLog).where(eq(activityLog.entityId, first.workspace.id));
+    expect(activity.map((row) => row.action).sort()).toEqual([
+      "execution_workspace.adopted",
+    ]);
+    const issueActivity = await db.select().from(activityLog).where(eq(activityLog.entityId, scope.bindIssueId!));
+    expect(issueActivity.map((row) => row.action)).toEqual(["issue.execution_workspace_bound"]);
+
+    await expect(svc.adoptGitWorktree(scope.companyId, {
+      ...request,
+      bindIssueId: otherBindIssueId,
+    }, {
+      actorType: "user",
+      actorId: "local-board",
+      agentId: null,
+      runId: null,
+    })).rejects.toMatchObject({
+      reasonCode: "workspace_conflict",
+      status: 409,
+    });
+  }, 20_000);
+
+  it("rejects forged adoption metadata before persistence and leaves exact adoption retry unpoisoned", async () => {
+    const git = await createAdoptionGitFixture({ branch: "feature/forged-adoption-guard" });
+    tempDirs.add(git.repoRoot);
+    tempDirs.add(git.worktreePath);
+    const scope = await seedAdoptionScope(db, {
+      repoRoot: git.repoRoot,
+      repoUrl: git.repoUrl,
+    });
+    const normalWorkspaceId = randomUUID();
+    const canonicalCwd = await fs.realpath(git.worktreePath);
+    const canonicalRepoRoot = await fs.realpath(git.worktreePath);
+    const immutableFingerprint = fingerprintAdoptionForTest({
+      companyId: scope.companyId,
+      projectId: scope.projectId,
+      projectWorkspaceId: scope.projectWorkspaceId,
+      sourceIssueId: scope.sourceIssueId,
+      canonicalCwd,
+      repoRoot: canonicalRepoRoot,
+      normalizedRepoUrl: "ssh://example.com/paperclip/repo",
+      fullBranchRef: git.fullBranchRef,
+      headSha: git.headSha,
+      upstream: git.upstream,
+    });
+
+    await db.insert(executionWorkspaces).values({
+      id: normalWorkspaceId,
+      companyId: scope.companyId,
+      projectId: scope.projectId,
+      projectWorkspaceId: scope.projectWorkspaceId,
+      sourceIssueId: scope.sourceIssueId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Ordinary runtime workspace",
+      status: "active",
+      providerType: "git_worktree",
+      cwd: `/tmp/ordinary-${normalWorkspaceId}`,
+      providerRef: `/tmp/ordinary-${normalWorkspaceId}`,
+      branchName: "feature/ordinary-runtime",
+      metadata: { runtimeNote: "ordinary" },
+    });
+
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = {
+        type: "board",
+        userId: "local-board",
+        companyIds: [scope.companyId],
+        source: "local_implicit",
+        isInstanceAdmin: false,
+      };
+      next();
+    });
+    app.use("/api", executionWorkspaceRoutes(db));
+    app.use(errorHandler);
+
+    const forged = await supertest(app)
+      .patch(`/api/execution-workspaces/${normalWorkspaceId}`)
+      .send({
+        name: "Forged adopted workspace",
+        metadata: {
+          runtimeNote: "ordinary",
+          createdByRuntime: false,
+          ownsGitArtifacts: false,
+          fullBranchRef: git.fullBranchRef,
+          adoptionRollback: { version: 1, reason: "forged" },
+          adoption: {
+            version: 1,
+            immutableFingerprint,
+            boundIssueId: scope.bindIssueId,
+          },
+        },
+      });
+
+    expect(forged.status).toBe(409);
+    expect(forged.body).toEqual({
+      error: "Execution workspace server-owned metadata is immutable",
+      reasonCode: "execution_workspace_server_owned_metadata_immutable",
+      protectedKeys: [
+        "adoption",
+        "adoptionRollback",
+        "fullBranchRef",
+        "ownsGitArtifacts",
+        "createdByRuntime",
+      ],
+    });
+    const [normalReadback] = await db
+      .select()
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, normalWorkspaceId));
+    expect(normalReadback?.name).toBe("Ordinary runtime workspace");
+    expect(normalReadback?.metadata).toEqual({ runtimeNote: "ordinary" });
+    expect(await db.select().from(activityLog).where(eq(activityLog.entityId, normalWorkspaceId))).toHaveLength(0);
+
+    const adopted = await svc.adoptGitWorktree(
+      scope.companyId,
+      adoptionRequest({ ...git, ...scope }),
+      {
+        actorType: "user",
+        actorId: "local-board",
+        agentId: null,
+        runId: null,
+      },
+    );
+    expect(adopted.workspace.id).not.toBe(normalWorkspaceId);
+    expect(adopted.operation).toMatchObject({
+      phase: "workspace_adopt",
+      status: "succeeded",
+    });
+    expect((adopted.workspace.metadata as Record<string, unknown>).adoption).toMatchObject({
+      immutableFingerprint,
+      boundIssueId: scope.bindIssueId,
+    });
+  }, 20_000);
+
+  it("keeps operator git state and adopted ownership immutable across rejected patches and archive", async () => {
+    const git = await createAdoptionGitFixture({ branch: "feature/immutable-adoption" });
+    tempDirs.add(git.repoRoot);
+    tempDirs.add(git.worktreePath);
+    const scope = await seedAdoptionScope(db, {
+      repoRoot: git.repoRoot,
+      repoUrl: git.repoUrl,
+    });
+    const adopted = await svc.adoptGitWorktree(
+      scope.companyId,
+      adoptionRequest({ ...git, ...scope }, { bindIssueId: null }),
+      {
+        actorType: "user",
+        actorId: "local-board",
+        agentId: null,
+        runId: null,
+      },
+    );
+    const evidencePath = path.join(git.worktreePath, "operator-untracked.txt");
+    await fs.writeFile(evidencePath, "preserve me\n", "utf8");
+    const gitStateBefore = {
+      head: await readGit(git.worktreePath, ["rev-parse", "HEAD"]),
+      branch: await readGit(git.worktreePath, ["symbolic-ref", "HEAD"]),
+      upstream: await readGit(git.worktreePath, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]),
+      status: await readGit(git.worktreePath, ["status", "--porcelain=v1", "--untracked-files=all"]),
+    };
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = {
+        type: "board",
+        userId: "local-board",
+        companyIds: [scope.companyId],
+        source: "local_implicit",
+        isInstanceAdmin: false,
+      };
+      next();
+    });
+    app.use("/api", executionWorkspaceRoutes(db));
+    app.use(errorHandler);
+
+    for (const patch of [
+      {
+        metadata: {
+          ...(adopted.workspace.metadata as Record<string, unknown>),
+          ownsGitArtifacts: true,
+        },
+      },
+      { metadata: null },
+      {
+        metadata: {
+          ...(adopted.workspace.metadata as Record<string, unknown>),
+          adoption: {
+            ...((adopted.workspace.metadata as Record<string, unknown>).adoption as Record<string, unknown>),
+            immutableFingerprint: "execution_workspace_adoption:v1:sha256:rewritten",
+          },
+        },
+      },
+      {
+        cwd: `${git.worktreePath}-other`,
+        providerRef: `${git.worktreePath}-other`,
+        repoUrl: "ssh://git@example.com/other/repo",
+        branchName: "feature/other",
+        baseRef: "origin/other",
+      },
+    ]) {
+      const rejected = await supertest(app)
+        .patch(`/api/execution-workspaces/${adopted.workspace.id}`)
+        .send(patch);
+      expect(rejected.status).toBe(409);
+      expect(rejected.body.reasonCode).toBe("adopted_workspace_identity_immutable");
+    }
+
+    const archived = await supertest(app)
+      .patch(`/api/execution-workspaces/${adopted.workspace.id}`)
+      .send({ status: "archived" });
+    expect(archived.status).toBe(200);
+    expect(archived.body.status).toBe("archived");
+
+    const postArchiveEscalation = await supertest(app)
+      .patch(`/api/execution-workspaces/${adopted.workspace.id}`)
+      .send({
+        metadata: {
+          ...(adopted.workspace.metadata as Record<string, unknown>),
+          ownsGitArtifacts: true,
+        },
+      });
+    expect(postArchiveEscalation.status).toBe(409);
+    expect(postArchiveEscalation.body.reasonCode).toBe("adopted_workspace_identity_immutable");
+
+    const persisted = await svc.getById(adopted.workspace.id);
+    expect(persisted).toMatchObject({
+      status: "archived",
+      cwd: adopted.workspace.cwd,
+      providerRef: adopted.workspace.providerRef,
+      repoUrl: adopted.workspace.repoUrl,
+      branchName: git.branch,
+      baseRef: git.upstream,
+      metadata: {
+        createdByRuntime: false,
+        ownsGitArtifacts: false,
+        fullBranchRef: git.fullBranchRef,
+        adoption: {
+          immutableFingerprint: adopted.inspection.worktreeFingerprint,
+        },
+      },
+    });
+    await expect(fs.stat(evidencePath)).resolves.toBeDefined();
+    await expect(fs.stat(git.worktreePath)).resolves.toBeDefined();
+    await expect(Promise.all([
+      readGit(git.worktreePath, ["rev-parse", "HEAD"]),
+      readGit(git.worktreePath, ["symbolic-ref", "HEAD"]),
+      readGit(git.worktreePath, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]),
+      readGit(git.worktreePath, ["status", "--porcelain=v1", "--untracked-files=all"]),
+    ])).resolves.toEqual([
+      gitStateBefore.head,
+      gitStateBefore.branch,
+      gitStateBefore.upstream,
+      gitStateBefore.status,
+    ]);
+
+    const workspaceActivity = await db.select().from(activityLog).where(eq(activityLog.entityId, adopted.workspace.id));
+    expect(workspaceActivity.map((row) => row.action).sort()).toEqual([
+      "execution_workspace.adopted",
+      "execution_workspace.updated",
+    ]);
+  }, 20_000);
+
+  it("serializes concurrent identical adoptions without duplicating operations or activity", async () => {
+    const git = await createAdoptionGitFixture();
+    tempDirs.add(git.repoRoot);
+    tempDirs.add(git.worktreePath);
+    const scope = await seedAdoptionScope(db, {
+      repoRoot: git.repoRoot,
+      repoUrl: git.repoUrl,
+    });
+    const request = adoptionRequest({ ...git, ...scope });
+    let arrivals = 0;
+    let releaseBarrier!: () => void;
+    const barrier = new Promise<void>((resolve) => {
+      releaseBarrier = resolve;
+    });
+    const raceSvc = executionWorkspaceService(db, {
+      afterAdoptionInitialInspection: async () => {
+        arrivals += 1;
+        if (arrivals === 2) releaseBarrier();
+        await barrier;
+      },
+    });
+    const actor = {
+      actorType: "user" as const,
+      actorId: "local-board",
+      agentId: null,
+      runId: null,
+    };
+
+    const results = await Promise.all([
+      raceSvc.adoptGitWorktree(scope.companyId, request, actor),
+      raceSvc.adoptGitWorktree(scope.companyId, request, actor),
+    ]);
+
+    expect(new Set(results.map((result) => result.workspace.id))).toHaveProperty("size", 1);
+    expect(results.filter((result) => result.operation !== null)).toHaveLength(1);
+    expect(results.filter((result) => result.operation === null)).toHaveLength(1);
+    await expect(countAdoptionSideEffects(db)).resolves.toEqual({
+      workspaces: 1,
+      operations: 1,
+      activity: 2,
+    });
+    const workspaceId = results[0]!.workspace.id;
+    const workspaceActivity = await db.select().from(activityLog).where(eq(activityLog.entityId, workspaceId));
+    expect(workspaceActivity.map((row) => row.action)).toEqual(["execution_workspace.adopted"]);
+    const issueActivity = await db.select().from(activityLog).where(eq(activityLog.entityId, scope.bindIssueId!));
+    expect(issueActivity.map((row) => row.action)).toEqual(["issue.execution_workspace_bound"]);
+  }, 20_000);
+
+  it.each([
+    {
+      name: "remote-only missing local branch",
+      reasonCode: "missing_branch",
+      mutate: async (fixture: Awaited<ReturnType<typeof createAdoptionGitFixture>>) => {
+        await runGit(fixture.worktreePath, ["checkout", "--detach", fixture.headSha]);
+        await runGit(fixture.repoRoot, ["branch", "-D", fixture.branch]);
+      },
+    },
+    {
+      name: "detached HEAD",
+      reasonCode: "detached_head",
+      mutate: async (fixture: Awaited<ReturnType<typeof createAdoptionGitFixture>>) => {
+        await runGit(fixture.worktreePath, ["checkout", "--detach", fixture.headSha]);
+      },
+    },
+    {
+      name: "mismatched branch",
+      reasonCode: "mismatched_branch",
+      mutate: async (fixture: Awaited<ReturnType<typeof createAdoptionGitFixture>>) => {
+        await runGit(fixture.repoRoot, ["branch", "feature/other", fixture.headSha]);
+        await runGit(fixture.worktreePath, ["checkout", "feature/other"]);
+      },
+    },
+    {
+      name: "SHA mismatch",
+      reasonCode: "sha_mismatch",
+      requestPatch: { expectedHeadSha: "0000000000000000000000000000000000000000" },
+    },
+    {
+      name: "upstream mismatch",
+      reasonCode: "upstream_mismatch",
+      requestPatch: { expectedUpstream: "origin/other" },
+    },
+    {
+      name: "tracked dirtiness",
+      reasonCode: "dirty_worktree",
+      mutate: async (fixture: Awaited<ReturnType<typeof createAdoptionGitFixture>>) => {
+        await fs.appendFile(path.join(fixture.worktreePath, "README.md"), "dirty tracked work\n", "utf8");
+      },
+    },
+    {
+      name: "untracked dirtiness",
+      reasonCode: "dirty_worktree",
+      mutate: async (fixture: Awaited<ReturnType<typeof createAdoptionGitFixture>>) => {
+        await fs.writeFile(path.join(fixture.worktreePath, "untracked.txt"), "dirty untracked work\n", "utf8");
+      },
+    },
+    {
+      name: "branch attached elsewhere",
+      reasonCode: "branch_attached_elsewhere",
+      mutate: async (fixture: Awaited<ReturnType<typeof createAdoptionGitFixture>>) => {
+        const otherWorktreePath = path.join(path.dirname(fixture.repoRoot), `paperclip-adopt-attached-${randomUUID()}`);
+        tempDirs.add(otherWorktreePath);
+        await runGit(fixture.repoRoot, ["worktree", "add", "--force", otherWorktreePath, fixture.branch]);
+      },
+    },
+    {
+      name: "repo URL mismatch",
+      reasonCode: "repo_mismatch",
+      requestPatch: { expectedRepoUrl: "git@example.com:paperclip/other.git" },
+    },
+  ])("rejects adoption with stable reason code for $name", async ({ reasonCode, mutate, requestPatch }) => {
+    const git = await createAdoptionGitFixture();
+    tempDirs.add(git.repoRoot);
+    tempDirs.add(git.worktreePath);
+    const scope = await seedAdoptionScope(db, {
+      repoRoot: git.repoRoot,
+      repoUrl: git.repoUrl,
+    });
+    await mutate?.(git);
+
+    await expect(svc.adoptGitWorktree(scope.companyId, adoptionRequest({ ...git, ...scope }, requestPatch), {
+      actorType: "user",
+      actorId: "local-board",
+      agentId: null,
+      runId: null,
+    })).rejects.toMatchObject({
+      reasonCode,
+      status: 422,
+    });
+    await expect(countAdoptionSideEffects(db)).resolves.toEqual({
+      workspaces: 0,
+      operations: 0,
+      activity: 0,
+    });
+  }, 20_000);
+
+  it("rejects a cwd outside the git root as repo_mismatch", async () => {
+    const git = await createAdoptionGitFixture();
+    tempDirs.add(git.repoRoot);
+    tempDirs.add(git.worktreePath);
+    const nestedCwd = path.join(git.worktreePath, "nested");
+    await fs.mkdir(nestedCwd);
+    const scope = await seedAdoptionScope(db, {
+      repoRoot: git.repoRoot,
+      repoUrl: git.repoUrl,
+    });
+
+    await expect(svc.adoptGitWorktree(scope.companyId, adoptionRequest({ ...git, ...scope }, { cwd: nestedCwd }), {
+      actorType: "user",
+      actorId: "local-board",
+      agentId: null,
+      runId: null,
+    })).rejects.toMatchObject({
+      reasonCode: "repo_mismatch",
+      status: 422,
+    });
+    await expect(countAdoptionSideEffects(db)).resolves.toEqual({
+      workspaces: 0,
+      operations: 0,
+      activity: 0,
+    });
+  }, 20_000);
+
+  it("fails repo identity closed when the selected project workspace cannot be inspected", async () => {
+    const git = await createAdoptionGitFixture();
+    tempDirs.add(git.repoRoot);
+    tempDirs.add(git.worktreePath);
+    const scope = await seedAdoptionScope(db, {
+      repoRoot: git.repoRoot,
+      repoUrl: git.repoUrl,
+    });
+    await db
+      .update(projectWorkspaces)
+      .set({ cwd: path.join(git.repoRoot, "missing-project-workspace") })
+      .where(eq(projectWorkspaces.id, scope.projectWorkspaceId));
+
+    await expect(svc.adoptGitWorktree(scope.companyId, adoptionRequest({ ...git, ...scope }), {
+      actorType: "user",
+      actorId: "local-board",
+      agentId: null,
+      runId: null,
+    })).rejects.toMatchObject({ reasonCode: "repo_mismatch", status: 422 });
+    await expect(countAdoptionSideEffects(db)).resolves.toEqual({
+      workspaces: 0,
+      operations: 0,
+      activity: 0,
+    });
+  }, 20_000);
+
+  it("revalidates source issue scope after transaction locks before adoption writes", async () => {
+    const git = await createAdoptionGitFixture();
+    tempDirs.add(git.repoRoot);
+    tempDirs.add(git.worktreePath);
+    const scope = await seedAdoptionScope(db, {
+      repoRoot: git.repoRoot,
+      repoUrl: git.repoUrl,
+    });
+    const otherProjectId = randomUUID();
+    await db.insert(projects).values({
+      id: otherProjectId,
+      companyId: scope.companyId,
+      name: "Other same-company project",
+      status: "in_progress",
+    });
+    const [bindingBefore] = await db
+      .select({
+        executionWorkspaceId: issues.executionWorkspaceId,
+        executionWorkspacePreference: issues.executionWorkspacePreference,
+        executionWorkspaceSettings: issues.executionWorkspaceSettings,
+      })
+      .from(issues)
+      .where(eq(issues.id, scope.bindIssueId!));
+    const raceSvc = executionWorkspaceService(db, {
+      afterAdoptionInitialInspection: async () => {
+        await db
+          .update(issues)
+          .set({ projectId: otherProjectId })
+          .where(eq(issues.id, scope.sourceIssueId));
+      },
+    });
+
+    await expect(raceSvc.adoptGitWorktree(scope.companyId, adoptionRequest({ ...git, ...scope }), {
+      actorType: "user",
+      actorId: "local-board",
+      agentId: null,
+      runId: null,
+    })).rejects.toMatchObject({ reasonCode: "cross_scope_not_found", status: 404 });
+    await expect(countAdoptionSideEffects(db)).resolves.toEqual({
+      workspaces: 0,
+      operations: 0,
+      activity: 0,
+    });
+    const [sourceIssue] = await db
+      .select({ projectId: issues.projectId })
+      .from(issues)
+      .where(eq(issues.id, scope.sourceIssueId));
+    expect(sourceIssue?.projectId).toBe(otherProjectId);
+    const [bindingAfter] = await db
+      .select({
+        executionWorkspaceId: issues.executionWorkspaceId,
+        executionWorkspacePreference: issues.executionWorkspacePreference,
+        executionWorkspaceSettings: issues.executionWorkspaceSettings,
+      })
+      .from(issues)
+      .where(eq(issues.id, scope.bindIssueId!));
+    expect(bindingAfter).toEqual(bindingBefore);
+  }, 20_000);
+
+  it("rejects an idempotent retry when its adopted workspace source issue moved out of project scope", async () => {
+    const git = await createAdoptionGitFixture();
+    tempDirs.add(git.repoRoot);
+    tempDirs.add(git.worktreePath);
+    const scope = await seedAdoptionScope(db, {
+      repoRoot: git.repoRoot,
+      repoUrl: git.repoUrl,
+    });
+    const request = adoptionRequest({ ...git, ...scope });
+    const actor = {
+      actorType: "user" as const,
+      actorId: "local-board",
+      agentId: null,
+      runId: null,
+    };
+    const adopted = await svc.adoptGitWorktree(scope.companyId, request, actor);
+    const sideEffectsBeforeRetry = await countAdoptionSideEffects(db);
+    const otherProjectId = randomUUID();
+    await db.insert(projects).values({
+      id: otherProjectId,
+      companyId: scope.companyId,
+      name: "Other same-company project",
+      status: "in_progress",
+    });
+    const retrySvc = executionWorkspaceService(db, {
+      afterAdoptionInitialInspection: async () => {
+        await db
+          .update(issues)
+          .set({ projectId: otherProjectId })
+          .where(eq(issues.id, scope.sourceIssueId));
+      },
+    });
+
+    await expect(retrySvc.adoptGitWorktree(scope.companyId, request, actor)).rejects.toMatchObject({
+      reasonCode: "cross_scope_not_found",
+      status: 404,
+    });
+    await expect(countAdoptionSideEffects(db)).resolves.toEqual(sideEffectsBeforeRetry);
+    expect(sideEffectsBeforeRetry).toEqual({
+      workspaces: 1,
+      operations: 1,
+      activity: 2,
+    });
+    const [workspace] = await db
+      .select()
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, adopted.workspace.id));
+    expect(workspace?.status).toBe("active");
+  }, 20_000);
+
+  it("re-inspects git state after transaction locks and rejects mutation before insert", async () => {
+    const git = await createAdoptionGitFixture();
+    tempDirs.add(git.repoRoot);
+    tempDirs.add(git.worktreePath);
+    const scope = await seedAdoptionScope(db, {
+      repoRoot: git.repoRoot,
+      repoUrl: git.repoUrl,
+    });
+    const raceSvc = executionWorkspaceService(db, {
+      afterAdoptionInitialInspection: async () => {
+        await fs.appendFile(path.join(git.worktreePath, "README.md"), "changed after initial inspection\n", "utf8");
+      },
+    });
+
+    await expect(raceSvc.adoptGitWorktree(scope.companyId, adoptionRequest({ ...git, ...scope }), {
+      actorType: "user",
+      actorId: "local-board",
+      agentId: null,
+      runId: null,
+    })).rejects.toMatchObject({ reasonCode: "dirty_worktree", status: 422 });
+    await expect(countAdoptionSideEffects(db)).resolves.toEqual({
+      workspaces: 0,
+      operations: 0,
+      activity: 0,
+    });
+  }, 20_000);
+
+  it("re-inspects git state after transaction locks before returning an idempotent retry", async () => {
+    const git = await createAdoptionGitFixture();
+    tempDirs.add(git.repoRoot);
+    tempDirs.add(git.worktreePath);
+    const scope = await seedAdoptionScope(db, {
+      repoRoot: git.repoRoot,
+      repoUrl: git.repoUrl,
+    });
+    const request = adoptionRequest({ ...git, ...scope });
+    const actor = {
+      actorType: "user" as const,
+      actorId: "local-board",
+      agentId: null,
+      runId: null,
+    };
+    const adopted = await svc.adoptGitWorktree(scope.companyId, request, actor);
+    const sideEffectsBeforeRetry = await countAdoptionSideEffects(db);
+    const retrySvc = executionWorkspaceService(db, {
+      afterAdoptionInitialInspection: async () => {
+        await fs.appendFile(path.join(git.worktreePath, "README.md"), "changed during idempotent retry\n", "utf8");
+      },
+    });
+
+    await expect(retrySvc.adoptGitWorktree(scope.companyId, request, actor)).rejects.toMatchObject({
+      reasonCode: "dirty_worktree",
+      status: 422,
+    });
+    await expect(countAdoptionSideEffects(db)).resolves.toEqual(sideEffectsBeforeRetry);
+    expect(sideEffectsBeforeRetry).toEqual({
+      workspaces: 1,
+      operations: 1,
+      activity: 2,
+    });
+    const [workspace] = await db
+      .select()
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, adopted.workspace.id));
+    expect(workspace?.status).toBe("active");
+  }, 20_000);
+
+  it("never executes a repository-configured fsmonitor during either adoption inspection", async () => {
+    const git = await createAdoptionGitFixture({ branch: "feature/fsmonitor-safe-adoption" });
+    tempDirs.add(git.repoRoot);
+    tempDirs.add(git.worktreePath);
+    const hookPath = path.join(git.repoRoot, "fsmonitor-hook.sh");
+    const markerPath = path.join(git.repoRoot, "fsmonitor-executed.txt");
+    await fs.writeFile(
+      hookPath,
+      "#!/bin/sh\nmarker_path=\"$(dirname \"$0\")/fsmonitor-executed.txt\"\nprintf invoked > \"$marker_path\"\nprintf \"%s\\n\" \"$2\"\n",
+      "utf8",
+    );
+    await fs.chmod(hookPath, 0o755);
+    await runGit(git.worktreePath, ["config", "core.fsmonitor", hookPath]);
+    await runGit(git.worktreePath, ["config", "core.fsmonitorHookVersion", "2"]);
+    const scope = await seedAdoptionScope(db, {
+      repoRoot: git.repoRoot,
+      repoUrl: git.repoUrl,
+    });
+    let markerExistedAfterInitialInspection = false;
+    const hardenedSvc = executionWorkspaceService(db, {
+      afterAdoptionInitialInspection: async () => {
+        markerExistedAfterInitialInspection = await fs.access(markerPath).then(() => true).catch(() => false);
+      },
+    });
+
+    await expect(hardenedSvc.adoptGitWorktree(scope.companyId, adoptionRequest({ ...git, ...scope }), {
+      actorType: "user",
+      actorId: "local-board",
+      agentId: null,
+      runId: null,
+    })).resolves.toMatchObject({ inspection: { status: "accepted" } });
+
+    expect(markerExistedAfterInitialInspection).toBe(false);
+    await expect(fs.access(markerPath)).rejects.toMatchObject({ code: "ENOENT" });
+  }, 20_000);
+
+  it("leaves a stale clean index byte-for-byte unchanged after both adoption inspections", async () => {
+    const git = await createAdoptionGitFixture({ branch: "feature/index-safe-adoption" });
+    tempDirs.add(git.repoRoot);
+    tempDirs.add(git.worktreePath);
+    const scope = await seedAdoptionScope(db, {
+      repoRoot: git.repoRoot,
+      repoUrl: git.repoUrl,
+    });
+    const indexPathRaw = await readGit(git.worktreePath, ["rev-parse", "--git-path", "index"]);
+    const indexPath = path.isAbsolute(indexPathRaw!)
+      ? indexPathRaw!
+      : path.join(git.worktreePath, indexPathRaw!);
+    const indexBeforeInspection = await fs.readFile(indexPath);
+    const trackedPath = path.join(git.worktreePath, "README.md");
+    const staleMtime = new Date(Date.now() + 60_000);
+    await fs.utimes(trackedPath, staleMtime, staleMtime);
+    let indexAfterInitialInspection: Buffer | null = null;
+    const hardenedSvc = executionWorkspaceService(db, {
+      afterAdoptionInitialInspection: async () => {
+        indexAfterInitialInspection = await fs.readFile(indexPath);
+      },
+    });
+
+    await expect(hardenedSvc.adoptGitWorktree(scope.companyId, adoptionRequest({ ...git, ...scope }), {
+      actorType: "user",
+      actorId: "local-board",
+      agentId: null,
+      runId: null,
+    })).resolves.toMatchObject({ inspection: { status: "accepted" } });
+
+    expect(indexAfterInitialInspection).not.toBeNull();
+    expect(indexAfterInitialInspection!.equals(indexBeforeInspection)).toBe(true);
+    expect((await fs.readFile(indexPath)).equals(indexBeforeInspection)).toBe(true);
+  }, 20_000);
+
+  it("rejects adoption binding when issue authorization fields change before the transaction lock", async () => {
+    const git = await createAdoptionGitFixture();
+    tempDirs.add(git.repoRoot);
+    tempDirs.add(git.worktreePath);
+    const scope = await seedAdoptionScope(db, {
+      repoRoot: git.repoRoot,
+      repoUrl: git.repoUrl,
+    });
+    const authorizedBindIssue = await readIssueAuthorizationSnapshot(db, scope.bindIssueId!);
+    const raceSvc = executionWorkspaceService(db, {
+      afterAdoptionInitialInspection: async () => {
+        await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, scope.bindIssueId!));
+      },
+    });
+
+    await expect(raceSvc.adoptGitWorktree(scope.companyId, adoptionRequest({ ...git, ...scope }), {
+      actorType: "user",
+      actorId: "local-board",
+      agentId: null,
+      runId: null,
+    }, authorizedBindIssue)).rejects.toMatchObject({ reasonCode: "workspace_conflict", status: 409 });
+    await expect(countAdoptionSideEffects(db)).resolves.toEqual({
+      workspaces: 0,
+      operations: 0,
+      activity: 0,
+    });
+  }, 20_000);
+
+  it("rejects company-wide cwd/provider claims and same-project repository branch claims as workspace_conflict", async () => {
+    for (const duplicateField of ["cwd", "providerRef", "fullBranchRef"] as const) {
+      await db.delete(activityLog);
+      await db.delete(workspaceOperations);
+      await db.delete(executionWorkspaces);
+      await db.delete(issues);
+      await db.delete(projectWorkspaces);
+      await db.delete(projects);
+      await db.delete(companies);
+
+      const git = await createAdoptionGitFixture({ worktreeSlug: `paperclip-adopt-${duplicateField}` });
+      tempDirs.add(git.repoRoot);
+      tempDirs.add(git.worktreePath);
+      const scope = await seedAdoptionScope(db, {
+        repoRoot: git.repoRoot,
+        repoUrl: git.repoUrl,
+      });
+      const canonicalWorktreePath = await fs.realpath(git.worktreePath);
+      const gitCommonDir = await readGit(git.worktreePath, ["rev-parse", "--git-common-dir"]);
+      const repositoryIdentity = await fs.realpath(
+        path.isAbsolute(gitCommonDir!) ? gitCommonDir! : path.join(git.worktreePath, gitCommonDir!),
+      );
+      await db.insert(executionWorkspaces).values({
+        companyId: scope.companyId,
+        projectId: scope.projectId,
+        projectWorkspaceId: scope.projectWorkspaceId,
+        sourceIssueId: scope.sourceIssueId,
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        name: `duplicate-${duplicateField}`,
+        status: "active",
+        providerType: "git_worktree",
+        cwd: duplicateField === "cwd" ? canonicalWorktreePath : `/tmp/${randomUUID()}`,
+        providerRef: duplicateField === "providerRef" ? canonicalWorktreePath : `/tmp/${randomUUID()}`,
+        branchName: duplicateField === "fullBranchRef" ? git.branch : `feature/${randomUUID()}`,
+        metadata: duplicateField === "fullBranchRef"
+          ? { repositoryIdentity, fullBranchRef: git.fullBranchRef }
+          : null,
+      });
+
+      await expect(svc.adoptGitWorktree(scope.companyId, adoptionRequest({ ...git, ...scope }), {
+        actorType: "user",
+        actorId: "local-board",
+        agentId: null,
+        runId: null,
+      })).rejects.toMatchObject({
+        reasonCode: "workspace_conflict",
+        status: 409,
+      });
+    }
+  }, 60_000);
+
+  it("allows distinct repositories and projects in one company to adopt the same full branch ref", async () => {
+    const firstGit = await createAdoptionGitFixture({ repoUrl: "git@example.com:paperclip/repo-one.git" });
+    const secondGit = await createAdoptionGitFixture({ repoUrl: "git@example.com:paperclip/repo-two.git" });
+    for (const git of [firstGit, secondGit]) {
+      tempDirs.add(git.repoRoot);
+      tempDirs.add(git.worktreePath);
+    }
+    const firstScope = await seedAdoptionScope(db, {
+      bindIssueId: null,
+      repoRoot: firstGit.repoRoot,
+      repoUrl: firstGit.repoUrl,
+    });
+    const secondProjectId = randomUUID();
+    const secondProjectWorkspaceId = randomUUID();
+    const secondSourceIssueId = randomUUID();
+    await db.insert(projects).values({
+      id: secondProjectId,
+      companyId: firstScope.companyId,
+      name: "Second repository adoption",
+      status: "in_progress",
+    });
+    await db.insert(projectWorkspaces).values({
+      id: secondProjectWorkspaceId,
+      companyId: firstScope.companyId,
+      projectId: secondProjectId,
+      name: "Primary",
+      cwd: secondGit.repoRoot,
+      repoUrl: secondGit.repoUrl,
+      isPrimary: true,
+    });
+    await db.insert(issues).values({
+      id: secondSourceIssueId,
+      companyId: firstScope.companyId,
+      projectId: secondProjectId,
+      title: "Second repository source issue",
+      status: "todo",
+      priority: "medium",
+    });
+    const secondScope = {
+      ...firstScope,
+      projectId: secondProjectId,
+      projectWorkspaceId: secondProjectWorkspaceId,
+      sourceIssueId: secondSourceIssueId,
+    };
+    const actor = {
+      actorType: "user" as const,
+      actorId: "local-board",
+      agentId: null,
+      runId: null,
+    };
+
+    const first = await svc.adoptGitWorktree(
+      firstScope.companyId,
+      adoptionRequest({ ...firstGit, ...firstScope }),
+      actor,
+    );
+    const second = await svc.adoptGitWorktree(
+      firstScope.companyId,
+      adoptionRequest({ ...secondGit, ...secondScope }),
+      actor,
+    );
+
+    expect(second.workspace.id).not.toBe(first.workspace.id);
+    const active = await db
+      .select()
+      .from(executionWorkspaces)
+      .where(and(eq(executionWorkspaces.companyId, firstScope.companyId), eq(executionWorkspaces.status, "active")));
+    expect(active).toHaveLength(2);
+    expect(active.map((row) => row.metadata)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ fullBranchRef: firstGit.fullBranchRef }),
+      expect.objectContaining({ fullBranchRef: secondGit.fullBranchRef }),
+    ]));
+  }, 30_000);
+
+  it("serializes company-wide adoption claims across different projects", async () => {
+    const git = await createAdoptionGitFixture();
+    tempDirs.add(git.repoRoot);
+    tempDirs.add(git.worktreePath);
+    const firstScope = await seedAdoptionScope(db, {
+      bindIssueId: null,
+      repoRoot: git.repoRoot,
+      repoUrl: git.repoUrl,
+    });
+    const secondProjectId = randomUUID();
+    const secondProjectWorkspaceId = randomUUID();
+    const secondSourceIssueId = randomUUID();
+    await db.insert(projects).values({
+      id: secondProjectId,
+      companyId: firstScope.companyId,
+      name: "Concurrent adoption",
+      status: "in_progress",
+    });
+    await db.insert(projectWorkspaces).values({
+      id: secondProjectWorkspaceId,
+      companyId: firstScope.companyId,
+      projectId: secondProjectId,
+      name: "Primary",
+      cwd: git.repoRoot,
+      repoUrl: git.repoUrl,
+      isPrimary: true,
+    });
+    await db.insert(issues).values({
+      id: secondSourceIssueId,
+      companyId: firstScope.companyId,
+      projectId: secondProjectId,
+      title: "Concurrent source issue",
+      status: "todo",
+      priority: "medium",
+    });
+    const secondScope = {
+      ...firstScope,
+      projectId: secondProjectId,
+      projectWorkspaceId: secondProjectWorkspaceId,
+      sourceIssueId: secondSourceIssueId,
+      bindIssueId: null,
+    };
+    const actor = {
+      actorType: "user" as const,
+      actorId: "local-board",
+      agentId: null,
+      runId: null,
+    };
+
+    const results = await Promise.allSettled([
+      svc.adoptGitWorktree(firstScope.companyId, adoptionRequest({ ...git, ...firstScope }), actor),
+      svc.adoptGitWorktree(firstScope.companyId, adoptionRequest({ ...git, ...secondScope }), actor),
+    ]);
+
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    const [rejected] = results.filter((result) => result.status === "rejected");
+    expect(rejected).toMatchObject({
+      reason: expect.objectContaining({ reasonCode: "workspace_conflict", status: 409 }),
+    });
+    const active = await db
+      .select()
+      .from(executionWorkspaces)
+      .where(and(eq(executionWorkspaces.companyId, firstScope.companyId), eq(executionWorkspaces.status, "active")));
+    expect(active).toHaveLength(1);
+  }, 20_000);
+
+  it("rejects cross-project and cross-company adoption identifiers before git inspection", async () => {
+    const git = await createAdoptionGitFixture();
+    tempDirs.add(git.repoRoot);
+    tempDirs.add(git.worktreePath);
+    const scope = await seedAdoptionScope(db, {
+      repoRoot: git.repoRoot,
+      repoUrl: git.repoUrl,
+    });
+    const otherProjectId = randomUUID();
+    const otherProjectWorkspaceId = randomUUID();
+    const otherProjectIssueId = randomUUID();
+    await db.insert(projects).values({
+      id: otherProjectId,
+      companyId: scope.companyId,
+      name: "Other project",
+      status: "in_progress",
+    });
+    await db.insert(projectWorkspaces).values({
+      id: otherProjectWorkspaceId,
+      companyId: scope.companyId,
+      projectId: otherProjectId,
+      name: "Other primary",
+      cwd: git.repoRoot,
+      repoUrl: git.repoUrl,
+      isPrimary: true,
+    });
+    await db.insert(issues).values({
+      id: otherProjectIssueId,
+      companyId: scope.companyId,
+      projectId: otherProjectId,
+      title: "Other project issue",
+      status: "todo",
+      priority: "medium",
+    });
+    const otherCompany = await seedAdoptionScope(db, {
+      repoRoot: git.repoRoot,
+      repoUrl: git.repoUrl,
+    });
+    const cases = [
+      { projectId: otherProjectId },
+      { projectWorkspaceId: otherProjectWorkspaceId },
+      { sourceIssueId: otherProjectIssueId },
+      { bindIssueId: otherProjectIssueId },
+      { projectId: otherCompany.projectId },
+      { projectWorkspaceId: otherCompany.projectWorkspaceId },
+      { sourceIssueId: otherCompany.sourceIssueId },
+      { bindIssueId: otherCompany.bindIssueId },
+    ];
+
+    for (const patch of cases) {
+      await expect(svc.adoptGitWorktree(scope.companyId, {
+        ...adoptionRequest({ ...git, ...scope }),
+        ...patch,
+      }, {
+        actorType: "user",
+        actorId: "local-board",
+        agentId: null,
+        runId: null,
+      })).rejects.toMatchObject({
+        reasonCode: "cross_scope_not_found",
+        status: 404,
+      });
+    }
+    await expect(countAdoptionSideEffects(db)).resolves.toEqual({
+      workspaces: 0,
+      operations: 0,
+      activity: 0,
+    });
+  }, 20_000);
+
+  it("rejects rollback of a non-adopted workspace with the stable adoption error contract", async () => {
+    const scope = await seedAdoptionScope(db, {
+      repoRoot: `/tmp/${randomUUID()}`,
+      repoUrl: "git@example.com:paperclip/repo.git",
+    });
+    const workspaceId = randomUUID();
+    await db.insert(executionWorkspaces).values({
+      id: workspaceId,
+      companyId: scope.companyId,
+      projectId: scope.projectId,
+      projectWorkspaceId: scope.projectWorkspaceId,
+      sourceIssueId: scope.sourceIssueId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "ordinary workspace",
+      status: "active",
+      providerType: "git_worktree",
+      cwd: `/tmp/${randomUUID()}`,
+      branchName: "feature/ordinary",
+    });
+
+    const error = await svc.rollbackAdoption(workspaceId, {
+      actorType: "user",
+      actorId: "local-board",
+      agentId: null,
+      runId: null,
+    }, "not adopted", null, null).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(ExecutionWorkspaceAdoptionError);
+    expect(error).toMatchObject({
+      reasonCode: "workspace_conflict",
+      status: 409,
+    });
+    const [workspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspaceId));
+    expect(workspace).toMatchObject({ status: "active", closedAt: null });
+    const activity = await db.select().from(activityLog).where(eq(activityLog.entityId, workspaceId));
+    expect(activity).toHaveLength(0);
+  });
+
+  it("rolls back adopted records without deleting or mutating the adopted git worktree", async () => {
+    const git = await createAdoptionGitFixture();
+    tempDirs.add(git.repoRoot);
+    tempDirs.add(git.worktreePath);
+    const scope = await seedAdoptionScope(db, {
+      repoRoot: git.repoRoot,
+      repoUrl: git.repoUrl,
+    });
+    const beforeHead = await readGit(git.worktreePath, ["rev-parse", "HEAD"]);
+    const beforeBranch = await readGit(git.worktreePath, ["symbolic-ref", "--quiet", "HEAD"]);
+
+    const adopted = await svc.adoptGitWorktree(scope.companyId, adoptionRequest({ ...git, ...scope }), {
+      actorType: "user",
+      actorId: "local-board",
+      agentId: null,
+      runId: null,
+    });
+    const authorizedBoundIssue = await readIssueAuthorizationSnapshot(db, scope.bindIssueId!);
+    const rolledBack = await svc.rollbackAdoption(adopted.workspace.id, {
+      actorType: "user",
+      actorId: "local-board",
+      agentId: null,
+      runId: null,
+    }, "record-only rollback", scope.bindIssueId, authorizedBoundIssue);
+
+    expect(rolledBack).toMatchObject({
+      id: adopted.workspace.id,
+      status: "archived",
+      cleanupReason: "adoption_rollback",
+      boundIssue: null,
+    });
+    await expect(fs.access(git.worktreePath)).resolves.toBeUndefined();
+    await expect(readGit(git.worktreePath, ["rev-parse", "HEAD"])).resolves.toBe(beforeHead);
+    await expect(readGit(git.worktreePath, ["symbolic-ref", "--quiet", "HEAD"])).resolves.toBe(beforeBranch);
+    await expect(readGit(git.worktreePath, ["status", "--porcelain=v1", "--untracked-files=all"])).resolves.toBeNull();
+    const operations = await db.select().from(workspaceOperations).where(eq(workspaceOperations.executionWorkspaceId, adopted.workspace.id));
+    expect(operations.map((row) => row.phase)).toEqual(["workspace_adopt"]);
+    const [beforeRepeat] = await db
+      .select()
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, adopted.workspace.id));
+    const activityBeforeRepeat = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, adopted.workspace.id));
+
+    await expect(svc.rollbackAdoption(adopted.workspace.id, {
+      actorType: "user",
+      actorId: "different-board-actor",
+      agentId: null,
+      runId: null,
+    }, "must not replace first rollback", scope.bindIssueId, authorizedBoundIssue)).rejects.toMatchObject({
+      reasonCode: "workspace_conflict",
+      status: 409,
+    });
+
+    const [afterRepeat] = await db
+      .select()
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, adopted.workspace.id));
+    const activityAfterRepeat = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, adopted.workspace.id));
+    expect(afterRepeat?.metadata).toEqual(beforeRepeat?.metadata);
+    expect(afterRepeat?.updatedAt).toEqual(beforeRepeat?.updatedAt);
+    expect(activityAfterRepeat).toEqual(activityBeforeRepeat);
+  }, 20_000);
+
+  it("rejects repeated rollback of an unbound adopted workspace without changing metadata or activity", async () => {
+    const git = await createAdoptionGitFixture();
+    tempDirs.add(git.repoRoot);
+    tempDirs.add(git.worktreePath);
+    const scope = await seedAdoptionScope(db, {
+      bindIssueId: null,
+      repoRoot: git.repoRoot,
+      repoUrl: git.repoUrl,
+    });
+    const adopted = await svc.adoptGitWorktree(scope.companyId, adoptionRequest({ ...git, ...scope }), {
+      actorType: "user",
+      actorId: "local-board",
+      agentId: null,
+      runId: null,
+    });
+    await svc.rollbackAdoption(adopted.workspace.id, {
+      actorType: "user",
+      actorId: "local-board",
+      agentId: null,
+      runId: null,
+    }, "first rollback", null, null);
+    const [beforeRepeat] = await db
+      .select()
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, adopted.workspace.id));
+    const activityBeforeRepeat = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, adopted.workspace.id));
+
+    await expect(svc.rollbackAdoption(adopted.workspace.id, {
+      actorType: "user",
+      actorId: "different-board-actor",
+      agentId: null,
+      runId: null,
+    }, "must not replace first rollback", null, null)).rejects.toMatchObject({
+      reasonCode: "workspace_conflict",
+      status: 409,
+    });
+
+    const [afterRepeat] = await db
+      .select()
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, adopted.workspace.id));
+    const activityAfterRepeat = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, adopted.workspace.id));
+    expect(afterRepeat?.metadata).toEqual(beforeRepeat?.metadata);
+    expect(afterRepeat?.updatedAt).toEqual(beforeRepeat?.updatedAt);
+    expect(activityAfterRepeat).toEqual(activityBeforeRepeat);
+    expect(activityAfterRepeat.map((row) => row.action).sort()).toEqual([
+      "execution_workspace.adopted",
+      "execution_workspace.adoption_rolled_back",
+    ].sort());
+  }, 20_000);
+
+  it("rolls back atomically when adoption fails after workspace insert but before optional issue binding", async () => {
+    const git = await createAdoptionGitFixture();
+    tempDirs.add(git.repoRoot);
+    tempDirs.add(git.worktreePath);
+    const scope = await seedAdoptionScope(db, {
+      repoRoot: git.repoRoot,
+      repoUrl: git.repoUrl,
+    });
+    const previousWorkspaceId = randomUUID();
+    await db.insert(executionWorkspaces).values({
+      id: previousWorkspaceId,
+      companyId: scope.companyId,
+      projectId: scope.projectId,
+      sourceIssueId: scope.sourceIssueId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "previous",
+      status: "active",
+      providerType: "git_worktree",
+      cwd: `/tmp/${randomUUID()}`,
+      branchName: "feature/previous",
+    });
+    await db.update(issues).set({
+      executionWorkspaceId: previousWorkspaceId,
+      executionWorkspacePreference: "reuse_existing",
+    }).where(eq(issues.id, scope.bindIssueId!));
+    const failingSvc = executionWorkspaceService(db, {
+      afterAdoptionWorkspaceInsert: () => {
+        throw new Error("forced adoption failure");
+      },
+    });
+
+    await expect(failingSvc.adoptGitWorktree(scope.companyId, adoptionRequest({ ...git, ...scope }), {
+      actorType: "user",
+      actorId: "local-board",
+      agentId: null,
+      runId: null,
+    })).rejects.toThrow("forced adoption failure");
+
+    const rows = await db.select().from(executionWorkspaces);
+    expect(rows.map((row) => row.id)).toEqual([previousWorkspaceId]);
+    const [boundIssue] = await db.select().from(issues).where(eq(issues.id, scope.bindIssueId!));
+    expect(boundIssue).toMatchObject({
+      executionWorkspaceId: previousWorkspaceId,
+      executionWorkspacePreference: "reuse_existing",
+    });
+    await expect(countAdoptionSideEffects(db)).resolves.toEqual({
+      workspaces: 1,
+      operations: 0,
+      activity: 0,
+    });
+  }, 20_000);
+
+  it("treats shell-shaped git inputs as argv data and does not mutate git artifacts", async () => {
+    const git = await createAdoptionGitFixture({
+      worktreeSlug: "paperclip-adopt-argv-safe;touch-should-not-run",
+    });
+    tempDirs.add(git.repoRoot);
+    tempDirs.add(git.worktreePath);
+    const scope = await seedAdoptionScope(db, {
+      repoRoot: git.repoRoot,
+      repoUrl: git.repoUrl,
+    });
+    const markerPath = path.join(path.dirname(git.repoRoot), "paperclip-adoption-shell-marker");
+    const beforeHead = await readGit(git.worktreePath, ["rev-parse", "HEAD"]);
+    const beforeStatus = await readGit(git.worktreePath, ["status", "--porcelain=v1", "--untracked-files=all"]);
+
+    await expect(svc.adoptGitWorktree(scope.companyId, adoptionRequest({ ...git, ...scope }, {
+      expectedBranch: `${git.fullBranchRef};touch ${markerPath}`,
+      name: `argv-safe;touch ${markerPath}`,
+    }), {
+      actorType: "user",
+      actorId: "local-board",
+      agentId: null,
+      runId: null,
+    })).rejects.toMatchObject({
+      reasonCode: "missing_branch",
+      status: 422,
+    });
+
+    await expect(fs.access(markerPath)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readGit(git.worktreePath, ["rev-parse", "HEAD"])).resolves.toBe(beforeHead);
+    await expect(readGit(git.worktreePath, ["status", "--porcelain=v1", "--untracked-files=all"])).resolves.toBe(beforeStatus);
+    await expect(countAdoptionSideEffects(db)).resolves.toEqual({
+      workspaces: 0,
+      operations: 0,
+      activity: 0,
+    });
+  }, 20_000);
+
+  it("rolls back adopted records by restoring the previous issue binding without cleanup operations", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const previousWorkspaceId = randomUUID();
+    const adoptedWorkspaceId = randomUUID();
+    const sourceIssueId = randomUUID();
+    const bindIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Rollback adoption",
+      status: "in_progress",
+    });
+    await db.insert(issues).values({
+      id: sourceIssueId,
+      companyId,
+      projectId,
+      title: "Source issue",
+      status: "todo",
+      priority: "medium",
+    });
+    await db.insert(executionWorkspaces).values([
+      {
+        id: previousWorkspaceId,
+        companyId,
+        projectId,
+        sourceIssueId,
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        name: "previous",
+        status: "active",
+        providerType: "git_worktree",
+        cwd: "/tmp/previous",
+        branchName: "feature/previous",
+      },
+      {
+        id: adoptedWorkspaceId,
+        companyId,
+        projectId,
+        sourceIssueId,
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        name: "adopted",
+        status: "active",
+        providerType: "git_worktree",
+        cwd: "/tmp/adopted",
+        branchName: "feature/adopted",
+        metadata: {
+          adoption: {
+            version: 1,
+            immutableFingerprint: "execution_workspace_adoption:v1:sha256:test",
+            boundIssueId: bindIssueId,
+            previousIssueBinding: {
+              issueId: bindIssueId,
+              executionWorkspaceId: previousWorkspaceId,
+              executionWorkspacePreference: "reuse_existing",
+              executionWorkspaceSettings: {
+                mode: "isolated_workspace",
+                workspaceStrategy: {
+                  type: "git_worktree",
+                  baseRef: "origin/feature/previous",
+                },
+              },
+            },
+          },
+        },
+      },
+    ]);
+    await db.insert(issues).values({
+      id: bindIssueId,
+      companyId,
+      projectId,
+      title: "Bound issue",
+      status: "todo",
+      priority: "medium",
+      executionWorkspaceId: adoptedWorkspaceId,
+      executionWorkspacePreference: "reuse_existing",
+      executionWorkspaceSettings: {
+        mode: "isolated_workspace",
+        workspaceStrategy: {
+          type: "git_worktree",
+          baseRef: "origin/feature/adopted",
+        },
+      },
+    });
+
+    const authorizedBoundIssue = await readIssueAuthorizationSnapshot(db, bindIssueId);
+    expect(authorizedBoundIssue).not.toBeNull();
+    await expect(svc.rollbackAdoption(adoptedWorkspaceId, {
+      actorType: "user",
+      actorId: "local-board",
+      agentId: null,
+      runId: null,
+    }, "stale authorization", randomUUID(), authorizedBoundIssue)).rejects.toMatchObject({ reasonCode: "workspace_conflict", status: 409 });
+    const [stillAuthorizedBinding] = await db.select().from(issues).where(eq(issues.id, bindIssueId));
+    expect(stillAuthorizedBinding?.executionWorkspaceId).toBe(adoptedWorkspaceId);
+
+    await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, bindIssueId));
+    await expect(svc.rollbackAdoption(adoptedWorkspaceId, {
+      actorType: "user",
+      actorId: "local-board",
+      agentId: null,
+      runId: null,
+    }, "stale issue authorization", bindIssueId, authorizedBoundIssue)).rejects.toMatchObject({
+      reasonCode: "workspace_conflict",
+      status: 409,
+    });
+    await db.update(issues).set({ status: "todo" }).where(eq(issues.id, bindIssueId));
+
+    await db
+      .update(issues)
+      .set({ executionWorkspaceId: previousWorkspaceId })
+      .where(eq(issues.id, bindIssueId));
+    await expect(svc.rollbackAdoption(adoptedWorkspaceId, {
+      actorType: "user",
+      actorId: "local-board",
+      agentId: null,
+      runId: null,
+    }, "stale rollback", bindIssueId, authorizedBoundIssue)).rejects.toMatchObject({ reasonCode: "workspace_conflict", status: 409 });
+    const [unchangedAdoptedWorkspace] = await db
+      .select()
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, adoptedWorkspaceId));
+    const [newerBoundIssue] = await db.select().from(issues).where(eq(issues.id, bindIssueId));
+    expect(unchangedAdoptedWorkspace?.status).toBe("active");
+    expect(newerBoundIssue?.executionWorkspaceId).toBe(previousWorkspaceId);
+
+    await db
+      .update(issues)
+      .set({ executionWorkspaceId: adoptedWorkspaceId })
+      .where(eq(issues.id, bindIssueId));
+
+    const result = await svc.rollbackAdoption(adoptedWorkspaceId, {
+      actorType: "user",
+      actorId: "local-board",
+      agentId: null,
+      runId: null,
+    }, "operator rollback", bindIssueId, authorizedBoundIssue);
+
+    expect(result).toMatchObject({
+      id: adoptedWorkspaceId,
+      status: "archived",
+      cleanupReason: "adoption_rollback",
+      boundIssue: null,
+    });
+    const [boundIssue] = await db.select().from(issues).where(eq(issues.id, bindIssueId));
+    expect(boundIssue).toMatchObject({
+      executionWorkspaceId: previousWorkspaceId,
+      executionWorkspacePreference: "reuse_existing",
+    });
+    expect(boundIssue?.executionWorkspaceSettings).toMatchObject({
+      workspaceStrategy: {
+        baseRef: "origin/feature/previous",
+      },
+    });
+    const operations = await db.select().from(workspaceOperations).where(eq(workspaceOperations.executionWorkspaceId, adoptedWorkspaceId));
+    expect(operations).toHaveLength(0);
+    const activity = await db.select().from(activityLog).where(eq(activityLog.entityId, adoptedWorkspaceId));
+    expect(activity.map((row) => row.action)).toEqual(["execution_workspace.adoption_rolled_back"]);
+  });
+
   it("returns a bounded company-scoped workspace overview with service and linked issue summaries", async () => {
     const companyId = randomUUID();
     const otherCompanyId = randomUUID();
@@ -2524,6 +4208,55 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       "teardown_command",
       "git_worktree_remove",
       "git_branch_delete",
+    ]));
+  }, 20_000);
+
+  it("reports record-only close readiness for adopted operator-owned worktrees", async () => {
+    const fixture = await createAdoptionGitFixture({ branch: "feature/operator-owned-close" });
+    tempDirs.add(fixture.repoRoot);
+    tempDirs.add(fixture.worktreePath);
+    const scope = await seedAdoptionScope(db, fixture);
+    await db
+      .update(projects)
+      .set({
+        executionWorkspacePolicy: {
+          enabled: true,
+          workspaceStrategy: {
+            type: "git_worktree",
+            teardownCommand: "node ./scripts/project-teardown.js",
+          },
+        },
+      })
+      .where(eq(projects.id, scope.projectId));
+    await db
+      .update(projectWorkspaces)
+      .set({ cleanupCommand: "node ./scripts/project-cleanup.js" })
+      .where(eq(projectWorkspaces.id, scope.projectWorkspaceId));
+
+    const adopted = await svc.adoptGitWorktree(
+      scope.companyId,
+      adoptionRequest({ ...fixture, ...scope }, { bindIssueId: null }),
+      {
+        actorType: "user",
+        actorId: "board-user",
+        agentId: null,
+        runId: null,
+      },
+      null,
+    );
+
+    const readiness = await svc.getCloseReadiness(adopted.workspace.id);
+
+    expect(adopted.workspace.metadata).toMatchObject({ ownsGitArtifacts: false });
+    expect(readiness?.plannedActions).toEqual([
+      expect.objectContaining({ kind: "archive_record", command: null }),
+    ]);
+    expect(readiness?.plannedActions.map((action) => action.kind)).not.toEqual(expect.arrayContaining([
+      "cleanup_command",
+      "teardown_command",
+      "git_worktree_remove",
+      "git_branch_delete",
+      "remove_local_directory",
     ]));
   }, 20_000);
 });

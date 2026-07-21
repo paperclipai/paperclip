@@ -1,11 +1,14 @@
+import { isDeepStrictEqual } from "node:util";
 import { and, eq } from "drizzle-orm";
 import { Router, type Request, type Response } from "express";
 import type { Db } from "@paperclipai/db";
 import { issues, projects, projectWorkspaces } from "@paperclipai/db";
 import {
+  adoptGitWorktreeExecutionWorkspaceSchema,
   findWorkspaceCommandDefinition,
   matchWorkspaceRuntimeServiceToCommand,
   reconcileExecutionWorkspaceBranchSchema,
+  rollbackAdoptedExecutionWorkspaceSchema,
   updateExecutionWorkspaceSchema,
   workspaceOverviewQuerySchema,
   workspaceRuntimeControlTargetSchema,
@@ -13,7 +16,11 @@ import {
 import type { WorkspaceRuntimeDesiredState, WorkspaceRuntimeServiceStateMap } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { accessService, executionWorkspaceService, heartbeatService, logActivity, workspaceOperationService } from "../services/index.js";
-import { mergeExecutionWorkspaceConfig, readExecutionWorkspaceConfig } from "../services/execution-workspaces.js";
+import {
+  executionWorkspaceOwnsGitArtifacts,
+  mergeExecutionWorkspaceConfig,
+  readExecutionWorkspaceConfig,
+} from "../services/execution-workspaces.js";
 import { parseProjectExecutionWorkspacePolicy } from "../services/execution-workspace-policy.js";
 import { readProjectWorkspaceRuntimeConfig } from "../services/project-workspace-runtime-config.js";
 import {
@@ -35,8 +42,57 @@ import { assertCanManageExecutionWorkspaceRuntimeServices } from "./workspace-ru
 import { appendWithCap } from "../adapters/utils.js";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
+import {
+  ExecutionWorkspaceAdoptionError,
+  type ExecutionWorkspaceIssueAuthorizationSnapshot,
+} from "../services/execution-workspaces.js";
 
 const WORKSPACE_CONTROL_OUTPUT_MAX_CHARS = 256 * 1024;
+
+function adoptionBoundIssueId(metadata: Record<string, unknown> | null | undefined) {
+  const adoption = metadata?.adoption;
+  if (!adoption || typeof adoption !== "object" || Array.isArray(adoption)) return null;
+  const value = (adoption as Record<string, unknown>).boundIssueId;
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+const ADOPTED_WORKSPACE_MUTABLE_PATCH_KEYS = new Set([
+  "name",
+  "config",
+  "status",
+  "cleanupEligibleAt",
+  "cleanupReason",
+]);
+
+const SERVER_OWNED_EXECUTION_WORKSPACE_METADATA_KEYS = [
+  "adoption",
+  "adoptionRollback",
+  "repositoryIdentity",
+  "fullBranchRef",
+  "ownsGitArtifacts",
+  "createdByRuntime",
+] as const;
+
+function changedServerOwnedMetadataKeys(
+  existing: Record<string, unknown> | null | undefined,
+  requested: Record<string, unknown> | null,
+) {
+  const existingMetadata = existing ?? {};
+  const requestedMetadata = requested ?? {};
+  return SERVER_OWNED_EXECUTION_WORKSPACE_METADATA_KEYS.filter((key) =>
+    Object.hasOwn(existingMetadata, key) !== Object.hasOwn(requestedMetadata, key)
+    || !isDeepStrictEqual(existingMetadata[key], requestedMetadata[key]),
+  );
+}
+
+function isAdoptedWorkspace(workspace: {
+  metadata?: Record<string, unknown> | null;
+}) {
+  const adoption = workspace.metadata?.adoption;
+  return adoption !== null
+    && typeof adoption === "object"
+    && !Array.isArray(adoption);
+}
 
 export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: PluginWorkerManager } = {}) {
   const router = Router();
@@ -72,6 +128,40 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
     return false;
   }
 
+  async function assertAdoptionAllowed(req: Request, res: Response, companyId: string, projectId: string) {
+    const decision = await access.decide({
+      actor: req.actor,
+      action: "execution_workspaces:adopt",
+      resource: { type: "project", companyId, projectId },
+      scope: { projectId },
+    });
+    if (decision.allowed) return true;
+    res.status(req.actor.type === "agent" ? 404 : 403).json({
+      error: req.actor.type === "agent" ? "Execution workspace adoption target not found" : "Execution workspace adoption is not authorized",
+      reasonCode: req.actor.type === "agent" ? "cross_scope_not_found" : "unauthorized",
+    });
+    return false;
+  }
+
+  async function logAdoptionRejected(req: Request, companyId: string, reasonCode: string) {
+    try {
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "execution_workspace.adoption_rejected",
+        entityType: "company",
+        entityId: companyId,
+        details: { reasonCode },
+      });
+    } catch {
+      // Rejection logging must not convert a safe denial into an unexpected failure.
+    }
+  }
+
   router.get("/companies/:companyId/execution-workspaces", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
@@ -105,6 +195,99 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
 
     const overview = await svc.listOverview(companyId, parsed.data);
     res.json(overview);
+  });
+
+  router.post("/companies/:companyId/execution-workspaces/adopt-git-worktree", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const parsed = adoptGitWorktreeExecutionWorkspaceSchema.safeParse(req.body);
+    if (!parsed.success) {
+      await logAdoptionRejected(req, companyId, "unsafe_input");
+      res.status(422).json({ error: "Invalid execution workspace adoption request", reasonCode: "unsafe_input" });
+      return;
+    }
+    if (!(await assertAdoptionAllowed(req, res, companyId, parsed.data.projectId))) {
+      await logAdoptionRejected(req, companyId, "unauthorized");
+      return;
+    }
+    let authorizedBindIssue: ExecutionWorkspaceIssueAuthorizationSnapshot | null = null;
+    if (parsed.data.bindIssueId) {
+      const [bindIssue] = await db
+        .select({
+          id: issues.id,
+          companyId: issues.companyId,
+          projectId: issues.projectId,
+          parentId: issues.parentId,
+          assigneeAgentId: issues.assigneeAgentId,
+          assigneeUserId: issues.assigneeUserId,
+          status: issues.status,
+          executionPolicy: issues.executionPolicy,
+          originKind: issues.originKind,
+          originId: issues.originId,
+        })
+        .from(issues)
+        .where(and(
+          eq(issues.id, parsed.data.bindIssueId),
+          eq(issues.companyId, companyId),
+          eq(issues.projectId, parsed.data.projectId),
+        ))
+        .limit(1);
+      if (!bindIssue) {
+        await logAdoptionRejected(req, companyId, "cross_scope_not_found");
+        res.status(404).json({
+          error: "Execution workspace adoption target not found",
+          reasonCode: "cross_scope_not_found",
+        });
+        return;
+      }
+      const bindDecision = await access.decide({
+        actor: req.actor,
+        action: "issue:mutate",
+        resource: {
+          type: "issue",
+          companyId,
+          issueId: parsed.data.bindIssueId,
+          projectId: parsed.data.projectId,
+          parentIssueId: bindIssue.parentId,
+          assigneeAgentId: bindIssue.assigneeAgentId,
+          assigneeUserId: bindIssue.assigneeUserId,
+          status: bindIssue.status,
+          originKind: bindIssue.originKind,
+          originId: bindIssue.originId,
+        },
+      });
+      if (!bindDecision.allowed) {
+        await logAdoptionRejected(req, companyId, "unauthorized");
+        res.status(req.actor.type === "agent" ? 404 : 403).json({
+          error: req.actor.type === "agent" ? "Execution workspace adoption target not found" : "Issue binding is not authorized",
+          reasonCode: req.actor.type === "agent" ? "cross_scope_not_found" : "unauthorized",
+        });
+        return;
+      }
+      authorizedBindIssue = bindIssue;
+    }
+    const actor = getActorInfo(req);
+    try {
+      const result = await svc.adoptGitWorktree(companyId, parsed.data, {
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+      }, authorizedBindIssue);
+      res.status(result.operation ? 201 : 200).json(result);
+    } catch (error) {
+      if (error instanceof ExecutionWorkspaceAdoptionError) {
+        await logAdoptionRejected(req, companyId, error.reasonCode);
+        res.status(error.status).json({
+          error: "Execution workspace adoption rejected",
+          reasonCode: error.reasonCode,
+        });
+        return;
+      }
+      await logAdoptionRejected(req, companyId, "unexpected_failure");
+      logger.warn({ err: error, companyId }, "execution workspace adoption failed unexpectedly");
+      res.status(500).json({ error: "Execution workspace adoption failed", reasonCode: "unexpected_failure" });
+    }
   });
 
   router.get("/execution-workspaces/:id", async (req, res) => {
@@ -570,11 +753,108 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
     res.json(result);
   });
 
+  router.post("/execution-workspaces/:id/rollback-adoption", validate(rollbackAdoptedExecutionWorkspaceSchema), async (req, res) => {
+    const id = req.params.id as string;
+    const existing = await getAccessibleResource(req, res, svc.getById(id), "Execution workspace not found");
+    if (!existing) return;
+    if (!(await assertAdoptionAllowed(req, res, existing.companyId, existing.projectId))) return;
+    const boundIssueId = adoptionBoundIssueId(existing.metadata);
+    let authorizedBoundIssue: ExecutionWorkspaceIssueAuthorizationSnapshot | null = null;
+    if (boundIssueId) {
+      const [boundIssue] = await db
+        .select({
+          id: issues.id,
+          parentId: issues.parentId,
+          assigneeAgentId: issues.assigneeAgentId,
+          assigneeUserId: issues.assigneeUserId,
+          status: issues.status,
+          executionPolicy: issues.executionPolicy,
+          originKind: issues.originKind,
+          originId: issues.originId,
+        })
+        .from(issues)
+        .where(and(
+          eq(issues.id, boundIssueId),
+          eq(issues.companyId, existing.companyId),
+          eq(issues.projectId, existing.projectId),
+        ))
+        .limit(1);
+      if (!boundIssue) {
+        res.status(409).json({ error: "Adoption rollback no longer matches the bound issue", reasonCode: "workspace_conflict" });
+        return;
+      }
+      const bindDecision = await access.decide({
+        actor: req.actor,
+        action: "issue:mutate",
+        resource: {
+          type: "issue",
+          companyId: existing.companyId,
+          issueId: boundIssue.id,
+          projectId: existing.projectId,
+          parentIssueId: boundIssue.parentId,
+          assigneeAgentId: boundIssue.assigneeAgentId,
+          assigneeUserId: boundIssue.assigneeUserId,
+          status: boundIssue.status,
+          originKind: boundIssue.originKind,
+          originId: boundIssue.originId,
+        },
+      });
+      if (!bindDecision.allowed) {
+        res.status(req.actor.type === "agent" ? 404 : 403).json({
+          error: req.actor.type === "agent" ? "Execution workspace adoption target not found" : "Issue rollback is not authorized",
+          reasonCode: req.actor.type === "agent" ? "cross_scope_not_found" : "unauthorized",
+        });
+        return;
+      }
+      authorizedBoundIssue = boundIssue;
+    }
+    const actor = getActorInfo(req);
+    try {
+      const workspace = await svc.rollbackAdoption(id, {
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+      }, req.body.reason ?? null, boundIssueId, authorizedBoundIssue);
+      res.json({ workspace });
+    } catch (error) {
+      if (error instanceof ExecutionWorkspaceAdoptionError) {
+        res.status(error.status).json({ error: "Execution workspace adoption rollback rejected", reasonCode: error.reasonCode });
+        return;
+      }
+      throw error;
+    }
+  });
+
   router.patch("/execution-workspaces/:id", validate(updateExecutionWorkspaceSchema), async (req, res) => {
     const id = req.params.id as string;
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Execution workspace not found");
     if (!existing) return;
     if (!(await assertRuntimeManageAllowed(req, res, existing.companyId))) return;
+    if (
+      isAdoptedWorkspace(existing)
+      && Object.keys(req.body).some((key) => !ADOPTED_WORKSPACE_MUTABLE_PATCH_KEYS.has(key))
+    ) {
+      res.status(409).json({
+        error: "Adopted execution workspace identity is immutable",
+        reasonCode: "adopted_workspace_identity_immutable",
+      });
+      return;
+    }
+    const changedServerOwnedKeys = req.body.metadata === undefined
+      ? []
+      : changedServerOwnedMetadataKeys(
+          existing.metadata as Record<string, unknown> | null,
+          req.body.metadata as Record<string, unknown> | null,
+        );
+    if (changedServerOwnedKeys.length > 0) {
+      res.status(409).json({
+        error: "Execution workspace server-owned metadata is immutable",
+        reasonCode: "execution_workspace_server_owned_metadata_immutable",
+        protectedKeys: changedServerOwnedKeys,
+      });
+      return;
+    }
     assertNoAgentHostWorkspaceCommandMutation(
       req,
       collectExecutionWorkspaceCommandPaths({
@@ -664,50 +944,52 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
           executionWorkspaceId: existing.id,
           workspaceCwd: existing.cwd,
         });
-        const projectWorkspace = existing.projectWorkspaceId
-          ? await db
-              .select({
-                cwd: projectWorkspaces.cwd,
-                cleanupCommand: projectWorkspaces.cleanupCommand,
-              })
-              .from(projectWorkspaces)
-            .where(
-                and(
-                  eq(projectWorkspaces.id, existing.projectWorkspaceId),
-                  eq(projectWorkspaces.companyId, existing.companyId),
-                ),
-              )
-              .then((rows) => rows[0] ?? null)
-          : null;
-        const projectPolicy = existing.projectId
-          ? await db
-              .select({
-                executionWorkspacePolicy: projects.executionWorkspacePolicy,
-              })
-              .from(projects)
-              .where(and(eq(projects.id, existing.projectId), eq(projects.companyId, existing.companyId)))
-              .then((rows) => parseProjectExecutionWorkspacePolicy(rows[0]?.executionWorkspacePolicy))
-          : null;
-        const cleanupResult = await cleanupExecutionWorkspaceArtifacts({
-          workspace: existing,
-          projectWorkspace,
-          teardownCommand: configForCleanup?.teardownCommand ?? projectPolicy?.workspaceStrategy?.teardownCommand ?? null,
-          cleanupCommand: configForCleanup?.cleanupCommand ?? null,
-          recorder: workspaceOperationsSvc.createRecorder({
-            companyId: existing.companyId,
-            executionWorkspaceId: existing.id,
-          }),
-        });
-        cleanupWarnings = cleanupResult.warnings;
-        const cleanupPatch: Record<string, unknown> = {
-          closedAt,
-          cleanupReason: cleanupWarnings.length > 0 ? cleanupWarnings.join(" | ") : null,
-        };
-        if (!cleanupResult.cleaned) {
-          cleanupPatch.status = "cleanup_failed";
-        }
-        if (cleanupResult.warnings.length > 0 || !cleanupResult.cleaned) {
-          workspace = (await svc.update(id, cleanupPatch)) ?? workspace;
+        if (executionWorkspaceOwnsGitArtifacts(existing.metadata as Record<string, unknown> | null)) {
+          const projectWorkspace = existing.projectWorkspaceId
+            ? await db
+                .select({
+                  cwd: projectWorkspaces.cwd,
+                  cleanupCommand: projectWorkspaces.cleanupCommand,
+                })
+                .from(projectWorkspaces)
+              .where(
+                  and(
+                    eq(projectWorkspaces.id, existing.projectWorkspaceId),
+                    eq(projectWorkspaces.companyId, existing.companyId),
+                  ),
+                )
+                .then((rows) => rows[0] ?? null)
+            : null;
+          const projectPolicy = existing.projectId
+            ? await db
+                .select({
+                  executionWorkspacePolicy: projects.executionWorkspacePolicy,
+                })
+                .from(projects)
+                .where(and(eq(projects.id, existing.projectId), eq(projects.companyId, existing.companyId)))
+                .then((rows) => parseProjectExecutionWorkspacePolicy(rows[0]?.executionWorkspacePolicy))
+            : null;
+          const cleanupResult = await cleanupExecutionWorkspaceArtifacts({
+            workspace: existing,
+            projectWorkspace,
+            teardownCommand: configForCleanup?.teardownCommand ?? projectPolicy?.workspaceStrategy?.teardownCommand ?? null,
+            cleanupCommand: configForCleanup?.cleanupCommand ?? null,
+            recorder: workspaceOperationsSvc.createRecorder({
+              companyId: existing.companyId,
+              executionWorkspaceId: existing.id,
+            }),
+          });
+          cleanupWarnings = cleanupResult.warnings;
+          const cleanupPatch: Record<string, unknown> = {
+            closedAt,
+            cleanupReason: cleanupWarnings.length > 0 ? cleanupWarnings.join(" | ") : null,
+          };
+          if (!cleanupResult.cleaned) {
+            cleanupPatch.status = "cleanup_failed";
+          }
+          if (cleanupResult.warnings.length > 0 || !cleanupResult.cleaned) {
+            workspace = (await svc.update(id, cleanupPatch)) ?? workspace;
+          }
         }
       } catch (error) {
         const failureReason = error instanceof Error ? error.message : String(error);
