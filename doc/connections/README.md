@@ -69,6 +69,60 @@ The agent should not hold a durable provider credential. It should hold a
 Paperclip run/session token; the server or broker resolves the connection,
 checks governance, invokes the provider, and writes audit.
 
+## Identity vs. connections
+
+Signing a user *in* and connecting a *resource* are different planes with
+different owners, different token profiles, and different homes. Do not merge
+them. The source of truth for this boundary is
+[`paperclip-id/docs/identity-model.md`](https://github.com/paperclipai/paperclip-id/blob/master/docs/identity-model.md);
+this section is the connections-side pointer so connector implementers inherit
+the rule without re-deriving it.
+
+| Plane | Question | Lives where | Token profile |
+| --- | --- | --- | --- |
+| **P1. Sign-in methods** | *Who are you?* | `paperclip-id` (id.paperclip.ing → Account) | Minimal-scope provider tokens (`openid email profile`), used once to authenticate, encrypted at rest, never exported |
+| **P2. Connections (Apps)** | *What may your agents touch?* | Paperclip App instances (`tool_connections`), acquired via the **connect broker** for hosted + self-hosted | Rich-scope, long-lived resource tokens in the **instance's** encrypted vault; per-agent grants; ask-first on writes |
+| **P3. Login with Paperclip** | *Who may authenticate against us?* | `paperclip-id` OIDC provider + DB-backed client registry ([`docs/oidc.md`](https://github.com/paperclipai/paperclip-id/blob/master/docs/oidc.md)) | Our ES256 ID/access tokens issued *by* us to registered RPs (instances, the broker, future third parties) |
+
+Everything in `doc/connections/` — the [First-30 matrix](./FIRST-30-MATRIX.md),
+the [connector playbook](./CONNECTOR-PLAYBOOK.md), and the connect-broker work —
+lives on **plane P2**. It never acquires, stores, or brokers a P1 sign-in token.
+
+### The standing rule (D7)
+
+Adopted as a standing rule (decision D7) with the identity-model plan; the full
+rationale lives in the source-of-truth doc linked above. State it verbatim in any
+P2 design so the app-store work cannot drift into merging the planes:
+
+> Sign-in tokens are never reused as resource tokens; id.paperclip.ing never
+> stores resource tokens; no connections hub on the ID service.
+
+P2 tokens flow broker → instance vault as pass-through only; the id.paperclip.ing
+Account page therefore must **not** grow a "Connections" hub. The reasons to
+hold the planes apart (from the plan §3):
+
+- **Scope discipline.** Sign-in wants the narrowest grant; connections want
+  deliberately broad ones. One button that does both is how you grant repo
+  access just to log in.
+- **Blast radius.** id.paperclip.ing holding every customer's Vercel/Slack/GitHub
+  resource tokens would make it the single juiciest target in the fleet; the
+  broker is intentionally pass-through.
+- **Self-hosted symmetry.** Instances own their vaults, so self-hosters don't
+  depend on our uptime to *use* their own connections.
+- **Legibility.** Sign-in and connections answer different user questions, and
+  every product we benchmarked (Vercel, Railway, GitHub, Google) keeps them on
+  separate pages with separate names.
+
+### Naming alignment
+
+Use the surface-correct name for each plane; they intentionally differ:
+
+| Surface | Plane | Name to use |
+| --- | --- | --- |
+| Paperclip App instances | P2 | **"Connections"** |
+| id.paperclip.ing Account | P1 | **"Ways to sign in"** |
+| id.paperclip.ing admin | P3 | **"OIDC clients"** (until the app store productizes it) |
+
 ## Packaging Rule
 
 Default to a **catalog entry** when an integration can be described as metadata:
@@ -85,6 +139,9 @@ not own durable tokens.
 ## Canonical Docs
 
 - [Glossary](./GLOSSARY.md) defines product and internal terms.
+- [Identity vs. connections](#identity-vs-connections) fixes the P1/P2/P3
+  boundary and the D7 standing rule; the source of truth is
+  [`paperclip-id/docs/identity-model.md`](https://github.com/paperclipai/paperclip-id/blob/master/docs/identity-model.md).
 - [Security threat model](./SECURITY-THREAT-MODEL.md) harvests the keeper from
   [PAP-2359](/PAP/issues/PAP-2359) and maps it onto Apps v2.
 - [First-30 matrix](./FIRST-30-MATRIX.md) harvests the keeper from
