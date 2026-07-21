@@ -99,6 +99,7 @@ export { financeEvents } from "./finance_events.js";
 export { approvals } from "./approvals.js";
 export { approvalComments } from "./approval_comments.js";
 export { activityLog } from "./activity_log.js";
+export { fleetPatrolAudit } from "./fleet_patrol_audit.js";
 export { companySecretProviderConfigs } from "./company_secret_provider_configs.js";
 export { userSecretDefinitions } from "./user_secret_definitions.js";
 export { companySecrets } from "./company_secrets.js";

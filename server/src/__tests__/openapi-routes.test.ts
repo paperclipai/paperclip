@@ -31,6 +31,7 @@ const apiPrefixes: Record<string, string> = {
   "environments.ts": "/api",
   "execution-workspaces.ts": "/api",
   "file-resources.ts": "/api",
+  "fleet-patrol-remediation.ts": "/api",
   "folders.ts": "/api",
   "goals.ts": "/api",
   "health.ts": "/api/health",
@@ -226,6 +227,21 @@ describe("openapi routes", () => {
     expect(spec.paths["/api/execution-workspaces/{id}/reconcile-branch"].post["x-paperclip-authorization"]).toEqual({
       actor: "board",
     });
+    expect(spec.paths["/api/fleet-patrol/remediation"].post.security).toEqual([
+      { AgentBearerAuth: [] },
+    ]);
+    expect(spec.paths["/api/fleet-patrol/remediation"].post["x-paperclip-authorization"]).toEqual({
+      actor: "agent",
+      credential: "run_scoped_jwt",
+      principal: "fleet_patrol",
+    });
+    expect(Object.keys(spec.paths["/api/fleet-patrol/remediation"].post.responses).sort()).toEqual([
+      "200",
+      "401",
+      "403",
+      "409",
+      "422",
+    ]);
     expect(spec.paths["/api/companies/{companyId}/cost-events"].post.responses["201"]).toBeDefined();
     expect(spec.paths["/api/companies/{companyId}/cost-events"].post.responses["403"]).toBeDefined();
     expect(spec.paths["/api/instance/database-backups"].post.responses["201"]).toBeDefined();
