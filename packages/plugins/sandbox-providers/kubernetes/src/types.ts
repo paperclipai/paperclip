@@ -19,6 +19,7 @@ export const kubernetesProviderConfigSchema = z
     egressAllowFqdns: z.array(z.string()).default([]),
     egressAllowCidrs: z.array(z.string().regex(cidrRegex, "Invalid CIDR")).default([]),
     egressMode: z.enum(["cilium", "standard"]).default("standard"),
+    egressPolicy: z.enum(["allowlist", "open-internet"]).default("allowlist"),
 
     defaultResources: z
       .object({

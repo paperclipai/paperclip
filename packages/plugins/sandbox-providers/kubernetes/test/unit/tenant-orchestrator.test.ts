@@ -77,6 +77,16 @@ describe("ensureTenant", () => {
     expect((npCalls[0].body as { metadata: { name: string } }).metadata.name).toBe("paperclip-deny-all");
   });
 
+  it("threads egressPolicy=open-internet into the CiliumNetworkPolicy manifest", async () => {
+    const clients = makeMockClients();
+    await ensureTenant(clients as never, { ...baseInput, egressMode: "cilium", egressPolicy: "open-internet" });
+    const cnpCall = clients.calls.find((c) => c.kind === "CiliumNetworkPolicy");
+    expect(cnpCall).toBeDefined();
+    const cnp = cnpCall!.body as { spec: { egress: { toCIDRSet?: { cidr: string }[] }[] } };
+    const openRule = cnp.spec.egress.find((rule) => rule.toCIDRSet?.some((entry) => entry.cidr === "0.0.0.0/0"));
+    expect(openRule).toBeDefined();
+  });
+
   it("applies serviceAccountAnnotations to the ServiceAccount", async () => {
     const clients = makeMockClients();
     await ensureTenant(clients as never, {
