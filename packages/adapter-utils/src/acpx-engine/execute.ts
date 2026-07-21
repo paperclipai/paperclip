@@ -81,11 +81,44 @@ const defaultModuleDir = path.dirname(fileURLToPath(import.meta.url));
 const PAPERCLIP_MANAGED_CODEX_SKILLS_MANIFEST = ".paperclip-managed-skills.json";
 const BENIGN_NES_CLOSE_STDERR = /method: ['"]nes\/close['"].*-32601/;
 
+interface ChildStderrState {
+  logPath: string | null;
+  pendingLiveLine: string;
+}
+
+function routeChildStderr(state: ChildStderrState, chunk: string) {
+  if (state.logPath) {
+    fsSync.mkdirSync(path.dirname(state.logPath), { recursive: true });
+    fsSync.appendFileSync(state.logPath, chunk);
+  }
+  const combined = state.pendingLiveLine + chunk;
+  const lastNewline = combined.lastIndexOf("\n");
+  if (lastNewline < 0) {
+    state.pendingLiveLine = combined;
+    return;
+  }
+  const complete = combined.slice(0, lastNewline + 1);
+  state.pendingLiveLine = combined.slice(lastNewline + 1);
+  const filtered = complete
+    .split(/(?<=\n)/)
+    .filter((line) => !BENIGN_NES_CLOSE_STDERR.test(line))
+    .join("");
+  if (filtered) process.stderr.write(filtered);
+}
+
+function flushChildStderr(state: ChildStderrState) {
+  if (state.pendingLiveLine && !BENIGN_NES_CLOSE_STDERR.test(state.pendingLiveLine)) {
+    process.stderr.write(state.pendingLiveLine);
+  }
+  state.pendingLiveLine = "";
+}
+
 type AcpxRuntimeFactory = (options: AcpRuntimeOptions) => AcpRuntime;
 
 export interface RuntimeCacheEntry {
   runtime: AcpRuntime;
   handle: AcpRuntimeHandle;
+  childStderrState: ChildStderrState;
   fingerprint: string;
   lastUsedAt: number;
   cleanupTimer?: NodeJS.Timeout;
@@ -1832,6 +1865,7 @@ async function closeWarmHandle(input: {
     reason: input.reason,
     discardPersistentState: input.discardPersistentState ?? false,
   }).catch(() => {});
+  flushChildStderr(input.entry.childStderrState);
 }
 
 function scheduleIdleHandleCleanup(input: {
@@ -1907,6 +1941,9 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
     const canResume = isCompatibleSession(previousParams, prepared);
     const resumeSessionId = canResume ? asString(previousParams.acpSessionId, "") || undefined : undefined;
     const cached = canResume ? warmHandles.get(prepared.sessionKey) : undefined;
+    const childStderrState = cached?.childStderrState ?? { logPath: null, pendingLiveLine: "" };
+    flushChildStderr(childStderrState);
+    childStderrState.logPath = prepared.childStderrLogPath;
     const runtimeOptions: AcpRuntimeOptions = {
       cwd: prepared.cwd,
       sessionStore: createRuntimeStore({ stateDir: prepared.stateDir }),
@@ -1920,15 +1957,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       // benefit from doubling the log volume.
       verbose: prepared.acpxAgent === "claude",
       onAgentStderr: prepared.childStderrLogPath
-        ? (chunk) => {
-            fsSync.mkdirSync(path.dirname(prepared.childStderrLogPath!), { recursive: true });
-            fsSync.appendFileSync(prepared.childStderrLogPath!, chunk);
-            const filtered = chunk
-              .split(/(?<=\n)/)
-              .filter((line) => !BENIGN_NES_CLOSE_STDERR.test(line))
-              .join("");
-            if (filtered) process.stderr.write(filtered);
-          }
+        ? (chunk) => routeChildStderr(childStderrState, chunk)
         : undefined,
     };
     const runtime = cached?.runtime ?? createRuntime(runtimeOptions);
@@ -2177,6 +2206,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           const entry: RuntimeCacheEntry = {
             runtime,
             handle: sessionHandle,
+            childStderrState,
             fingerprint: prepared.fingerprint,
             lastUsedAt: now(),
           };
@@ -2218,6 +2248,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         message: errorMessage,
       });
       await cleanupRemoteBridges(prepared);
+      flushChildStderr(childStderrState);
       return {
         exitCode: terminal.status === "completed" ? 0 : 1,
         signal: timedOut ? "SIGTERM" : null,
@@ -2274,6 +2305,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         messageOverride,
       });
       await cleanupRemoteBridges(prepared);
+      flushChildStderr(childStderrState);
       return {
         exitCode: 1,
         signal: timedOut ? "SIGTERM" : null,

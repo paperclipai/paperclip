@@ -943,7 +943,8 @@ describe("shared ACPX engine runtime behavior", () => {
         onMeta: async () => {},
       } as never);
       expect(result.exitCode).toBe(0);
-      runtimeOptions?.onAgentStderr?.("Error handling request { method: 'nes/close' } { code: -32601 }\n");
+      runtimeOptions?.onAgentStderr?.("Error handling request { method: 'nes/cl");
+      runtimeOptions?.onAgentStderr?.("ose' } { code: -32601 }\n");
       runtimeOptions?.onAgentStderr?.("some genuine crash: TypeError: x is not a function\n");
     } finally {
       process.stderr.write = originalWrite;
@@ -953,6 +954,49 @@ describe("shared ACPX engine runtime behavior", () => {
     const runLog = await fs.readFile(path.join(stateDir, "run-stderr", "run-nes-close-1.log"), "utf8");
     expect(runLog).toContain("nes/close");
     expect(runLog).toContain("some genuine crash");
+  });
+
+  it("routes reused warm-runtime stderr to the current run log", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const warmHandles = new Map();
+    let runtimeOptions: AcpRuntimeOptions | undefined;
+    const execute = createAcpxEngineExecutor({
+      warmHandles,
+      createRuntime: (options) => {
+        runtimeOptions = options;
+        return buildRuntime() as never;
+      },
+    });
+    const config = {
+      agent: "custom",
+      agentCommand: "node ./fake-acp.js",
+      stateDir,
+      mode: "persistent",
+      warmHandleIdleMs: 60_000,
+    };
+    const first = await execute({
+      runId: "run-warm-1",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config,
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+    } as never);
+    const second = await execute({
+      runId: "run-warm-2",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: { sessionParams: first.sessionParams },
+      config,
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+    } as never);
+    expect(second.exitCode).toBe(0);
+    runtimeOptions?.onAgentStderr?.("current-run-stderr\n");
+    await expect(fs.readFile(path.join(stateDir, "run-stderr", "run-warm-1.log"), "utf8")).rejects.toThrow();
+    await expect(fs.readFile(path.join(stateDir, "run-stderr", "run-warm-2.log"), "utf8")).resolves.toContain("current-run-stderr");
   });
 
   it("passes Paperclip env through ACPX session options instead of process.env", async () => {
