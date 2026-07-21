@@ -13,7 +13,7 @@ class TestTranscribe(unittest.TestCase):
         open(ogg, "wb").close()
 
         def fake_run(cmd, **kwargs):
-            if cmd[0] == "whisper-cli":
+            if os.path.basename(cmd[0]) == "whisper-cli":
                 # -of <prefix> steht direkt vor -f <wav>; schreibe <prefix>.txt
                 prefix = cmd[cmd.index("-of") + 1]
                 with open(prefix + ".txt", "w", encoding="utf-8") as fh:
@@ -50,6 +50,16 @@ class TestTranscribe(unittest.TestCase):
             with self.assertRaises(transcribe.TranscriptionError) as ctx:
                 transcribe.transcribe(ogg, "model.bin", workdir=workdir)
             self.assertIn("whisper produced no output", str(ctx.exception))
+
+    def test_resolve_binary_raises_when_missing(self):
+        with mock.patch("transcribe.shutil.which", return_value=None), \
+             mock.patch("transcribe.os.path.exists", return_value=False):
+            with self.assertRaises(transcribe.TranscriptionError):
+                transcribe._resolve_binary("ffmpeg")
+
+    def test_resolve_binary_prefers_which(self):
+        with mock.patch("transcribe.shutil.which", return_value="/opt/homebrew/bin/ffmpeg"):
+            self.assertEqual(transcribe._resolve_binary("ffmpeg"), "/opt/homebrew/bin/ffmpeg")
 
 
 if __name__ == "__main__":
