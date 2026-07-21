@@ -5214,6 +5214,98 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
     expect(wakes.some((row) => row.reason === "run_liveness_continuation")).toBe(false);
   });
+
+  it("bounds same-root automatic retries to four runs via the production mint, parks with owner/action, and resumes on new external input", async () => {
+    const { agentId, companyId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+    });
+    const heartbeat = heartbeatService(db);
+    const oldFinishedAt = new Date("2026-03-19T00:05:00.000Z");
+
+    const loadRun = async (id: string) =>
+      db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)).then((rows) => rows[0]!);
+    // The exact gate-source shape recovery paths pass into the production mint.
+    const gateSourceOf = (run: typeof heartbeatRuns.$inferSelect) => ({
+      id: run.id,
+      companyId: run.companyId,
+      retryRootRunId: run.retryRootRunId,
+      retryEpoch: run.retryEpoch,
+      errorCode: run.errorCode,
+      error: run.error,
+      responsibleUserId: run.responsibleUserId,
+    });
+    // Finalize a run as a past failure so the next mint sees a terminal run
+    // (no coalescing) and the issue-rewake throttle (which only counts recent
+    // terminal runs) stays out of the way.
+    const failRunInPast = async (id: string) =>
+      db
+        .update(heartbeatRuns)
+        .set({ status: "failed", errorCode: "process_lost", error: "still failing", finishedAt: oldFinishedAt, updatedAt: oldFinishedAt })
+        .where(eq(heartbeatRuns.id, id));
+    const recoveryWake = (source: ReturnType<typeof gateSourceOf>, reason: string, external = false) =>
+      heartbeat.wakeup(agentId, {
+        source: external ? "on_demand" : "automation",
+        triggerDetail: external ? "callback" : "system",
+        reason,
+        contextSnapshot: { issueId, taskId: issueId, wakeReason: reason },
+        requestedByActorType: external ? "user" : "system",
+        requestedByActorId: external ? "responsible-user" : null,
+        sameRootRetry: { source },
+      });
+
+    // Drive the real production mint (heartbeat.wakeup with sameRootRetry — the
+    // same call the stranded/source-scoped recovery paths make). Each allowed
+    // retry is scheduled with backoff and holds no slot.
+    let source = gateSourceOf(await loadRun(runId));
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      const minted = await recoveryWake(source, "issue_assignment_recovery");
+      expect(minted?.status).toBe("scheduled_retry");
+      expect(minted?.retryRootRunId).toBe(runId);
+      expect(minted?.retryEpoch).toBe(0);
+      expect(minted?.scheduledRetryAttempt).toBe(attempt);
+      await failRunInPast(minted!.id);
+      source = gateSourceOf(await loadRun(minted!.id));
+    }
+
+    // Budget is now first run + 3 retries. Two concurrent 4th mints must both be
+    // refused — the advisory lock serializes them so neither slips a 5th run past
+    // the cap.
+    const [a, b] = await Promise.all([
+      recoveryWake(source, "issue_assignment_recovery"),
+      recoveryWake(source, "issue_assignment_recovery"),
+    ]);
+    expect(a).toBeNull();
+    expect(b).toBeNull();
+
+    const rootRuns = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.retryRootRunId, runId), eq(heartbeatRuns.retryEpoch, 0)));
+    expect(rootRuns).toHaveLength(3); // 3 retries + the root run = 4 automatic runs
+
+    // Park recorded with an operator-facing next owner/action; execution slot released.
+    const park = await db
+      .select()
+      .from(activityLog)
+      .where(and(eq(activityLog.entityId, issueId), eq(activityLog.action, "issue.same_root_retry_parked")));
+    expect(park.length).toBeGreaterThanOrEqual(1);
+    const parkDetails = park[0]?.details as Record<string, unknown>;
+    expect(parkDetails.status).toBe("parked");
+    expect(parkDetails.reason).toBe("root_retry_cap_exhausted");
+    expect(parkDetails.nextAction).toBeTruthy();
+    const issueAfterPark = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issueAfterPark?.executionRunId ?? null).toBeNull();
+
+    // New external input opens a fresh retry epoch: the same root resumes with a
+    // clean budget (attempt 1 in epoch 1) through the real mint.
+    const resumed = await recoveryWake(source, "issue_commented", true);
+    expect(resumed?.status).toBe("scheduled_retry");
+    expect(resumed?.retryRootRunId).toBe(runId);
+    expect(resumed?.retryEpoch).toBe(1);
+    expect(resumed?.scheduledRetryAttempt).toBe(1);
+  });
+
   it("blocks stranded in-progress work after the continuation retry was already used", async () => {
     const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
       status: "in_progress",
