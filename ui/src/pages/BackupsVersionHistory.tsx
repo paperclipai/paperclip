@@ -230,7 +230,7 @@ export function BackupsVersionHistory() {
           </p>
         </div>
         <a
-          href="https://docs.paperclip.ing/runbooks/restore"
+          href="https://github.com/cryppadotta/paperclip/blob/master/doc/RESTORE-RUNBOOK.md"
           target="_blank"
           rel="noreferrer"
           className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs font-medium text-muted-foreground hover:bg-accent hover:text-accent-foreground"
