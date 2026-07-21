@@ -3,6 +3,7 @@ import type { ToolCatalogEntry, ToolConnection } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
+import { appDefinitionSlug } from "../app-definition-display";
 import type { AppDetailSectionProps } from "./types";
 import { googleSheetsConfigWithAllowlist, parseGoogleSheetIds } from "../google-sheets";
 
@@ -35,7 +36,7 @@ export function SetupPanel({
       {description && (
         <p className="max-w-2xl text-sm leading-6 text-muted-foreground">{description}</p>
       )}
-      {galleryEntry?.slug === "google-sheets" && (
+      {appDefinitionSlug(galleryEntry) === "google-sheets" && (
         <GoogleSheetsAllowlistSection
           connection={connection}
           disabled={configUpdateDisabled}

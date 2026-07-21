@@ -110,7 +110,9 @@ function ReconnectForm({
   onReconnected: () => void;
 }) {
   const { pushToast } = useToast();
-  const method = galleryEntry ? getAvailableConnectionMethod(galleryEntry) : null;
+  const method = galleryEntry && Array.isArray(galleryEntry.methods)
+    ? getAvailableConnectionMethod(galleryEntry)
+    : null;
   const fields = (method?.credentialFields ?? []).map((field) => ({
     ...field,
     configPath: credentialConfigPath(field),
