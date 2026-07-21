@@ -5,6 +5,7 @@ import {
   activityLog,
   agents,
   agentRuntimeState,
+  agentTaskSessions,
   agentWakeupRequests,
   companySkills,
   companies,
@@ -138,6 +139,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     await db.delete(issues);
     await db.delete(heartbeatRunEvents);
     await db.delete(activityLog);
+    await db.delete(agentTaskSessions);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(agentRuntimeState);
@@ -530,6 +532,154 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       .set({ status: "succeeded", finishedAt: new Date(), updatedAt: new Date() })
       .where(eq(heartbeatRuns.id, activeRunId));
   });
+
+  it("persists the completed task session before a deferred same-issue follow-up starts", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    let finishFirstRun!: () => void;
+    const firstRunCanFinish = new Promise<void>((resolve) => {
+      finishFirstRun = resolve;
+    });
+
+    mockAdapterExecute.mockImplementationOnce(async () => {
+      await firstRunCanFinish;
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "Initial run saved a resumable session.",
+        provider: "test",
+        model: "test-model",
+        sessionParams: { sessionId: "session-before-followup" },
+        sessionDisplayId: "session-before-followup",
+      };
+    });
+    mockAdapterExecute.mockImplementationOnce(async () => ({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      errorMessage: null,
+      summary: "Deferred follow-up resumed the saved session.",
+      provider: "test",
+      model: "test-model",
+      sessionParams: { sessionId: "session-before-followup" },
+      sessionDisplayId: "session-before-followup",
+    }));
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "SessionCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+      },
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Resume a deferred same-issue follow-up",
+      status: "todo",
+      priority: "high",
+      assigneeAgentId: agentId,
+      responsibleUserId: "responsible-user",
+    });
+
+    try {
+      const firstWake = await heartbeat.wakeup(agentId, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: { issueId },
+        contextSnapshot: { issueId, taskId: issueId, wakeReason: "issue_assigned" },
+      });
+      expect(firstWake).not.toBeNull();
+      expect(
+        await waitForCondition(async () => mockAdapterExecute.mock.calls.length === 1, 30_000),
+      ).toBe(true);
+
+      await db.insert(issueComments).values({
+        companyId,
+        issueId,
+        authorAgentId: agentId,
+        authorType: "agent",
+        createdByRunId: firstWake!.id,
+        body: "Initial run saved a resumable session.",
+      });
+      const humanComment = await db
+        .insert(issueComments)
+        .values({
+          companyId,
+          issueId,
+          authorUserId: "user-1",
+          authorType: "user",
+          body: "Continue this same task with the new detail.",
+        })
+        .returning()
+        .then((rows) => rows[0]);
+      await db
+        .update(issues)
+        .set({ updatedAt: new Date(Date.now() + 1_000) })
+        .where(eq(issues.id, issueId));
+
+      const deferred = await heartbeat.wakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_commented",
+        payload: { issueId, commentId: humanComment.id },
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          commentId: humanComment.id,
+          wakeCommentId: humanComment.id,
+          wakeReason: "issue_commented",
+        },
+        requestedByActorType: "user",
+        requestedByActorId: "user-1",
+      });
+      expect(deferred).toBeNull();
+
+      finishFirstRun();
+
+      expect(
+        await waitForCondition(async () => mockAdapterExecute.mock.calls.length >= 2, 30_000),
+      ).toBe(true);
+      const secondInput = mockAdapterExecute.mock.calls[1]?.[0] as {
+        runtime?: { sessionParams?: Record<string, unknown> | null };
+      } | undefined;
+      expect(secondInput?.runtime?.sessionParams).toMatchObject({
+        sessionId: "session-before-followup",
+      });
+
+      expect(
+        await waitForCondition(async () => {
+          const active = await db
+            .select({ status: heartbeatRuns.status })
+            .from(heartbeatRuns)
+            .where(eq(heartbeatRuns.agentId, agentId));
+          return active.length === 2 && active.every((run) => run.status === "succeeded");
+        }, 30_000),
+      ).toBe(true);
+    } finally {
+      finishFirstRun();
+    }
+  }, 60_000);
 
   it("honors maxConcurrentRuns 1 by leaving a second assignment wake queued", async () => {
     const companyId = randomUUID();
@@ -1104,4 +1254,179 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       },
     });
   });
+  it("persists the preserved task session before an adapter-error run becomes terminal", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    let finishInitialRun!: () => void;
+    const initialRunCanFinish = new Promise<void>((resolve) => {
+      finishInitialRun = resolve;
+    });
+
+    mockAdapterExecute.mockImplementationOnce(async () => {
+      await initialRunCanFinish;
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "Initial session established.",
+        provider: "test",
+        model: "test-model",
+        sessionParams: { sessionId: "session-preserved-after-error" },
+        sessionDisplayId: "session-preserved-after-error",
+      };
+    });
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "FailureSessionCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+      },
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Preserve a task session after an adapter error",
+      status: "todo",
+      priority: "high",
+      assigneeAgentId: agentId,
+      responsibleUserId: "responsible-user",
+    });
+
+    try {
+      const firstWake = await heartbeat.wakeup(agentId, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: { issueId },
+        contextSnapshot: { issueId, taskId: issueId, wakeReason: "issue_assigned" },
+      });
+      expect(firstWake).not.toBeNull();
+      expect(
+        await waitForCondition(async () => mockAdapterExecute.mock.calls.length === 1, 30_000),
+      ).toBe(true);
+      await db.insert(issueComments).values({
+        companyId,
+        issueId,
+        authorAgentId: agentId,
+        authorType: "agent",
+        createdByRunId: firstWake!.id,
+        body: "Initial session established.",
+      });
+      finishInitialRun();
+      expect(
+        await waitForCondition(async () => {
+          const run = await db
+            .select({ status: heartbeatRuns.status })
+            .from(heartbeatRuns)
+            .where(eq(heartbeatRuns.id, firstWake!.id))
+            .then((rows) => rows[0]);
+          const session = await db
+            .select({ lastRunId: agentTaskSessions.lastRunId })
+            .from(agentTaskSessions)
+            .where(eq(agentTaskSessions.taskKey, issueId))
+            .then((rows) => rows[0]);
+          return run?.status === "succeeded" && session?.lastRunId === firstWake!.id;
+        }, 30_000),
+      ).toBe(true);
+
+      mockAdapterExecute.mockImplementationOnce(async () => {
+        throw new Error("synthetic adapter failure after resume");
+      });
+      const humanComment = await db
+        .insert(issueComments)
+        .values({
+          companyId,
+          issueId,
+          authorUserId: "user-1",
+          authorType: "user",
+          body: "Trigger the adapter-error continuation.",
+        })
+        .returning()
+        .then((rows) => rows[0]);
+      await db
+        .update(issues)
+        .set({ updatedAt: new Date(Date.now() + 1_000) })
+        .where(eq(issues.id, issueId));
+
+      const failedWake = await heartbeat.wakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_commented",
+        payload: { issueId, commentId: humanComment.id },
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          commentId: humanComment.id,
+          wakeCommentId: humanComment.id,
+          wakeReason: "issue_commented",
+        },
+        requestedByActorType: "user",
+        requestedByActorId: "user-1",
+      });
+      expect(failedWake).not.toBeNull();
+
+      let observedTerminalWithoutSession = false;
+      expect(
+        await waitForCondition(async () => {
+          const run = await db
+            .select({ status: heartbeatRuns.status })
+            .from(heartbeatRuns)
+            .where(eq(heartbeatRuns.id, failedWake!.id))
+            .then((rows) => rows[0]);
+          const session = await db
+            .select({
+              lastRunId: agentTaskSessions.lastRunId,
+              lastError: agentTaskSessions.lastError,
+            })
+            .from(agentTaskSessions)
+            .where(eq(agentTaskSessions.taskKey, issueId))
+            .then((rows) => rows[0]);
+          if (run?.status === "failed" && session?.lastRunId !== failedWake!.id) {
+            observedTerminalWithoutSession = true;
+            return true;
+          }
+          return run?.status === "failed" && session?.lastRunId === failedWake!.id;
+        }, 30_000),
+      ).toBe(true);
+      expect(observedTerminalWithoutSession).toBe(false);
+
+      const preserved = await db
+        .select({
+          sessionDisplayId: agentTaskSessions.sessionDisplayId,
+          lastRunId: agentTaskSessions.lastRunId,
+          lastError: agentTaskSessions.lastError,
+        })
+        .from(agentTaskSessions)
+        .where(eq(agentTaskSessions.taskKey, issueId))
+        .then((rows) => rows[0]);
+      expect(preserved).toMatchObject({
+        sessionDisplayId: "session-preserved-after-error",
+        lastRunId: failedWake!.id,
+        lastError: "synthetic adapter failure after resume",
+      });
+    } finally {
+      finishInitialRun();
+    }
+  }, 60_000);
+
+
 });
