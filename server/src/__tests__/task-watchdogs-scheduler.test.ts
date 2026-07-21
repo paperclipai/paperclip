@@ -248,6 +248,74 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     expect(watchdog?.triggerCount).toBe(1);
   });
 
+  it("does not re-arm when the source receives only system no-op comments", async () => {
+    const companyId = await seedCompany();
+    const sourceId = await seedIssue(companyId, { identifier: "WDOG-SYS-COMMENT", status: "done" });
+    const agentId = await seedAgent(companyId);
+    await seedWatchdog(companyId, sourceId, agentId);
+    const { service, wakes } = createService();
+
+    const first = await service.reconcileTaskWatchdogs({ companyId });
+    expect(first).toMatchObject({ checked: 1, triggered: 1 });
+
+    const [firstWatchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    const watchdogIssueId = firstWatchdog!.watchdogIssueId!;
+
+    const commentAt = new Date(Date.now() + 60_000);
+    await db.insert(issueComments).values({
+      companyId,
+      issueId: sourceId,
+      authorType: "system",
+      body: "No-op heartbeat transcript retained for audit.",
+      createdAt: commentAt,
+      updatedAt: commentAt,
+    });
+
+    const second = await service.reconcileTaskWatchdogs({ companyId });
+    expect(second).toMatchObject({ checked: 1, triggered: 0, live: 1 });
+    expect(wakes).toHaveLength(1);
+    const watchdogComments = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, watchdogIssueId));
+    expect(watchdogComments).toHaveLength(1);
+    const [watchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    expect(watchdog?.triggerCount).toBe(1);
+  });
+
+  it("re-arms when a user comment changes the source stopped fingerprint", async () => {
+    const companyId = await seedCompany();
+    const sourceId = await seedIssue(companyId, { identifier: "WDOG-USER-COMMENT", status: "done" });
+    const agentId = await seedAgent(companyId);
+    await seedWatchdog(companyId, sourceId, agentId);
+    const { service } = createService();
+
+    const first = await service.reconcileTaskWatchdogs({ companyId });
+    expect(first).toMatchObject({ checked: 1, triggered: 1 });
+
+    const [firstWatchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    const watchdogIssueId = firstWatchdog!.watchdogIssueId!;
+
+    const commentAt = new Date(Date.now() + 60_000);
+    await db.insert(issueComments).values({
+      companyId,
+      issueId: sourceId,
+      authorType: "user",
+      authorUserId: "user-1",
+      body: "Manual follow-up note from work.",
+      createdAt: commentAt,
+      updatedAt: commentAt,
+    });
+
+    const second = await service.reconcileTaskWatchdogs({ companyId });
+    expect(second).toMatchObject({ checked: 1, triggered: 1 });
+    const watchdogComments = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, watchdogIssueId));
+    expect(watchdogComments).toHaveLength(2);
+  });
+
   it("re-wakes a same-fingerprint watchdog review stuck in stale in_review", async () => {
     const companyId = await seedCompany();
     const sourceId = await seedIssue(companyId, { identifier: "WDOG-STALE", status: "done" });
