@@ -1320,7 +1320,9 @@ export {
 } from "./validators/sidebar-preferences.js";
 export {
   resourceMembershipStateSchema,
+  updateDocumentResourceMembershipSchema,
   updateResourceMembershipSchema,
+  type UpdateDocumentResourceMembership,
   type UpdateResourceMembership,
 } from "./validators/resource-memberships.js";
 export {
