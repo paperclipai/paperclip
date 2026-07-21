@@ -8,6 +8,7 @@ import {
   Download,
   GitCommitHorizontal,
   History,
+  Info,
   Link2,
   Link2Off,
   Loader2,
@@ -72,6 +73,11 @@ function StatusPill({ tone, label }: { tone: Tone; label: string }) {
       {label}
     </span>
   );
+}
+
+function absoluteTime(iso: string): string {
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? iso : date.toLocaleString();
 }
 
 function errorMessage(error: unknown, fallback: string): string {
@@ -194,12 +200,27 @@ export function BackupsVersionHistory() {
   const snapshot = healthQuery.data?.stateSnapshot;
   const dbBackup = healthQuery.data?.databaseBackup;
 
+  // A brand-new instance hasn't produced its first snapshot/backup yet. That's an
+  // expected day-one state, not a regression — treat "never run" as neutral
+  // ("Not yet run"), and reserve amber "Attention" for the stale case (a
+  // snapshot/backup exists but is older than the freshness window).
+  const snapshotNeverRun = !!snapshot?.enabled && snapshot.status !== "ok" && !snapshot.latestSnapshot;
+  const dbBackupNeverRun = !!dbBackup?.enabled && dbBackup.status !== "ok" && !dbBackup.latestBackup;
+
   const snapshotTone: Tone = !snapshot?.enabled
     ? "neutral"
     : snapshot.status === "ok"
       ? "ok"
-      : "warn";
-  const dbBackupTone: Tone = !dbBackup?.enabled ? "neutral" : dbBackup.status === "ok" ? "ok" : "warn";
+      : snapshotNeverRun
+        ? "neutral"
+        : "warn";
+  const dbBackupTone: Tone = !dbBackup?.enabled
+    ? "neutral"
+    : dbBackup.status === "ok"
+      ? "ok"
+      : dbBackupNeverRun
+        ? "neutral"
+        : "warn";
 
   const mirrorTone: Tone = !mirrorHealth?.configured
     ? "neutral"
@@ -230,7 +251,7 @@ export function BackupsVersionHistory() {
           </p>
         </div>
         <a
-          href="https://github.com/cryppadotta/paperclip/blob/master/doc/RESTORE-RUNBOOK.md"
+          href="https://github.com/paperclipai/paperclip/blob/master/doc/RESTORE-RUNBOOK.md"
           target="_blank"
           rel="noreferrer"
           className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs font-medium text-muted-foreground hover:bg-accent hover:text-accent-foreground"
@@ -250,31 +271,49 @@ export function BackupsVersionHistory() {
             icon={ShieldCheck}
             title="Instance-state snapshot"
             tone={snapshotTone}
-            statusLabel={!snapshot?.enabled ? "Not configured" : snapshot.status === "ok" ? "Healthy" : "Attention"}
+            statusLabel={
+              !snapshot?.enabled
+                ? "Not configured"
+                : snapshot.status === "ok"
+                  ? "Healthy"
+                  : snapshotNeverRun
+                    ? "Not yet run"
+                    : "Attention"
+            }
             loading={healthQuery.isLoading}
             detail={
               !snapshot?.enabled
                 ? "Encrypted instance snapshots are not enabled on this instance."
                 : (snapshot.latestSnapshot?.finishedAt as string | undefined)
                   ? `Last snapshot ${timeAgo(snapshot.latestSnapshot!.finishedAt as string)}`
-                  : "Awaiting the first successful snapshot."
+                  : "Awaiting the first successful snapshot — this is expected until the first snapshot runs."
             }
             warnings={snapshot?.warnings ?? []}
+            mutedWarnings={snapshotNeverRun}
           />
           <HealthCard
             icon={Cloud}
             title="Database backup"
             tone={dbBackupTone}
-            statusLabel={!dbBackup?.enabled ? "Not configured" : dbBackup.status === "ok" ? "Healthy" : "Attention"}
+            statusLabel={
+              !dbBackup?.enabled
+                ? "Not configured"
+                : dbBackup.status === "ok"
+                  ? "Healthy"
+                  : dbBackupNeverRun
+                    ? "Not yet run"
+                    : "Attention"
+            }
             loading={healthQuery.isLoading}
             detail={
               !dbBackup?.enabled
                 ? "Scheduled database backups are not enabled on this instance."
                 : dbBackup.latestBackup
                   ? `Last backup ${timeAgo(dbBackup.latestBackup.mtime)} · ${(dbBackup.latestBackup.sizeBytes / 1e6).toFixed(1)} MB`
-                  : "Awaiting the first successful backup."
+                  : "Awaiting the first successful backup — this is expected until the first backup runs."
             }
             warnings={dbBackup?.warnings ?? []}
+            mutedWarnings={dbBackupNeverRun}
           />
         </div>
       </section>
@@ -310,17 +349,24 @@ export function BackupsVersionHistory() {
           ) : (
             <ul className="divide-y divide-border">
               {commits.map((commit) => (
-                <li key={commit.hash} className="flex items-start gap-3 px-4 py-2.5 hover:bg-accent/40">
+                <li key={commit.hash} className="flex items-start gap-3 px-4 py-2.5">
                   <GitCommitHorizontal className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
                   <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm">{commit.subject}</p>
+                    <p className="truncate text-sm" title={commit.subject}>{commit.subject}</p>
                     <p className="text-xs text-muted-foreground">
                       <span className="font-medium text-foreground/80">{commit.author}</span>
                       {" · "}
-                      {commit.date ? timeAgo(commit.date) : "unknown time"}
+                      <span title={commit.date ? absoluteTime(commit.date) : undefined}>
+                        {commit.date ? timeAgo(commit.date) : "unknown time"}
+                      </span>
                     </p>
                   </div>
-                  <code className="mt-0.5 shrink-0 font-mono text-xs text-muted-foreground">{commit.shortHash}</code>
+                  <code
+                    className="mt-0.5 shrink-0 font-mono text-xs text-muted-foreground"
+                    title={commit.hash}
+                  >
+                    {commit.shortHash}
+                  </code>
                 </li>
               ))}
             </ul>
@@ -460,6 +506,7 @@ function HealthCard({
   detail,
   warnings,
   loading,
+  mutedWarnings,
 }: {
   icon: typeof ShieldCheck;
   title: string;
@@ -468,6 +515,7 @@ function HealthCard({
   detail: string;
   warnings: Array<{ code: string; message: string }>;
   loading?: boolean;
+  mutedWarnings?: boolean;
 }) {
   return (
     <Card>
@@ -494,8 +542,18 @@ function HealthCard({
         {warnings.length > 0 && (
           <ul className="space-y-1">
             {warnings.map((warning) => (
-              <li key={warning.code} className="flex items-start gap-1.5 text-xs text-amber-600 dark:text-amber-400">
-                <AlertTriangle className="mt-0.5 size-3 shrink-0" />
+              <li
+                key={warning.code}
+                className={cn(
+                  "flex items-start gap-1.5 text-xs",
+                  mutedWarnings ? "text-muted-foreground" : "text-amber-600 dark:text-amber-400",
+                )}
+              >
+                {mutedWarnings ? (
+                  <Info className="mt-0.5 size-3 shrink-0" />
+                ) : (
+                  <AlertTriangle className="mt-0.5 size-3 shrink-0" />
+                )}
                 <span>{warning.message}</span>
               </li>
             ))}
