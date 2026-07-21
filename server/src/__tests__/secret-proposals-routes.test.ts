@@ -168,6 +168,11 @@ describeEmbeddedPostgres("secret proposal routes", () => {
     expect(secretResponse.status).toBe(201);
     expect(JSON.stringify(secretResponse.body)).not.toContain("top-secret");
     expect(secretResponse.body).not.toHaveProperty("valueFingerprintSha256");
+    const [registeredRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.heartbeatRunId));
+    expect(JSON.stringify(registeredRun.contextSnapshot)).not.toContain("top-secret");
+    expect(registeredRun.contextSnapshot).toMatchObject({
+      paperclipSecretRedactions: [expect.objectContaining({ fingerprintSha256: expect.any(String), material: expect.any(Object) })],
+    });
 
     const bindingResponse = await request(createAgentApp(fixture))
       .post("/api/agents/me/secret-proposals")

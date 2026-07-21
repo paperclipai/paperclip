@@ -22,6 +22,7 @@ import { LOW_TRUST_REVIEW_PRESET, type AgentApiKeyScope } from "@paperclipai/sha
 import { errorHandler } from "../middleware/error-handler.js";
 import { secretRoutes } from "../routes/secrets.js";
 import { secretService } from "../services/secrets.js";
+import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -196,6 +197,11 @@ describeEmbeddedPostgres("agent secret routes", () => {
     expect(fetched.status).toBe(200);
     expect(fetched.headers["cache-control"]).toBe("no-store");
     expect(fetched.body).toEqual({ key: "env_only_key", value: "env-secret-value", version: 1 });
+    const [registeredRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.heartbeatRunId));
+    expect(JSON.stringify(registeredRun.contextSnapshot)).not.toContain("env-secret-value");
+    expect(registeredRun.contextSnapshot).toMatchObject({
+      paperclipSecretRedactions: [expect.objectContaining({ fingerprintSha256: expect.any(String), material: expect.any(Object) })],
+    });
     expect(await db.select().from(secretAccessEvents)).toEqual([
       expect.objectContaining({ secretId: envSecret.id, outcome: "success", consumerType: "agent_api" }),
     ]);
@@ -218,6 +224,12 @@ describeEmbeddedPostgres("agent secret routes", () => {
     expect(await db.select().from(activityLog)).toEqual(expect.arrayContaining([
       expect.objectContaining({ action: "secret.value.read", entityId: unboundSecret.id }),
     ]));
+  });
+
+  it("fails closed when run redaction registration cannot be persisted", async () => {
+    const fixture = await seedAgentRun();
+    await expect(createRunSecretRedactionRegistry(db).register(fixture.companyId, randomUUID(), "must-not-return"))
+      .rejects.toThrow("Heartbeat run redaction registration failed");
   });
 
   it("denies low-trust, task-bridge, and skill-test callers on both routes", async () => {

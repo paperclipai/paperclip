@@ -26,6 +26,7 @@ import { accessService } from "../services/access.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { issueService } from "../services/issues.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
+import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
 
 function assertSecretDefinitionAdmin(req: Parameters<typeof assertBoard>[0], companyId: string) {
   assertBoard(req);
@@ -68,6 +69,7 @@ export function secretRoutes(db: Db) {
   const access = accessService(db);
   const issues = issueService(db);
   const heartbeat = heartbeatService(db);
+  const runRedactions = createRunSecretRedactionRegistry(db);
   const defaultProvider = getConfiguredSecretProvider();
 
   function agentSecretContext(req: Parameters<typeof assertBoard>[0]) {
@@ -177,7 +179,9 @@ export function secretRoutes(db: Db) {
     const body = req.body ?? {};
     const proposal = body.kind === "secret"
       ? await proposals.createSecret({
-          companyId: context.companyId, heartbeatRunId: context.heartbeatRunId, registerForRedaction: () => undefined,
+          companyId: context.companyId,
+          heartbeatRunId: context.heartbeatRunId,
+          registerForRedaction: (value) => runRedactions.register(context.companyId, context.heartbeatRunId, value),
         }, { name: body.name, description: body.description, value: body.value, justification: body.justification })
       : body.kind === "binding"
         ? await proposals.createBinding({ companyId: context.companyId, heartbeatRunId: context.heartbeatRunId }, {
@@ -277,7 +281,7 @@ export function secretRoutes(db: Db) {
         configPath: secret?.configPath ?? `access.${req.params.key}`,
         bindingId: secret?.bindingId ?? null,
         issueId: null,
-        registerForRedaction: () => undefined,
+        registerForRedaction: (value) => runRedactions.register(context.companyId, context.heartbeatRunId, value),
       },
     );
     res.set("Cache-Control", "no-store");
