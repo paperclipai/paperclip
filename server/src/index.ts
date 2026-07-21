@@ -585,6 +585,15 @@ export async function startServer(): Promise<StartedServer> {
 
   const requestedListenPort = config.port;
   const listenPort = await detectPort(requestedListenPort);
+  if (
+    config.deploymentMode === "authenticated"
+    && config.deploymentExposure === "public"
+    && listenPort !== requestedListenPort
+  ) {
+    throw new Error(
+      `authenticated public deployments require requested listen port ${requestedListenPort} to be available; refusing fallback to ${listenPort}`,
+    );
+  }
   if (config.authBaseUrlMode === "explicit" && config.authPublicBaseUrl) {
     config.authPublicBaseUrl = rewriteLocalUrlPort(config.authPublicBaseUrl, listenPort);
   }

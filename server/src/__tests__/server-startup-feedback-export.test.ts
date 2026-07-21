@@ -385,6 +385,20 @@ describe("startServer feedback export wiring", () => {
     );
     expect(createDbMock).not.toHaveBeenCalled();
   });
+
+  it("refuses authenticated public startup when the requested listen port is busy", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      deploymentExposure: "public",
+      port: 3100,
+      authBaseUrlMode: "explicit",
+      authPublicBaseUrl: "https://tenant.example.com",
+    }));
+    detectPortMock.mockResolvedValueOnce(3110);
+
+    await expect(startServer()).rejects.toThrow(
+      "authenticated public deployments require requested listen port 3100 to be available; refusing fallback to 3110",
+    );
+  });
 });
 
 describe("startServer authenticated auth origin setup", () => {
