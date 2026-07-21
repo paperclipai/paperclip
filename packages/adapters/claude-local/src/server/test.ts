@@ -11,7 +11,6 @@ import {
   asBoolean,
   asNumber,
   asStringArray,
-  parseJson,
   parseObject,
   ensurePathInEnv,
 } from "@paperclipai/adapter-utils/server-utils";
@@ -20,21 +19,13 @@ import {
   ensureAdapterExecutionTargetDirectory,
   maybeRunSandboxInstallCommand,
   prepareAdapterExecutionTargetRuntime,
-  runAdapterExecutionTargetProcess,
   describeAdapterExecutionTarget,
   resolveAdapterExecutionTargetCwd,
   adapterExecutionTargetUsesManagedHome,
 } from "@paperclipai/adapter-utils/execution-target";
-import {
-  describeClaudeFailure,
-  detectClaudeLoginRequired,
-  isClaudeTransientUpstreamError,
-  parseClaudeStreamJson,
-} from "./parse.js";
-import { claudeCommandLooksLike, claudeCommandSupportsEffortFlag } from "./cli-capabilities.js";
-import { isBedrockModelId } from "./models.js";
-import { buildClaudeProbePermissionArgs } from "./permissions.js";
+import { claudeCommandLooksLike } from "./cli-capabilities.js";
 import { materializeRemoteClaudeConfig, prepareClaudeConfigSeed } from "./claude-config.js";
+import { runClaudeCredentialHelloProbe } from "./hello-probe.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { resolveClaudeExecutionEngineForRun, testClaudeAcpEnvironment } from "./acp.js";
 
@@ -46,44 +37,6 @@ function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentT
 
 function isNonEmpty(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
-}
-
-function firstNonEmptyLine(text: string): string {
-  return (
-    text
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .find(Boolean) ?? ""
-  );
-}
-
-function lastNonInitStdoutLine(text: string): string {
-  const lines = text
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-  for (let index = lines.length - 1; index >= 0; index -= 1) {
-    const line = lines[index]!;
-    const parsed = parseJson(line);
-    if (parsed && asString(parsed.type, "") === "system" && asString(parsed.subtype, "") === "init") {
-      continue;
-    }
-    return line;
-  }
-  return "";
-}
-
-function truncateDetail(value: string, max = 240): string {
-  const clean = value.replace(/\s+/g, " ").trim();
-  return clean.length > max ? `${clean.slice(0, max - 1)}…` : clean;
-}
-
-function summarizeProbeDetail(stdout: string, stderr: string): string | null {
-  const raw = firstNonEmptyLine(stderr) || lastNonInitStdoutLine(stdout);
-  if (!raw) return null;
-  const clean = raw.replace(/\s+/g, " ").trim();
-  const max = 240;
-  return clean.length > max ? `${clean.slice(0, max - 1)}…` : clean;
 }
 
 export async function testEnvironment(
@@ -314,40 +267,6 @@ export async function testEnvironment(
         return asStringArray(config.args);
       })();
 
-      let effectiveEffort = effort;
-      if (targetIsSandbox && effort) {
-        const supportsEffort = await claudeCommandSupportsEffortFlag({
-          runId,
-          command,
-          target,
-          cwd,
-          env,
-          timeoutSec: 45,
-          graceSec: 5,
-        });
-        if (supportsEffort === false) {
-          effectiveEffort = "";
-          checks.push({
-            code: "claude_effort_flag_unsupported",
-            level: "warn",
-            message:
-              "Claude CLI in the sandbox does not advertise --effort; the probe omitted the configured reasoning effort.",
-            hint: "Upgrade the sandbox CLI/template to a newer Claude Code release to restore reasoning-effort control.",
-          });
-        }
-      }
-
-      const args = ["--print", "-", "--output-format", "stream-json", "--verbose"];
-      args.push(...buildClaudeProbePermissionArgs({ dangerouslySkipPermissions, targetIsRemote }));
-      if (chrome) args.push("--chrome");
-      // For Bedrock: only pass --model when the ID is a Bedrock-native identifier.
-      if (model && (!hasBedrock || isBedrockModelId(model))) {
-        args.push("--model", model);
-      }
-      if (effectiveEffort) args.push("--effort", effectiveEffort);
-      if (maxTurns > 0) args.push("--max-turns", String(maxTurns));
-      if (extraArgs.length > 0) args.push(...extraArgs);
-
       // Sandbox bridges still add lease warmup and transport overhead, but
       // the standard-2 Cloudflare tier now probes fast enough that a 90s
       // budget leaves headroom without masking real hangs.
@@ -356,101 +275,24 @@ export async function testEnvironment(
         asNumber(config.helloProbeTimeoutSec, targetIsSandbox ? 90 : 45),
       );
 
-      const probe = await runAdapterExecutionTargetProcess(
+      const probeChecks = await runClaudeCredentialHelloProbe({
         runId,
         target,
         command,
-        args,
-        {
-          cwd,
-          env,
-          timeoutSec: helloProbeTimeoutSec,
-          graceSec: 5,
-          stdin: "Respond with hello.",
-          onLog: async () => {},
-        },
-      );
-
-      const parsedStream = parseClaudeStreamJson(probe.stdout);
-      const parsed = parsedStream.resultJson;
-      const loginMeta = detectClaudeLoginRequired({
-        parsed,
-        stdout: probe.stdout,
-        stderr: probe.stderr,
+        cwd,
+        env,
+        model,
+        effort,
+        chrome,
+        maxTurns,
+        dangerouslySkipPermissions,
+        extraArgs,
+        hasBedrock,
+        targetIsSandbox,
+        targetIsRemote,
+        helloProbeTimeoutSec,
       });
-      const detail = summarizeProbeDetail(probe.stdout, probe.stderr);
-
-      if (probe.timedOut) {
-        checks.push({
-          code: "claude_hello_probe_timed_out",
-          level: "warn",
-          message: "Claude hello probe timed out.",
-          hint: "Retry the probe. If this persists, verify Claude can run `Respond with hello` from this directory manually.",
-        });
-      } else if (loginMeta.requiresLogin) {
-        checks.push({
-          code: "claude_hello_probe_auth_required",
-          level: "warn",
-          message: "Claude CLI is installed, but login is required.",
-          ...(detail ? { detail } : {}),
-          hint: loginMeta.loginUrl
-            ? `Run \`claude login\` and complete sign-in at ${loginMeta.loginUrl}, then retry.`
-            : "Run `claude login` in this environment, then retry the probe.",
-        });
-      } else if ((probe.exitCode ?? 1) === 0) {
-        const summary = parsedStream.summary.trim();
-        const hasHello = /\bhello\b/i.test(summary);
-        checks.push({
-          code: hasHello ? "claude_hello_probe_passed" : "claude_hello_probe_unexpected_output",
-          level: hasHello ? "info" : "warn",
-          message: hasHello
-            ? "Claude hello probe succeeded."
-            : "Claude probe ran but did not return `hello` as expected.",
-          ...(summary ? { detail: summary.replace(/\s+/g, " ").trim().slice(0, 240) } : {}),
-          ...(hasHello
-            ? {}
-            : {
-                hint: "Try the probe manually (`claude --print - --output-format stream-json --verbose`) and prompt `Respond with hello`.",
-              }),
-        });
-      } else {
-        // Surface the actual failure instead of the leading stream-json
-        // `system/init` line: the real error lives in the final `result`
-        // event (parsed) or, when the CLI dies before emitting one, the last
-        // non-init stdout line — never the first one `summarizeProbeDetail`
-        // returns.
-        const stdoutFallback = lastNonInitStdoutLine(probe.stdout);
-        const failureDetail =
-          (parsed ? describeClaudeFailure(parsed) : null) ||
-          (firstNonEmptyLine(probe.stderr)
-            ? truncateDetail(firstNonEmptyLine(probe.stderr))
-            : "") ||
-          (stdoutFallback ? truncateDetail(stdoutFallback) : "") ||
-          detail ||
-          "";
-        const transient = isClaudeTransientUpstreamError({
-          parsed,
-          stdout: probe.stdout,
-          stderr: probe.stderr,
-        });
-        checks.push(
-          transient
-            ? {
-                code: "claude_hello_probe_transient_upstream",
-                level: "warn",
-                message: "Claude hello probe hit a transient upstream error (rate limit or overload).",
-                ...(failureDetail ? { detail: failureDetail } : {}),
-                hint: "This is usually temporary. Wait a moment and re-run Test.",
-              }
-            : {
-                code: "claude_hello_probe_failed",
-                level: "error",
-                message: "Claude hello probe failed.",
-                ...(failureDetail ? { detail: failureDetail } : {}),
-                hint: `Exit code ${probe.exitCode ?? "unknown"}. Run \`claude --print - --output-format stream-json --verbose\` manually in this directory and prompt \`Respond with hello\` to debug.`,
-              },
-        );
-      }
+      checks.push(...probeChecks);
     }
   }
 
