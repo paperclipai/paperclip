@@ -385,15 +385,25 @@ export function InviteLandingPage() {
         return;
       }
 
-      if (!invite || invite.inviteType !== "bootstrap_ceo") {
+      if (!invite) {
         return;
       }
 
+      // A brand-new account that just signed up via this invite is not a member
+      // of the inviting company yet, so we must consume the invite token here.
+      // Without this, sign-up creates the account but never adds the user to the
+      // company membership. (Bootstrap invites take the bootstrap branch below.)
       try {
         const payload = await acceptMutation.mutateAsync();
-        if (isBootstrapAcceptancePayload(payload)) {
-          navigate("/", { replace: true });
+        if (invite.inviteType === "bootstrap_ceo") {
+          if (isBootstrapAcceptancePayload(payload)) {
+            navigate("/", { replace: true });
+          }
+          return;
         }
+        // Non-bootstrap company invite: acceptMutation.onSuccess already cleared
+        // the pending token, invalidated caches, and navigated the user.
+        // Nothing more to do here.
       } catch {
         return;
       }
