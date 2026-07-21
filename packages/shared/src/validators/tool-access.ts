@@ -34,7 +34,11 @@ import { jsonSchemaSchema } from "./plugin.js";
 
 export const toolApplicationTypeSchema = z.enum(TOOL_APPLICATION_TYPES);
 export const toolApplicationStatusSchema = z.enum(TOOL_APPLICATION_STATUSES);
-export const toolConnectionTransportSchema = z.enum(["remote_http", "local_stdio"]);
+export const toolConnectionTransportSchema = z.enum(["mcp_remote", "rest_api", "local_stdio"]);
+export const toolConnectionAuthKindSchema = z.enum(["oauth", "api_key", "none"]);
+export const toolConnectionOwnershipSchema = z.enum(["platform_shared", "platform_provisioned", "customer", "dcr"]);
+export const connectionGrantKindSchema = z.enum(["workspace", "user"]);
+export const connectionGrantStatusSchema = z.enum(["active", "revoked", "expired", "needs_reauthorization"]);
 export const toolConnectionStatusSchema = z.enum(["draft", "active", "disabled", "archived"]);
 export const toolConnectionInstallTargetTypeSchema = z.enum(["company", "agent"]);
 export const toolCredentialPlacementSchema = z.enum(["header", "env"]);
@@ -94,6 +98,8 @@ export const toolCredentialSecretRefSchema = z.object({
   label: z.string().trim().max(120).optional().nullable(),
   projectionClass: z.enum(SECRET_PROJECTION_CLASSES).optional(),
   projectionAllowlistKey: z.string().trim().min(1).max(160).optional().nullable(),
+  keyScope: z.string().trim().min(1).max(160).optional(),
+  expiresAt: z.string().datetime({ offset: true }).optional(),
 });
 
 export const mcpConnectionCredentialRefSchema = z.object({
@@ -141,6 +147,8 @@ export const createToolConnectionSchema = z.object({
   applicationName: z.string().trim().min(1).max(160).optional(),
   name: z.string().trim().min(1).max(160),
   transport: toolConnectionTransportSchema.optional(),
+  authKind: toolConnectionAuthKindSchema.default("none"),
+  ownership: toolConnectionOwnershipSchema.default("customer"),
   status: toolConnectionStatusSchema.optional(),
   connectionKind: toolConnectionKindSchema.default("managed"),
   config: toolTransportConfigSchema.optional(),
@@ -158,6 +166,33 @@ export const updateToolConnectionSchema = createToolConnectionSchema.omit({ appl
 );
 
 export type UpdateToolConnection = z.infer<typeof updateToolConnectionSchema>;
+
+export const connectionGrantSchema = z.object({
+  id: z.string().uuid(),
+  companyId: z.string().uuid(),
+  connectionId: z.string().uuid(),
+  kind: connectionGrantKindSchema,
+  subjectUserId: z.string().nullable(),
+  providerTenant: z.object({
+    name: z.string().trim().min(1).max(200).optional(),
+    externalId: z.string().trim().min(1).max(400).optional(),
+  }).nullable(),
+  credentialSecretRefs: z.array(toolCredentialSecretRefSchema),
+  status: connectionGrantStatusSchema,
+  isDefault: z.boolean(),
+  createdByAgentId: z.string().uuid().nullable(),
+  createdByUserId: z.string().nullable(),
+  revokedAt: z.coerce.date().nullable(),
+  revokedByAgentId: z.string().uuid().nullable(),
+  revokedByUserId: z.string().nullable(),
+  lastUsedAt: z.coerce.date().nullable(),
+  createdAt: z.coerce.date(),
+  updatedAt: z.coerce.date(),
+}).superRefine((grant, ctx) => {
+  if ((grant.kind === "user") !== Boolean(grant.subjectUserId)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["subjectUserId"], message: "User grants require a subject user; workspace grants must not have one" });
+  }
+});
 
 export const putToolConnectionInstallsSchema = z.object({
   installs: z.array(z.object({

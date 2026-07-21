@@ -67,9 +67,13 @@ export type {
 };
 
 export type ToolActorType = "agent" | "user" | "system" | "plugin";
-export type ToolConnectionTransport = "remote_http" | "local_stdio";
+export type ToolConnectionTransport = "mcp_remote" | "rest_api" | "local_stdio";
+export type ToolConnectionAuthKind = "oauth" | "api_key" | "none";
+export type ToolConnectionOwnership = "platform_shared" | "platform_provisioned" | "customer" | "dcr";
 export type ToolConnectionStatus = "draft" | "active" | "disabled" | "archived";
 export type ToolConnectionInstallTargetType = "company" | "agent";
+export type ConnectionGrantKind = "workspace" | "user";
+export type ConnectionGrantStatus = "active" | "revoked" | "expired" | "needs_reauthorization";
 export type ToolCredentialPlacement = "header" | "env";
 
 export interface McpConnectionCredentialRef {
@@ -89,6 +93,8 @@ export interface ToolCredentialSecretRef {
   label?: string | null;
   projectionClass?: SecretProjectionClass;
   projectionAllowlistKey?: string | null;
+  keyScope?: string;
+  expiresAt?: string;
 }
 
 export interface ToolRedactedValueSummary {
@@ -121,8 +127,11 @@ export interface ToolConnection {
   companyId: string;
   applicationId: string;
   name: string;
+  uid: string;
   connectionKind: ToolConnectionKind;
-  transport?: ToolConnectionTransport;
+  ownership: ToolConnectionOwnership;
+  transport: ToolConnectionTransport;
+  authKind: ToolConnectionAuthKind;
   status?: ToolConnectionStatus;
   transportConfig: Record<string, unknown>;
   config?: Record<string, unknown>;
@@ -142,6 +151,27 @@ export interface ToolConnection {
   createdAt: Date;
   updatedAt: Date;
   installs?: ToolConnectionInstall[];
+  grants?: ConnectionGrant[];
+}
+
+export interface ConnectionGrant {
+  id: string;
+  companyId: string;
+  connectionId: string;
+  kind: ConnectionGrantKind;
+  subjectUserId: string | null;
+  providerTenant: { name?: string; externalId?: string } | null;
+  credentialSecretRefs: ToolCredentialSecretRef[];
+  status: ConnectionGrantStatus;
+  isDefault: boolean;
+  createdByAgentId: string | null;
+  createdByUserId: string | null;
+  revokedAt: Date | null;
+  revokedByAgentId: string | null;
+  revokedByUserId: string | null;
+  lastUsedAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
 }
 
 export interface ToolConnectionInstall {

@@ -38,7 +38,7 @@ Classify the vendor before writing metadata. Use the [PAP-2432](/PAP/issues/PAP-
 
 | Reuse path | Use when | Typical transport | Examples from the matrix |
 | --- | --- | --- | --- |
-| MCP-direct | The vendor exposes an official or stable MCP server whose tools map cleanly to Paperclip grants. | `remote_http`; `local_stdio` only for approved trusted templates. | Linear, Notion, Sentry, Vercel, Exa, Apify, Context7. |
+| MCP-direct | The vendor exposes an official or stable MCP server whose tools map cleanly to Paperclip grants. | `mcp_remote`; `local_stdio` only for approved trusted templates. | Linear, Notion, Sentry, Vercel, Exa, Apify, Context7. |
 | OpenAPI-shim | The vendor has a documented REST/OpenAPI surface but no stable MCP server, and a generated/thin shim can expose safe actions. | Shim service or approved template that presents an MCP-compatible catalog to Paperclip. | Datadog, Apollo, QuickBooks, Ramp/Brex, Zendesk. |
 | Vendor-deep-wrapper | The vendor boundary depends on app-installation tokens, event validation, rich domain semantics, resource grants, or high-risk writes. | Vendor-specific wrapper behind the same connection model. | GitHub, Slack, Google Workspace writes, Atlassian, Microsoft 365, Cloudflare, Figma, Stripe, Salesforce, HubSpot, Intercom, PagerDuty. |
 
@@ -78,23 +78,23 @@ Credentials always live in `company_secrets` with redacted metadata and versione
 
 Do not add durable vendor credentials to agent env, project env, runtime env, adapter config, issue comments, screenshots, logs, fixture JSON, or plugin config. Agents receive a run-scoped gateway token; Paperclip resolves the vendor credential server-side and audits the call.
 
-## Step 4: Define Manifest Metadata
+## Step 4: Author The AppDefinition
 
-The manifest must explain what the operator gets without exposing protocol details in prosumer surfaces. Developer docs can mention transport, MCP, shim, and gateway terms; the Apps gallery copy should use plain app/action language.
+Author an `AppDefinition` as the canonical data record for the app and every supported connection method. It must explain what the operator gets without exposing protocol details in prosumer surfaces. Developer docs can mention transport, MCP, shim, and gateway terms; the Apps gallery copy should use plain app/action language.
 
 Capture:
 
 - `key`: stable lowercase app key, e.g. `linear`.
 - `name`, `logoUrl`, `tagline`, `description`: user-facing metadata.
-- `authKind`: `oauth`, `api_key`, or `none`.
-- `transportTemplate`: `remote_http` URL, approved `local_stdio` template key, or shim template key once available.
+- `methods`: explicit combinations of `transport` (`mcp_remote`, `rest_api`, `local_stdio`), `authKind` (`oauth`, `api_key`, `none`), and `ownership` (`platform_shared`, `platform_provisioned`, `customer`, `dcr`).
+- Stable connection UID namespace used to form `{namespace}/{slug}` addresses.
 - `credentialFields`: labels, vendor-call placement, header key, prefix, help URL, and required state. User-facing labels should be sanitized by the Apps UI copy layer. The saved value is always a `company_secrets` ref, not an env entry.
 - `oauth`: provider key, scopes, authorization URL, token URL, metadata URL if applicable.
 - `urlPatterns`: URLs that can identify this app during paste/import flows.
 - `recommendedDefaults`: access and risk defaults, especially ask-first risk levels.
 - `availability`: whether the connector is generally available, gated by deployment config, or needs vendor registration.
 
-Keep manifest metadata deterministic and company-scoped at install time. Global catalog data names capabilities; company connection rows hold the configured instance, secret refs, resource filters, status, health, and audit history.
+Keep `AppDefinition` metadata deterministic and company-scoped at install time. Global catalog data names capabilities; company connection and grant rows hold the configured instance, subject/provider tenant, secret refs, resource filters, status, health, and audit history.
 
 ## Step 5: Model Resource Filters
 
@@ -274,7 +274,7 @@ This dry run applies the template to Linear, one of the [PAP-2432](/PAP/issues/P
 
 ### Transport And Auth
 
-- Transport: `remote_http`
+- Transport: `mcp_remote`
 - Endpoint: `https://mcp.linear.app/mcp`
 - Auth mode: OAuth
 - OAuth scopes: `read` and `write` initially, with writes governed by profiles and ask-first policies.
@@ -298,7 +298,7 @@ This dry run applies the template to Linear, one of the [PAP-2432](/PAP/issues/P
   "tagline": "Create, update and read tickets.",
   "authKind": "oauth",
   "transportTemplate": {
-    "transport": "remote_http",
+    "transport": "mcp_remote",
     "url": "https://mcp.linear.app/mcp"
   },
   "credentialFields": [],

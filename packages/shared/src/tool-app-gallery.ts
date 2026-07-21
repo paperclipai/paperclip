@@ -14,7 +14,7 @@ export interface AppGalleryCredentialField {
 
 export type AppGalleryTransportTemplate =
   | {
-      transport: Extract<ToolConnectionTransport, "remote_http">;
+      transport: Extract<ToolConnectionTransport, "mcp_remote">;
       url: string;
     }
   | {
@@ -58,7 +58,7 @@ export const TOOL_APP_GALLERY = [
     description: "Let agents use Zapier automations across the apps your business already runs. Good for handoffs, lightweight operations, and cross-app updates that should stay visible in Paperclip.",
     authKind: "api_key",
     transportTemplate: {
-      transport: "remote_http",
+      transport: "mcp_remote",
       url: "https://mcp.zapier.com/api/mcp",
     },
     credentialFields: [
@@ -86,7 +86,7 @@ export const TOOL_APP_GALLERY = [
     description: "Give agents a governed way to inspect repositories, issues, and pull requests. Useful when engineering work needs GitHub context or small updates without leaving Paperclip.",
     authKind: "api_key",
     transportTemplate: {
-      transport: "remote_http",
+      transport: "mcp_remote",
       url: "https://api.githubcopilot.com/mcp/",
     },
     credentialFields: [
@@ -114,7 +114,7 @@ export const TOOL_APP_GALLERY = [
     description: "Let agents search workspace conversations and coordinate in Slack when work needs team context. Message-sending actions can still ask a human first.",
     authKind: "oauth",
     transportTemplate: {
-      transport: "remote_http",
+      transport: "mcp_remote",
       url: "https://mcp.slack.com/mcp",
     },
     credentialFields: [],
@@ -138,7 +138,7 @@ export const TOOL_APP_GALLERY = [
     description: "Connect Notion so agents can find docs, read project notes, and update workspace pages. Use it for company memory that lives outside Paperclip.",
     authKind: "oauth",
     transportTemplate: {
-      transport: "remote_http",
+      transport: "mcp_remote",
       url: "https://mcp.notion.com/mcp",
     },
     credentialFields: [],
@@ -162,7 +162,7 @@ export const TOOL_APP_GALLERY = [
     description: "Let agents look up Linear work and make issue updates when their Paperclip tasks depend on your existing product queue.",
     authKind: "oauth",
     transportTemplate: {
-      transport: "remote_http",
+      transport: "mcp_remote",
       url: "https://mcp.linear.app/mcp",
     },
     credentialFields: [],
@@ -204,7 +204,7 @@ export const TOOL_APP_GALLERY = [
     description: "Let agents pull current library documentation while they work. It is a low-risk reference app for coding and research tasks.",
     authKind: "none",
     transportTemplate: {
-      transport: "remote_http",
+      transport: "mcp_remote",
       url: "https://mcp.context7.com/mcp",
     },
     credentialFields: [],

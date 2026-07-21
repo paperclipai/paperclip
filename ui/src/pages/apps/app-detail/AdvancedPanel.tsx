@@ -268,7 +268,7 @@ export function connectionAddress(connection: ToolConnection): string {
 }
 
 export function connectionTransportLabel(transport: ToolConnection["transport"]): string {
-  if (transport === "remote_http") return "Remote HTTP";
+  if (transport === "mcp_remote") return "Remote HTTP";
   if (transport === "local_stdio") return "Local command";
   return "Unknown";
 }

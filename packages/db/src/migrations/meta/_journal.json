@@ -1228,7 +1228,7 @@
       "breakpoints": true
     },
     {
-      "idx": 177,
+      "idx": 178,
       "version": "7",
       "when": 1784241826832,
       "tag": "0177_activity_log_responsible_user",
@@ -1260,6 +1260,13 @@
       "version": "7",
       "when": 1784231633059,
       "tag": "0181_decision_training_retention_policy",
+      "breakpoints": true
+    },
+    {
+      "idx": 182,
+      "version": "7",
+      "when": 1784592000000,
+      "tag": "0182_connections_v3_schema_core",
       "breakpoints": true
     }
   ]

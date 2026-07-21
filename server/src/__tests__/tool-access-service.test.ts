@@ -271,7 +271,8 @@ async function createBrokerConnection(
     companyId,
     applicationId: application!.id,
     name: `Pages connection ${randomUUID()}`,
-    transport: "remote_http",
+    uid: `test/${randomUUID()}`,
+    transport: "mcp_remote",
     status: "active",
     enabled: true,
     healthStatus: input.healthStatus ?? "ok",
@@ -329,7 +330,8 @@ async function createOAuthConnection(
     companyId,
     applicationId: application!.id,
     name: `OAuth connection ${randomUUID()}`,
-    transport: "remote_http",
+    uid: `test/${randomUUID()}`,
+    transport: "mcp_remote",
     status: "active",
     enabled: true,
     healthStatus: "ok",
@@ -378,7 +380,8 @@ async function createRemoteToolFixture(
     companyId,
     applicationId: application!.id,
     name: `Fixture Connection ${randomUUID()}`,
-    transport: "remote_http",
+    uid: `fixture/${randomUUID()}`,
+    transport: "mcp_remote",
     status: "active",
     enabled: true,
     config: { url: "https://fixture.example.test/mcp" },
@@ -746,7 +749,7 @@ describeEmbeddedPostgres("tool access service", () => {
 
     const connection = await service.createConnection(company.id, {
       name: "Remote fixture",
-      transport: "remote_http",
+      transport: "mcp_remote",
       config: { url: "https://fixture.example/mcp", quarantineNewEntries: true },
       enabled: true,
       status: "active",
@@ -835,7 +838,7 @@ describeEmbeddedPostgres("tool access service", () => {
 
     const connection = await service.createConnection(company.id, {
       name: "Streamable HTTP fixture",
-      transport: "remote_http",
+      transport: "mcp_remote",
       config: { url: "http://127.0.0.1:8848/mcp" },
       enabled: true,
       status: "active",
@@ -1018,7 +1021,7 @@ describeEmbeddedPostgres("tool access service", () => {
 
     await expect(service.createConnection(company.id, {
       name: "Metadata endpoint",
-      transport: "remote_http",
+      transport: "mcp_remote",
       config: { url: "http://169.254.169.254/latest/meta-data" },
       enabled: true,
       status: "active",
@@ -1049,7 +1052,8 @@ describeEmbeddedPostgres("tool access service", () => {
       companyId: company.id,
       applicationId: application.id,
       name: `Profile Connection ${randomUUID()}`,
-      transport: "remote_http",
+      uid: `test/${randomUUID()}`,
+      transport: "mcp_remote",
       status: "active",
       enabled: true,
       config: { url: "https://fixture.example/mcp" },
@@ -1676,7 +1680,8 @@ describeEmbeddedPostgres("tool access service", () => {
       companyId: company.id,
       applicationId: application!.id,
       name: "Summary connection",
-      transport: "remote_http",
+      uid: `test/${randomUUID()}`,
+      transport: "mcp_remote",
       status: "active",
       enabled: true,
       config: { url: "https://fixture.example/mcp" },
@@ -1773,7 +1778,8 @@ describeEmbeddedPostgres("tool access service", () => {
       companyId: company.id,
       applicationId: application!.id,
       name: "Preview connection",
-      transport: "remote_http",
+      uid: `test/${randomUUID()}`,
+      transport: "mcp_remote",
       status: "active",
       enabled: true,
       config: { url: "https://fixture.example/mcp" },
@@ -1836,7 +1842,8 @@ describeEmbeddedPostgres("tool access service", () => {
       companyId: company.id,
       applicationId: application!.id,
       name: "Allow connection",
-      transport: "remote_http",
+      uid: `test/${randomUUID()}`,
+      transport: "mcp_remote",
       status: "active",
       enabled: true,
       config: { url: "https://fixture.example/mcp" },
@@ -2335,7 +2342,7 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(res.body.drafts).toEqual([
       expect.objectContaining({
         name: "secure",
-        transport: "remote_http",
+        transport: "mcp_remote",
         status: "draft",
         config: { url: "https://secure.example/mcp" },
         credentialFields: [
@@ -2404,7 +2411,7 @@ describeEmbeddedPostgres("tool access service", () => {
     const connection = await service.createConnection(company.id, {
       applicationName: "Discord",
       name: "Discord bot token",
-      transport: "remote_http",
+      transport: "mcp_remote",
       config: { url: "https://discord.example.test/mcp" },
       enabled: false,
       status: "draft",
@@ -2461,7 +2468,7 @@ describeEmbeddedPostgres("tool access service", () => {
     await expect(service.createConnection(company.id, {
       applicationId: application!.id,
       name: "Blocked class-3 token",
-      transport: "remote_http",
+      transport: "mcp_remote",
       config: { url: "https://blocked.example.test/mcp" },
       enabled: false,
       status: "draft",
@@ -2639,7 +2646,8 @@ describeEmbeddedPostgres("tool access service", () => {
       companyId: company.id,
       applicationId: application.id,
       name: "Sheets",
-      transport: "remote_http",
+      uid: `test/${randomUUID()}`,
+      transport: "mcp_remote",
       status: "active",
       enabled: true,
       config: { url: "https://sheets.example/mcp" },
@@ -3082,7 +3090,7 @@ describeEmbeddedPostgres("tool access service", () => {
     const service = toolAccessService(db);
     const connection = await service.createConnection(company.id, {
       name: "Machine OAuth",
-      transport: "remote_http",
+      transport: "mcp_remote",
       config: {
         url: "https://m2m.example.test/mcp",
         oauth: {
@@ -3238,7 +3246,8 @@ describeEmbeddedPostgres("tool access service", () => {
       companyId: company.id,
       applicationId: application.id,
       name: `Attention connection ${randomUUID()}`,
-      transport: "remote_http",
+      uid: `test/${randomUUID()}`,
+      transport: "mcp_remote",
       status: "active",
       enabled: true,
       config: { url: "https://fixture.example/mcp" },
@@ -3250,7 +3259,8 @@ describeEmbeddedPostgres("tool access service", () => {
       companyId: company.id,
       applicationId: application.id,
       name: `Healthy connection ${randomUUID()}`,
-      transport: "remote_http",
+      uid: `test/${randomUUID()}`,
+      transport: "mcp_remote",
       status: "active",
       enabled: true,
       config: { url: "https://healthy.example/mcp" },
@@ -3333,7 +3343,8 @@ describeEmbeddedPostgres("tool access service", () => {
       companyId: company.id,
       applicationId: application.id,
       name: `Action review connection ${randomUUID()}`,
-      transport: "remote_http",
+      uid: `test/${randomUUID()}`,
+      transport: "mcp_remote",
       status: "active",
       enabled: true,
       config: { url: "https://fixture.example/mcp" },
@@ -3428,7 +3439,8 @@ describeEmbeddedPostgres("tool access service", () => {
       companyId: company.id,
       applicationId: application.id,
       name: `Review connection ${randomUUID()}`,
-      transport: "remote_http",
+      uid: `test/${randomUUID()}`,
+      transport: "mcp_remote",
       status: "active",
       enabled: true,
       config: { url: "https://review.example/mcp" },
@@ -3588,7 +3600,8 @@ describeEmbeddedPostgres("tool access service", () => {
       companyId: company.id,
       applicationId: application.id,
       name: "Auto connection",
-      transport: "remote_http",
+      uid: `test/${randomUUID()}`,
+      transport: "mcp_remote",
       status: "active",
       enabled: true,
       config: { url: "https://auto.example/mcp" },
@@ -3648,7 +3661,8 @@ describeEmbeddedPostgres("tool access service", () => {
       companyId: company.id,
       applicationId: application.id,
       name: "Attention review connection",
-      transport: "remote_http",
+      uid: `test/${randomUUID()}`,
+      transport: "mcp_remote",
       status: "active",
       enabled: true,
       config: { url: "https://attention-review.example/mcp" },
@@ -4068,7 +4082,8 @@ describeEmbeddedPostgres("tool access service", () => {
       companyId: company.id,
       applicationId: application!.id,
       name: "Smoke OAuth masquerade connection",
-      transport: "remote_http",
+      uid: `test/${randomUUID()}`,
+      transport: "mcp_remote",
       status: "active",
       enabled: false,
       healthStatus: "unchecked",
@@ -4138,7 +4153,8 @@ describeEmbeddedPostgres("tool access service", () => {
       companyId: company.id,
       applicationId: application!.id,
       name: "Smoke Lab HTTP MCP fixture",
-      transport: "remote_http",
+      uid: `test/${randomUUID()}`,
+      transport: "mcp_remote",
       status: "active",
       enabled: true,
       healthStatus: "ok",
@@ -4771,7 +4787,7 @@ describeEmbeddedPostgres("tool access service", () => {
     const connection = await service.createConnection(company.id, {
       applicationId: application.id,
       name: "Viewer guarded connection",
-      transport: "remote_http",
+      transport: "mcp_remote",
       config: { url: "https://viewer-guard.example/mcp" },
       status: "active",
       enabled: true,
@@ -4784,7 +4800,7 @@ describeEmbeddedPostgres("tool access service", () => {
         .send({ name: "Viewer create app", type: "mcp_http" }),
       await request(viewerApp)
         .post(`/api/companies/${company.id}/tools/connections`)
-        .send({ name: "Viewer create connection", transport: "remote_http", config: { url: "https://viewer-create.example/mcp" } }),
+        .send({ name: "Viewer create connection", transport: "mcp_remote", config: { url: "https://viewer-create.example/mcp" } }),
       await request(viewerApp)
         .patch(`/api/tool-applications/${application.id}`)
         .send({ name: "Viewer edited app" }),
@@ -4930,7 +4946,7 @@ describeEmbeddedPostgres("tool access service", () => {
     const app = createRouteApp(db);
     const connection = await service.createConnection(company.id, {
       name: "Guarded connection",
-      transport: "remote_http",
+      transport: "mcp_remote",
       config: { url: "https://fixture.example/mcp" },
     });
 
@@ -4951,7 +4967,7 @@ describeEmbeddedPostgres("tool access service", () => {
     const app = createRouteApp(db);
     const connection = await service.createConnection(company.id, {
       name: "Single connection",
-      transport: "remote_http",
+      transport: "mcp_remote",
       config: { url: "https://fixture.example/mcp" },
       status: "active",
       enabled: true,
@@ -4996,7 +5012,7 @@ describeEmbeddedPostgres("tool access service", () => {
     const first = await service.createConnection(company.id, {
       applicationId: application.id,
       name: "First connection",
-      transport: "remote_http",
+      transport: "mcp_remote",
       config: { url: "https://one.example/mcp" },
       status: "active",
       enabled: true,
@@ -5004,7 +5020,7 @@ describeEmbeddedPostgres("tool access service", () => {
     await service.createConnection(company.id, {
       applicationId: application.id,
       name: "Second connection",
-      transport: "remote_http",
+      transport: "mcp_remote",
       config: { url: "https://two.example/mcp" },
       status: "active",
       enabled: true,
@@ -5030,7 +5046,7 @@ describeEmbeddedPostgres("tool access service", () => {
     const service = toolAccessService(db);
     const connection = await service.createConnection(company.id, {
       name: "Racy connection",
-      transport: "remote_http",
+      transport: "mcp_remote",
       config: { url: "https://fixture.example/mcp" },
     });
 
@@ -5060,7 +5076,7 @@ describeEmbeddedPostgres("tool access service", () => {
     const service = toolAccessService(db);
     const connection = await service.createConnection(company.id, {
       name: "Company-scoped connection",
-      transport: "remote_http",
+      transport: "mcp_remote",
       config: { url: "https://fixture.example/mcp" },
     });
 
@@ -5149,7 +5165,8 @@ describeEmbeddedPostgres("tool access service", () => {
       companyId: company.id,
       applicationId: application.id,
       name: "Remote MCP",
-      transport: "remote_http",
+      uid: `test/${randomUUID()}`,
+      transport: "mcp_remote",
       status: "active",
       enabled: true,
       config: { url: "https://example.invalid/mcp" },
@@ -5273,7 +5290,8 @@ describeEmbeddedPostgres("tool access service", () => {
       companyId: company.id,
       applicationId: application.id,
       name: "GitHub",
-      transport: "remote_http",
+      uid: `test/${randomUUID()}`,
+      transport: "mcp_remote",
       status: "active",
       enabled: true,
       config: { url: "https://github.example/mcp" },
@@ -5414,7 +5432,8 @@ describeEmbeddedPostgres("tool access service", () => {
       companyId: company.id,
       applicationId: application.id,
       name: "Google Sheets (stdio smoke)",
-      transport: "remote_http",
+      uid: `test/${randomUUID()}`,
+      transport: "mcp_remote",
       status: "active",
       enabled: true,
       config: { url: "https://sheets.example/mcp" },
@@ -5478,7 +5497,7 @@ describeEmbeddedPostgres("tool access service", () => {
         action: "tool_connection.archived",
         entityType: "tool_connection",
         entityId: connection.id,
-        details: { transport: "remote_http" },
+        details: { transport: "mcp_remote" },
         createdAt: new Date("2026-06-12T10:04:00Z"),
       },
     ]);
@@ -5536,7 +5555,8 @@ describeEmbeddedPostgres("tool access service", () => {
       companyId: company.id,
       applicationId: application.id,
       name: "Remote runtime",
-      transport: "remote_http",
+      uid: `test/${randomUUID()}`,
+      transport: "mcp_remote",
       status: "active",
       enabled: true,
       config: { url: "https://fixture.example/mcp" },
@@ -5549,7 +5569,7 @@ describeEmbeddedPostgres("tool access service", () => {
       slotKey: `${connection.id}:remote`,
       ownerScopeType: "connection",
       ownerScopeId: connection.id,
-      runtimeKind: "remote_http",
+      runtimeKind: "mcp_remote",
       status: "running",
       reuseKey: connection.id,
       provider: "paperclip",
@@ -5562,7 +5582,7 @@ describeEmbeddedPostgres("tool access service", () => {
         status: 422,
         details: expect.objectContaining({
           code: "runtime_control_unsupported",
-          runtimeKind: "remote_http",
+          runtimeKind: "mcp_remote",
         }),
       });
   });
@@ -5586,6 +5606,7 @@ describeEmbeddedPostgres("tool access service", () => {
       companyId: company.id,
       applicationId: application.id,
       name: "Degraded local stdio",
+      uid: `test/${randomUUID()}`,
       transport: "local_stdio",
       status: "active",
       enabled: true,
@@ -5715,7 +5736,8 @@ describeEmbeddedPostgres("tool access service", () => {
         companyId: company.id,
         applicationId: application.id,
         name: "Imported draft",
-        transport: "remote_http",
+        uid: `test/${randomUUID()}`,
+        transport: "mcp_remote",
         status: "draft",
         enabled: false,
         config: { url: "https://draft.example/mcp" },
@@ -5727,7 +5749,8 @@ describeEmbeddedPostgres("tool access service", () => {
         companyId: company.id,
         applicationId: application.id,
         name: "OAuth connected, not enabled",
-        transport: "remote_http",
+        uid: `test/${randomUUID()}`,
+        transport: "mcp_remote",
         status: "active",
         enabled: false,
         config: { url: "https://not-enabled.example/mcp" },
@@ -5812,7 +5835,7 @@ describeEmbeddedPostgres("tool access service", () => {
       expect.arrayContaining([
         expect.objectContaining({
           name: "github",
-          transport: "remote_http",
+          transport: "mcp_remote",
           status: "draft",
           config: { url: "https://mcp.example/github" },
           warnings: [expect.stringContaining("Paperclip secret")],
@@ -5833,7 +5856,7 @@ describeEmbeddedPostgres("tool access service", () => {
     const service = toolAccessService(db);
     const connection = await service.createConnection(company.id, {
       name: "Secret-backed remote",
-      transport: "remote_http",
+      transport: "mcp_remote",
       config: { url: "https://fixture.example/mcp" },
       enabled: true,
       status: "active",
@@ -5872,7 +5895,7 @@ describeEmbeddedPostgres("tool access service", () => {
       action: "tool_connection.health_check",
       outcome: "failure",
       reasonCode: "secret_missing",
-      details: { status: "missing_secret", transport: "remote_http" },
+      details: { status: "missing_secret", transport: "mcp_remote" },
     });
     expect(JSON.stringify(audit)).not.toContain("Bearer ");
     expect(JSON.stringify(audit)).not.toContain("Authorization");
@@ -5884,7 +5907,7 @@ describeEmbeddedPostgres("tool access service", () => {
     vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("revoked token"));
     const connection = await service.createConnection(company.id, {
       name: "Swept remote",
-      transport: "remote_http",
+      transport: "mcp_remote",
       config: { url: "https://fixture.example/mcp" },
       enabled: true,
       status: "active",
@@ -5912,14 +5935,14 @@ describeEmbeddedPostgres("tool access service", () => {
 
     const used = await service.createConnection(company.id, {
       name: "Used remote",
-      transport: "remote_http",
+      transport: "mcp_remote",
       config: { url: "https://used.example/mcp" },
       enabled: true,
       status: "active",
     });
     const unused = await service.createConnection(company.id, {
       name: "Unused remote",
-      transport: "remote_http",
+      transport: "mcp_remote",
       config: { url: "https://unused.example/mcp" },
       enabled: true,
       status: "active",

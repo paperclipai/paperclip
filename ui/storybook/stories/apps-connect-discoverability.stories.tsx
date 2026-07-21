@@ -141,7 +141,7 @@ const REMOTE_PREVIEW: McpJsonImportPreview = {
   drafts: [
     {
       name: "kv-demo",
-      transport: "remote_http",
+      transport: "mcp_remote",
       status: "draft",
       config: { url: "http://127.0.0.1:8848/mcp" },
       credentialRefs: [],
@@ -155,7 +155,7 @@ const MIXED_PREVIEW: McpJsonImportPreview = {
   drafts: [
     {
       name: "linear",
-      transport: "remote_http",
+      transport: "mcp_remote",
       status: "draft",
       config: { url: "https://mcp.linear.app/sse" },
       credentialRefs: [

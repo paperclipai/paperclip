@@ -505,6 +505,10 @@ function normalizeKey(input: string) {
     .slice(0, 160) || "tool";
 }
 
+function connectionUid(namespace: string, name: string) {
+  return `${normalizeKey(namespace)}/${normalizeKey(name)}`;
+}
+
 function actorBinding(actor: ActorInfo | undefined) {
   return {
     actorType: actor?.actorType ?? null,
@@ -589,8 +593,11 @@ function toConnection(row: typeof toolConnections.$inferSelect): ToolConnection 
     companyId: row.companyId,
     applicationId: row.applicationId,
     name: row.name,
+    uid: row.uid,
     connectionKind: row.connectionKind,
+    ownership: row.ownership,
     transport: row.transport,
+    authKind: row.authKind,
     status: row.status,
     enabled: row.enabled,
     config: row.config ?? {},
@@ -2070,7 +2077,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       activeConnections,
       disabledConnections,
       degradedConnections,
-      remoteHttpConnections: connections.filter((connection) => connection.status !== "archived" && connection.transport === "remote_http").length,
+      remoteHttpConnections: connections.filter((connection) => connection.status !== "archived" && connection.transport === "mcp_remote").length,
       localStdioConnections: connections.filter((connection) => connection.status !== "archived" && connection.transport === "local_stdio").length,
     };
     const recommendations = buildRuntimeAlerts({
@@ -2105,13 +2112,13 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       supportMatrix: {
         remoteHttp: {
           supported: true,
-          note: "remote_http MCP connections are supported in hosted cloud and local deployments.",
+          note: "mcp_remote MCP connections are supported in hosted cloud and local deployments.",
         },
         localStdio: {
           supported: localStdioSupported,
           note: localStdioSupported
             ? "local_stdio is available for local trusted mode or through the configured trusted MCP runtime host."
-            : `local_stdio should stay disabled for ${deploymentMode}/${deploymentExposure}; use remote_http or configure a trusted runtime worker.`,
+            : `local_stdio should stay disabled for ${deploymentMode}/${deploymentExposure}; use mcp_remote or configure a trusted runtime worker.`,
         },
       },
       alerts: firing,
@@ -2779,7 +2786,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
   }
 
   async function discoverTools(connection: typeof toolConnections.$inferSelect): Promise<McpToolDescriptor[]> {
-    if (connection.transport === "remote_http") return remoteTools(connection);
+    if (connection.transport === "mcp_remote") return remoteTools(connection);
     await resolveCredentialHeaders(connection);
     return localTools(connection);
   }
@@ -2814,7 +2821,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
   async function checkConnectionHealth(connectionId: string, actor?: ActorInfo): Promise<ToolConnectionHealthCheckResult> {
     const connection = await getConnectionRow(connectionId);
     try {
-      if (connection.transport === "remote_http") {
+      if (connection.transport === "mcp_remote") {
         await remoteTools(connection);
       } else {
         await resolveCredentialHeaders(connection);
@@ -3308,6 +3315,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       companyId,
       applicationId,
       name: definition.connectionName,
+      uid: connectionUid("paperclip", definition.connectionName),
       connectionKind: "managed",
       transport: "local_stdio",
       status: "active",
@@ -4092,11 +4100,11 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
 
     const name = input.name ?? existingApplication?.name ?? galleryEntry?.name ?? defaultLinkName(input.link ?? "");
     const transportTemplate = galleryEntry?.transportTemplate ?? {
-      transport: "remote_http" as const,
+      transport: "mcp_remote" as const,
       url: input.link ?? "",
     };
     const transport = transportTemplate.transport;
-    const baseConfig = transport === "remote_http"
+    const baseConfig = transport === "mcp_remote"
       ? { url: transportTemplate.url }
       : { templateId: transportTemplate.templateKey };
     let config: Record<string, unknown> = galleryEntry
@@ -4119,7 +4127,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       config = normalizeGoogleSheetsConnectionConfig(config);
       await assertGoogleSheetsSpreadsheetOwnership(companyId, config);
     }
-    if (transport === "remote_http") await assertRemoteEndpointAllowed(config);
+    if (transport === "mcp_remote") await assertRemoteEndpointAllowed(config);
     if (transport === "local_stdio") await stdioTemplateId(companyId, config);
     assertLocalStdioCanBeEnabled(transport, false);
 
@@ -4181,7 +4189,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           applicationKey: `app-gallery:${galleryEntry?.key ?? "link"}:${randomUUID()}`,
           name,
           description: galleryEntry?.tagline ?? `Connected app at ${input.link}`,
-          type: transport === "remote_http" ? "mcp_http" : "mcp_stdio",
+          type: transport === "mcp_remote" ? "mcp_http" : "mcp_stdio",
           status: "draft",
           metadata: galleryEntry ? { sourceTemplateKey: galleryEntry.key, galleryKey: galleryEntry.key } : { source: "link" },
         }).returning();
@@ -4221,7 +4229,9 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           companyId,
           applicationId: applicationRow.id,
           name,
+          uid: connectionUid(applicationRow.applicationKey ?? applicationRow.name, name),
           connectionKind: "managed",
+          authKind: galleryEntry?.authKind ?? "none",
           transport,
           status: "draft",
           enabled: false,
@@ -5348,16 +5358,18 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
 
     createConnection: async (companyId: string, input: CreateToolConnection): Promise<ToolConnection> => {
       let applicationId = input.applicationId;
+      let applicationNamespace = input.applicationName ?? input.name;
       const transport = input.transport;
       if (!transport) throw badRequest("Tool connection transport is required");
       const config = normalizeGoogleSheetsConnectionConfig(input.config ?? input.transportConfig ?? {});
-      if (transport === "remote_http") await assertRemoteEndpointAllowed(config);
+      if (transport === "mcp_remote") await assertRemoteEndpointAllowed(config);
       if (transport === "local_stdio") await stdioTemplateId(companyId, config);
       assertLocalStdioCanBeEnabled(transport, input.enabled ?? false);
       await assertGoogleSheetsSpreadsheetOwnership(companyId, config);
       if (applicationId) {
         const app = await assertApplication(companyId, applicationId);
-        if ((transport === "remote_http" && app.type !== "mcp_http") || (transport === "local_stdio" && app.type !== "mcp_stdio")) {
+        applicationNamespace = app.applicationKey ?? app.name;
+        if ((transport === "mcp_remote" && app.type !== "mcp_http") || (transport === "local_stdio" && app.type !== "mcp_stdio")) {
           throw unprocessable("Connection transport must match application type");
         }
       } else {
@@ -5365,7 +5377,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           companyId,
           applicationKey: normalizeKey(input.applicationName ?? input.name),
           name: input.applicationName ?? input.name,
-          type: transport === "remote_http" ? "mcp_http" : "mcp_stdio",
+          type: transport === "mcp_remote" ? "mcp_http" : "mcp_stdio",
           status: "active",
           metadata: {},
         }).returning();
@@ -5376,8 +5388,11 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         companyId,
         applicationId,
         name: input.name,
+        uid: connectionUid(applicationNamespace, input.name),
         connectionKind: input.connectionKind ?? "managed",
+        ownership: input.ownership ?? "customer",
         transport,
+        authKind: input.authKind ?? "none",
         status: input.status ?? "draft",
         enabled: input.enabled ?? false,
         config,
@@ -5475,7 +5490,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     updateConnection: async (connectionId: string, input: UpdateToolConnection): Promise<ToolConnection> => {
       const existing = await getConnectionRow(connectionId);
       const config = normalizeGoogleSheetsConnectionConfig(input.config ?? input.transportConfig ?? existing.config);
-      if (existing.transport === "remote_http") await assertRemoteEndpointAllowed(config);
+      if (existing.transport === "mcp_remote") await assertRemoteEndpointAllowed(config);
       if (existing.transport === "local_stdio") await stdioTemplateId(existing.companyId, config);
       assertLocalStdioCanBeEnabled(existing.transport, input.enabled ?? existing.enabled);
       await assertGoogleSheetsSpreadsheetOwnership(existing.companyId, config, { excludeConnectionId: existing.id });
@@ -6543,7 +6558,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           });
           return {
             name,
-            transport: "remote_http" as const,
+            transport: "mcp_remote" as const,
             status: "draft" as const,
             config: { url: server.url ?? server.endpoint },
             credentialRefs: [] as McpConnectionCredentialRef[],
@@ -6566,7 +6581,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         warnings.push("Unsupported MCP server entry.");
         return {
           name,
-          transport: "remote_http" as const,
+          transport: "mcp_remote" as const,
           status: "draft" as const,
           config: {},
           credentialRefs: [],

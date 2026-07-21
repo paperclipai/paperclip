@@ -1,11 +1,21 @@
 import { describe, expect, it } from "vitest";
 import {
   createToolConnectionSchema,
+  toolCredentialSecretRefSchema,
   toolRedactedValueSummarySchema,
   toolTransportConfigSchema,
 } from "./tool-access.js";
 
 describe("tool access validators", () => {
+  it("accepts multi-key credential annotations", () => {
+    const parsed = toolCredentialSecretRefSchema.parse({
+      secretId: "11111111-1111-4111-8111-111111111111",
+      configPath: "credentials.apiKey",
+      keyScope: "production",
+      expiresAt: "2027-01-01T00:00:00Z",
+    });
+    expect(parsed.keyScope).toBe("production");
+  });
   it("rejects raw credential-looking fields in transport config", () => {
     const parsed = toolTransportConfigSchema.safeParse({
       url: "https://example.test/mcp",
