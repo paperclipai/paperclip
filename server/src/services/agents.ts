@@ -81,18 +81,54 @@ export function agentTimerOnlyLockKey(agentId: string): string {
   return `paperclip:agent-timer-only:${agentId}`;
 }
 
+/**
+ * Does this runtimeConfig patch persist `heartbeat.timerOnly=true`? runtimeConfig
+ * is written to the column wholesale, so the flag in the patch is the final state.
+ * Mirrors `parseHeartbeatPolicy`'s boolean coercion so a rollback snapshot storing
+ * a coerced truthy value is caught too.
+ */
+function runtimeConfigEnablesTimerOnly(runtimeConfig: unknown): boolean {
+  if (!isPlainRecord(runtimeConfig)) return false;
+  const heartbeat = runtimeConfig.heartbeat;
+  if (!isPlainRecord(heartbeat)) return false;
+  const value = heartbeat.timerOnly;
+  return value === true || value === "true" || value === 1;
+}
+
+/**
+ * Throws a 409 conflict if the agent has a running non-timer run. Callers MUST
+ * hold {@link agentTimerOnlyLockKey}'s advisory lock in the same transaction so
+ * this check is atomic against the heartbeat claim path.
+ */
+async function assertNoActiveNonTimerRun(db: Db, agentId: string): Promise<void> {
+  const active = await db
+    .select({ id: heartbeatRuns.id, invocationSource: heartbeatRuns.invocationSource })
+    .from(heartbeatRuns)
+    .where(
+      and(
+        eq(heartbeatRuns.agentId, agentId),
+        eq(heartbeatRuns.status, "running"),
+        ne(heartbeatRuns.invocationSource, "timer"),
+      ),
+    )
+    .limit(1);
+  if (active.length > 0) {
+    throw conflict(
+      "Cannot enable timerOnly while a non-timer run is active. " +
+        "Wait for the active run to complete before applying this policy.",
+      {
+        code: "timer_only_active_non_timer_run",
+        activeRunId: active[0].id,
+        activeRunSource: active[0].invocationSource,
+      },
+    );
+  }
+}
+
 interface UpdateAgentOptions {
   recordRevision?: RevisionMetadata;
   allowBuiltInAgentMetadata?: boolean;
   allowPendingApprovalConfigUpdate?: boolean;
-  /**
-   * Runs inside the update transaction AFTER an advisory lock keyed on the agent
-   * is held and BEFORE the row is written. Use it to enforce an invariant that
-   * must be atomic with the write against a concurrent writer taking the same
-   * advisory lock (e.g. enabling `timerOnly` must serialize with the heartbeat
-   * claim path). Throw to abort the update (the throw rolls back).
-   */
-  guardBeforeWrite?: (tx: Db, lockedAgent: typeof agents.$inferSelect) => Promise<void>;
 }
 
 interface CreateAgentOptions {
@@ -549,18 +585,21 @@ export function agentService(db: Db) {
 
     const shouldRecordRevision = Boolean(options?.recordRevision) && hasConfigPatchFields(normalizedPatch);
     const beforeConfig = shouldRecordRevision ? buildConfigSnapshot(existing) : null;
+    const willEnableTimerOnly = runtimeConfigEnablesTimerOnly(normalizedPatch.runtimeConfig);
 
     return db.transaction(async (tx) => {
       const txDb = tx as unknown as Db;
-      if (options?.guardBeforeWrite) {
-        // Serialize the guard's check and the write below against any concurrent
-        // writer taking the same advisory lock (the heartbeat claim path). A
-        // dedicated advisory lock — not a row `FOR UPDATE` — so it does not
-        // deadlock against unrelated transactions that touch the agent row.
+      if (willEnableTimerOnly) {
+        // Authoritative timer-only enable invariant, enforced at the deepest
+        // common agent-mutation boundary so EVERY writer that can persist
+        // timerOnly=true (PATCH, config rollback, …) serializes with the
+        // heartbeat claim path through the same per-agent advisory lock. Take the
+        // lock FIRST, then re-check for a running non-timer run and write, so the
+        // check+write pair cannot interleave with `claimQueuedRun`. A dedicated
+        // advisory lock — not a row `FOR UPDATE` — so it does not deadlock
+        // against unrelated transactions that touch the agent row.
         await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${agentTimerOnlyLockKey(id)}))`);
-        const [lockedAgent] = await tx.select().from(agents).where(eq(agents.id, id));
-        if (!lockedAgent) return null;
-        await options.guardBeforeWrite(txDb, lockedAgent);
+        await assertNoActiveNonTimerRun(txDb, id);
       }
       const updated = await tx
         .update(agents)

@@ -18,7 +18,7 @@
 
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { and, eq, not } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import {
   agents,
   agentWakeupRequests,
@@ -28,7 +28,6 @@ import {
   heartbeatRuns,
   issues,
 } from "@paperclipai/db";
-import type { Db } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -284,24 +283,6 @@ describeEmbeddedPostgres("timer-only isolation — real control-plane paths", ()
     const heartbeat = heartbeatService(db);
     const { companyId, agentId } = await seedAgent(false);
 
-    // The SAME guard the PATCH route installs: re-check inside the update
-    // transaction (while the agent row is held FOR UPDATE) and refuse the flip
-    // if a non-timer run is already running.
-    const timerOnlyGuard = async (tx: Db) => {
-      const raced = await tx
-        .select({ id: heartbeatRuns.id, invocationSource: heartbeatRuns.invocationSource })
-        .from(heartbeatRuns)
-        .where(
-          and(
-            eq(heartbeatRuns.agentId, agentId),
-            eq(heartbeatRuns.status, "running"),
-            not(eq(heartbeatRuns.invocationSource, "timer")),
-          ),
-        )
-        .limit(1);
-      if (raced.length > 0) throw new Error("timer_only_active_non_timer_run");
-    };
-
     const offConfig = { heartbeat: { enabled: true, intervalSec: 60, timerOnly: false, maxConcurrentRuns: 5 } };
     const onConfig = { heartbeat: { enabled: true, intervalSec: 60, timerOnly: true, maxConcurrentRuns: 5 } };
 
@@ -312,10 +293,13 @@ describeEmbeddedPostgres("timer-only isolation — real control-plane paths", ()
       await db.delete(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
       const runId = await insertQueuedRun(companyId, agentId, "automation");
 
-      // Fire both real writers concurrently. Each takes the agent-row FOR UPDATE
-      // lock before its decisive write, so they can never interleave.
+      // Fire both real writers concurrently. `svc.update` enables timerOnly and
+      // `claimQueuedRun` flips the queued non-timer run to running; each takes the
+      // SAME per-agent advisory lock before its decisive write (the enable guard
+      // now lives INSIDE `agentService.update`, not a caller-supplied callback),
+      // so they can never interleave.
       const [enableRes] = await Promise.allSettled([
-        svc.update(agentId, { runtimeConfig: onConfig }, { guardBeforeWrite: timerOnlyGuard }),
+        svc.update(agentId, { runtimeConfig: onConfig }),
         heartbeat.claimQueuedRun(await loadRun(runId)),
       ]);
 
@@ -347,6 +331,118 @@ describeEmbeddedPostgres("timer-only isolation — real control-plane paths", ()
         // Claim won the lock; the enable was rejected by its guard, leaving the
         // policy off — so the running non-timer run is not a violation.
         expect(enableRes.status).toBe("rejected");
+      }
+    }
+  });
+
+  // Records a config revision whose snapshot has timerOnly=true, then leaves the
+  // agent back at timerOnly=false. Returns the id of the timerOnly=true revision
+  // — a valid rollback target that would re-enable the policy.
+  async function recordTimerOnlyRevision(agentId: string): Promise<string> {
+    const svc = agentService(db);
+    const onConfig = { heartbeat: { enabled: true, intervalSec: 60, timerOnly: true, maxConcurrentRuns: 5 } };
+    const offConfig = { heartbeat: { enabled: true, intervalSec: 60, timerOnly: false, maxConcurrentRuns: 5 } };
+    const recordRevision = { source: "patch" as const };
+    await svc.update(agentId, { runtimeConfig: onConfig }, { recordRevision });
+    await svc.update(agentId, { runtimeConfig: offConfig }, { recordRevision });
+    const revisions = await svc.listConfigRevisions(agentId);
+    const timerOnlyRevision = revisions.find(
+      (r) => parseHeartbeatPolicyForTest((r.afterConfig as { runtimeConfig?: unknown })?.runtimeConfig).timerOnly,
+    );
+    if (!timerOnlyRevision) throw new Error("expected a timerOnly=true revision to exist");
+    return timerOnlyRevision.id;
+  }
+
+  async function insertRunningRun(
+    companyId: string,
+    agentId: string,
+    invocationSource: "timer" | "assignment" | "automation" | "on_demand",
+  ) {
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource,
+      status: "running",
+      responsibleUserId: "test-responsible-user",
+      startedAt: new Date(),
+    });
+    return runId;
+  }
+
+  it("rollback: refuses to restore a timerOnly=true revision while a non-timer run is running (overlap=0)", async () => {
+    const svc = agentService(db);
+    const { companyId, agentId } = await seedAgent(false);
+    const revisionId = await recordTimerOnlyRevision(agentId);
+
+    // A non-timer run is already running when the rollback is attempted.
+    await insertRunningRun(companyId, agentId, "assignment");
+
+    // Restoring the timerOnly=true snapshot must go through the SAME advisory
+    // lock + active-run guard as the PATCH/claim paths, so it is rejected.
+    await expect(
+      svc.rollbackConfigRevision(agentId, revisionId, { agentId: null, userId: null }),
+    ).rejects.toMatchObject({ status: 409, details: { code: "timer_only_active_non_timer_run" } });
+
+    // The policy stays off, so the running non-timer run is not a violation.
+    const agentRow = await db
+      .select()
+      .from(agents)
+      .where(eq(agents.id, agentId))
+      .then((rows) => rows[0]!);
+    expect(parseHeartbeatPolicyForTest(agentRow.runtimeConfig).timerOnly).toBe(false);
+  });
+
+  it("race: concurrent config rollback and claim serialize (overlap=0 under interleaving)", async () => {
+    const svc = agentService(db);
+    const heartbeat = heartbeatService(db);
+    const { companyId, agentId } = await seedAgent(false);
+    const revisionId = await recordTimerOnlyRevision(agentId);
+    const offConfig = { heartbeat: { enabled: true, intervalSec: 60, timerOnly: false, maxConcurrentRuns: 5 } };
+
+    // Repeat to exercise both interleavings (rollback-wins-lock and claim-wins-lock).
+    for (let i = 0; i < 30; i++) {
+      await db.update(agents).set({ runtimeConfig: offConfig }).where(eq(agents.id, agentId));
+      await db.delete(heartbeatRunEvents);
+      await db.delete(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+      const runId = await insertQueuedRun(companyId, agentId, "automation");
+
+      // The rollback re-enables timerOnly and the claim flips the queued non-timer
+      // run to running; both take the SAME per-agent advisory lock before writing.
+      const [rollbackRes] = await Promise.allSettled([
+        svc.rollbackConfigRevision(agentId, revisionId, { agentId: null, userId: null }),
+        heartbeat.claimQueuedRun(await loadRun(runId)),
+      ]);
+
+      const running = await db
+        .select({ id: heartbeatRuns.id, invocationSource: heartbeatRuns.invocationSource })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.status, "running"));
+      const nonTimerRunning = running.filter((r) => r.invocationSource !== "timer");
+
+      const agentRow = await db
+        .select()
+        .from(agents)
+        .where(eq(agents.id, agentId))
+        .then((rows) => rows[0]!);
+      const policy = parseHeartbeatPolicyForTest(agentRow.runtimeConfig);
+
+      // THE INVARIANT: timerOnly=true and a running non-timer run are mutually
+      // exclusive — overlap=0 — for EVERY interleaving.
+      expect(policy.timerOnly && nonTimerRunning.length > 0).toBe(false);
+
+      if (policy.timerOnly) {
+        // Rollback won the lock; the claim then fail-closed the non-timer run.
+        expect(nonTimerRunning).toHaveLength(0);
+        expect(await runStatus(runId)).toMatchObject({
+          status: "cancelled",
+          errorCode: "timer_only_policy",
+        });
+      } else {
+        // Claim won the lock; the rollback was rejected by its guard, leaving the
+        // policy off — so the running non-timer run is not a violation.
+        expect(rollbackRes.status).toBe("rejected");
       }
     }
   });
