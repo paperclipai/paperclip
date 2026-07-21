@@ -363,18 +363,23 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
   };
 }
 
-function toInstanceSettings(row: typeof instanceSettings.$inferSelect): InstanceSettings {
+function toInstanceSettings(
+  row: typeof instanceSettings.$inferSelect,
+  overrides: InstanceSettingsOverrides = emptyOverrides(),
+): InstanceSettings {
   return {
     id: row.id,
     defaultEnvironmentId: row.defaultEnvironmentId ?? null,
-    general: normalizeGeneralSettings(row.general),
-    experimental: normalizeExperimentalSettings(row.experimental),
+    general: resolveGeneralSettings(row.general, overrides.general),
+    experimental: resolveExperimentalSettings(row.experimental, overrides.experimental),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   } as InstanceSettings;
 }
 
 export function instanceSettingsService(db: Db, options: InstanceSettingsServiceOptions = {}) {
+  const overrides = parseInstanceSettingsOverrides(options.runtimeEnv ?? process.env);
+
   async function getOrCreateRow() {
     const existing = await db
       .select()
@@ -414,7 +419,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
   }
 
   return {
-    get: async (): Promise<InstanceSettings> => toInstanceSettings(await getOrCreateRow()),
+    get: async (): Promise<InstanceSettings> => toInstanceSettings(await getOrCreateRow(), overrides),
 
     update: async (patch: PatchInstanceSettings): Promise<InstanceSettings> => {
       const current = await getOrCreateRow();
@@ -429,24 +434,28 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
         })
         .where(eq(instanceSettings.id, current.id))
         .returning();
-      return toInstanceSettings(updated ?? current);
+      return toInstanceSettings(updated ?? current, overrides);
     },
 
     getGeneral: async (): Promise<InstanceGeneralSettings> => {
       const row = await getOrCreateRow();
-      return normalizeGeneralSettings(row.general);
+      return resolveGeneralSettings(row.general, overrides.general);
     },
 
     getExperimental: async (): Promise<InstanceExperimentalSettings> => {
       const row = await getOrCreateRow();
-      return normalizeExperimentalSettings(row.experimental);
+      return resolveExperimentalSettings(row.experimental, overrides.experimental);
     },
 
     updateGeneral: async (patch: PatchInstanceGeneralSettings): Promise<InstanceSettings> => {
       const current = await getOrCreateRow();
+      const effectivePatch = stripOverriddenPatchKeys(
+        patch as Record<string, unknown>,
+        Object.keys(overrides.general),
+      );
       const nextGeneral = normalizeGeneralSettings({
         ...normalizeGeneralSettings(current.general),
-        ...patch,
+        ...effectivePatch,
       });
       const now = new Date();
       const [updated] = await db
@@ -457,12 +466,16 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
         })
         .where(eq(instanceSettings.id, current.id))
         .returning();
-      return toInstanceSettings(updated ?? current);
+      return toInstanceSettings(updated ?? current, overrides);
     },
 
     updateExperimental: async (patch: PatchInstanceExperimentalSettings): Promise<InstanceSettings> => {
       const current = await getOrCreateRow();
-      const nextExperimental = applyExperimentalSettingsPatch(current.experimental, patch, options);
+      const effectivePatch = stripOverriddenPatchKeys(
+        patch as Record<string, unknown>,
+        Object.keys(overrides.experimental),
+      ) as PatchInstanceExperimentalSettings;
+      const nextExperimental = applyExperimentalSettingsPatch(current.experimental, effectivePatch, options);
       const now = new Date();
       const [updated] = await db
         .update(instanceSettings)
@@ -472,7 +485,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
         })
         .where(eq(instanceSettings.id, current.id))
         .returning();
-      return toInstanceSettings(updated ?? current);
+      return toInstanceSettings(updated ?? current, overrides);
     },
 
     listCompanyIds: async (): Promise<string[]> =>

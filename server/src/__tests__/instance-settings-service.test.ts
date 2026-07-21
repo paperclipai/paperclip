@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { InstanceExperimentalSettings } from "@paperclipai/shared";
 import {
   applyExperimentalSettingsPatch,
+  instanceSettingsService,
   normalizeExperimentalSettings,
   resolveWorktreeRunExecutionActivationState,
   parseInstanceSettingsOverrides,
@@ -433,5 +434,51 @@ describe("stripOverriddenPatchKeys", () => {
   it("returns the patch unchanged when nothing is overridden", () => {
     const patch = { enableCases: true };
     expect(stripOverriddenPatchKeys(patch, [])).toEqual(patch);
+  });
+});
+
+function makeSettingsRow(overrides: Partial<Record<string, unknown>> = {}) {
+  return {
+    id: "row-1",
+    singletonKey: "default",
+    defaultEnvironmentId: null,
+    general: {},
+    experimental: {},
+    visibility: {},
+    createdAt: new Date("2026-01-01T00:00:00Z"),
+    updatedAt: new Date("2026-01-01T00:00:00Z"),
+    ...overrides,
+  };
+}
+
+function makeReadOnlyDb(row: unknown) {
+  return {
+    select: () => ({ from: () => ({ where: () => Promise.resolve([row]) }) }),
+  } as never;
+}
+
+describe("instanceSettingsService with env overrides", () => {
+  it("get() returns override-merged experimental settings", async () => {
+    const svc = instanceSettingsService(makeReadOnlyDb(makeSettingsRow()), {
+      runtimeEnv: { PAPERCLIP_INSTANCE_SETTINGS_OVERRIDES: '{"experimental":{"enableApps":true}}' },
+    });
+    const settings = await svc.get();
+    expect(settings.experimental.enableApps).toBe(true);
+  });
+
+  it("getExperimental() applies overrides over stored values", async () => {
+    const svc = instanceSettingsService(
+      makeReadOnlyDb(makeSettingsRow({ experimental: { enableApps: false, enableCases: true } })),
+      { runtimeEnv: { PAPERCLIP_INSTANCE_SETTINGS_OVERRIDES: '{"experimental":{"enableApps":true}}' } },
+    );
+    const experimental = await svc.getExperimental();
+    expect(experimental.enableApps).toBe(true);
+    expect(experimental.enableCases).toBe(true);
+  });
+
+  it("getExperimental() without the env var behaves exactly as before", async () => {
+    const svc = instanceSettingsService(makeReadOnlyDb(makeSettingsRow()), { runtimeEnv: {} });
+    const experimental = await svc.getExperimental();
+    expect(experimental.enableApps).toBe(false);
   });
 });
