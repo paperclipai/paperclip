@@ -3661,6 +3661,18 @@ async function resolveInstructionsConfigFingerprintMetadata(config: Record<strin
   return metadata;
 }
 
+function stripNonSemanticWorkspaceRevisionTimestamps(workspaceConfig: unknown) {
+  if (!workspaceConfig || typeof workspaceConfig !== "object" || Array.isArray(workspaceConfig)) {
+    return workspaceConfig;
+  }
+  const {
+    issueConfigRevisionAt: _issueConfigRevisionAt,
+    projectConfigRevisionAt: _projectConfigRevisionAt,
+    ...semanticWorkspaceConfig
+  } = workspaceConfig as Record<string, unknown>;
+  return semanticWorkspaceConfig;
+}
+
 function buildSessionConfigCategoryValues(input: {
   adapterType: string;
   effectiveAdapterConfig: Record<string, unknown>;
@@ -3688,7 +3700,11 @@ function buildSessionConfigCategoryValues(input: {
     modelProfile: input.modelProfile,
     instructions: input.instructions,
     issueOverrides: input.issueOverrides,
-    workspaceConfig: input.workspaceConfig,
+    // Issue/project updatedAt values also move for comments, status changes,
+    // and unrelated project edits. The semantic workspace values remain in
+    // the fingerprint, so generic revision timestamps must not invalidate a
+    // resumable task session.
+    workspaceConfig: stripNonSemanticWorkspaceRevisionTimestamps(input.workspaceConfig),
     environment: input.environment,
     envBindings: {
       environment: { env: input.environmentEnv },
@@ -12296,6 +12312,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       workspaceConfig: {
         requestedMode: requestedExecutionWorkspaceMode,
         effectiveMode: effectiveExecutionWorkspaceMode,
+        workspaceIdentity: {
+          projectId: issueContext?.projectId ?? null,
+          projectWorkspaceId: issueContext?.projectWorkspaceId ?? null,
+          executionWorkspaceId: issueContext?.executionWorkspaceId ?? null,
+        },
+        trustPreset,
         issueConfigRevisionAt: issueContext?.updatedAt instanceof Date
           ? issueContext.updatedAt.toISOString()
           : issueContext?.updatedAt ?? null,
