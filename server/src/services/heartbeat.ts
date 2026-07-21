@@ -219,6 +219,19 @@ const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_JITTER_RATIO = 0.25;
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON = "transient_failure";
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON = "transient_failure_retry";
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS = BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length;
+
+// LLM budget circuit-breaker (incident 2026-07-20/21): when the LLM provider's
+// hard budget wall is hit, every run fails instantly until the budget resets
+// externally — retrying at full timer cadence is pure waste (observed: 40
+// failed runs/hr for 15h). Adapters classify those failures as
+// LLM_BUDGET_ERROR_CODE (see e.g. the hermes adapter); while an agent's most
+// recent completed run is such a failure fresher than the cooldown, timer
+// wakes are skipped. A successful run or cooldown expiry re-arms the timer,
+// so the max added recovery delay after a budget reset is one cooldown.
+// Non-timer wakes (comment/manual/automation) are never gated.
+export const LLM_BUDGET_ERROR_CODE = "llm_budget_exceeded";
+export const LLM_BUDGET_COOLDOWN_MS = 30 * 60 * 1000;
+export const LLM_BUDGET_COOLDOWN_SKIP_REASON = "llm_budget.cooldown";
 export const MAX_TURN_CONTINUATION_RETRY_REASON = "max_turns_continuation";
 export const MAX_TURN_CONTINUATION_WAKE_REASON = "max_turns_continuation_retry";
 const MAX_TURN_CONTINUATION_DEFAULT_MAX_ATTEMPTS = 2;
@@ -8628,6 +8641,33 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (source === "timer" && !policy.enabled) {
       await writeSkippedRequest("heartbeat.disabled");
       return null;
+    }
+    if (source === "timer") {
+      const lastCompleted = await db
+        .select({
+          status: heartbeatRuns.status,
+          errorCode: heartbeatRuns.errorCode,
+          finishedAt: heartbeatRuns.finishedAt,
+        })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.agentId, agentId),
+            inArray(heartbeatRuns.status, ["succeeded", "failed"]),
+          ),
+        )
+        .orderBy(desc(heartbeatRuns.finishedAt))
+        .limit(1)
+        .then((rows) => rows[0]);
+      if (
+        lastCompleted?.status === "failed" &&
+        lastCompleted.errorCode === LLM_BUDGET_ERROR_CODE &&
+        lastCompleted.finishedAt &&
+        Date.now() - lastCompleted.finishedAt.getTime() < LLM_BUDGET_COOLDOWN_MS
+      ) {
+        await writeSkippedRequest(LLM_BUDGET_COOLDOWN_SKIP_REASON);
+        return null;
+      }
     }
     if (source !== "timer" && !policy.wakeOnDemand) {
       await writeSkippedRequest("heartbeat.wakeOnDemand.disabled");
