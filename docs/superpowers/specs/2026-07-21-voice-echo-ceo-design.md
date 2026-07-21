@@ -11,7 +11,7 @@ WHITESTAG-CEO an.
 
 | Frage | Entscheidung |
 |---|---|
-| Kanal | **Dedizierter Telegram-Bot** (eigener CEO-Bot, NICHT der bestehende Luna-Bot) |
+| Kanal | **Bestehender, ungenutzter Bot `@whitestag_jarvis_bot`** (Anzeigename „J.A.R.V.I.S.") — eigener CEO-Bot, NICHT Luna |
 | Web-Seite / Cloudflare | **Entfällt komplett** — durch Telegram ersetzt |
 | Zielformat | **Neues Issue**, dem CEO-Agenten zugewiesen |
 | Ziel-CEO | **WHITESTAG-CEO** (fest verdrahtet) |
@@ -117,7 +117,11 @@ Muster wie Deliverable-Watcher), `WHITESTAG_COMPANY_ID`, `CEO_AGENT_ID`,
 - Kein Rückkanal CEO → Telegram (später denkbar, jetzt nicht).
 
 ## Setup-Voraussetzungen / offene Punkte für den Plan
-- **Neuen Bot beim BotFather anlegen** → Token (manueller Einmal-Schritt Walters).
+- **Bot existiert bereits:** `@whitestag_jarvis_bot` (Anzeigename „J.A.R.V.I.S."), von Walter
+  angelegt, bisher ungenutzt. Kein neuer Bot nötig.
+- **Token aus BotFather holen:** Das Token ist NIRGENDS auf dem Mac gespeichert (gesamtes
+  Home durchsucht). Walter holt es in Telegram über `@BotFather → /mybots →
+  @whitestag_jarvis_bot → API Token` (ggf. „Revoke current token" für ein frisches).
 - **Walters Telegram-User-ID ermitteln** (z. B. via @userinfobot) für die Allowlist.
 - Modell-Download-Weg + Pfad festlegen.
 - Service-Token beschaffen (bestehenden wiederverwenden vs. neuen anlegen).
