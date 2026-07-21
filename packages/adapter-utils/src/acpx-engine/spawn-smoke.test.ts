@@ -26,7 +26,7 @@ it("spawns a real Node ACP agent with per-session env on this platform", async (
     runtime: {},
     config: {
       agent: "custom",
-      agentCommand: `${process.execPath} ${fixturePath}`,
+      agentCommand: `${JSON.stringify(process.execPath.replaceAll("\\", "/"))} ${JSON.stringify(fixturePath.replaceAll("\\", "/"))}`,
       mode: "oneshot",
       stateDir,
       cwd: repoRoot,
