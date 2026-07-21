@@ -208,6 +208,60 @@ describeEmbeddedPostgres("heartbeat LLM budget circuit-breaker", () => {
     await waitForHeartbeatIdle();
   });
 
+  it("evaluates the cooldown against the tick clock, not the wall clock", async () => {
+    // Greptile #9968: tickTimers(now) must make a consistent decision on a
+    // catch-up / simulated tick. Here the budget failure is FRESH relative to
+    // the supplied tick `now` (5 min old) but ANCIENT relative to the wall
+    // clock (the fixed dates are far in the past), so a wall-clock cooldown
+    // would wrongly enqueue. The tick-clock cooldown must skip.
+    const tickNow = new Date("2026-01-01T00:05:00.000Z");
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Atlas Coordinator",
+      role: "engineer",
+      status: "active",
+      adapterType: "process",
+      adapterConfig: { command: process.execPath, args: ["-e", ""], cwd: process.cwd() },
+      runtimeConfig: {
+        heartbeat: { enabled: true, intervalSec: 60, wakeOnDemand: true, maxConcurrentRuns: 1 },
+      },
+      permissions: {},
+      // A day before the tick, so the interval has elapsed by tick-clock.
+      lastHeartbeatAt: new Date("2025-12-31T00:00:00.000Z"),
+    });
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId,
+      invocationSource: "timer",
+      status: "failed",
+      error: "Adapter failed",
+      errorCode: LLM_BUDGET_ERROR_CODE,
+      startedAt: new Date("2025-12-31T23:59:00.000Z"),
+      finishedAt: new Date("2026-01-01T00:00:00.000Z"),
+    });
+
+    const result = await heartbeat.tickTimers(tickNow);
+
+    expect(result.enqueued).toBe(0);
+    expect(result.skipped).toBe(1);
+    const requests = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+    expect(requests).toHaveLength(1);
+    expect(requests[0]!.reason).toBe(LLM_BUDGET_COOLDOWN_SKIP_REASON);
+  });
+
   it("non-timer wakes bypass the breaker", async () => {
     const now = new Date();
     const { companyId, agentId } = await seedAgent(now);

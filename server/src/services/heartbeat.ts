@@ -979,6 +979,10 @@ interface WakeupOptions {
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
   contextSnapshot?: Record<string, unknown>;
+  // The scheduler's effective tick clock. Time-based gates (e.g. the LLM budget
+  // cooldown) MUST evaluate against this, not the wall clock, so a catch-up or
+  // simulated tickTimers(now) makes a consistent decision. Defaults to now.
+  now?: Date;
 }
 
 type UsageTotals = {
@@ -8659,11 +8663,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .orderBy(desc(heartbeatRuns.finishedAt))
         .limit(1)
         .then((rows) => rows[0]);
+      const evalNowMs = (opts.now ?? new Date()).getTime();
       if (
         lastCompleted?.status === "failed" &&
         lastCompleted.errorCode === LLM_BUDGET_ERROR_CODE &&
         lastCompleted.finishedAt &&
-        Date.now() - lastCompleted.finishedAt.getTime() < LLM_BUDGET_COOLDOWN_MS
+        evalNowMs - lastCompleted.finishedAt.getTime() < LLM_BUDGET_COOLDOWN_MS
       ) {
         await writeSkippedRequest(LLM_BUDGET_COOLDOWN_SKIP_REASON);
         return null;
@@ -9781,6 +9786,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           reason: "heartbeat_timer",
           requestedByActorType: "system",
           requestedByActorId: "heartbeat_scheduler",
+          now,
           contextSnapshot: {
             source: "scheduler",
             reason: "interval_elapsed",
