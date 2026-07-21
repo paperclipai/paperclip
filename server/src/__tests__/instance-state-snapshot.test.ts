@@ -20,7 +20,14 @@ describe("instance state snapshots", () => {
     const objects = new Map<string, Buffer>();
     const provider: StorageProvider = {
       id: "local_disk",
-      async putObject(input) { objects.set(input.objectKey, Buffer.isBuffer(input.body) ? input.body : Buffer.from(await Readable.toArray(input.body))); },
+      async putObject(input) {
+        if (Buffer.isBuffer(input.body)) objects.set(input.objectKey, input.body);
+        else {
+          const chunks: Buffer[] = [];
+          for await (const chunk of input.body) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+          objects.set(input.objectKey, Buffer.concat(chunks));
+        }
+      },
       async getObject(input) { const body = objects.get(input.objectKey); if (!body) throw new Error("missing"); return { stream: Readable.from(body), contentLength: body.length }; },
       async headObject(input) { const body = objects.get(input.objectKey); return { exists: Boolean(body), contentLength: body?.length }; },
       async deleteObject(input) { objects.delete(input.objectKey); },
