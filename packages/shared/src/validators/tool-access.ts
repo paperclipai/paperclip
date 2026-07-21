@@ -210,9 +210,22 @@ export const connectionTokenScopeSchema = z.union([
   z.array(z.string().trim().min(1).max(240)).max(100),
 ]);
 
+export const connectionTokenSubjectSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("app") }).strict(),
+  z.object({ type: z.literal("user"), userId: z.string().trim().min(1).max(500) }).strict(),
+]);
+
 export const connectionTokenRequestSchema = z.object({
+  subject: connectionTokenSubjectSchema.optional().default({ type: "app" }),
   scope: connectionTokenScopeSchema.optional(),
   requestedTtlSeconds: z.number().int().positive().max(86_400).optional(),
+  grantId: z.string().uuid().optional(),
+}).strict();
+
+export const startConnectionAuthorizationSchema = z.object({
+  subjectUserId: z.string().trim().min(1).max(500),
+  scopes: z.array(z.string().trim().min(1).max(240)).max(100).optional(),
+  returnTo: z.string().trim().max(2000).optional(),
 }).strict();
 
 export type ConnectionTokenRequestInput = z.infer<typeof connectionTokenRequestSchema>;

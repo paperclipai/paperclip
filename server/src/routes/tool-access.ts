@@ -28,6 +28,7 @@ import {
   importMcpJsonSchema,
   putToolConnectionInstallsSchema,
   connectionTokenRequestSchema,
+  startConnectionAuthorizationSchema,
   revokeToolTrustRuleSchema,
   reorderToolPoliciesSchema,
   toolPolicyTestRequestSchema,
@@ -174,6 +175,24 @@ export function toolAccessRoutes(
     await assertBoardToolPermission(req, companyId, "tools:manage_runtime");
   }
 
+  router.post("/agents/me/connections/:connectionId/start-authorization", validate(startConnectionAuthorizationSchema), async (req, res) => {
+    if (req.actor.type !== "agent" || !req.actor.agentId || !req.actor.companyId || !req.actor.runId) {
+      res.status(401).json({ error: "Active agent run authentication required" });
+      return;
+    }
+    const result = await svc.startAuthorizationForAgent({
+      companyId: req.actor.companyId,
+      connectionId: req.params.connectionId as string,
+      agentId: req.actor.agentId,
+      runId: req.actor.runId,
+      subjectUserId: req.body.subjectUserId,
+      scopes: req.body.scopes,
+      returnTo: req.body.returnTo,
+      redirectUri: oauthRedirectUri(),
+    });
+    res.json({ url: result.authorizationUrl });
+  });
+
   router.post("/agents/me/connections/:connectionId/token", validate(connectionTokenRequestSchema), async (req, res) => {
     if (req.actor.type !== "agent" || !req.actor.agentId || !req.actor.companyId) {
       res.status(401).json({ error: "Agent authentication required" });
@@ -266,6 +285,27 @@ export function toolAccessRoutes(
       svc.ensureNoDuplicateNameError(error);
     }
   });
+
+  router.post(
+    "/companies/:companyId/tools/connections/:connectionId/start-authorization",
+    validate(startConnectionAuthorizationSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertToolAppMutationAccess(req, companyId);
+      if (!req.actor.userId || req.actor.userId !== req.body.subjectUserId) {
+        throw forbidden("Board users may only authorize their own connection subject");
+      }
+      const existing = await svc.getConnection(req.params.connectionId as string, companyId);
+      const result = await svc.startOAuth(companyId, existing.id, {
+        redirectUri: oauthRedirectUri(),
+        actor: getActorInfo(req),
+        subjectUserId: req.body.subjectUserId,
+        scopes: req.body.scopes,
+        returnTo: req.body.returnTo,
+      });
+      res.json({ url: result.authorizationUrl });
+    },
+  );
 
   router.post("/tools/oauth/:connectionId/start", async (req, res) => {
     const existing = await svc.getConnection(req.params.connectionId as string);
@@ -521,6 +561,67 @@ export function toolAccessRoutes(
     if (!hasCompanyAccess(req, connection.companyId)) throw notFound("Tool connection not found");
     assertCompanyAccess(req, connection.companyId);
     res.json(connection);
+  });
+
+  router.get("/tool-connections/:connectionId/grants", async (req, res) => {
+    assertBoard(req);
+    const connection = await svc.getConnection(req.params.connectionId as string);
+    if (!hasCompanyAccess(req, connection.companyId)) throw notFound("Tool connection not found");
+    assertCompanyAccess(req, connection.companyId);
+    res.json(await svc.listConnectionGrants(connection.id, connection.companyId));
+  });
+
+  router.post("/tool-connections/:connectionId/grants/installations", async (req, res) => {
+    assertBoard(req);
+    const connection = await svc.getConnection(req.params.connectionId as string);
+    await assertBoardToolPermission(req, connection.companyId, "tools:manage_connections");
+    const body = req.body && typeof req.body === "object" ? req.body as Record<string, unknown> : {};
+    const credentialSecretRefs = Array.isArray(body.credentialSecretRefs) ? body.credentialSecretRefs : [];
+    const providerTenant = body.providerTenant && typeof body.providerTenant === "object"
+      ? body.providerTenant as { name?: string; externalId?: string }
+      : undefined;
+    const grant = await svc.addConnectionInstallation(connection.id, {
+      providerTenant,
+      credentialSecretRefs,
+      isDefault: body.isDefault === true,
+    }, getActorInfo(req));
+    await logActivity(db, {
+      companyId: connection.companyId,
+      actorType: "user",
+      actorId: req.actor.userId ?? "board",
+      action: "tool_connection.grant_added",
+      entityType: "connection_grant",
+      entityId: grant.id,
+      details: { connectionId: connection.id, kind: grant.kind },
+    });
+    res.status(201).json(grant);
+  });
+
+  router.delete("/tool-connections/:connectionId/grants/:grantId", async (req, res) => {
+    assertBoard(req);
+    const connection = await svc.getConnection(req.params.connectionId as string);
+    await assertBoardToolPermission(req, connection.companyId, "tools:manage_connections");
+    const grant = await svc.revokeConnectionGrant(connection.id, req.params.grantId as string, getActorInfo(req));
+    await logActivity(db, {
+      companyId: connection.companyId,
+      actorType: "user",
+      actorId: req.actor.userId ?? "board",
+      action: "tool_connection.grant_revoked",
+      entityType: "connection_grant",
+      entityId: grant.id,
+      details: { connectionId: connection.id, kind: grant.kind },
+    });
+    res.json(grant);
+  });
+
+  router.get("/tool-connections/:connectionId/usage", async (req, res) => {
+    assertBoard(req);
+    const connection = await svc.getConnection(req.params.connectionId as string);
+    if (!hasCompanyAccess(req, connection.companyId)) throw notFound("Tool connection not found");
+    assertCompanyAccess(req, connection.companyId);
+    const range = req.query.range === "30d" ? "30d" : req.query.range === undefined || req.query.range === "7d" ? "7d" : null;
+    if (!range) throw badRequest("Usage range must be 7d or 30d");
+    res.json(await svc.getConnectionUsage(connection.id, range, connection.companyId));
   });
 
   router.get("/tool-connections/:connectionId/installs", async (req, res) => {
