@@ -28,6 +28,15 @@ const SECRET_PATTERNS = [
 ] as const;
 
 export type StateRepoActor = { name: string; email: string };
+export type StateRepoCommit = {
+  hash: string;
+  shortHash: string;
+  author: string;
+  authorEmail: string;
+  committer: string;
+  date: string;
+  subject: string;
+};
 export type StateRepoMemorySource = { agentId: string; root: string };
 type Entry = { oid: string; mode: string };
 
@@ -219,6 +228,45 @@ export function createStateRepoService(options: {
       const repo = repoPathFor(companyId);
       await ensureRepo(repo);
       await git(repo, ["bundle", "create", outputPath, "--all"]);
+    },
+    async log(companyId: string, limit = 50): Promise<StateRepoCommit[]> {
+      const repo = repoPathFor(companyId);
+      try {
+        await fs.access(path.join(repo, "HEAD"));
+      } catch {
+        return [];
+      }
+      // Unit separator (\x1f) between fields, record separator (\x1e) between commits —
+      // both are safe against author names / subjects that contain newlines or pipes.
+      const bounded = Math.min(Math.max(1, Math.floor(limit) || 0), 500);
+      let stdout: string;
+      try {
+        ({ stdout } = await git(repo, [
+          "log",
+          `-n${bounded}`,
+          "--format=%H%x1f%an%x1f%ae%x1f%cn%x1f%aI%x1f%s%x1e",
+          "main",
+        ]));
+      } catch {
+        // Empty repo (no commits on main yet) → no history to show.
+        return [];
+      }
+      return stdout
+        .split("\x1e")
+        .map((record) => record.replace(/^\n/, ""))
+        .filter(Boolean)
+        .map((record) => {
+          const [hash, author, authorEmail, committer, date, subject] = record.split("\x1f");
+          return {
+            hash: hash ?? "",
+            shortHash: (hash ?? "").slice(0, 8),
+            author: author ?? "",
+            authorEmail: authorEmail ?? "",
+            committer: committer ?? "",
+            date: date ?? "",
+            subject: subject ?? "",
+          };
+        });
     },
     async restore(companyId: string, source: string, ref = "main", dryRun = false) {
       const instance = resolvePaperclipInstancePath({ homeDir: options.homeDir, instanceId: options.instanceId });

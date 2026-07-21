@@ -47,6 +47,27 @@ describe("state repo service", () => {
     await expect(service.commit({ companyId: "company-1", actor: { name: "Fable", email: "agent+fable@paperclip.invalid" }, message: "bad" })).rejects.toThrow("secret scan blocked");
   });
 
+  it("reports an attributed commit log, newest first, and empty for an unborn repo", async () => {
+    const homeDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-state-log-"));
+    const instance = path.join(homeDir, "instances", "test");
+    const instructions = path.join(instance, "companies", "company-1", "agents", "agent-1", "instructions");
+    await fs.mkdir(instructions, { recursive: true });
+    const service = createStateRepoService({ homeDir, instanceId: "test", markerDir: path.join(instance, "health") });
+    // No commits yet → empty log, no throw.
+    expect(await service.log("company-1")).toEqual([]);
+    await fs.writeFile(path.join(instructions, "AGENTS.md"), "# One\n");
+    await service.commit({ companyId: "company-1", actor: { name: "Fable", email: "agent+fable@paperclip.invalid" }, message: "agent-instructions: update Fable" });
+    await fs.writeFile(path.join(instructions, "AGENTS.md"), "# Two\n");
+    await service.commit({ companyId: "company-1", actor: { name: "Board User", email: "user+board@paperclip.invalid" }, message: "config: change ports" });
+    const log = await service.log("company-1");
+    expect(log).toHaveLength(2);
+    expect(log[0]).toMatchObject({ author: "Board User", committer: "paperclip-state-bot", subject: "config: change ports" });
+    expect(log[1]).toMatchObject({ author: "Fable", subject: "agent-instructions: update Fable" });
+    expect(log[0]!.shortHash).toBe(log[0]!.hash.slice(0, 8));
+    expect(log[0]!.date).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(await service.log("company-1", 1)).toHaveLength(1);
+  });
+
   it("debounces Claude memory changes into an automatic commit", async () => {
     const homeDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-state-memory-"));
     const instance = path.join(homeDir, "instances", "test");

@@ -53,6 +53,7 @@ import {
   secretService,
 } from "./services/index.js";
 import { createStateRepoService } from "./services/state-repo.js";
+import { stateRepoRemoteService } from "./services/state-repo-remote.js";
 import { resolveWorktreeRunExecutionActivationState } from "./services/instance-settings.js";
 import {
   parseAdapterRegistryEnv,
@@ -716,17 +717,26 @@ export async function startServer(): Promise<StartedServer> {
     repoPerCompany: true,
     markerDir: stateRepoMarkerDir,
     resolveMirror: async (companyId) => {
-      const configured = stateRepoMirrors[companyId];
-      if (!configured?.url) return null;
-      const ref = configured.secretRef;
-      const token = ref?.secretId
-        ? await secretService(db as any).resolveSecretValue(companyId, ref.secretId, ref.version ?? "latest", {
+      // DB-configured "connect your repo" remote takes precedence; fall back to
+      // the boot-time env map for instances that still configure mirrors via
+      // PAPERCLIP_STATE_REPO_MIRRORS_JSON.
+      const dbRemote = await stateRepoRemoteService(db as any).get(companyId).catch(() => null);
+      const url = dbRemote?.remoteUrl ?? stateRepoMirrors[companyId]?.url;
+      if (!url) return null;
+      const secretId = dbRemote?.secretId ?? stateRepoMirrors[companyId]?.secretRef?.secretId;
+      const version = dbRemote
+        ? dbRemote.secretVersion && dbRemote.secretVersion !== "latest"
+          ? Number(dbRemote.secretVersion)
+          : "latest"
+        : stateRepoMirrors[companyId]?.secretRef?.version ?? "latest";
+      const token = secretId
+        ? await secretService(db as any).resolveSecretValue(companyId, secretId, version, {
             consumerType: "system",
             consumerId: "state-repo-mirror",
             configPath: "stateRepo.remote.secretRef",
           })
         : undefined;
-      return { url: configured.url, token };
+      return { url, token };
     },
     resolveMemorySources: async (companyId) => {
       const rows = await db.select({ id: agents.id, adapterType: agents.adapterType, adapterConfig: agents.adapterConfig })
