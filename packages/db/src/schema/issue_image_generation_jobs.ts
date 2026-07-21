@@ -17,6 +17,9 @@ export const issueImageGenerationJobs = pgTable(
     actor: jsonb("actor").notNull(),
     requestFingerprint: text("request_fingerprint").notNull(),
     lastError: text("last_error"),
+    // A claim is fenced by a new token on every lease acquisition.  A worker
+    // which lost its lease must not be able to publish a terminal result.
+    claimToken: uuid("claim_token"),
     leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
     startedAt: timestamp("started_at", { withTimezone: true }),
     finishedAt: timestamp("finished_at", { withTimezone: true }),

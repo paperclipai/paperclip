@@ -86,6 +86,7 @@ type JobSelect = {
   referenceSnapshot: ReferenceSnapshot;
   actor: ActorInfo;
   terminalAudit: Record<string, unknown> | null;
+  claimToken: string | null;
 };
 
 function resolveIssueImageProvider(): IssueImageProvider {
@@ -212,6 +213,7 @@ function selectShape(job: JobRow): JobSelect {
     referenceSnapshot: readJson<ReferenceSnapshot>(job.referenceSnapshot),
     actor: readJson<ActorInfo>(job.actor),
     terminalAudit: readJson<Record<string, unknown> | null>(job.terminalAudit),
+    claimToken: job.claimToken,
   };
 }
 
@@ -321,18 +323,25 @@ async function createIssueGeneratedAttachment(input: {
     body: input.body,
   });
 
-  return svc.createAttachment({
-    issueId: input.issueId,
-    issueCommentId: null,
-    provider: stored.provider,
-    objectKey: stored.objectKey,
-    contentType: stored.contentType,
-    byteSize: stored.byteSize,
-    sha256: stored.sha256,
-    originalFilename: stored.originalFilename,
-    createdByAgentId: input.actor.agentId,
-    createdByUserId: input.actor.actorType === "user" ? input.actor.actorId : null,
-  });
+  try {
+    return await svc.createAttachment({
+      issueId: input.issueId,
+      issueCommentId: null,
+      provider: stored.provider,
+      objectKey: stored.objectKey,
+      contentType: stored.contentType,
+      byteSize: stored.byteSize,
+      sha256: stored.sha256,
+      originalFilename: stored.originalFilename,
+      createdByAgentId: input.actor.agentId,
+      createdByUserId: input.actor.actorType === "user" ? input.actor.actorId : null,
+    });
+  } catch (error) {
+    // Storage is outside the DB transaction used by createAttachment. Do not
+    // leave an unreferenced object if that transaction rejects or rolls back.
+    await input.storage.deleteObject(input.companyId, stored.objectKey).catch(() => undefined);
+    throw error;
+  }
 }
 
 export function createIssueImageGenerationJobService(
@@ -364,16 +373,31 @@ export function createIssueImageGenerationJobService(
       return selectShape(existing);
     }
 
-    await db.insert(issueImageGenerationJobs).values({
-      companyId: input.companyId,
-      issueId: input.issueId,
-      idempotencyKey: input.idempotencyKey,
-      status: "queued",
-      request: input.request,
-      referenceSnapshot: input.referenceSnapshot,
-      actor: input.actor,
-      requestFingerprint: input.requestFingerprint,
-    });
+    try {
+      await db.insert(issueImageGenerationJobs).values({
+        companyId: input.companyId,
+        issueId: input.issueId,
+        idempotencyKey: input.idempotencyKey,
+        status: "queued",
+        request: input.request,
+        referenceSnapshot: input.referenceSnapshot,
+        actor: input.actor,
+        requestFingerprint: input.requestFingerprint,
+      });
+    } catch (error) {
+      // The pre-read above is only an optimisation. Concurrent requests can
+      // still race at the unique index, so resolve that race deterministically.
+      const code = (error as { code?: string } | null)?.code;
+      if (code !== "23505") throw error;
+      const raced = await db.select().from(issueImageGenerationJobs).where(
+        and(eq(issueImageGenerationJobs.issueId, input.issueId), eq(issueImageGenerationJobs.idempotencyKey, input.idempotencyKey)),
+      ).then((rows) => rows[0] ?? null);
+      if (!raced) throw error;
+      if (raced.requestFingerprint !== input.requestFingerprint) {
+        throw unprocessable("This idempotency key already belongs to a different image-generation request");
+      }
+      return selectShape(raced);
+    }
     const job = await db
       .select()
       .from(issueImageGenerationJobs)
@@ -415,6 +439,7 @@ export function createIssueImageGenerationJobService(
         status = 'running',
         attempt_count = jobs.attempt_count + 1,
         started_at = COALESCE(jobs.started_at, now()),
+        claim_token = gen_random_uuid(),
         lease_expires_at = ${new Date(Date.now() + leaseMs)},
         updated_at = now(),
         last_error = NULL
@@ -426,7 +451,37 @@ export function createIssueImageGenerationJobService(
     return row ? selectShape(row as JobRow) : null;
   }
 
+  async function renewLease(job: JobSelect): Promise<boolean> {
+    if (!job.claimToken) return false;
+    const result = await db.update(issueImageGenerationJobs).set({
+      leaseExpiresAt: new Date(Date.now() + leaseMs),
+      updatedAt: new Date(),
+    }).where(and(
+      eq(issueImageGenerationJobs.id, job.id),
+      eq(issueImageGenerationJobs.status, "running"),
+      eq(issueImageGenerationJobs.claimToken, job.claimToken),
+    )).returning({ id: issueImageGenerationJobs.id });
+    return result.length === 1;
+  }
+
+  async function requireActiveClaim(job: JobSelect) {
+    if (!(await renewLease(job))) {
+      throw new Error("Image generation job lease was lost to another worker");
+    }
+  }
+
+  async function compensateAttachment(attachment: Awaited<ReturnType<ReturnType<typeof issueService>["createAttachment"]>> | null) {
+    if (!attachment) return;
+    try {
+      const removed = await issueService(db).removeAttachment(attachment.id);
+      if (removed) await storage.deleteObject(removed.companyId, removed.objectKey);
+    } catch (error) {
+      log.error({ err: error, attachmentId: attachment.id }, "failed to compensate image generation attachment");
+    }
+  }
+
   async function execute(job: JobSelect): Promise<void> {
+    if (!job.claimToken) throw new Error("Image generation job has no claim token");
     const requestedSize = parseRequestedImageSize(job.request.size);
     const issue = await issueService(db).getById(job.issueId);
     if (!issue) {
@@ -459,39 +514,57 @@ export function createIssueImageGenerationJobService(
     const credentialResolution = imageProvider === "openai" && job.actor.agentId
       ? await resolveAllCredentialEnv(db, job.actor.agentId)
       : { env: {} as Record<string, string> };
-    const generated = imageProvider === "openai"
-      ? await generateOpenAiIssueImage({
+    // A timer extends the cross-replica lease while the provider is running.
+    // Every publication step separately fences on the same claim token.
+    let leaseLost = false;
+    const heartbeat = setInterval(() => {
+      void renewLease(job).then((renewed) => { leaseLost ||= !renewed; }).catch(() => { leaseLost = true; });
+    }, Math.max(1_000, Math.floor(leaseMs / 3)));
+    heartbeat.unref?.();
+    let generated: Awaited<ReturnType<typeof generateOpenAiIssueImage>> | Awaited<ReturnType<typeof generateCodexIssueImage>>;
+    try {
+      generated = imageProvider === "openai"
+        ? await generateOpenAiIssueImage({
           prompt: job.request.prompt,
           size: job.request.size,
           quality: job.request.quality,
           references,
           apiKey: credentialResolution.env.OPENAI_API_KEY,
         })
-      : await generateCodexIssueImage({
-          prompt: job.request.prompt,
-          size: job.request.size,
-          quality: job.request.quality,
-          references,
-          companyId: job.companyId,
-          agentId: job.actor.agentId,
-          runId: job.actor.runId,
-        });
+        : await generateCodexIssueImage({
+            prompt: job.request.prompt,
+            size: job.request.size,
+            quality: job.request.quality,
+            references,
+            companyId: job.companyId,
+            agentId: job.actor.agentId,
+            runId: job.actor.runId,
+          });
+    } finally {
+      clearInterval(heartbeat);
+    }
+    if (leaseLost) throw new Error("Image generation job lease was lost while provider was running");
+    await requireActiveClaim(job);
     const normalizedOutput = await normalizeGeneratedImageOutput({
       bytes: generated.outputBytes,
       requestedSize,
     });
 
-    const outputAttachment = await createIssueGeneratedAttachment({
-      db,
-      storage,
-      issueId: job.issueId,
-      companyId: job.companyId,
-      actor: job.actor,
-      namespace: `issues/${job.issueId}/generated-images`,
-      originalFilename: generatedImageFilename(job.request.outputFilename),
-      contentType: normalizedOutput.contentType,
-      body: normalizedOutput.bytes,
-    });
+    let outputAttachment: Awaited<ReturnType<typeof createIssueGeneratedAttachment>> | null = null;
+    let auditAttachment: Awaited<ReturnType<typeof createIssueGeneratedAttachment>> | null = null;
+    try {
+      outputAttachment = await createIssueGeneratedAttachment({
+        db,
+        storage,
+        issueId: job.issueId,
+        companyId: job.companyId,
+        actor: job.actor,
+        namespace: `issues/${job.issueId}/generated-images`,
+        originalFilename: generatedImageFilename(job.request.outputFilename),
+        contentType: normalizedOutput.contentType,
+        body: normalizedOutput.bytes,
+      });
+      if (!outputAttachment) throw new Error("Image output attachment was not created");
 
     const audit = {
       generatedAt: new Date().toISOString(),
@@ -535,7 +608,8 @@ export function createIssueImageGenerationJobService(
       })),
     };
 
-    const auditAttachment = await createIssueGeneratedAttachment({
+    await requireActiveClaim(job);
+    auditAttachment = await createIssueGeneratedAttachment({
       db,
       storage,
       issueId: job.issueId,
@@ -547,7 +621,7 @@ export function createIssueImageGenerationJobService(
       body: Buffer.from(JSON.stringify(audit, null, 2), "utf8"),
     });
 
-    await db
+    const terminal = await db
       .update(issueImageGenerationJobs)
       .set({
         status: "succeeded",
@@ -558,7 +632,13 @@ export function createIssueImageGenerationJobService(
         auditAttachmentId: auditAttachment.id,
         terminalAudit: audit,
       })
-      .where(eq(issueImageGenerationJobs.id, job.id));
+      .where(and(
+        eq(issueImageGenerationJobs.id, job.id),
+        eq(issueImageGenerationJobs.status, "running"),
+        eq(issueImageGenerationJobs.claimToken, job.claimToken),
+      ))
+      .returning({ id: issueImageGenerationJobs.id });
+    if (terminal.length !== 1) throw new Error("Image generation job lease was lost before terminal delivery");
 
     await logActivity(db, {
       companyId: job.companyId,
@@ -584,10 +664,22 @@ export function createIssueImageGenerationJobService(
         auditAttachmentId: auditAttachment.id,
         jobId: job.id,
       },
+    }).catch((error) => {
+      // The terminal result is already durable and correctly linked. Activity
+      // logging is observability, not a reason to remove a delivered result.
+      log.error({ err: error, jobId: job.id }, "failed to write image generation activity");
     });
+    } catch (error) {
+      // Attachments are persisted independently from object storage. If the
+      // fenced terminal link cannot be written, remove both durable artifacts
+      // so a later attempt cannot silently publish a second delivery.
+      await compensateAttachment(auditAttachment);
+      await compensateAttachment(outputAttachment);
+      throw error;
+    }
   }
 
-  async function fail(jobId: string, error: unknown) {
+  async function fail(job: JobSelect, error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     await db
       .update(issueImageGenerationJobs)
@@ -598,7 +690,11 @@ export function createIssueImageGenerationJobService(
         updatedAt: new Date(),
         leaseExpiresAt: null,
       })
-      .where(eq(issueImageGenerationJobs.id, jobId));
+      .where(and(
+        eq(issueImageGenerationJobs.id, job.id),
+        eq(issueImageGenerationJobs.status, "running"),
+        eq(issueImageGenerationJobs.claimToken, job.claimToken ?? ""),
+      ));
   }
 
   async function tick(): Promise<void> {
@@ -612,7 +708,7 @@ export function createIssueImageGenerationJobService(
           await execute(job);
         } catch (error) {
           log.warn({ err: error, jobId: job.id, issueId: job.issueId }, "issue image generation job failed");
-          await fail(job.id, error);
+          await fail(job, error);
         }
       }
     } finally {
