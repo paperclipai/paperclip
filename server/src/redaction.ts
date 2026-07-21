@@ -102,6 +102,10 @@ export function sanitizeRecord(record: Record<string, unknown>): Record<string, 
       redacted[key] = redactSensitiveText(value);
       continue;
     }
+    if ((key === "secretId" || key === "secretName") && typeof value === "string") {
+      redacted[key] = redactSensitiveText(value);
+      continue;
+    }
     if (SECRET_PAYLOAD_KEY_RE.test(key)) {
       if (isSecretRefBinding(value)) {
         redacted[key] = sanitizeValue(value);
@@ -131,6 +135,47 @@ export function redactEventPayload(payload: Record<string, unknown> | null): Rec
   if (!payload) return null;
   if (!isPlainObject(payload)) return payload;
   return sanitizeRecord(payload);
+}
+
+function countOccurrences(input: string, needle: string) {
+  if (!needle) return 0;
+  let count = 0;
+  let offset = 0;
+  while ((offset = input.indexOf(needle, offset)) !== -1) {
+    count += 1;
+    offset += needle.length;
+  }
+  return count;
+}
+
+export interface CredentialRedactionResult<T> {
+  value: T;
+  matchCount: number;
+}
+
+export function redactSensitiveTextWithMetadata(input: string): CredentialRedactionResult<string> {
+  const value = redactSensitiveText(input);
+  const addedMarkers = countOccurrences(value, REDACTED_EVENT_VALUE)
+    - countOccurrences(input, REDACTED_EVENT_VALUE);
+  return {
+    value,
+    matchCount: value === input ? 0 : Math.max(1, addedMarkers),
+  };
+}
+
+export function redactEventPayloadWithMetadata(
+  payload: Record<string, unknown> | null,
+): CredentialRedactionResult<Record<string, unknown> | null> {
+  const value = redactEventPayload(payload);
+  if (!payload || !value) return { value, matchCount: 0 };
+  const inputJson = JSON.stringify(payload);
+  const valueJson = JSON.stringify(value);
+  const addedMarkers = countOccurrences(valueJson, REDACTED_EVENT_VALUE)
+    - countOccurrences(inputJson, REDACTED_EVENT_VALUE);
+  return {
+    value,
+    matchCount: valueJson === inputJson ? 0 : Math.max(1, addedMarkers),
+  };
 }
 
 export function redactSensitiveText(input: string): string {

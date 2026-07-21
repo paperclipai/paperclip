@@ -135,4 +135,19 @@ describe("redaction", () => {
     expect(result?.args).toEqual(["--api-key", "not-a-command-secret"]);
     expect(result?.argv).toEqual(["--api-key", REDACTED_EVENT_VALUE]);
   });
+
+  it("preserves safe secret metadata without broadening generic string scanning", () => {
+    const message = "Authorization: Bearer synthetic-value";
+    const result = redactEventPayload({
+      message,
+      secretId: "11111111-1111-1111-1111-111111111111",
+      secretName: "unbound-runtime-secret",
+    });
+
+    expect(result).toEqual({
+      message,
+      secretId: "11111111-1111-1111-1111-111111111111",
+      secretName: "unbound-runtime-secret",
+    });
+  });
 });
