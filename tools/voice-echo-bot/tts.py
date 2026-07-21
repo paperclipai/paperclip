@@ -22,7 +22,8 @@ def synthesize(text, api_key, dest):
     if not api_key:
         raise TtsError("missing ElevenLabs API key")
 
-    body = json.dumps({"text": text, "model_id": config.ELEVEN_MODEL}).encode("utf-8")
+    body = json.dumps({"text": text, "model_id": config.ELEVEN_MODEL,
+                       "language_code": config.ELEVEN_LANGUAGE}).encode("utf-8")
     req = urllib.request.Request(
         config.ELEVEN_TTS_URL,
         data=body,

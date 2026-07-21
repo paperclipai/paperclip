@@ -42,7 +42,8 @@ LONGPOLL_TIMEOUT_SEC = 25
 # --- Antwort-Modus (Text/Voice) + ElevenLabs-TTS ---
 REPLY_MODE_PATH = os.path.expanduser("~/.paperclip/voice-echo-reply-mode.json")
 ELEVEN_VOICE_ID = "VBhW9TV6mNHCxbcqSl17"
-ELEVEN_MODEL = "eleven_multilingual_v2"
+ELEVEN_MODEL = "eleven_turbo_v2_5"
+ELEVEN_LANGUAGE = "de"  # feste Sprache — verhindert Auto-Sprachwechsel bei Namen/Zahlen
 ELEVEN_TTS_URL = (
     "https://api.elevenlabs.io/v1/text-to-speech/"
     + ELEVEN_VOICE_ID
