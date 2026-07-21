@@ -76,6 +76,12 @@ const manifest: PaperclipPluginManifestV1 = {
             enum: ["standard", "cilium"],
             description: "Network policy mode. `cilium` enables FQDN-based egress filtering via CiliumNetworkPolicy.",
           },
+          egressPolicy: {
+            type: "string",
+            enum: ["allowlist", "open-internet"],
+            description:
+              "allowlist (default): tenant egress restricted to egressAllowFqdns/egressAllowCidrs. open-internet: public internet on ports 80/443 with private ranges, link-local metadata, and CGNAT blocked.",
+          },
           runtimeClassName: {
             type: "string",
             description:

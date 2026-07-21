@@ -92,4 +92,19 @@ describe("buildNetworkPolicyManifests", () => {
     );
     expect(fallback).toBeUndefined();
   });
+
+  it("applies the public-internet fallback whenever egressPolicy is open-internet", () => {
+    const [, egressAllow]: any[] = buildNetworkPolicyManifests({
+      namespace: "tenant-x",
+      paperclipServerNamespace: "paperclip-app",
+      egressAllowCidrs: ["203.0.113.0/24"],
+      egressAllowFqdns: [],
+      egressPolicy: "open-internet",
+    });
+    const fallback = egressAllow.spec.egress.find(
+      (rule: any) => rule.to?.[0]?.ipBlock?.cidr === "0.0.0.0/0",
+    );
+    expect(fallback).toBeDefined();
+    expect(fallback.to[0].ipBlock.except).toContain("169.254.0.0/16");
+  });
 });

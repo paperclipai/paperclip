@@ -56,6 +56,7 @@ describe("parseExecutionPolicyBootstrapEnv", () => {
         PAPERCLIP_K8S_IN_CLUSTER: "true",
         PAPERCLIP_K8S_RUNTIME_CLASS_NAME: "gvisor",
         PAPERCLIP_K8S_EGRESS_MODE: "cilium",
+        PAPERCLIP_K8S_EGRESS_POLICY: "open-internet",
         PAPERCLIP_K8S_EGRESS_ALLOW_FQDNS: "api.anthropic.com, api.openai.com",
         PAPERCLIP_K8S_EGRESS_ALLOW_CIDRS: "10.0.0.0/8",
       }),
@@ -67,9 +68,25 @@ describe("parseExecutionPolicyBootstrapEnv", () => {
       inCluster: true,
       runtimeClassName: "gvisor",
       egressMode: "cilium",
+      egressPolicy: "open-internet",
       egressAllowFqdns: ["api.anthropic.com", "api.openai.com"],
       egressAllowCidrs: ["10.0.0.0/8"],
     });
+  });
+
+  it("defaults egressPolicy to undefined (plugin schema applies allowlist) when unset", () => {
+    const parsed = parseExecutionPolicyBootstrapEnv(
+      env({ PAPERCLIP_EXECUTION_MODE: "kubernetes" }),
+    );
+    expect(parsed?.kubernetesConfig.egressPolicy).toBeUndefined();
+  });
+
+  it("throws on an unknown egress policy", () => {
+    expect(() =>
+      parseExecutionPolicyBootstrapEnv(
+        env({ PAPERCLIP_EXECUTION_MODE: "kubernetes", PAPERCLIP_K8S_EGRESS_POLICY: "wide-open" }),
+      ),
+    ).toThrow(/PAPERCLIP_K8S_EGRESS_POLICY/);
   });
 
   it("defaults inCluster false and omits unset optional fields", () => {
