@@ -7158,11 +7158,15 @@ export function issueService(db: Db) {
           }
         }
 
+        // Only an in_progress issue goes back to the todo pool on release.
+        // Releasing after a terminal or handed-off status (done, cancelled,
+        // in_review, blocked) must not resurrect the issue: resetting done
+        // back to todo re-dispatches finished work on the next wake.
+        const resetToTodo = existing.status === "in_progress";
         const updated = await tx
           .update(issues)
           .set({
-            status: "todo",
-            assigneeAgentId: null,
+            ...(resetToTodo ? { status: "todo" as const, assigneeAgentId: null } : {}),
             checkoutRunId: null,
             executionRunId: null,
             executionAgentNameKey: null,

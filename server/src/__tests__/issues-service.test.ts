@@ -5083,6 +5083,93 @@ describeEmbeddedPostgres("issueService.clearExecutionRunIfTerminal", () => {
     });
   });
 
+  async function seedReleaseFixture(issueStatus: "done" | "in_progress") {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "manual",
+      startedAt: new Date("2026-07-12T08:30:00.000Z"),
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: `Release fixture ${issueStatus}`,
+      status: issueStatus,
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: runId,
+      executionRunId: runId,
+      executionAgentNameKey: "codexcoder",
+      executionLockedAt: new Date("2026-07-12T08:30:00.000Z"),
+    });
+
+    return { companyId, agentId, issueId, runId };
+  }
+
+  it("release preserves a done issue's status and assignee while clearing run locks", async () => {
+    // KEN-6185 regression: release() used to reset done -> todo and clear the
+    // assignee unconditionally, resurrecting finished work for re-dispatch on
+    // the next wake (Morning Briefing double-execution incident 2026-07-12).
+    const { agentId, issueId, runId } = await seedReleaseFixture("done");
+
+    const released = await svc.release(issueId, agentId, runId);
+
+    expect(released).toMatchObject({
+      status: "done",
+      assigneeAgentId: agentId,
+      checkoutRunId: null,
+      executionRunId: null,
+      executionAgentNameKey: null,
+      executionLockedAt: null,
+    });
+
+    const row = await db
+      .select({ status: issues.status, assigneeAgentId: issues.assigneeAgentId })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(row).toMatchObject({ status: "done", assigneeAgentId: agentId });
+  });
+
+  it("release resets an in_progress issue to todo and clears the assignee", async () => {
+    const { issueId, agentId, runId } = await seedReleaseFixture("in_progress");
+
+    const released = await svc.release(issueId, agentId, runId);
+
+    expect(released).toMatchObject({
+      status: "todo",
+      assigneeAgentId: null,
+      checkoutRunId: null,
+      executionRunId: null,
+      executionAgentNameKey: null,
+      executionLockedAt: null,
+    });
+  });
+
   it("checkout refuses to promote a 'done' issue when 'done' is not in expectedStatuses, even with a lingering executionRunId pointer", async () => {
     // Regression for PR #2482 checkout-adoption review finding: the original
     // patch's stale-executionRunId adoption SQL set `status: 'in_progress'`
