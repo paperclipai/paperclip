@@ -10,4 +10,5 @@ export const HTTP_LOG_REDACT_PATHS = [
   'req.headers["x-csrf-token"]',
   'req.headers["x-xsrf-token"]',
   'req.headers["x-api-key"]',
+  "req.headers.x-paperclip-deploy-token",
 ] as const;
