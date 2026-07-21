@@ -32,17 +32,24 @@ export type TelemetryConfigOverrides = Partial<
   >
 >;
 
-type ResolvedCaps = Pick<
-  TelemetryConfig,
-  "maxEventsPerBatch" | "maxBodyBytes" | "maxPendingRetryBatches" | "backoff"
->;
+/**
+ * Fully-resolved caps + backoff — every field is present (defaults applied), so
+ * `client.ts` can consume them without re-defaulting. `TelemetryConfig`'s own
+ * cap fields stay optional (additive wire surface); this is the resolved view.
+ */
+export interface ResolvedTelemetryCaps {
+  maxEventsPerBatch: number;
+  maxBodyBytes: number;
+  maxPendingRetryBatches: number;
+  backoff: TelemetryBackoffConfig;
+}
 
 /**
  * Resolves soft caps + backoff, applying `TELEMETRY_DEFAULTS` for any field the
  * caller did not override. One source of truth for both the config surface and
- * Impl-2's future `client.ts` consumer.
+ * Impl-2's `client.ts` consumer.
  */
-export function resolveCaps(overrides?: TelemetryConfigOverrides): ResolvedCaps {
+export function resolveCaps(overrides?: TelemetryConfigOverrides): ResolvedTelemetryCaps {
   return {
     maxEventsPerBatch: overrides?.maxEventsPerBatch ?? TELEMETRY_DEFAULTS.maxEventsPerBatch,
     maxBodyBytes: overrides?.maxBodyBytes ?? TELEMETRY_DEFAULTS.maxBodyBytes,

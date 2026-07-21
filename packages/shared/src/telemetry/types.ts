@@ -56,6 +56,13 @@ export interface TelemetryEventEnvelope {
   installId: string;
   version: string;
   events: TelemetryEvent[];
+  /**
+   * Deterministic, salt-free content-hash of `{installId, events}` used as the
+   * server idempotency key so a retried batch de-dupes (202 replay) instead of
+   * double-counting. Derived in `client.ts`; the server allow-set already
+   * accepts it. See PAP-2869 (Impl-2) + the Stage-1 security review (C1/C2).
+   */
+  batchId: string;
 }
 
 export type RegisteredPluginEventName = never;
