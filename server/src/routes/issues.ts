@@ -1,6 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
+import type { Readable } from "node:stream";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
+import ZipStream from "zip-stream";
 import { z } from "zod";
 import { and, asc, desc, eq, inArray, isNull, notInArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -190,6 +192,11 @@ import {
   type TrustPresetResolution,
 } from "../services/trust-preset-resolver.js";
 import { externalObjectService } from "../services/external-objects.js";
+import {
+  buildAttachmentArchivePaths,
+  buildDocumentArchivePath,
+  buildIssueAttachmentArchiveFilename,
+} from "../issue-attachment-archive.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
@@ -10403,6 +10410,107 @@ export function issueRoutes(
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const attachments = await svc.listAttachments(issueId);
     res.json(attachments.map(withContentPath));
+  });
+
+  router.get("/issues/:id/attachments/archive", async (req, res, next) => {
+    const issueId = req.params.id as string;
+    const issue = await getAccessibleResource(req, res, svc.getById(issueId), "Issue not found");
+    if (!issue) return;
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
+
+    const [attachments, issueDocuments] = await Promise.all([
+      svc.listAttachments(issue.id),
+      documentsSvc.listIssueDocuments(issue.id),
+    ]);
+    if (attachments.length === 0 && issueDocuments.length === 0) {
+      res.status(422).json({ error: "Issue has no exportable attachments or documents" });
+      return;
+    }
+
+    const archive = new ZipStream({ zlib: { level: 1 } });
+    const attachmentPaths = buildAttachmentArchivePaths(attachments);
+    const appendEntry = (source: Buffer | Readable, name: string, date: Date) =>
+      new Promise<void>((resolve, reject) => {
+        let settled = false;
+        const settle = (err?: Error | null) => {
+          if (settled) return;
+          settled = true;
+          if (!Buffer.isBuffer(source)) source.off("error", settle);
+          if (err) reject(err);
+          else resolve();
+        };
+        if (!Buffer.isBuffer(source)) source.once("error", settle);
+        archive.entry(source, { name, date }, settle);
+      });
+    let handledError = false;
+    const handleArchiveError = (err: unknown, context: Record<string, unknown>) => {
+      if (handledError) return;
+      handledError = true;
+      logger.error({ err, issueId: issue.id, ...context }, "failed to stream issue attachment archive");
+      const error = err instanceof Error ? err : new Error(String(err));
+      if (!res.headersSent) {
+        archive.unpipe();
+        res.removeHeader("Content-Type");
+        res.removeHeader("Content-Disposition");
+        res.removeHeader("Cache-Control");
+        res.removeHeader("X-Content-Type-Options");
+        archive.destroy();
+        next(error);
+      } else if (!res.destroyed) {
+        archive.destroy(error);
+        res.destroy(error);
+      }
+    };
+
+    archive.on("error", (err) => handleArchiveError(err, { stage: "archive" }));
+    res.on("close", () => {
+      if (!res.writableEnded && !archive.destroyed) archive.destroy();
+    });
+    res.setHeader("Content-Type", "application/zip");
+    res.setHeader("Content-Disposition", `attachment; filename="${buildIssueAttachmentArchiveFilename(issue.identifier ?? issue.id)}"`);
+    res.setHeader("Cache-Control", "private, no-store, no-transform");
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    archive.pipe(res);
+
+    try {
+      for (const attachment of attachments) {
+        let object;
+        try {
+          object = await storage.getObject(attachment.companyId, attachment.objectKey);
+        } catch (err) {
+          logger.error(
+            { err, issueId: issue.id, attachmentId: attachment.id, objectKey: attachment.objectKey },
+            "failed to read attachment while streaming issue archive",
+          );
+          throw err;
+        }
+        try {
+          await appendEntry(
+            object.stream,
+            attachmentPaths.get(attachment.id) ?? `attachments/attachment-${attachment.id}`,
+            attachment.createdAt,
+          );
+        } catch (err) {
+          handleArchiveError(err, {
+            stage: "attachment-stream",
+            attachmentId: attachment.id,
+            objectKey: attachment.objectKey,
+          });
+          throw err;
+        }
+      }
+
+      for (const document of issueDocuments) {
+        await appendEntry(
+          Buffer.from(document.body ?? "", "utf8"),
+          buildDocumentArchivePath(document),
+          document.updatedAt,
+        );
+      }
+      archive.finalize();
+    } catch (err) {
+      handleArchiveError(err, { stage: "entry" });
+    }
   });
 
   router.post("/companies/:companyId/issues/:issueId/attachments", async (req, res) => {

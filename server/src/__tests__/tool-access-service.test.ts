@@ -2047,7 +2047,7 @@ describeEmbeddedPostgres("tool access service", () => {
       .expect(403);
   });
 
-  it("returns 404 for cross-company profile reads, 403 for mutations, and 404 for missing profiles", async () => {
+  it("returns 404 for cross-company profile reads and missing profiles", async () => {
     const allowedCompany = await createCompany(db);
     const otherCompany = await createCompany(db);
     const profile = await toolAccessService(db).createProfile(otherCompany.id, {
@@ -2072,7 +2072,9 @@ describeEmbeddedPostgres("tool access service", () => {
       source: "session",
     });
 
-    await request(app).get(`/api/tool-profiles/${profile.id}/new-tools`).expect(404);
+    await request(app)
+      .get(`/api/tool-profiles/${profile.id}/new-tools`)
+      .expect(404, { error: "Tool profile not found" });
     await request(app)
       .post(`/api/tool-profiles/${profile.id}/duplicate`)
       .send({ name: "Forbidden copy", includeAssignments: false })
@@ -2099,6 +2101,38 @@ describeEmbeddedPostgres("tool access service", () => {
       .post(`/api/tool-profiles/${randomUUID()}/new-tools/review`)
       .send({ decisions: [{ catalogEntryId: randomUUID(), decision: "keep_blocked" }] })
       .expect(404);
+  });
+
+  it("returns 404 for cross-company connection reads without leaking existence", async () => {
+    const allowedCompany = await createCompany(db);
+    const otherCompany = await createCompany(db);
+    const connection = await toolAccessService(db).createConnection(otherCompany.id, {
+      name: "Other company connection",
+      transport: "remote_http",
+      config: { url: "https://other-company.example/mcp" },
+    });
+    const app = createRouteApp(db, {
+      type: "board",
+      userId: "member-user",
+      userName: "Member User",
+      userEmail: null,
+      companyIds: [allowedCompany.id],
+      memberships: [
+        {
+          companyId: allowedCompany.id,
+          membershipRole: "owner",
+          status: "active",
+        },
+      ],
+      isInstanceAdmin: false,
+      source: "session",
+    });
+
+    for (const suffix of ["", "/installs", "/catalog", "/activity"]) {
+      await request(app)
+        .get(`/api/tool-connections/${connection.id}${suffix}`)
+        .expect(404, { error: "Tool connection not found" });
+    }
   });
 
   it("installs the safe example fixture idempotently and smokes allow, deny, and audit paths", async () => {

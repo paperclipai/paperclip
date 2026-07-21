@@ -4653,6 +4653,7 @@ export function IssueDetail() {
       ) : hasAttachments ? (
         <IssueAttachmentsSection
           attachments={attachmentList}
+          downloadAllHref={`/api/issues/${issue.id}/attachments/archive`}
           uploadButton={attachmentUploadButton}
           error={attachmentError}
           dragActive={attachmentDragActive}
