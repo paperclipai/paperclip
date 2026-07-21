@@ -1,4 +1,4 @@
-import { useCallback, useState, type ReactNode } from "react";
+import { useCallback, useRef, useState, type ReactNode } from "react";
 import { useNavigate } from "@/lib/router";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
@@ -29,7 +29,11 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { AgentStatusBadge } from "./StatusBadge";
-import { agentsApi } from "../api/agents";
+import {
+  agentsApi,
+  createOrReuseAgentHireAttempt,
+  type AgentHireAttempt,
+} from "../api/agents";
 import { ApiError } from "../api/client";
 import { queryKeys } from "../lib/queryKeys";
 import { agentRouteRef } from "../lib/utils";
@@ -201,6 +205,7 @@ export function AgentActionButtons({
   const queryClient = useQueryClient();
   const { openNewIssue } = useDialogActions();
   const { pushToast } = useToastActions();
+  const duplicateHireAttemptRef = useRef<AgentHireAttempt | null>(null);
   const [moreOpen, setMoreOpen] = useState(false);
   const [pauseConfirmOpen, setPauseConfirmOpen] = useState(false);
 
@@ -266,7 +271,12 @@ export function AgentActionButtons({
         return await agentsApi.create(resolvedCompanyId, payload);
       } catch (error) {
         if (error instanceof ApiError && error.status === 409 && error.message.includes("requires board approval")) {
-          const hire = await agentsApi.hire(resolvedCompanyId, payload);
+          const attempt = createOrReuseAgentHireAttempt(duplicateHireAttemptRef.current, payload);
+          duplicateHireAttemptRef.current = attempt;
+          const hire = await agentsApi.hire(resolvedCompanyId, payload, {
+            idempotencyKey: attempt.idempotencyKey,
+          });
+          duplicateHireAttemptRef.current = null;
           return hire.agent;
         }
         throw error;

@@ -53,6 +53,12 @@ import {
   syncInstructionsBundleConfigFromFilePath,
   workspaceOperationService,
 } from "../services/index.js";
+import {
+  agentHireOperationService,
+  AgentHireIdempotencyConflictError,
+  hashAgentHireRequest,
+  publicAgentHireOperation,
+} from "../services/agent-hire-operations.js";
 import { conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
 import {
@@ -114,6 +120,28 @@ import {
 
 const RUN_LOG_DEFAULT_LIMIT_BYTES = 256_000;
 const RUN_LOG_MAX_LIMIT_BYTES = 1024 * 1024;
+const AGENT_HIRE_IDEMPOTENCY_KEY_MAX_LENGTH = 255;
+const DEFAULT_AGENT_HIRE_REQUEST_BUDGET_MS = 5_000;
+
+function parseAgentHireIdempotencyKey(req: Request) {
+  const value = req.get("Idempotency-Key");
+  if (value === undefined) return null;
+  if (
+    value.length === 0 ||
+    value.length > AGENT_HIRE_IDEMPOTENCY_KEY_MAX_LENGTH ||
+    value !== value.trim() ||
+    !/^[\x21-\x7E]+$/.test(value)
+  ) {
+    throw unprocessable("Idempotency-Key must be 1-255 visible ASCII characters without surrounding whitespace");
+  }
+  return value;
+}
+
+function agentHireRequestBudgetMs() {
+  const configured = Number(process.env.PAPERCLIP_AGENT_HIRE_REQUEST_BUDGET_MS);
+  if (!Number.isFinite(configured)) return DEFAULT_AGENT_HIRE_REQUEST_BUDGET_MS;
+  return Math.max(0, Math.min(30_000, Math.trunc(configured)));
+}
 
 function readRunLogLimitBytes(value: unknown) {
   const parsed = Number(value ?? RUN_LOG_DEFAULT_LIMIT_BYTES);
@@ -180,6 +208,7 @@ export function agentRoutes(
 
   const router = Router();
   const svc = agentService(db);
+  const agentHireOperations = agentHireOperationService(db);
   const access = accessService(db);
   const approvalsSvc = approvalService(db);
   const budgets = budgetService(db);
@@ -2342,23 +2371,44 @@ export function agentRoutes(
   router.post("/companies/:companyId/agent-hires", validate(createAgentHireSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     await assertCanCreateAgentsForCompany(req, companyId);
-    const sourceIssueIds = parseSourceIssueIds(req.body);
+    const idempotencyKey = parseAgentHireIdempotencyKey(req);
+    const actor = getActorInfo(req);
+    const hireRequestBody = structuredClone(req.body);
+    const validatedAdapterType = assertKnownAdapterType(hireRequestBody.adapterType);
+    const preflightAdapterConfig = (hireRequestBody.adapterConfig ?? {}) as Record<string, unknown>;
+    assertNoNewAgentLegacyPromptTemplate(validatedAdapterType, preflightAdapterConfig);
+    assertNoAgentAdapterConfigMutation(req, preflightAdapterConfig);
+    assertNoAgentRuntimeConfigAdapterConfigMutation(req, hireRequestBody.runtimeConfig);
+
+    const performAgentHire = async (
+      reservedAgentId?: string,
+      operationLease?: { id: string; leaseToken: string },
+    ) => {
+      async function timeHireStage<T>(stage: string, work: () => Promise<T>): Promise<T> {
+        const startedAt = Date.now();
+        const result = await work();
+        if (operationLease) {
+          await agentHireOperations.recordStage(
+            operationLease.id,
+            operationLease.leaseToken,
+            stage,
+            Date.now() - startedAt,
+          );
+        }
+        return result;
+      }
+
+      const sourceIssueIds = parseSourceIssueIds(hireRequestBody);
     const {
       desiredSkills: requestedDesiredSkills,
       instructionsBundle,
       sourceIssueId: _sourceIssueId,
       sourceIssueIds: _sourceIssueIds,
       ...hireInput
-    } = req.body;
-    hireInput.adapterType = assertKnownAdapterType(hireInput.adapterType);
+    } = hireRequestBody;
+    hireInput.adapterType = validatedAdapterType;
     const rawHireAdapterConfig = (hireInput.adapterConfig ?? {}) as Record<string, unknown>;
-    assertNoNewAgentLegacyPromptTemplate(
-      hireInput.adapterType,
-      rawHireAdapterConfig,
-    );
-    assertNoAgentAdapterConfigMutation(req, rawHireAdapterConfig);
-    assertNoAgentRuntimeConfigAdapterConfigMutation(req, hireInput.runtimeConfig);
-    const hiredAgentId = randomUUID();
+    const hiredAgentId = reservedAgentId ?? randomUUID();
     const requestedAdapterConfig = applyCodexLocalKeyIsolation(
       companyId,
       hiredAgentId,
@@ -2368,22 +2418,34 @@ export function agentRoutes(
         rawHireAdapterConfig,
       ),
     );
-    const desiredSkillAssignment = await resolveDesiredSkillAssignment(
-      companyId,
-      hireInput.adapterType,
-      requestedAdapterConfig,
-      normalizeDesiredSkillSelections(Array.isArray(requestedDesiredSkills) ? requestedDesiredSkills : undefined),
+    const desiredSkillAssignment = await timeHireStage(
+      "desired_skill_resolution",
+      () => resolveDesiredSkillAssignment(
+        companyId,
+        hireInput.adapterType,
+        requestedAdapterConfig,
+        normalizeDesiredSkillSelections(Array.isArray(requestedDesiredSkills) ? requestedDesiredSkills : undefined),
+      ),
     );
-    const normalizedAdapterConfig = await normalizeMediatedAdapterConfigForPersistence({
-      companyId,
-      adapterType: hireInput.adapterType,
-      adapterConfig: desiredSkillAssignment.adapterConfig,
-    });
-    const normalizedRuntimeConfig = await normalizeRuntimeConfigAdapterConfigsForPersistence(
-      companyId,
-      hireInput.adapterType,
-      normalizeNewAgentRuntimeConfig(hireInput.runtimeConfig),
-      normalizedAdapterConfig,
+    const { normalizedAdapterConfig, normalizedRuntimeConfig } = await timeHireStage(
+      "config_normalization",
+      async () => {
+        const adapterConfig = await normalizeMediatedAdapterConfigForPersistence({
+          companyId,
+          adapterType: hireInput.adapterType,
+          adapterConfig: desiredSkillAssignment.adapterConfig,
+        });
+        const runtimeConfig = await normalizeRuntimeConfigAdapterConfigsForPersistence(
+          companyId,
+          hireInput.adapterType,
+          normalizeNewAgentRuntimeConfig(hireInput.runtimeConfig),
+          adapterConfig,
+        );
+        return {
+          normalizedAdapterConfig: adapterConfig,
+          normalizedRuntimeConfig: runtimeConfig,
+        };
+      },
     );
     const normalizedHireInput = {
       ...hireInput,
@@ -2397,25 +2459,36 @@ export function agentRoutes(
       .where(eq(companies.id, companyId))
       .then((rows) => rows[0] ?? null);
     if (!company) {
-      res.status(404).json({ error: "Company not found" });
-      return;
+      throw notFound("Company not found");
     }
 
     const requiresApproval = company.requireBoardApprovalForNewAgents;
     const status = requiresApproval ? "pending_approval" : "idle";
-    const createdAgent = await svc.create(companyId, {
-      id: hiredAgentId,
-      ...normalizedHireInput,
-      status,
-      spentMonthlyCents: 0,
-      lastHeartbeatAt: null,
+    const createdAgent = await timeHireStage("agent_creation", async () => {
+      const existing = reservedAgentId ? await svc.getById(hiredAgentId) : null;
+      if (existing) {
+        if (existing.companyId !== companyId) throw conflict("Reserved agent id belongs to another company");
+        return existing;
+      }
+      return svc.create(companyId, {
+        id: hiredAgentId,
+        ...normalizedHireInput,
+        status,
+        spentMonthlyCents: 0,
+        lastHeartbeatAt: null,
+      });
     });
-    const agent = await materializeDefaultInstructionsBundleForNewAgent(createdAgent, instructionsBundle);
+    const agent = await timeHireStage(
+      "instruction_materialization",
+      () => materializeDefaultInstructionsBundleForNewAgent(createdAgent, instructionsBundle),
+    );
 
-    let approval: Awaited<ReturnType<typeof approvalsSvc.getById>> | null = null;
-    const actor = getActorInfo(req);
-
-    if (requiresApproval) {
+    const approval = await timeHireStage("approval_linking", async () => {
+      if (!requiresApproval) return null;
+      const existingApproval = reservedAgentId
+        ? await approvalsSvc.findOpenHireApprovalForAgent(companyId, agent.id)
+        : null;
+      if (existingApproval) return existingApproval;
       const requestedAdapterType = normalizedHireInput.adapterType ?? agent.adapterType;
       const requestedAdapterConfig =
         redactEventPayload(
@@ -2429,7 +2502,7 @@ export function agentRoutes(
         redactEventPayload(
           ((normalizedHireInput.metadata ?? agent.metadata ?? {}) as Record<string, unknown>),
         ) ?? {};
-      approval = await approvalsSvc.create(companyId, {
+      const createdApproval = await approvalsSvc.create(companyId, {
         type: "hire_agent",
         requestedByAgentId: actor.actorType === "agent" ? actor.actorId : null,
         requestedByUserId: actor.actorType === "user" ? actor.actorId : null,
@@ -2466,14 +2539,15 @@ export function agentRoutes(
       });
 
       if (sourceIssueIds.length > 0) {
-        await issueApprovalsSvc.linkManyForApproval(approval.id, sourceIssueIds, {
+        await issueApprovalsSvc.linkManyForApproval(createdApproval.id, sourceIssueIds, {
           agentId: actor.actorType === "agent" ? actor.actorId : null,
           userId: actor.actorType === "user" ? actor.actorId : null,
         });
       }
-    }
+      return createdApproval;
+    });
 
-    await logActivity(db, {
+    await timeHireStage("activity_logging", () => logActivity(db, {
       companyId,
       actorType: actor.actorType,
       actorId: actor.actorId,
@@ -2491,16 +2565,19 @@ export function agentRoutes(
         issueIds: sourceIssueIds,
         desiredSkills: desiredSkillAssignment.desiredSkills,
       },
-    });
+    }));
     const telemetryClient = getTelemetryClient();
     if (telemetryClient) {
       trackAgentCreated(telemetryClient, { agentRole: agent.role, agentId: agent.id });
     }
 
-    await applyDefaultAgentTaskAssignGrant(
-      companyId,
-      agent.id,
-      actor.actorType === "user" ? actor.actorId : null,
+    await timeHireStage(
+      "grants",
+      () => applyDefaultAgentTaskAssignGrant(
+        companyId,
+        agent.id,
+        actor.actorType === "user" ? actor.actorId : null,
+      ),
     );
 
     if (approval) {
@@ -2518,7 +2595,121 @@ export function agentRoutes(
       });
     }
 
-    res.status(201).json({ agent, approval });
+      return { agent, approval };
+    };
+
+    if (!idempotencyKey) {
+      const result = await performAgentHire();
+      res.status(201).json(result);
+      return;
+    }
+
+    const statusUrlFor = (operationId: string) =>
+      `/api/companies/${companyId}/agent-hire-operations/${operationId}`;
+    const sendOperation = (
+      operation: NonNullable<Awaited<ReturnType<typeof agentHireOperations.getById>>>,
+      replay: boolean,
+    ) => {
+      if (replay) res.setHeader("Idempotency-Key-Replay", "true");
+      if (operation.status === "succeeded" && operation.response) {
+        res.status(201).json(operation.response);
+        return;
+      }
+      if (operation.status === "failed") {
+        res.status(operation.error?.statusCode ?? 500).json({
+          operationId: operation.id,
+          status: "failed",
+          error: {
+            code: operation.error?.code ?? "agent_hire_failed",
+            message: operation.error?.message ?? "Agent hire failed",
+          },
+        });
+        return;
+      }
+      const statusUrl = statusUrlFor(operation.id);
+      res
+        .status(202)
+        .location(statusUrl)
+        .json({
+          operationId: operation.id,
+          status: "pending",
+          stage: operation.stage,
+          statusUrl,
+        });
+    };
+
+    let reservation: Awaited<ReturnType<typeof agentHireOperations.reserve>>;
+    try {
+      reservation = await agentHireOperations.reserve({
+        companyId,
+        principalType: actor.actorType,
+        principalId: actor.actorId,
+        idempotencyKey,
+        requestHash: hashAgentHireRequest(hireRequestBody),
+      });
+    } catch (error) {
+      if (error instanceof AgentHireIdempotencyConflictError) {
+        throw unprocessable(error.message, { code: "idempotency_key_payload_mismatch" });
+      }
+      throw error;
+    }
+
+    if (reservation.operation.status !== "pending") {
+      sendOperation(reservation.operation, !reservation.created);
+      return;
+    }
+
+    const claim = await agentHireOperations.claim(reservation.operation.id);
+    if (claim) {
+      void performAgentHire(claim.operation.agentId, {
+        id: claim.operation.id,
+        leaseToken: claim.leaseToken,
+      })
+        .then(async (result) => {
+          const publicResponse = redactEventPayload(result) as {
+            agent: Record<string, unknown>;
+            approval: Record<string, unknown> | null;
+          } | null | undefined;
+          if (!publicResponse) throw new Error("Failed to serialize agent hire response");
+          await agentHireOperations.succeed(claim.operation.id, claim.leaseToken, publicResponse);
+        })
+        .catch(async (error: unknown) => {
+          const statusCode = error instanceof HttpError ? error.status : 500;
+          const redacted = redactEventPayload({
+            message: error instanceof Error ? error.message : "Agent hire failed",
+          }) as { message?: unknown };
+          await agentHireOperations.fail(claim.operation.id, claim.leaseToken, {
+            code: error instanceof HttpError ? `http_${statusCode}` : "agent_hire_failed",
+            message: typeof redacted.message === "string" ? redacted.message : "Agent hire failed",
+            statusCode,
+          });
+        })
+        .catch(() => undefined);
+    }
+
+    const operation = await agentHireOperations.waitForTerminal(
+      reservation.operation.id,
+      agentHireRequestBudgetMs(),
+    );
+    if (!operation) throw new Error("Agent hire operation disappeared");
+    sendOperation(operation, !reservation.created);
+  });
+
+  router.get("/companies/:companyId/agent-hire-operations/:operationId", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const actor = getActorInfo(req);
+    const operation = await agentHireOperations.getForPrincipal({
+      id: req.params.operationId as string,
+      companyId,
+      principalType: actor.actorType,
+      principalId: actor.actorId,
+    });
+    if (!operation) {
+      res.status(404).json({ error: "Agent hire operation not found" });
+      return;
+    }
+    res.json(publicAgentHireOperation(operation));
   });
 
   router.post("/companies/:companyId/agents", validate(createAgentSchema), async (req, res) => {

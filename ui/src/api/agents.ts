@@ -69,6 +69,77 @@ export interface AgentHireResponse {
   approval: Approval | null;
 }
 
+export interface AgentHirePendingResponse {
+  operationId: string;
+  status: "pending";
+  stage: string;
+  statusUrl: string;
+}
+
+export interface AgentHireOptions {
+  /** Caller-owned key. Reuse it when retrying the same logical hire. */
+  idempotencyKey: string;
+  signal?: AbortSignal;
+  timeoutMs?: number;
+}
+
+export interface AgentHireAttempt {
+  idempotencyKey: string;
+  payloadFingerprint: string;
+}
+
+export class AgentHireTimeoutError extends Error {
+  constructor(
+    readonly idempotencyKey: string,
+    readonly timeoutMs: number,
+  ) {
+    super(`Agent hire did not finish within ${timeoutMs} ms`);
+    this.name = "AgentHireTimeoutError";
+  }
+}
+
+const AGENT_HIRE_POLL_INTERVAL_MS = 250;
+const DEFAULT_AGENT_HIRE_TIMEOUT_MS = 30_000;
+
+export function createAgentHireIdempotencyKey() {
+  if (typeof globalThis.crypto?.randomUUID === "function") {
+    return globalThis.crypto.randomUUID();
+  }
+  return `hire-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
+export function createOrReuseAgentHireAttempt(
+  previous: AgentHireAttempt | null,
+  data: Record<string, unknown>,
+): AgentHireAttempt {
+  const payloadFingerprint = JSON.stringify(data);
+  if (previous?.payloadFingerprint === payloadFingerprint) return previous;
+  return {
+    idempotencyKey: createAgentHireIdempotencyKey(),
+    payloadFingerprint,
+  };
+}
+
+function abortError(): DOMException {
+  return new DOMException("The operation was aborted.", "AbortError");
+}
+
+function waitForAgentHirePoll(delayMs: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.reject(abortError());
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, delayMs);
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      reject(abortError());
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
 export interface AgentPermissionUpdate {
   canCreateAgents: boolean;
   canCreateSkills: boolean;
@@ -137,8 +208,46 @@ export const agentsApi = {
     api.post<Agent>(agentPath(id, companyId, `/config-revisions/${revisionId}/rollback`), {}),
   create: (companyId: string, data: Record<string, unknown>) =>
     api.post<Agent>(`/companies/${companyId}/agents`, data),
-  hire: (companyId: string, data: Record<string, unknown>) =>
-    api.post<AgentHireResponse>(`/companies/${companyId}/agent-hires`, data),
+  hire: async (companyId: string, data: Record<string, unknown>, options: AgentHireOptions) => {
+    const timeoutMs = Math.max(0, options.timeoutMs ?? DEFAULT_AGENT_HIRE_TIMEOUT_MS);
+    const deadline = Date.now() + timeoutMs;
+    const path = `/companies/${companyId}/agent-hires`;
+    const requestController = new AbortController();
+    let deadlineExpired = false;
+    const onCallerAbort = () => requestController.abort();
+    options.signal?.addEventListener("abort", onCallerAbort, { once: true });
+    const deadlineTimer = setTimeout(() => {
+      deadlineExpired = true;
+      requestController.abort();
+    }, timeoutMs);
+
+    try {
+      while (true) {
+        if (options.signal?.aborted) throw abortError();
+        if (deadlineExpired || Date.now() >= deadline) {
+          throw new AgentHireTimeoutError(options.idempotencyKey, timeoutMs);
+        }
+        const response = await api.post<AgentHireResponse | AgentHirePendingResponse>(path, data, {
+          headers: { "Idempotency-Key": options.idempotencyKey },
+          signal: requestController.signal,
+        });
+        if ("agent" in response) return response;
+        await waitForAgentHirePoll(
+          Math.min(AGENT_HIRE_POLL_INTERVAL_MS, Math.max(0, deadline - Date.now())),
+          requestController.signal,
+        );
+      }
+    } catch (error) {
+      if (options.signal?.aborted) throw abortError();
+      if (deadlineExpired || Date.now() >= deadline) {
+        throw new AgentHireTimeoutError(options.idempotencyKey, timeoutMs);
+      }
+      throw error;
+    } finally {
+      clearTimeout(deadlineTimer);
+      options.signal?.removeEventListener("abort", onCallerAbort);
+    }
+  },
   update: (id: string, data: Record<string, unknown>, companyId?: string) =>
     api.patch<Agent>(agentPath(id, companyId), data),
   updatePermissions: (id: string, data: AgentPermissionUpdate, companyId?: string) =>

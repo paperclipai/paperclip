@@ -1459,7 +1459,24 @@ registry.registerPath({
     params: z.object({ companyId: z.string() }),
     body: jsonBody(createAgentHireSchema),
   },
-  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+  responses: {
+    201: r.ok(),
+    202: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    422: r.unprocessable,
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/agent-hire-operations/{operationId}",
+  tags: ["agents"],
+  summary: "Get a durable agent hire operation",
+  request: {
+    params: z.object({ companyId: z.string(), operationId: z.string().uuid() }),
+  },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
 
 registry.registerPath({
