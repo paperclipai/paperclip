@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createAwsSecretsManagerProvider } from "../secrets/aws-secrets-manager-provider.js";
 import { SecretProviderClientError } from "../secrets/types.js";
 
+const UUID_V4_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 describe("awsSecretsManagerProvider", () => {
   const previousEnv = {
     PAPERCLIP_SECRETS_AWS_REGION: process.env.PAPERCLIP_SECRETS_AWS_REGION,
@@ -229,6 +231,8 @@ describe("awsSecretsManagerProvider", () => {
     expect(headers.authorization).toContain("SignedHeaders=");
     expect(headers.authorization).toContain("Signature=");
     expect(init?.signal).toBeInstanceOf(AbortSignal);
+    const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    expect(body.ClientRequestToken).toEqual(expect.stringMatching(UUID_V4_PATTERN));
   });
 
   it("creates new AWS secret versions against a namespace-valid existing secret reference", async () => {
@@ -284,6 +288,7 @@ describe("awsSecretsManagerProvider", () => {
             "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/company-1/openai-api-key",
           SecretString: "rotated-secret-value",
           VersionStages: ["PAPERCLIP_PENDING"],
+          ClientRequestToken: expect.stringMatching(UUID_V4_PATTERN),
         },
       },
     ]);
