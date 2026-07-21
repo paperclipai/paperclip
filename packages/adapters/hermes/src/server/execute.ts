@@ -467,9 +467,7 @@ export async function execute(
 
   // PAPERCLIP_API_KEY is never accepted from config — the harness-minted run
   // token is the only source of Paperclip API identity.
-  if (userEnv && typeof userEnv === "object" && "PAPERCLIP_API_KEY" in userEnv) {
-    delete env.PAPERCLIP_API_KEY;
-  }
+  delete env.PAPERCLIP_API_KEY;
   if ((ctx as any).authToken) env.PAPERCLIP_API_KEY = (ctx as any).authToken;
 
   // BUG FIX: Read task context from ctx.context (wake context), not ctx.config (adapter config)
