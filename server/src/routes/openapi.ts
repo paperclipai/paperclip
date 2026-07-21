@@ -610,6 +610,80 @@ const workTimelineResponseSchema = z.object({
   }).strict(),
 }).strict();
 
+const releaseCandidateDigestSchema = z.string().trim().min(12).max(300);
+const releaseCandidateSha256Schema = z.string().trim().regex(/^(sha256:)?[a-fA-F0-9]{64}$/);
+
+const createReleaseCandidateOpenApiSchema = z.object({
+  sourceIssueId: z.string().uuid(),
+  commitSha: z.string().trim().min(7).max(80),
+  imageDigest: releaseCandidateDigestSchema,
+  signatureBundleRef: z.string().trim().min(1).max(2000),
+  signatureBundleSha256: releaseCandidateSha256Schema,
+  provenanceRef: z.string().trim().min(1).max(2000),
+  sbomHash: releaseCandidateSha256Schema,
+  workflowRunUrl: z.string().trim().url().max(2000),
+  environment: z.string().trim().min(1).max(120),
+  targetHost: z.string().trim().min(1).max(255),
+  sequence: z.number().int().positive(),
+  documentRevisionId: z.string().trim().min(1).max(255).nullable().optional(),
+  metadata: z.record(z.unknown()).optional(),
+}).strict();
+
+const updateReleaseCandidateOpenApiSchema = z.object({
+  signatureBundleRef: z.string().trim().min(1).max(2000).optional(),
+  signatureBundleSha256: releaseCandidateSha256Schema.optional(),
+  provenanceRef: z.string().trim().min(1).max(2000).optional(),
+  workflowRunUrl: z.string().trim().url().max(2000).optional(),
+  documentRevisionId: z.string().trim().min(1).max(255).nullable().optional(),
+  metadata: z.record(z.unknown()).optional(),
+}).strict();
+
+const approvedReleaseLeaseQuerySchema = z.object({
+  authorizationId: z.string().uuid(),
+}).strict();
+
+const stageReleaseRelayArtifactOpenApiSchema = z.object({
+  imageDigest: releaseCandidateDigestSchema,
+  sbomHash: releaseCandidateSha256Schema,
+  signatureVerified: z.boolean(),
+  sbomVerified: z.boolean(),
+  tarballSha256: releaseCandidateSha256Schema,
+  tarballBase64: z.string().trim().min(1),
+  signatureBundleSha256: releaseCandidateSha256Schema,
+  signatureBundleBase64: z.string().trim().min(1),
+  originalFilename: z.string().trim().min(1).max(255).nullable().optional(),
+  signatureBundleFilename: z.string().trim().min(1).max(255).nullable().optional(),
+}).strict();
+
+const releaseDeployRecordOpenApiSchema = z.object({
+  authorizationId: z.string().uuid(),
+  status: z.enum(["started", "succeeded", "failed", "rolled_back"]),
+  message: z.string().trim().max(2000).nullable().optional(),
+  commitSha: z.string().trim().min(7).max(80).nullable().optional(),
+  healthStatus: z.string().trim().max(200).nullable().optional(),
+  rollbackReason: z.string().trim().max(2000).nullable().optional(),
+  metadata: z.record(z.unknown()).optional(),
+}).strict();
+
+const releaseDeployReceiptMetadataOpenApiSchema = z.object({
+  deployRecord: z.object({
+    lease_id: z.string().uuid(),
+    candidate_id: z.string().uuid(),
+    commit_sha: z.string().trim().min(7).max(80),
+    image_digest: releaseCandidateDigestSchema,
+    approval_interaction_id: z.string().uuid(),
+  }).passthrough(),
+}).passthrough();
+
+const releaseDeployReceiptOpenApiSchema = releaseDeployRecordOpenApiSchema
+  .omit({ authorizationId: true })
+  .extend({
+    candidateId: z.string().uuid(),
+    status: z.enum(["succeeded", "failed", "rolled_back"]),
+    metadata: releaseDeployReceiptMetadataOpenApiSchema,
+  })
+  .strict();
+
 function paramsSchemaFromPath(routePath: string): z.ZodObject<z.ZodRawShape> | undefined {
   const names = [...routePath.matchAll(/\{([A-Za-z0-9_]+)\}/g)].map((match) => match[1]);
   if (names.length === 0) return undefined;
@@ -6531,6 +6605,92 @@ registerCurrentRoute({
     search: z.string().optional(),
     cursor: z.string().optional(),
   }),
+});
+
+// ─── Release candidates ──────────────────────────────────────────────────────
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/release-candidates",
+  tags: ["release-candidates"],
+  summary: "Create a release candidate",
+  body: createReleaseCandidateOpenApiSchema,
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/release-candidates/approved-lease",
+  tags: ["release-candidates"],
+  summary: "Get an approved release candidate deploy lease",
+  query: approvedReleaseLeaseQuerySchema,
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/release-candidates/deploy-records",
+  tags: ["release-candidates"],
+  summary: "Record a release candidate deploy event",
+  body: releaseDeployRecordOpenApiSchema,
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/release-deploy-authorizations/{authorizationId}/deploy-record-receipt",
+  tags: ["release-candidates"],
+  summary: "Idempotently record a terminal deploy receipt using an agent API key",
+  body: releaseDeployReceiptOpenApiSchema,
+  responses: { 200: r.ok(), 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/release-candidates/{candidateId}",
+  tags: ["release-candidates"],
+  summary: "Get a release candidate",
+});
+
+registerCurrentRoute({
+  method: "patch",
+  path: "/api/release-candidates/{candidateId}",
+  tags: ["release-candidates"],
+  summary: "Update mutable release candidate metadata",
+  body: updateReleaseCandidateOpenApiSchema,
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/release-candidates/{candidateId}/approval-interaction",
+  tags: ["release-candidates"],
+  summary: "Create a release candidate approval interaction",
+  body: z.object({}).strict(),
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/release-deploy-authorizations/{authorizationId}/stage-relay-artifact",
+  tags: ["release-candidates"],
+  summary: "Stage a release candidate relay artifact",
+  body: stageReleaseRelayArtifactOpenApiSchema,
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/release-deploy-authorizations/{authorizationId}/staged-artifact",
+  tags: ["release-candidates"],
+  summary: "Download a staged release candidate artifact",
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/release-deploy-authorizations/{authorizationId}/staged-signature-bundle",
+  tags: ["release-candidates"],
+  summary: "Download a staged release candidate signature bundle",
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
 });
 
 // ─── Spec builder ─────────────────────────────────────────────────────────────

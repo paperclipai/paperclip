@@ -449,6 +449,9 @@ describe.sequential("issue thread interaction routes", () => {
       "interaction-1",
       { selectedClientKeys: ["task-1"] },
       expect.objectContaining({ userId: "local-board" }),
+      expect.objectContaining({
+        onRequestConfirmationAccepted: expect.any(Function),
+      }),
     );
     expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(2);
     expect(mockHeartbeatService.wakeup).toHaveBeenNthCalledWith(
@@ -842,6 +845,9 @@ describe.sequential("issue thread interaction routes", () => {
       "interaction-checkbox",
       { selectedOptionIds: ["file-b"] },
       expect.objectContaining({ userId: "local-board" }),
+      expect.objectContaining({
+        onRequestConfirmationAccepted: expect.any(Function),
+      }),
     );
     expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1);
     expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(

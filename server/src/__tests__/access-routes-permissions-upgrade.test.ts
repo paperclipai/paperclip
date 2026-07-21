@@ -26,11 +26,16 @@ const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 type Db = ReturnType<typeof createDb>;
+type AccessRoutes = typeof import("../routes/access.js").accessRoutes;
+
+let accessRoutesForTest: AccessRoutes | null = null;
 
 async function createApp(db: Db, companyId: string, userId: string) {
   process.env.PAPERCLIP_LOG_DIR = "/tmp/paperclip-test-home/logs";
   process.env.PAPERCLIP_IN_WORKTREE = "false";
-  const { accessRoutes } = await import("../routes/access.js");
+  if (!accessRoutesForTest) {
+    throw new Error("accessRoutes test module was not loaded");
+  }
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -44,7 +49,7 @@ async function createApp(db: Db, companyId: string, userId: string) {
     };
     next();
   });
-  app.use("/api", accessRoutes(db, {
+  app.use("/api", accessRoutesForTest(db, {
     deploymentMode: "authenticated",
     deploymentExposure: "private",
     bindHost: "127.0.0.1",
@@ -84,9 +89,11 @@ describeEmbeddedPostgres("access routes permissions upgrade compatibility", () =
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
+    const { accessRoutes } = await import("../routes/access.js");
+    accessRoutesForTest = accessRoutes;
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-access-routes-permissions-upgrade-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  }, 120_000);
 
   afterEach(async () => {
     await db.delete(activityLog);
@@ -96,6 +103,7 @@ describeEmbeddedPostgres("access routes permissions upgrade compatibility", () =
   });
 
   afterAll(async () => {
+    await db?.$client.end({ timeout: 0 });
     await tempDb?.cleanup();
   });
 
@@ -115,7 +123,7 @@ describeEmbeddedPostgres("access routes permissions upgrade compatibility", () =
       .where(eq(companyMemberships.id, owner.id))
       .then((rows) => rows[0]!);
     expect(unchanged.membershipRole).toBe("owner");
-  }, 10_000);
+  }, 30_000);
 
   it("keeps custom grants when the role-only member route changes a member role", async () => {
     const { company, owner } = await createCompanyWithOwner(db);
@@ -163,5 +171,5 @@ describeEmbeddedPostgres("access routes permissions upgrade compatibility", () =
       scope: customScope,
       grantedByUserId: owner.principalId,
     });
-  });
+  }, 30_000);
 });

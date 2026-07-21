@@ -15,6 +15,7 @@ import { EditorAutocompleteProvider } from "./context/EditorAutocompleteContext"
 import { ToastProvider } from "./context/ToastContext";
 import { ThemeProvider } from "./context/ThemeContext";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { DeployAuthorizationDialog } from "./components/DeployAuthorizationDialog";
 import { initPluginBridge } from "./plugins/bridge-init";
 import { PluginLauncherProvider } from "./plugins/launchers";
 import { startPerfMeasureReaper } from "./lib/perf-measure-reaper";
@@ -67,6 +68,7 @@ createRoot(document.getElementById("root")!).render(
                         <PanelProvider>
                           <PluginLauncherProvider>
                             <DialogProvider>
+                              <DeployAuthorizationDialog />
                               <App />
                             </DialogProvider>
                           </PluginLauncherProvider>
