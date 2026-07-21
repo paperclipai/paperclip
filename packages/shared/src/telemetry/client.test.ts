@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TelemetryClient } from "./client.js";
 import { resolveTelemetryConfig } from "./config.js";
 import type { TelemetryConfig, TelemetryState } from "./types.js";
@@ -10,12 +10,19 @@ const TEST_STATE: TelemetryState = {
   firstSeenVersion: "0.0.0",
 };
 
-function makeClient(stateFactory = vi.fn(() => TEST_STATE), config?: Partial<TelemetryConfig>) {
+function makeClient(
+  stateFactory = vi.fn(() => TEST_STATE),
+  config?: Partial<TelemetryConfig>,
+  // Seeded RNG for deterministic backoff jitter. 0.5 => zero jitter (the
+  // symmetric midpoint), so retry delays equal the un-jittered exponential base.
+  random: () => number = () => 0.5,
+) {
   return {
     client: new TelemetryClient(
       { enabled: true, endpoint: "http://localhost:9999/ingest", ...config },
       stateFactory,
       "0.0.0-test",
+      random,
     ),
     stateFactory,
   };
@@ -108,74 +115,6 @@ describe("TelemetryClient runtime event gate", () => {
         dimensions: { status: "ok" },
       }),
     ]);
-  });
-});
-
-// Stubs `fetch` to reject the batch with a given non-OK HTTP status for every
-// endpoint the client may try. Returns the mock so call counts can be asserted.
-function stubFetchStatus(status: number) {
-  const fetchMock = vi.fn().mockResolvedValue({ ok: false, status });
-  vi.stubGlobal("fetch", fetchMock);
-  return fetchMock;
-}
-
-// Phase 1 (PAP-2862): characterization pins for today's best-effort, silent-drop
-// flush. On ANY non-OK response or network error the drained batch is dropped
-// with no re-queue and no second attempt, and no `batchId` is emitted. These pins
-// lock the current baseline; Impl-2 (PAP-2853) replaces them when retry lands.
-describe("TelemetryClient silent-drop baseline (characterization)", () => {
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
-
-  it("drops the batch on a 429 with no re-queue", async () => {
-    const fetchMock = stubFetchStatus(429);
-    const { client } = makeClient();
-
-    client.track("install.started", {});
-    await client.flush();
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-
-    // Queue was drained despite the failure: a second flush sends nothing.
-    await client.flush();
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-  });
-
-  it("drops the batch on a 413 with no re-queue", async () => {
-    const fetchMock = stubFetchStatus(413);
-    const { client } = makeClient();
-
-    client.track("install.started", {});
-    await client.flush();
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-
-    await client.flush();
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-  });
-
-  it("drops the batch on a 400 with no re-queue", async () => {
-    const fetchMock = stubFetchStatus(400);
-    const { client } = makeClient();
-
-    client.track("install.started", {});
-    await client.flush();
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-
-    await client.flush();
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-  });
-
-  it("drops the batch on network error with no re-queue", async () => {
-    const fetchMock = vi.fn().mockRejectedValue(new Error("network down"));
-    vi.stubGlobal("fetch", fetchMock);
-    const { client } = makeClient();
-
-    client.track("install.started", {});
-    await client.flush();
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-
-    await client.flush();
-    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -369,5 +308,88 @@ describe("TelemetryClient deterministic batchId", () => {
     const id = sentBody().batchId as string;
     expect(id.length).toBeGreaterThanOrEqual(32);
     expect(id).toMatch(/^[0-9a-f]+$/);
+  });
+});
+
+// Phase 5 (PAP-2869): batch-grouped retry with capped, jittered exponential
+// backoff. Retryable statuses (429/502/503/504 + network) re-send the EXACT
+// same events + batchId (no re-mix — preserves server idempotency); terminal
+// statuses (400/405/409/413) never retry. Backoff uses the injected seeded RNG
+// and retries are driven off fake timers so tests are deterministic.
+describe("TelemetryClient batched retry + backoff", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it("retries a 429 with the same batchId and eventually succeeds", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: false, status: 429 })
+      .mockResolvedValue({ ok: true });
+    vi.stubGlobal("fetch", fetchMock);
+    const { client } = makeClient(undefined, {
+      backoff: { baseDelayMs: 1_000, maxDelayMs: 30_000, maxAttempts: 5, jitterRatio: 0.25 },
+    });
+
+    client.track("install.started", {});
+    await client.flush();
+    expect(fetchMock).toHaveBeenCalledTimes(1); // attempt 1 -> 429, queued for retry
+
+    // Un-jittered delay for attempt 1 == baseDelayMs.
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(fetchMock).toHaveBeenCalledTimes(2); // attempt 2 -> 200
+
+    const bodies = sentBodies();
+    expect(bodies[0]?.batchId).toBe(bodies[1]?.batchId); // identical id on retry
+    client.stop();
+  });
+
+  it("does not retry a terminal 400", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 400 });
+    vi.stubGlobal("fetch", fetchMock);
+    const { client } = makeClient();
+
+    client.track("install.started", {});
+    await client.flush();
+    await vi.advanceTimersByTimeAsync(120_000);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    client.stop();
+  });
+
+  it("does not retry a terminal 413", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 413 });
+    vi.stubGlobal("fetch", fetchMock);
+    const { client } = makeClient();
+
+    client.track("install.started", {});
+    await client.flush();
+    await vi.advanceTimersByTimeAsync(120_000);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    client.stop();
+  });
+
+  it("stops after maxAttempts on a persistent 429 and drops-and-logs", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 429 });
+    vi.stubGlobal("fetch", fetchMock);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const maxAttempts = 3;
+    const { client } = makeClient(undefined, {
+      backoff: { baseDelayMs: 1_000, maxDelayMs: 30_000, maxAttempts, jitterRatio: 0.25 },
+    });
+
+    client.track("install.started", {});
+    await client.flush();
+    // Drive all remaining scheduled retries.
+    await vi.advanceTimersByTimeAsync(600_000);
+
+    expect(fetchMock).toHaveBeenCalledTimes(maxAttempts);
+    expect(warn).toHaveBeenCalled();
+    client.stop();
   });
 });

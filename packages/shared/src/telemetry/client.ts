@@ -66,6 +66,19 @@ type TrackArgs<K extends TelemetryEventName> =
 // lower below 32.
 const BATCH_ID_HEX_LENGTH = 32;
 
+/**
+ * A chunk awaiting retry. `events` + `batchId` are frozen at first send and
+ * re-sent verbatim on every attempt — re-mixing events would change the content
+ * the server hashed under this id and trigger a 409. `attempt` is 1-based (the
+ * value of the attempt about to be made); `nextAttemptAt` is an epoch-ms gate.
+ */
+interface PendingBatch {
+  events: TelemetryEvent[];
+  batchId: string;
+  attempt: number;
+  nextAttemptAt: number;
+}
+
 export class TelemetryClient {
   private queue: TelemetryEvent[] = [];
   private readonly config: TelemetryConfig;
@@ -75,6 +88,10 @@ export class TelemetryClient {
   private readonly random: () => number;
   private state: TelemetryState | null = null;
   private flushInterval: ReturnType<typeof setInterval> | null = null;
+  // In-memory pending-retry store (best-effort; never persisted). Bounded in
+  // Phase 6. Insertion order == age (oldest at the front).
+  private pending: PendingBatch[] = [];
+  private readonly retryTimers = new Set<ReturnType<typeof setTimeout>>();
 
   constructor(
     config: TelemetryConfig,
@@ -126,11 +143,20 @@ export class TelemetryClient {
   }
 
   async flush(): Promise<void> {
-    if (!this.config.enabled || this.queue.length === 0) return;
+    if (!this.config.enabled) return;
+
+    // Re-send any due retries first, then send freshly-queued events.
+    await this.drainPending();
+    if (this.queue.length === 0) return;
 
     const events = this.queue.splice(0);
     for (const chunk of this.chunkForSend(events)) {
-      await this.sendChunk(chunk);
+      await this.attemptSend({
+        events: chunk,
+        batchId: this.deriveBatchId(this.getState().installId, chunk),
+        attempt: 1,
+        nextAttemptAt: 0,
+      });
     }
   }
 
@@ -167,7 +193,7 @@ export class TelemetryClient {
     this.splitByBytes(chunk.slice(mid), out);
   }
 
-  private buildEnvelope(events: TelemetryEvent[]): TelemetryEventEnvelope {
+  private buildEnvelope(events: TelemetryEvent[], batchId?: string): TelemetryEventEnvelope {
     const state = this.getState();
     return {
       app: this.config.app ?? "paperclip",
@@ -175,7 +201,7 @@ export class TelemetryClient {
       installId: state.installId,
       version: this.version,
       events,
-      batchId: this.deriveBatchId(state.installId, events),
+      batchId: batchId ?? this.deriveBatchId(state.installId, events),
     };
   }
 
@@ -198,9 +224,98 @@ export class TelemetryClient {
     return Buffer.byteLength(JSON.stringify(envelope));
   }
 
-  /** POSTs one already-built chunk; drops on any non-OK/error (best-effort). */
-  private async sendChunk(events: TelemetryEvent[]): Promise<void> {
-    await this.postEnvelope(JSON.stringify(this.buildEnvelope(events)));
+  /**
+   * Sends one batch (its current `attempt`). On a retryable failure the EXACT
+   * same events + `batchId` are re-queued with capped, jittered backoff; on a
+   * terminal failure or after `maxAttempts` the batch is dropped-and-logged.
+   */
+  private async attemptSend(batch: PendingBatch): Promise<void> {
+    const body = JSON.stringify(this.buildEnvelope(batch.events, batch.batchId));
+    const outcome = this.classifyOutcome(await this.postEnvelope(body));
+
+    if (outcome.kind === "ok") return;
+
+    if (outcome.kind === "terminal") {
+      this.warn(
+        `dropping batch ${batch.batchId} on terminal response (HTTP ${outcome.status}); ${batch.events.length} event(s) lost`,
+      );
+      return;
+    }
+
+    // Retryable (429/502/503/504 or network/timeout).
+    if (batch.attempt >= this.caps.backoff.maxAttempts) {
+      this.warn(
+        `dropping batch ${batch.batchId} after ${batch.attempt} attempt(s); ${batch.events.length} event(s) lost`,
+      );
+      return;
+    }
+    const delayMs = outcome.retryAfterMs ?? this.computeBackoffMs(batch.attempt);
+    this.enqueuePending({
+      ...batch,
+      attempt: batch.attempt + 1,
+      nextAttemptAt: Date.now() + delayMs,
+    });
+  }
+
+  private classifyOutcome(
+    result: { kind: "ok" } | { kind: "status"; status: number; retryAfterMs?: number } | { kind: "network" },
+  ): { kind: "ok" } | { kind: "retry"; retryAfterMs?: number } | { kind: "terminal"; status: number } {
+    if (result.kind === "ok") return { kind: "ok" };
+    if (result.kind === "network") return { kind: "retry" };
+    if (this.isRetryableStatus(result.status)) {
+      return { kind: "retry", retryAfterMs: result.retryAfterMs };
+    }
+    return { kind: "terminal", status: result.status };
+  }
+
+  private isRetryableStatus(status: number): boolean {
+    return status === 429 || status === 502 || status === 503 || status === 504;
+  }
+
+  /**
+   * Capped exponential backoff with symmetric jitter:
+   * `min(maxDelayMs, baseDelayMs * 2^(attempt-1)) * (1 ± jitterRatio)`, using the
+   * injected RNG. `attempt` is the failed attempt (1-based).
+   */
+  private computeBackoffMs(attempt: number): number {
+    const { baseDelayMs, maxDelayMs, jitterRatio } = this.caps.backoff;
+    const base = Math.min(maxDelayMs, baseDelayMs * 2 ** (attempt - 1));
+    const jitter = base * jitterRatio * (this.random() * 2 - 1);
+    return Math.max(0, Math.min(maxDelayMs, Math.round(base + jitter)));
+  }
+
+  /** Pushes a batch onto the pending store and schedules its retry wake-up. */
+  private enqueuePending(batch: PendingBatch): void {
+    this.pending.push(batch);
+    this.scheduleDrain(batch.nextAttemptAt);
+  }
+
+  private scheduleDrain(at: number): void {
+    const delay = Math.max(0, at - Date.now());
+    const timer = setTimeout(() => {
+      this.retryTimers.delete(timer);
+      void this.drainPending();
+    }, delay);
+    // Don't keep the process alive for a best-effort retry (CLI exits promptly).
+    if (typeof timer === "object" && timer !== null && "unref" in timer) {
+      (timer as { unref(): void }).unref();
+    }
+    this.retryTimers.add(timer);
+  }
+
+  /** Re-sends every pending batch whose `nextAttemptAt` is due. */
+  private async drainPending(): Promise<void> {
+    if (this.pending.length === 0) return;
+    const now = Date.now();
+    const due: PendingBatch[] = [];
+    const waiting: PendingBatch[] = [];
+    for (const batch of this.pending) {
+      (batch.nextAttemptAt <= now ? due : waiting).push(batch);
+    }
+    this.pending = waiting;
+    for (const batch of due) {
+      await this.attemptSend(batch);
+    }
   }
 
   /**
@@ -254,6 +369,10 @@ export class TelemetryClient {
       clearInterval(this.flushInterval);
       this.flushInterval = null;
     }
+    for (const timer of this.retryTimers) {
+      clearTimeout(timer);
+    }
+    this.retryTimers.clear();
   }
 
   hashPrivateRef(value: string): string {
