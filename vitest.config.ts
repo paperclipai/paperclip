@@ -8,6 +8,7 @@ export default defineConfig({
       "packages/db",
       "packages/adapter-utils",
       "packages/adapters/claude-local",
+      "packages/mcp-server",
       "packages/adapters/codex-local",
       "packages/adapters/cursor-cloud",
       "packages/adapters/cursor-local",
