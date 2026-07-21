@@ -39,6 +39,11 @@ export interface ListArtifactsParams {
   groupBy?: CompanyArtifactGroupBy;
   /** When grouping, selects a single stack to expand into its artifacts. */
   groupIssueId?: string;
+  /**
+   * Restrict to artifacts the current viewer has starred (documents only in V1).
+   * Requires a board viewer server-side; other actors get an empty list.
+   */
+  starred?: boolean;
   limit?: number;
   cursor?: string;
 }
@@ -50,6 +55,10 @@ function buildArtifactsQuery(params?: ListArtifactsParams): string {
   if (params?.q) search.set("q", params.q);
   if (params?.groupBy && params.groupBy !== "none") search.set("groupBy", params.groupBy);
   if (params?.groupIssueId) search.set("groupIssueId", params.groupIssueId);
+  // Server coerces the string "true" into the boolean filter (see
+  // companyArtifactsQuerySchema); the page's shareable `?starred=1` param is
+  // translated here so the two encodings stay decoupled.
+  if (params?.starred) search.set("starred", "true");
   if (params?.limit != null) search.set("limit", String(params.limit));
   if (params?.cursor) search.set("cursor", params.cursor);
   const qs = search.toString();

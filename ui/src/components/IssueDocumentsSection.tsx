@@ -38,6 +38,8 @@ import { Check, Copy, Diff, Download, FilePenLine, FileText, Lock, MoreHorizonta
 import { DocumentDiffModal } from "./DocumentDiffModal";
 import { DocumentFrameHeader, type DocumentFrameHeaderRevisionActor } from "./DocumentFrameHeader";
 import { SourceTrustBadge } from "./SourceTrustBadge";
+import { StarToggle } from "./StarToggle";
+import { isStarred, useDocumentStarMutation, useResourceMemberships } from "../hooks/useResourceMemberships";
 import { Badge } from "@/components/ui/badge";
 
 type DraftState = {
@@ -450,6 +452,12 @@ export function IssueDocumentsSection({
     }
     return map;
   }, [feedbackVotes]);
+
+  // Per-viewer document stars. All documents in a section share a company, so we
+  // derive it once and drive a single optimistic mutation keyed by document id.
+  const starCompanyId = sortedDocuments[0]?.companyId ?? null;
+  const membershipsQuery = useResourceMemberships(starCompanyId);
+  const documentStarMutation = useDocumentStarMutation(starCompanyId);
 
   const hasRealPlan = sortedDocuments.some((doc) => doc.key === "plan");
   const isEmpty = sortedDocuments.length === 0 && !documentSubject.legacyPlanDocument;
@@ -1058,6 +1066,27 @@ export function IssueDocumentsSection({
                 titleSlot={showTitle ? <p className="mt-2 text-sm font-medium">{displayedTitle}</p> : null}
                 actionsSlot={
                   <>
+                    <StarToggle
+                      size="row"
+                      starred={isStarred(membershipsQuery.data, "document", doc.id)}
+                      pending={
+                        documentStarMutation.isPending &&
+                        documentStarMutation.variables?.documentId === doc.id
+                      }
+                      error={
+                        documentStarMutation.isError &&
+                        documentStarMutation.variables?.documentId === doc.id
+                      }
+                      resourceName={displayedTitle.trim() || doc.key}
+                      revealClassName="opacity-100"
+                      onToggle={(next) =>
+                        documentStarMutation.mutate({
+                          documentId: doc.id,
+                          documentName: displayedTitle.trim() || doc.key,
+                          starred: next,
+                        })
+                      }
+                    />
                     {canManageDocumentLocks ? (
                     <Button
                       variant="ghost"

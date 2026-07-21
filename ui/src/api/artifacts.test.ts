@@ -75,6 +75,18 @@ describe("artifactsApi.list", () => {
     );
   });
 
+  it("omits the starred param when false", async () => {
+    await artifactsApi.list("company-1", { starred: false });
+    expect(mockApi.get).toHaveBeenCalledWith("/companies/company-1/artifacts");
+  });
+
+  it("serializes starred as the boolean-coercible string and composes with search", async () => {
+    await artifactsApi.list("company-1", { starred: true, q: "plan" });
+    expect(mockApi.get).toHaveBeenCalledWith(
+      "/companies/company-1/artifacts?q=plan&starred=true",
+    );
+  });
+
   it("preserves groups and selectedGroup from the envelope", async () => {
     const artifact = sampleArtifact();
     const group = {

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useInfiniteQuery } from "@tanstack/react-query";
-import { ArrowLeft, Check, Layers, Package, Search, X } from "lucide-react";
+import { ArrowLeft, Check, Layers, Package, Search, Star, X } from "lucide-react";
 import type { To } from "react-router-dom";
 import {
   artifactsApi,
@@ -66,10 +66,13 @@ export function Artifacts() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const [searchParams, setSearchParams] = useSearchParams();
 
-  const kind = parseKind(searchParams.get("kind"));
+  const starred = searchParams.get("starred") === "1";
+  // Starred is documents-only in V1: it ignores the kind filter and grouping so
+  // the tab always renders a flat list of the viewer's starred documents.
+  const kind = starred ? "all" : parseKind(searchParams.get("kind"));
   const query = searchParams.get("q") ?? "";
-  const groupBy = parseGroupBy(searchParams.get("groupBy"));
-  const groupIssueId = searchParams.get("groupIssueId") ?? undefined;
+  const groupBy = starred ? "none" : parseGroupBy(searchParams.get("groupBy"));
+  const groupIssueId = starred ? undefined : (searchParams.get("groupIssueId") ?? undefined);
 
   const [draftQuery, setDraftQuery] = useState(query);
   const loadMoreRef = useRef<HTMLDivElement | null>(null);
@@ -117,12 +120,26 @@ export function Artifacts() {
   const selectKind = useCallback(
     (value: ArtifactKindFilter) => {
       updateParams((next) => {
+        // Selecting any kind tab exits the Starred view (they are mutually
+        // exclusive: Starred resets the kind filter in V1).
+        next.delete("starred");
         if (value === "all") next.delete("kind");
         else next.set("kind", value);
       });
     },
     [updateParams],
   );
+
+  const selectStarred = useCallback(() => {
+    updateParams((next) => {
+      // Starred is documents-only: drop the kind filter and any grouping so the
+      // tab is a clean, shareable flat list (`?starred=1` composes with `q`).
+      next.set("starred", "1");
+      next.delete("kind");
+      next.delete("groupBy");
+      next.delete("groupIssueId");
+    });
+  }, [updateParams]);
 
   const selectGroupBy = useCallback(
     (value: ArtifactGroupBy) => {
@@ -177,13 +194,14 @@ export function Artifacts() {
     fetchNextPage,
     error,
   } = useInfiniteQuery({
-    queryKey: queryKeys.artifacts.list(selectedCompanyId!, kind, query, groupBy, groupIssueId),
+    queryKey: queryKeys.artifacts.list(selectedCompanyId!, kind, query, groupBy, groupIssueId, starred),
     queryFn: ({ pageParam }) =>
       artifactsApi.list(selectedCompanyId!, {
         kind,
         q: query || undefined,
         groupBy,
         groupIssueId,
+        starred,
         limit: ARTIFACTS_PAGE_SIZE,
         cursor: pageParam,
       }),
@@ -233,7 +251,11 @@ export function Artifacts() {
   const showGroupCards = viewingStackList;
   const items = showGroupCards ? groups : artifacts;
 
-  const emptyMessage = showGroupCards
+  const emptyMessage = starred
+    ? searching
+      ? "No starred documents match this search."
+      : "No starred documents yet — star a document from its header or card."
+    : showGroupCards
     ? searching
       ? "No artifact stacks match this search."
       : "No artifact stacks yet."
@@ -270,37 +292,40 @@ export function Artifacts() {
         </div>
 
         <div className="flex flex-wrap items-center gap-1.5">
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button
-                type="button"
-                variant="outline"
-                size="icon"
-                aria-label={`Group artifacts (currently ${artifactGroupByLabel(groupBy)})`}
-                title="Group artifacts"
-                data-testid="artifact-group-control"
-                data-group-by={groupBy}
-                className={cn("h-8 w-8 shrink-0", grouping && "bg-accent")}
-              >
-                <Layers className="h-3.5 w-3.5" aria-hidden="true" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-44">
-              <DropdownMenuLabel>Group by</DropdownMenuLabel>
-              {ARTIFACT_GROUP_OPTIONS.map((option) => (
-                <DropdownMenuItem
-                  key={option.value}
-                  data-testid={`artifact-group-option-${option.value}`}
-                  aria-selected={groupBy === option.value}
-                  onSelect={() => selectGroupBy(option.value)}
-                  className="justify-between"
+          {/* Grouping is meaningless in the documents-only Starred view. */}
+          {!starred ? (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  aria-label={`Group artifacts (currently ${artifactGroupByLabel(groupBy)})`}
+                  title="Group artifacts"
+                  data-testid="artifact-group-control"
+                  data-group-by={groupBy}
+                  className={cn("h-8 w-8 shrink-0", grouping && "bg-accent")}
                 >
-                  {option.label}
-                  {groupBy === option.value ? <Check className="h-3.5 w-3.5" /> : null}
-                </DropdownMenuItem>
-              ))}
-            </DropdownMenuContent>
-          </DropdownMenu>
+                  <Layers className="h-3.5 w-3.5" aria-hidden="true" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-44">
+                <DropdownMenuLabel>Group by</DropdownMenuLabel>
+                {ARTIFACT_GROUP_OPTIONS.map((option) => (
+                  <DropdownMenuItem
+                    key={option.value}
+                    data-testid={`artifact-group-option-${option.value}`}
+                    aria-selected={groupBy === option.value}
+                    onSelect={() => selectGroupBy(option.value)}
+                    className="justify-between"
+                  >
+                    {option.label}
+                    {groupBy === option.value ? <Check className="h-3.5 w-3.5" /> : null}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          ) : null}
 
           <div className="flex flex-wrap items-center gap-1.5" role="tablist" aria-label="Filter artifacts by type">
             {ARTIFACT_KIND_FILTERS.map((filter) => (
@@ -308,11 +333,11 @@ export function Artifacts() {
                 key={filter.value}
                 type="button"
                 role="tab"
-                aria-selected={kind === filter.value}
+                aria-selected={!starred && kind === filter.value}
                 onClick={() => selectKind(filter.value)}
                 className={cn(
                   "rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
-                  kind === filter.value
+                  !starred && kind === filter.value
                     ? "bg-accent text-foreground"
                     : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
                 )}
@@ -320,6 +345,25 @@ export function Artifacts() {
                 {filter.label}
               </button>
             ))}
+            <button
+              type="button"
+              role="tab"
+              aria-selected={starred}
+              onClick={selectStarred}
+              data-testid="artifact-starred-tab"
+              className={cn(
+                "inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
+                starred
+                  ? "bg-accent text-foreground"
+                  : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
+              )}
+            >
+              <Star
+                className={cn("h-3.5 w-3.5", starred && "fill-amber-500 text-amber-500")}
+                aria-hidden="true"
+              />
+              Starred
+            </button>
           </div>
         </div>
       </div>
@@ -348,7 +392,7 @@ export function Artifacts() {
       {isLoading ? (
         <PageSkeleton variant="list" />
       ) : items.length === 0 ? (
-        <EmptyState icon={showGroupCards ? Layers : Package} message={emptyMessage} />
+        <EmptyState icon={starred ? Star : showGroupCards ? Layers : Package} message={emptyMessage} />
       ) : (
         <>
           <div className="grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-3">
