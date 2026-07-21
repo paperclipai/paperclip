@@ -1,0 +1,206 @@
+"""Vault-Lookup — gemeinsame Nachschlage-Logik für die Chat-Bots (Luna/Jarvis).
+
+Hybrid, alles lokal + nur lesend:
+  - kontakt / termin / mail  → direkter, strukturierter Ordner-Zugriff (exakt)
+  - wissen                   → semantische Brain-Suche (:7777) für Thematisches
+
+Bewusst stdlib-only, damit es überall (n8n-Aufruf, Python-Bot) leicht läuft.
+"""
+from __future__ import annotations
+
+import glob
+import json
+import os
+import re
+import urllib.request
+from datetime import date, datetime, timedelta
+
+VAULT = os.path.expanduser("~/Obsidian/WHITESTAG-Vault")
+KONTAKTE = os.path.join(VAULT, "Kontakte")
+TERMINE = os.path.join(VAULT, "Termine")
+EMAILS = os.path.join(VAULT, "E-Mails")
+
+BRAIN_URL = "http://localhost:7777/"
+# Claude-Code-Scope-Token (voller Vault-Lesezugriff); via env überschreibbar.
+BRAIN_TOKEN = os.environ.get(
+    "BRAIN_TOKEN",
+    "5bc3675e4fc5e83977107dce675e2fde2038fda0b70b818f24aa99dbf90fe764",
+)
+
+_WORD = re.compile(r"[A-Za-zÄÖÜäöüß0-9.@-]{2,}")
+
+
+def _tokens(s: str) -> list[str]:
+    return [t.lower() for t in _WORD.findall(s or "")]
+
+
+# ---------------------------------------------------------------- Kontakte ---
+def lookup_kontakt(query: str, limit: int = 3) -> list[dict]:
+    """Findet Kontaktkarten per Namens-/Domain-Match. Gibt vollen Kartentext
+    zurück, damit das LLM die konkret gefragte Angabe (Tel/Mail/…) rauszieht."""
+    if not os.path.isdir(KONTAKTE):
+        return []
+    qtoks = [t for t in _tokens(query) if t not in ("kontakt", "nummer", "telefon",
+             "telefonnummer", "mail", "email", "adresse", "von", "der", "die", "das")]
+    scored = []
+    for path in glob.glob(os.path.join(KONTAKTE, "*.md")):
+        try:
+            text = open(path, encoding="utf-8").read()
+        except OSError:
+            continue
+        hay = (os.path.basename(path) + "\n" + text[:600]).lower()
+        score = sum(1 for t in qtoks if t in hay)
+        if score:
+            scored.append((score, path, text))
+    scored.sort(key=lambda x: -x[0])
+    out = []
+    for score, path, text in scored[:limit]:
+        out.append({"quelle": os.path.relpath(path, VAULT), "score": score,
+                    "inhalt": text.strip()[:1500]})
+    return out
+
+
+# ----------------------------------------------------------------- Termine ---
+def _parse_datumsfenster(query: str):
+    q = (query or "").lower()
+    today = date.today()
+    if "heute" in q:
+        return today, today
+    if "morgen" in q:
+        d = today + timedelta(days=1); return d, d
+    if "woche" in q:
+        start = today - timedelta(days=today.weekday())
+        return start, start + timedelta(days=6)
+    m = re.search(r"(\d{4}-\d{2}-\d{2})", q)
+    if m:
+        d = datetime.strptime(m.group(1), "%Y-%m-%d").date(); return d, d
+    return today, today + timedelta(days=13)  # Default: nächste 2 Wochen
+
+
+def lookup_termine(query: str, limit: int = 15) -> list[dict]:
+    if not os.path.isdir(TERMINE):
+        return []
+    start, end = _parse_datumsfenster(query)
+    out = []
+    for path in sorted(glob.glob(os.path.join(TERMINE, "*.md"))):
+        m = re.search(r"(\d{4}-\d{2}-\d{2})", os.path.basename(path))
+        if not m:
+            continue
+        try:
+            d = datetime.strptime(m.group(1), "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if start <= d <= end:
+            try:
+                text = open(path, encoding="utf-8").read()
+            except OSError:
+                continue
+            out.append({"datum": m.group(1), "quelle": os.path.relpath(path, VAULT),
+                        "inhalt": text.strip()[:600]})
+    return out[:limit]
+
+
+# ------------------------------------------------------------------- Mails ---
+def lookup_mail(query: str, limit: int = 5) -> list[dict]:
+    if not os.path.isdir(EMAILS):
+        return []
+    qtoks = [t for t in _tokens(query) if t not in ("mail", "email", "von", "letzte", "der")]
+    scored = []
+    for path in glob.glob(os.path.join(EMAILS, "*.md")):
+        base = os.path.basename(path)
+        try:
+            head = open(path, encoding="utf-8").read(700)
+        except OSError:
+            continue
+        hay = (base + "\n" + head).lower()
+        score = sum(1 for t in qtoks if t in hay)
+        if score:
+            scored.append((score, base[:10], path, head))
+    scored.sort(key=lambda x: (-x[0], x[1]), reverse=False)
+    scored.sort(key=lambda x: (x[0], x[1]), reverse=True)  # score desc, dann Datum desc
+    out = []
+    for score, _d, path, head in scored[:limit]:
+        out.append({"quelle": os.path.relpath(path, VAULT), "score": score,
+                    "auszug": head.strip()[:500]})
+    return out
+
+
+# ------------------------------------------------------------------ Wissen ---
+def search_wissen(query: str, limit: int = 5) -> list[dict]:
+    """Semantische Brain-Suche für thematische/Wissensfragen."""
+    body = json.dumps({"tool": "search_vault",
+                       "args": {"query": query, "limit": limit}}).encode()
+    req = urllib.request.Request(BRAIN_URL, data=body, method="POST",
+        headers={"Authorization": "Bearer " + BRAIN_TOKEN, "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            data = json.loads(r.read().decode())
+    except Exception as e:  # noqa: BLE001
+        return [{"fehler": f"Brain nicht erreichbar: {e}"}]
+    res = data.get("result", [])
+    return [{"quelle": h.get("path"), "score": round(h.get("score", 0), 3),
+             "auszug": (h.get("snippet") or h.get("text") or "")[:400]}
+            for h in (res if isinstance(res, list) else [])]
+
+
+# --------------------------------------------------------------- Dokumente ---
+_RG = "/opt/homebrew/bin/rg"
+_DOC_STOP = {"der","die","das","und","von","mit","fuer","für","ist","ein","eine",
+    "dem","den","im","in","auf","zu","nach","bitte","mir","mal","suche","such",
+    "dokument","dokumente","dokumenten","allen","alle","finde","was","wo","gibt",
+    "es","du","ich","hast","haben","kannst","bitte"}
+
+
+def lookup_dokument(query, limit=6):
+    """Volltextsuche (ripgrep) ueber den GANZEN Vault — findet exakte Begriffe
+    in jedem Dokument, unabhaengig vom Brain-Index."""
+    import subprocess
+    from collections import Counter
+    toks = [t for t in _tokens(query) if len(t) > 2 and t.lower() not in _DOC_STOP]
+    if not toks:
+        return []
+    score = Counter()
+    for tok in toks[:6]:
+        try:
+            r = subprocess.run([_RG, "-li", "--no-messages", "-g", "*.md", tok, VAULT],
+                               capture_output=True, text=True, timeout=20)
+        except Exception:
+            continue
+        for path in r.stdout.strip().splitlines():
+            score[path] += 1
+    ranked = []
+    for path, s in score.items():
+        base = os.path.basename(path).lower()
+        bonus = sum(1 for t in toks if t.lower() in base)
+        ranked.append((s + bonus, s, path))
+    ranked.sort(reverse=True)
+    out = []
+    pat = "|".join(re.escape(t) for t in toks)
+    for _rank, s, path in ranked[:limit]:
+        snippet = ""
+        try:
+            r = subprocess.run([_RG, "-i", "--no-messages", "-m", "3", pat, path],
+                               capture_output=True, text=True, timeout=10)
+            snippet = r.stdout.strip()[:400]
+        except Exception:
+            pass
+        out.append({"quelle": os.path.relpath(path, VAULT),
+                    "treffer_begriffe": s, "auszug": snippet})
+    return out
+
+
+# -------------------------------------------------------------- Dispatcher ---
+def lookup(mode: str, query: str) -> dict:
+    fn = {"kontakt": lookup_kontakt, "termin": lookup_termine,
+          "mail": lookup_mail, "wissen": search_wissen,
+          "dokument": lookup_dokument}.get(mode)
+    if not fn:
+        return {"mode": mode, "fehler": "unbekannter Modus (kontakt|termin|mail|wissen|dokument)"}
+    return {"mode": mode, "query": query, "treffer": fn(query)}
+
+
+if __name__ == "__main__":
+    import sys
+    m = sys.argv[1] if len(sys.argv) > 1 else "kontakt"
+    q = " ".join(sys.argv[2:]) or "Jana Kostbar"
+    print(json.dumps(lookup(m, q), ensure_ascii=False, indent=1))

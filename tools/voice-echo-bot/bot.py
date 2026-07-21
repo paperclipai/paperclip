@@ -32,7 +32,7 @@ from paperclip_client import (create_issue, derive_title, add_comment,
 IDENT_RE = re.compile(r"([A-Z]{2,5}-\d+)")
 
 # Steuer-Token nur am Zeilenanfang, case-insensitive.
-LOOKUP_RE = re.compile(r"^\s*LOOKUP\s+(kontakt|termin|mail|wissen)\s*:\s*(.+)$",
+LOOKUP_RE = re.compile(r"^\s*LOOKUP\s+(kontakt|termin|mail|wissen|dokument)\s*:\s*(.+)$",
                        re.IGNORECASE)
 ISSUE_RE = re.compile(r"^\s*ISSUE\s*:\s*(.+)$", re.IGNORECASE)
 
@@ -49,7 +49,7 @@ SYSTEM_PROMPT = (
     "einer Person; Termine; frühere Mails; Wissens-/Business-Fragen):\n"
     "   LOOKUP <modus>: <suchbegriff>\n"
     "   modus = kontakt (Tel/Mail/Adresse einer Person) | termin (Kalender) | "
-    "mail (frühere E-Mails) | wissen (Wissens-/Business-Fragen).\n"
+    "mail (frühere E-Mails) | wissen (Wissens-/Business-Fragen) | dokument (Volltextsuche in ALLEN Dokumenten/Unterlagen des Vaults, z.B. Angebote, Verträge, Projekte).\n"
     "   Beispiel: LOOKUP kontakt: Jana Kostbar\n\n"
     "2. Aufgabe beim CEO anlegen — NUR wenn {name} dich ausdrücklich darum "
     "bittet (\"leg an\", \"erstelle einen Task\", \"kümmer dich um\"):\n"
