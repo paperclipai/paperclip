@@ -902,6 +902,40 @@ type WorkspaceOverviewIssueRow = WorkspaceOverviewLinkedIssue & {
   executionWorkspaceId: string;
 };
 
+/**
+ * Detach every issue still bound to an execution workspace that is leaving the
+ * active set (archive / quarantine). Clears `reuse_existing` preference so the
+ * next run provisions a fresh workspace instead of failing closed on a dead id.
+ */
+export async function clearIssueBindersForExecutionWorkspace(
+  db: Pick<Db, "update">,
+  input: {
+    companyId: string;
+    executionWorkspaceId: string;
+    updatedAt?: Date;
+  },
+): Promise<number> {
+  const updatedAt = input.updatedAt ?? new Date();
+  const cleared = await db
+    .update(issues)
+    .set({
+      executionWorkspaceId: null,
+      executionWorkspacePreference: sql`CASE
+        WHEN ${issues.executionWorkspacePreference} = 'reuse_existing' THEN NULL
+        ELSE ${issues.executionWorkspacePreference}
+      END`,
+      updatedAt,
+    })
+    .where(
+      and(
+        eq(issues.companyId, input.companyId),
+        eq(issues.executionWorkspaceId, input.executionWorkspaceId),
+      ),
+    )
+    .returning({ id: issues.id });
+  return cleared.length;
+}
+
 export function executionWorkspaceService(db: Db) {
   const recoveryActionsSvc = issueRecoveryActionService(db);
 
@@ -1436,6 +1470,10 @@ export function executionWorkspaceService(db: Db) {
 
       if (isSharedWorkspace) {
         warnings.push("This shared workspace session points at project workspace infrastructure. Archiving it only removes the session record.");
+      } else if (linkedIssueSummaries.length > 0) {
+        warnings.push(
+          "Archiving this isolated workspace will clear executionWorkspaceId binders on linked issues (and drop reuse_existing preference) so later checkouts provision a fresh workspace.",
+        );
       }
 
       if (runtimeServices.some((service) => service.status !== "stopped")) {
@@ -1479,7 +1517,8 @@ export function executionWorkspaceService(db: Db) {
         {
           kind: "archive_record",
           label: "Archive workspace record",
-          description: "Keep the execution workspace history and issue linkage, but remove it from active workspace lists.",
+          description:
+            "Keep the execution workspace history, clear issue binders (including reuse_existing), and remove it from active workspace lists.",
           command: null,
         },
       ];
@@ -1942,6 +1981,10 @@ export function executionWorkspaceService(db: Db) {
 
         return cleared;
       });
+    },
+
+    clearIssueBinders: async (companyId: string, executionWorkspaceId: string) => {
+      return clearIssueBindersForExecutionWorkspace(db, { companyId, executionWorkspaceId });
     },
   };
 }
