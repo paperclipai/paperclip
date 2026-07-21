@@ -6629,12 +6629,12 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           remediation: { action: "reauthorize" },
         });
       }
-      const scopeSelector = typeof input.body.scope === "string" ? input.body.scope : undefined;
-      const matchingScopedRefs = scopeSelector
-        ? grant.credentialSecretRefs.filter((ref) => ref.keyScope === scopeSelector)
-        : [];
+      const requestedScopeSelectors = new Set(requestedScope);
+      const matchingScopedRefs = grant.credentialSecretRefs.filter(
+        (ref) => ref.keyScope && requestedScopeSelectors.has(ref.keyScope),
+      );
       const selectedCredentialSecretRefs = matchingScopedRefs.length > 0
-        ? grant.credentialSecretRefs.filter((ref) => !ref.keyScope || ref.keyScope === scopeSelector)
+        ? grant.credentialSecretRefs.filter((ref) => !ref.keyScope || requestedScopeSelectors.has(ref.keyScope))
         : grant.credentialSecretRefs.filter((ref) => !ref.keyScope);
       const rotateBefore = Date.now() + 14 * 24 * 60 * 60 * 1000;
       const expiringRef = selectedCredentialSecretRefs.find((ref) => ref.expiresAt && Date.parse(ref.expiresAt) <= rotateBefore);
