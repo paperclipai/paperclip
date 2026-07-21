@@ -542,6 +542,73 @@ describeEmbeddedPostgres("tool access service", () => {
     ]));
   });
 
+  it("does not select a differently scoped credential for an unknown scope", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const { connection } = await createBrokerConnection(db, company.id, {
+      parentScopes: ["staging", "production"],
+    });
+    const productionSecret = await secretService(db).create(company.id, {
+      provider: "local_encrypted",
+      name: `Production broker parent ${randomUUID()}`,
+      key: `broker.production.${randomUUID()}`,
+      value: "production-deploy-token",
+    });
+    await db.update(toolConnections).set({
+      config: {
+        ...connection.config,
+        tokenBroker: {
+          ...(connection.config.tokenBroker as Record<string, unknown>),
+          parentCredentialConfigPath: "credentials.production_token",
+        },
+      },
+      credentialSecretRefs: [
+        ...connection.credentialSecretRefs,
+        {
+          secretId: productionSecret.id,
+          versionSelector: "latest",
+          configPath: "credentials.production_token",
+          required: true,
+          label: "Production deploy token",
+          keyScope: "production",
+        },
+      ],
+      updatedAt: new Date(),
+    }).where(eq(toolConnections.id, connection.id));
+    await db.insert(companySecretBindings).values({
+      companyId: company.id,
+      secretId: productionSecret.id,
+      targetType: "tool_connection",
+      targetId: connection.id,
+      configPath: "credentials.production_token",
+    });
+    await allowConnectionForAgent(db, company.id, agent.id, connection.id);
+    const app = createRouteApp(db, agentJwtActor(company.id, agent.id, run.id));
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      status: 201,
+      json: async () => ({
+        token: "unexpected-production-token",
+        expiresAt: new Date(Date.now() + 900_000).toISOString(),
+        scope: "staging",
+      }),
+    } as Response);
+
+    const res = await request(app)
+      .post(`/api/agents/me/connections/${connection.id}/token`)
+      .send({ scope: "staging" });
+
+    expect(res.status).toBe(422);
+    expect(res.body).toMatchObject({ code: "parent_credential_missing" });
+    expect(fetchMock).not.toHaveBeenCalled();
+    const productionSecretEvents = await db.select().from(secretAccessEvents).where(and(
+      eq(secretAccessEvents.consumerId, connection.id),
+      eq(secretAccessEvents.configPath, "credentials.production_token"),
+    ));
+    expect(productionSecretEvents).toHaveLength(0);
+  });
+
   it("returns typed subject errors and rejects revoked grants immediately", async () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);

@@ -6617,9 +6617,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         : [];
       const selectedCredentialSecretRefs = matchingScopedRefs.length > 0
         ? grant.credentialSecretRefs.filter((ref) => !ref.keyScope || ref.keyScope === scopeSelector)
-        : scopeSelector
-          ? grant.credentialSecretRefs
-          : grant.credentialSecretRefs.filter((ref) => !ref.keyScope);
+        : grant.credentialSecretRefs.filter((ref) => !ref.keyScope);
       const rotateBefore = Date.now() + 14 * 24 * 60 * 60 * 1000;
       const expiringRef = selectedCredentialSecretRefs.find((ref) => ref.expiresAt && Date.parse(ref.expiresAt) <= rotateBefore);
       if (expiringRef && connection.healthStatus !== "degraded") {
