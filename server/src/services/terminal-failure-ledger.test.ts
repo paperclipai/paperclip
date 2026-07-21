@@ -15,7 +15,7 @@
 
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import {
   agents,
   companies,
@@ -142,21 +142,21 @@ describeEmbeddedPostgres("terminal-failure-ledger — real DB atomicity/dedupe",
       .then((rows) => rows.length);
   }
 
-  async function countLedgerComments(companyId: string, dedupeKey: string) {
+  async function countSystemComments(companyId: string, issueId: string) {
     return db
       .select({ id: issueComments.id })
       .from(issueComments)
       .where(
         and(
           eq(issueComments.companyId, companyId),
+          eq(issueComments.issueId, issueId),
           eq(issueComments.authorType, "system"),
-          sql`${issueComments.metadata} ->> 'terminalFailureDedupeKey' = ${dedupeKey}`,
         ),
       )
       .then((rows) => rows.length);
   }
 
-  it("issue-scoped: 1 ledger row + 1 top-level report + 1 comment", async () => {
+  it("issue-scoped: 1 ledger row + 1 top-level report, records the issue but posts no in-context comment", async () => {
     const { companyId, agentId } = await seed();
     const issueId = await seedIssue(companyId, agentId);
     const rootRunId = randomUUID();
@@ -174,10 +174,17 @@ describeEmbeddedPostgres("terminal-failure-ledger — real DB atomicity/dedupe",
 
     expect(result.kind).toBe("created");
     expect(result.reportIssueId).toBeTruthy();
-    expect(result.ledgerCommentId).toBeTruthy();
+    // The top-level report is the only visible surface — the source issue's own
+    // recovery/blocking thread is never perturbed by an escalation comment.
+    expect(result.ledgerCommentId).toBeNull();
     expect(await countLedger(companyId, dedupeKey)).toBe(1);
     expect(await countReportIssues(companyId)).toBe(1);
-    expect(await countLedgerComments(companyId, dedupeKey)).toBe(1);
+    const [row] = await db
+      .select({ issueId: terminalFailureLedger.issueId })
+      .from(terminalFailureLedger)
+      .where(eq(terminalFailureLedger.dedupeKey, dedupeKey));
+    expect(row.issueId).toBe(issueId);
+    expect(await countSystemComments(companyId, issueId)).toBe(0);
   });
 
   it("generic (issue-less) run: 1 ledger row + 1 top-level report + 0 comments", async () => {
@@ -200,7 +207,6 @@ describeEmbeddedPostgres("terminal-failure-ledger — real DB atomicity/dedupe",
     expect(result.ledgerCommentId).toBeNull();
     expect(await countLedger(companyId, dedupeKey)).toBe(1);
     expect(await countReportIssues(companyId)).toBe(1);
-    expect(await countLedgerComments(companyId, dedupeKey)).toBe(0);
   });
 
   it("sequential re-delivery: 0 duplicate ledger, 0 duplicate report, counter bumps", async () => {
@@ -253,6 +259,90 @@ describeEmbeddedPostgres("terminal-failure-ledger — real DB atomicity/dedupe",
       .from(terminalFailureLedger)
       .where(eq(terminalFailureLedger.dedupeKey, dedupeKey));
     expect(row.redeliveryCount).toBe(N - 1);
+  });
+
+  it("crash window A: report create throws, then re-delivery reconciles to 1 ledger + 1 report + non-null pointer", async () => {
+    const { companyId, agentId } = await seed();
+    const rootRunId = randomUUID();
+    const dedupeKey = buildDedupeKey(agentId, rootRunId, "process_lost");
+    const realCreate = makeCreateReportIssue();
+    let calls = 0;
+    const flakyCreate: CreateTerminalFailureReportIssue = async (input) => {
+      calls += 1;
+      if (calls === 1) throw new Error("injected report-create failure");
+      return realCreate(input);
+    };
+
+    // First delivery: the atomic upsert durably commits the ledger row, then the
+    // report create throws. The throw propagates (the caller logs and swallows).
+    await expect(
+      recordTerminalFailure(db, {
+        companyId, agentId, issueId: null, runId: rootRunId, rootRunId,
+        failureCause: "process_lost", createReportIssue: flakyCreate,
+      }),
+    ).rejects.toThrow(/injected report-create failure/);
+
+    // Crash state: the ledger row exists but the side effect is incomplete —
+    // no report, null pointer. A naive dedupe would strand this forever.
+    expect(await countLedger(companyId, dedupeKey)).toBe(1);
+    expect(await countReportIssues(companyId)).toBe(0);
+
+    // Re-delivery reconciles the incomplete side effect exactly once.
+    const recovered = await recordTerminalFailure(db, {
+      companyId, agentId, issueId: null, runId: rootRunId, rootRunId,
+      failureCause: "process_lost", createReportIssue: flakyCreate,
+    });
+
+    expect(recovered.kind).toBe("deduplicated");
+    expect(recovered.reportIssueId).toBeTruthy();
+    expect(await countLedger(companyId, dedupeKey)).toBe(1);
+    expect(await countReportIssues(companyId)).toBe(1);
+
+    const [ledgerRow] = await db
+      .select({ reportIssueId: terminalFailureLedger.reportIssueId })
+      .from(terminalFailureLedger)
+      .where(eq(terminalFailureLedger.dedupeKey, dedupeKey));
+    expect(ledgerRow.reportIssueId).toBeTruthy();
+  });
+
+  it("crash window B: report created but pointer write lost — re-delivery recovers via idempotency, 0 duplicate report", async () => {
+    const { companyId, agentId } = await seed();
+    const rootRunId = randomUUID();
+    const dedupeKey = buildDedupeKey(agentId, rootRunId, "process_lost");
+    const realCreate = makeCreateReportIssue();
+
+    // Reproduce the crash window: the ledger row is committed with a NULL pointer
+    // and the report issue already exists (created via its idempotencyKey), but
+    // the process died before the pointer write landed.
+    await db.insert(terminalFailureLedger).values({
+      companyId, agentId, dedupeKey,
+      normalizedFailureCause: "process_lost", failureCause: "process_lost",
+      rootRunId, runId: rootRunId, issueId: null,
+      reportIssueId: null, ledgerCommentId: null, redeliveryCount: 0,
+    });
+    const pre = await realCreate({
+      companyId, agentId, issueId: null, runId: rootRunId, rootRunId,
+      failureCause: "process_lost", dedupeKey,
+    });
+    expect(await countReportIssues(companyId)).toBe(1);
+
+    // Re-delivery reconciles: createReportIssue returns the SAME issue via its
+    // idempotencyKey, so the pointer is filled with no duplicate report.
+    const recovered = await recordTerminalFailure(db, {
+      companyId, agentId, issueId: null, runId: rootRunId, rootRunId,
+      failureCause: "process_lost", createReportIssue: realCreate,
+    });
+
+    expect(recovered.kind).toBe("deduplicated");
+    expect(recovered.reportIssueId).toBe(pre.issueId);
+    expect(await countLedger(companyId, dedupeKey)).toBe(1);
+    expect(await countReportIssues(companyId)).toBe(1);
+
+    const [ledgerRow] = await db
+      .select({ reportIssueId: terminalFailureLedger.reportIssueId })
+      .from(terminalFailureLedger)
+      .where(eq(terminalFailureLedger.dedupeKey, dedupeKey));
+    expect(ledgerRow.reportIssueId).toBe(pre.issueId);
   });
 
   it("retry lineage sharing a canonical root collapses to one record", async () => {

@@ -68,10 +68,31 @@ interface RevisionMetadata {
   rolledBackFromRevisionId?: string | null;
 }
 
+/**
+ * Advisory-lock key that serializes the two writers of the timer-only
+ * mutual-exclusion invariant: the `timerOnly`-enable agent update and the
+ * heartbeat `claimQueuedRun` transition. Both acquire this transaction-scoped
+ * advisory lock FIRST (before any row write), so their check+write pairs cannot
+ * interleave. It is a dedicated lock namespace — no other path takes it — so it
+ * serializes those two paths WITHOUT introducing agent-row lock-ordering
+ * deadlocks against unrelated transactions (e.g. stranded-recovery reconcilers).
+ */
+export function agentTimerOnlyLockKey(agentId: string): string {
+  return `paperclip:agent-timer-only:${agentId}`;
+}
+
 interface UpdateAgentOptions {
   recordRevision?: RevisionMetadata;
   allowBuiltInAgentMetadata?: boolean;
   allowPendingApprovalConfigUpdate?: boolean;
+  /**
+   * Runs inside the update transaction AFTER an advisory lock keyed on the agent
+   * is held and BEFORE the row is written. Use it to enforce an invariant that
+   * must be atomic with the write against a concurrent writer taking the same
+   * advisory lock (e.g. enabling `timerOnly` must serialize with the heartbeat
+   * claim path). Throw to abort the update (the throw rolls back).
+   */
+  guardBeforeWrite?: (tx: Db, lockedAgent: typeof agents.$inferSelect) => Promise<void>;
 }
 
 interface CreateAgentOptions {
@@ -531,6 +552,16 @@ export function agentService(db: Db) {
 
     return db.transaction(async (tx) => {
       const txDb = tx as unknown as Db;
+      if (options?.guardBeforeWrite) {
+        // Serialize the guard's check and the write below against any concurrent
+        // writer taking the same advisory lock (the heartbeat claim path). A
+        // dedicated advisory lock — not a row `FOR UPDATE` — so it does not
+        // deadlock against unrelated transactions that touch the agent row.
+        await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${agentTimerOnlyLockKey(id)}))`);
+        const [lockedAgent] = await tx.select().from(agents).where(eq(agents.id, id));
+        if (!lockedAgent) return null;
+        await options.guardBeforeWrite(txDb, lockedAgent);
+      }
       const updated = await tx
         .update(agents)
         .set({ ...normalizedPatch, updatedAt: new Date() })

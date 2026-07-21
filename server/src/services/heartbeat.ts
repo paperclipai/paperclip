@@ -212,6 +212,7 @@ import { productivityReviewService } from "./productivity-review.js";
 import { resolveRequiredSuccessfulRunHandoffOnValidPath } from "./successful-run-handoff-state.js";
 import { taskWatchdogService } from "./task-watchdogs.js";
 import { withAgentStartLock } from "./agent-start-lock.js";
+import { agentTimerOnlyLockKey } from "./agents.js";
 import {
   evaluateAgentInvokability,
   evaluateAgentInvokabilityFromDb,
@@ -10786,17 +10787,57 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       issueContext: issueId ? await getIssueExecutionContext(run.companyId, issueId) : null,
       routineEnvContext: { routineId: null, env: null, responsibleUserId: null },
     });
-    const claimed = await db
-      .update(heartbeatRuns)
-      .set({
-        status: "running",
-        responsibleUserId,
-        startedAt: run.startedAt ?? claimedAt,
-        updatedAt: claimedAt,
-      })
-      .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued")))
-      .returning()
-      .then((rows) => rows[0] ?? null);
+    // Authoritative timer-only mediation. Take a transaction-scoped advisory
+    // lock keyed on the agent, then re-read the policy in the SAME transaction as
+    // the queued→running write, so a concurrent `PATCH timerOnly=true` (which
+    // takes the same advisory lock) cannot interleave between the check and the
+    // claim. This is what makes the flip↔claim race impossible: whichever
+    // transaction wins the lock, timer and non-timer runs never overlap. A
+    // dedicated advisory lock — not an agent-row `FOR UPDATE` — so it does not
+    // deadlock against unrelated transactions that touch the agent row. The early
+    // gate above is a fast-path only.
+    const claimOutcome = await db.transaction(async (tx) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${agentTimerOnlyLockKey(run.agentId)}))`);
+      const [lockedAgent] = await tx
+        .select()
+        .from(agents)
+        .where(eq(agents.id, run.agentId));
+      if (!lockedAgent) return { kind: "agent_gone" as const };
+      if (run.invocationSource !== "timer" && parseHeartbeatPolicy(lockedAgent).timerOnly) {
+        return { kind: "timer_only_blocked" as const };
+      }
+      const claimedRow = await tx
+        .update(heartbeatRuns)
+        .set({
+          status: "running",
+          responsibleUserId,
+          startedAt: run.startedAt ?? claimedAt,
+          updatedAt: claimedAt,
+        })
+        .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued")))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      return { kind: "claimed" as const, claimed: claimedRow };
+    });
+
+    if (claimOutcome.kind === "agent_gone") {
+      await cancelRunInternal(run.id, "Cancelled because the agent no longer exists");
+      return null;
+    }
+    if (claimOutcome.kind === "timer_only_blocked") {
+      await cancelRunInternal(
+        run.id,
+        `Cancelled because the agent is configured for timer-only execution; ` +
+          `source "${run.invocationSource}" may not start.`,
+        { errorCode: "timer_only_policy" },
+      );
+      logger.info(
+        { runId: run.id, agentId: run.agentId, invocationSource: run.invocationSource },
+        "claimQueuedRun: fail-closed timer-only gate cancelled non-timer run (atomic)",
+      );
+      return null;
+    }
+    const claimed = claimOutcome.claimed;
     if (!claimed) return null;
 
     publishLiveEvent({
@@ -11611,28 +11652,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         failureReason: finalizedRun.error ?? undefined,
       });
 
-      // Fail-closed ledger: record every process_lost terminal failure — the
-      // worker cannot self-report it. This fires for issue-scoped runs AND for
-      // generic (issue-less) timer runs: the ledger is a dedicated durable table
-      // plus a top-level internal report, so it is reachable with or without an
-      // issue. Dedupe is atomic (DB unique key) keyed by the canonical root run
-      // id resolved from the retry lineage, so a retry chain of the same failure
-      // collapses to one ledger row and one top-level report.
-      const finalizedRunContext = parseObject(finalizedRun.contextSnapshot);
-      const finalizedRunIssueId = readNonEmptyString(finalizedRunContext.issueId) ?? null;
-      const rootRunId = await resolveCanonicalRootRunId(finalizedRun);
-      await recordTerminalFailure(db, {
-        companyId: finalizedRun.companyId,
-        agentId: finalizedRun.agentId,
-        issueId: finalizedRunIssueId,
-        runId: finalizedRun.id,
-        rootRunId,
-        failureCause: "process_lost",
-        createReportIssue: createTerminalFailureReportIssue,
-      }).catch((err) => {
-        logger.warn({ err, runId: finalizedRun!.id }, "terminal-failure-ledger: failed to record process_lost");
-      });
-
       let retriedRun: typeof heartbeatRuns.$inferSelect | null = null;
       const retryAgent = await getAgent(run.agentId);
       if (shouldRetry) {
@@ -11645,6 +11664,31 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
 
       if (!retriedRun) {
+        // Fail-closed escalation. Only when the process loss is genuinely terminal
+        // — no retry or recovery run was scheduled — do we escalate: the worker
+        // could not self-report it and nothing else will recover it. This fires
+        // for issue-scoped runs AND for generic (issue-less) timer runs, since the
+        // ledger is a dedicated durable table plus a top-level internal report,
+        // reachable with or without an issue. Dedupe is atomic (DB unique key)
+        // keyed by the canonical root run id resolved from the retry lineage, so a
+        // retry chain that ultimately fails collapses to one ledger row and one
+        // top-level report. (A loss that IS being retried is not escalated here;
+        // if that retry later fails terminally, THAT reap escalates it.)
+        const finalizedRunContext = parseObject(finalizedRun.contextSnapshot);
+        const finalizedRunIssueId = readNonEmptyString(finalizedRunContext.issueId) ?? null;
+        const rootRunId = await resolveCanonicalRootRunId(finalizedRun);
+        await recordTerminalFailure(db, {
+          companyId: finalizedRun.companyId,
+          agentId: finalizedRun.agentId,
+          issueId: finalizedRunIssueId,
+          runId: finalizedRun.id,
+          rootRunId,
+          failureCause: "process_lost",
+          createReportIssue: createTerminalFailureReportIssue,
+        }).catch((err) => {
+          logger.warn({ err, runId: finalizedRun!.id }, "terminal-failure-ledger: failed to record process_lost");
+        });
+
         await releaseIssueExecutionAndPromote(finalizedRun);
       }
 

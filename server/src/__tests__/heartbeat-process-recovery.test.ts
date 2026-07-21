@@ -39,6 +39,7 @@ import {
   issues,
   projects,
   projectWorkspaces,
+  terminalFailureLedger,
   workspaceOperations,
 } from "@paperclipai/db";
 import {
@@ -1311,6 +1312,125 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     );
     // Terminal run cleanup releases the checkout lock so future checkout 409s only mean a live owner exists.
     expect(checkoutReleasedIssue?.checkoutRunId).toBeNull();
+  });
+
+  it("generic (issue-less) process_lost: records exactly one fail-closed ledger row + one top-level report", async () => {
+    const { companyId, agentId, runId } = await seedRunFixture({
+      agentStatus: "idle",
+      adapterType: "codex_local",
+      processPid: null,
+      processGroupId: null,
+      includeIssue: false,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(1);
+    expect(result.runIds).toEqual([runId]);
+
+    const failed = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0]);
+    expect(failed?.status).toBe("failed");
+    expect(failed?.errorCode).toBe("process_lost");
+
+    // The durable fail-closed ledger is reachable even though the run carried no
+    // issue context (the reviewer's "generic timer run" case).
+    const ledger = await db
+      .select()
+      .from(terminalFailureLedger)
+      .where(eq(terminalFailureLedger.agentId, agentId));
+    expect(ledger).toHaveLength(1);
+    expect(ledger[0].issueId).toBeNull();
+    expect(ledger[0].reportIssueId).toBeTruthy();
+    expect(ledger[0].rootRunId).toBe(runId); // canonical root of a single-run lineage
+    expect(ledger[0].normalizedFailureCause).toBe("process_lost");
+
+    const reports = await db
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, "control_plane_terminal_failure"),
+        ),
+      );
+    expect(reports).toHaveLength(1);
+    // Durable, unassigned, non-waking record — no CS assignment/mention/automation.
+    expect(reports[0].assigneeAgentId).toBeNull();
+    expect(reports[0].status).toBe("backlog");
+    expect(reports[0].id).toBe(ledger[0].reportIssueId);
+  });
+
+  it("retry lineage under reap collapses to one ledger + one report (shared canonical root)", async () => {
+    const { companyId, agentId, runId: rootRunId } = await seedRunFixture({
+      agentStatus: "idle",
+      adapterType: "codex_local",
+      processPid: null,
+      processGroupId: null,
+      includeIssue: false,
+    });
+
+    // A retry of the SAME failure, also lost, that carries the canonical root via
+    // its retryOfRunId lineage. Reaping both must NOT create a second record.
+    const retryRunId = randomUUID();
+    const retryWakeupId = randomUUID();
+    const now = new Date("2026-03-19T00:00:00.000Z");
+    await db.insert(agentWakeupRequests).values({
+      id: retryWakeupId,
+      companyId,
+      agentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "process_lost_retry",
+      payload: {},
+      status: "claimed",
+      runId: retryRunId,
+      claimedAt: now,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: retryRunId,
+      companyId,
+      agentId,
+      invocationSource: "automation",
+      triggerDetail: "system",
+      status: "running",
+      wakeupRequestId: retryWakeupId,
+      contextSnapshot: {},
+      processPid: null,
+      processGroupId: null,
+      processLossRetryCount: 1,
+      retryOfRunId: rootRunId,
+      startedAt: now,
+      updatedAt: now,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reapOrphanedRuns();
+    expect(result.reaped).toBe(2);
+
+    const dedupeKey = `${agentId}|${rootRunId}|process_lost`;
+    const ledger = await db
+      .select()
+      .from(terminalFailureLedger)
+      .where(eq(terminalFailureLedger.companyId, companyId));
+    expect(ledger).toHaveLength(1);
+    expect(ledger[0].dedupeKey).toBe(dedupeKey);
+    expect(ledger[0].rootRunId).toBe(rootRunId);
+    expect(ledger[0].redeliveryCount).toBe(1); // the second reap re-delivered the same root/cause
+
+    const reports = await db
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, "control_plane_terminal_failure"),
+        ),
+      );
+    expect(reports).toHaveLength(1);
   });
 
   it("restores one lost monitor dispatch before escalating a second process loss", async () => {

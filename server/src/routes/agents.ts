@@ -3057,21 +3057,35 @@ export function agentRoutes(
     // Race guard: refuse to enable timerOnly while a non-timer run is active.
     // This prevents a race where setting timerOnly races an in-flight assignment
     // run, violating the timer-and-non-timer mutual-exclusion invariant.
+    //
+    // Two layers:
+    //   1. A cheap best-effort pre-check for a clean 409 in the common case.
+    //   2. An authoritative `guardBeforeWrite` that re-runs the check INSIDE the
+    //      update transaction while holding the agent row `FOR UPDATE`. The
+    //      heartbeat claim path (`claimQueuedRun`) takes the SAME row lock before
+    //      flipping a queued non-timer run to running, so the two can never
+    //      interleave: either the guard sees the running run here (→409) or the
+    //      claim sees timerOnly=true and fail-closes. Overlap is impossible.
+    let timerOnlyEnableGuard:
+      | ((tx: Db) => Promise<void>)
+      | undefined;
     if (requestedRuntimeConfig) {
       const requestedHeartbeat = asRecord(requestedRuntimeConfig.heartbeat);
       const timerOnlyRequested = requestedHeartbeat && requestedHeartbeat.timerOnly === true;
       if (timerOnlyRequested) {
-        const activeNonTimerRuns = await db
-          .select({ id: heartbeatRuns.id, invocationSource: heartbeatRuns.invocationSource })
-          .from(heartbeatRuns)
-          .where(
-            and(
-              eq(heartbeatRuns.agentId, id),
-              eq(heartbeatRuns.status, "running"),
-              not(eq(heartbeatRuns.invocationSource, "timer")),
-            ),
-          )
-          .limit(1);
+        const findActiveNonTimerRun = (dbOrTx: Db) =>
+          dbOrTx
+            .select({ id: heartbeatRuns.id, invocationSource: heartbeatRuns.invocationSource })
+            .from(heartbeatRuns)
+            .where(
+              and(
+                eq(heartbeatRuns.agentId, id),
+                eq(heartbeatRuns.status, "running"),
+                not(eq(heartbeatRuns.invocationSource, "timer")),
+              ),
+            )
+            .limit(1);
+        const activeNonTimerRuns = await findActiveNonTimerRun(db);
         if (activeNonTimerRuns.length > 0) {
           res.status(409).json({
             error:
@@ -3082,6 +3096,20 @@ export function agentRoutes(
           });
           return;
         }
+        timerOnlyEnableGuard = async (tx) => {
+          const raced = await findActiveNonTimerRun(tx);
+          if (raced.length > 0) {
+            throw conflict(
+              "Cannot enable timerOnly while a non-timer run is active. " +
+                "Wait for the active run to complete before applying this policy.",
+              {
+                code: "timer_only_active_non_timer_run",
+                activeRunId: raced[0].id,
+                activeRunSource: raced[0].invocationSource,
+              },
+            );
+          }
+        };
       }
     }
 
@@ -3092,6 +3120,7 @@ export function agentRoutes(
         createdByUserId: actor.actorType === "user" ? actor.actorId : null,
         source: "patch",
       },
+      guardBeforeWrite: timerOnlyEnableGuard,
     });
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });

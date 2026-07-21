@@ -9,9 +9,10 @@
  *     "원장"), keyed by a DB unique index on (companyId, dedupeKey).
  *   - A top-level internal report issue ("top-level 내부 보고"), created once per
  *     ledger row via an injected `createReportIssue` callback. This is the
- *     durable surface for issue-less generic timer runs.
- *   - When the failed run had issue context, an additional system comment on
- *     that issue (the in-context 원장 comment).
+ *     durable, always-reachable surface — with or without issue context — and it
+ *     names the source issue (when any) in its body. It is deliberately the ONLY
+ *     visible surface: no in-context issue comment is emitted, so escalation does
+ *     not perturb the source issue's own recovery/blocking thread.
  *
  * Idempotency is atomic and race-safe. The dedupe key is
  *
@@ -24,23 +25,10 @@
  * ledger row, one top-level report, and zero duplicates.
  */
 
-import { randomUUID } from "node:crypto";
 import type { Db } from "@paperclipai/db";
-import { issueComments, terminalFailureLedger } from "@paperclipai/db";
-import type { IssueCommentMetadata } from "@paperclipai/shared";
+import { terminalFailureLedger } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
 import { logger } from "../middleware/logger.js";
-
-type TerminalFailureCommentMeta = {
-  version: 1;
-  sections: [];
-  terminalFailureDedupeKey: string;
-  agentId: string;
-  runId: string;
-  rootRunId: string;
-  normalizedFailureCause: string;
-  recordedAt: string;
-};
 
 /**
  * Creates the top-level internal report issue for a terminal failure and
@@ -147,10 +135,24 @@ export async function recordTerminalFailure(
       redeliveryCount: terminalFailureLedger.redeliveryCount,
     });
 
-  if (!row.inserted) {
+  // Reconcile the durable side effect (the top-level report issue).
+  //
+  // This runs for the INSERT winner AND for any re-delivery whose earlier
+  // attempt crashed or errored partway — e.g. the report create threw, or the
+  // process died after creating the report but before persisting the pointer.
+  // Because the atomic upsert returns immediately on conflict, a null pointer
+  // would otherwise be permanent; reconciling on every delivery (until the
+  // report is present) is what makes fail-closed visibility exactly-once AND
+  // crash-recoverable.
+  //
+  // Nothing to reconcile when the report is already present (or was never
+  // requested).
+  const reportOutstanding = input.createReportIssue != null && row.reportIssueId == null;
+
+  if (!row.inserted && !reportOutstanding) {
     logger.info(
       { ledgerId: row.id, dedupeKey, redeliveryCount: row.redeliveryCount },
-      "terminal-failure-ledger: deduplicated re-delivery (atomic upsert), no new report",
+      "terminal-failure-ledger: deduplicated re-delivery (fully reconciled), no new report",
     );
     return {
       kind: "deduplicated",
@@ -162,11 +164,22 @@ export async function recordTerminalFailure(
     };
   }
 
-  // First occurrence (this transaction won the insert). Create the durable
-  // top-level report and, when there is issue context, the in-context comment.
-  let reportIssueId: string | null = null;
-  if (input.createReportIssue) {
-    try {
+  // Serialize reconciliation on the ledger row. Concurrent re-deliveries block
+  // on this FOR UPDATE lock, so at most one proceeds to create the report while
+  // the rest observe the persisted pointer and skip. The report create is
+  // additionally guarded by its own idempotencyKey (see caller), so even a crash
+  // between "report created" and "pointer persisted" recovers to the same report
+  // — never a duplicate.
+  const reconciled = await db.transaction(async (tx) => {
+    const [locked] = await tx
+      .select({ reportIssueId: terminalFailureLedger.reportIssueId })
+      .from(terminalFailureLedger)
+      .where(eq(terminalFailureLedger.id, row.id))
+      .for("update");
+
+    let reportIssueId = locked?.reportIssueId ?? null;
+
+    if (input.createReportIssue && !reportIssueId) {
       const report = await input.createReportIssue({
         companyId: input.companyId,
         agentId: input.agentId,
@@ -177,105 +190,34 @@ export async function recordTerminalFailure(
         dedupeKey,
       });
       reportIssueId = report.issueId;
-    } catch (err) {
-      logger.error(
-        { err, ledgerId: row.id, dedupeKey },
-        "terminal-failure-ledger: failed to create top-level report issue",
-      );
+      await tx
+        .update(terminalFailureLedger)
+        .set({ reportIssueId })
+        .where(eq(terminalFailureLedger.id, row.id));
     }
-  }
 
-  let ledgerCommentId: string | null = null;
-  if (input.issueId) {
-    ledgerCommentId = await insertLedgerComment(db, {
-      companyId: input.companyId,
-      issueId: input.issueId,
-      agentId: input.agentId,
-      runId: input.runId,
-      rootRunId: input.rootRunId,
-      failureCause: input.failureCause,
-      normalizedCause,
-      dedupeKey,
-      reportIssueId,
-      recordedAt: now,
-    });
-  }
-
-  await db
-    .update(terminalFailureLedger)
-    .set({ reportIssueId, ledgerCommentId })
-    .where(eq(terminalFailureLedger.id, row.id));
-
-  logger.info(
-    { ledgerId: row.id, dedupeKey, reportIssueId, ledgerCommentId, failureCause: input.failureCause },
-    "terminal-failure-ledger: created new ledger entry",
-  );
-  return {
-    kind: "created",
-    ledgerId: row.id,
-    dedupeKey,
-    reportIssueId,
-    ledgerCommentId,
-    redeliveryCount: 0,
-  };
-}
-
-async function insertLedgerComment(
-  db: Db,
-  input: {
-    companyId: string;
-    issueId: string;
-    agentId: string;
-    runId: string;
-    rootRunId: string;
-    failureCause: string;
-    normalizedCause: string;
-    dedupeKey: string;
-    reportIssueId: string | null;
-    recordedAt: Date;
-  },
-): Promise<string> {
-  const commentId = randomUUID();
-  const body = [
-    `**[Fail-closed] Terminal control-plane failure recorded**`,
-    ``,
-    `| Field | Value |`,
-    `|---|---|`,
-    `| Failure cause | \`${input.failureCause}\` |`,
-    `| Run ID | \`${input.runId}\` |`,
-    `| Root run ID | \`${input.rootRunId}\` |`,
-    `| Agent ID | \`${input.agentId}\` |`,
-    `| Dedupe key | \`${input.dedupeKey}\` |`,
-    input.reportIssueId ? `| Top-level report | \`${input.reportIssueId}\` |` : ``,
-    ``,
-    `This failure was recorded by the Paperclip control plane because the worker ` +
-      `could not self-report (e.g. \`process_lost\`). Re-delivery of the same event ` +
-      `is deduplicated by the terminal-failure ledger and will not create a duplicate.`,
-  ]
-    .filter((line) => line !== ``)
-    .join("\n");
-
-  const meta: TerminalFailureCommentMeta = {
-    version: 1,
-    sections: [],
-    terminalFailureDedupeKey: input.dedupeKey,
-    agentId: input.agentId,
-    runId: input.runId,
-    rootRunId: input.rootRunId,
-    normalizedFailureCause: input.normalizedCause,
-    recordedAt: input.recordedAt.toISOString(),
-  };
-
-  await db.insert(issueComments).values({
-    id: commentId,
-    companyId: input.companyId,
-    issueId: input.issueId,
-    authorType: "system",
-    body,
-    metadata: meta as unknown as IssueCommentMetadata,
-    createdAt: input.recordedAt,
-    updatedAt: input.recordedAt,
+    return { reportIssueId };
   });
 
-  return commentId;
+  logger.info(
+    {
+      ledgerId: row.id,
+      dedupeKey,
+      reportIssueId: reconciled.reportIssueId,
+      inserted: row.inserted,
+      failureCause: input.failureCause,
+    },
+    row.inserted
+      ? "terminal-failure-ledger: created new ledger entry"
+      : "terminal-failure-ledger: reconciled incomplete re-delivery",
+  );
+
+  return {
+    kind: row.inserted ? "created" : "deduplicated",
+    ledgerId: row.id,
+    dedupeKey,
+    reportIssueId: reconciled.reportIssueId,
+    ledgerCommentId: null,
+    redeliveryCount: row.redeliveryCount,
+  };
 }

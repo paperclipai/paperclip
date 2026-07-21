@@ -18,7 +18,7 @@
 
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { eq } from "drizzle-orm";
+import { and, eq, not } from "drizzle-orm";
 import {
   agents,
   agentWakeupRequests,
@@ -28,10 +28,12 @@ import {
   heartbeatRuns,
   issues,
 } from "@paperclipai/db";
+import type { Db } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "../__tests__/helpers/embedded-postgres.js";
+import { agentService } from "./agents.js";
 import { heartbeatService, parseHeartbeatPolicyForTest } from "./heartbeat.js";
 
 // Fast, pure derivation checks — cheap and still useful, but they are NOT the
@@ -275,6 +277,78 @@ describeEmbeddedPostgres("timer-only isolation — real control-plane paths", ()
       .from(heartbeatRuns)
       .then((rows) => rows.filter((r) => r.agentId === agentId).length);
     expect(runCount).toBe(0);
+  });
+
+  it("race: concurrent timerOnly-enable and claim serialize on the agent row (overlap=0 under interleaving)", async () => {
+    const svc = agentService(db);
+    const heartbeat = heartbeatService(db);
+    const { companyId, agentId } = await seedAgent(false);
+
+    // The SAME guard the PATCH route installs: re-check inside the update
+    // transaction (while the agent row is held FOR UPDATE) and refuse the flip
+    // if a non-timer run is already running.
+    const timerOnlyGuard = async (tx: Db) => {
+      const raced = await tx
+        .select({ id: heartbeatRuns.id, invocationSource: heartbeatRuns.invocationSource })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.agentId, agentId),
+            eq(heartbeatRuns.status, "running"),
+            not(eq(heartbeatRuns.invocationSource, "timer")),
+          ),
+        )
+        .limit(1);
+      if (raced.length > 0) throw new Error("timer_only_active_non_timer_run");
+    };
+
+    const offConfig = { heartbeat: { enabled: true, intervalSec: 60, timerOnly: false, maxConcurrentRuns: 5 } };
+    const onConfig = { heartbeat: { enabled: true, intervalSec: 60, timerOnly: true, maxConcurrentRuns: 5 } };
+
+    // Repeat to exercise both interleavings (enable-wins-lock and claim-wins-lock).
+    for (let i = 0; i < 30; i++) {
+      await db.update(agents).set({ runtimeConfig: offConfig }).where(eq(agents.id, agentId));
+      await db.delete(heartbeatRunEvents);
+      await db.delete(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+      const runId = await insertQueuedRun(companyId, agentId, "automation");
+
+      // Fire both real writers concurrently. Each takes the agent-row FOR UPDATE
+      // lock before its decisive write, so they can never interleave.
+      const [enableRes] = await Promise.allSettled([
+        svc.update(agentId, { runtimeConfig: onConfig }, { guardBeforeWrite: timerOnlyGuard }),
+        heartbeat.claimQueuedRun(await loadRun(runId)),
+      ]);
+
+      const running = await db
+        .select({ id: heartbeatRuns.id, invocationSource: heartbeatRuns.invocationSource })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.status, "running"));
+      const nonTimerRunning = running.filter((r) => r.invocationSource !== "timer");
+
+      const agentRow = await db
+        .select()
+        .from(agents)
+        .where(eq(agents.id, agentId))
+        .then((rows) => rows[0]!);
+      const policy = parseHeartbeatPolicyForTest(agentRow.runtimeConfig);
+
+      // THE INVARIANT: timerOnly=true and a running non-timer run are mutually
+      // exclusive — overlap=0 — for EVERY interleaving.
+      expect(policy.timerOnly && nonTimerRunning.length > 0).toBe(false);
+
+      if (policy.timerOnly) {
+        // Enable won the lock; the claim then fail-closed the non-timer run.
+        expect(nonTimerRunning).toHaveLength(0);
+        expect(await runStatus(runId)).toMatchObject({
+          status: "cancelled",
+          errorCode: "timer_only_policy",
+        });
+      } else {
+        // Claim won the lock; the enable was rejected by its guard, leaving the
+        // policy off — so the running non-timer run is not a violation.
+        expect(enableRes.status).toBe("rejected");
+      }
+    }
   });
 
   it("canary: a timer run and a non-timer run never overlap (non-timer=0, overlap=0)", async () => {
