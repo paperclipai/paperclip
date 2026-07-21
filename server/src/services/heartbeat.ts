@@ -11117,7 +11117,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         pausedAt: new Date(),
         updatedAt: new Date(),
       })
-      .where(eq(agents.id, agent.id))
+      // Guard on the persisted status, not just the in-memory snapshot: an agent
+      // externally terminated (or already paused) between the snapshot above and
+      // this update must not be flipped back to paused.
+      .where(and(eq(agents.id, agent.id), notInArray(agents.status, ["paused", "terminated"])))
       .catch((pauseErr) => {
         logger.warn(
           { err: pauseErr, agentId: agent.id, runId: run.id },
@@ -13998,7 +14001,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               pausedAt: new Date(),
               updatedAt: new Date(),
             })
-            .where(eq(agents.id, agent.id))
+            // Guard on the persisted status, not just the in-memory snapshot: an
+            // agent externally terminated (or already paused) between the check
+            // above and this update must not be flipped back to paused.
+            .where(and(eq(agents.id, agent.id), notInArray(agents.status, ["paused", "terminated"])))
             .catch((pauseErr) => {
               logger.warn(
                 { err: pauseErr, agentId: agent.id, runId: livenessRun.id },
