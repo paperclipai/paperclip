@@ -26,6 +26,7 @@ import {
   runDatabaseBackup,
   authUsers,
   companies,
+  agents,
   companyMemberships,
   instanceUserRoles,
 } from "@paperclipai/db";
@@ -49,7 +50,10 @@ import {
   reconcilePersistedRuntimeServicesOnStartup,
   routineService,
   toolAccessService,
+  secretService,
 } from "./services/index.js";
+import { createStateRepoService } from "./services/state-repo.js";
+import { stateRepoRemoteService } from "./services/state-repo-remote.js";
 import { resolveWorktreeRunExecutionActivationState } from "./services/instance-settings.js";
 import {
   parseAdapterRegistryEnv,
@@ -59,6 +63,9 @@ import { createFeedbackTraceShareClientFromConfig } from "./services/feedback-sh
 import { buildRuntimeApiCandidateUrls, choosePrimaryRuntimeApiUrl } from "./runtime-api.js";
 import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
+import { createStorageProviderFromConfig } from "./storage/provider-registry.js";
+import { configureRunLogS3Defaults } from "./services/run-log-store.js";
+import { createAesStateSnapshotEncryptionProvider, createInstanceStateSnapshotService } from "./services/instance-state-snapshot.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
 import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
@@ -69,6 +76,7 @@ import type {
   InstanceDatabaseBackupRunResult,
   InstanceDatabaseBackupTrigger,
 } from "./routes/instance-database-backups.js";
+import { resolvePaperclipInstanceId, resolvePaperclipInstancePath, resolveUserHomePath } from "@paperclipai/shared";
 
 type BetterAuthSessionUser = {
   id: string;
@@ -588,6 +596,36 @@ export async function startServer(): Promise<StartedServer> {
   });
   const uiMode = config.uiDevMiddleware ? "vite-dev" : config.serveUi ? "static" : "none";
   const storageService = createStorageServiceFromConfig(config);
+  const storageProvider = createStorageProviderFromConfig(config);
+  configureRunLogS3Defaults({
+    enabled: process.env.PAPERCLIP_K8S_IN_CLUSTER === "true" && config.storageProvider === "s3",
+    bucket: config.storageS3Bucket,
+    region: config.storageS3Region,
+    endpoint: config.storageS3Endpoint,
+    prefix: config.storageS3Prefix,
+    forcePathStyle: config.storageS3ForcePathStyle,
+  });
+  const stateSnapshotInstanceId = resolvePaperclipInstanceId();
+  const stateSnapshotKeyRaw = process.env.PAPERCLIP_STATE_SNAPSHOT_KEY?.trim();
+  const stateSnapshotKey = stateSnapshotKeyRaw
+    ? Buffer.from(stateSnapshotKeyRaw, /^[0-9a-f]{64}$/i.test(stateSnapshotKeyRaw) ? "hex" : "base64")
+    : null;
+  const stateSnapshotMarkerDir = resolvePaperclipInstancePath({ instanceId: stateSnapshotInstanceId }, "data", "instance-backups");
+  const stateSnapshotService = stateSnapshotKey
+    ? createInstanceStateSnapshotService({
+        storageProvider,
+        encryptionProvider: createAesStateSnapshotEncryptionProvider(stateSnapshotKey),
+        context: { instanceId: stateSnapshotInstanceId },
+        markerDir: stateSnapshotMarkerDir,
+      })
+    : null;
+  let stateSnapshotInFlight = false;
+  const runStateSnapshot = async () => {
+    if (!stateSnapshotService || stateSnapshotInFlight) return null;
+    stateSnapshotInFlight = true;
+    try { return await stateSnapshotService.runSnapshot(); }
+    finally { stateSnapshotInFlight = false; }
+  };
   const feedback = feedbackService(db as any, {
     shareClient: createFeedbackTraceShareClientFromConfig(config),
   });
@@ -665,6 +703,54 @@ export async function startServer(): Promise<StartedServer> {
     }
   };
   const pluginWorkerManager = createPluginWorkerManager();
+  const stateRepoMarkerDir = resolvePaperclipInstancePath({ instanceId: stateSnapshotInstanceId }, "health");
+  const stateRepoMirrors = (() => {
+    try {
+      return JSON.parse(process.env.PAPERCLIP_STATE_REPO_MIRRORS_JSON || "{}") as Record<string, { url?: string; secretRef?: { secretId?: string; version?: number | "latest" } }>;
+    } catch {
+      logger.warn("Ignoring invalid PAPERCLIP_STATE_REPO_MIRRORS_JSON");
+      return {};
+    }
+  })();
+  const stateRepoService = createStateRepoService({
+    instanceId: stateSnapshotInstanceId,
+    repoPerCompany: true,
+    markerDir: stateRepoMarkerDir,
+    resolveMirror: async (companyId) => {
+      // DB-configured "connect your repo" remote takes precedence; fall back to
+      // the boot-time env map for instances that still configure mirrors via
+      // PAPERCLIP_STATE_REPO_MIRRORS_JSON.
+      const dbRemote = await stateRepoRemoteService(db as any).get(companyId).catch(() => null);
+      const url = dbRemote?.remoteUrl ?? stateRepoMirrors[companyId]?.url;
+      if (!url) return null;
+      const secretId = dbRemote?.secretId ?? stateRepoMirrors[companyId]?.secretRef?.secretId;
+      const version = dbRemote
+        ? dbRemote.secretVersion && dbRemote.secretVersion !== "latest"
+          ? Number(dbRemote.secretVersion)
+          : "latest"
+        : stateRepoMirrors[companyId]?.secretRef?.version ?? "latest";
+      const token = secretId
+        ? await secretService(db as any).resolveSecretValue(companyId, secretId, version, {
+            consumerType: "system",
+            consumerId: "state-repo-mirror",
+            configPath: "stateRepo.remote.secretRef",
+          })
+        : undefined;
+      return { url, token };
+    },
+    resolveMemorySources: async (companyId) => {
+      const rows = await db.select({ id: agents.id, adapterType: agents.adapterType, adapterConfig: agents.adapterConfig })
+        .from(agents)
+        .where(eq(agents.companyId, companyId));
+      const claudeRoot = process.env.CLAUDE_CONFIG_DIR?.trim() || resolveUserHomePath(".claude");
+      return rows.flatMap((agent) => {
+        if (agent.adapterType !== "claude_local") return [];
+        const cwd = typeof agent.adapterConfig?.cwd === "string" ? agent.adapterConfig.cwd : null;
+        if (!cwd) return [];
+        return [{ agentId: agent.id, root: resolve(claudeRoot, "projects", cwd.replace(/[^a-zA-Z0-9-]/g, "-"), "memory") }];
+      });
+    },
+  });
   const app = await createApp(db as any, {
     uiMode,
     serverPort: listenPort,
@@ -679,6 +765,16 @@ export async function startServer(): Promise<StartedServer> {
         return result;
       },
     },
+    stateSnapshotService: stateSnapshotService
+      ? {
+          runSnapshot: async () => {
+            const result = await runStateSnapshot();
+            if (!result) throw conflict("Instance-state snapshot already in progress");
+            return result;
+          },
+          restoreSnapshot: stateSnapshotService.restoreSnapshot,
+        }
+      : undefined,
     databaseBackupHealth: config.databaseBackupEnabled
       ? {
           enabled: config.databaseBackupEnabled,
@@ -688,6 +784,13 @@ export async function startServer(): Promise<StartedServer> {
           alertFiles: databaseBackupAlertFiles,
         }
       : undefined,
+    stateSnapshotHealth: {
+      enabled: Boolean(stateSnapshotService),
+      markerDir: stateSnapshotMarkerDir,
+      maxAgeHours: Math.max(1, Number(process.env.PAPERCLIP_STATE_SNAPSHOT_MAX_AGE_HOURS) || 48),
+    },
+    stateRepoService,
+    stateRepoMarkerDir,
     deploymentMode: config.deploymentMode,
     deploymentExposure: config.deploymentExposure,
     allowedHostnames: config.allowedHostnames,
@@ -700,6 +803,9 @@ export async function startServer(): Promise<StartedServer> {
     pluginWorkerManager,
   });
   const server = createServer(app as unknown as Parameters<typeof createServer>[0]);
+  const stopStateRepoWatcher = stateRepoService.startWatcher({
+    listCompanyIds: async () => (await db.select({ id: companies.id }).from(companies)).map((company) => company.id),
+  });
 
   // Increase keep-alive timeouts to safely outlive default idle timeouts
   // of common reverse proxies and load balancers (like AWS ALB, Nginx, or Traefik).
@@ -1117,6 +1223,14 @@ export async function startServer(): Promise<StartedServer> {
       });
     }, backupIntervalMs);
   }
+
+  if (stateSnapshotService) {
+    const intervalMinutes = Math.max(15, Number(process.env.PAPERCLIP_STATE_SNAPSHOT_INTERVAL_MINUTES) || 1440);
+    logger.info({ intervalMinutes, provider: storageProvider.id }, "Automatic encrypted instance-state snapshots enabled");
+    setInterval(() => { void runStateSnapshot().catch((err) => logger.error({ err }, "Automatic instance-state snapshot failed")); }, intervalMinutes * 60 * 1000);
+  } else {
+    logger.warn("Instance-state snapshots disabled: PAPERCLIP_STATE_SNAPSHOT_KEY is not configured");
+  }
   
   // Wait for external adapters to finish loading before accepting requests.
   // Without this, adapter type validation (assertKnownAdapterType) would
@@ -1199,6 +1313,7 @@ export async function startServer(): Promise<StartedServer> {
   
   {
     const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
+      stopStateRepoWatcher();
       heartbeatSchedulerStopped = true;
       if (heartbeatSchedulerInterval) {
         clearInterval(heartbeatSchedulerInterval);

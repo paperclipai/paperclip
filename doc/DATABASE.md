@@ -181,6 +181,17 @@ This policy makes training exports self-describing while keeping the decision re
 
 The plugin runtime tracks plugin-owned database namespaces and migrations in `plugin_database_namespaces` and `plugin_migrations`. Hosted deployments that separate runtime and migration connections should set `DATABASE_MIGRATION_URL`; plugin namespace migration work uses the migration connection when present.
 
+## Agent instruction bundle durability
+
+Managed agent instruction bundles are stored in Postgres through `built_in_managed_resources` instruction bindings; the instance `companies/<company-id>/agents/<agent-id>/instructions/` directory is a rebuildable materialization cache. Existing installations can import disk-backed managed bundles idempotently with:
+
+```sh
+pnpm instructions:import-bindings          # report only
+pnpm instructions:import-bindings --apply  # persist missing bindings
+```
+
+Bundles explicitly configured with `instructionsBundleMode: "external"` remain pointers by design. Their roots genuinely live outside Paperclip's managed instance tree, are not copied into Postgres, and must be backed up by the external owner.
+
 ## Backups
 
 Paperclip supports automatic and manual logical database backups. These dumps include

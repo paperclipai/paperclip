@@ -8,6 +8,7 @@ import { heartbeatRun } from "./commands/heartbeat-run.js";
 import { runCommand } from "./commands/run.js";
 import { bootstrapCeoInvite } from "./commands/auth-bootstrap-ceo.js";
 import { dbBackupCommand } from "./commands/db-backup.js";
+import { stateRestoreCommand, stateSnapshotCommand } from "./commands/state.js";
 import { registerEnvLabCommands } from "./commands/env-lab.js";
 import { registerContextCommands } from "./commands/client/context.js";
 import { registerCompanyCommands } from "./commands/client/company.js";
@@ -113,6 +114,25 @@ program
   .action(async (opts) => {
     await dbBackupCommand(opts);
   });
+
+const state = program.command("state").description("Inspect, snapshot, and restore instance state");
+state.command("snapshot")
+  .description("Create an encrypted instance-state snapshot")
+  .option("--api-url <url>", "Paperclip API base URL")
+  .option("--token <token>", "Board/admin bearer token")
+  .option("--json", "Print result as JSON")
+  .action(stateSnapshotCommand);
+state.command("restore")
+  .description("Restore an encrypted snapshot or company state from git")
+  .argument("[object-key]", "Storage-provider object key returned by state snapshot")
+  .option("--from-git <path>", "Restore company state from a bare repo or git bundle")
+  .option("--company-id <id>", "Company to restore (defaults to PAPERCLIP_COMPANY_ID)")
+  .option("--ref <ref>", "Git ref to restore", "main")
+  .option("--dry-run", "List files without writing them")
+  .option("--api-url <url>", "Paperclip API base URL")
+  .option("--token <token>", "Board/admin bearer token")
+  .option("--json", "Print result as JSON")
+  .action(stateRestoreCommand);
 
 program
   .command("allowed-hostname")
