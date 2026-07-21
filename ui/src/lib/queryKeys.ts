@@ -15,6 +15,10 @@ export const queryKeys = {
     connectionInstalls: (connectionId: string) =>
       ["tools", "connection", connectionId, "installs"] as const,
     catalog: (connectionId: string) => ["tools", "connection", connectionId, "catalog"] as const,
+    connectionGrants: (connectionId: string) =>
+      ["tools", "connection", connectionId, "grants"] as const,
+    connectionUsage: (connectionId: string, range: string) =>
+      ["tools", "connection", connectionId, "usage", range] as const,
     connectionActivity: (connectionId: string) =>
       ["tools", "connection", connectionId, "activity"] as const,
     testAgents: (connectionId: string) =>

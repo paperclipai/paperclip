@@ -50,6 +50,11 @@ import type {
   CreateToolMcpGatewayToken,
   UpdateToolMcpGateway,
   CreateToolTrustRuleFromActionRequest,
+  ConnectionGrant,
+  ConnectionUsageResponse,
+  StartConnectionAuthorizationRequest,
+  StartConnectionAuthorizationResponse,
+  ToolCredentialSecretRef,
 } from "@paperclipai/shared";
 import { api } from "./client";
 
@@ -299,6 +304,41 @@ export const toolsApi = {
     }),
   refreshCatalog: (connectionId: string) =>
     api.post<ToolCatalogRefreshResult>(`/tool-connections/${connectionId}/catalog/refresh`, {}),
+
+  // --- Grants / installations (Connections v3 P2, PAP-14830) ---
+  // Grants are the layer between a connection (config) and credential material:
+  // workspace grants = provider-tenant installations; user grants = per-user OAuth.
+  listConnectionGrants: (connectionId: string) =>
+    api.get<ConnectionGrant[]>(`/tool-connections/${connectionId}/grants`),
+  addConnectionInstallation: (
+    connectionId: string,
+    input: {
+      providerTenant?: { name?: string; externalId?: string };
+      credentialSecretRefs?: ToolCredentialSecretRef[];
+      isDefault?: boolean;
+    },
+  ) =>
+    api.post<ConnectionGrant>(`/tool-connections/${connectionId}/grants/installations`, input),
+  revokeConnectionGrant: (connectionId: string, grantId: string) =>
+    api.delete<ConnectionGrant>(`/tool-connections/${connectionId}/grants/${grantId}`),
+
+  // --- Usage observability (P2/WS3, PAP-14830) ---
+  getConnectionUsage: (connectionId: string, range: "7d" | "30d" = "7d") =>
+    api.get<ConnectionUsageResponse>(
+      `/tool-connections/${connectionId}/usage?range=${range}`,
+    ),
+
+  // --- app-initiated user consent (startAuthorization, P2) ---
+  // Board users may authorize their own subject; returns the provider consent URL.
+  startConnectionAuthorization: (
+    companyId: string,
+    connectionId: string,
+    input: StartConnectionAuthorizationRequest,
+  ) =>
+    api.post<StartConnectionAuthorizationResponse>(
+      `/companies/${companyId}/tools/connections/${connectionId}/start-authorization`,
+      input,
+    ),
   listCatalog: (connectionId: string) =>
     api.get<ToolCatalogResponse>(`/tool-connections/${connectionId}/catalog`),
   listConnectionActivity: (connectionId: string, limit = 20) =>
