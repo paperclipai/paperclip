@@ -32,3 +32,29 @@ In Telegram an `@whitestag_jarvis_bot` eine Sprach- oder Textnachricht senden �
 ## Hinweise
 - **Nur EIN Long-Poll-Consumer je Bot-Token.** Nicht parallel woanders `getUpdates`/Webhook auf denselben Token laufen lassen (Luna ist ein anderer Bot/Token — kein Konflikt).
 - Whisper läuft on-demand (Modell wird pro Aufnahme geladen, RAM danach frei) — bewusst kein Dauer-Server wegen RAM-Contention mit LM Studio.
+
+## Rückkanal + Mehrmandanten (Feature 2)
+
+**Mandanten-Tabelle:** `~/.paperclip/voice-echo-tenants.json` (600) — Telegram-ID → {company_id, ceo_agent_id}. Aktuell: Walter `8311805232` → WHITESTAG/CEO, Clara `1220010628` → Clara Sound/Büroleitung. Neue Person: Zeile ergänzen, sie drückt `/start` beim Bot.
+
+**Dedup-State:** `~/.paperclip/voice-echo-state.json` — verhindert Doppel-Pushes; Erststart markiert Bestand still als „seen".
+
+**Decision-Label `entscheidung-noetig`:**
+- WHITESTAG: `77196d1b-6d7c-45ac-a89f-08424b48ac72`
+- Clara Sound: `4441d371-3ec6-4437-ad03-2e3bc139ae11`
+- Bot löst die ID zur Laufzeit per Name auf (`resolve_label_id`), IDs hier nur zur Referenz.
+
+**CEO-Instruktion (setzt das Label bei Entscheidungsbedarf):**
+- WHITESTAG-CEO: durable in `~/.paperclip/scripts/agents-instructions/roles/ceo.role.md` (Abschnitt „Entscheidungen an Walter"); via Generator übernommen:
+  ```bash
+  cd ~/.paperclip/scripts/agents-instructions
+  export PCP_API=http://localhost:3100 PCP_CID=9cebf3cf-efe8-4597-a400-f06488900a87
+  export PCP_TOKEN=$(python3 -c "import json,os;print(json.load(open(os.path.expanduser('~/.paperclip/auth.json')))['credentials']['http://localhost:3100']['token'])")
+  python3 build-agents-md.py --dry-run   # Umfang prüfen (nur CEO ändert sich)
+  python3 build-agents-md.py --backup --apply   # ggf. 2× (eventual consistency)
+  ```
+- Clara-Büroleitung: NICHT im WHITESTAG-Generator → direkt via API-Bundle geschrieben
+  (`PUT /api/agents/64ad7d03-…/instructions-bundle/file` mit `{"path":"AGENTS.md","content":…}`),
+  Abschnitt „Entscheidungen an Clara".
+
+**Rückkanal-Verhalten:** Bot pollt je Mandant alle ~60 s: Top-Level-Issue neu `done` → „✅ Erledigt"-Push; Issue trägt `entscheidung-noetig` → „🟠 Entscheidung benötigt"-Push. Nutzer antwortet per Telegram-**Reply** (Sprache/Text) → Kommentar ans Issue (`resume:true`).
