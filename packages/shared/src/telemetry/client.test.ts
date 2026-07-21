@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TelemetryClient } from "./client.js";
 import { resolveTelemetryConfig } from "./config.js";
-import type { TelemetryConfig, TelemetryState } from "./types.js";
+import type { TelemetryConfig, TelemetryDimensions, TelemetryState } from "./types.js";
 
 const TEST_STATE: TelemetryState = {
   installId: "test-install",
@@ -320,6 +320,42 @@ describe("TelemetryClient deterministic batchId", () => {
     await client.flush();
 
     const id = sentBody().batchId as string;
+    expect(id.length).toBeGreaterThanOrEqual(32);
+    expect(id).toMatch(/^[0-9a-f]+$/);
+  });
+
+  it("does not crash flush on a circular dimension; drops-and-logs it and still sends valid events (Superagent P2)", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal("fetch", fetchMock);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { client } = makeClient();
+
+    // A plugin passing a circular `dimensions` object. `enqueue` shallow-copies
+    // the top level, so the cycle survives one level down and would drive both
+    // `stableStringify` (deriveBatchId) and `JSON.stringify` (serializedBytes /
+    // wire body) into an unhandled throw without the guards.
+    const circular: Record<string, unknown> = { a: 1 };
+    circular.self = circular;
+    // Cast models an untyped third-party plugin passing a malformed object at
+    // runtime — TypeScript would reject the cycle, but the wire path cannot.
+    client.trackDynamic("plugin.telemetry.circular", circular as unknown as TelemetryDimensions);
+    // A well-formed event queued alongside it must still be delivered.
+    client.trackDynamic("plugin.telemetry.ok", { a: 1 });
+
+    // flush() resolves instead of rejecting with a RangeError/TypeError.
+    await expect(client.flush()).resolves.toBeUndefined();
+
+    // The circular event was dropped-and-logged (fail loudly), not sent.
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("non-serializable dimension (circular reference?)"),
+    );
+
+    // The valid event still went out on the wire with a well-formed batchId.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const body = sentBody();
+    expect(body.events).toHaveLength(1);
+    expect((body.events as Array<{ name: string }>)[0]?.name).toBe("plugin.telemetry.ok");
+    const id = body.batchId as string;
     expect(id.length).toBeGreaterThanOrEqual(32);
     expect(id).toMatch(/^[0-9a-f]+$/);
   });

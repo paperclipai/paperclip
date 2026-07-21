@@ -178,13 +178,16 @@ export class TelemetryClient {
 
   private splitByBytes(chunk: TelemetryEvent[], out: TelemetryEvent[][]): void {
     if (chunk.length === 0) return;
-    if (this.serializedBytes(this.buildEnvelope(chunk)) <= this.caps.maxBodyBytes) {
+    const bytes = this.serializedBytes(this.buildEnvelope(chunk));
+    if (bytes <= this.caps.maxBodyBytes) {
       out.push(chunk);
       return;
     }
     if (chunk.length === 1) {
       this.warn(
-        `dropping 1 event whose serialized envelope exceeds maxBodyBytes (${this.caps.maxBodyBytes} bytes); event="${chunk[0]?.name}"`,
+        Number.isFinite(bytes)
+          ? `dropping 1 event whose serialized envelope exceeds maxBodyBytes (${this.caps.maxBodyBytes} bytes); event="${chunk[0]?.name}"`
+          : `dropping 1 event with a non-serializable dimension (circular reference?); event="${chunk[0]?.name}"`,
       );
       return;
     }
@@ -214,14 +217,37 @@ export class TelemetryClient {
    * double-counting; different events/install yield a different id.
    */
   private deriveBatchId(installId: string, events: TelemetryEvent[]): string {
-    return createHash("sha256")
-      .update(stableStringify({ installId, events }))
-      .digest("hex")
-      .slice(0, BATCH_ID_HEX_LENGTH);
+    try {
+      return createHash("sha256")
+        .update(stableStringify({ installId, events }))
+        .digest("hex")
+        .slice(0, BATCH_ID_HEX_LENGTH);
+    } catch {
+      // A plugin can pass a circular (or otherwise non-serializable) `dimensions`
+      // object via `trackDynamic`; `stableStringify` would then recurse until it
+      // throws a `RangeError`. Fall back to a count-based hash so this call never
+      // crashes the flush. Such an event can't be JSON-serialized for the wire
+      // either, so it is dropped-and-logged in `splitByBytes` — this fallback id
+      // is only ever attached to a batch that is about to be dropped, so its
+      // weakened idempotency is moot. The single operator-facing signal is the
+      // drop-and-log warning, not a (recursively-repeated) warning here.
+      return createHash("sha256")
+        .update(JSON.stringify({ installId, count: events.length }))
+        .digest("hex")
+        .slice(0, BATCH_ID_HEX_LENGTH);
+    }
   }
 
   private serializedBytes(envelope: TelemetryEventEnvelope): number {
-    return Buffer.byteLength(JSON.stringify(envelope));
+    try {
+      return Buffer.byteLength(JSON.stringify(envelope));
+    } catch {
+      // A non-serializable event (e.g. a circular `dimensions` object from a
+      // plugin) can neither be byte-measured nor sent over the wire. Report it
+      // as effectively unbounded so `splitByBytes` routes it to the existing
+      // over-limit drop-and-log path instead of throwing out of the flush.
+      return Number.POSITIVE_INFINITY;
+    }
   }
 
   /**
