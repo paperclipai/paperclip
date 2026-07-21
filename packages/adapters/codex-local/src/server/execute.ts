@@ -563,7 +563,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   );
   const preparedRuntimeConfig = await prepareCodexRuntimeConfig({
     env: envConfigStrings,
-    codexHome: configuredCodexHome ? null : effectiveCodexHome,
+    codexHome: configuredCodexHome && !configuredHomeIsManaged ? null : effectiveCodexHome,
   });
   try {
     for (const note of preparedRuntimeConfig.notes) {
