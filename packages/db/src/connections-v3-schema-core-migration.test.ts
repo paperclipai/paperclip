@@ -27,6 +27,7 @@ describeEmbeddedPostgres("connections v3 schema core migration", () => {
     await sql`DELETE FROM "drizzle"."__drizzle_migrations" WHERE "hash" = ${await migrationHash()}`;
     await sql`DROP TABLE IF EXISTS "connection_grants"`;
     await sql`DROP INDEX IF EXISTS "tool_connections_company_uid_uq"`;
+    await sql`DROP INDEX IF EXISTS "tool_connections_company_id_uq"`;
     await sql`ALTER TABLE "tool_connections" DROP CONSTRAINT IF EXISTS "tool_connections_ownership_check"`;
     await sql`ALTER TABLE "tool_connections" DROP CONSTRAINT IF EXISTS "tool_connections_transport_check"`;
     await sql`ALTER TABLE "tool_connections" DROP CONSTRAINT IF EXISTS "tool_connections_auth_kind_check"`;
@@ -59,8 +60,20 @@ describeEmbeddedPostgres("connections v3 schema core migration", () => {
     expect(grant).toMatchObject({ kind: "workspace", is_default: true });
     expect(grant?.credential_secret_refs).toEqual([{ secretId, configPath: "oauth.refresh_token" }]);
 
+    const otherCompanyId = randomUUID();
+    await sql`INSERT INTO "companies" ("id", "name", "issue_prefix") VALUES (${otherCompanyId}, 'Other', 'OTH')`;
+    await expect(sql`
+      INSERT INTO "connection_grants" ("company_id", "connection_id", "kind")
+      VALUES (${otherCompanyId}, ${connectionId}, 'workspace')
+    `).rejects.toMatchObject({ code: "23503" });
+    await expect(sql`
+      INSERT INTO "connection_grants" ("company_id", "connection_id", "kind", "subject_user_id", "is_default")
+      VALUES (${companyId}, ${connectionId}, 'user', 'user-1', true)
+    `).rejects.toMatchObject({ code: "23514" });
+
     await sql`DROP TABLE "connection_grants"`;
     await sql`DROP INDEX "tool_connections_company_uid_uq"`;
+    await sql`DROP INDEX "tool_connections_company_id_uq"`;
     await sql`ALTER TABLE "tool_connections" DROP CONSTRAINT "tool_connections_ownership_check"`;
     await sql`ALTER TABLE "tool_connections" DROP CONSTRAINT "tool_connections_transport_check"`;
     await sql`ALTER TABLE "tool_connections" DROP CONSTRAINT "tool_connections_auth_kind_check"`;

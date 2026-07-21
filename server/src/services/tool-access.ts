@@ -505,8 +505,8 @@ function normalizeKey(input: string) {
     .slice(0, 160) || "tool";
 }
 
-function connectionUid(namespace: string, name: string) {
-  return `${normalizeKey(namespace)}/${normalizeKey(name)}`;
+function connectionUid(namespace: string, name: string, connectionId: string) {
+  return `${normalizeKey(namespace)}/${normalizeKey(name)}-${connectionId.slice(0, 8)}`;
 }
 
 function actorBinding(actor: ActorInfo | undefined) {
@@ -3311,11 +3311,13 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       await ensureRuntimeSlot(updated);
       return { row: updated, created: false };
     }
+    const connectionId = randomUUID();
     const [created] = await db.insert(toolConnections).values({
+      id: connectionId,
       companyId,
       applicationId,
       name: definition.connectionName,
-      uid: connectionUid("paperclip", definition.connectionName),
+      uid: connectionUid("paperclip", definition.connectionName, connectionId),
       connectionKind: "managed",
       transport: "local_stdio",
       status: "active",
@@ -4225,11 +4227,13 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           updatedAt: new Date(),
         }).where(eq(toolConnections.id, revivedConnectionPrevious.id)).returning();
       } else {
+        const connectionId = randomUUID();
         [connectionRow] = await db.insert(toolConnections).values({
+          id: connectionId,
           companyId,
           applicationId: applicationRow.id,
           name,
-          uid: connectionUid(applicationRow.applicationKey ?? applicationRow.name, name),
+          uid: connectionUid(applicationRow.applicationKey ?? applicationRow.name, name, connectionId),
           connectionKind: "managed",
           authKind: galleryEntry?.authKind ?? "none",
           transport,
@@ -5384,11 +5388,13 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         applicationId = app.id;
       }
       await assertSecretRefs(companyId, [...(input.credentialRefs ?? []), ...(input.credentialSecretRefs ?? [])]);
+      const connectionId = randomUUID();
       const [row] = await db.insert(toolConnections).values({
+        id: connectionId,
         companyId,
         applicationId,
         name: input.name,
-        uid: connectionUid(applicationNamespace, input.name),
+        uid: connectionUid(applicationNamespace, input.name, connectionId),
         connectionKind: input.connectionKind ?? "managed",
         ownership: input.ownership ?? "customer",
         transport,

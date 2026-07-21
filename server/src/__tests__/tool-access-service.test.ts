@@ -5041,6 +5041,36 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(activities.some((activity) => activity.action === "tool_application.archived")).toBe(false);
   });
 
+  it("keeps normalized connection UIDs unique", async () => {
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const firstApplication = await service.createApplication(company.id, {
+      name: "First UID app",
+      type: "mcp_http",
+    });
+    const secondApplication = await service.createApplication(company.id, {
+      name: "Second UID app",
+      type: "mcp_http",
+    });
+
+    const first = await service.createConnection(company.id, {
+      applicationId: firstApplication.id,
+      name: "Foo Bar",
+      transport: "mcp_remote",
+      config: { url: "https://one.example/mcp" },
+    });
+    const second = await service.createConnection(company.id, {
+      applicationId: secondApplication.id,
+      name: "foo-bar",
+      transport: "mcp_remote",
+      config: { url: "https://two.example/mcp" },
+    });
+
+    expect(first.uid).not.toBe(second.uid);
+    expect(first.uid).toMatch(/\/foo-bar-[0-9a-f]{8}$/);
+    expect(second.uid).toMatch(/\/foo-bar-[0-9a-f]{8}$/);
+  });
+
   it("fails closed at the database when a connection races an application delete (no silent cascade)", async () => {
     const company = await createCompany(db);
     const service = toolAccessService(db);

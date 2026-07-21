@@ -4,6 +4,7 @@ import {
 import {
   boolean,
   check,
+  foreignKey,
   index,
   integer,
   jsonb,
@@ -141,6 +142,7 @@ export const toolConnections = pgTable(
     index("tool_connections_company_enabled_idx").on(table.companyId, table.enabled),
     uniqueIndex("tool_connections_company_name_uq").on(table.companyId, table.name),
     uniqueIndex("tool_connections_company_uid_uq").on(table.companyId, table.uid),
+    uniqueIndex("tool_connections_company_id_uq").on(table.companyId, table.id),
   ],
 );
 
@@ -149,7 +151,7 @@ export const connectionGrants = pgTable(
   {
     id: uuid("id").primaryKey().defaultRandom(),
     companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
-    connectionId: uuid("connection_id").notNull().references(() => toolConnections.id, { onDelete: "cascade" }),
+    connectionId: uuid("connection_id").notNull(),
     kind: text("kind").$type<ConnectionGrantKind>().notNull(),
     subjectUserId: text("subject_user_id"),
     providerTenant: jsonb("provider_tenant").$type<{ name?: string; externalId?: string }>(),
@@ -169,10 +171,16 @@ export const connectionGrants = pgTable(
     check("connection_grants_kind_check", sql`${table.kind} in ('workspace', 'user')`),
     check("connection_grants_status_check", sql`${table.status} in ('active', 'revoked', 'expired', 'needs_reauthorization')`),
     check("connection_grants_subject_check", sql`(${table.kind} = 'user' and ${table.subjectUserId} is not null) or (${table.kind} = 'workspace' and ${table.subjectUserId} is null)`),
+    check("connection_grants_default_check", sql`${table.isDefault} = false or ${table.kind} = 'workspace'`),
+    foreignKey({
+      columns: [table.companyId, table.connectionId],
+      foreignColumns: [toolConnections.companyId, toolConnections.id],
+      name: "connection_grants_company_connection_fk",
+    }).onDelete("cascade"),
     index("connection_grants_company_connection_idx").on(table.companyId, table.connectionId),
     index("connection_grants_subject_user_idx").on(table.companyId, table.subjectUserId),
     uniqueIndex("connection_grants_user_uq").on(table.connectionId, table.subjectUserId),
-    uniqueIndex("connection_grants_default_uq").on(table.connectionId).where(sql`${table.isDefault} = true`),
+    uniqueIndex("connection_grants_default_uq").on(table.connectionId).where(sql`${table.isDefault} = true and ${table.kind} = 'workspace'`),
   ],
 );
 
