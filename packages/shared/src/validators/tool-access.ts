@@ -167,6 +167,24 @@ export const updateToolConnectionSchema = createToolConnectionSchema.omit({ appl
 
 export type UpdateToolConnection = z.infer<typeof updateToolConnectionSchema>;
 
+export const connectionTriggerDestinationTypeSchema = z.enum(["routine", "issue_wake", "plugin_worker"]);
+
+export const createConnectionTriggerSchema = z.object({
+  destinationType: connectionTriggerDestinationTypeSchema,
+  destinationId: z.string().uuid(),
+  enabled: z.boolean().optional(),
+  config: z.record(z.string(), z.unknown()).optional(),
+});
+
+export type CreateConnectionTrigger = z.infer<typeof createConnectionTriggerSchema>;
+
+export const updateConnectionTriggerSchema = createConnectionTriggerSchema.partial().refine(
+  (value) => Object.keys(value).length > 0,
+  { message: "At least one connection trigger field is required" },
+);
+
+export type UpdateConnectionTrigger = z.infer<typeof updateConnectionTriggerSchema>;
+
 export const connectionGrantSchema = z.object({
   id: z.string().uuid(),
   companyId: z.string().uuid(),

@@ -1,7 +1,9 @@
 import { randomBytes } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createRelaySignature, type RelayEnvelope } from "@paperclip/connect-protocol";
-import { pollRelayChannel, processAndDispatchConnectionRelay, processConnectionRelay, type ConnectionRelayStore } from "./connection-relay.js";
+import { companies, connectionTriggerDeliveries, connectionTriggers, createDb, toolApplications, toolConnections } from "@paperclipai/db";
+import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
+import { connectionRelayStore, pollRelayChannel, processAndDispatchConnectionRelay, processConnectionRelay, type ConnectionRelayStore } from "./connection-relay.js";
 
 function fixture() {
   const envelope: RelayEnvelope = {
@@ -136,7 +138,82 @@ describe("processConnectionRelay", () => {
       },
       onEnvelope: async ({ body }) => { received.push(JSON.parse(body.toString("utf8")).deliveryId); },
     });
-    expect(calls.map((url) => new URL(url).pathname)).toEqual(["/v1/relay/channel", "/v1/relay/poll"]);
+    expect(calls.map((url) => new URL(url).pathname)).toEqual(["/v1/relay/stream", "/v1/relay/poll"]);
     expect(received).toEqual(["dl_01K0EXAMPLE"]);
+  });
+
+  it("consumes SSE data and acknowledges successful deliveries", async () => {
+    const { rawBody } = fixture();
+    const envelope = JSON.parse(rawBody.toString("utf8"));
+    const acknowledged: string[][] = [];
+    const received: string[] = [];
+    await pollRelayChannel({
+      baseUrl: "https://connect.example",
+      createSession: async () => ({ channelToken: "short-lived-token", streamUrl: "/v1/relay/stream" }),
+      fetch: async () => new Response(`id: ${envelope.deliveryId}\ndata: ${JSON.stringify({ envelope, signature: "v1=test", timestamp: "1784657045" })}\n\n`, {
+        headers: { "content-type": "text/event-stream" },
+      }),
+      onEnvelope: async ({ body }) => { received.push(JSON.parse(body.toString("utf8")).deliveryId); },
+      acknowledge: async (deliveryIds) => { acknowledged.push(deliveryIds); },
+    });
+    expect(received).toEqual(["dl_01K0EXAMPLE"]);
+    expect(acknowledged).toEqual([["dl_01K0EXAMPLE"]]);
+  });
+});
+
+const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+
+describeEmbeddedPostgres("connection relay persistence", () => {
+  let db!: ReturnType<typeof createDb>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-connection-relay-");
+    db = createDb(tempDb.connectionString);
+  }, 20_000);
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  it("persists an observable delivery row and fires one routine destination", async () => {
+    const company = await db.insert(companies).values({ name: "Relay Test", issuePrefix: "RLY" }).returning().then((rows) => rows[0]!);
+    const application = await db.insert(toolApplications).values({ companyId: company.id, name: "Vercel", type: "mcp_http" }).returning().then((rows) => rows[0]!);
+    const connection = await db.insert(toolConnections).values({
+      companyId: company.id,
+      applicationId: application.id,
+      name: "Vercel Relay",
+      uid: "vercel-relay",
+      transport: "rest_api",
+      enabled: true,
+      config: { relay: { publicRef: "cn_01K0EXAMPLE" } },
+    }).returning().then((rows) => rows[0]!);
+    await db.insert(connectionTriggers).values({
+      companyId: company.id,
+      connectionId: connection.id,
+      destinationType: "routine",
+      destinationId: "11111111-1111-4111-8111-111111111111",
+    });
+
+    const { rawBody, relaySecret } = fixture();
+    const fired: string[] = [];
+    const result = await processAndDispatchConnectionRelay(connectionRelayStore(db), {
+      routine: async (trigger) => { fired.push(trigger.destinationId); },
+      issue_wake: async () => {},
+      plugin_worker: async () => {},
+    }, {
+      rawBody,
+      signature: createRelaySignature({ body: rawBody, relaySecret }),
+      timestamp: "1784657045",
+      relaySecret,
+      now: new Date("2026-07-21T18:04:05.000Z"),
+    });
+
+    const rows = await db.select().from(connectionTriggerDeliveries);
+    expect(result.status).toBe("delivered");
+    expect(fired).toEqual(["11111111-1111-4111-8111-111111111111"]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ deliveryId: "dl_01K0EXAMPLE", status: "delivered", connectionId: connection.id });
   });
 });

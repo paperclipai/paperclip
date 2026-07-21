@@ -624,6 +624,84 @@ export function toolAccessRoutes(
     res.json(await svc.getConnectionUsage(connection.id, range, connection.companyId));
   });
 
+  router.get("/tool-connections/:connectionId/triggers", async (req, res) => {
+    assertBoard(req);
+    const connection = await svc.getConnection(req.params.connectionId as string);
+    if (!hasCompanyAccess(req, connection.companyId)) throw notFound("Tool connection not found");
+    assertCompanyAccess(req, connection.companyId);
+    res.json({ connectionId: connection.id, triggers: await triggerSvc.list(connection.companyId, connection.id) });
+  });
+
+  router.post(
+    "/tool-connections/:connectionId/triggers",
+    validate(createConnectionTriggerSchema),
+    async (req, res) => {
+      assertBoard(req);
+      const connection = await svc.getConnection(req.params.connectionId as string);
+      await assertBoardToolPermission(req, connection.companyId, "tools:manage_connections");
+      try {
+        const trigger = await triggerSvc.create({
+          companyId: connection.companyId,
+          connectionId: connection.id,
+          ...req.body,
+        });
+        await logActivity(db, {
+          companyId: connection.companyId,
+          actorType: "user",
+          actorId: req.actor.userId ?? "board",
+          action: "connection_trigger.created",
+          entityType: "connection_trigger",
+          entityId: trigger.id,
+          details: { connectionId: connection.id, destinationType: trigger.destinationType, destinationId: trigger.destinationId },
+        });
+        res.status(201).json(trigger);
+      } catch (error) {
+        if (error instanceof Error && error.message === "A connection may have at most 3 triggers") throw unprocessable(error.message);
+        throw error;
+      }
+    },
+  );
+
+  router.patch(
+    "/tool-connections/:connectionId/triggers/:triggerId",
+    validate(updateConnectionTriggerSchema),
+    async (req, res) => {
+      assertBoard(req);
+      const connection = await svc.getConnection(req.params.connectionId as string);
+      await assertBoardToolPermission(req, connection.companyId, "tools:manage_connections");
+      const trigger = await triggerSvc.update(connection.companyId, connection.id, req.params.triggerId as string, req.body);
+      if (!trigger) throw notFound("Connection trigger not found");
+      await logActivity(db, {
+        companyId: connection.companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "board",
+        action: "connection_trigger.updated",
+        entityType: "connection_trigger",
+        entityId: trigger.id,
+        details: { connectionId: connection.id },
+      });
+      res.json(trigger);
+    },
+  );
+
+  router.delete("/tool-connections/:connectionId/triggers/:triggerId", async (req, res) => {
+    assertBoard(req);
+    const connection = await svc.getConnection(req.params.connectionId as string);
+    await assertBoardToolPermission(req, connection.companyId, "tools:manage_connections");
+    const removed = await triggerSvc.remove(connection.companyId, connection.id, req.params.triggerId as string);
+    if (!removed) throw notFound("Connection trigger not found");
+    await logActivity(db, {
+      companyId: connection.companyId,
+      actorType: "user",
+      actorId: req.actor.userId ?? "board",
+      action: "connection_trigger.deleted",
+      entityType: "connection_trigger",
+      entityId: req.params.triggerId as string,
+      details: { connectionId: connection.id },
+    });
+    res.status(204).end();
+  });
+
   router.get("/tool-connections/:connectionId/installs", async (req, res) => {
     assertBoard(req);
     const connection = await svc.getConnection(req.params.connectionId as string);
