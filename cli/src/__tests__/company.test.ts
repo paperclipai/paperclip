@@ -747,7 +747,12 @@ describe("import selection catalog", () => {
           description: null,
           brandColor: null,
           logoPath: null,
+          attachmentMaxBytes: null,
           requireBoardApprovalForNewAgents: false,
+          feedbackDataSharingEnabled: false,
+          feedbackDataSharingConsentAt: null,
+          feedbackDataSharingConsentByUserId: null,
+          feedbackDataSharingTermsVersion: null,
         },
         sidebar: {
           agents: [],
