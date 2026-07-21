@@ -118,6 +118,7 @@ import { readSignedToolArgumentsPayload } from "./tool-content-guards.js";
 import { narrowestScopeBindings, profileIdsInBindingOrder } from "./tool-profile-binding-precedence.js";
 import { recordToolRuntimeAuditWriteFailure, TOOL_RUNTIME_AUDIT_WRITE_FAILURE_METRIC } from "./tool-runtime-metrics.js";
 import { createToolRuntimeSupervisor, ToolRuntimeSupervisorError } from "./tool-runtime-supervisor.js";
+import type { connectionBrokerService } from "./connection-broker.js";
 
 type ActorInfo = {
   actorType?: "agent" | "user" | "system" | "plugin";
@@ -143,6 +144,8 @@ type ToolAccessServiceOptions = {
   deploymentExposure?: DeploymentExposure;
   trustedLocalStdioRuntimeHost?: string | null;
   now?: () => Date;
+  connectionBroker?: ReturnType<typeof connectionBrokerService>;
+  brokeredCustodyMode?: "A" | "B2";
 };
 
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
@@ -4738,7 +4741,15 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
   async function startOAuth(
     companyId: string,
     connectionId: string,
-    input: { redirectUri: string; actor: ActorInfo; subjectUserId?: string; scopes?: string[]; returnTo?: string; issueId?: string },
+    input: {
+      redirectUri: string;
+      actor: ActorInfo;
+      brokered?: boolean;
+      subjectUserId?: string;
+      scopes?: string[];
+      returnTo?: string;
+      issueId?: string;
+    },
   ): Promise<ToolOAuthStartResult> {
     const connection = await getConnectionRow(connectionId, companyId);
     if (connection.status === "archived") throw conflict("Archived app connections cannot start sign in");
@@ -4748,6 +4759,23 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     }
     const client = oauthClientForConnection(connection, endpoints.provider);
     if (!client.clientId) throw unprocessable(`OAuth client id is not configured for ${endpoints.provider}`);
+
+    if (input.brokered) {
+      if (!options.connectionBroker) throw unprocessable("Brokered OAuth is not configured for this instance");
+      const custodyMode = options.brokeredCustodyMode ?? "A";
+      const result = await options.connectionBroker.startOAuth({
+        providerSlug: endpoints.provider,
+        methodKey: "oauth",
+        custodyMode,
+        clientOwnership: connection.ownership === "customer" ? "customer" : connection.ownership,
+        connectionRef: connection.id,
+        grantWrapKey: custodyMode === "A" ? undefined : randomOauthToken(48),
+        returnUrl: input.redirectUri,
+        scopes: endpoints.scopes,
+        byoClient: connection.ownership === "customer" ? { clientId: client.clientId } : undefined,
+      });
+      return { connectionId: connection.id, provider: endpoints.provider, authorizationUrl: result.authorizeUrl, expiresAt: result.expiresAt };
+    }
 
     await db.delete(toolOauthStates).where(lt(toolOauthStates.expiresAt, new Date()));
 
@@ -5289,6 +5317,18 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         returnTo: input.returnTo,
         issueId: runContext.issueId ?? undefined,
       });
+    },
+
+    claimBrokeredOAuth: async (companyId: string, connectionId: string, input: { claimCode: string; kind: "workspace" | "user"; subjectUserId?: string | null }) => {
+      await getConnectionRow(connectionId, companyId);
+      if (!options.connectionBroker) throw unprocessable("Brokered OAuth is not configured for this instance");
+      return options.connectionBroker.claimOAuth({ companyId, connectionId, ...input });
+    },
+
+    registerConnectionRelay: async (companyId: string, connectionId: string, input: { providerSlug: string; intakeUrls: string[] }) => {
+      await getConnectionRow(connectionId, companyId);
+      if (!options.connectionBroker) throw unprocessable("Connection relay is not configured for this instance");
+      return options.connectionBroker.registerRelay({ companyId, connectionId, ...input });
     },
 
     peekOAuthState,

@@ -64,6 +64,11 @@ export const claimResponseSchema = z.union([
   z.object({ custodyMode: z.enum(["B", "B2"]), grantSealed: z.string().min(1), tokenMeta: tokenMetadataSchema }),
 ]);
 
+export const grantTokenRequestSchema = z.object({ grantWrapKey: z.string().min(1) });
+export const grantTokenResponseSchema = z.object({ grantSealed: z.string().min(1), tokenMeta: tokenMetadataSchema });
+export const relayRegistrationRequestSchema = z.object({ connectionRef: z.string().uuid(), providerSlug: z.string().min(1), intakeUrls: z.array(z.string().url()).min(1) });
+export const relayRegistrationResponseSchema = z.object({ connectionPublicRef: opaqueId("cn"), intakeUrls: z.array(z.string().url()).min(1), relaySecret: z.string().min(1) });
+
 export const relayEnvelopeSchema = z.object({
   v: z.literal(1),
   deliveryId: opaqueId("dl"),

@@ -313,8 +313,27 @@ export function toolAccessRoutes(
     const result = await svc.startOAuth(existing.companyId, existing.id, {
       redirectUri: oauthRedirectUri(),
       actor: getActorInfo(req),
+      brokered: req.body?.brokered === true,
     });
     res.json(result);
+  });
+
+  router.post("/tools/oauth/:connectionId/claim", async (req, res) => {
+    const existing = await svc.getConnection(req.params.connectionId as string);
+    assertToolAppMutationAccess(req, existing.companyId);
+    const claimCode = typeof req.body?.claimCode === "string" ? req.body.claimCode : "";
+    const kind = req.body?.kind === "user" ? "user" : "workspace";
+    if (claimCode.length < 22) throw badRequest("Invalid claim code");
+    res.json(await svc.claimBrokeredOAuth(existing.companyId, existing.id, { claimCode, kind, subjectUserId: kind === "user" ? req.body?.subjectUserId ?? req.actor.userId ?? null : null }));
+  });
+
+  router.post("/tool-connections/:connectionId/relay/register", async (req, res) => {
+    const existing = await svc.getConnection(req.params.connectionId as string);
+    assertToolAppMutationAccess(req, existing.companyId);
+    const providerSlug = typeof req.body?.providerSlug === "string" ? req.body.providerSlug : "";
+    const intakeUrls = Array.isArray(req.body?.intakeUrls) ? req.body.intakeUrls.filter((value: unknown): value is string => typeof value === "string") : [];
+    if (!providerSlug || intakeUrls.length === 0) throw badRequest("Provider and intake URLs are required");
+    res.status(201).json(await svc.registerConnectionRelay(existing.companyId, existing.id, { providerSlug, intakeUrls }));
   });
 
   router.get("/tools/oauth/callback", async (req, res) => {
