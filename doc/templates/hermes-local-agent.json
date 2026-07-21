@@ -1,0 +1,16 @@
+{
+  "name": "Hermes Worker",
+  "role": "general",
+  "title": "Hermes execution agent",
+  "adapterType": "hermes_local",
+  "adapterConfig": {
+    "paperclipApiUrl": "REPLACE_PAPERCLIP_API_BASE",
+    "toolsets": "terminal,file",
+    "timeoutSec": 120,
+    "graceSec": 10,
+    "persistSession": false,
+    "verbose": false
+  },
+  "runtimeConfig": {},
+  "budgetMonthlyCents": 0
+}
