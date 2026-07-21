@@ -58,7 +58,7 @@
     "lexical": "0.47.0",
     "lucide-react": "^0.577.0",
     "mermaid": "^11.16.0",
-    "radix-ui": "^1.6.0",
+    "radix-ui": "^1.6.4",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "react-i18next": "^17.0.10",
