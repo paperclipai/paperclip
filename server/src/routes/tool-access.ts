@@ -3,7 +3,8 @@ import type { Db } from "@paperclipai/db";
 import { agents, companies } from "@paperclipai/db";
 import { eq } from "drizzle-orm";
 import {
-  TOOL_APP_GALLERY,
+  CONNECTABLE_APP_DEFINITIONS,
+  DEFAULT_OWNERSHIP_AVAILABILITY,
   TOOL_ACTION_REQUEST_STATUSES,
   type DeploymentExposure,
   type DeploymentMode,
@@ -218,15 +219,16 @@ export function toolAccessRoutes(
     assertCompanyAccess(req, companyId);
     const googleSheetsAvailability = googleSheetsRobotEmailFromEnv();
     res.json({
-      apps: TOOL_APP_GALLERY.map((entry) =>
-        entry.key === "google-sheets"
+      apps: CONNECTABLE_APP_DEFINITIONS.map((app) =>
+        app.slug === "google-sheets"
           ? {
-              ...entry,
+              ...app,
+              ownershipAvailability: DEFAULT_OWNERSHIP_AVAILABILITY,
               availability: googleSheetsAvailability.available
                 ? { available: true, robotEmail: googleSheetsAvailability.robotEmail }
                 : { available: false, reason: googleSheetsAvailability.reason },
             }
-          : entry,
+          : { ...app, ownershipAvailability: DEFAULT_OWNERSHIP_AVAILABILITY },
       ),
     });
   });

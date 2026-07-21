@@ -30,7 +30,7 @@
       "credentialFields": [
         {
           "key": "authorization",
-          "label": "Zapier token",
+          "label": "Zapier MCP token",
           "type": "password",
           "required": true,
           "placeholder": "Paste your Zapier token",

@@ -1,6 +1,6 @@
 import type {
   Agent,
-  AppGalleryEntry,
+  AppDefinition,
   ToolCallEvent,
   ToolConnectionActivityResponse,
   ToolConnectionLifecycleEvent,
@@ -14,7 +14,7 @@ export interface AppDetailSectionProps {
   connectionId: string;
   connection: ToolConnection;
   appName: string;
-  galleryEntry: AppGalleryEntry | null;
+  galleryEntry: AppDefinition | null;
   catalog: ToolCatalogEntry[];
   active: ToolCatalogEntry[];
   readOnly: ToolCatalogEntry[];

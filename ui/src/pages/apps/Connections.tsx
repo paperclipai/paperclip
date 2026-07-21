@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { AppWindow, ShieldAlert, ShieldQuestion } from "lucide-react";
 import type {
-  AppGalleryEntry,
+  AppDefinition,
   ToolApplication,
   ToolConnection,
   ToolProfileWithDetails,
@@ -115,13 +115,13 @@ export function Connections() {
 
   const gallery = galleryQuery.data?.apps ?? [];
   const logoByName = useMemo(() => {
-    const map = new Map<string, AppGalleryEntry>();
+    const map = new Map<string, AppDefinition>();
     for (const entry of gallery) map.set(entry.name.toLowerCase(), entry);
     return map;
   }, [gallery]);
   const logoByKey = useMemo(() => {
-    const map = new Map<string, AppGalleryEntry>();
-    for (const entry of gallery) map.set(entry.key, entry);
+    const map = new Map<string, AppDefinition>();
+    for (const entry of gallery) map.set(entry.slug, entry);
     return map;
   }, [gallery]);
 
@@ -173,7 +173,7 @@ export function Connections() {
         status: statusFor(application, appConnections),
         actionCount,
         lastUsedAt,
-        logoUrl: galleryEntry?.logoUrl ?? logoByName.get(application.name.toLowerCase())?.logoUrl,
+        logoUrl: galleryEntry?.branding.logoUrl ?? logoByName.get(application.name.toLowerCase())?.branding.logoUrl,
       };
     });
   }, [actionCountByConnection, applications, connectionsByApplication, logoByKey, logoByName]);

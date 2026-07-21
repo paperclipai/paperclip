@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, Loader2, Pencil } from "lucide-react";
 import type {
-  AppGalleryEntry,
+  AppDefinition,
   ToolConnection,
   ToolPolicy,
   ToolProfileWithDetails,
@@ -479,7 +479,7 @@ function AppDetailHeader({
 }: {
   appName: string;
   connection: ToolConnection;
-  logoEntry: AppGalleryEntry | null;
+  logoEntry: AppDefinition | null;
   status: StatusInfo;
   actionCount: number;
   renaming: boolean;
@@ -493,7 +493,7 @@ function AppDetailHeader({
   return (
     <header className="flex flex-wrap items-start justify-between gap-4">
       <div className="flex items-center gap-3">
-        <AppLogo name={appName} logoUrl={logoEntry?.logoUrl} size={44} />
+        <AppLogo name={appName} logoUrl={logoEntry?.branding.logoUrl} size={44} />
         <div>
           {renaming ? (
             <form
@@ -607,10 +607,10 @@ function accessFrom(profile: ToolProfileWithDetails | undefined): AccessDraft {
   return { mode: "specific", agentIds };
 }
 
-function galleryEntryFor(apps: AppGalleryEntry[], connection: ToolConnection | undefined): AppGalleryEntry | null {
+function galleryEntryFor(apps: AppDefinition[], connection: ToolConnection | undefined): AppDefinition | null {
   if (!connection) return null;
   const name = connection.name.toLowerCase();
-  return apps.find((a) => a.name.toLowerCase() === name) ?? apps.find((a) => a.key === name) ?? null;
+  return apps.find((a) => a.name.toLowerCase() === name) ?? apps.find((a) => a.slug === name) ?? null;
 }
 
 function addAll(set: Set<string>, ids: string[]): Set<string> {

@@ -2,8 +2,8 @@ import { useEffect, useMemo, useRef } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
-  TOOL_APP_GALLERY,
-  type AppGalleryEntry,
+  CONNECTABLE_APP_DEFINITIONS,
+  type AppDefinition,
   type McpJsonImportPreview,
 } from "@paperclipai/shared";
 import { queryKeys } from "@/lib/queryKeys";
@@ -23,7 +23,7 @@ import { PasteConfigTab } from "@/pages/tools/PasteConfigTab";
 
 const COMPANY = "company-storybook";
 
-const GALLERY: AppGalleryEntry[] = TOOL_APP_GALLERY.slice(0, 6) as AppGalleryEntry[];
+const GALLERY: AppDefinition[] = CONNECTABLE_APP_DEFINITIONS.slice(0, 6) as AppDefinition[];
 
 function seededClient() {
   const c = new QueryClient({

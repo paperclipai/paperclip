@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link2, Search } from "lucide-react";
-import type { AppGalleryEntry } from "@paperclipai/shared";
+import type { AppDefinition } from "@paperclipai/shared";
 import { useNavigate } from "@/lib/router";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
@@ -49,8 +49,8 @@ export function Browse() {
   const gallery = galleryQuery.data?.apps ?? [];
   const popular = useMemo(
     () =>
-      POPULAR_KEYS.map((key) => gallery.find((entry) => entry.key === key)).filter(
-        (entry): entry is AppGalleryEntry => Boolean(entry),
+      POPULAR_KEYS.map((key) => gallery.find((entry) => entry.slug === key)).filter(
+        (entry): entry is AppDefinition => Boolean(entry),
       ),
     [gallery],
   );
@@ -61,7 +61,7 @@ export function Browse() {
     return gallery.filter(
       (entry) =>
         entry.name.toLowerCase().includes(trimmed) ||
-        entry.tagline.toLowerCase().includes(trimmed) ||
+        entry.description.toLowerCase().includes(trimmed) ||
         (entry.description?.toLowerCase().includes(trimmed) ?? false),
     );
   }, [gallery, trimmed]);
@@ -109,9 +109,9 @@ export function Browse() {
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
                 {popular.map((entry) => (
                   <AppTile
-                    key={entry.key}
+                    key={entry.slug}
                     entry={entry}
-                    onConnect={entry.key === "zapier" ? () => navigate(ZAPIER_CONNECT_HREF) : undefined}
+                    onConnect={entry.slug === "zapier" ? () => navigate(ZAPIER_CONNECT_HREF) : undefined}
                     compact
                   />
                 ))}
@@ -132,9 +132,9 @@ export function Browse() {
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
                 {filtered.map((entry) => (
                   <AppTile
-                    key={entry.key}
+                    key={entry.slug}
                     entry={entry}
-                    onConnect={entry.key === "zapier" ? () => navigate(ZAPIER_CONNECT_HREF) : undefined}
+                    onConnect={entry.slug === "zapier" ? () => navigate(ZAPIER_CONNECT_HREF) : undefined}
                   />
                 ))}
               </div>
@@ -160,7 +160,7 @@ function AppTile({
   onConnect,
   compact = false,
 }: {
-  entry: AppGalleryEntry;
+  entry: AppDefinition;
   onConnect?: () => void;
   compact?: boolean;
 }) {
@@ -175,7 +175,7 @@ function AppTile({
           ? "flex cursor-not-allowed flex-col items-center gap-2 rounded-xl border border-border bg-background px-3 py-4 text-center opacity-60"
           : "flex flex-col items-center gap-2 rounded-xl border border-border bg-background px-3 py-4 text-center transition-colors hover:border-foreground/30 hover:bg-accent/40"}
       >
-        <AppLogo name={entry.name} logoUrl={entry.logoUrl} size={36} />
+        <AppLogo name={entry.name} logoUrl={entry.branding.logoUrl} size={36} />
         <span className="text-xs font-medium text-foreground">{entry.name}</span>
         <span className={disabled ? "text-xs text-muted-foreground" : "text-xs font-semibold text-primary"}>
           {disabled ? "Coming soon" : "Connect →"}
@@ -192,10 +192,10 @@ function AppTile({
         ? "flex h-full cursor-not-allowed items-start gap-3 rounded-xl border border-border bg-card px-4 py-4 text-left opacity-60"
         : "flex h-full items-start gap-3 rounded-xl border border-border bg-card px-4 py-4 text-left transition-colors hover:border-foreground/30 hover:bg-accent/40"}
     >
-      <AppLogo name={entry.name} logoUrl={entry.logoUrl} size={36} />
+      <AppLogo name={entry.name} logoUrl={entry.branding.logoUrl} size={36} />
       <div className="min-w-0 flex-1">
         <div className="text-sm font-semibold text-foreground">{entry.name}</div>
-        <div className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">{entry.tagline}</div>
+        <div className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">{entry.description}</div>
       </div>
       <span className={disabled ? "shrink-0 text-xs font-semibold text-muted-foreground" : "shrink-0 text-xs font-semibold text-primary"}>
         {disabled ? "Coming soon" : "Connect →"}

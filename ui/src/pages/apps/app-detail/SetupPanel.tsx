@@ -26,7 +26,7 @@ export function SetupPanel({
   onStartOAuth: () => void;
   oauthStartDisabled: boolean;
 }) {
-  const description = galleryEntry?.description ?? galleryEntry?.tagline ?? null;
+  const description = galleryEntry?.description ?? null;
   const oauth = connection.config?.oauth;
   const hasOAuthSignIn = Boolean(oauth && typeof oauth === "object" && !Array.isArray(oauth));
   const isSmokeLabFixture = connection.config?.smokeLabFixture === "oauth-http";
@@ -35,7 +35,7 @@ export function SetupPanel({
       {description && (
         <p className="max-w-2xl text-sm leading-6 text-muted-foreground">{description}</p>
       )}
-      {galleryEntry?.key === "google-sheets" && (
+      {galleryEntry?.slug === "google-sheets" && (
         <GoogleSheetsAllowlistSection
           connection={connection}
           disabled={configUpdateDisabled}

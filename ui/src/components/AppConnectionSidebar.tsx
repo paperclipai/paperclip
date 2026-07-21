@@ -1,7 +1,7 @@
 import { ChevronLeft } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { humanizeConnectionDisplayName } from "@paperclipai/shared";
-import type { AppGalleryEntry, ToolApplication, ToolConnection } from "@paperclipai/shared";
+import type { AppDefinition, ToolApplication, ToolConnection } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { toolsApi } from "@/api/tools";
 import { useCompany } from "@/context/CompanyContext";
@@ -83,7 +83,7 @@ export function AppDetailSidebar(props: AppDetailSidebarProps) {
           <span className="truncate">All apps</span>
         </Link>
         <div className="flex min-w-0 items-center gap-2 px-2 py-1">
-          <AppLogo name={appName} logoUrl={logoEntry?.logoUrl} size={28} />
+          <AppLogo name={appName} logoUrl={logoEntry?.branding.logoUrl} size={28} />
           <span className="flex-1 truncate text-sm font-bold text-foreground">{appName}</span>
         </div>
       </div>
@@ -117,17 +117,17 @@ function tabHref(props: AppDetailSidebarProps, tab: AppTabKey): string {
 }
 
 function galleryEntryFor(
-  apps: AppGalleryEntry[],
+  apps: AppDefinition[],
   connection: ToolConnection | undefined,
   application: ToolApplication | undefined,
-): AppGalleryEntry | null {
+): AppDefinition | null {
   if (application?.applicationKey) {
-    const keyed = apps.find((app) => app.key === application.applicationKey);
+    const keyed = apps.find((app) => app.slug === application.applicationKey);
     if (keyed) return keyed;
   }
   const name = (connection?.name ?? application?.name)?.toLowerCase();
   if (!name) return null;
-  return apps.find((app) => app.name.toLowerCase() === name) ?? apps.find((app) => app.key === name) ?? null;
+  return apps.find((app) => app.name.toLowerCase() === name) ?? apps.find((app) => app.slug === name) ?? null;
 }
 
 function latestArchivedConnection(connections: ToolConnection[]): ToolConnection | null {

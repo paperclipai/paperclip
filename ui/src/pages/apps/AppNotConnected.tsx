@@ -123,8 +123,8 @@ export function AppNotConnected() {
 
   const gallery = galleryQuery.data?.apps ?? [];
   const logoUrl =
-    (application.applicationKey ? gallery.find((entry) => entry.key === application.applicationKey)?.logoUrl : undefined) ??
-    gallery.find((entry) => entry.name.toLowerCase() === application.name.toLowerCase())?.logoUrl;
+    (application.applicationKey ? gallery.find((entry) => entry.slug === application.applicationKey)?.branding.logoUrl : undefined) ??
+    gallery.find((entry) => entry.name.toLowerCase() === application.name.toLowerCase())?.branding.logoUrl;
 
   const previousAddress = previousConnection ? connectionAddress(previousConnection) : null;
   const connectHref = reconnectHref({

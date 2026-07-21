@@ -2285,7 +2285,7 @@ describeEmbeddedPostgres("tool access service", () => {
     const res = await request(app).get(`/api/companies/${company.id}/tools/gallery`);
 
     expect(res.status).toBe(200);
-    expect(res.body.apps.map((entry: { key: string }) => entry.key)).toEqual([
+    expect(res.body.apps.map((app: { slug: string }) => app.slug)).toEqual([
       "zapier",
       "github",
       "slack",
@@ -2294,23 +2294,36 @@ describeEmbeddedPostgres("tool access service", () => {
       "google-sheets",
       "context7",
     ]);
-    expect(res.body.apps.map((entry: { key: string }) => entry.key)).not.toContain("google-drive");
+    expect(res.body.apps.map((app: { slug: string }) => app.slug)).not.toContain("google-drive");
     expect(res.body.apps).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          key: "slack",
-          authKind: "oauth",
-          oauth: expect.objectContaining({ provider: "slack" }),
+          slug: "slack",
+          methods: expect.arrayContaining([
+            expect.objectContaining({
+              auth: "oauth",
+              defaults: expect.objectContaining({ authorizationEndpoint: "https://slack.com/oauth/v2/authorize" }),
+            }),
+          ]),
+          ownershipAvailability: expect.objectContaining({
+            platform_shared: false,
+            platform_provisioned: false,
+            customer: true,
+            dcr: true,
+          }),
         }),
         expect.objectContaining({
-          key: "zapier",
-          credentialFields: [
+          slug: "zapier",
+          methods: expect.arrayContaining([
             expect.objectContaining({
-              configPath: "credentials.authorization",
-              placement: "header",
-              key: "Authorization",
+              credentialFields: [expect.objectContaining({ key: "authorization" })],
+              keyPlacement: expect.objectContaining({ location: "header", name: "Authorization" }),
             }),
-          ],
+          ]),
+        }),
+        expect.objectContaining({
+          slug: "google-sheets",
+          availability: expect.objectContaining({ available: false }),
         }),
       ]),
     );

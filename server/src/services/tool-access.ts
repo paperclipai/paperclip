@@ -33,6 +33,7 @@ import {
   toolRuntimeSlots,
 } from "@paperclipai/db";
 import type {
+  AppDefinition,
   ConnectionTokenIssuanceOutcome,
   ConnectionTokenIssuancePath,
   ConnectionTokenRequest,
@@ -104,7 +105,7 @@ import type {
   UpdateToolProfileWithEntries,
   UnbindToolProfileBinding,
 } from "@paperclipai/shared";
-import { CLASS3_STATIC_LEASE_ALLOWLIST, getToolAppGalleryEntry, isToolConnectionAttentionHealth } from "@paperclipai/shared";
+import { CLASS3_STATIC_LEASE_ALLOWLIST, credentialConfigPath, getAvailableConnectionMethod, getConnectableAppDefinition, isToolConnectionAttentionHealth, recommendedDefaultsForApp } from "@paperclipai/shared";
 import { badRequest, conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { logActivity } from "./activity-log.js";
 import { mcpHttpRequestHeaders, parseMcpHttpResponseBody } from "./mcp-http.js";
@@ -421,6 +422,25 @@ export function googleSheetsRobotEmailFromEnv(
     return { available: false, reason: "Google Sheets is not available on this instance yet." };
   }
   return { available: false, reason: "Google Sheets is not available on this instance yet." };
+}
+
+function connectionMethodFor(app: AppDefinition) {
+  const method = getAvailableConnectionMethod(app);
+  if (!method) throw unprocessable("This app does not have an available connection method");
+  return method;
+}
+
+function credentialFieldsFor(app: AppDefinition) {
+  const method = connectionMethodFor(app);
+  return (method.credentialFields ?? []).map((field) => ({
+    label: field.label,
+    configPath: credentialConfigPath(field),
+    helpUrl: method.consoleLinks?.keys ?? method.consoleLinks?.docs ?? "",
+    required: field.required,
+    placement: method.keyPlacement?.location === "header" ? "header" as const : undefined,
+    key: method.keyPlacement?.name,
+    prefix: method.keyPlacement?.prefix,
+  }));
 }
 
 function googleSheetsAllowedSpreadsheetIds(configValues: Record<string, unknown> | undefined): string[] {
@@ -3833,13 +3853,14 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     return null;
   }
 
-  async function oauthProviderEndpoints(galleryEntry: NonNullable<ReturnType<typeof getToolAppGalleryEntry>>): Promise<OAuthProviderEndpoints> {
-    const oauth = galleryEntry.oauth;
-    if (!oauth) throw unprocessable("This app does not support sign in");
-    let authorizationUrl = oauth.authorizationUrl ?? null;
-    let tokenUrl = oauth.tokenUrl ?? null;
-    if ((!authorizationUrl || !tokenUrl) && oauth.metadataUrl) {
-      const response = await fetchRemoteHttpUrl(oauth.metadataUrl);
+  async function oauthProviderEndpoints(app: AppDefinition): Promise<OAuthProviderEndpoints> {
+    const method = connectionMethodFor(app);
+    if (method.auth !== "oauth") throw unprocessable("This app does not support sign in");
+    let authorizationUrl = method.defaults?.authorizationEndpoint ?? null;
+    let tokenUrl = method.defaults?.tokenEndpoint ?? null;
+    const metadataUrl = method.defaults?.metadataUrl ?? null;
+    if ((!authorizationUrl || !tokenUrl) && metadataUrl) {
+      const response = await fetchRemoteHttpUrl(metadataUrl);
       if (!response.ok) throw new HttpError(502, "OAuth provider metadata could not be loaded", { code: "oauth_metadata_failed" });
       const metadata = asRecord(await response.json() as unknown);
       authorizationUrl = authorizationUrl ?? (typeof metadata.authorization_endpoint === "string" ? metadata.authorization_endpoint : null);
@@ -3848,7 +3869,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     if (!authorizationUrl || !tokenUrl) {
       throw unprocessable("OAuth provider endpoints are not configured for this app");
     }
-    return { provider: oauth.provider, scopes: oauth.scopes, authorizationUrl, tokenUrl, grantType: "authorization_code", metadataUrl: oauth.metadataUrl ?? null };
+    return { provider: app.slug, scopes: method.defaults?.scopesHint ?? [], authorizationUrl, tokenUrl, grantType: "authorization_code", metadataUrl };
   }
 
   async function oauthEndpointsForConnection(
@@ -3858,9 +3879,9 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
   ): Promise<OAuthProviderEndpoints> {
     const smokeLabEndpoints = smokeLabOAuthEndpoints(connection, redirectUri);
     const sourceTemplateKey = typeof connection.config.sourceTemplateKey === "string" ? connection.config.sourceTemplateKey : null;
-    const galleryEntry = sourceTemplateKey ? getToolAppGalleryEntry(sourceTemplateKey) : null;
+    const galleryEntry = sourceTemplateKey ? getConnectableAppDefinition(sourceTemplateKey) : null;
     const endpoints = smokeLabEndpoints
-      ?? (galleryEntry?.authKind === "oauth" && galleryEntry.oauth
+      ?? (galleryEntry && connectionMethodFor(galleryEntry).auth === "oauth"
       ? await oauthProviderEndpoints(galleryEntry)
       : await discoverOAuthEndpoints(connection, challenge));
     if (!endpoints) throw unprocessable("This app connection does not advertise OAuth sign in");
@@ -3871,8 +3892,8 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
   async function oauthGalleryEntryForConnection(connection: typeof toolConnections.$inferSelect) {
     const sourceTemplateKey = typeof connection.config.sourceTemplateKey === "string" ? connection.config.sourceTemplateKey : null;
     if (!sourceTemplateKey) throw unprocessable("This app connection was not created from the app gallery");
-    const galleryEntry = getToolAppGalleryEntry(sourceTemplateKey);
-    if (!galleryEntry || galleryEntry.authKind !== "oauth" || !galleryEntry.oauth) {
+    const galleryEntry = getConnectableAppDefinition(sourceTemplateKey);
+    if (!galleryEntry || connectionMethodFor(galleryEntry).auth !== "oauth") {
       throw unprocessable("This app connection does not use sign in");
     }
     return galleryEntry;
@@ -4087,7 +4108,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     input: ConnectToolApp,
     actor?: ActorInfo,
   ): Promise<ConnectToolAppResult> {
-    const galleryEntry = input.galleryKey ? getToolAppGalleryEntry(input.galleryKey) : null;
+    const galleryEntry = input.galleryKey ? getConnectableAppDefinition(input.galleryKey) : null;
     if (input.galleryKey && !galleryEntry) throw notFound("Tool app gallery entry not found");
 
     let existingApplication: typeof toolApplications.$inferSelect | null = null;
@@ -4101,18 +4122,15 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     }
 
     const name = input.name ?? existingApplication?.name ?? galleryEntry?.name ?? defaultLinkName(input.link ?? "");
-    const transportTemplate = galleryEntry?.transportTemplate ?? {
-      transport: "mcp_remote" as const,
-      url: input.link ?? "",
-    };
-    const transport = transportTemplate.transport;
+    const method = galleryEntry ? connectionMethodFor(galleryEntry) : null;
+    const transport = method?.transport ?? "mcp_remote";
     const baseConfig = transport === "mcp_remote"
-      ? { url: transportTemplate.url }
-      : { templateId: transportTemplate.templateKey };
+      ? { url: method?.defaults?.serverUrl ?? input.link ?? "" }
+      : { templateId: method?.defaults?.templateKey };
     let config: Record<string, unknown> = galleryEntry
-      ? { ...baseConfig, sourceTemplateKey: galleryEntry.key, quarantineNewEntries: true }
+      ? { ...baseConfig, sourceTemplateKey: galleryEntry.slug, quarantineNewEntries: true }
       : { ...baseConfig, quarantineNewEntries: true };
-    if (galleryEntry?.key === GOOGLE_SHEETS_GALLERY_KEY) {
+    if (galleryEntry?.slug === GOOGLE_SHEETS_GALLERY_KEY) {
       const availability = googleSheetsRobotEmailFromEnv();
       if (!availability.available) {
         throw unprocessable(availability.reason, { code: "google_sheets_unavailable" });
@@ -4142,7 +4160,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     let revivedConnectionPrevious: typeof toolConnections.$inferSelect | null = null;
 
     try {
-      const credentialFields = galleryEntry?.credentialFields ?? linkCredentialFields(credentialValues);
+      const credentialFields = galleryEntry ? credentialFieldsFor(galleryEntry) : linkCredentialFields(credentialValues);
       for (const field of credentialFields) {
         const value = credentialValues[field.configPath];
         if (!value && field.required !== false) {
@@ -4188,12 +4206,12 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       } else {
         [applicationRow] = await db.insert(toolApplications).values({
           companyId,
-          applicationKey: `app-gallery:${galleryEntry?.key ?? "link"}:${randomUUID()}`,
+          applicationKey: `app-gallery:${galleryEntry?.slug ?? "link"}:${randomUUID()}`,
           name,
-          description: galleryEntry?.tagline ?? `Connected app at ${input.link}`,
+          description: galleryEntry?.description ?? `Connected app at ${input.link}`,
           type: transport === "mcp_remote" ? "mcp_http" : "mcp_stdio",
           status: "draft",
-          metadata: galleryEntry ? { sourceTemplateKey: galleryEntry.key, galleryKey: galleryEntry.key } : { source: "link" },
+          metadata: galleryEntry ? { sourceTemplateKey: galleryEntry.slug, galleryKey: galleryEntry.slug } : { source: "link" },
         }).returning();
       }
 
@@ -4235,7 +4253,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           name,
           uid: connectionUid(applicationRow.applicationKey ?? applicationRow.name, name, connectionId),
           connectionKind: "managed",
-          authKind: galleryEntry?.authKind ?? "none",
+          authKind: galleryEntry ? connectionMethodFor(galleryEntry).auth : "none",
           transport,
           status: "draft",
           enabled: false,
@@ -4250,14 +4268,14 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       await syncCredentialBindings(connectionRow);
       await ensureRuntimeSlot(connectionRow);
 
-      if (galleryEntry?.authKind === "oauth") {
+      if (galleryEntry && connectionMethodFor(galleryEntry).auth === "oauth") {
         return {
           connectionId: connectionRow.id,
           application: toApplication(applicationRow),
           connection: toConnection(connectionRow),
           catalog: [],
           actions: { readOnly: [], canMakeChanges: [] },
-          suggestedDefaults: galleryEntry.recommendedDefaults,
+          suggestedDefaults: recommendedDefaultsForApp(galleryEntry),
           auth: { kind: "oauth", startUrl: null },
         };
       }
@@ -4292,7 +4310,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         connection: refresh.connection,
         catalog: refresh.catalog,
         actions: groupedActions(refresh.catalog),
-        suggestedDefaults: galleryEntry?.recommendedDefaults ?? {
+        suggestedDefaults: galleryEntry ? recommendedDefaultsForApp(galleryEntry) : {
           access: "all_agents",
           askFirstRiskLevels: ["write", "destructive"],
         },
@@ -4619,8 +4637,8 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     if (connection.status === "archived") throw conflict("Archived app connections cannot be reconnected");
     const sourceTemplateKey =
       typeof connection.config.sourceTemplateKey === "string" ? connection.config.sourceTemplateKey : null;
-    const galleryEntry = sourceTemplateKey ? getToolAppGalleryEntry(sourceTemplateKey) : null;
-    const credentialFields = galleryEntry?.credentialFields ?? [
+    const galleryEntry = sourceTemplateKey ? getConnectableAppDefinition(sourceTemplateKey) : null;
+    const credentialFields = galleryEntry ? credentialFieldsFor(galleryEntry) : [
       {
         label: "App key",
         configPath: "credentials.authorization",
@@ -4784,7 +4802,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
 
     let connection = await getConnectionRow(stateRow.connectionId, stateRow.companyId);
     const sourceTemplateKey = typeof connection.config.sourceTemplateKey === "string" ? connection.config.sourceTemplateKey : null;
-    const galleryEntry = sourceTemplateKey ? getToolAppGalleryEntry(sourceTemplateKey) : null;
+    const galleryEntry = sourceTemplateKey ? getConnectableAppDefinition(sourceTemplateKey) : null;
     const endpoints = await oauthEndpointsForConnection(connection, null, input.redirectUri);
     const client = oauthClientForConnection(connection, endpoints.provider);
     if (!client.clientId) throw unprocessable(`OAuth client id is not configured for ${endpoints.provider}`);
@@ -4884,7 +4902,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       connection: refresh.connection,
       catalog: refresh.catalog,
       actions: groupedActions(refresh.catalog),
-      suggestedDefaults: galleryEntry?.recommendedDefaults ?? {
+      suggestedDefaults: galleryEntry ? recommendedDefaultsForApp(galleryEntry) : {
         access: "all_agents",
         askFirstRiskLevels: ["write", "destructive"],
       },
