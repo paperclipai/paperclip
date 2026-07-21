@@ -5,13 +5,14 @@ import unittest
 from unittest import mock
 import bot
 
-TENANTS = {"8311805232": {"name": "W", "company_id": "comp-1", "ceo_agent_id": "ceo-1"},
-           "1220010628": {"name": "C", "company_id": "comp-2", "ceo_agent_id": "ceo-2"}}
+TENANTS = {"8311805232": {"name": "Walter / WHITESTAG", "company_id": "comp-1", "ceo_agent_id": "ceo-1"},
+           "1220010628": {"name": "Clara / Clara Sound", "company_id": "comp-2", "ceo_agent_id": "ceo-2"}}
 
 def make_app(tg, reply_mode_path="/tmp/nope-reply-mode.json"):
     cfg = {"tenants": TENANTS, "paperclip_token": "tok", "whisper_model": "m.bin",
            "decision_label": "entscheidung-noetig", "poll_interval": 60, "state_path": "/tmp/nope.json",
-           "reply_mode_path": reply_mode_path, "eleven_api_key": "xi-test-key"}
+           "reply_mode_path": reply_mode_path, "eleven_api_key": "xi-test-key",
+           "chat_model": "gemma-test"}
     app = bot.BotApp(tg, cfg); app.seen = set(); app._seeded = True; return app
 
 def msg(uid, mid=1, text=None, voice=False, reply_text=None):
@@ -26,20 +27,55 @@ class TestTenantRouting(unittest.TestCase):
         tg = mock.MagicMock(); make_app(tg).handle_update(msg(999, text="hi"))
         tg.send_message.assert_not_called()
 
-    def test_text_stores_candidate_with_tenant(self):
+    def test_plain_message_goes_to_chat_no_auto_offer(self):
+        # Ersetzt das alte _offer-Verhalten: eine normale Nachricht darf KEIN
+        # Issue anlegen und keine Bestätigungs-Buttons schicken, sondern nur
+        # die LLM-Chat-Antwort zurückspiegeln.
         tg = mock.MagicMock(); app = make_app(tg)
-        app.handle_update(msg(1220010628, mid=5, text="Mische den Song"))
-        cand = app.candidates["1220010628:5"]
-        self.assertEqual(cand["company_id"], "comp-2")
-        self.assertEqual(cand["ceo_agent_id"], "ceo-2")
+        with mock.patch.object(bot.llm, "chat", return_value="Hallo Clara, wie kann ich helfen?") as lc, \
+             mock.patch.object(bot, "create_issue") as ci:
+            app.handle_update(msg(1220010628, mid=5, text="Hi Jarvis"))
+        lc.assert_called_once()
+        ci.assert_not_called()
+        # keine reply_markup/Buttons
+        for c in tg.send_message.call_args_list:
+            self.assertNotIn("reply_markup", c.kwargs)
+        self.assertFalse(hasattr(app, "candidates"))
+        # Systemprompt trägt den Vornamen des Mandanten
+        sys_msg = lc.call_args.args[0][0]
+        self.assertEqual(sys_msg["role"], "system")
+        self.assertIn("Clara", sys_msg["content"])
 
-    def test_callback_send_creates_issue_in_tenant_company(self):
+    def test_issue_token_creates_issue_in_tenant_company(self):
+        # Ersetzt den alten Callback-Bestätigungs-Flow: das LLM gibt das
+        # ISSUE-Token aus, der Bot legt DIREKT beim CEO des Mandanten an.
         tg = mock.MagicMock(); app = make_app(tg)
-        app.candidates["1220010628:5"] = {"text": "Mische den Song", "company_id": "comp-2", "ceo_agent_id": "ceo-2"}
-        with mock.patch.object(bot, "create_issue", return_value={"identifier": "CLR-1"}) as ci:
-            app.handle_update({"callback_query": {"id": "q", "from": {"id": 1220010628},
-                                                  "message": {"chat": {"id": 1220010628}}, "data": "send:1220010628:5"}})
-        ci.assert_called_once_with("tok", "comp-2", "ceo-2", "Mische den Song", "Mische den Song")
+        with mock.patch.object(bot.llm, "chat",
+                               return_value="ISSUE: Song mischen :: Bitte den Song final mischen."), \
+             mock.patch.object(bot, "create_issue", return_value={"identifier": "CLR-1"}) as ci:
+            app.handle_update(msg(1220010628, mid=5, text="Leg mir einen Task an: Song mischen"))
+        ci.assert_called_once_with("tok", "comp-2", "ceo-2",
+                                   bot.derive_title("Song mischen"), "Bitte den Song final mischen.")
+        acked = [c for c in tg.send_message.call_args_list if "Task angelegt: CLR-1" in c.args[1]]
+        self.assertEqual(len(acked), 1)
+
+    def test_lookup_token_calls_vault_and_answers(self):
+        # Frage nach echten Daten -> LLM gibt LOOKUP-Token -> Vault-Aufruf ->
+        # zweiter LLM-Call formuliert die finale Antwort aus den Treffern.
+        tg = mock.MagicMock(); app = make_app(tg)
+        with mock.patch.object(bot.llm, "chat",
+                               side_effect=["LOOKUP kontakt: Jana Kostbar",
+                                            "Janas Nummer ist 0170 1234567."]) as lc, \
+             mock.patch.object(bot.vault_client, "lookup",
+                               return_value={"mode": "kontakt", "query": "Jana Kostbar",
+                                             "treffer": [{"inhalt": "Tel: 0170 1234567"}]}) as vl, \
+             mock.patch.object(bot, "create_issue") as ci:
+            app.handle_update(msg(8311805232, mid=7, text="Was ist Janas Telefonnummer?"))
+        vl.assert_called_once_with("kontakt", "Jana Kostbar")
+        ci.assert_not_called()
+        self.assertEqual(lc.call_count, 2)  # genau eine Lookup-Runde
+        texts = [c.args[1] for c in tg.send_message.call_args_list]
+        self.assertTrue(any("0170 1234567" in t for t in texts))
 
 class TestReplyModeCommands(unittest.TestCase):
     def _app(self):
@@ -50,10 +86,11 @@ class TestReplyModeCommands(unittest.TestCase):
 
     def test_voice_command_sets_mode_and_confirms_no_issue(self):
         tg, app, p = self._app()
-        with mock.patch.object(bot, "create_issue") as ci:
+        with mock.patch.object(bot, "create_issue") as ci, \
+             mock.patch.object(bot.llm, "chat") as lc:
             app.handle_update(msg(8311805232, text="/voice"))
         ci.assert_not_called()
-        self.assertEqual(app.candidates, {})
+        lc.assert_not_called()  # Modus-Befehl geht nicht ans LLM
         self.assertEqual(bot.reply_mode.get_mode(p, 8311805232), "voice")
         tg.send_message.assert_called_once_with(8311805232, "🔊 Antworten jetzt als Sprache.")
 
@@ -69,49 +106,48 @@ class TestReplyModeCommands(unittest.TestCase):
         app.handle_update(msg(8311805232, text="/voice@JarvisBot"))
         self.assertEqual(bot.reply_mode.get_mode(p, 8311805232), "voice")
 
-    def test_command_does_not_transcribe_or_offer(self):
+    def test_command_does_not_transcribe_or_chat(self):
         tg, app, p = self._app()
-        with mock.patch.object(app, "_extract_text") as ex, mock.patch.object(app, "_offer") as of:
+        with mock.patch.object(app, "_extract_text") as ex, mock.patch.object(app, "_handle_chat") as hc:
             app.handle_update(msg(8311805232, text="/text"))
         ex.assert_not_called()
-        of.assert_not_called()
+        hc.assert_not_called()
 
     def test_voice_mode_routes_ack_via_send_voice(self):
+        # _reply-Voice-Ausgabe jetzt über den Chat-/ISSUE-Pfad getrieben
+        # (früher über den entfallenen Callback-Bestätigungs-Flow).
         tg, app, p = self._app()
         bot.reply_mode.set_mode(p, 1220010628, "voice")
-        app.candidates["1220010628:5"] = {"text": "Mische den Song", "company_id": "comp-2", "ceo_agent_id": "ceo-2"}
-        with mock.patch.object(bot, "create_issue", return_value={"identifier": "CLR-1"}), \
+        with mock.patch.object(bot.llm, "chat", return_value="ISSUE: Song :: Mische den Song"), \
+             mock.patch.object(bot, "create_issue", return_value={"identifier": "CLR-1"}), \
              mock.patch.object(bot.tts, "synthesize", return_value="/tmp/reply.ogg") as syn:
-            app.handle_update({"callback_query": {"id": "q", "from": {"id": 1220010628},
-                                                  "message": {"chat": {"id": 1220010628}}, "data": "send:1220010628:5"}})
+            app.handle_update(msg(1220010628, mid=5, text="Leg einen Task an: Song mischen"))
         syn.assert_called_once()
-        # Der Text-Ack ging als Sprachnachricht raus, nicht als send_message
+        # Der Ack ging als Sprachnachricht raus, nicht als send_message
         tg.send_voice.assert_called_once()
         self.assertEqual(tg.send_voice.call_args.args[0], 1220010628)
-        acked = [c for c in tg.send_message.call_args_list if "An CEO gesendet" in (c.args[1] if len(c.args) > 1 else "")]
+        acked = [c for c in tg.send_message.call_args_list if "Task angelegt" in (c.args[1] if len(c.args) > 1 else "")]
         self.assertEqual(acked, [])
 
     def test_text_mode_ack_uses_send_message(self):
         tg, app, p = self._app()  # Default text
-        app.candidates["1220010628:5"] = {"text": "x", "company_id": "comp-2", "ceo_agent_id": "ceo-2"}
-        with mock.patch.object(bot, "create_issue", return_value={"identifier": "CLR-1"}):
-            app.handle_update({"callback_query": {"id": "q", "from": {"id": 1220010628},
-                                                  "message": {"chat": {"id": 1220010628}}, "data": "send:1220010628:5"}})
+        with mock.patch.object(bot.llm, "chat", return_value="ISSUE: x :: x"), \
+             mock.patch.object(bot, "create_issue", return_value={"identifier": "CLR-1"}):
+            app.handle_update(msg(1220010628, mid=5, text="Leg einen Task an"))
         tg.send_voice.assert_not_called()
-        acked = [c for c in tg.send_message.call_args_list if "An CEO gesendet" in c.args[1]]
+        acked = [c for c in tg.send_message.call_args_list if "Task angelegt" in c.args[1]]
         self.assertEqual(len(acked), 1)
 
     def test_tts_error_falls_back_to_text(self):
         tg, app, p = self._app()
         bot.reply_mode.set_mode(p, 1220010628, "voice")
-        app.candidates["1220010628:5"] = {"text": "x", "company_id": "comp-2", "ceo_agent_id": "ceo-2"}
-        with mock.patch.object(bot, "create_issue", return_value={"identifier": "CLR-1"}), \
+        with mock.patch.object(bot.llm, "chat", return_value="ISSUE: x :: x"), \
+             mock.patch.object(bot, "create_issue", return_value={"identifier": "CLR-1"}), \
              mock.patch.object(bot.tts, "synthesize", side_effect=bot.tts.TtsError("boom")):
-            app.handle_update({"callback_query": {"id": "q", "from": {"id": 1220010628},
-                                                  "message": {"chat": {"id": 1220010628}}, "data": "send:1220010628:5"}})
+            app.handle_update(msg(1220010628, mid=5, text="Leg einen Task an"))
         tg.send_voice.assert_not_called()
         texts = [c.args[1] for c in tg.send_message.call_args_list]
-        self.assertTrue(any("An CEO gesendet" in t for t in texts))
+        self.assertTrue(any("Task angelegt" in t for t in texts))
         self.assertTrue(any("Sprachausgabe fehlgeschlagen" in t for t in texts))
 
 
@@ -253,6 +289,56 @@ class TestBuildAppSeeding(unittest.TestCase):
             app = bot.build_app()
         self.assertEqual(app.seen, {"a:done"})
         self.assertTrue(app._seeded)
+
+
+class TestParseControl(unittest.TestCase):
+    def test_lookup_token_case_insensitive(self):
+        a = bot.parse_control("lookup TERMIN: heute")
+        self.assertEqual(a, {"kind": "lookup", "mode": "termin", "query": "heute"})
+
+    def test_issue_token_splits_title_and_description(self):
+        a = bot.parse_control("ISSUE: Titel :: Lange Beschreibung")
+        self.assertEqual(a["kind"], "issue")
+        self.assertEqual(a["title"], "Titel")
+        self.assertEqual(a["description"], "Lange Beschreibung")
+
+    def test_issue_without_desc_reuses_title(self):
+        a = bot.parse_control("ISSUE: Nur ein Titel")
+        self.assertEqual(a["description"], "Nur ein Titel")
+
+    def test_plain_text_is_chat(self):
+        a = bot.parse_control("Hallo Walter, klar!")
+        self.assertEqual(a, {"kind": "chat", "text": "Hallo Walter, klar!"})
+
+    def test_token_only_recognized_at_line_start(self):
+        # Steht das "Token" mitten im Fließtext, ist es KEIN Steuer-Token.
+        a = bot.parse_control("Ich könnte ein LOOKUP kontakt: X machen, soll ich?")
+        self.assertEqual(a["kind"], "chat")
+
+
+class TestChatFallback(unittest.TestCase):
+    def test_llm_unreachable_sends_hint_no_crash(self):
+        tg = mock.MagicMock(); app = make_app(tg)
+        with mock.patch.object(bot.llm, "chat", side_effect=bot.llm.LlmError("down")):
+            app.handle_update(msg(8311805232, mid=3, text="Hi"))
+        texts = [c.args[1] for c in tg.send_message.call_args_list]
+        self.assertTrue(any("nicht erreichbar" in t for t in texts))
+
+    def test_vault_unreachable_still_answers(self):
+        tg = mock.MagicMock(); app = make_app(tg)
+        with mock.patch.object(bot.llm, "chat",
+                               side_effect=["LOOKUP kontakt: X", "Ich habe dazu leider nichts gefunden."]), \
+             mock.patch.object(bot.vault_client, "lookup", side_effect=bot.vault_client.VaultError("down")):
+            app.handle_update(msg(8311805232, mid=3, text="Nummer von X?"))
+        texts = [c.args[1] for c in tg.send_message.call_args_list]
+        self.assertTrue(any("nichts gefunden" in t for t in texts))
+
+    def test_history_is_trimmed_to_max(self):
+        tg = mock.MagicMock(); app = make_app(tg)
+        with mock.patch.object(bot.llm, "chat", return_value="ok"):
+            for i in range(10):
+                app.handle_update(msg(8311805232, mid=i, text="Frage {}".format(i)))
+        self.assertLessEqual(len(app.history[8311805232]), bot.MAX_HISTORY_MESSAGES)
 
 
 if __name__ == "__main__": unittest.main()
