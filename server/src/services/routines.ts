@@ -266,6 +266,60 @@ function nextResultText(status: string, issueId?: string | null) {
   return status;
 }
 
+type ExceptionLedEvaluation = NonNullable<RunRoutine["exceptionLedEvaluation"]>;
+
+function normalizeExceptionFingerprintPart(value: string) {
+  return value
+    .normalize("NFKC")
+    .trim()
+    .toLowerCase()
+    .replace(/\b\d{4}-\d{2}-\d{2}t\d{2}:\d{2}:\d{2}(?:\.\d+)?z\b/g, "<timestamp>")
+    .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/g, "<uuid>")
+    .replace(/\s+/g, " ");
+}
+
+export function createRoutineExceptionFingerprint(input: {
+  routineId: string;
+  contractVersion: string;
+  normalizedRootCause: string;
+  affectedResource: string;
+}) {
+  const parts = [
+    input.routineId.trim(),
+    normalizeExceptionFingerprintPart(input.contractVersion),
+    normalizeExceptionFingerprintPart(input.normalizedRootCause),
+    normalizeExceptionFingerprintPart(input.affectedResource),
+  ];
+  if (parts.some((part) => !part)) throw new Error("Exception fingerprint fields must be non-empty");
+  return crypto.createHash("sha256").update(parts.join("\0")).digest("hex");
+}
+
+function exceptionResourceOriginId(routineId: string, contractVersion: string, affectedResource: string) {
+  const resourceKey = crypto
+    .createHash("sha256")
+    .update(
+      `${normalizeExceptionFingerprintPart(contractVersion)}\0${normalizeExceptionFingerprintPart(affectedResource)}`,
+    )
+    .digest("hex");
+  return `${routineId}:${resourceKey}`;
+}
+
+function approvalClosureFailure(evaluation: ExceptionLedEvaluation) {
+  const evidence = evaluation.approvalClosure;
+  if (!evidence && normalizeExceptionFingerprintPart(evaluation.contractVersion).startsWith("approval-release")) {
+    return "approval closure evidence is missing";
+  }
+  if (!evidence) return null;
+  if (evidence.approvalStatus === "pending") return "approval is non-terminal";
+  if (evidence.approvalIssueId !== evidence.evidenceIssueId) return "approval issue identity mismatch";
+  if (evidence.approvalPrId !== evidence.evidencePrId) return "approval PR identity mismatch";
+  if (evidence.approvalRuntimeId !== evidence.evidenceRuntimeId) return "approval runtime identity mismatch";
+  if (evidence.runtimeState !== "clean") return `runtime state is ${evidence.runtimeState}`;
+  if (!evidence.bootCommitMatches) return "runtime boot commit is stale";
+  if (!evidence.reconciliationMatches) return "approval reconciliation mismatch";
+  return null;
+}
+
 function normalizeWebhookTimestampMs(rawTimestamp: string) {
   const parsed = Number(rawTimestamp);
   if (!Number.isFinite(parsed)) return null;
@@ -623,6 +677,7 @@ export function routineService(
     heartbeat?: IssueAssignmentWakeupDeps;
     pluginWorkerManager?: PluginWorkerManager;
     runtimeEnv?: Record<string, string | undefined>;
+    beforePersistExceptionEvaluation?: (evaluation: ExceptionLedEvaluation) => void | Promise<void>;
   } = {},
 ) {
   const issueSvc = issueService(db);
@@ -632,6 +687,17 @@ export function routineService(
   const heartbeat = deps.heartbeat ?? heartbeatService(db, {
     pluginWorkerManager: deps.pluginWorkerManager,
   });
+
+  function isExceptionLedPilot(routineId: string) {
+    if (!isTruthyRuntimeEnvValue(runtimeEnv.PAPERCLIP_EXCEPTION_LED_ROUTINES_ENABLED)) return false;
+    const pilotIds = new Set(
+      (runtimeEnv.PAPERCLIP_EXCEPTION_LED_ROUTINE_IDS ?? "")
+        .split(",")
+        .map((value) => value.trim())
+        .filter(Boolean),
+    );
+    return pilotIds.has(routineId);
+  }
 
   async function getRoutineById(id: string) {
     return db
@@ -1606,6 +1672,230 @@ export function routineService(
           eq(issueInboxArchives.userId, input.userId),
         ),
       );
+  }
+
+  async function recordExceptionLedEvaluation(input: {
+    routine: typeof routines.$inferSelect;
+    trigger: typeof routineTriggers.$inferSelect | null;
+    source: "manual" | "api";
+    evaluation: ExceptionLedEvaluation;
+    idempotencyKey?: string | null;
+    actor?: Actor;
+  }) {
+    return db.transaction(async (tx) => {
+      const txDb = tx as unknown as Db;
+      await tx.execute(
+        sql`select id from ${routines} where ${routines.id} = ${input.routine.id} and ${routines.companyId} = ${input.routine.companyId} for update`,
+      );
+
+      if (input.idempotencyKey) {
+        const existing = await txDb
+          .select()
+          .from(routineRuns)
+          .where(and(
+            eq(routineRuns.companyId, input.routine.companyId),
+            eq(routineRuns.routineId, input.routine.id),
+            eq(routineRuns.source, input.source),
+            eq(routineRuns.idempotencyKey, input.idempotencyKey),
+            input.trigger ? eq(routineRuns.triggerId, input.trigger.id) : isNull(routineRuns.triggerId),
+          ))
+          .orderBy(desc(routineRuns.createdAt))
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+        if (existing) return existing;
+      }
+
+      const triggeredAt = new Date();
+      let effectiveEvaluation = input.evaluation;
+      let failureReason: string | null = null;
+      const approvalFailure = approvalClosureFailure(effectiveEvaluation);
+      if (effectiveEvaluation.outcome === "green" && approvalFailure) {
+        failureReason = approvalFailure;
+        effectiveEvaluation = {
+          ...effectiveEvaluation,
+          outcome: "failure",
+          normalizedRootCause: `approval closure refused: ${approvalFailure}`,
+        };
+      }
+
+      try {
+        await deps.beforePersistExceptionEvaluation?.(effectiveEvaluation);
+      } catch (error) {
+        failureReason = error instanceof Error ? error.message : String(error);
+        effectiveEvaluation = {
+          ...effectiveEvaluation,
+          outcome: "failure",
+          normalizedRootCause: "UNVERIFIABLE: evaluation persistence failed",
+        };
+      }
+
+      let fingerprint: string;
+      try {
+        fingerprint = createRoutineExceptionFingerprint({
+          routineId: input.routine.id,
+          contractVersion: effectiveEvaluation.contractVersion,
+          normalizedRootCause:
+            effectiveEvaluation.outcome === "green"
+              ? "green"
+              : effectiveEvaluation.normalizedRootCause ?? "",
+          affectedResource: effectiveEvaluation.affectedResource,
+        });
+      } catch (error) {
+        failureReason = error instanceof Error ? error.message : String(error);
+        effectiveEvaluation = {
+          ...effectiveEvaluation,
+          outcome: "failure",
+          normalizedRootCause: "UNVERIFIABLE: exception fingerprint failed",
+          affectedResource: effectiveEvaluation.affectedResource || "unknown",
+          contractVersion: effectiveEvaluation.contractVersion || "unknown",
+        };
+        fingerprint = createRoutineExceptionFingerprint({
+          routineId: input.routine.id,
+          contractVersion: effectiveEvaluation.contractVersion,
+          normalizedRootCause:
+            effectiveEvaluation.normalizedRootCause ?? "UNVERIFIABLE: exception fingerprint failed",
+          affectedResource: effectiveEvaluation.affectedResource,
+        });
+      }
+
+      const originId = exceptionResourceOriginId(
+        input.routine.id,
+        effectiveEvaluation.contractVersion,
+        effectiveEvaluation.affectedResource,
+      );
+      const [createdRun] = await txDb.insert(routineRuns).values({
+        companyId: input.routine.companyId,
+        routineId: input.routine.id,
+        triggerId: input.trigger?.id ?? null,
+        source: input.source,
+        status: "received",
+        triggeredAt,
+        routineRevisionId: input.routine.latestRevisionId,
+        responsibleUserId: input.routine.responsibleUserId,
+        idempotencyKey: input.idempotencyKey ?? null,
+        triggerPayload: { exceptionLedEvaluation: input.evaluation },
+        dispatchFingerprint: fingerprint,
+        failureReason,
+      }).returning();
+
+      const complete = async (
+        status: string,
+        linkedIssueId: string | null,
+        coalescedIntoRunId: string | null = null,
+      ) => {
+        const [updatedRun] = await txDb.update(routineRuns).set({
+          status,
+          linkedIssueId,
+          coalescedIntoRunId,
+          failureReason,
+          completedAt: triggeredAt,
+          updatedAt: triggeredAt,
+        }).where(eq(routineRuns.id, createdRun.id)).returning();
+        await updateRoutineTouchedState({
+          routineId: input.routine.id,
+          triggerId: input.trigger?.id ?? null,
+          triggeredAt,
+          status,
+          issueId: linkedIssueId,
+        }, txDb);
+        return updatedRun ?? createdRun;
+      };
+
+      if (effectiveEvaluation.outcome === "green") {
+        const openIncidents = await txDb.select({ id: issues.id }).from(issues).where(and(
+          eq(issues.companyId, input.routine.companyId),
+          eq(issues.originKind, "routine_exception"),
+          eq(issues.originId, originId),
+          inArray(issues.status, OPEN_ISSUE_STATUSES),
+          visibleIssueCondition(),
+        ));
+        const incidentIds = openIncidents.map((incident) => incident.id);
+        if (incidentIds.length > 0) {
+          await txDb.update(issues).set({
+            status: "done",
+            completedAt: triggeredAt,
+            updatedAt: triggeredAt,
+          }).where(inArray(issues.id, incidentIds));
+        }
+
+        const residueIds = [...new Set(effectiveEvaluation.residueIssueIds)];
+        if (residueIds.length > 0) {
+          await txDb.update(issues).set({
+            status: "cancelled",
+            cancelledAt: triggeredAt,
+            updatedAt: triggeredAt,
+          }).where(and(
+            eq(issues.companyId, input.routine.companyId),
+            eq(issues.originKind, "routine_execution"),
+            eq(issues.originId, input.routine.id),
+            inArray(issues.id, residueIds),
+            inArray(issues.status, OPEN_ISSUE_STATUSES),
+          ));
+        }
+
+        await logActivity(txDb, {
+          companyId: input.routine.companyId,
+          actorType: input.actor?.agentId ? "agent" : input.actor?.userId ? "user" : "system",
+          actorId: input.actor?.agentId ?? input.actor?.userId ?? "routine-exception-dispatch",
+          agentId: input.actor?.agentId ?? null,
+          runId: input.actor?.runId ?? null,
+          action: "routine.exception_recovered",
+          entityType: "routine_run",
+          entityId: createdRun.id,
+          details: { routineId: input.routine.id, originId, incidentIds, residueIssueIds: residueIds },
+        });
+        return complete("completed", null);
+      }
+
+      const existingIncident = await txDb.select().from(issues).where(and(
+        eq(issues.companyId, input.routine.companyId),
+        eq(issues.originKind, "routine_exception"),
+        eq(issues.originId, originId),
+        eq(issues.originFingerprint, fingerprint),
+        inArray(issues.status, OPEN_ISSUE_STATUSES),
+        visibleIssueCondition(),
+      )).limit(1).then((rows) => rows[0] ?? null);
+      if (existingIncident) {
+        return complete("coalesced", existingIncident.id, existingIncident.originRunId);
+      }
+
+      const rootCause = effectiveEvaluation.normalizedRootCause ?? "UNVERIFIABLE: missing root cause";
+      const incident = await issueService(txDb).create(input.routine.companyId, {
+        projectId: input.routine.projectId,
+        goalId: input.routine.goalId,
+        parentId: input.routine.parentIssueId,
+        title: `Routine exception: ${input.routine.title}`,
+        description: [
+          `Exception-led routine evaluation failed for \`${effectiveEvaluation.affectedResource}\`.`,
+          `Contract: \`${effectiveEvaluation.contractVersion}\``,
+          `Root cause: ${rootCause}`,
+          `Evidence is retained on routine run \`${createdRun.id}\`.`,
+        ].join("\n\n"),
+        status: "blocked",
+        priority: "high",
+        assigneeAgentId: input.routine.assigneeAgentId,
+        createdByAgentId: input.actor?.agentId ?? null,
+        createdByUserId: input.actor?.userId ?? null,
+        responsibleUserId: input.routine.responsibleUserId,
+        trustExplicitResponsibleUserId: true,
+        originKind: "routine_exception",
+        originId,
+        originRunId: createdRun.id,
+        originFingerprint: fingerprint,
+      });
+      await logActivity(txDb, {
+        companyId: input.routine.companyId,
+        actorType: input.actor?.agentId ? "agent" : input.actor?.userId ? "user" : "system",
+        actorId: input.actor?.agentId ?? input.actor?.userId ?? "routine-exception-dispatch",
+        agentId: input.actor?.agentId ?? null,
+        runId: input.actor?.runId ?? null,
+        action: "routine.exception_opened",
+        entityType: "issue",
+        entityId: incident.id,
+        details: { routineId: input.routine.id, routineRunId: createdRun.id, originId, fingerprint },
+      });
+      return complete("issue_created", incident.id);
+    });
   }
 
   async function dispatchRoutineRun(input: {
@@ -2725,6 +3015,16 @@ export function routineService(
       const trigger = input.triggerId ? await getTriggerById(input.triggerId) : null;
       if (trigger && trigger.routineId !== routine.id) throw forbidden("Trigger does not belong to routine");
       if (trigger && !trigger.enabled) throw conflict("Routine trigger is not active");
+      if (input.exceptionLedEvaluation && isExceptionLedPilot(routine.id)) {
+        return recordExceptionLedEvaluation({
+          routine,
+          trigger,
+          source: input.source,
+          evaluation: input.exceptionLedEvaluation,
+          idempotencyKey: input.idempotencyKey,
+          actor,
+        });
+      }
       return dispatchRoutineRun({
         routine,
         trigger,

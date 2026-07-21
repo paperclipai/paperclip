@@ -169,6 +169,26 @@ export const runRoutineSchema = z.object({
   executionWorkspaceId: z.string().uuid().optional().nullable(),
   executionWorkspacePreference: z.enum(ISSUE_EXECUTION_WORKSPACE_PREFERENCES).optional().nullable(),
   executionWorkspaceSettings: issueExecutionWorkspaceSettingsSchema.optional().nullable(),
+  exceptionLedEvaluation: z.object({
+    contractVersion: z.string().trim().min(1).max(120),
+    outcome: z.enum(["green", "failure"]),
+    affectedResource: z.string().trim().min(1).max(500),
+    normalizedRootCause: z.string().trim().min(1).max(2_000).optional().nullable(),
+    evidence: z.record(z.string(), z.unknown()).optional().default({}),
+    residueIssueIds: z.array(z.string().uuid()).max(100).optional().default([]),
+    approvalClosure: z.object({
+      approvalStatus: z.enum(["approved", "rejected", "cancelled", "pending"]),
+      approvalIssueId: z.string().uuid(),
+      evidenceIssueId: z.string().uuid(),
+      approvalPrId: z.string().trim().min(1),
+      evidencePrId: z.string().trim().min(1),
+      approvalRuntimeId: z.string().trim().min(1),
+      evidenceRuntimeId: z.string().trim().min(1),
+      runtimeState: z.enum(["clean", "dirty", "unknown"]),
+      bootCommitMatches: z.boolean(),
+      reconciliationMatches: z.boolean(),
+    }).optional().nullable(),
+  }).optional().nullable(),
 });
 
 export type RunRoutine = z.infer<typeof runRoutineSchema>;

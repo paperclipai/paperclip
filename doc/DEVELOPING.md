@@ -178,6 +178,17 @@ These browser suites are intended for targeted local verification and CI, not th
 
 For normal issue work, start with the smallest targeted check that proves the change. Reserve repo-wide typecheck/build/test runs for PR-ready handoff or changes broad enough that narrow checks do not cover the risk.
 
+### Exception-led routine pilot
+
+Routine API runs can record a deterministic `exceptionLedEvaluation` without creating the normal execution issue. The path is disabled by default and applies only when both settings are present:
+
+```sh
+PAPERCLIP_EXCEPTION_LED_ROUTINES_ENABLED=true
+PAPERCLIP_EXCEPTION_LED_ROUTINE_IDS=<routine-uuid>,<routine-uuid>
+```
+
+Green evaluations retain a routine-run record and create no issue. Failed evaluations create or reuse a high-priority incident keyed by routine, contract version, normalized root cause, and affected resource. Remove the routine id from the allowlist or disable the feature flag to restore issue-per-run dispatch.
+
 ## One-Command Local Run
 
 For a first-time local install, you can bootstrap and run in one command:
