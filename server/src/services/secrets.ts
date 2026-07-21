@@ -1238,7 +1238,7 @@ export function secretService(db: Db) {
     secretId: string,
     version: number | "latest",
     context: AgentSecretReadContext,
-  ): Promise<string> {
+  ): Promise<{ value: string; version: number }> {
     if (context.actorSource !== "agent_jwt") {
       throw forbidden("Agent secret access requires a run-bound agent token");
     }
@@ -1257,6 +1257,7 @@ export function secretService(db: Db) {
         eq(heartbeatRuns.id, context.heartbeatRunId),
         eq(heartbeatRuns.companyId, companyId),
         eq(heartbeatRuns.agentId, context.agentId),
+        eq(heartbeatRuns.status, "running"),
       ))
       .then((rows) => rows[0] ?? null);
     if (!run) {
@@ -1369,7 +1370,10 @@ export function secretService(db: Db) {
           version: resolution.manifestEntry.version,
         },
       });
-      return resolution.value;
+      return {
+        value: resolution.value,
+        version: resolution.manifestEntry.version,
+      };
     } catch (error) {
       const errorCode = secretResolutionErrorCode(error);
       await logActivity(db, {
@@ -1409,6 +1413,7 @@ export function secretService(db: Db) {
         eq(heartbeatRuns.id, context.heartbeatRunId),
         eq(heartbeatRuns.companyId, companyId),
         eq(heartbeatRuns.agentId, context.agentId),
+        eq(heartbeatRuns.status, "running"),
       ))
       .then((rows) => rows[0] ?? null);
     if (!run) throw forbidden("Agent secret access requires a verified heartbeat run");

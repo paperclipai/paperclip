@@ -100,7 +100,7 @@ export function secretRoutes(db: Db) {
     const secret = available.find((entry) => entry.key === req.params.key);
     const unresolvedSecret = secret ? null : await svc.getByKey(context.companyId, req.params.key);
     if (!secret && !unresolvedSecret) throw forbidden("Secret access is not granted for this agent");
-    const value = await svc.resolveSecretValueForAgentAccess(
+    const resolution = await svc.resolveSecretValueForAgentAccess(
       context.companyId,
       secret?.secretId ?? unresolvedSecret!.id,
       secret?.versionSelector ?? "latest",
@@ -115,8 +115,8 @@ export function secretRoutes(db: Db) {
     res.set("Cache-Control", "no-store");
     res.json({
       key: secret?.key ?? unresolvedSecret!.key,
-      value,
-      version: secret?.resolvedVersion ?? unresolvedSecret!.latestVersion,
+      value: resolution.value,
+      version: resolution.version,
     });
   });
 

@@ -239,7 +239,7 @@ describeEmbeddedPostgres("secretService", () => {
         actorSource: "agent_jwt",
         heartbeatRunId,
         registerForRedaction: (value) => redactedValues.push(value),
-      })).resolves.toBe("runtime-secret");
+      })).resolves.toEqual({ value: "runtime-secret", version: 1 });
     }
 
     expect(redactedValues).toEqual(["runtime-secret", "runtime-secret"]);
@@ -322,6 +322,20 @@ describeEmbeddedPostgres("secretService", () => {
       heartbeatRunId,
       registerForRedaction,
     })).rejects.toThrow(/not granted/i);
+
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, heartbeatRunId));
+    await expect(svc.listAgentSecretAccess(companyId, {
+      agentId,
+      actorSource: "agent_jwt",
+      heartbeatRunId,
+    })).rejects.toThrow(/verified heartbeat run/i);
+    await expect(svc.resolveSecretValueForAgentAccess(companyId, secret.id, "latest", {
+      agentId,
+      configPath: "access.GRANTED",
+      actorSource: "agent_jwt",
+      heartbeatRunId,
+      registerForRedaction,
+    })).rejects.toThrow(/verified heartbeat run/i);
 
     expect(registerForRedaction).not.toHaveBeenCalled();
     const events = await svc.listAccessEvents(companyId, secret.id);
