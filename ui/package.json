@@ -55,7 +55,7 @@
     "hermes-paperclip-adapter": "^0.2.0",
     "lexical": "0.35.0",
     "lucide-react": "^0.574.0",
-    "mermaid": "^11.12.0",
+    "mermaid": "^11.15.0",
     "radix-ui": "^1.4.3",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
@@ -77,6 +77,6 @@
     "typescript": "^5.7.3",
     "storybook": "10.5.0",
     "vite": "^8.1.5",
-    "vitest": "^3.0.5"
+    "vitest": "^3.2.6"
   }
 }
