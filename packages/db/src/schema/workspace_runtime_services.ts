@@ -36,6 +36,7 @@ export const workspaceRuntimeServices = pgTable(
     url: text("url"),
     provider: text("provider").notNull(),
     providerRef: text("provider_ref"),
+    providerMetadata: jsonb("provider_metadata").$type<Record<string, unknown>>(),
     ownerAgentId: uuid("owner_agent_id").references(() => agents.id, { onDelete: "set null" }),
     startedByRunId: uuid("started_by_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
     lastUsedAt: timestamp("last_used_at", { withTimezone: true }).notNull().defaultNow(),

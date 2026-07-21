@@ -41,6 +41,7 @@ import {
   startRuntimeServicesForWorkspaceControl,
   stopRuntimeServicesForExecutionWorkspace,
   type RealizedExecutionWorkspace,
+  type RuntimeServiceProvider,
 } from "../services/workspace-runtime.ts";
 import {
   findAdoptableLocalService,
@@ -3306,6 +3307,110 @@ describe("ensureRuntimeServicesForRun", () => {
     expect(services).toEqual([]);
   });
 
+  it("routes runtime service lifecycle through a sandbox provider", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-provider-"));
+    const workspace = buildWorkspace(workspaceRoot);
+    const provider: RuntimeServiceProvider = {
+      start: async (service) => {
+        expect(service).toMatchObject({
+          serviceName: "remote-web",
+          command: "pnpm dev",
+          cwd: workspaceRoot,
+          url: "https://runtime.example.test",
+          readinessUrl: "https://runtime.example.test/health",
+        });
+        expect(service.env).toEqual({ SAFE_RUNTIME_VALUE: "from-adapter" });
+        return {
+          providerRef: "docker-runtime-service-1",
+          url: "https://runtime.example.test",
+          metadata: { containerId: "container-1" },
+        };
+      },
+      health: async (service) => {
+        expect(service).toEqual({
+          serviceName: "remote-web",
+          providerRef: "docker-runtime-service-1",
+          url: "https://runtime.example.test",
+          readinessUrl: "https://runtime.example.test/health",
+        });
+        return { healthy: true, metadata: { healthcheck: "passed" } };
+      },
+      stop: async (service) => {
+        expect(service).toEqual({
+          serviceName: "remote-web",
+          providerRef: "docker-runtime-service-1",
+        });
+      },
+    };
+
+    try {
+      const services = await ensureRuntimeServicesForRun({
+        runId: "run-provider-runtime",
+        agent: { id: "agent-1", name: "Codex Coder", companyId: "company-1" },
+        issue: null,
+        workspace,
+        config: {
+          workspaceRuntime: {
+            services: [{
+              name: "remote-web",
+              command: "pnpm dev",
+              cwd: ".",
+              env: { SAFE_RUNTIME_VALUE: "{{workspace.env.RUNTIME_SAFE_VALUE}}" },
+              expose: { type: "url", urlTemplate: "https://runtime.example.test" },
+              readiness: { type: "http", url: "https://runtime.example.test/health" },
+            }],
+          },
+        },
+        adapterEnv: { RUNTIME_SAFE_VALUE: "from-adapter", DATABASE_URL: "postgres://must-not-forward.example.test/paperclip" },
+        providerRuntime: provider,
+      });
+
+      expect(services).toEqual([expect.objectContaining({
+        provider: "sandbox_provider",
+        providerRef: "docker-runtime-service-1",
+        providerMetadata: { containerId: "container-1", healthcheck: "passed" },
+        url: "https://runtime.example.test",
+      })]);
+    } finally {
+      await releaseRuntimeServicesForRun("run-provider-runtime");
+    }
+  });
+
+  it("waits for a sandbox provider service to become healthy", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-provider-ready-"));
+    const workspace = buildWorkspace(workspaceRoot);
+    let healthChecks = 0;
+    const provider: RuntimeServiceProvider = {
+      start: async () => ({ providerRef: "docker-runtime-service-2", url: "https://runtime.example.test" }),
+      health: async () => ({ healthy: ++healthChecks >= 2 }),
+      stop: async () => undefined,
+    };
+
+    try {
+      await expect(ensureRuntimeServicesForRun({
+        runId: "run-provider-readiness",
+        agent: { id: "agent-1", name: "Codex Coder", companyId: "company-1" },
+        issue: null,
+        workspace,
+        config: {
+          workspaceRuntime: {
+            services: [{
+              name: "remote-web",
+              command: "pnpm dev",
+              cwd: ".",
+              readiness: { type: "http", url: "https://runtime.example.test/health", intervalMs: 1 },
+            }],
+          },
+        },
+        adapterEnv: {},
+        providerRuntime: provider,
+      })).resolves.toHaveLength(1);
+      expect(healthChecks).toBe(2);
+    } finally {
+      await releaseRuntimeServicesForRun("run-provider-readiness");
+    }
+  });
+
   it("requires Paperclip dev runtime services to pass /api/health readiness", async () => {
     const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-health-"));
     const workspace = buildWorkspace(workspaceRoot);
@@ -3796,6 +3901,40 @@ describe("ensureRuntimeServicesForRun", () => {
 
     await releaseRuntimeServicesForRun(runId);
     leasedRunIds.delete(runId);
+  });
+
+  it("routes workspace-controlled services through a sandbox provider", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-control-provider-"));
+    const workspace = buildWorkspace(workspaceRoot);
+    const started: string[] = [];
+    const stopped: string[] = [];
+    const provider: RuntimeServiceProvider = {
+      start: async (service) => {
+        started.push(service.serviceName);
+        return { providerRef: "docker-control-service", url: "https://runtime.example.test" };
+      },
+      health: async () => ({ healthy: true }),
+      stop: async (service) => { stopped.push(service.providerRef ?? ""); },
+    };
+
+    const services = await startRuntimeServicesForWorkspaceControl({
+      invocationId: "control-provider-run",
+      actor: { id: "agent-1", name: "Codex Coder", companyId: "company-1" },
+      issue: null,
+      workspace,
+      executionWorkspaceId: "execution-workspace-control-provider",
+      config: {
+        desiredState: "running",
+        workspaceRuntime: { services: [{ name: "remote-web", command: "pnpm dev", cwd: "." }] },
+      },
+      adapterEnv: {},
+      providerRuntime: provider,
+    });
+
+    expect(services).toEqual([expect.objectContaining({ provider: "sandbox_provider", providerRef: "docker-control-service" })]);
+    expect(started).toEqual(["remote-web"]);
+    await stopRuntimeServicesForExecutionWorkspace({ executionWorkspaceId: "execution-workspace-control-provider" });
+    expect(stopped).toEqual(["docker-control-service"]);
   });
 
   it("starts only the selected workspace-controlled runtime service", async () => {

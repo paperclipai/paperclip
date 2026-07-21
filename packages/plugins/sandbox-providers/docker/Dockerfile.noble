@@ -1,0 +1,19 @@
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+    ca-certificates curl git nodejs npm tini \
+    chromium \
+    libasound2t64 libatk-bridge2.0-0 libatk1.0-0 libcups2t64 libdrm2 \
+    libgbm1 libgtk-3-0 libnspr4 libnss3 libx11-xcb1 libxcomposite1 \
+    libxdamage1 libxfixes3 libxkbcommon0 libxrandr2 xdg-utils \
+  && rm -rf /var/lib/apt/lists/* \
+  && groupadd --gid 1000 paperclip \
+  && useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash paperclip \
+  && install -d -o paperclip -g paperclip -m 0755 /workspace
+
+USER paperclip
+WORKDIR /workspace
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["sleep", "infinity"]

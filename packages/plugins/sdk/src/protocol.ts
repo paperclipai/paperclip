@@ -650,6 +650,46 @@ export interface PluginEnvironmentExecuteResult {
   metadata?: Record<string, unknown>;
 }
 
+/** A long-running workspace service owned by the sandbox provider. */
+export interface PluginEnvironmentRuntimeService {
+  serviceName: string;
+  command: string;
+  cwd?: string;
+  url?: string | null;
+  readinessUrl?: string | null;
+  port?: number | null;
+  env?: Record<string, string>;
+  timeoutMs?: number;
+}
+
+export interface PluginEnvironmentStartRuntimeServiceParams extends PluginEnvironmentDriverBaseParams {
+  lease: PluginEnvironmentLease;
+  service: PluginEnvironmentRuntimeService;
+}
+
+export interface PluginEnvironmentStartRuntimeServiceResult {
+  providerRef: string;
+  url?: string | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface PluginEnvironmentStopRuntimeServiceParams extends PluginEnvironmentDriverBaseParams {
+  lease: PluginEnvironmentLease;
+  serviceName: string;
+  providerRef?: string | null;
+}
+
+export interface PluginEnvironmentHealthRuntimeServiceParams extends PluginEnvironmentStopRuntimeServiceParams {
+  url?: string | null;
+  readinessUrl?: string | null;
+}
+
+export interface PluginEnvironmentHealthRuntimeServiceResult {
+  healthy: boolean;
+  url?: string | null;
+  metadata?: Record<string, unknown>;
+}
+
 export type PluginEnvironmentInteractiveSetupStatus =
   | "starting"
   | "waiting_for_user"
@@ -864,6 +904,9 @@ export interface HostToWorkerMethods {
     params: PluginEnvironmentExecuteParams,
     result: PluginEnvironmentExecuteResult,
   ];
+  environmentStartRuntimeService: [params: PluginEnvironmentStartRuntimeServiceParams, result: PluginEnvironmentStartRuntimeServiceResult];
+  environmentStopRuntimeService: [params: PluginEnvironmentStopRuntimeServiceParams, result: void];
+  environmentHealthRuntimeService: [params: PluginEnvironmentHealthRuntimeServiceParams, result: PluginEnvironmentHealthRuntimeServiceResult];
   environmentStartInteractiveSetup: [
     params: PluginEnvironmentStartInteractiveSetupParams,
     result: PluginEnvironmentInteractiveSetupSession,
@@ -918,6 +961,9 @@ export const HOST_TO_WORKER_OPTIONAL_METHODS: readonly HostToWorkerMethodName[] 
   "environmentDestroyLease",
   "environmentRealizeWorkspace",
   "environmentExecute",
+  "environmentStartRuntimeService",
+  "environmentStopRuntimeService",
+  "environmentHealthRuntimeService",
   "environmentStartInteractiveSetup",
   "environmentGetInteractiveSetup",
   "environmentCaptureTemplate",

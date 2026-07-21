@@ -55,6 +55,11 @@ import type {
   PluginEnvironmentDestroyLeaseParams,
   PluginEnvironmentExecuteParams,
   PluginEnvironmentExecuteResult,
+  PluginEnvironmentStartRuntimeServiceParams,
+  PluginEnvironmentStartRuntimeServiceResult,
+  PluginEnvironmentStopRuntimeServiceParams,
+  PluginEnvironmentHealthRuntimeServiceParams,
+  PluginEnvironmentHealthRuntimeServiceResult,
   PluginEnvironmentStartInteractiveSetupParams,
   PluginEnvironmentInteractiveSetupSession,
   PluginEnvironmentGetInteractiveSetupParams,
@@ -335,6 +340,15 @@ export interface PluginDefinition {
   onEnvironmentExecute?(
     params: PluginEnvironmentExecuteParams,
   ): Promise<PluginEnvironmentExecuteResult>;
+
+  /** Called to start a workspace runtime service inside the provider lease. */
+  onEnvironmentStartRuntimeService?(params: PluginEnvironmentStartRuntimeServiceParams): Promise<PluginEnvironmentStartRuntimeServiceResult>;
+
+  /** Called to stop a workspace runtime service inside the provider lease. */
+  onEnvironmentStopRuntimeService?(params: PluginEnvironmentStopRuntimeServiceParams): Promise<void>;
+
+  /** Called to health-check a workspace runtime service inside the provider lease. */
+  onEnvironmentHealthRuntimeService?(params: PluginEnvironmentHealthRuntimeServiceParams): Promise<PluginEnvironmentHealthRuntimeServiceResult>;
 
   /** Called to start an interactive setup sandbox and return redacted connection metadata. */
   onEnvironmentStartInteractiveSetup?(
