@@ -26,7 +26,11 @@
       "defaults": {
         "serverUrl": "https://mcp.linear.app/mcp",
         "authorizationEndpoint": "https://linear.app/oauth/authorize",
-        "tokenEndpoint": "https://api.linear.app/oauth/token"
+        "tokenEndpoint": "https://api.linear.app/oauth/token",
+        "scopesHint": [
+          "read",
+          "write"
+        ]
       },
       "guidanceMd": "Register a Linear OAuth app and add Paperclip's redirect URI before connecting.",
       "riskTier": "S2",
