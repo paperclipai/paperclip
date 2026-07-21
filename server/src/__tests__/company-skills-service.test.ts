@@ -2000,6 +2000,10 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     await fs.mkdir(skillDir, { recursive: true });
     await fs.writeFile(path.join(skillDir, "SKILL.md"), "---\nname: Editorial\n---\n", "utf8");
     await fs.writeFile(path.join(workspaceDir, "content", "README.md"), "# Content\n", "utf8");
+    await fs.writeFile(path.join(workspaceDir, "content", "skill.md"), "# Not a valid skill filename\n", "utf8");
+    for (let entryIndex = 0; entryIndex < 251; entryIndex += 1) {
+      await fs.symlink(skillDir, path.join(workspaceDir, `ignored-${String(entryIndex).padStart(3, "0")}`));
+    }
     await db.insert(companies).values({
       id: companyId,
       name: "Paperclip",
@@ -2018,12 +2022,14 @@ describeEmbeddedPostgres("companySkillService.list", () => {
 
     const root = await svc.browseProjectWorkspace(companyId, { projectId, workspaceId });
     expect(root.entries).toEqual([expect.objectContaining({ name: "content", kind: "directory", isSkill: false })]);
+    expect(root.truncated).toBe(false);
 
     const content = await svc.browseProjectWorkspace(companyId, { projectId, workspaceId, path: "content" });
     expect(content).toMatchObject({ path: "content", parentPath: "." });
     expect(content.entries).toEqual([
       expect.objectContaining({ name: "teams", kind: "directory", isSkill: false }),
       expect.objectContaining({ name: "README.md", kind: "file", isSkill: false }),
+      expect.objectContaining({ name: "skill.md", kind: "file", isSkill: false }),
     ]);
 
     const teams = await svc.browseProjectWorkspace(companyId, { projectId, workspaceId, path: "content/teams" });

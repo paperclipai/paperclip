@@ -4506,10 +4506,14 @@ export function companySkillService(db: Db) {
     if (!targetStat.isDirectory()) throw unprocessable("Project workspace path must be a folder.");
 
     const directoryEntries = await fs.readdir(targetPath, { withFileTypes: true });
+    const visibleDirectoryEntries = directoryEntries.filter((entry) => (
+      !entry.isSymbolicLink()
+      && entry.name !== ".git"
+      && entry.name !== "node_modules"
+      && (entry.isDirectory() || entry.isFile())
+    ));
     const entries: CompanySkillProjectBrowseResult["entries"] = [];
-    for (const entry of directoryEntries.slice(0, 250)) {
-      if (entry.isSymbolicLink() || entry.name === ".git" || entry.name === "node_modules") continue;
-      if (!entry.isDirectory() && !entry.isFile()) continue;
+    for (const entry of visibleDirectoryEntries.slice(0, 250)) {
       const entryPath = normalizedPath === "." ? entry.name : `${normalizedPath}/${entry.name}`;
       entries.push({
         name: entry.name,
@@ -4517,7 +4521,7 @@ export function companySkillService(db: Db) {
         kind: entry.isDirectory() ? "directory" : "file",
         isSkill: entry.isDirectory()
           ? Boolean((await statPath(path.join(targetPath, entry.name, "SKILL.md")))?.isFile())
-          : entry.name.toLowerCase() === "skill.md",
+          : entry.name === "SKILL.md",
       });
     }
     entries.sort((left, right) => {
@@ -4531,7 +4535,7 @@ export function companySkillService(db: Db) {
       path: normalizedPath,
       parentPath: normalizedPath === "." ? null : path.posix.dirname(normalizedPath) || ".",
       entries,
-      truncated: directoryEntries.length > 250,
+      truncated: visibleDirectoryEntries.length > 250,
     };
   }
 
