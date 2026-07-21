@@ -42,6 +42,10 @@ export const heartbeatRuns = pgTable(
     retryOfRunId: uuid("retry_of_run_id").references((): AnyPgColumn => heartbeatRuns.id, {
       onDelete: "set null",
     }),
+    retryRootRunId: uuid("retry_root_run_id").references((): AnyPgColumn => heartbeatRuns.id, {
+      onDelete: "set null",
+    }),
+    retryEpoch: integer("retry_epoch").notNull().default(0),
     processLossRetryCount: integer("process_loss_retry_count").notNull().default(0),
     scheduledRetryAt: timestamp("scheduled_retry_at", { withTimezone: true }),
     scheduledRetryAttempt: integer("scheduled_retry_attempt").notNull().default(0),

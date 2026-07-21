@@ -3,7 +3,7 @@ import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash, randomUUID } from "node:crypto";
-import { and, asc, desc, eq, getTableColumns, gt, gte, inArray, isNull, lt, lte, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, getTableColumns, gt, gte, inArray, isNull, lt, lte, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
@@ -203,6 +203,13 @@ import {
   readContinuationAttempt,
 } from "./recovery/index.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./recovery/pause-hold-guard.js";
+import {
+  buildSameRootRetryPark,
+  computeSameRootRetryDelayMs,
+  evaluateSameRootRetry,
+  resolveRetryEpochForNewRun,
+  resolveRetryRootRunId,
+} from "./same-root-retry-cap.js";
 import {
   recoveryAssigneeAdapterOverrides,
   withRecoveryModelProfileHint,
@@ -1777,6 +1784,8 @@ const heartbeatRunListColumns = {
   lastOutputStream: heartbeatRuns.lastOutputStream,
   lastOutputBytes: heartbeatRuns.lastOutputBytes,
   retryOfRunId: heartbeatRuns.retryOfRunId,
+  retryRootRunId: heartbeatRuns.retryRootRunId,
+  retryEpoch: heartbeatRuns.retryEpoch,
   processLossRetryCount: heartbeatRuns.processLossRetryCount,
   scheduledRetryAt: heartbeatRuns.scheduledRetryAt,
   scheduledRetryAttempt: heartbeatRuns.scheduledRetryAttempt,
@@ -8651,7 +8660,47 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }, "normal_model");
     const responsibleUserId = await resolveResponsibleUserIdForRunContext(run, retryContextSnapshot);
 
-    const queued = await db.transaction(async (tx) => {
+    const retryRootRunId = resolveRetryRootRunId(run);
+    const retryEpoch = resolveRetryEpochForNewRun({ source: run, wakeReason: "process_lost_retry" });
+
+    const priorAutomaticRunCount = await db
+      .select({ value: count() })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, run.companyId),
+          eq(heartbeatRuns.retryRootRunId, retryRootRunId),
+          eq(heartbeatRuns.retryEpoch, retryEpoch),
+        ),
+      )
+      .then((rows) => rows[0]?.value ?? 0);
+
+    const capDecision = evaluateSameRootRetry({ priorAutomaticRunCount: priorAutomaticRunCount + 1 });
+    if (!capDecision.allowed) {
+      const park = buildSameRootRetryPark({
+        rootRunId: retryRootRunId,
+        epoch: retryEpoch,
+        attempt: capDecision.attempt,
+        maxRetries: capDecision.maxRetries,
+        lastErrorCode: run.errorCode ?? null,
+        lastErrorMessage: run.error ?? null,
+        nextOwner: run.responsibleUserId ?? null,
+      });
+      await appendRunEvent(run, await nextRunEventSeq(run.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "error",
+        message: park.summary,
+        payload: park,
+      });
+      await releaseIssueExecutionAndPromote(run);
+      return null;
+    }
+
+    const retryDelayMs = computeSameRootRetryDelayMs(capDecision.attempt);
+    const scheduledAt = new Date(now.getTime() + retryDelayMs);
+
+    const scheduled = await db.transaction(async (tx) => {
       const wakeupRequest = await tx
         .insert(agentWakeupRequests)
         .values({
@@ -8679,13 +8728,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           agentId: run.agentId,
           invocationSource: "automation",
           triggerDetail: "system",
-          status: "queued",
+          status: "scheduled_retry",
           wakeupRequestId: wakeupRequest.id,
           contextSnapshot: retryContextSnapshot,
           responsibleUserId,
           sessionIdBefore: sessionBefore,
           retryOfRunId: run.id,
+          retryRootRunId,
+          retryEpoch,
           processLossRetryCount: (run.processLossRetryCount ?? 0) + 1,
+          scheduledRetryAt: scheduledAt,
+          scheduledRetryAttempt: capDecision.attempt,
+          scheduledRetryReason: "process_lost_retry",
           updatedAt: now,
         })
         .returning()
@@ -8715,29 +8769,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return retryRun;
     });
 
-    publishLiveEvent({
-      companyId: queued.companyId,
-      type: "heartbeat.run.queued",
-      payload: {
-        runId: queued.id,
-        agentId: queued.agentId,
-        invocationSource: queued.invocationSource,
-        triggerDetail: queued.triggerDetail,
-        wakeupRequestId: queued.wakeupRequestId,
-      },
-    });
-
-    await appendRunEvent(queued, 1, {
+    await appendRunEvent(scheduled, 1, {
       eventType: "lifecycle",
       stream: "system",
       level: "warn",
-      message: "Queued automatic retry after orphaned child process was confirmed dead",
+      message: "Scheduled automatic retry after orphaned child process was confirmed dead",
       payload: {
         retryOfRunId: run.id,
+        retryRootRunId,
+        retryEpoch,
+        attempt: capDecision.attempt,
+        scheduledAt: scheduledAt.toISOString(),
+        delayMs: retryDelayMs,
       },
     });
 
-    return queued;
+    return scheduled;
   }
 
   function toHotRestartIntentRun(input: {
