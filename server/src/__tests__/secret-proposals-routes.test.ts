@@ -184,6 +184,12 @@ describeEmbeddedPostgres("secret proposal routes", () => {
       });
     expect(bindingResponse.status).toBe(201);
 
+    const agentApprovalDenied = await request(createAgentApp(fixture))
+      .post(`/api/companies/${fixture.companyId}/secret-proposals/${secretResponse.body.id}/approve`)
+      .send({});
+    expect(agentApprovalDenied.status).toBe(403);
+    expect(await db.select().from(companySecrets)).toHaveLength(0);
+
     const prerequisite = await request(createBoardApp(fixture))
       .post(`/api/companies/${fixture.companyId}/secret-proposals/${bindingResponse.body.id}/approve`)
       .send({});

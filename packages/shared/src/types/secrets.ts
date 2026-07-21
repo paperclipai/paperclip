@@ -429,10 +429,11 @@ export interface SecretProposalView {
 
   /**
    * Server-computed permission preflight for the current viewer, mirroring the
-   * exact authz the approve path enforces (secrets write for secret-kind;
-   * secrets write — when cascading a proposed secret — AND `agent_config:update`
-   * on the target agent for binding-kind). Approve is disabled with
-   * `approveBlockReason` shown when this is `false`.
+   * exact authz the approve path enforces. Secret-kind approval uses the same
+   * board + company-access gate as the normal company-secret create route;
+   * binding-kind approval additionally requires `agent_config:update` on the
+   * target agent. Approve is disabled with `approveBlockReason` shown when this
+   * is `false`.
    */
   viewerCanApprove: boolean;
   approveBlockReason: string | null;
