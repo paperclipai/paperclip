@@ -98,6 +98,40 @@ function applyMembershipChange(
   };
 }
 
+/**
+ * Apply an optimistic document star change to the cached memberships snapshot.
+ * Documents have no join/leave state — they only carry a per-viewer star, so
+ * this mirrors the `document` half of the server rules: starring prepends the id
+ * (newest-first, matching starredAt DESC) and stamps `documentStarredAt`;
+ * unstarring drops both.
+ */
+function applyDocumentStarChange(
+  current: ResourceMemberships | undefined,
+  documentId: string,
+  starred: boolean,
+): ResourceMemberships {
+  const base = current ?? emptyMemberships();
+  const currentIds = base.starredDocumentIds ?? [];
+  const nextStarredAt = { ...(base.documentStarredAt ?? {}) };
+  const previouslyStarred = currentIds.includes(documentId);
+
+  let starredIds = currentIds;
+  if (starred && !previouslyStarred) {
+    starredIds = [documentId, ...currentIds];
+    nextStarredAt[documentId] = new Date().toISOString();
+  } else if (!starred && previouslyStarred) {
+    starredIds = currentIds.filter((id) => id !== documentId);
+    delete nextStarredAt[documentId];
+  }
+
+  return {
+    ...base,
+    starredDocumentIds: starredIds,
+    documentStarredAt: nextStarredAt,
+    updatedAt: new Date(),
+  };
+}
+
 export function resourceMembershipState(
   memberships: ResourceMemberships | undefined,
   resourceType: JoinableResourceType,
@@ -194,6 +228,72 @@ export function useResourceMembershipMutation(companyId: string | null | undefin
     },
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey });
+    },
+  });
+}
+
+type DocumentStarVariables = {
+  documentId: string;
+  /** Human-readable document name, used for the error toast. */
+  documentName: string;
+  starred: boolean;
+};
+
+/**
+ * Optimistic star/unstar for documents. Mirrors {@link useResourceMembershipMutation}
+ * but talks to the document-only route (documents have no join/leave state) and
+ * touches the `starredDocumentIds` / `documentStarredAt` cache fields.
+ */
+export function useDocumentStarMutation(companyId: string | null | undefined) {
+  const queryClient = useQueryClient();
+  const { pushToast } = useToastActions();
+  const queryKey = queryKeys.resourceMemberships.mine(companyId ?? "__none__");
+
+  return useMutation({
+    mutationFn: (variables: DocumentStarVariables) => {
+      if (!companyId) throw new Error("Select a company first.");
+      return resourceMembershipsApi.updateDocument(companyId, variables.documentId, {
+        starred: variables.starred,
+      });
+    },
+    onMutate: async (variables) => {
+      await queryClient.cancelQueries({ queryKey });
+      const previous = queryClient.getQueryData<ResourceMemberships>(queryKey);
+      // Capture only this document's prior star so a rollback reverts just this
+      // change and leaves any concurrent star mutation's optimistic state intact.
+      const previousStarred = isStarred(previous, "document", variables.documentId);
+      queryClient.setQueryData<ResourceMemberships>(
+        queryKey,
+        applyDocumentStarChange(previous, variables.documentId, variables.starred),
+      );
+      return { previousStarred };
+    },
+    onError: (error, variables, context) => {
+      // Targeted rollback: re-apply this document's prior star on top of the
+      // current cache, so we don't clobber a newer concurrent update.
+      queryClient.setQueryData<ResourceMemberships>(
+        queryKey,
+        (current) => applyDocumentStarChange(current, variables.documentId, context?.previousStarred ?? false),
+      );
+      pushToast({
+        title: `Couldn't ${variables.starred ? "star" : "unstar"} ${variables.documentName}.`,
+        body: error instanceof Error ? error.message : "Try again.",
+        tone: "error",
+      });
+    },
+    onSuccess: (result) => {
+      queryClient.setQueryData<ResourceMemberships>(
+        queryKey,
+        // Loose null-check: a missing or null starredAt both mean "not starred".
+        (current) => applyDocumentStarChange(current, result.resourceId, result.starredAt != null),
+      );
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey });
+      // The Artifacts "Starred" tab is a separate list query keyed by ["artifacts", ...],
+      // so refresh it too — otherwise an unstarred document lingers in the grid
+      // until the next natural refetch.
+      queryClient.invalidateQueries({ queryKey: ["artifacts"] });
     },
   });
 }

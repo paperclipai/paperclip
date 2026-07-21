@@ -182,6 +182,7 @@ describe("Artifacts page", () => {
         q: undefined,
         groupBy: "task",
         groupIssueId: undefined,
+        starred: false,
         limit: 30,
         cursor: undefined,
       });
@@ -228,6 +229,7 @@ describe("Artifacts page", () => {
         q: "launch",
         groupBy: "task",
         groupIssueId: undefined,
+        starred: false,
         limit: 30,
         cursor: undefined,
       });
@@ -285,6 +287,7 @@ describe("Artifacts page", () => {
         q: undefined,
         groupBy: "none",
         groupIssueId: undefined,
+        starred: false,
         limit: 30,
         cursor: "cursor-2",
       });
@@ -325,6 +328,7 @@ describe("Artifacts page", () => {
         q: undefined,
         groupBy: "none",
         groupIssueId: undefined,
+        starred: false,
         limit: 30,
         cursor: undefined,
       });
@@ -353,6 +357,7 @@ describe("Artifacts page", () => {
         q: undefined,
         groupBy: "task",
         groupIssueId: undefined,
+        starred: false,
         limit: 30,
         cursor: undefined,
       });
@@ -386,6 +391,7 @@ describe("Artifacts page", () => {
         q: undefined,
         groupBy: "task",
         groupIssueId: "issue-1",
+        starred: false,
         limit: 30,
         cursor: undefined,
       });
@@ -395,6 +401,95 @@ describe("Artifacts page", () => {
       ).toBe("/artifacts");
       expect(container.textContent).toContain("Stacked Artifact");
       expect(container.querySelector('[data-testid="artifact-card"]')).not.toBeNull();
+    });
+
+    flushSync(() => {
+      root.unmount();
+    });
+  });
+
+  it("requests starred documents from the ?starred=1 URL, ignoring kind and grouping", async () => {
+    artifactsApiMock.list.mockResolvedValue({
+      artifacts: [sampleArtifact({ id: "document:doc-1", title: "Starred Brief" })],
+      nextCursor: null,
+    });
+
+    const { root } = renderArtifacts(container, ["/artifacts?starred=1&kind=image&groupBy=task"]);
+
+    await waitForAssertion(() => {
+      expect(artifactsApiMock.list).toHaveBeenCalledWith("company-1", {
+        kind: "all",
+        q: undefined,
+        groupBy: "none",
+        groupIssueId: undefined,
+        starred: true,
+        limit: 30,
+        cursor: undefined,
+      });
+      const starredTab = container.querySelector('[data-testid="artifact-starred-tab"]') as HTMLElement;
+      expect(starredTab.getAttribute("aria-selected")).toBe("true");
+      // The grouping control is hidden in the documents-only Starred view.
+      expect(container.querySelector('[data-testid="artifact-group-control"]')).toBeNull();
+      expect(container.querySelector('[data-testid="artifact-card"]')).not.toBeNull();
+    });
+
+    flushSync(() => {
+      root.unmount();
+    });
+  });
+
+  it("composes the search query with the Starred filter", async () => {
+    artifactsApiMock.list.mockResolvedValue({ artifacts: [], nextCursor: null });
+
+    const { root } = renderArtifacts(container, ["/artifacts?starred=1&q=launch"]);
+
+    await waitForAssertion(() => {
+      expect(artifactsApiMock.list).toHaveBeenCalledWith("company-1", {
+        kind: "all",
+        q: "launch",
+        groupBy: "none",
+        groupIssueId: undefined,
+        starred: true,
+        limit: 30,
+        cursor: undefined,
+      });
+      // Empty state guides the user to star a document.
+      expect(container.textContent).toContain("No starred documents match this search.");
+    });
+
+    flushSync(() => {
+      root.unmount();
+    });
+  });
+
+  it("enters the Starred view when the Starred tab is clicked", async () => {
+    artifactsApiMock.list.mockResolvedValue({ artifacts: [], groups: [sampleGroup()], nextCursor: null });
+
+    const { root } = renderArtifacts(container);
+
+    const starredTab = await (async () => {
+      let tab: HTMLElement | null = null;
+      await waitForAssertion(() => {
+        tab = container.querySelector('[data-testid="artifact-starred-tab"]');
+        expect(tab).not.toBeNull();
+      });
+      return tab as unknown as HTMLElement;
+    })();
+
+    flushSync(() => {
+      starredTab.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    });
+
+    await waitForAssertion(() => {
+      expect(artifactsApiMock.list).toHaveBeenLastCalledWith("company-1", {
+        kind: "all",
+        q: undefined,
+        groupBy: "none",
+        groupIssueId: undefined,
+        starred: true,
+        limit: 30,
+        cursor: undefined,
+      });
     });
 
     flushSync(() => {
@@ -417,6 +512,7 @@ describe("Artifacts page", () => {
         q: undefined,
         groupBy: "task",
         groupIssueId: undefined,
+        starred: false,
         limit: 30,
         cursor: undefined,
       });

@@ -275,6 +275,7 @@ export const queryKeys = {
       q?: string,
       groupBy?: string,
       groupIssueId?: string,
+      starred?: boolean,
     ) =>
       [
         "artifacts",
@@ -283,6 +284,7 @@ export const queryKeys = {
         q ?? "",
         groupBy ?? "none",
         groupIssueId ?? "",
+        starred ? "starred" : "all",
       ] as const,
   },
   budgets: {

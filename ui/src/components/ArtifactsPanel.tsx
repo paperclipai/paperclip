@@ -4,6 +4,8 @@ import type { IssueWorkProduct } from "@paperclipai/shared";
 import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
 import { MarkdownBody } from "./MarkdownBody";
+import { StarToggle } from "./StarToggle";
+import { isStarred, useDocumentStarMutation, useResourceMemberships } from "../hooks/useResourceMemberships";
 import { cn } from "../lib/utils";
 import {
   FileText,
@@ -264,6 +266,9 @@ function DocumentViewer({
     queryFn: () => issuesApi.getDocument(taskId, docKey),
   });
 
+  const membershipsQuery = useResourceMemberships(doc?.companyId ?? null);
+  const documentStarMutation = useDocumentStarMutation(doc?.companyId ?? null);
+
   const needsAction = status === "ready_for_review" || reviewState === "needs_board_review";
   const isApproved = status === "approved" || reviewState === "approved";
   const isRejected = status === "changes_requested" || reviewState === "changes_requested";
@@ -275,6 +280,25 @@ function DocumentViewer({
           <ArrowLeft className="h-4 w-4" />
         </button>
         <h3 className="text-sm font-semibold flex-1 truncate">{title}</h3>
+        {doc ? (
+          <StarToggle
+            size="row"
+            starred={isStarred(membershipsQuery.data, "document", doc.id)}
+            pending={
+              documentStarMutation.isPending &&
+              documentStarMutation.variables?.documentId === doc.id
+            }
+            error={
+              documentStarMutation.isError &&
+              documentStarMutation.variables?.documentId === doc.id
+            }
+            resourceName={title}
+            revealClassName="opacity-100"
+            onToggle={(next) =>
+              documentStarMutation.mutate({ documentId: doc.id, documentName: title, starred: next })
+            }
+          />
+        ) : null}
         <button onClick={onBack} className="text-muted-foreground hover:text-foreground">
           <X className="h-4 w-4" />
         </button>

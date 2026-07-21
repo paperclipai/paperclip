@@ -3,6 +3,20 @@ import { Download, ExternalLink, Paperclip, Play } from "lucide-react";
 import type { CompanyArtifact } from "@/api/artifacts";
 import { Link } from "@/lib/router";
 import { cn, formatDate } from "@/lib/utils";
+import { useCompany } from "@/context/CompanyContext";
+import {
+  isStarred,
+  useDocumentStarMutation,
+  useResourceMemberships,
+} from "@/hooks/useResourceMemberships";
+import { StarToggle } from "@/components/StarToggle";
+
+/** Document artifact ids are `document:<documents.id>`; other sources have no star. */
+function documentIdFromArtifactId(artifact: CompanyArtifact): string | null {
+  if (artifact.source !== "document") return null;
+  const prefix = "document:";
+  return artifact.id.startsWith(prefix) ? artifact.id.slice(prefix.length) : null;
+}
 
 interface ArtifactCardProps {
   artifact: CompanyArtifact;
@@ -190,7 +204,35 @@ function SecondaryAction({
   );
 }
 
+/**
+ * Star control for a document artifact card. Rendered only for `document`
+ * sources (mounted conditionally so the membership hooks stay off non-document
+ * cards). Reuses the shared row StarToggle + resource-membership optimistic
+ * machinery. Lives outside the hover-reveal group so a starred document stays
+ * visibly marked at rest while unstarred stars reveal on hover/focus.
+ */
+function ArtifactCardStar({ documentId, name }: { documentId: string; name: string }) {
+  const { selectedCompanyId } = useCompany();
+  const membershipsQuery = useResourceMemberships(selectedCompanyId);
+  const starMutation = useDocumentStarMutation(selectedCompanyId);
+  const starred = isStarred(membershipsQuery.data, "document", documentId);
+  const pending = starMutation.isPending && starMutation.variables?.documentId === documentId;
+  const error = starMutation.isError && starMutation.variables?.documentId === documentId;
+
+  return (
+    <StarToggle
+      size="row"
+      starred={starred}
+      pending={pending}
+      error={error}
+      resourceName={name}
+      onToggle={(next) => starMutation.mutate({ documentId, documentName: name, starred: next })}
+    />
+  );
+}
+
 export function ArtifactCard({ artifact }: ArtifactCardProps) {
+  const documentId = documentIdFromArtifactId(artifact);
   return (
     <Link
       // design-allow(card-pattern): navigation <Link> card; Card renders a div and would break anchor semantics (C5a Run 3)
@@ -210,17 +252,20 @@ export function ArtifactCard({ artifact }: ArtifactCardProps) {
           >
             {artifact.title}
           </h3>
-          <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
-            {artifact.openPath ? (
-              <SecondaryAction href={artifact.openPath} title="Open file in new tab">
-                <ExternalLink className="h-3.5 w-3.5" />
-              </SecondaryAction>
-            ) : null}
-            {artifact.downloadPath ? (
-              <SecondaryAction href={artifact.downloadPath} download title="Download file">
-                <Download className="h-3.5 w-3.5" />
-              </SecondaryAction>
-            ) : null}
+          <div className="flex shrink-0 items-center gap-0.5">
+            {documentId ? <ArtifactCardStar documentId={documentId} name={artifact.title} /> : null}
+            <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+              {artifact.openPath ? (
+                <SecondaryAction href={artifact.openPath} title="Open file in new tab">
+                  <ExternalLink className="h-3.5 w-3.5" />
+                </SecondaryAction>
+              ) : null}
+              {artifact.downloadPath ? (
+                <SecondaryAction href={artifact.downloadPath} download title="Download file">
+                  <Download className="h-3.5 w-3.5" />
+                </SecondaryAction>
+              ) : null}
+            </div>
           </div>
         </div>
 

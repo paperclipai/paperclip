@@ -11,6 +11,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IssueDocumentsSection } from "./IssueDocumentsSection";
 import { queryKeys } from "../lib/queryKeys";
 
+// The document StarToggle uses the shared resource-membership mutation, which
+// pulls in toast feedback; stub the throwing hook so these provider-less renders
+// don't need a ToastProvider (all other real exports stay intact).
+vi.mock("../context/ToastContext", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../context/ToastContext")>()),
+  useToastActions: () => ({ pushToast: vi.fn(), dismissToast: vi.fn() }),
+}));
+
 const mockIssuesApi = vi.hoisted(() => ({
   listDocuments: vi.fn(),
   listDocumentRevisions: vi.fn(),
