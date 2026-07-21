@@ -298,12 +298,26 @@ const INTERACTION_CONTINUATION_REQUEUE_MAX_ATTEMPTS = 3;
 const CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS = 3;
 const CONTINUATION_RECOVERY_DEFAULT_MAX_ATTEMPTS = 1;
 const CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS = 60_000;
+// A binary swap window closes in seconds, so a short first backoff is enough to
+// clear the transient case. Three attempts then hands it to a human instead of
+// spending the budget the 2026-05-20 cluster burned on 12.
+const CONTINUATION_RECOVERY_MISSING_EXECUTABLE_MAX_ATTEMPTS = 3;
+const CONTINUATION_RECOVERY_MISSING_EXECUTABLE_BASE_BACKOFF_MS = 30_000;
 export const PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS = 60 * 60 * 1000;
 
 const PROVIDER_QUOTA_ERROR_RE =
   /(?:you(?:'|’)ve hit your usage limit|usage limit(?: reached| exceeded)?|provider quota|quota (?:limit )?exceeded|model (?:is )?at capacity)/i;
 const CONFIGURATION_INCOMPLETE_ERROR_RE =
   /(?:model_not_found|model [^\n]{0,120} not found|missing (?:api )?(?:key|credentials?)|credentials? (?:are |is )?missing|no (?:api )?(?:key|credentials?) (?:was |were )?(?:found|configured|provided)|api key (?:is )?(?:not set|unavailable))/i;
+/**
+ * The adapter CLI binary could not be found or started. Usually a package
+ * manager swapping the binary's symlink mid-run, which clears on its own; when
+ * it does not, the binary is genuinely gone and an operator has to reinstall
+ * it. Either way this is not upstream flakiness, so it gets its own bounded
+ * bucket rather than sharing the generic `adapter_failed` transient one.
+ */
+const MISSING_EXECUTABLE_ERROR_RE =
+  /(?:command not found in PATH|command is not executable|spawn \S+ ENOENT|\bENOENT\b[^\n]{0,80}spawn|failed to start command)/i;
 
 export type AdapterFailureRecoveryClassification =
   | { kind: "provider_quota"; retryAt: Date; parsedResetTime: boolean }
@@ -416,16 +430,35 @@ export function classifyAdapterFailureForRecovery(
 }
 
 type ContinuationRetryClassification = {
-  kind: "transient_infra" | "non_retryable" | "default";
+  kind: "transient_infra" | "missing_executable" | "non_retryable" | "default";
   maxAttempts: number;
   baseBackoffMs: number;
   errorCode: string | null;
 };
 
+export function isMissingExecutableFailure(latestRun: LatestIssueRun): boolean {
+  if (!latestRun) return false;
+  const resultJson = parseObject(latestRun.resultJson);
+  return MISSING_EXECUTABLE_ERROR_RE.test(
+    [latestRun.error ?? "", JSON.stringify(resultJson)].join("\n"),
+  );
+}
+
 export function classifyContinuationFailure(latestRun: LatestIssueRun): ContinuationRetryClassification {
   const errorCode = readNonEmptyString(latestRun?.errorCode);
   if (errorCode && NON_RETRYABLE_CONTINUATION_ERROR_CODES.has(errorCode)) {
     return { kind: "non_retryable", maxAttempts: 0, baseBackoffMs: 0, errorCode };
+  }
+  // Checked before the transient bucket: a missing binary arrives as the
+  // catch-all `adapter_failed` code, which would otherwise land it in the most
+  // retry-friendly bucket we have.
+  if (isMissingExecutableFailure(latestRun)) {
+    return {
+      kind: "missing_executable",
+      maxAttempts: CONTINUATION_RECOVERY_MISSING_EXECUTABLE_MAX_ATTEMPTS,
+      baseBackoffMs: CONTINUATION_RECOVERY_MISSING_EXECUTABLE_BASE_BACKOFF_MS,
+      errorCode,
+    };
   }
   if (errorCode && TRANSIENT_INFRA_CONTINUATION_ERROR_CODES.has(errorCode)) {
     return {
