@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import { z } from "zod";
-import { and, asc, desc, eq, inArray, isNull, notInArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, ne, notInArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -3783,6 +3783,7 @@ export function issueRoutes(
         eq(issueRows.parentId, parent.id),
         inArray(issueRows.status, ["todo", "in_progress", "in_review", "blocked"]),
         isNull(issueRows.hiddenAt),
+        ne(issueRows.originKind, TASK_WATCHDOG_ORIGIN_KIND),
       ))
       .orderBy(asc(issueRows.issueNumber), asc(issueRows.createdAt), asc(issueRows.id));
     return children[0] ?? null;

@@ -14564,11 +14564,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
         const deferredCommentIds = extractWakeCommentIds(deferredContextSeed);
         const deferredWakeReason = readNonEmptyString(deferredContextSeed.wakeReason);
+        // Only explicit lifecycle intent should revive completed issues. A human
+        // comment that landed while the issue was still open is deferred as
+        // `issue_commented` without reopen markers; promoting that wake after the
+        // active run marks the issue `done` must not undo that close. Real
+        // post-close reopens set `reopenedFrom` / `issue_reopened_via_comment`, or
+        // an agent asks for resume via resumeIntent/followUpRequested.
+        const deferredLifecycleIntent =
+          promotedContextSeed.resumeIntent === true ||
+          promotedContextSeed.followUpRequested === true ||
+          readNonEmptyString(promotedContextSeed.reopenedFrom) !== null ||
+          deferredWakeReason === "issue_reopened_via_comment";
         // Local-CLI agents post comments under user auth, so a self-comment from
         // the run that is now ending would otherwise look like a real human
         // comment and trigger a reopen on the very issue this run just closed.
         // Suppress reopen only when every referenced comment came from this run;
-        // mixed batches must still reopen because they contain a real follow-up.
+        // mixed batches with real post-close reopen intent must still reopen.
         let deferredCommentWakeIsSelfAuthored = false;
         if (deferredCommentIds.length > 0) {
           const deferredComments = await tx
@@ -14586,12 +14597,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             deferredComments.length > 0 &&
             deferredComments.every((comment) => comment.createdByRunId === run.id);
         }
-        // Only human/comment-reopen interactions should revive completed issues;
-        // system follow-ups such as retry or cleanup wakes must not reopen closed work.
+        // Only human/comment-reopen interactions with lifecycle intent should
+        // revive completed issues; system follow-ups such as retry or cleanup
+        // wakes, and plain deferred `issue_commented` wakes that predate the
+        // close, must not reopen closed work.
         const shouldReopenDeferredCommentWake =
           deferredCommentIds.length > 0 &&
           !deferredCommentWakeIsSelfAuthored &&
           (issue.status === "done" || issue.status === "cancelled") &&
+          deferredLifecycleIntent &&
           (
             deferred.requestedByActorType === "user" ||
             deferredWakeReason === "issue_reopened_via_comment"
